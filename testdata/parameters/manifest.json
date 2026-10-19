@@ -1,0 +1,673 @@
+{
+  "cases": [
+    {
+      "name": "pss-256-mgf256-salt0",
+      "xml": "pss-256-mgf256-salt0.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-256-mgf256-salt0-bad-digest",
+      "xml": "pss-256-mgf256-salt0.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-256-mgf256-salt0-wrong-salt",
+      "xml": "pss-256-mgf256-salt0.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-256-mgf256-salt20",
+      "xml": "pss-256-mgf256-salt20.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-256-mgf256-salt20-bad-digest",
+      "xml": "pss-256-mgf256-salt20.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-256-mgf256-salt20-wrong-salt",
+      "xml": "pss-256-mgf256-salt20.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-256-mgf256-salt32",
+      "xml": "pss-256-mgf256-salt32.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-256-mgf256-salt32-bad-digest",
+      "xml": "pss-256-mgf256-salt32.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-256-mgf256-salt32-wrong-salt",
+      "xml": "pss-256-mgf256-salt32.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-256-mgf384-salt0",
+      "xml": "pss-256-mgf384-salt0.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-256-mgf384-salt0-bad-digest",
+      "xml": "pss-256-mgf384-salt0.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-256-mgf384-salt0-wrong-salt",
+      "xml": "pss-256-mgf384-salt0.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-256-mgf384-salt20",
+      "xml": "pss-256-mgf384-salt20.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-256-mgf384-salt20-bad-digest",
+      "xml": "pss-256-mgf384-salt20.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-256-mgf384-salt20-wrong-salt",
+      "xml": "pss-256-mgf384-salt20.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-256-mgf384-salt32",
+      "xml": "pss-256-mgf384-salt32.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-256-mgf384-salt32-bad-digest",
+      "xml": "pss-256-mgf384-salt32.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-256-mgf384-salt32-wrong-salt",
+      "xml": "pss-256-mgf384-salt32.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-256-mgf512-salt0",
+      "xml": "pss-256-mgf512-salt0.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-256-mgf512-salt0-bad-digest",
+      "xml": "pss-256-mgf512-salt0.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-256-mgf512-salt0-wrong-salt",
+      "xml": "pss-256-mgf512-salt0.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-256-mgf512-salt20",
+      "xml": "pss-256-mgf512-salt20.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-256-mgf512-salt20-bad-digest",
+      "xml": "pss-256-mgf512-salt20.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-256-mgf512-salt20-wrong-salt",
+      "xml": "pss-256-mgf512-salt20.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-256-mgf512-salt32",
+      "xml": "pss-256-mgf512-salt32.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-256-mgf512-salt32-bad-digest",
+      "xml": "pss-256-mgf512-salt32.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-256-mgf512-salt32-wrong-salt",
+      "xml": "pss-256-mgf512-salt32.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-384-mgf256-salt0",
+      "xml": "pss-384-mgf256-salt0.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-384-mgf256-salt0-bad-digest",
+      "xml": "pss-384-mgf256-salt0.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-384-mgf256-salt0-wrong-salt",
+      "xml": "pss-384-mgf256-salt0.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-384-mgf256-salt20",
+      "xml": "pss-384-mgf256-salt20.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-384-mgf256-salt20-bad-digest",
+      "xml": "pss-384-mgf256-salt20.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-384-mgf256-salt20-wrong-salt",
+      "xml": "pss-384-mgf256-salt20.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-384-mgf256-salt48",
+      "xml": "pss-384-mgf256-salt48.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-384-mgf256-salt48-bad-digest",
+      "xml": "pss-384-mgf256-salt48.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-384-mgf256-salt48-wrong-salt",
+      "xml": "pss-384-mgf256-salt48.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-384-mgf384-salt0",
+      "xml": "pss-384-mgf384-salt0.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-384-mgf384-salt0-bad-digest",
+      "xml": "pss-384-mgf384-salt0.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-384-mgf384-salt0-wrong-salt",
+      "xml": "pss-384-mgf384-salt0.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-384-mgf384-salt20",
+      "xml": "pss-384-mgf384-salt20.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-384-mgf384-salt20-bad-digest",
+      "xml": "pss-384-mgf384-salt20.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-384-mgf384-salt20-wrong-salt",
+      "xml": "pss-384-mgf384-salt20.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-384-mgf384-salt48",
+      "xml": "pss-384-mgf384-salt48.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-384-mgf384-salt48-bad-digest",
+      "xml": "pss-384-mgf384-salt48.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-384-mgf384-salt48-wrong-salt",
+      "xml": "pss-384-mgf384-salt48.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-384-mgf512-salt0",
+      "xml": "pss-384-mgf512-salt0.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-384-mgf512-salt0-bad-digest",
+      "xml": "pss-384-mgf512-salt0.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-384-mgf512-salt0-wrong-salt",
+      "xml": "pss-384-mgf512-salt0.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-384-mgf512-salt20",
+      "xml": "pss-384-mgf512-salt20.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-384-mgf512-salt20-bad-digest",
+      "xml": "pss-384-mgf512-salt20.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-384-mgf512-salt20-wrong-salt",
+      "xml": "pss-384-mgf512-salt20.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-384-mgf512-salt48",
+      "xml": "pss-384-mgf512-salt48.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-384-mgf512-salt48-bad-digest",
+      "xml": "pss-384-mgf512-salt48.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-384-mgf512-salt48-wrong-salt",
+      "xml": "pss-384-mgf512-salt48.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-512-mgf256-salt0",
+      "xml": "pss-512-mgf256-salt0.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-512-mgf256-salt0-bad-digest",
+      "xml": "pss-512-mgf256-salt0.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-512-mgf256-salt0-wrong-salt",
+      "xml": "pss-512-mgf256-salt0.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-512-mgf256-salt20",
+      "xml": "pss-512-mgf256-salt20.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-512-mgf256-salt20-bad-digest",
+      "xml": "pss-512-mgf256-salt20.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-512-mgf256-salt20-wrong-salt",
+      "xml": "pss-512-mgf256-salt20.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-512-mgf256-salt64",
+      "xml": "pss-512-mgf256-salt64.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-512-mgf256-salt64-bad-digest",
+      "xml": "pss-512-mgf256-salt64.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-512-mgf256-salt64-wrong-salt",
+      "xml": "pss-512-mgf256-salt64.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-512-mgf384-salt0",
+      "xml": "pss-512-mgf384-salt0.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-512-mgf384-salt0-bad-digest",
+      "xml": "pss-512-mgf384-salt0.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-512-mgf384-salt0-wrong-salt",
+      "xml": "pss-512-mgf384-salt0.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-512-mgf384-salt20",
+      "xml": "pss-512-mgf384-salt20.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-512-mgf384-salt20-bad-digest",
+      "xml": "pss-512-mgf384-salt20.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-512-mgf384-salt20-wrong-salt",
+      "xml": "pss-512-mgf384-salt20.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-512-mgf384-salt64",
+      "xml": "pss-512-mgf384-salt64.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-512-mgf384-salt64-bad-digest",
+      "xml": "pss-512-mgf384-salt64.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-512-mgf384-salt64-wrong-salt",
+      "xml": "pss-512-mgf384-salt64.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-512-mgf512-salt0",
+      "xml": "pss-512-mgf512-salt0.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-512-mgf512-salt0-bad-digest",
+      "xml": "pss-512-mgf512-salt0.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-512-mgf512-salt0-wrong-salt",
+      "xml": "pss-512-mgf512-salt0.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-512-mgf512-salt20",
+      "xml": "pss-512-mgf512-salt20.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-512-mgf512-salt20-bad-digest",
+      "xml": "pss-512-mgf512-salt20.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-512-mgf512-salt20-wrong-salt",
+      "xml": "pss-512-mgf512-salt20.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-512-mgf512-salt64",
+      "xml": "pss-512-mgf512-salt64.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-512-mgf512-salt64-bad-digest",
+      "xml": "pss-512-mgf512-salt64.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-512-mgf512-salt64-wrong-salt",
+      "xml": "pss-512-mgf512-salt64.wrong-salt.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "signature-value"
+    },
+    {
+      "name": "pss-default",
+      "xml": "pss-default.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-default-bad-digest",
+      "xml": "pss-default.bad-digest.xml",
+      "kind": "pss",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "hmac-256-bits0",
+      "xml": "hmac-256-bits0.xml",
+      "kind": "hmac",
+      "valid": true
+    },
+    {
+      "name": "hmac-256-bits0-bad-digest",
+      "xml": "hmac-256-bits0.bad-digest.xml",
+      "kind": "hmac",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "hmac-256-bits128",
+      "xml": "hmac-256-bits128.xml",
+      "kind": "hmac",
+      "valid": true
+    },
+    {
+      "name": "hmac-256-bits128-bad-digest",
+      "xml": "hmac-256-bits128.bad-digest.xml",
+      "kind": "hmac",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "hmac-384-bits0",
+      "xml": "hmac-384-bits0.xml",
+      "kind": "hmac",
+      "valid": true
+    },
+    {
+      "name": "hmac-384-bits0-bad-digest",
+      "xml": "hmac-384-bits0.bad-digest.xml",
+      "kind": "hmac",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "hmac-384-bits192",
+      "xml": "hmac-384-bits192.xml",
+      "kind": "hmac",
+      "valid": true
+    },
+    {
+      "name": "hmac-384-bits192-bad-digest",
+      "xml": "hmac-384-bits192.bad-digest.xml",
+      "kind": "hmac",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "hmac-512-bits0",
+      "xml": "hmac-512-bits0.xml",
+      "kind": "hmac",
+      "valid": true
+    },
+    {
+      "name": "hmac-512-bits0-bad-digest",
+      "xml": "hmac-512-bits0.bad-digest.xml",
+      "kind": "hmac",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "hmac-512-bits256",
+      "xml": "hmac-512-bits256.xml",
+      "kind": "hmac",
+      "valid": true
+    },
+    {
+      "name": "hmac-512-bits256-bad-digest",
+      "xml": "hmac-512-bits256.bad-digest.xml",
+      "kind": "hmac",
+      "valid": false,
+      "stage": "references"
+    },
+    {
+      "name": "pss-384-empty-mgf",
+      "xml": "pss-384-empty-mgf.xml",
+      "kind": "pss",
+      "valid": true
+    },
+    {
+      "name": "pss-512-empty-mgf",
+      "xml": "pss-512-empty-mgf.xml",
+      "kind": "pss",
+      "valid": true
+    }
+  ],
+  "spki": "rsa.spki.der",
+  "hmac_key": "hmac-test-key.bin",
+  "summary": {
+    "counts": {
+      "python_to_go": 36,
+      "go_to_python": 13,
+      "precomputed_provider_roundtrips": 21,
+      "negative_second_digest": 34,
+      "negative_wrong_salt": 27
+    },
+    "fixture_cases": 97,
+    "engines": {
+      "cryptography": "46.0.4",
+      "openssl": "OpenSSL 3.5.5 27 Jan 2026",
+      "libxml2": [
+        2,
+        14,
+        6
+      ]
+    },
+    "notes": [
+      "Precomputed provider roundtrip tests interface plumbing and output validation, not a real HSM/KMS.",
+      "HMAC test secret is PUBLIC fixture material. No RSA private key is persisted.",
+      "These cases do not establish full XMLDSig conformance."
+    ]
+  }
+}

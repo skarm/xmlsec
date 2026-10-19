@@ -1,0 +1,1 @@
+<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:k="http://www.w3.org/2009/xmldsig11#" Id="key-info"><ds:KeyName>  exact key name  </ds:KeyName><k:DEREncodedKeyValue>MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEyFx4iySqxs9TnpMnlyQ8SF5mN/jEH717T2I69KMvkhqq/jWgKFs+xpxi18k/uJ6/3kZ7qjdAqcbnwJaZgXk4uRP0hY0nh1fHkdpzmK70rI1OqKrQE2N/Lm12G2HDCDHQ</k:DEREncodedKeyValue></ds:KeyInfo>

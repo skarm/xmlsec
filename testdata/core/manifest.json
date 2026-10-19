@@ -1,0 +1,929 @@
+{
+  "producer": "JDK JSR105 DOM XMLDSig",
+  "cases": [
+    {
+      "name": "rsa256-enveloping-cm0-signature0",
+      "file": "rsa256-enveloping-cm0.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa256-whole-cm0-signature0",
+      "file": "rsa256-whole-cm0.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa256-enveloping-cm1-signature0",
+      "file": "rsa256-enveloping-cm1.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa256-whole-cm1-signature0",
+      "file": "rsa256-whole-cm1.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa256-enveloping-cm2-signature0",
+      "file": "rsa256-enveloping-cm2.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa256-whole-cm2-signature0",
+      "file": "rsa256-whole-cm2.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa256-enveloping-cm3-signature0",
+      "file": "rsa256-enveloping-cm3.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa256-whole-cm3-signature0",
+      "file": "rsa256-whole-cm3.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa256-enveloping-cm4-signature0",
+      "file": "rsa256-enveloping-cm4.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa256-whole-cm4-signature0",
+      "file": "rsa256-whole-cm4.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa256-enveloping-cm5-signature0",
+      "file": "rsa256-enveloping-cm5.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa256-whole-cm5-signature0",
+      "file": "rsa256-whole-cm5.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa256-sibling-cm0-signature0",
+      "file": "rsa256-sibling-cm0.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa256-xpointer-cm0-signature0",
+      "file": "rsa256-xpointer-cm0.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa256-multi-cm0-signature0",
+      "file": "rsa256-multi-cm0.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa256-multi-cm0-signature1",
+      "file": "rsa256-multi-cm0.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 1,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa256-bad-second",
+      "file": "rsa256-bad-second.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": false,
+      "failed_reference": 1,
+      "references": 3
+    },
+    {
+      "name": "rsa384-enveloping-cm0-signature0",
+      "file": "rsa384-enveloping-cm0.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa384-whole-cm0-signature0",
+      "file": "rsa384-whole-cm0.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa384-enveloping-cm1-signature0",
+      "file": "rsa384-enveloping-cm1.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa384-whole-cm1-signature0",
+      "file": "rsa384-whole-cm1.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa384-enveloping-cm2-signature0",
+      "file": "rsa384-enveloping-cm2.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa384-whole-cm2-signature0",
+      "file": "rsa384-whole-cm2.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa384-enveloping-cm3-signature0",
+      "file": "rsa384-enveloping-cm3.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa384-whole-cm3-signature0",
+      "file": "rsa384-whole-cm3.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa384-enveloping-cm4-signature0",
+      "file": "rsa384-enveloping-cm4.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa384-whole-cm4-signature0",
+      "file": "rsa384-whole-cm4.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa384-enveloping-cm5-signature0",
+      "file": "rsa384-enveloping-cm5.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa384-whole-cm5-signature0",
+      "file": "rsa384-whole-cm5.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa384-sibling-cm0-signature0",
+      "file": "rsa384-sibling-cm0.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa384-xpointer-cm0-signature0",
+      "file": "rsa384-xpointer-cm0.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa384-multi-cm0-signature0",
+      "file": "rsa384-multi-cm0.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa384-multi-cm0-signature1",
+      "file": "rsa384-multi-cm0.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 1,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa384-bad-second",
+      "file": "rsa384-bad-second.jdk.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": false,
+      "failed_reference": 1,
+      "references": 3
+    },
+    {
+      "name": "rsa512-enveloping-cm0-signature0",
+      "file": "rsa512-enveloping-cm0.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa512-whole-cm0-signature0",
+      "file": "rsa512-whole-cm0.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa512-enveloping-cm1-signature0",
+      "file": "rsa512-enveloping-cm1.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa512-whole-cm1-signature0",
+      "file": "rsa512-whole-cm1.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa512-enveloping-cm2-signature0",
+      "file": "rsa512-enveloping-cm2.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa512-whole-cm2-signature0",
+      "file": "rsa512-whole-cm2.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa512-enveloping-cm3-signature0",
+      "file": "rsa512-enveloping-cm3.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa512-whole-cm3-signature0",
+      "file": "rsa512-whole-cm3.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa512-enveloping-cm4-signature0",
+      "file": "rsa512-enveloping-cm4.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa512-whole-cm4-signature0",
+      "file": "rsa512-whole-cm4.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa512-enveloping-cm5-signature0",
+      "file": "rsa512-enveloping-cm5.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "rsa512-whole-cm5-signature0",
+      "file": "rsa512-whole-cm5.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa512-sibling-cm0-signature0",
+      "file": "rsa512-sibling-cm0.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa512-xpointer-cm0-signature0",
+      "file": "rsa512-xpointer-cm0.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa512-multi-cm0-signature0",
+      "file": "rsa512-multi-cm0.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa512-multi-cm0-signature1",
+      "file": "rsa512-multi-cm0.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 1,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "rsa512-bad-second",
+      "file": "rsa512-bad-second.jdk.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": false,
+      "failed_reference": 1,
+      "references": 3
+    },
+    {
+      "name": "ec256-enveloping-cm0-signature0",
+      "file": "ec256-enveloping-cm0.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec256-whole-cm0-signature0",
+      "file": "ec256-whole-cm0.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec256-enveloping-cm1-signature0",
+      "file": "ec256-enveloping-cm1.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec256-whole-cm1-signature0",
+      "file": "ec256-whole-cm1.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec256-enveloping-cm2-signature0",
+      "file": "ec256-enveloping-cm2.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec256-whole-cm2-signature0",
+      "file": "ec256-whole-cm2.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec256-enveloping-cm3-signature0",
+      "file": "ec256-enveloping-cm3.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec256-whole-cm3-signature0",
+      "file": "ec256-whole-cm3.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec256-enveloping-cm4-signature0",
+      "file": "ec256-enveloping-cm4.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec256-whole-cm4-signature0",
+      "file": "ec256-whole-cm4.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec256-enveloping-cm5-signature0",
+      "file": "ec256-enveloping-cm5.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec256-whole-cm5-signature0",
+      "file": "ec256-whole-cm5.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec256-sibling-cm0-signature0",
+      "file": "ec256-sibling-cm0.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec256-xpointer-cm0-signature0",
+      "file": "ec256-xpointer-cm0.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec256-multi-cm0-signature0",
+      "file": "ec256-multi-cm0.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec256-multi-cm0-signature1",
+      "file": "ec256-multi-cm0.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 1,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec256-bad-second",
+      "file": "ec256-bad-second.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": false,
+      "failed_reference": 1,
+      "references": 3
+    },
+    {
+      "name": "ec384-enveloping-cm0-signature0",
+      "file": "ec384-enveloping-cm0.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec384-whole-cm0-signature0",
+      "file": "ec384-whole-cm0.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec384-enveloping-cm1-signature0",
+      "file": "ec384-enveloping-cm1.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec384-whole-cm1-signature0",
+      "file": "ec384-whole-cm1.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec384-enveloping-cm2-signature0",
+      "file": "ec384-enveloping-cm2.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec384-whole-cm2-signature0",
+      "file": "ec384-whole-cm2.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec384-enveloping-cm3-signature0",
+      "file": "ec384-enveloping-cm3.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec384-whole-cm3-signature0",
+      "file": "ec384-whole-cm3.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec384-enveloping-cm4-signature0",
+      "file": "ec384-enveloping-cm4.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec384-whole-cm4-signature0",
+      "file": "ec384-whole-cm4.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec384-enveloping-cm5-signature0",
+      "file": "ec384-enveloping-cm5.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec384-whole-cm5-signature0",
+      "file": "ec384-whole-cm5.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec384-sibling-cm0-signature0",
+      "file": "ec384-sibling-cm0.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec384-xpointer-cm0-signature0",
+      "file": "ec384-xpointer-cm0.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec384-multi-cm0-signature0",
+      "file": "ec384-multi-cm0.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec384-multi-cm0-signature1",
+      "file": "ec384-multi-cm0.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 1,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec384-bad-second",
+      "file": "ec384-bad-second.jdk.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": false,
+      "failed_reference": 1,
+      "references": 3
+    },
+    {
+      "name": "ec521-enveloping-cm0-signature0",
+      "file": "ec521-enveloping-cm0.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec521-whole-cm0-signature0",
+      "file": "ec521-whole-cm0.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec521-enveloping-cm1-signature0",
+      "file": "ec521-enveloping-cm1.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec521-whole-cm1-signature0",
+      "file": "ec521-whole-cm1.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec521-enveloping-cm2-signature0",
+      "file": "ec521-enveloping-cm2.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec521-whole-cm2-signature0",
+      "file": "ec521-whole-cm2.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec521-enveloping-cm3-signature0",
+      "file": "ec521-enveloping-cm3.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec521-whole-cm3-signature0",
+      "file": "ec521-whole-cm3.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec521-enveloping-cm4-signature0",
+      "file": "ec521-enveloping-cm4.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec521-whole-cm4-signature0",
+      "file": "ec521-whole-cm4.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec521-enveloping-cm5-signature0",
+      "file": "ec521-enveloping-cm5.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 3
+    },
+    {
+      "name": "ec521-whole-cm5-signature0",
+      "file": "ec521-whole-cm5.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec521-sibling-cm0-signature0",
+      "file": "ec521-sibling-cm0.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec521-xpointer-cm0-signature0",
+      "file": "ec521-xpointer-cm0.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec521-multi-cm0-signature0",
+      "file": "ec521-multi-cm0.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec521-multi-cm0-signature1",
+      "file": "ec521-multi-cm0.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 1,
+      "valid": true,
+      "references": 2
+    },
+    {
+      "name": "ec521-bad-second",
+      "file": "ec521-bad-second.jdk.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "signature_index": 0,
+      "valid": false,
+      "failed_reference": 1,
+      "references": 3
+    }
+  ]
+}

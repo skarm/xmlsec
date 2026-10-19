@@ -1,0 +1,1 @@
+<?before x?><!--before--><p:r xmlns:p="urn:p" xmlns:unused="urn:unused" xml:lang="en"><p:item z="2" a="1">text</p:item><!--inside--></p:r><?after x?>

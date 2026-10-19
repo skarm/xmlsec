@@ -1,0 +1,73 @@
+package uripath_test
+
+import (
+	"errors"
+	"path/filepath"
+	"testing"
+
+	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
+)
+
+func TestResolveSchemaURI(t *testing.T) {
+	const schemaPart = "part.xsd"
+
+	for _, tc := range []struct{ base, ref, want string }{
+		{"https://example.org/s/main.xsd", schemaPart, "https://example.org/s/part.xsd"},
+		{"mem:/schemas/main.xsd", schemaPart, "mem:/schemas/part.xsd"},
+		{"file:///schemas/main.xsd", schemaPart, "file:///schemas/part.xsd"},
+		{"schemas", "parts/a.xsd", "schemas/parts/a.xsd"},
+		{`schemas\parts`, `a.xsd`, "schemas/parts/a.xsd"},
+		{"schemas", "urn:external", "urn:external"},
+	} {
+		t.Run(tc.base+"/"+tc.ref, func(t *testing.T) {
+			got, err := uripath.ResolveSchemaURI(tc.ref, tc.base)
+			if err != nil || got != tc.want {
+				t.Fatalf("got %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+
+	for _, ref := range []string{"../escape.xsd", `..\escape.xsd`, "sub/../../escape.xsd"} {
+		if _, err := uripath.ResolveSchemaURI(ref, "schemas"); !errors.Is(err, uripath.ErrInvalidURI) {
+			t.Errorf("escape %q: %v", ref, err)
+		}
+	}
+}
+
+func TestFileURIToPath(t *testing.T) {
+	for _, uri := range []string{"file:///tmp/a%20b.xml", "file://LOCALHOST/tmp/a%20b.xml"} {
+		got, err := uripath.FileURIToPath(uri)
+		if err != nil || got != filepath.FromSlash("/tmp/a b.xml") {
+			t.Errorf("%s: %q, %v", uri, got, err)
+		}
+	}
+
+	for _, uri := range []string{"file:relative.xml", "file://localhost", "file://server/share/file.xml", "file:////server/share/file.xml", "https://example.org/a"} {
+		if path, err := uripath.FileURIToPath(uri); err == nil {
+			t.Errorf("nonlocal or invalid URI %q resolved to %q", uri, path)
+		}
+	}
+}
+
+func TestPortablePathShapes(t *testing.T) {
+	for _, tc := range []struct {
+		input    string
+		absolute bool
+		scheme   string
+	}{
+		{`C:\styles\main.xsl`, true, ""},
+		{"D:/main.xsl", true, ""},
+		{"C:relative", false, ""},
+		{"/styles/main.xsl", true, ""},
+		{"urn:example", false, "urn"},
+		{"https://example.org/a", false, "https"},
+	} {
+		if uripath.IsAbsolutePath(tc.input) != tc.absolute || uripath.URIScheme(tc.input) != tc.scheme {
+			t.Errorf("unexpected path classification for %q", tc.input)
+		}
+	}
+
+	if got := uripath.SlashRel(`C:\a\b`, `C:\a\c\x.xml`); got != "../c/x.xml" {
+		t.Errorf("relative Windows path = %q", got)
+	}
+}

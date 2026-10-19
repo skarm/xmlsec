@@ -1,0 +1,61 @@
+[
+  {
+    "kind": "xpath-context",
+    "jdk_verifies_go": {
+      "signature_value": true,
+      "references": [
+        false,
+        false
+      ],
+      "valid": false
+    },
+    "go_verifies_jdk": {
+      "manifest_validation": "not-checked",
+      "status": "invalid",
+      "signature_value": "valid",
+      "signature_method": "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256",
+      "references": [
+        {
+          "index": 0,
+          "uri": "#payload",
+          "status": "invalid",
+          "stage": "digest",
+          "error": "XMLDSig reference digest mismatch",
+          "steps": [
+            {
+              "algorithm": "http://www.w3.org/TR/1999/REC-xpath-19991116",
+              "input_kind": "node-set",
+              "output_kind": "node-set",
+              "input_size": 20,
+              "output_size": 10,
+              "implicit": false
+            },
+            {
+              "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+              "input_kind": "node-set",
+              "output_kind": "octet-stream",
+              "input_size": 10,
+              "output_size": 59,
+              "implicit": false
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "uri": "#payload",
+          "status": "not-checked"
+        }
+      ],
+      "failure_stage": "references",
+      "error": "reference 0 (#payload), digest: XMLDSig reference digest mismatch"
+    },
+    "jdk_verifies_jdk": {
+      "signature_value": true,
+      "references": [
+        true,
+        true
+      ],
+      "valid": true
+    }
+  }
+]

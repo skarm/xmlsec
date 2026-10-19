@@ -1,0 +1,50 @@
+{
+  "generator": "scripts/interop.py",
+  "lxml_version": [
+    6,
+    1,
+    1,
+    0
+  ],
+  "libxml2_version": [
+    2,
+    14,
+    6
+  ],
+  "cryptography_version": "46.0.4",
+  "canonicalization_cases": 249,
+  "xmlstarlet_cases": 2,
+  "cases": [
+    {
+      "name": "rsa256",
+      "method": "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256",
+      "digest": "http://www.w3.org/2001/04/xmlenc#sha256"
+    },
+    {
+      "name": "rsa384",
+      "method": "http://www.w3.org/2001/04/xmldsig-more#rsa-sha384",
+      "digest": "http://www.w3.org/2001/04/xmldsig-more#sha384"
+    },
+    {
+      "name": "rsa512",
+      "method": "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512",
+      "digest": "http://www.w3.org/2001/04/xmlenc#sha512"
+    },
+    {
+      "name": "ec256",
+      "method": "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256",
+      "digest": "http://www.w3.org/2001/04/xmlenc#sha256"
+    },
+    {
+      "name": "ec384",
+      "method": "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha384",
+      "digest": "http://www.w3.org/2001/04/xmldsig-more#sha384"
+    },
+    {
+      "name": "ec521",
+      "method": "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha512",
+      "digest": "http://www.w3.org/2001/04/xmlenc#sha512"
+    }
+  ],
+  "notes": "Generated with ephemeral test keys; private keys are not retained. Not a full conformance suite or audit."
+}

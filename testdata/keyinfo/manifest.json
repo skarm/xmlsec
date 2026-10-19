@@ -1,0 +1,94 @@
+{
+  "generator": "scripts/keyinfo_interop.py",
+  "cryptography": "46.0.4",
+  "lxml": "6.1.1.0",
+  "cases": [
+    {
+      "name": "rsa-xml",
+      "sha256": "7d1b56d92899ffa61628c27749266ed2a39fd18c0708578be2b41ce398672a14",
+      "keyinfo": "rsa-xml.keyinfo.xml",
+      "signature": "rsa-xml.signature.xml",
+      "spki": "rsa-xml.spki.der",
+      "negative": "rsa-xml.tampered.xml"
+    },
+    {
+      "name": "rsa-der",
+      "sha256": "7d1b56d92899ffa61628c27749266ed2a39fd18c0708578be2b41ce398672a14",
+      "keyinfo": "rsa-der.keyinfo.xml",
+      "signature": "rsa-der.signature.xml",
+      "spki": "rsa-der.spki.der",
+      "negative": "rsa-der.tampered.xml"
+    },
+    {
+      "name": "p256-xml",
+      "sha256": "6296a79318db622eeba4277b64b94705c9ad15af4bc2637dc8ec7fc9be46fd0e",
+      "keyinfo": "p256-xml.keyinfo.xml",
+      "signature": "p256-xml.signature.xml",
+      "spki": "p256-xml.spki.der",
+      "negative": "p256-xml.tampered.xml"
+    },
+    {
+      "name": "p256-der",
+      "sha256": "6296a79318db622eeba4277b64b94705c9ad15af4bc2637dc8ec7fc9be46fd0e",
+      "keyinfo": "p256-der.keyinfo.xml",
+      "signature": "p256-der.signature.xml",
+      "spki": "p256-der.spki.der",
+      "negative": "p256-der.tampered.xml"
+    },
+    {
+      "name": "p384-xml",
+      "sha256": "77b2ba2c9976e036c6402060d58cf9f9de5d491b61dca4fcab7dcb8f329d5e38",
+      "keyinfo": "p384-xml.keyinfo.xml",
+      "signature": "p384-xml.signature.xml",
+      "spki": "p384-xml.spki.der",
+      "negative": "p384-xml.tampered.xml"
+    },
+    {
+      "name": "p384-der",
+      "sha256": "77b2ba2c9976e036c6402060d58cf9f9de5d491b61dca4fcab7dcb8f329d5e38",
+      "keyinfo": "p384-der.keyinfo.xml",
+      "signature": "p384-der.signature.xml",
+      "spki": "p384-der.spki.der",
+      "negative": "p384-der.tampered.xml"
+    },
+    {
+      "name": "p521-xml",
+      "sha256": "c750df47fd6dc31f875bafb3711498ae913e78351e9035d8792414ab8dd4215d",
+      "keyinfo": "p521-xml.keyinfo.xml",
+      "signature": "p521-xml.signature.xml",
+      "spki": "p521-xml.spki.der",
+      "negative": "p521-xml.tampered.xml"
+    },
+    {
+      "name": "p521-der",
+      "sha256": "c750df47fd6dc31f875bafb3711498ae913e78351e9035d8792414ab8dd4215d",
+      "keyinfo": "p521-der.keyinfo.xml",
+      "signature": "p521-der.signature.xml",
+      "spki": "p521-der.spki.der",
+      "negative": "p521-der.tampered.xml"
+    },
+    {
+      "name": "ed25519-der",
+      "sha256": "b3be8674b8f27f43012a6d6a12ff54ef7e0c56f960a05632d7157bd98ca4d093",
+      "keyinfo": "ed25519-der.keyinfo.xml",
+      "signature": "ed25519-der.signature.xml",
+      "spki": "ed25519-der.spki.der",
+      "negative": "ed25519-der.tampered.xml"
+    },
+    {
+      "name": "p256-x509",
+      "sha256": "6296a79318db622eeba4277b64b94705c9ad15af4bc2637dc8ec7fc9be46fd0e",
+      "keyinfo": "p256-x509.keyinfo.xml",
+      "signature": "p256-x509.signature.xml",
+      "spki": "p256-x509.spki.der",
+      "negative": "p256-x509.tampered.xml"
+    }
+  ],
+  "results": {
+    "keyinfo_python_to_go": 10,
+    "keyinfo_go_to_python": 10,
+    "signature_python_to_go": 10,
+    "signature_go_to_python": 10,
+    "negative_rejections": 20
+  }
+}

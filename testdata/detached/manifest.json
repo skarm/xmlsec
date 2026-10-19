@@ -1,0 +1,306 @@
+{
+  "producer": "JDK JSR 105 DOM XMLDSig",
+  "resources": "resources.json",
+  "cases": [
+    {
+      "name": "rsa256-cm0",
+      "file": "rsa256-cm0.java.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "valid": true
+    },
+    {
+      "name": "rsa256-cm1",
+      "file": "rsa256-cm1.java.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "valid": true
+    },
+    {
+      "name": "rsa256-cm2",
+      "file": "rsa256-cm2.java.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "valid": true
+    },
+    {
+      "name": "rsa256-cm3",
+      "file": "rsa256-cm3.java.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "valid": true
+    },
+    {
+      "name": "rsa256-cm4",
+      "file": "rsa256-cm4.java.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "valid": true
+    },
+    {
+      "name": "rsa256-cm5",
+      "file": "rsa256-cm5.java.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "valid": true
+    },
+    {
+      "name": "rsa256-bad-second",
+      "file": "rsa256.bad-second.xml",
+      "public_key": "rsa256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "valid": false,
+      "failed_reference": 1
+    },
+    {
+      "name": "rsa384-cm0",
+      "file": "rsa384-cm0.java.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "valid": true
+    },
+    {
+      "name": "rsa384-cm1",
+      "file": "rsa384-cm1.java.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "valid": true
+    },
+    {
+      "name": "rsa384-cm2",
+      "file": "rsa384-cm2.java.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "valid": true
+    },
+    {
+      "name": "rsa384-cm3",
+      "file": "rsa384-cm3.java.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "valid": true
+    },
+    {
+      "name": "rsa384-cm4",
+      "file": "rsa384-cm4.java.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "valid": true
+    },
+    {
+      "name": "rsa384-cm5",
+      "file": "rsa384-cm5.java.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "valid": true
+    },
+    {
+      "name": "rsa384-bad-second",
+      "file": "rsa384.bad-second.xml",
+      "public_key": "rsa384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "valid": false,
+      "failed_reference": 1
+    },
+    {
+      "name": "rsa512-cm0",
+      "file": "rsa512-cm0.java.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "valid": true
+    },
+    {
+      "name": "rsa512-cm1",
+      "file": "rsa512-cm1.java.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "valid": true
+    },
+    {
+      "name": "rsa512-cm2",
+      "file": "rsa512-cm2.java.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "valid": true
+    },
+    {
+      "name": "rsa512-cm3",
+      "file": "rsa512-cm3.java.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "valid": true
+    },
+    {
+      "name": "rsa512-cm4",
+      "file": "rsa512-cm4.java.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "valid": true
+    },
+    {
+      "name": "rsa512-cm5",
+      "file": "rsa512-cm5.java.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "valid": true
+    },
+    {
+      "name": "rsa512-bad-second",
+      "file": "rsa512.bad-second.xml",
+      "public_key": "rsa512.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "valid": false,
+      "failed_reference": 1
+    },
+    {
+      "name": "ec256-cm0",
+      "file": "ec256-cm0.java.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "valid": true
+    },
+    {
+      "name": "ec256-cm1",
+      "file": "ec256-cm1.java.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "valid": true
+    },
+    {
+      "name": "ec256-cm2",
+      "file": "ec256-cm2.java.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "valid": true
+    },
+    {
+      "name": "ec256-cm3",
+      "file": "ec256-cm3.java.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "valid": true
+    },
+    {
+      "name": "ec256-cm4",
+      "file": "ec256-cm4.java.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "valid": true
+    },
+    {
+      "name": "ec256-cm5",
+      "file": "ec256-cm5.java.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "valid": true
+    },
+    {
+      "name": "ec256-bad-second",
+      "file": "ec256.bad-second.xml",
+      "public_key": "ec256.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "valid": false,
+      "failed_reference": 1
+    },
+    {
+      "name": "ec384-cm0",
+      "file": "ec384-cm0.java.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "valid": true
+    },
+    {
+      "name": "ec384-cm1",
+      "file": "ec384-cm1.java.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "valid": true
+    },
+    {
+      "name": "ec384-cm2",
+      "file": "ec384-cm2.java.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "valid": true
+    },
+    {
+      "name": "ec384-cm3",
+      "file": "ec384-cm3.java.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "valid": true
+    },
+    {
+      "name": "ec384-cm4",
+      "file": "ec384-cm4.java.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "valid": true
+    },
+    {
+      "name": "ec384-cm5",
+      "file": "ec384-cm5.java.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "valid": true
+    },
+    {
+      "name": "ec384-bad-second",
+      "file": "ec384.bad-second.xml",
+      "public_key": "ec384.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "valid": false,
+      "failed_reference": 1
+    },
+    {
+      "name": "ec521-cm0",
+      "file": "ec521-cm0.java.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "valid": true
+    },
+    {
+      "name": "ec521-cm1",
+      "file": "ec521-cm1.java.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "valid": true
+    },
+    {
+      "name": "ec521-cm2",
+      "file": "ec521-cm2.java.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "valid": true
+    },
+    {
+      "name": "ec521-cm3",
+      "file": "ec521-cm3.java.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "valid": true
+    },
+    {
+      "name": "ec521-cm4",
+      "file": "ec521-cm4.java.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11",
+      "valid": true
+    },
+    {
+      "name": "ec521-cm5",
+      "file": "ec521-cm5.java.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "valid": true
+    },
+    {
+      "name": "ec521-bad-second",
+      "file": "ec521.bad-second.xml",
+      "public_key": "ec521.pub.pem",
+      "canonicalization": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "valid": false,
+      "failed_reference": 1
+    }
+  ]
+}

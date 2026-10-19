@@ -1,0 +1,114 @@
+[
+  {
+    "name": "rsa-metadata-valid",
+    "kind": "metadata",
+    "certificate": "rsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": true
+  },
+  {
+    "name": "rsa-metadata-double-default",
+    "kind": "metadata",
+    "certificate": "rsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": false
+  },
+  {
+    "name": "rsa-request-valid",
+    "kind": "request",
+    "certificate": "rsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": true
+  },
+  {
+    "name": "rsa-request-acs",
+    "kind": "request",
+    "certificate": "rsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": false
+  },
+  {
+    "name": "rsa-response-valid",
+    "kind": "response",
+    "certificate": "rsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": true
+  },
+  {
+    "name": "rsa-response-audience",
+    "kind": "response",
+    "certificate": "rsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": false
+  },
+  {
+    "name": "rsa-response-recipient",
+    "kind": "response",
+    "certificate": "rsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": false
+  },
+  {
+    "name": "rsa-response-forbidden-notbefore",
+    "kind": "response",
+    "certificate": "rsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": false
+  },
+  {
+    "name": "ecdsa-metadata-valid",
+    "kind": "metadata",
+    "certificate": "ecdsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": true
+  },
+  {
+    "name": "ecdsa-metadata-double-default",
+    "kind": "metadata",
+    "certificate": "ecdsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": false
+  },
+  {
+    "name": "ecdsa-request-valid",
+    "kind": "request",
+    "certificate": "ecdsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": true
+  },
+  {
+    "name": "ecdsa-request-acs",
+    "kind": "request",
+    "certificate": "ecdsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": false
+  },
+  {
+    "name": "ecdsa-response-valid",
+    "kind": "response",
+    "certificate": "ecdsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": true
+  },
+  {
+    "name": "ecdsa-response-audience",
+    "kind": "response",
+    "certificate": "ecdsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": false
+  },
+  {
+    "name": "ecdsa-response-recipient",
+    "kind": "response",
+    "certificate": "ecdsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": false
+  },
+  {
+    "name": "ecdsa-response-forbidden-notbefore",
+    "kind": "response",
+    "certificate": "ecdsa.der",
+    "at": "2026-10-08T00:00:29Z",
+    "valid": false
+  }
+]

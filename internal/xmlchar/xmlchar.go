@@ -1,0 +1,296 @@
+// Derived from lestrrat-go/helium at 7362c0a70122a757780f4d0b545a9b370dead6ab.
+// Copyright (c) 2015 lestrrat. MIT License; see licenses/MIT-helium.txt.
+
+// Package xmlchar provides XML character classification functions: the XML 1.0
+// and XML 1.1 Char productions, literal-character validity, and the NCName,
+// QName, and Name productions.
+package xmlchar
+
+import (
+	"strings"
+	"unicode/utf8"
+)
+
+// IsChar reports whether r is a valid XML 1.0 §2.2 Char.
+// Char ::= #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF].
+func IsChar(r rune) bool {
+	if r < 0x100 {
+		return r == 0x9 || r == 0xA || r == 0xD || r >= 0x20
+	}
+
+	return (r >= 0x100 && r <= 0xD7FF) || (r >= 0xE000 && r <= 0xFFFD) || (r >= 0x10000 && r <= 0x10FFFF)
+}
+
+// IsXML11Char implements the XML 1.1 §2.2 Char production:
+//
+//	Char ::= [#x1-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+//
+// The C0/C1 control characters (0x1-0x1F, 0x7F-0x9F) the XML 1.0 Char
+// production forbids are valid XML 1.1 characters; only U+0000 is disallowed.
+// XML 1.1 requires the restricted characters to appear as character references
+// and never literally, so on its own this predicate governs only the
+// character-reference value check; IsLiteralChar governs literal text.
+func IsXML11Char(r rune) bool {
+	if r < 0x100 {
+		return r > 0
+	}
+
+	return (r >= 0x100 && r <= 0xD7FF) || (r >= 0xE000 && r <= 0xFFFD) || (r >= 0x10000 && r <= 0x10FFFF)
+}
+
+// IsXML11RestrictedChar reports whether r is an XML 1.1 RestrictedChar
+// (§2.2): a control character that is a valid XML 1.1 Char but must appear as a
+// character reference and never literally. Tab (U+0009), LF (U+000A), CR
+// (U+000D), and NEL (U+0085) are not restricted.
+//
+//	RestrictedChar ::= [#x1-#x8] | [#xB-#xC] | [#xE-#x1F] | [#x7F-#x84] | [#x86-#x9F]
+func IsXML11RestrictedChar(r rune) bool {
+	switch {
+	case r >= 0x1 && r <= 0x8:
+		return true
+	case r == 0xB || r == 0xC:
+		return true
+	case r >= 0xE && r <= 0x1F:
+		return true
+	case r >= 0x7F && r <= 0x84:
+		return true
+	case r >= 0x86 && r <= 0x9F:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsXML11SerializeAsCharRef reports whether a writer producing XML 1.1 output
+// must write r as a character reference and never literally. This is the
+// RestrictedChar set (IsXML11RestrictedChar) plus NEL (U+0085) and LINE
+// SEPARATOR (U+2028). Those two are not RestrictedChar, but XML 1.1 §2.11
+// line-ending normalization turns them into U+000A on input, so a literal one
+// would not survive a round trip. In XML 1.0 neither is a line-ending
+// character, so writers consult this only for XML 1.1 output.
+func IsXML11SerializeAsCharRef(r rune) bool {
+	return IsXML11RestrictedChar(r) || r == 0x85 || r == 0x2028
+}
+
+// IsLiteralChar reports whether r may appear literally (not as a character
+// reference) in an XML 1.1 document (xml11) or an XML 1.0 document (!xml11):
+// Char for XML 1.0, Char minus RestrictedChar for XML 1.1. It is the single
+// definition of literal-character validity; the parser's run validators and the
+// character-data scanner in internal/strcursor are both built from it. It does
+// not judge UTF-8 decoding: callers reject a width-one utf8.RuneError (invalid
+// UTF-8) themselves, since a real U+FFFD is a valid character.
+func IsLiteralChar(r rune, xml11 bool) bool {
+	if xml11 {
+		return IsXML11Char(r) && !IsXML11RestrictedChar(r)
+	}
+
+	return IsChar(r)
+}
+
+// IsSpace reports whether r belongs to XML 1.0's S production.
+func IsSpace(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' }
+
+// IsAllSpace reports whether every byte of b is XML 1.0 §2.3 whitespace (the S
+// production: #x20 | #x9 | #xD | #xA). An empty value is all-space.
+func IsAllSpace[T string | []byte](b T) bool {
+	for i := range len(b) {
+		if c := b[i]; c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			return false
+		}
+	}
+
+	return true
+}
+
+// IsNCNameStartChar checks the XML 1.0 NCName start character production.
+// NCNameStartChar ::= [A-Z] | "_" | [a-z] | [#xC0-#xD6] | [#xD8-#xF6]
+//
+//	| [#xF8-#x2FF] | [#x370-#x37D] | [#x37F-#x1FFF] | [#x200C-#x200D]
+//	| [#x2070-#x218F] | [#x2C00-#x2FEF] | [#x3001-#xD7FF]
+//	| [#xF900-#xFDCF] | [#xFDF0-#xFFFD] | [#x10000-#xEFFFF]
+func IsNCNameStartChar(r rune) bool {
+	return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_' ||
+		(r >= 0xC0 && r <= 0xD6) || (r >= 0xD8 && r <= 0xF6) ||
+		(r >= 0xF8 && r <= 0x2FF) || (r >= 0x370 && r <= 0x37D) ||
+		(r >= 0x37F && r <= 0x1FFF) || (r >= 0x200C && r <= 0x200D) ||
+		(r >= 0x2070 && r <= 0x218F) || (r >= 0x2C00 && r <= 0x2FEF) ||
+		(r >= 0x3001 && r <= 0xD7FF) || (r >= 0xF900 && r <= 0xFDCF) ||
+		(r >= 0xFDF0 && r <= 0xFFFD) || (r >= 0x10000 && r <= 0xEFFFF)
+}
+
+// IsNCNameChar checks the XML 1.0 NCName character production.
+// NCNameChar ::= NCNameStartChar | "-" | "." | [0-9] | #xB7
+//
+//	| [#x0300-#x036F] | [#x203F-#x2040]
+func IsNCNameChar(r rune) bool {
+	return IsNCNameStartChar(r) ||
+		(r >= '0' && r <= '9') || r == '-' || r == '.' ||
+		r == 0xB7 || (r >= 0x0300 && r <= 0x036F) || (r >= 0x203F && r <= 0x2040)
+}
+
+// IsValidPITarget reports whether target is a valid XML processing
+// instruction target. A PI target is an NCName (colons are forbidden, matching
+// helium's parser, which rejects colons in PI targets) and must not be the
+// reserved name "xml" (any case).
+func IsValidPITarget(target string) bool {
+	if target == "" {
+		return false
+	}
+
+	if strings.EqualFold(target, "xml") {
+		return false
+	}
+	// Ranging over an invalid byte yields utf8.RuneError (U+FFFD), which is
+	// itself a valid NCName character, so IsValidNCName would accept invalid
+	// UTF-8 and emit raw bytes. Reject invalid encodings up front; a genuinely
+	// encoded U+FFFD is valid UTF-8 and still passes.
+	if !utf8.ValidString(target) {
+		return false
+	}
+
+	return IsValidNCName(target)
+}
+
+// IsValidQName checks whether s is a valid XML QName (Namespaces in XML §3):
+//
+//	QName ::= PrefixedName | UnprefixedName
+//	PrefixedName ::= Prefix ':' LocalPart
+//	UnprefixedName ::= LocalPart
+//
+// where Prefix and LocalPart are each an NCName. An unprefixed name is a bare
+// NCName; a prefixed name has exactly one colon separating two NCNames.
+func IsValidQName(s string) bool {
+	if s == "" {
+		return false
+	}
+
+	if prefix, local, found := strings.Cut(s, ":"); found {
+		// Exactly one colon, splitting two NCNames. A second colon makes
+		// the local part fail IsValidNCName, so no explicit second-colon
+		// check is needed.
+		return IsValidNCName(prefix) && IsValidNCName(local)
+	}
+
+	return IsValidNCName(s)
+}
+
+// IsValidEncName reports whether s is a valid XML EncName (XML 1.0 §4.3.3):
+//
+//	EncName ::= [A-Za-z] ([A-Za-z0-9._] | '-')*
+//
+// This mirrors the parser's encoding-name production (see
+// parserCtx.parseEncodingName) and is intentionally ASCII-only: it ensures an
+// untrusted encoding string emitted into the XML declaration cannot inject
+// markup or be an otherwise-malformed EncName (e.g. "utf 8").
+func IsValidEncName(s string) bool {
+	if s == "" {
+		return false
+	}
+
+	if !isEncNameStart(s[0]) {
+		return false
+	}
+
+	for i := 1; i < len(s); i++ {
+		if !isEncNameChar(s[i]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func isEncNameStart(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isEncNameChar(c byte) bool {
+	return isEncNameStart(c) || (c >= '0' && c <= '9') ||
+		c == '.' || c == '_' || c == '-'
+}
+
+// IsHexDigit reports whether b is an ASCII hexadecimal digit ([0-9a-fA-F]).
+func IsHexDigit(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
+}
+
+// IsASCIILetter reports whether b is an ASCII letter ([a-zA-Z]).
+func IsASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// IsASCIIDigit reports whether b is an ASCII decimal digit ([0-9]).
+func IsASCIIDigit(b byte) bool {
+	return b >= '0' && b <= '9'
+}
+
+// IsValidName checks whether s is a valid XML Name (XML 1.0 §2.3):
+//
+//	Name          ::= NameStartChar (NameChar)*
+//	NameStartChar ::= ":" | NCNameStartChar
+//	NameChar      ::= NameStartChar | "-" | "." | [0-9] | #xB7 | ...
+//
+// Unlike NCName/QName, a Name may contain colons anywhere (including leading,
+// trailing, or repeated), so the Name production is strictly broader than
+// QName. This matches the XML DTD productions for element, attlist, notation,
+// and doctype names, which helium's parser reads as the Name production.
+func IsValidName(s string) bool {
+	if s == "" {
+		return false
+	}
+	// Decode explicitly (not range) so invalid UTF-8 — which range reports as
+	// RuneError indistinguishable from a real U+FFFD — is rejected by width.
+	first := true
+
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			return false
+		}
+
+		if first {
+			if r != ':' && !IsNCNameStartChar(r) {
+				return false
+			}
+
+			first = false
+		} else if r != ':' && !IsNCNameChar(r) {
+			return false
+		}
+
+		i += size
+	}
+
+	return true
+}
+
+// IsValidNCName checks whether s is a valid XML NCName (non-colonized name).
+func IsValidNCName(s string) bool {
+	if s == "" {
+		return false
+	}
+	// Decode explicitly (not range) so invalid UTF-8 — which range reports as
+	// RuneError indistinguishable from a real U+FFFD — is rejected by width.
+	first := true
+
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			return false
+		}
+
+		if first {
+			if !IsNCNameStartChar(r) {
+				return false
+			}
+
+			first = false
+		} else if !IsNCNameChar(r) {
+			return false
+		}
+
+		i += size
+	}
+
+	return true
+}

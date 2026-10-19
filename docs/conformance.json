@@ -1,0 +1,956 @@
+{
+  "completeness": "Scope register, not an exhaustive clause-by-clause matrix or audited conformance claim.",
+  "requirements": [
+    {
+      "id": "XML-PARSE",
+      "notes": "UTF-8/UTF-16LE/BE, DTD-free, coalesced text nodes; Fifth Edition names including U+037F and supplementary characters through U+EFFFF; not a complete XML processor conformance claim",
+      "source": "https://www.w3.org/TR/xml/",
+      "status": "implemented-restricted",
+      "tests": [
+        "document/document_test.go",
+        "document/encoding_test.go"
+      ],
+      "title": "XML 1.0 / Namespaces"
+    },
+    {
+      "id": "XML-LIMITS",
+      "notes": "Bytes/depth/content nodes/per-element attrs plus in-scope bindings and expanded NodeSet bounds",
+      "source": null,
+      "status": "implemented-restricted",
+      "tests": [
+        "document/document_test.go",
+        "document/nodeset_test.go",
+        "document/encoding_test.go"
+      ],
+      "title": "Resource policy"
+    },
+    {
+      "id": "EXC-DOC",
+      "notes": "Complete DTD-free documents; Exclusive C14N is the restricted profile default",
+      "source": "https://www.w3.org/TR/xml-exc-c14n/",
+      "status": "implemented-restricted",
+      "tests": [
+        "c14n/c14n_test.go",
+        "tests/interop/c14n_test.go"
+      ],
+      "title": "Exclusive C14N 1.0 document"
+    },
+    {
+      "id": "EXC-SUBTREE",
+      "notes": "Complete subtree and explicit node-set paths share a core; known sparse oracle differences documented",
+      "source": "https://www.w3.org/TR/xml-exc-c14n/",
+      "status": "implemented-restricted",
+      "tests": [
+        "c14n/nodeset_test.go",
+        "tests/interop/c14n_test.go"
+      ],
+      "title": "Exclusive C14N subtree"
+    },
+    {
+      "id": "EXC-PREFIXLIST",
+      "notes": "#default, max 128 tokens; missing prefixes ignored; does not reselect omitted nodes",
+      "source": "https://www.w3.org/TR/xml-exc-c14n/",
+      "status": "implemented-restricted",
+      "tests": [
+        "c14n/nodeset_test.go",
+        "tests/interop/c14n_test.go"
+      ],
+      "title": "InclusiveNamespaces PrefixList"
+    },
+    {
+      "id": "EXC-COMMENTS",
+      "notes": "All six canonicalization URIs, including comment variants, in the general and detached APIs; the restricted root-enveloped profile excludes comments.",
+      "source": "https://www.w3.org/TR/xml-exc-c14n/",
+      "status": "implemented-restricted",
+      "tests": [
+        "c14n/nodeset_test.go"
+      ],
+      "title": "WithComments"
+    },
+    {
+      "id": "DSIG-CREATE",
+      "notes": "Strict, detached, selected template and programmatic builder; Object/Manifest and immutable preservation.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/xmldsig_test.go",
+        "tests/interop/signatures_test.go",
+        "xmldsig/detached_test.go",
+        "xmldsig/core_test.go",
+        "tests/integration/xmldsig/signature_test.go"
+      ],
+      "title": "Signature creation"
+    },
+    {
+      "id": "DSIG-VERIFY",
+      "notes": "Every required direct reference plus explicitly enabled Manifest contents; exact element coverage and direct URI multiset.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/xmldsig_test.go",
+        "tests/integration/xmldsig/signature_test.go",
+        "xmldsig/detached_test.go",
+        "xmldsig/core_test.go"
+      ],
+      "title": "SignatureValue and reference validation"
+    },
+    {
+      "id": "DSIG-RSA",
+      "notes": "SHA-256/384/512",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented",
+      "tests": [
+        "tests/integration/xmldsig/signature_test.go",
+        "tests/interop/signatures_test.go"
+      ],
+      "title": "RSA PKCS#1 v1.5 SHA-2"
+    },
+    {
+      "id": "DSIG-ECDSA",
+      "notes": "P-256/384/521; fixed-width r||s; SHA-256/384/512",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/xmldsig_test.go",
+        "tests/integration/xmldsig/signature_test.go"
+      ],
+      "title": "ECDSA XMLDSig value encoding"
+    },
+    {
+      "id": "PROVIDER",
+      "notes": "crypto.Signer and ContextSigner adapter, exact message helpers; no real HSM/KMS/MessageSigner-specific test.",
+      "source": "https://pkg.go.dev/crypto",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/xmldsig_test.go"
+      ],
+      "title": "crypto.Signer adapter"
+    },
+    {
+      "id": "TRUST",
+      "notes": "XMLDSig uses explicit public key; separate SPKI pin and offline PKI. KeyInfo does not establish trust.",
+      "source": null,
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/xmldsig_test.go"
+      ],
+      "title": "Externally pinned public key"
+    },
+    {
+      "id": "C14N-10",
+      "notes": "DTD-free document/subtree/node-set processing; orphan xml:* rules; known sparse oracle disagreements",
+      "source": "https://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "status": "implemented-restricted",
+      "tests": [
+        "c14n/nodeset_test.go",
+        "tests/interop/c14n_test.go"
+      ],
+      "title": "Canonical XML 1.0"
+    },
+    {
+      "errata": "https://www.w3.org/2008/05/xml-c14n11-errata",
+      "id": "C14N-11",
+      "notes": "DTD-free C14N1.1, xml:id rules, xml:base fix-up with E11-01, modified dot removal; whitespace/LEIRI limitation",
+      "source": "https://www.w3.org/TR/xml-c14n11/",
+      "status": "implemented-restricted",
+      "tests": [
+        "c14n/nodeset_test.go",
+        "internal/tree/uri_test.go",
+        "tests/interop/c14n_test.go"
+      ],
+      "title": "Canonical XML 1.1"
+    },
+    {
+      "id": "NODESET",
+      "notes": "Seven XPath node kinds, per-owner namespace identity and immutable set algebra; expression evaluation is an optional separate backend.",
+      "source": "https://www.w3.org/TR/xml-exc-c14n/",
+      "status": "implemented-restricted",
+      "tests": [
+        "document/nodeset_test.go",
+        "c14n/nodeset_test.go"
+      ],
+      "title": "Arbitrary XPath node-sets"
+    },
+    {
+      "id": "DSIG-FULL",
+      "notes": "Objects, multisig, mixed references, local Manifest graph; restricted KeyInfo; no remote manifests or full transform conformance; approved pure-Go XMLDSig v1 transforms retained.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "partially-implemented",
+      "tests": [
+        "xmldsig/detached_test.go",
+        "tests/integration/xmldsig/signature_test.go",
+        "xmldsig/core_test.go"
+      ],
+      "title": "External references, Object, Manifest, multiple signatures"
+    },
+    {
+      "id": "TRANSFORMS",
+      "notes": "Approved XMLDSig XPath 1.0, Filter2 and restricted XSLT 1.0 through the unified Go engine. Exact program allowlist, original node identity, here()/explicit ID rules, shared budgets and no implicit resources. Signed/tampered JDK fixtures cover selected cases; full v1 conformance is not claimed.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "reference/extensions_test.go",
+        "xmldsig/transforms_test.go",
+        "tests/integration/xmldsig/transforms_test.go",
+        "transform/v1_test.go",
+        "transform/v1_semantics_test.go",
+        "transform/v1_xslt_test.go"
+      ],
+      "title": "XPath / XPath Filter 2.0 / XSLT"
+    },
+    {
+      "id": "XMLENC",
+      "notes": "AES-GCM 128/192/256 with direct AES data keys, explicit RSA-OAEP SHA-2/matching MGF1 and bounded label, or AES Key Wrap 128/192/256. Opaque bytes, UTF-8/NFC element and content; exact bounded external CipherReference. No sender authentication or general XMLENC conformance.",
+      "source": "https://www.w3.org/TR/xmlenc-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmlenc/xmlenc_test.go",
+        "xmlenc/suites_test.go",
+        "xmlenc/element_test.go",
+        "xmlenc/content_test.go",
+        "xmlenc/oaep_test.go",
+        "xmlenc/symmetric_test.go",
+        "xmlenc/reference_test.go"
+      ],
+      "title": "XML Encryption"
+    },
+    {
+      "id": "REFERENCE-TYPED",
+      "notes": "Octets/node-set, implicit parse and final C14N1.0, budgets, no I/O",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "reference/process_test.go"
+      ],
+      "title": "Typed reference processing"
+    },
+    {
+      "id": "REFERENCE-URI",
+      "notes": "Empty URI, bare #ID, limited XPointer. Used in general SignTemplate/VerifySignature with explicit scoped ID rules.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "reference/same_document_test.go",
+        "xmldsig/core_test.go",
+        "tests/integration/xmldsig/signature_test.go"
+      ],
+      "title": "Same-document URI resolution"
+    },
+    {
+      "id": "REFERENCE-BASE64",
+      "notes": "RFC2045 filter; selected text only for node-sets; strict digest fields separate",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "reference/process_test.go"
+      ],
+      "title": "Base64 transform"
+    },
+    {
+      "id": "REFERENCE-ENVELOPED",
+      "notes": "Exact same-snapshot containing Signature and its axes, not every Signature",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "reference/process_test.go"
+      ],
+      "title": "Enveloped-signature transform"
+    },
+    {
+      "id": "DETACHED",
+      "notes": "Exact ExpectedURIs, six SI C14N variants opt-in, auth-before-I/O, no trust in KeyInfo",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/detached_test.go",
+        "tests/integration/xmldsig/signature_test.go",
+        "tests/interop/signatures_test.go"
+      ],
+      "title": "External-detached profile"
+    },
+    {
+      "id": "REFERENCE-REPORT",
+      "notes": "Direct/nested statuses, SignatureValue and Manifest status, copied bytes/steps; no partial result.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/detached_test.go",
+        "reference/process_test.go",
+        "xmldsig/core_test.go",
+        "tests/integration/xmldsig/signature_test.go"
+      ],
+      "title": "Digest inputs and processing traces"
+    },
+    {
+      "id": "DSIG-OBJECT",
+      "notes": "Arbitrary Object XML; MimeType/Encoding advisory, no implicit decoding; ds:Id scoped.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/core_test.go",
+        "tests/integration/xmldsig/signature_test.go",
+        "tests/interop/signatures_test.go"
+      ],
+      "title": "Object and enveloping signatures"
+    },
+    {
+      "id": "DSIG-MULTI",
+      "notes": "Verification checks selected handle only. Generation requires all other nonempty signatures pinned/pre-post checked.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/core_test.go",
+        "tests/integration/xmldsig/signature_test.go",
+        "tests/interop/signatures_test.go"
+      ],
+      "title": "Explicit multi-signature selection and preservation"
+    },
+    {
+      "id": "DSIG-COVERAGE",
+      "notes": "Exact snapshot identity; Base64/reparse loses source coverage; wrapper not implicitly signed.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/core_test.go",
+        "tests/integration/xmldsig/signature_test.go",
+        "tests/interop/signatures_test.go"
+      ],
+      "title": "Conservative source element coverage"
+    },
+    {
+      "id": "DSIG-TEMPLATE",
+      "notes": "Blank placeholders, dependency graph for supported Manifest refs, immutable copy and serialized self-verify.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/core_test.go",
+        "tests/integration/xmldsig/signature_test.go",
+        "tests/interop/signatures_test.go"
+      ],
+      "title": "Template signing with self-verification"
+    },
+    {
+      "id": "MANIFEST-GRAPH",
+      "notes": "Opt-in only; bounded reachability, cycles, source coverage, nested negatives; no external Manifest expansion.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/manifest_test.go",
+        "tests/integration/xmldsig/profiles_test.go",
+        "tests/interop/profiles_test.go"
+      ],
+      "title": "Local recursive Manifest DAG"
+    },
+    {
+      "id": "MIXED-REFERENCES",
+      "notes": "Exact allowlist, preflight/authentication before I/O, byte cache and self-check replay; preservation passes have independent budgets.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/manifest_test.go"
+      ],
+      "title": "Mixed references with explicit external resolver"
+    },
+    {
+      "id": "DSIG-BUILDER",
+      "notes": "New immutable snapshot; XML root/text/base64/Manifest variants; no signature or trust from builder alone.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/manifest_test.go"
+      ],
+      "title": "Typed Signature/Object/Manifest template construction"
+    },
+    {
+      "id": "PSS-FIXED",
+      "notes": "Equal hash/MGF hash and salt digest length; nonmatching salt rejected.",
+      "source": "https://www.rfc-editor.org/rfc/rfc9231.html",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/xmldsig_test.go",
+        "tests/interop/profiles_test.go"
+      ],
+      "title": "Fixed PSS SHA2"
+    },
+    {
+      "id": "ED25519-PURE",
+      "notes": "Signs full message, not prehash; modern policy required; no Ed448/ph/ctx.",
+      "source": "https://www.rfc-editor.org/rfc/rfc9231.html",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/xmldsig_test.go",
+        "tests/interop/profiles_test.go"
+      ],
+      "title": "Pure Ed25519"
+    },
+    {
+      "id": "CRL-DIRECT",
+      "notes": "Bounds, authenticated issuer/signature/time/number/extensions; select newest consistent fresh complete CRL, reject same-number conflicts and non-monotonic numbers independent of evidence order. No delta/scoped/indirect CRLs.",
+      "source": "https://www.rfc-editor.org/rfc/rfc5280.html",
+      "status": "implemented-restricted",
+      "tests": [
+        "pki/pki_test.go",
+        "pki/standards_test.go"
+      ],
+      "title": "Offline direct complete CRL subset"
+    },
+    {
+      "id": "SAML-REDIRECT",
+      "notes": "Exact encoded parameters authenticated before decompress; no SSO acceptance.",
+      "source": "https://docs.oasis-open.org/security/saml/v2.0/saml-bindings-2.0-os.pdf",
+      "status": "implemented-restricted",
+      "tests": [
+        "saml/binding/redirect_test.go",
+        "tests/interop/profiles_test.go"
+      ],
+      "title": "Signed HTTP-Redirect binding"
+    },
+    {
+      "id": "SAML-REPLAY",
+      "notes": "Single-process only, batch all-or-nothing, no active-ID eviction; not invoked automatically by binding.",
+      "source": null,
+      "status": "implemented-restricted",
+      "tests": [
+        "saml/replay/store_test.go"
+      ],
+      "title": "Atomic bounded replay-store primitive"
+    },
+    {
+      "id": "XADES-BASIC",
+      "notes": "Two-reference shape, signed cert DER/time/data format, explicit cert; not full baseline validation.",
+      "source": "https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf",
+      "status": "implemented-restricted",
+      "tests": [
+        "xades/basic_test.go",
+        "tests/interop/evidence_test.go"
+      ],
+      "title": "Restricted basic enveloped properties"
+    },
+    {
+      "id": "XMLENC-GCM-OAEP",
+      "notes": "IV12/tag16; caller-selected GCM algorithm, explicit matching SHA-256/384/512 digest and MGF1, PSource label bounded to 1024 bytes. Parameter order independent, duplicates/mixed hashes/omitted SHA-1 defaults rejected before provider use. Bidirectional xmlsec1/OpenSSL checks and independent crypto/rsa decryption.",
+      "source": "https://www.w3.org/TR/xmlenc-core1/",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmlenc/xmlenc_test.go",
+        "xmlenc/suites_test.go",
+        "xmlenc/element_test.go",
+        "xmlenc/replace_test.go",
+        "tests/interop/encryption_test.go",
+        "xmlenc/oaep_test.go"
+      ],
+      "title": "Restricted AES-GCM with explicit SHA-2 RSA-OAEP parameters"
+    },
+    {
+      "id": "XMLENC-AES-KEY-WRAP",
+      "notes": "Explicit KEK/API/algorithm, exact session-key length before AES rounds, six official vectors, all nine GCM/KW combinations independently tested. No general key discovery/chains or sender authentication.",
+      "source": "https://www.rfc-editor.org/rfc/rfc3394.html",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmlenc/keywrap_test.go",
+        "xmlenc/suites_test.go",
+        "xmlenc/element_test.go",
+        "xmlenc/replace_test.go",
+        "tests/interop/encryption_test.go"
+      ],
+      "title": "RFC 3394 AES Key Wrap 128/192/256 for AES-GCM session keys"
+    },
+    {
+      "id": "CMS-BOUNDED-SIGNEDDATA",
+      "implementation": [
+        "cms",
+        "internal/der",
+        "internal/signature"
+      ],
+      "limitations": "Definite-length SignedData with strict signedAttrs; not arbitrary BER/full CMS/countersignatures.",
+      "standards": [
+        "RFC5652 5",
+        "RFC6211",
+        "RFC5035"
+      ],
+      "status": "implemented-subset",
+      "tests": [
+        "cms/cms_test.go",
+        "tests/integration/evidence/evidence_test.go"
+      ]
+    },
+    {
+      "id": "OCSP-CURRENT-TIME",
+      "implementation": [
+        "pki"
+      ],
+      "limitations": "Offline issuer/delegated response verification; bounded single-identifier requests; not all extensions.",
+      "standards": [
+        "RFC6960",
+        "RFC9654"
+      ],
+      "status": "implemented-subset",
+      "tests": [
+        "pki/ocsp_test.go",
+        "tests/integration/evidence/evidence_test.go",
+        "pki/standards_test.go"
+      ]
+    },
+    {
+      "id": "RFC3161-TSA",
+      "implementation": [
+        "timestamp"
+      ],
+      "limitations": "Imprint/nonce/policy/ESS/EKU/current PKIX; no trusted clock/service or historical POE implementation.",
+      "standards": [
+        "RFC3161",
+        "RFC5816"
+      ],
+      "status": "implemented-subset",
+      "tests": [
+        "timestamp/timestamp_test.go",
+        "tests/integration/evidence/evidence_test.go"
+      ]
+    },
+    {
+      "id": "XADES-SIGNATURE-TIMESTAMP",
+      "implementation": [
+        "xades"
+      ],
+      "limitations": "Root-enveloped form; rejects unsupported extra unsigned properties instead of guessing.",
+      "standards": [
+        "ETSI EN319132-1 5.4.2"
+      ],
+      "status": "implemented-closed-profile",
+      "tests": [
+        "xades/timestamp_test.go"
+      ]
+    },
+    {
+      "id": "XADES-MATERIAL-ARCHIVE-CURRENT",
+      "implementation": [
+        "xades"
+      ],
+      "limitations": "NOT full EN319102-1 historical validation, universal XAdES or automatic renewal across new TSA/evidence regimes.",
+      "standards": [
+        "ETSI EN319132-1 5.4.3-5.4.5",
+        "ETSI EN319132-1 5.5.2.3"
+      ],
+      "status": "implemented-closed-current-time-profile",
+      "tests": [
+        "xades/archive_test.go",
+        "tests/integration/evidence/evidence_test.go"
+      ]
+    },
+    {
+      "id": "SAML-METADATA",
+      "implementation": [
+        "saml/metadata"
+      ],
+      "limitations": "Explicit pin/out-of-band trust; strict supported structures; no dynamic metadata network service.",
+      "standards": [
+        "SAML2 Metadata",
+        "SAML Metadata IOP"
+      ],
+      "status": "implemented-subset",
+      "tests": [
+        "saml/metadata/metadata_test.go",
+        "tests/integration/saml/interop_test.go"
+      ]
+    },
+    {
+      "id": "SAML-SOLICITED-WEBSSO",
+      "implementation": [
+        "saml/protocol",
+        "saml/sp",
+        "saml/idp",
+        "saml/state"
+      ],
+      "limitations": "No unsolicited/SLO/Artifact/ECP/queries/encrypted assertion application profile or real external IdP interop.",
+      "standards": [
+        "SAML2 Core",
+        "SAML2 Bindings",
+        "SAML2 Profiles WebSSO"
+      ],
+      "status": "implemented-closed-profile",
+      "tests": [
+        "tests/integration/saml/sso_test.go",
+        "tests/integration/saml/interop_test.go"
+      ]
+    },
+    {
+      "id": "PSS-PARAMETERS",
+      "notes": "Independent MGF1 SHA-2, exact salt incl zero; native signing only same-hash positive salt. Other configurations need explicit provider; no SHA1/SHA224/SHA3/other MGF/trailer.",
+      "source": "https://www.rfc-editor.org/rfc/rfc9231.html#section-2.3.9",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/parameters_test.go",
+        "tests/integration/xmldsig/parameters_test.go",
+        "tests/interop/parameters_test.go"
+      ],
+      "title": "Generic RSA-PSS SHA-2 profile"
+    },
+    {
+      "id": "HMAC-SHA2",
+      "notes": "SHA256/384/512; opt-in, full tags by default, minimum half-hash, whole bytes, shared secret never inferred from KeyInfo, all references verified.",
+      "source": "https://www.w3.org/TR/xmldsig-core1/#sec-HMAC",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmldsig/hmac_test.go",
+        "tests/integration/xmldsig/parameters_test.go",
+        "tests/interop/parameters_test.go"
+      ],
+      "title": "HMAC separate trust mode and truncation policy"
+    },
+    {
+      "id": "SAML-ACS-DEFAULT",
+      "notes": "POST and Redirect: first explicit default, then first unspecified, then first endpoint; trusted binding/URL/index restrictions apply.",
+      "source": "https://docs.oasis-open.org/security/saml/v2.0/saml-metadata-2.0-os.pdf",
+      "status": "implemented-restricted",
+      "tests": [
+        "saml/metadata/metadata_test.go",
+        "saml/protocol/protocol_test.go"
+      ],
+      "title": "ACS selection in metadata order"
+    },
+    {
+      "id": "OCSP-PREALLOCATION-LIMIT",
+      "notes": "Oversized request/response rejected before an input-size allocation.",
+      "source": null,
+      "status": "implemented-restricted",
+      "tests": [
+        "pki/ocsp_test.go"
+      ],
+      "title": "Bound input before cloning or parsing"
+    },
+    {
+      "id": "XADES-WITH-TIME-BT",
+      "notes": "All tokens verified at current TSA trust; earliest GenTime+Accuracy proof, signer PKIX and fresh revocation at proof; SigningTime ignored. Refuses archive/expired-TSA/known later revocation recovery. No full historical EN319102-1 or algorithm migration.",
+      "source": "https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/",
+      "status": "implemented-closed-profile",
+      "tests": [
+        "xades/with_time_test.go"
+      ],
+      "title": "Restricted trusted signature proof and historical signer PKIX"
+    },
+    {
+      "id": "CMS-ALGORITHM-PROTECTION",
+      "notes": "Exact digest/signature identifiers modulo supported equivalent parameter encodings; distinct RSA OIDs rejected even when the cryptographic operation is compatible.",
+      "source": "https://www.rfc-editor.org/rfc/rfc6211.html#section-3.1",
+      "status": "implemented-restricted",
+      "tests": [
+        "cms/cms_test.go"
+      ],
+      "title": "CMS AlgorithmIdentifier protection"
+    },
+    {
+      "id": "CMS-ATTRIBUTE-PROFILE",
+      "notes": "Known signed-only attributes rejected in unsignedAttrs; countersignature rejected in signedAttrs. One SigningTime, UTC seconds, UTCTime 1950-2049; asserted time never establishes trust. Unknown/countersignature semantics are not validated.",
+      "source": "https://www.rfc-editor.org/rfc/rfc5652.html#section-11",
+      "status": "implemented-restricted",
+      "tests": [
+        "cms/cms_test.go"
+      ],
+      "title": "Signed attribute placement and SigningTime syntax"
+    },
+    {
+      "id": "OCSP-TIME-PROFILE",
+      "notes": "ProducedAt, ThisUpdate, NextUpdate and RevocationTime require UTC with seconds, no fraction or offset (RFC5280 4.1.2.5.2). Authenticated negative controls cover all four fields; timestamp GenTime remains a distinct profile.",
+      "source": "https://www.rfc-editor.org/rfc/rfc6960.html#section-4.2.2.1",
+      "status": "implemented-restricted",
+      "tests": [
+        "pki/standards_test.go"
+      ],
+      "title": "PKIX OCSP GeneralizedTime profile"
+    },
+    {
+      "id": "XMLENC-ELEMENT",
+      "notes": "XML production 39, UTF-8 and NFC. Reject declaration, prolog/epilog, UTF-16 and non-NFC serialization for RSA and AES Key Wrap; opaque byte API unchanged, no automatic normalization. Exact NFC validation accepts normalized long non-starter runs and preserves original CGJ.",
+      "source": "https://www.w3.org/TR/xmlenc-core1/#sec-Processing-Encryption",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmlenc/element_test.go"
+      ],
+      "title": "Element plaintext serialization profile"
+    },
+    {
+      "id": "INTEROP-XMLSEC-REFERENCE",
+      "notes": "Optional bidirectional comparisons for overlapping profiles; the harness requires xmlsec1 1.3.10+ and logs installed engine versions. CI installs Debian binary packages. Known canonicalization, XPath focus and empty-content differences are separate diagnostics; the C API probe checks authenticated empty buffers and rejected tags. Harness coverage does not establish full conformance or trust certification.",
+      "source": "https://github.com/lsh123/xmlsec/releases/tag/1.3.12",
+      "status": "optional-interop-coverage",
+      "tests": [
+        "tests/interop/encryption_test.go",
+        "tests/interop/signatures_test.go",
+        "tests/interop/keys_test.go",
+        "tests/interop/testdata/buffer_probe.c"
+      ],
+      "title": "Generated bidirectional XMLDSig/XMLENC interop with xmlsec1/OpenSSL"
+    },
+    {
+      "id": "XMLENC-SELECTED-ELEMENT",
+      "implementation": [
+        "xmlenc/replace.go",
+        "xmlenc/fragment.go"
+      ],
+      "notes": "One caller-selected element and exact new handle; parent namespace context, local xmlns reset, siblings and document-level nodes preserved; embedded signatures tested with six C14N variants. Independent plaintext/full-output limits and no result on failure. Whole-structure super-encryption only; automatic search and recursive decryption excluded. Content has a separate entry. Parent context and sender trust require application validation.",
+      "source": "https://www.w3.org/TR/xmlenc-core1/#sec-Processing-XML",
+      "standards": [
+        "XMLENC 1.1 4.2–4.3",
+        "XMLENC 1.1 4.5.1–4.5.4 (optional processing model)"
+      ],
+      "status": "implemented-restricted",
+      "tests": [
+        "xmlenc/replace_test.go",
+        "tests/interop/encryption_test.go"
+      ],
+      "title": "Explicit immutable Type #Element replacement in parent context"
+    },
+    {
+      "id": "XMLENC-CONTENT",
+      "implementation": [
+        "xmlenc/content.go",
+        "xmlenc/fragment.go",
+        "internal/tree/stream_xml.go"
+      ],
+      "notes": "All 12 allowed suites, empty/text/mixed/multiple-child content, independent forest and complete-output limits. Encryption returns the exact EncryptedData handle; decryption returns its restored parent's handle. No additional cipher namespace bindings enter plaintext. Authenticated malformed-input/fuzz tests and six embedded-signature C14N modes. Standalone Content without element parent, partial encryption of cipher structures, recursive decryption and sender trust excluded. Tested xmlsec1 empty-content failures are separate diagnostics.",
+      "source": "https://www.w3.org/TR/xmlenc-core1/#sec-Type-Parameters",
+      "standards": [
+        "XML 1.0 production 43",
+        "XMLENC 1.1 4.2–4.3, 4.5.1–4.5.4"
+      ],
+      "status": "implemented-restricted",
+      "tests": [
+        "xmlenc/content_test.go",
+        "tests/interop/encryption_test.go",
+        "tests/interop/testdata/buffer_probe.c"
+      ],
+      "title": "Explicit immutable Type #Content replacement with parent context"
+    },
+    {
+      "id": "KEYINFO-ALLOWED-DATA",
+      "implementation": [
+        "keyinfo/policy.go",
+        "keyinfo/parse.go",
+        "keyinfo/references.go"
+      ],
+      "notes": "Nil preserves all recognized representations; explicit empty denies all. QName policy frozen before callbacks. KeyValue leaf types, same-document and fetched targets checked; typed target checks and direct siblings preflight before I/O. Untyped explicitly allowed retrieval can fetch before the target form is known. No change to URI/trust policy; no global registry.",
+      "source": "https://github.com/lsh123/xmlsec/blob/913a20d56dfb78279b5d181bb8cab2f4582ce3c1/docs/md/tutorial/using-contexts.md",
+      "status": "implemented-restricted",
+      "tests": [
+        "keyinfo/policy_test.go",
+        "xmldsig/keyinfo_test.go"
+      ],
+      "title": "Operation-local KeyInfo representation allowlist"
+    },
+    {
+      "id": "CLI-KEY-FORMATS",
+      "implementation": [
+        "cmd/xmlsec/keys.go"
+      ],
+      "notes": "Explicit plain/encrypted PKCS#8/PKCS#12 private loading with a bounded trusted password file, no password in argv, KDF work limits, no signature or output-file changes on load failure. Public PEM/DER keys and certificates remain explicit pins without PKIX trust. HSM provider management excluded.",
+      "source": "https://www.rfc-editor.org/rfc/rfc7468.html",
+      "status": "implemented-restricted",
+      "tests": [
+        "cmd/xmlsec/keys_test.go",
+        "tests/interop/keys_test.go"
+      ],
+      "title": "Bounded PEM/DER private/public key and pinned-certificate loading"
+    },
+    {
+      "id": "KEY-MATERIAL",
+      "notes": "One unencrypted PKCS#8/RSA PKCS#1/EC SEC1 private key, SPKI/RSA PKCS#1 public key or X.509 certificate/CRL. Authoritative PEM labels, complete bounded DER, owned input, pre-validation RSA component limits. No trust or I/O; password containers use separate explicit APIs.",
+      "source": "https://www.rfc-editor.org/rfc/rfc7468.html",
+      "status": "implemented-restricted",
+      "tests": [
+        "keys/parse_test.go",
+        "cmd/xmlsec/keys_test.go",
+        "tests/interop/keys_test.go"
+      ],
+      "title": "Bounded PEM/DER key, certificate and CRL parsing"
+    },
+    {
+      "id": "XMLENC-DIRECT-KEY",
+      "notes": "AES128/192/256 keys of exact caller-selected size; random 96-bit nonce, 128-bit tag, no EncryptedKey, optional exact KeyName hint. Bytes/root/selected Element/Content share authentication/limits/snapshot contracts. Independent crypto/cipher and bidirectional xmlsec1 checks.",
+      "source": "https://www.w3.org/TR/xmlenc-core1/#sec-AES-GCM",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmlenc/symmetric_test.go",
+        "tests/interop/encryption_test.go"
+      ],
+      "title": "Explicit direct AES-GCM data keys"
+    },
+    {
+      "id": "XMLENC-CIPHER-REFERENCE",
+      "notes": "Exact absolute URI through application-owned resolver, no implicit I/O, raw or one ds:base64 transform in xenc:Transforms, readers closed, pre-transform and decoded byte limits. Inline EncryptedKey only; no same-document URI/arbitrary programs. ExternalizeCiphertext returns immutable snapshot and owned raw data. Authentication and typed XML restoration remain mandatory.",
+      "source": "https://www.w3.org/TR/xmlenc-core1/#sec-CipherReference",
+      "status": "implemented-restricted",
+      "tests": [
+        "xmlenc/reference_test.go",
+        "tests/interop/encryption_test.go"
+      ],
+      "title": "Bounded explicit external ciphertext resources"
+    },
+    {
+      "id": "KEY-PBES2",
+      "implementation": [
+        "keys/password.go",
+        "keys/pbes2.go",
+        "keys/pkcs8.go"
+      ],
+      "notes": "PBES2/PBKDF2 with explicit SHA-256/384/512 PRFs and AES-128/192/256-CBC. Fresh salts/IVs; complete version-zero PrivateKeyInfo with bounded attributes, component validation before KDF export, RSA snapshot without caller CRT mutation. Owned input/password data and bounded cancellable work; no partial result. Standalone PKCS#8 does not authenticate ciphertext; legacy ciphers/scrypt/BER excluded.",
+      "source": "https://www.rfc-editor.org/rfc/rfc8018.html",
+      "status": "implemented-restricted",
+      "tests": [
+        "keys/password_test.go",
+        "keys/password_internal_test.go",
+        "cmd/xmlsec/keys_test.go",
+        "tests/interop/keys_test.go"
+      ],
+      "title": "Bounded encrypted PKCS#8 import/export"
+    },
+    {
+      "id": "KEY-PKCS12",
+      "implementation": [
+        "keys/pkcs12.go",
+        "keys/pkcs12_mac.go"
+      ],
+      "notes": "DER PFX version 3 with mandatory MAC verified before bag decryption, exactly one private key and matching certificate; canonical public-key binding and conflicting identifier/duplicate/ambiguous identity rejection. SHA-2 classic MAC import/export, no alternate empty-password fallback. Eight ContentInfos, 32 flat bags, 16 certificates, known attributes; no nested bags/BER/RC2/3DES/SHA-1 or implicit certificate trust.",
+      "source": "https://www.rfc-editor.org/rfc/rfc7292.html",
+      "status": "implemented-restricted",
+      "tests": [
+        "keys/password_test.go",
+        "keys/password_internal_test.go",
+        "cmd/xmlsec/keys_test.go",
+        "tests/interop/keys_test.go"
+      ],
+      "title": "Authenticated bounded PKCS#12 identities"
+    },
+    {
+      "id": "KEY-PBMAC1",
+      "implementation": [
+        "keys/password.go",
+        "keys/pkcs12_mac.go"
+      ],
+      "notes": "Default PKCS#12 export; UTF-8 password bytes, explicit PBKDF2 PRF and required keyLength equal to SHA-2 HMAC output size. Outer macSalt/iterations ignored as required, including integers larger than machine int. PRF and MAC hash independently selected on import; aggregate work counts all PBKDF2 blocks. Empty/missing/wrong MAC rejected. Fixed size/SHA-2 profile, not general PBMAC1 support.",
+      "source": "https://www.rfc-editor.org/rfc/rfc9879.html",
+      "status": "implemented-restricted",
+      "tests": [
+        "keys/password_test.go",
+        "keys/password_internal_test.go",
+        "cmd/xmlsec/keys_test.go",
+        "tests/interop/keys_test.go"
+      ],
+      "title": "RFC 9879 PBMAC1 PKCS#12 password integrity"
+    },
+    {
+      "id": "MODERN-TRANSFORMS",
+      "notes": "One Go engine with shared immutable XDM values, language version checks, typed parameters, invocation budgets, explicit resource resolvers and owned primary/secondary outputs. Standalone XPath/XSLT 1.0 and approved XMLDSig v1 programs use the same compiler and evaluator. Full QT3/XSLT suites have not been run; schema awareness, streaming and a public package resolver are unsupported.",
+      "source": "https://www.w3.org/TR/xpath-31/",
+      "status": "implemented-restricted",
+      "tests": [
+        "transform/engine_test.go",
+        "transform/resource_test.go",
+        "transform/value_test.go",
+        "transform/xpath_test.go",
+        "transform/xslt_test.go",
+        "transform/xpath10_test.go",
+        "transform/xslt10_test.go"
+      ],
+      "title": "XPath 1.0/2.0/3.0/3.1 and XSLT 1.0 / Basic XSLT 2.0/3.0"
+    },
+    {
+      "id": "CLI-APPLICATION",
+      "implementation": [
+        "cmd/xmlsec/app.go",
+        "cmd/xmlsec/execution.go",
+        "cmd/xmlsec/stdio_unix.go",
+        "cmd/xmlsec/encryption.go",
+        "cmd/xmlsec/keyinfo_verify.go"
+      ],
+      "notes": "Grouped, bounded CLI for XMLDSig including parameterized PSS/HMAC/approved transforms, canonicalization, XML Encryption, key import/export, KeyInfo pins, offline PKIX/OCSP/CMS/RFC3161/XAdES and SAML primitives. Runtime-pollable inherited Unix streams support cancellation; strict URI/path verification manifests never silently accept signing recipes. No implicit network resource lookup, KeyInfo trust, stateful WebSSO session/replay guarantee, HSM management or full standards-conformance claim. See docs/cli.md for the scope and configuration contracts.",
+      "source": null,
+      "status": "implemented-restricted",
+      "tests": [
+        "cmd/xmlsec/application_test.go",
+        "cmd/xmlsec/evidence_commands_test.go",
+        "cmd/xmlsec/process_test.go"
+      ],
+      "title": "Command-line application and bounded local I/O contracts"
+    },
+    {
+      "id": "XML-SCHEMA-UTC-TIME",
+      "implementation": [
+        "internal/xmltime/time.go",
+        "saml/internal/xmlutil/xml.go",
+        "xades/basic.go"
+      ],
+      "notes": "Strict UTC dateTime lexical form, four-digit positive years, up to nine fractional digits, midnight normalization. SAML cache durations use exact nanoseconds, positive day/time subset up to 365 days. Higher precision is explicitly unsupported; signer time is not trusted time.",
+      "source": "https://www.w3.org/TR/xmlschema-2/",
+      "status": "implemented-restricted",
+      "tests": [
+        "saml/internal/xmlutil/xml_test.go",
+        "saml/protocol/protocol_test.go",
+        "xades/basic_test.go"
+      ],
+      "title": "XML Schema time syntax and exact SAML duration arithmetic"
+    },
+    {
+      "id": "OCSP-NONCE-REQUESTER",
+      "implementation": [
+        "pki/ocsp.go",
+        "cmd/xmlsec/pki_commands.go"
+      ],
+      "notes": "New supplied request nonces require 32--128 bytes; the CLI generates 32 random bytes by default. Optional absence is retained. Inbound requests and response binding accept legacy 1--128 byte nonces; supplied randomness is the caller responsibility.",
+      "source": "https://www.rfc-editor.org/rfc/rfc9654.html#section-2.1",
+      "status": "implemented-restricted",
+      "tests": [
+        "pki/ocsp_test.go",
+        "pki/standards_test.go",
+        "cmd/xmlsec/evidence_commands_test.go"
+      ],
+      "title": "RFC 9654 requester and responder nonce boundaries"
+    },
+    {
+      "id": "OCSP-EXPIRY-STATUS",
+      "implementation": [
+        "pki/ocsp_parse.go",
+        "pki/ocsp_verify.go"
+      ],
+      "notes": "nextUpdate is exclusive, including configured clock skew. Undefined/negative response statuses are malformed evidence, not valid responder error statuses. Authenticated freshness boundary tests.",
+      "source": "https://www.rfc-editor.org/rfc/rfc6960.html#section-3.2",
+      "status": "implemented-restricted",
+      "tests": [
+        "pki/standards_test.go"
+      ],
+      "title": "OCSP response status syntax and exclusive freshness boundary"
+    },
+    {
+      "id": "XPATH-IRI-RESOLUTION",
+      "implementation": [
+        "transform/internal/xpath/functions_uri.go",
+        "transform/internal/xpath/uri_resolution.go"
+      ],
+      "notes": "F&O rule ordering, FONS0005 for absent static base, FORG0002 for unsuitable bases, RFC 3986 resolution over original IRI components. Unicode and existing escapes retain identity; empty query/fragment delimiters are preserved. No retrieval; C14N 1.1 retains its separate modified algorithm.",
+      "source": "https://www.w3.org/TR/xpath-functions-31/#func-resolve-uri",
+      "status": "implemented-restricted",
+      "tests": [
+        "transform/uri_test.go",
+        "transform/resource_test.go"
+      ],
+      "title": "XPath resolve-uri and RFC 3986 component preservation"
+    },
+    {
+      "id": "KEY-PRIVATE-DER-STRUCTURE",
+      "implementation": [
+        "keys/private_structure.go",
+        "keys/parse.go",
+        "keys/pkcs8.go"
+      ],
+      "notes": "PKCS#8 version zero and bounded valid attribute sets; complete canonical PKCS#1 versions/components/CRT values including multi-prime inputs. Fixed-size EC scalar, consistent named curve and matching optional uncompressed public key; PKCS#8 may inherit outer curve. Applies to plain and password container import; no trust decision.",
+      "source": "https://www.rfc-editor.org/rfc/rfc5208.html#section-5",
+      "status": "implemented-restricted",
+      "tests": [
+        "keys/password_test.go",
+        "keys/parse_test.go"
+      ],
+      "title": "Explicit private-key grammar beyond crypto/x509 legacy tolerance"
+    }
+  ],
+  "scope": "Experimental XML security toolkit with bounded signatures, encryption, key containers, XPath/XSLT, offline trust/evidence verification, closed XAdES profiles and solicited SAML WebSSO; not a full standards conformance claim.",
+  "stage": "experimental-bounded-profiles"
+}

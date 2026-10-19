@@ -1,0 +1,277 @@
+{
+  "producer": "focused lxml/libxml2 + cryptography oracle; not a full XAdES/SSO validator",
+  "cases": [
+    {
+      "name": "pss256.jdk",
+      "kind": "manifest",
+      "file": "pss256.jdk.xml",
+      "public_key": "pss256.pub.pem",
+      "certificate": "pss256.cert.der",
+      "valid": true
+    },
+    {
+      "name": "pss256.jdk.bad-nested",
+      "kind": "manifest",
+      "file": "pss256.jdk.bad-nested.xml",
+      "public_key": "pss256.pub.pem",
+      "certificate": "pss256.cert.der",
+      "valid": false
+    },
+    {
+      "name": "pss256.redirect.python",
+      "kind": "redirect",
+      "file": "pss256.redirect.python.txt",
+      "public_key": "pss256.pub.pem",
+      "certificate": "pss256.cert.der",
+      "valid": true
+    },
+    {
+      "name": "pss256.python",
+      "kind": "manifest",
+      "file": "pss256.python.xml",
+      "public_key": "pss256.pub.pem",
+      "certificate": "pss256.cert.der",
+      "valid": true
+    },
+    {
+      "name": "pss256.bad-nested",
+      "kind": "manifest",
+      "file": "pss256.bad-nested.xml",
+      "public_key": "pss256.pub.pem",
+      "certificate": "pss256.cert.der",
+      "valid": false
+    },
+    {
+      "name": "pss256.xades.python",
+      "kind": "xades",
+      "file": "pss256.xades.python.xml",
+      "public_key": "pss256.pub.pem",
+      "certificate": "pss256.cert.der",
+      "valid": true
+    },
+    {
+      "name": "pss384.jdk",
+      "kind": "manifest",
+      "file": "pss384.jdk.xml",
+      "public_key": "pss384.pub.pem",
+      "certificate": "pss384.cert.der",
+      "valid": true
+    },
+    {
+      "name": "pss384.jdk.bad-nested",
+      "kind": "manifest",
+      "file": "pss384.jdk.bad-nested.xml",
+      "public_key": "pss384.pub.pem",
+      "certificate": "pss384.cert.der",
+      "valid": false
+    },
+    {
+      "name": "pss384.redirect.python",
+      "kind": "redirect",
+      "file": "pss384.redirect.python.txt",
+      "public_key": "pss384.pub.pem",
+      "certificate": "pss384.cert.der",
+      "valid": true
+    },
+    {
+      "name": "pss384.python",
+      "kind": "manifest",
+      "file": "pss384.python.xml",
+      "public_key": "pss384.pub.pem",
+      "certificate": "pss384.cert.der",
+      "valid": true
+    },
+    {
+      "name": "pss384.bad-nested",
+      "kind": "manifest",
+      "file": "pss384.bad-nested.xml",
+      "public_key": "pss384.pub.pem",
+      "certificate": "pss384.cert.der",
+      "valid": false
+    },
+    {
+      "name": "pss384.xades.python",
+      "kind": "xades",
+      "file": "pss384.xades.python.xml",
+      "public_key": "pss384.pub.pem",
+      "certificate": "pss384.cert.der",
+      "valid": true
+    },
+    {
+      "name": "pss512.jdk",
+      "kind": "manifest",
+      "file": "pss512.jdk.xml",
+      "public_key": "pss512.pub.pem",
+      "certificate": "pss512.cert.der",
+      "valid": true
+    },
+    {
+      "name": "pss512.jdk.bad-nested",
+      "kind": "manifest",
+      "file": "pss512.jdk.bad-nested.xml",
+      "public_key": "pss512.pub.pem",
+      "certificate": "pss512.cert.der",
+      "valid": false
+    },
+    {
+      "name": "pss512.redirect.python",
+      "kind": "redirect",
+      "file": "pss512.redirect.python.txt",
+      "public_key": "pss512.pub.pem",
+      "certificate": "pss512.cert.der",
+      "valid": true
+    },
+    {
+      "name": "pss512.python",
+      "kind": "manifest",
+      "file": "pss512.python.xml",
+      "public_key": "pss512.pub.pem",
+      "certificate": "pss512.cert.der",
+      "valid": true
+    },
+    {
+      "name": "pss512.bad-nested",
+      "kind": "manifest",
+      "file": "pss512.bad-nested.xml",
+      "public_key": "pss512.pub.pem",
+      "certificate": "pss512.cert.der",
+      "valid": false
+    },
+    {
+      "name": "pss512.xades.python",
+      "kind": "xades",
+      "file": "pss512.xades.python.xml",
+      "public_key": "pss512.pub.pem",
+      "certificate": "pss512.cert.der",
+      "valid": true
+    },
+    {
+      "name": "ed25519.redirect.python",
+      "kind": "redirect",
+      "file": "ed25519.redirect.python.txt",
+      "public_key": "ed25519.pub.pem",
+      "certificate": "ed25519.cert.der",
+      "valid": true
+    },
+    {
+      "name": "ed25519.python",
+      "kind": "manifest",
+      "file": "ed25519.python.xml",
+      "public_key": "ed25519.pub.pem",
+      "certificate": "ed25519.cert.der",
+      "valid": true
+    },
+    {
+      "name": "ed25519.bad-nested",
+      "kind": "manifest",
+      "file": "ed25519.bad-nested.xml",
+      "public_key": "ed25519.pub.pem",
+      "certificate": "ed25519.cert.der",
+      "valid": false
+    },
+    {
+      "name": "ed25519.xades.python",
+      "kind": "xades",
+      "file": "ed25519.xades.python.xml",
+      "public_key": "ed25519.pub.pem",
+      "certificate": "ed25519.cert.der",
+      "valid": true
+    },
+    {
+      "name": "rsa256.jdk",
+      "kind": "manifest",
+      "file": "rsa256.jdk.xml",
+      "public_key": "rsa256.pub.pem",
+      "certificate": "rsa256.cert.der",
+      "valid": true
+    },
+    {
+      "name": "rsa256.jdk.bad-nested",
+      "kind": "manifest",
+      "file": "rsa256.jdk.bad-nested.xml",
+      "public_key": "rsa256.pub.pem",
+      "certificate": "rsa256.cert.der",
+      "valid": false
+    },
+    {
+      "name": "rsa256.redirect.python",
+      "kind": "redirect",
+      "file": "rsa256.redirect.python.txt",
+      "public_key": "rsa256.pub.pem",
+      "certificate": "rsa256.cert.der",
+      "valid": true
+    },
+    {
+      "name": "rsa256.python",
+      "kind": "manifest",
+      "file": "rsa256.python.xml",
+      "public_key": "rsa256.pub.pem",
+      "certificate": "rsa256.cert.der",
+      "valid": true
+    },
+    {
+      "name": "rsa256.bad-nested",
+      "kind": "manifest",
+      "file": "rsa256.bad-nested.xml",
+      "public_key": "rsa256.pub.pem",
+      "certificate": "rsa256.cert.der",
+      "valid": false
+    },
+    {
+      "name": "rsa256.xades.python",
+      "kind": "xades",
+      "file": "rsa256.xades.python.xml",
+      "public_key": "rsa256.pub.pem",
+      "certificate": "rsa256.cert.der",
+      "valid": true
+    },
+    {
+      "name": "ec256.jdk",
+      "kind": "manifest",
+      "file": "ec256.jdk.xml",
+      "public_key": "ec256.pub.pem",
+      "certificate": "ec256.cert.der",
+      "valid": true
+    },
+    {
+      "name": "ec256.jdk.bad-nested",
+      "kind": "manifest",
+      "file": "ec256.jdk.bad-nested.xml",
+      "public_key": "ec256.pub.pem",
+      "certificate": "ec256.cert.der",
+      "valid": false
+    },
+    {
+      "name": "ec256.redirect.python",
+      "kind": "redirect",
+      "file": "ec256.redirect.python.txt",
+      "public_key": "ec256.pub.pem",
+      "certificate": "ec256.cert.der",
+      "valid": true
+    },
+    {
+      "name": "ec256.python",
+      "kind": "manifest",
+      "file": "ec256.python.xml",
+      "public_key": "ec256.pub.pem",
+      "certificate": "ec256.cert.der",
+      "valid": true
+    },
+    {
+      "name": "ec256.bad-nested",
+      "kind": "manifest",
+      "file": "ec256.bad-nested.xml",
+      "public_key": "ec256.pub.pem",
+      "certificate": "ec256.cert.der",
+      "valid": false
+    },
+    {
+      "name": "ec256.xades.python",
+      "kind": "xades",
+      "file": "ec256.xades.python.xml",
+      "public_key": "ec256.pub.pem",
+      "certificate": "ec256.cert.der",
+      "valid": true
+    }
+  ]
+}

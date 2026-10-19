@@ -1,0 +1,77 @@
+{
+  "cases": [
+    {
+      "file": "xpath.jdk.xml",
+      "kind": "xpath",
+      "valid": true,
+      "producer": "JDK JSR105"
+    },
+    {
+      "file": "xpath.bad-second.xml",
+      "kind": "xpath",
+      "valid": false,
+      "producer": "JDK JSR105"
+    },
+    {
+      "file": "xpath-here.jdk.xml",
+      "kind": "xpath-here",
+      "valid": true,
+      "producer": "JDK JSR105"
+    },
+    {
+      "file": "xpath-here.bad-second.xml",
+      "kind": "xpath-here",
+      "valid": false,
+      "producer": "JDK JSR105"
+    },
+    {
+      "file": "filter.jdk.xml",
+      "kind": "filter",
+      "valid": true,
+      "producer": "JDK JSR105"
+    },
+    {
+      "file": "filter.bad-second.xml",
+      "kind": "filter",
+      "valid": false,
+      "producer": "JDK JSR105"
+    },
+    {
+      "file": "filter-sequence.jdk.xml",
+      "kind": "filter-sequence",
+      "valid": true,
+      "producer": "JDK JSR105"
+    },
+    {
+      "file": "filter-sequence.bad-second.xml",
+      "kind": "filter-sequence",
+      "valid": false,
+      "producer": "JDK JSR105"
+    },
+    {
+      "file": "filter-here.jdk.xml",
+      "kind": "filter-here",
+      "valid": true,
+      "producer": "JDK JSR105"
+    },
+    {
+      "file": "filter-here.bad-second.xml",
+      "kind": "filter-here",
+      "valid": false,
+      "producer": "JDK JSR105"
+    },
+    {
+      "file": "xslt-text.jdk.xml",
+      "kind": "xslt-text",
+      "valid": true,
+      "producer": "JDK JSR105"
+    },
+    {
+      "file": "xslt-text.bad-second.xml",
+      "kind": "xslt-text",
+      "valid": false,
+      "producer": "JDK JSR105"
+    }
+  ],
+  "public_key": "public.pem"
+}

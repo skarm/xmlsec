@@ -1,0 +1,986 @@
+// Derived from lestrrat-go/helium at 7362c0a70122a757780f4d0b545a9b370dead6ab.
+// Copyright (c) 2015 lestrrat. MIT License; see licenses/MIT-helium.txt at the repository root.
+
+package xslt
+
+import (
+	"context"
+	"maps"
+	"strings"
+
+	"github.com/skarm/xmlsec/transform/internal/xdm"
+	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	"github.com/skarm/xmlsec/transform/internal/xpath"
+)
+
+func (ec *execContext) evaluateTemplateArguments(ctx context.Context, params []*withParam) (map[string]xdm.Sequence, map[string]xdm.Sequence, error) {
+	var regular, tunnel map[string]xdm.Sequence
+
+	for _, param := range params {
+		value, err := ec.evaluateWithParam(ctx, param)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if param.Tunnel {
+			if tunnel == nil {
+				tunnel = make(map[string]xdm.Sequence)
+			}
+
+			tunnel[param.Name] = value
+		} else {
+			if regular == nil {
+				regular = make(map[string]xdm.Sequence)
+			}
+
+			regular[param.Name] = value
+		}
+	}
+
+	return regular, tunnel, nil
+}
+
+func (ec *execContext) pushTunnelArguments(tunnel map[string]xdm.Sequence) func() {
+	saved := ec.tunnelParams
+	if tunnel != nil {
+		merged := make(map[string]xdm.Sequence, len(saved)+len(tunnel))
+		maps.Copy(merged, saved)
+		maps.Copy(merged, tunnel)
+		ec.tunnelParams = merged
+	}
+
+	return func() { ec.tunnelParams = saved }
+}
+
+func (ec *execContext) execApplyTemplates(ctx context.Context, inst *applyTemplatesInst) error {
+	items, err := ec.selectApplyTemplateItems(ctx, inst)
+	if err != nil {
+		return err
+	}
+
+	if len(inst.Sort) > 0 {
+		items, err = ec.sortApplyTemplateItems(ctx, items, inst.Sort)
+		if err != nil {
+			return err
+		}
+	}
+
+	mode := inst.Mode
+	if mode == modeCurrent {
+		mode = ec.currentMode
+	}
+	// When mode is absent (empty), use the stylesheet's default-mode
+	// (not the current mode — #current must be explicit)
+
+	paramValues, newTunnelParams, err := ec.evaluateTemplateArguments(ctx, inst.Params)
+	if err != nil {
+		return err
+	}
+
+	restoreTunnel := ec.pushTunnelArguments(newTunnelParams)
+
+	// Filter whitespace-only text nodes per xsl:strip-space before
+	// setting position/size, so position()/last() reflect the filtered list.
+	filtered := items[:0]
+	for _, item := range items {
+		if ni, ok := item.(xdm.NodeItem); ok && ec.shouldStripWhitespace(ni.Node) {
+			continue
+		}
+
+		filtered = append(filtered, item)
+	}
+
+	items = filtered
+
+	savedPos := ec.position
+	savedSize := ec.size
+	savedGroupKey := ec.currentGroupKey
+	savedGroup := ec.currentGroup
+	savedInGroupCtx := ec.inGroupContext
+	savedGroupHasKey := ec.groupHasKey
+	savedInMerge := ec.inMergeAction
+	ec.size = len(items)
+	// Per XSLT 3.0: current-grouping-key() and current-group() are only
+	// available in the body of xsl:for-each-group itself, not in templates
+	// invoked by apply-templates within that body.
+	ec.currentGroupKey = nil
+	ec.currentGroup = nil
+	ec.inGroupContext = false
+	ec.groupHasKey = false
+
+	ec.inMergeAction = false // XTDE3480: merge context not available across template boundaries
+	defer func() {
+		ec.position = savedPos
+		ec.size = savedSize
+
+		restoreTunnel()
+
+		ec.currentGroupKey = savedGroupKey
+		ec.currentGroup = savedGroup
+		ec.inGroupContext = savedInGroupCtx
+		ec.groupHasKey = savedGroupHasKey
+		ec.inMergeAction = savedInMerge
+	}()
+
+	// Dispatch each selected item in sequence order. Node items go through
+	// template matching for nodes; atomic values, arrays, and maps use the
+	// XSLT 3.0 atomic dispatch rules.
+	for i, item := range items {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		ec.position = i + 1
+
+		if ni, ok := item.(xdm.NodeItem); ok {
+			if err := ec.applyTemplates(ctx, ni.Node, mode, paramValues); err != nil {
+				return err
+			}
+
+			continue
+		}
+
+		if err := ec.dispatchApplyTemplatesItem(ctx, item, inst, mode, paramValues); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// selectApplyTemplateItems preserves sequence order and array/map identity.
+func (ec *execContext) selectApplyTemplateItems(ctx context.Context, inst *applyTemplatesInst) (xdm.ItemSlice, error) {
+	var items xdm.ItemSlice
+
+	if inst.Select != nil {
+		result, err := ec.evalXPath(ctx, inst.Select, ec.contextNode)
+		if err != nil {
+			return nil, err
+		}
+		// Do NOT flatten arrays here: XSLT 3.0 allows arrays (and maps) as
+		// items in apply-templates, matched via pattern rules (e.g.,
+		// match=".[. instance of array(*)]"). Flattening would destroy the
+		// array before template matching can see it.
+		items = xdm.Materialize(result.Sequence())
+	} else {
+		// Default select is child::node() which requires a node context item.
+		// If the context item is an atomic value (contextNode is nil), raise XTTE0510.
+		if normalizeNode(ec.contextNode) == nil {
+			return nil, dynamicError(errCodeXTTE0510, "apply-templates with default select requires a node context item")
+		}
+
+		for _, node := range selectDefaultNodes(ec.contextNode) {
+			items = append(items, xdm.NodeItem{Node: node})
+		}
+	}
+
+	return items, nil
+}
+
+// sortApplyTemplateItems uses the node path so current() in sort keys receives
+// each node; mixed/atomic sorting still validates attributes for empty input.
+func (ec *execContext) sortApplyTemplateItems(ctx context.Context, items xdm.ItemSlice, sortKeys []*sortKey) (xdm.ItemSlice, error) {
+	if nodes, allNodes := xdm.NodesFrom(items); allNodes {
+		sorted, err := sortNodes(ctx, ec, nodes, sortKeys)
+		if err != nil {
+			return nil, err
+		}
+
+		items = items[:0]
+		for _, node := range sorted {
+			items = append(items, xdm.NodeItem{Node: node})
+		}
+	} else {
+		// Validate sort key attributes even when the selection is empty
+		// (XTDE0030); sortNodes does this internally, sortItems does not.
+		for _, sk := range sortKeys {
+			if err := validateSortKeyAttrs(ctx, ec, sk); err != nil {
+				return nil, err
+			}
+		}
+
+		sorted, err := sortItems(ctx, ec, items, sortKeys)
+		if err != nil {
+			return nil, err
+		}
+
+		items = xdm.Materialize(sorted)
+	}
+
+	return items, nil
+}
+
+// dispatchApplyTemplatesItem applies templates to a single non-node item
+// (atomic value, array, or map) per the XSLT 3.0 rules: try template matching
+// first, then the built-in rules for arrays/maps, then fall back to built-in
+// text output unless the mode's on-no-match skips unmatched atomic items.
+func (ec *execContext) dispatchApplyTemplatesItem(ctx context.Context, item xdm.Item, inst *applyTemplatesInst, mode string, paramValues map[string]xdm.Sequence) error {
+	tmpl, err := ec.findAtomicTemplate(ctx, item, mode)
+	if err != nil {
+		return err
+	}
+
+	if tmpl != nil {
+		return ec.executeAtomicTemplate(ctx, tmpl, item, mode, paramValues)
+	}
+
+	if handled, err := ec.applyCompoundTemplateItem(ctx, item, inst, mode, paramValues); handled || err != nil {
+		return err
+	}
+	// Check mode's on-no-match: for "deep-skip" and "shallow-skip",
+	// unmatched atomic items are silently skipped.
+	modeKey := mode
+	if modeKey == "" || modeKey == modeUnnamed {
+		modeKey = modeDefault
+	}
+
+	modeDef := ec.effectiveModeDefs()[modeKey]
+	if modeDef != nil && (modeDef.OnNoMatch == onNoMatchDeepSkip || modeDef.OnNoMatch == onNoMatchShallowSkip) {
+		return nil
+	}
+
+	return ec.outputBuiltinTemplateItem(item)
+}
+
+func (ec *execContext) applyCompoundTemplateItem(ctx context.Context, item xdm.Item, inst *applyTemplatesInst, mode string, params map[string]xdm.Sequence) (bool, error) {
+	switch value := item.(type) {
+	case xdm.ArrayItem:
+		for index := 1; index <= value.Size(); index++ {
+			member, err := value.Get(index)
+			if err != nil {
+				return true, err
+			}
+
+			if err := ec.applyTemplatesToSequence(ctx, member, inst, mode, params); err != nil {
+				return true, err
+			}
+		}
+
+		return true, nil
+	case xdm.MapItem:
+		return true, value.ForEach(func(_ xdm.AtomicValue, member xdm.Sequence) error {
+			return ec.applyTemplatesToSequence(ctx, member, inst, mode, params)
+		})
+	default:
+		return false, nil
+	}
+}
+
+func (ec *execContext) outputBuiltinTemplateItem(item xdm.Item) error {
+	av, err := xpath.AtomizeItem(item)
+	if err != nil {
+		return err
+	}
+
+	s, err := xpath.AtomicToString(av)
+	if err != nil {
+		return err
+	}
+
+	text := ec.resultDoc.CreateText(s)
+
+	return ec.addNode(text)
+}
+
+// applyTemplatesToSequence applies templates to each item in a sequence,
+// implementing the built-in template rules for arrays and maps (XSLT 3.0).
+func (ec *execContext) applyTemplatesToSequence(ctx context.Context, seq xdm.Sequence, inst *applyTemplatesInst, mode string, params map[string]xdm.Sequence) error {
+	for item := range xdm.SequenceItems(seq) {
+		if node, ok := item.(xdm.NodeItem); ok {
+			if err := ec.applyTemplates(ctx, node.Node, mode, params); err != nil {
+				return err
+			}
+
+			continue
+		}
+
+		if err := ec.applyBuiltinSequenceItem(ctx, item, inst, mode, params); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// applyBuiltinSequenceItem retains the recursive array/map rule: unmatched
+// atomics in a member sequence use text output without the outer mode skip gate.
+func (ec *execContext) applyBuiltinSequenceItem(ctx context.Context, item xdm.Item, inst *applyTemplatesInst, mode string, params map[string]xdm.Sequence) error {
+	tmpl, err := ec.findAtomicTemplate(ctx, item, mode)
+	if err != nil {
+		return err
+	}
+
+	if tmpl != nil {
+		return ec.executeAtomicTemplate(ctx, tmpl, item, mode, params)
+	}
+
+	if handled, err := ec.applyCompoundTemplateItem(ctx, item, inst, mode, params); handled || err != nil {
+		return err
+	}
+
+	return ec.outputBuiltinTemplateItem(item)
+}
+
+func (ec *execContext) evaluateWithParam(ctx context.Context, wp *withParam) (xdm.Sequence, error) {
+	var val xdm.Sequence
+
+	if wp.Select != nil {
+		result, err := ec.evalXPath(ctx, wp.Select, ec.contextNode)
+		if err != nil {
+			return nil, err
+		}
+
+		val = result.Sequence()
+	} else if len(wp.Body) > 0 {
+		ec.temporaryOutputDepth++
+
+		var err error
+		if wp.As != "" {
+			// With as attribute: evaluate as sequence constructor,
+			// keeping each node as a separate item
+			val, err = ec.evaluateBodyAsSequence(ctx, wp.Body)
+		} else {
+			// No as: wrap in document node (temporary tree)
+			val, err = ec.evaluateBodyAsDocument(ctx, wp.Body)
+		}
+
+		ec.temporaryOutputDepth--
+
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if wp.As != "" {
+			val = xdm.EmptySequence()
+		} else {
+			val = xdm.SingleAtomic(xdm.AtomicValue{
+				TypeName: xdm.TypeString,
+				Value:    "",
+			})
+		}
+	}
+
+	// Type check against the declared as type
+	if wp.As != "" {
+		st := parseSequenceType(wp.As)
+
+		checked, err := checkSequenceType(ctx, val, st, errCodeXTTE0570, "with-param $"+wp.Name, ec)
+		if err != nil {
+			return nil, err
+		}
+
+		val = checked
+	}
+
+	return val, nil
+}
+
+// resolveNamedTemplate looks up a named template by searching:
+//  1. The main stylesheet's namedTemplates map
+//  2. The current package context (if set) - allows private templates
+//     from the package to be called by other templates in the same package
+func (ec *execContext) resolveNamedTemplate(name string) (*template, bool) {
+	// Handle xsl:original — resolve to the original overridden template
+	if name == xdm.ClarkName(lexicon.NamespaceXSLT, "original") {
+		if ec.overridingTemplate != nil && ec.overridingTemplate.OriginalTemplate != nil {
+			return ec.overridingTemplate.OriginalTemplate, true
+		}
+
+		return nil, false
+	}
+
+	if tmpl, ok := ec.stylesheet.namedTemplates[name]; ok {
+		return tmpl, true
+	}
+
+	if ec.currentPackage != nil {
+		if tmpl, ok := ec.currentPackage.namedTemplates[name]; ok {
+			return tmpl, true
+		}
+	}
+
+	return nil, false
+}
+
+func (ec *execContext) execCallTemplate(ctx context.Context, inst *callTemplateInst) error {
+	ec.depth++
+	if ec.depth > xpath.DepthLimit(ctx, maxRecursionDepth) {
+		ec.depth--
+		return dynamicErrorCause(errCodeXTDE0820, xpath.ErrBudget, "recursion depth exceeded")
+	}
+	defer func() { ec.depth-- }()
+
+	// XTDE3480/XTDE3510: clear merge-action context across template boundaries.
+	savedInMerge := ec.inMergeAction
+
+	ec.inMergeAction = false
+	defer func() { ec.inMergeAction = savedInMerge }()
+
+	tmpl, ok := ec.resolveNamedTemplate(inst.Name)
+	if !ok {
+		return dynamicError(errCodeXTDE0060, "named template %q not found", inst.Name)
+	}
+
+	// XTTE0590: check context-item type constraint
+	if err := ec.checkContextItemType(tmpl); err != nil {
+		return err
+	}
+
+	// Switch package function scope if the template belongs to a different package.
+	// Override templates (OriginalTemplate != nil) run in the main stylesheet
+	// context so that strip-space and other package-scoped rules from the
+	// using package apply, not the used package's rules.
+	savedFnsNS := ec.cachedFnsNS
+
+	savedPackage := ec.currentPackage
+	if tmpl.OriginalTemplate != nil {
+		ec.cachedFnsNS = nil
+		ec.currentPackage = nil
+	} else if tmpl.OwnerPackage != nil && tmpl.OwnerPackage != ec.currentPackage {
+		ec.cachedFnsNS = nil
+		ec.currentPackage = tmpl.OwnerPackage
+	}
+	// Do NOT set ec.currentTemplate here: xsl:call-template preserves the
+	// current template rule for xsl:apply-imports/xsl:next-match.
+
+	// Track overriding template for xsl:original support.
+	savedOverridingTemplate := ec.overridingTemplate
+	if tmpl.OriginalTemplate != nil {
+		ec.overridingTemplate = tmpl
+	}
+
+	// Evaluate with-param values BEFORE clearing the context for use="absent",
+	// because the with-param select expressions need the caller's context item.
+	//
+	// Two-phase param evaluation (mirrors xsl:apply-templates): evaluate ALL
+	// with-param values into LOCAL maps first, THEN merge tunnel params into
+	// ec.tunnelParams. This prevents a later with-param body that invokes
+	// another template (e.g. via an error caught by xsl:try/xsl:catch) from
+	// observing a tentative tunnel override before control has actually been
+	// transferred to the called template.
+	paramOverrides, newTunnelParams, err := ec.evaluateTemplateArguments(ctx, inst.Params)
+	if err != nil {
+		return err
+	}
+
+	defer ec.pushTunnelArguments(newTunnelParams)()
+
+	// xsl:context-item use="absent": make the context item absent within the
+	// called template's body. This means xsl:next-match will fail with
+	// XTDE0560 because there is no context node to match against.
+	// Also clear current-group/current-grouping-key because the template
+	// has declared it does not use the context, so group functions should
+	// raise XTDE1061/XTDE1071.
+	savedContextNode := ec.contextNode
+	savedContextItem := ec.contextItem
+	savedCurrentNode := ec.currentNode
+	savedCurrentTemplate := ec.currentTemplate
+	savedGroup := ec.currentGroup
+	savedGroupKey := ec.currentGroupKey
+
+	savedInGroupCtx := ec.inGroupContext
+
+	savedGroupHasKey := ec.groupHasKey
+	if tmpl.ContextItemUse == ctxItemAbsent {
+		ec.contextNode = nil
+		ec.contextItem = nil
+		ec.currentNode = nil
+		ec.setCurrentTemplate(nil)
+		ec.currentGroup = nil
+		ec.currentGroupKey = nil
+		ec.inGroupContext = false
+		ec.groupHasKey = false
+	}
+	defer func() {
+		ec.cachedFnsNS = savedFnsNS
+		ec.currentPackage = savedPackage
+
+		ec.overridingTemplate = savedOverridingTemplate
+		if tmpl.ContextItemUse == ctxItemAbsent {
+			ec.contextNode = savedContextNode
+			ec.contextItem = savedContextItem
+			ec.currentNode = savedCurrentNode
+			ec.setCurrentTemplate(savedCurrentTemplate)
+			ec.currentGroup = savedGroup
+			ec.currentGroupKey = savedGroupKey
+			ec.inGroupContext = savedInGroupCtx
+			ec.groupHasKey = savedGroupHasKey
+		}
+	}()
+
+	ec.pushVarScope()
+	defer ec.popVarScope()
+
+	// Apply default-collation from the called template
+	savedDefaultCollation := ec.defaultCollation
+	if tmpl.DefaultCollation != "" {
+		ec.defaultCollation = tmpl.DefaultCollation
+	}
+	defer func() { ec.defaultCollation = savedDefaultCollation }()
+
+	if err := ec.bindCalledTemplateParams(ctx, tmpl.Params, paramOverrides); err != nil {
+		return err
+	}
+
+	if tmpl.As != "" {
+		return ec.executeTemplateBodyWithAs(ctx, tmpl)
+	}
+
+	return ec.executeSequenceConstructor(ctx, tmpl.Body)
+}
+
+func (ec *execContext) bindCalledTemplateParams(ctx context.Context, params []*param, overrides map[string]xdm.Sequence) error {
+	for _, param := range params {
+		value, fromCaller := overrides[param.Name]
+		if param.Tunnel {
+			value, fromCaller = ec.tunnelParams[param.Name]
+		}
+
+		if !fromCaller {
+			var err error
+
+			value, err = ec.calledTemplateParamDefault(ctx, param)
+			if err != nil {
+				return err
+			}
+		}
+
+		if param.As != "" && (value != nil || fromCaller) {
+			code := errCodeXTTE0570
+			if fromCaller {
+				code = errCodeXTTE0590
+			}
+
+			checked, err := checkSequenceType(ctx, value, parseSequenceType(param.As), code, "param $"+param.Name, ec)
+			if err != nil {
+				return err
+			}
+
+			value = checked
+		}
+
+		ec.setVar(param.Name, value)
+	}
+
+	return nil
+}
+
+func (ec *execContext) calledTemplateParamDefault(ctx context.Context, param *param) (xdm.Sequence, error) {
+	if param.Select != nil {
+		result, err := ec.evalXPath(ctx, param.Select, ec.contextNode)
+		if err != nil {
+			return nil, err
+		}
+
+		return result.Sequence(), nil
+	}
+
+	if len(param.Body) == 0 {
+		return xdm.EmptySequence(), nil
+	}
+
+	ec.temporaryOutputDepth++
+	defer func() { ec.temporaryOutputDepth-- }()
+
+	if param.As != "" {
+		return ec.evaluateBodyAsSequence(ctx, param.Body)
+	}
+
+	return ec.evaluateBodyAsDocument(ctx, param.Body)
+}
+
+func (ec *execContext) execNextMatch(ctx context.Context, inst *nextMatchInst) error {
+	// XTDE0560: xsl:next-match when the current template rule is absent.
+	if ec.currentTemplate == nil || ec.currentTemplate.Match == nil {
+		return dynamicError(errCodeXTDE0560, "xsl:next-match: no current template rule")
+	}
+	// xsl:next-match: find the next matching template after the current one
+	node := ec.currentNode
+	mode := ec.currentMode
+
+	// Process with-param (tunnel and regular).
+	//
+	// Two-phase param evaluation (mirrors xsl:apply-templates): evaluate ALL
+	// with-param values into LOCAL maps first, THEN merge tunnel params into
+	// ec.tunnelParams. This prevents a later with-param body that invokes
+	// another template (e.g. via an error caught by xsl:try/xsl:catch) from
+	// observing a tentative tunnel override before control has actually been
+	// transferred to the next-match template.
+	pv, newTunnelParams, err := ec.evaluateTemplateArguments(ctx, inst.Params)
+	if err != nil {
+		return err
+	}
+
+	defer ec.pushTunnelArguments(newTunnelParams)()
+
+	if ec.contextItem != nil {
+		return ec.execNextAtomicMatch(ctx, mode, pv)
+	}
+
+	templates := ec.stylesheet.modeTemplates[mode]
+	foundCurrent := false
+
+	failOnMultiple := ec.onMultipleMatchFail(mode)
+	for i, tmpl := range templates {
+		if tmpl == ec.currentTemplate {
+			foundCurrent = true
+			continue
+		}
+
+		if !foundCurrent {
+			continue
+		}
+
+		if tmpl.Match == nil || !tmpl.Match.matchPattern(ctx, ec, node) {
+			continue
+		}
+
+		if failOnMultiple {
+			if err := ec.checkNextMatchConflicts(ctx, templates[i+1:], tmpl, node, mode); err != nil {
+				return err
+			}
+		}
+
+		return ec.executeTemplate(ctx, tmpl, node, mode, pv)
+	}
+
+	// No next match found — apply built-in rules
+	return ec.applyBuiltinRules(ctx, node, mode, pv)
+}
+
+func (ec *execContext) checkNextMatchConflicts(ctx context.Context, candidates []*template, tmpl *template, node xdm.Node, mode string) error {
+	for _, other := range candidates {
+		if other.ImportPrec < tmpl.ImportPrec || (other.ImportPrec == tmpl.ImportPrec && other.Priority < tmpl.Priority) {
+			break
+		}
+		// A mode list can hold one template twice (a mode="#all"
+		// template registered in the default mode); it never
+		// conflicts with itself.
+		if other == tmpl {
+			continue
+		}
+		// Split union pattern branches originate from the same template
+		// rule and never conflict with each other (spec bug 30402).
+		if other.splitOriginID != nil && other.splitOriginID == tmpl.splitOriginID {
+			continue
+		}
+
+		if other.Match != nil && other.Match.matchPattern(ctx, ec, node) {
+			return dynamicError(errCodeXTDE0540,
+				"ambiguous rule match for node %v in mode %q (on-multiple-match=fail)",
+				node, mode)
+		}
+	}
+
+	return nil
+}
+
+func (ec *execContext) execNextAtomicMatch(ctx context.Context, mode string, pv map[string]xdm.Sequence) error {
+	templates := ec.stylesheet.modeTemplates[mode]
+	foundCurrent := false
+
+	for _, tmpl := range templates {
+		if tmpl == ec.currentTemplate {
+			foundCurrent = true
+			continue
+		}
+
+		if foundCurrent && tmpl.Match != nil && ec.matchAtomicPattern(ctx, tmpl.Match, ec.contextItem) {
+			return ec.executeAtomicTemplate(ctx, tmpl, ec.contextItem, mode, pv)
+		}
+	}
+	// No next match for atomic items — output string value as built-in rule
+	av, ok := ec.contextItem.(xdm.AtomicValue)
+	if !ok {
+		return nil
+	}
+
+	s, err := xpath.AtomicToString(av)
+	if err != nil {
+		return err
+	}
+
+	text := ec.resultDoc.CreateText(s)
+
+	return ec.addNode(text)
+}
+
+func (ec *execContext) execApplyImports(ctx context.Context, inst *applyImportsInst) error {
+	// xsl:apply-imports: find a matching template with lower import precedence
+	// than the currently executing template.
+	// XTDE0560: xsl:apply-imports when the current template rule is absent.
+	// A template rule is a template with a match pattern; named templates
+	// invoked via call-template or initial-template don't count.
+	if ec.currentTemplate == nil || ec.currentTemplate.Match == nil {
+		return dynamicError(errCodeXTDE0560, "xsl:apply-imports: no current template rule")
+	}
+
+	node := ec.currentNode
+	mode := ec.currentMode
+	maxPrec := ec.currentTemplate.ImportPrec
+
+	// Process with-param (tunnel and regular).
+	//
+	// Two-phase param evaluation (mirrors xsl:apply-templates): evaluate ALL
+	// with-param values into LOCAL maps first, THEN merge tunnel params into
+	// ec.tunnelParams. This prevents a later with-param body that invokes
+	// another template (e.g. via an error caught by xsl:try/xsl:catch) from
+	// observing a tentative tunnel override before control has actually been
+	// transferred to the imported template.
+	pv, newTunnelParams, err := ec.evaluateTemplateArguments(ctx, inst.Params)
+	if err != nil {
+		return err
+	}
+
+	defer ec.pushTunnelArguments(newTunnelParams)()
+
+	// xsl:apply-imports searches only within the current module's import
+	// tree. MinImportPrec marks the lowest precedence among the module's
+	// (transitive) imports, so we restrict the search to [minPrec, maxPrec).
+	minPrec := ec.currentTemplate.MinImportPrec
+
+	// XSLT 3.0: when the context item is an atomic value (e.g. from
+	// xsl:apply-templates select="1 to 5"), search for matching atomic
+	// templates with lower import precedence, then fall back to outputting
+	// the string value of the atomic item (built-in rule for atomic values).
+	if ec.contextItem != nil {
+		templates := ec.stylesheet.modeTemplates[mode]
+		for _, tmpl := range templates {
+			if tmpl.ImportPrec >= maxPrec || tmpl.ImportPrec < minPrec {
+				continue
+			}
+
+			if tmpl.Match != nil && ec.matchAtomicPattern(ctx, tmpl.Match, ec.contextItem) {
+				return ec.executeAtomicTemplate(ctx, tmpl, ec.contextItem, mode, pv)
+			}
+		}
+		// Built-in rule for atomic values: output string value
+		av, err := xpath.AtomizeItem(ec.contextItem)
+		if err != nil {
+			return err
+		}
+
+		s, err := xpath.AtomicToString(av)
+		if err != nil {
+			return err
+		}
+
+		text := ec.resultDoc.CreateText(s)
+
+		return ec.addNode(text)
+	}
+
+	templates := ec.stylesheet.modeTemplates[mode]
+	for _, tmpl := range templates {
+		if tmpl.ImportPrec >= maxPrec || tmpl.ImportPrec < minPrec {
+			continue
+		}
+
+		if tmpl.Match != nil && tmpl.Match.matchPattern(ctx, ec, node) {
+			return ec.executeTemplate(ctx, tmpl, node, mode, pv)
+		}
+	}
+
+	// No imported template found, use built-in rules
+	return ec.applyBuiltinRules(ctx, node, mode, pv)
+}
+
+// checkContextItemType validates the context item against the template's
+// xsl:context-item declaration. Returns XTTE0590 on type mismatch or
+// XPDY0002 when the context item is absent but required.
+func (ec *execContext) checkContextItemType(tmpl *template) error {
+	if tmpl.ContextItemAs == "" && tmpl.ContextItemUse == "" {
+		return nil
+	}
+
+	// Determine the current context item
+	var contextSeq xdm.ItemSlice
+	if ec.contextItem != nil {
+		contextSeq = xdm.ItemSlice{ec.contextItem}
+	} else if normalizeNode(ec.contextNode) != nil {
+		contextSeq = xdm.ItemSlice{xdm.NodeItem{Node: ec.contextNode}}
+	}
+
+	use := tmpl.ContextItemUse
+	if use == "" {
+		// Default use depends on template type:
+		// - match templates default to "required" (context always present)
+		// - named templates default to "optional" (may be called without context)
+		if tmpl.Match != nil {
+			use = ctxItemRequired
+		} else {
+			use = ctxItemOptional
+		}
+	}
+
+	// XPDY0002: context item absent when use="required"
+	if len(contextSeq) == 0 && use == ctxItemRequired {
+		return dynamicError(errCodeXPDY0002, "context item is absent but xsl:context-item use=\"required\"")
+	}
+
+	// Type check: if as is specified and context item exists, check the type.
+	// Context-item type checking uses "instance of" semantics (no atomization/casting).
+	if tmpl.ContextItemAs != "" && len(contextSeq) > 0 {
+		asExpr := stripXPathComments(tmpl.ContextItemAs)
+		if !instanceOfItemType(contextSeq[0], asExpr, ec) {
+			return dynamicError(errCodeXTTE0590,
+				"context item does not match required type %s", asExpr)
+		}
+	}
+
+	return nil
+}
+
+// instanceOfItemType checks if an item is an instance of the given item type
+// WITHOUT coercion or atomization. This is used for xsl:context-item/@as which
+// requires "instance of" semantics per XSLT 3.0 §9.8.
+func instanceOfItemType(item xdm.Item, itemType string, ec *execContext) bool {
+	switch itemType {
+	case lexicon.NodeTestItem:
+		return true
+	case lexicon.NodeTestNode:
+		_, ok := item.(xdm.NodeItem)
+		return ok
+	case lexicon.NodeTestElement:
+		ni, ok := item.(xdm.NodeItem)
+		return ok && ni.Node.Type() == xdm.ElementNode
+	case lexicon.NodeTestAttribute:
+		ni, ok := item.(xdm.NodeItem)
+		return ok && ni.Node.Type() == xdm.AttributeNode
+	case lexicon.NodeTestText:
+		ni, ok := item.(xdm.NodeItem)
+		return ok && (ni.Node.Type() == xdm.TextNode || ni.Node.Type() == xdm.CDATASectionNode)
+	case lexicon.NodeTestComment:
+		ni, ok := item.(xdm.NodeItem)
+		return ok && ni.Node.Type() == xdm.CommentNode
+	case lexicon.NodeTestPI:
+		ni, ok := item.(xdm.NodeItem)
+		return ok && ni.Node.Type() == xdm.ProcessingInstructionNode
+	case lexicon.NodeTestDocumentNode:
+		ni, ok := item.(xdm.NodeItem)
+		return ok && ni.Node.Type() == xdm.DocumentNode
+	}
+
+	if strings.HasPrefix(itemType, "element(") {
+		return instanceOfElementItemType(item, itemType, ec)
+	}
+
+	if strings.HasPrefix(itemType, "document-node(") {
+		return instanceOfDocumentItemType(item, itemType, ec)
+	}
+
+	// Atomic types: item must be an atomic value of the specified type
+	av, ok := item.(xdm.AtomicValue)
+	if !ok {
+		// Node items are not instances of atomic types
+		return false
+	}
+
+	target := normalizeTypeName(itemType, ec)
+	if target == lexicon.XSAnyAtomicType {
+		return true
+	}
+
+	if av.TypeName == target {
+		return true
+	}
+
+	if isBuiltinSubtypeOf(av.TypeName, target) {
+		return true
+	}
+
+	return false
+}
+
+func instanceOfElementItemType(item xdm.Item, itemType string, ec *execContext) bool {
+	ni, ok := item.(xdm.NodeItem)
+	if !ok || ni.Node.Type() != xdm.ElementNode {
+		return false
+	}
+
+	inner := strings.TrimSpace(itemType[len("element(") : len(itemType)-1])
+	if inner == "" || inner == "*" {
+		return true
+	}
+
+	parts := splitTopLevelTypeArgs(inner)
+
+	reqName := strings.TrimSpace(parts[0])
+	if reqName != "*" {
+		reqLocal, reqNS := resolveSchemaQName(reqName, qnameElementName, ec)
+
+		elem, isElem := ni.Node.(*xdm.Element)
+		if !isElem || elem.LocalName() != reqLocal || elem.URI() != reqNS {
+			return false
+		}
+	}
+
+	return true
+}
+
+func instanceOfDocumentItemType(item xdm.Item, itemType string, ec *execContext) bool {
+	ni, ok := item.(xdm.NodeItem)
+	if !ok || ni.Node.Type() != xdm.DocumentNode {
+		return false
+	}
+
+	inner := strings.TrimSpace(itemType[len("document-node(") : len(itemType)-1])
+	if inner == "" {
+		return true
+	}
+
+	doc, isDoc := ni.Node.(*xdm.Document)
+	if !isDoc {
+		return false
+	}
+
+	rootElem := findDocumentElement(doc)
+	if rootElem == nil {
+		return false
+	}
+
+	return instanceOfItemType(xdm.NodeItem{Node: rootElem}, inner, ec)
+}
+
+// stripXPathComments removes XPath 2.0+ comments (: ... :) from a string
+// and normalizes whitespace (collapses runs of whitespace into single spaces,
+// removes spaces adjacent to parentheses).
+func stripXPathComments(s string) string {
+	// First pass: remove comments
+	var buf strings.Builder
+
+	depth := 0
+
+	for i := 0; i < len(s); i++ {
+		if i+1 < len(s) && s[i] == '(' && s[i+1] == ':' {
+			depth++
+			i++ // skip ':'
+
+			continue
+		}
+
+		if i+1 < len(s) && s[i] == ':' && s[i+1] == ')' {
+			if depth > 0 {
+				depth--
+			}
+
+			i++ // skip ')'
+
+			continue
+		}
+
+		if depth == 0 {
+			buf.WriteByte(s[i])
+		}
+	}
+	// Normalize whitespace: collapse runs into single space, trim
+	result := strings.Join(strings.Fields(buf.String()), " ")
+	result = strings.ReplaceAll(result, " (", "(")
+	result = strings.ReplaceAll(result, "( ", "(")
+	result = strings.ReplaceAll(result, " )", ")")
+	result = strings.ReplaceAll(result, ") ", ")")
+	result = strings.ReplaceAll(result, " ,", ",")
+	result = strings.ReplaceAll(result, ", ", ",")
+
+	return result
+}

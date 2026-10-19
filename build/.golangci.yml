@@ -1,0 +1,118 @@
+version: "2"
+
+run:
+  timeout: 5m
+  relative-path-mode: gomod
+  modules-download-mode: readonly
+  build-tags: [ interop ]
+
+linters:
+  default: none
+  enable:
+    - asciicheck
+    - bodyclose
+    - canonicalheader
+    - dogsled
+    - dupl
+    - errcheck
+    - errorlint
+    - forcetypeassert
+    - gochecknoglobals
+    - gochecknoinits
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - godot
+    - goprintffuncname
+    - gosec
+    - govet
+    - iface
+    - ineffassign
+    - misspell
+    - nakedret
+    - nilerr
+    - nilnesserr
+    - noctx
+    - nolintlint
+    - perfsprint
+    - prealloc
+    - predeclared
+    - protogetter
+    - sloglint
+    - sqlclosecheck
+    - staticcheck
+    - testpackage
+    - tparallel
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+    - wsl_v5
+  settings:
+    errcheck:
+      check-type-assertions: true
+    gocritic:
+      disabled-checks: [ ifElseChain ]
+    godot:
+      scope: declarations
+      capital: false
+    govet:
+      enable: [ nilness ]
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: exported
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: increment-decrement
+        - name: receiver-naming
+        - name: var-naming
+    staticcheck:
+      checks: [ all, '-QF1001' ]
+    thelper:
+      tb:
+        name: false
+  exclusions:
+    generated: strict
+    rules:
+      # Adapted language/model sources retain their existing style exemptions.
+      # The public API remains fully linted; govet and correctness checks cover
+      # all three integrated packages.
+      - path: ^transform/internal/(xdm|xpath|xslt)/
+        linters: [ errorlint, gocritic, godot, gosec, misspell, nakedret, nolintlint, perfsprint, revive, makezero ]
+      # Native value/storage assertions already carry explicit forcetypeassert
+      # exemptions. Keep ordinary unchecked-error detection enabled there.
+      - path: ^transform/internal/(xdm|xpath|xslt)/
+        linters: [ errcheck ]
+        source: '//nolint:forcetypeassert'
+      - path: ^transform/internal/(xdm|xpath|xslt)/
+        linters: [ staticcheck ]
+        text: 'ST[0-9]+:'
+      # Test fixtures deliberately exercise weak algorithms and unchecked inputs.
+      - path: _test\.go$
+        linters: [ errcheck, forcetypeassert, gosec ]
+      # Nil contexts are intentional negative API inputs in these tests.
+      - path: _test\.go$
+        linters: [ staticcheck ]
+        text: 'SA1012:'
+
+formatters:
+  enable: [ gofmt, gofumpt, goimports ]
+  settings:
+    goimports:
+      local-prefixes: [ github.com/skarm/xmlsec ]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+output:
+  formats:
+    text:
+      colors: false

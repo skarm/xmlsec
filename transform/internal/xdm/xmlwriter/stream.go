@@ -1,0 +1,1756 @@
+// Derived from lestrrat-go/helium at 7362c0a70122a757780f4d0b545a9b370dead6ab.
+// Copyright (c) 2015 lestrrat. MIT License; see licenses/MIT-helium.txt at the repository root.
+
+package stream
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"slices"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/skarm/xmlsec/internal/xmlchar"
+	"github.com/skarm/xmlsec/internal/xmloutput"
+	"github.com/skarm/xmlsec/transform/internal/xdm/encoding"
+)
+
+// Reserved namespace names (Namespaces in XML 1.0 §3). The "xml" prefix is
+// bound by definition to xmlNamespaceURI, and the "xmlns" prefix to
+// xmlnsNamespaceURI; neither may be rebound or otherwise misused.
+const (
+	xmlNamespaceURI   = "http://www.w3.org/XML/1998/namespace"
+	xmlnsNamespaceURI = "http://www.w3.org/2000/xmlns/"
+)
+
+var errNilOutputWriter = errors.New("stream: output writer is nil")
+
+// Writer writes XML incrementally to an io.Writer.
+//
+// Writer is not safe for concurrent use by multiple goroutines.
+//
+// The zero value of Writer is not ready to use because it has no output
+// destination. Construct a Writer with NewWriter. The fluent configuration
+// methods (Indent, QuoteChar, XMLVersion) return copies and are meant to be
+// called before any write. A copy taken after writing has begun resolves
+// namespace prefixes against the scopes it has open itself, independently of
+// the Writer it was copied from. The two copies still write to the same
+// destination, and they still share the backing storage of their element and
+// namespace scope stacks, so writing through both of them after the copy
+// interleaves their output and can overwrite scopes one of them still has
+// open.
+//
+// (libxml2: xmlTextWriter)
+type Writer struct {
+	out           io.Writer
+	err           error       // sticky error
+	nsBind        *nsBindings // in-scope prefix -> URI index; a Writer copy shares it until either copy changes it (ownNSBind)
+	indent        string      // indent string per level; empty = no indentation
+	elemStack     []elementEntry
+	nsStack       []nsScope
+	stateStack    []writerState // for comment/PI/CDATA nesting
+	state         writerState
+	nsSeq         uint64 // revision of nsBind this Writer wrote; it owns nsBind while nsSeq == nsBind.seq
+	depth         int    // current element nesting depth (for indentation)
+	cdataBrackets int    // count (0,1,2) of trailing ']' in the current CDATA body, to detect ']]>' across writes
+	quoteChar     byte   // attribute quote character ('"' or '\'')
+	singleByte    [1]byte
+	hasOutput     bool // true after first output has been written
+	wroteNL       bool // true after EndComment/EndPI wrote trailing \n (suppresses writeIndent's \n)
+	commentDash   bool // true if the current comment body ends with '-' (would form '--->' on close)
+	piQuestion    bool // true if the current PI body ends with '?' (would form '?>' across writes)
+	xml11         bool // true when serializing XML 1.1: restricted control chars are emitted as decimal character references instead of being rejected
+}
+
+type writerState int
+
+const (
+	stateNone      writerState = iota // initial / after EndDocument
+	stateDocument                     // after StartDocument, or after closing top-level constructs
+	stateName                         // inside element opening tag (attributes allowed, > not yet written)
+	stateAttribute                    // inside attribute value
+	stateText                         // inside element body (after >)
+	stateComment                      // inside comment body
+	statePI                           // after PI target, before content
+	statePIText                       // inside PI content
+	stateCDATA                        // inside CDATA section
+	stateDTD                          // inside DTD (before internal subset)
+)
+
+type elementEntry struct {
+	name     string // qualified name (prefix:local or local)
+	empty    bool   // true until content is written; enables self-close
+	hasText  bool   // true if text content was written (disables indent for end tag)
+	hasChild bool   // true if child elements were written
+}
+
+type nsScope struct {
+	decls   []nsEntry
+	emitted int // number of decls already emitted (indices < emitted are done)
+}
+
+// nsBindings is the prefix -> URI index for the declarations currently in
+// scope: a prefix is absent when it is unbound, and present with an empty
+// URI when it has been explicitly undeclared (xmlns=""). seq is the index's
+// revision counter, bumped by whichever Writer last changed it. See
+// Writer.ownNSBind for why the revision matters.
+type nsBindings struct {
+	m   map[string]string
+	seq uint64
+}
+
+type escapeMode int
+
+const (
+	escapeNone escapeMode = iota
+	escapeText
+	escapeAttr
+)
+
+type nsEntry struct {
+	prefix string
+	uri    string
+
+	// prevURI/prevHad record the binding this declaration shadowed, so
+	// popNSScope can restore w.nsBind[prefix] when the scope closes.
+	// prevHad is false when the prefix was unbound before this
+	// declaration, in which case popNSScope deletes it instead of
+	// restoring prevURI.
+	prevURI string
+	prevHad bool
+}
+
+// NewWriter creates a Writer that writes to w. Configure the Writer
+// with fluent methods (Indent, QuoteChar) before calling action methods.
+// (libxml2: xmlNewTextWriterMemory)
+func NewWriter(w io.Writer) Writer {
+	return Writer{
+		out:       w,
+		quoteChar: '"',
+		state:     stateNone,
+	}
+}
+
+// Indent returns a copy of the Writer with indentation enabled.
+// Each nested level is indented by the given string (e.g. "  " for
+// two spaces, "\t" for tab).
+func (w Writer) Indent(indent string) Writer {
+	w.indent = indent
+	return w
+}
+
+// QuoteChar returns a copy of the Writer with the attribute value
+// quote character set to q. Must be '"' or '\”. Any other value
+// is silently ignored. The default is '"'.
+func (w Writer) QuoteChar(q byte) Writer {
+	if q == '\'' || q == '"' {
+		w.quoteChar = q
+	}
+
+	return w
+}
+
+// XMLVersion returns a copy of the Writer configured for the given XML
+// output version. When v is "1.1", the restricted control characters that
+// XML 1.1 permits (but which may not appear literally) are serialized as
+// decimal character references in text and attribute content instead of
+// being rejected. Any other value selects XML 1.0 behavior (the default),
+// where those characters are rejected as invalid. StartDocument also sets
+// this from its version argument, so callers that emit an XML declaration
+// need not call this explicitly; it is required only when the declaration
+// is omitted.
+func (w Writer) XMLVersion(v string) Writer {
+	w.xml11 = v == "1.1"
+	return w
+}
+
+// Error returns the sticky error, if any. Once an error occurs, all
+// subsequent write operations become no-ops. The error is also returned
+// by [Writer.Flush].
+func (w *Writer) Error() error { return w.err }
+
+// --- Document lifecycle ---
+
+// StartDocument writes the XML declaration. Pass "" for any parameter to
+// use its default (version="1.0", no encoding, no standalone).
+func (w *Writer) StartDocument(version, enc, standalone string) error {
+	if w.err != nil {
+		return w.err
+	}
+
+	if w.state != stateNone {
+		return errors.New("stream: StartDocument called in invalid state")
+	}
+
+	if version == "" {
+		version = "1.0"
+	}
+	// Validate version and standalone before writing, so an untrusted value
+	// cannot inject markup into (or otherwise corrupt) the XML declaration.
+	if !isValidXMLVersion(version) {
+		return fmt.Errorf("stream: invalid XML version %q", version)
+	}
+
+	if standalone != "" && standalone != "yes" && standalone != "no" {
+		return fmt.Errorf("stream: invalid standalone value %q (want \"yes\", \"no\", or empty)", standalone)
+	}
+
+	if version == "1.1" {
+		w.xml11 = true
+	}
+	// Validate the encoding name BEFORE writing any output: first against the XML
+	// EncName production (so a syntactically malformed value like "utf 8" cannot
+	// be emitted raw into the declaration), then for actual support. encoding.Load
+	// is lenient (it normalizes/accepts non-EncName spellings), so the syntactic
+	// check must come first.
+	if enc != "" {
+		if !xmlchar.IsValidEncName(enc) {
+			return fmt.Errorf("stream: invalid encoding name %q", enc)
+		}
+
+		if encoding.Load(enc) == nil {
+			return fmt.Errorf("stream: unsupported encoding %q", enc)
+		}
+	}
+
+	w.writeStr("<?xml version=")
+	w.writeByte(w.quoteChar)
+	w.writeStr(version)
+	w.writeByte(w.quoteChar)
+
+	if enc != "" {
+		w.writeStr(" encoding=")
+		w.writeByte(w.quoteChar)
+		w.writeStr(enc)
+		w.writeByte(w.quoteChar)
+	}
+
+	if standalone != "" {
+		w.writeStr(" standalone=")
+		w.writeByte(w.quoteChar)
+		w.writeStr(standalone)
+		w.writeByte(w.quoteChar)
+	}
+
+	w.writeStr("?>\n")
+	w.state = stateDocument
+	w.hasOutput = true
+
+	return w.err
+}
+
+// isValidXMLVersion reports whether v is a valid XML declaration VersionNum.
+// VersionNum ::= '1.' [0-9]+ (XML 1.0 §2.8). Restricting to this grammar
+// prevents an untrusted version string from injecting markup into the XML
+// declaration (e.g. `1.0"?><x/>`).
+func isValidXMLVersion(v string) bool {
+	rest, ok := strings.CutPrefix(v, "1.")
+	if !ok {
+		return false
+	}
+
+	if rest == "" {
+		return false
+	}
+
+	for i := range len(rest) {
+		if rest[i] < '0' || rest[i] > '9' {
+			return false
+		}
+	}
+
+	return true
+}
+
+// EndDocument auto-closes any open constructs (PI, CDATA, comment, DTD,
+// elements) and flushes the output.
+func (w *Writer) EndDocument() error {
+	if w.err != nil {
+		return w.err
+	}
+	// Auto-close any open construct before closing elements.
+	switch w.state {
+	case statePI, statePIText:
+		if err := w.EndPI(); err != nil {
+			return err
+		}
+	case stateCDATA:
+		if err := w.EndCDATA(); err != nil {
+			return err
+		}
+	case stateComment:
+		if err := w.EndComment(); err != nil {
+			return err
+		}
+	case stateDTD:
+		if err := w.EndDTD(); err != nil {
+			return err
+		}
+	}
+	// Close all open elements
+	for len(w.elemStack) > 0 {
+		if err := w.EndElement(); err != nil {
+			return err
+		}
+	}
+
+	if w.indent == "" {
+		w.writeStr("\n")
+	}
+
+	w.state = stateNone
+
+	return w.Flush()
+}
+
+// --- Elements ---
+
+// StartElement opens a new element with the given local name.
+func (w *Writer) StartElement(name string) error {
+	if name == "" {
+		return errors.New("stream: element name must not be empty")
+	}
+
+	if w.err != nil {
+		return w.err
+	}
+	// Validate the name before touching any writer state or output, so an
+	// untrusted name cannot inject markup (extra attributes, '>') or produce
+	// malformed XML. Namespaced names (prefix:local) and the xml:/xmlns
+	// idioms are valid QNames and remain accepted.
+	if !xmlchar.IsValidQName(name) {
+		return fmt.Errorf("stream: invalid element name %q", name)
+	}
+
+	switch w.state {
+	case stateNone, stateDocument, stateText, stateDTD:
+		// ok — stateNone allows fragment writing without StartDocument
+	case stateName:
+		w.closeTagIfOpen()
+	default:
+		return errors.New("stream: StartElement called in invalid state")
+	}
+
+	// Mark parent as having children
+	w.markParentChild()
+
+	w.writeIndent()
+	w.writeByte('<')
+	w.writeStr(name)
+	w.hasOutput = true
+
+	w.elemStack = append(w.elemStack, elementEntry{name: name, empty: true})
+	w.nsStack = append(w.nsStack, nsScope{})
+	w.state = stateName
+	w.depth++
+
+	return w.err
+}
+
+// StartElementNS opens a new element with namespace. prefix and
+// namespaceURI may be empty.
+func (w *Writer) StartElementNS(prefix, localName, namespaceURI string) error {
+	if w.err != nil {
+		return w.err
+	}
+
+	if err := validateNSParts("element", prefix, localName); err != nil {
+		return err
+	}
+	// Reject reserved-prefix/namespace misuse before any markup is emitted, so
+	// an illegal binding (e.g. rebinding "xml") never reaches the output.
+	if err := validateReservedNS("element", prefix, namespaceURI); err != nil {
+		return err
+	}
+	// Validate the namespace URI before StartElement emits anything or
+	// declareNS records a declaration, so an untrusted URI cannot inject
+	// markup as an xmlns attribute value and a rejected call leaves the
+	// writer unmutated.
+	if err := validateXMLChars("namespace URI", namespaceURI); err != nil {
+		return err
+	}
+
+	qname := qualifiedName(prefix, localName)
+	if err := w.StartElement(qname); err != nil {
+		return err
+	}
+
+	if namespaceURI != "" {
+		w.declareNS(prefix, namespaceURI)
+	} else if prefix == "" && w.hasDefaultNSInScope() {
+		// When an element has no namespace but a default namespace is
+		// in scope from an ancestor, emit xmlns="" to undeclare it.
+		w.declareNS("", "")
+	}
+
+	return w.err
+}
+
+// EndElement closes the current element. Uses self-closing form "/>"
+// when the element has no content.
+func (w *Writer) EndElement() error {
+	if w.err != nil {
+		return w.err
+	}
+
+	if len(w.elemStack) == 0 {
+		return errors.New("stream: EndElement called with no open element")
+	}
+
+	if w.state == stateAttribute {
+		if err := w.EndAttribute(); err != nil {
+			return err
+		}
+	}
+
+	w.depth--
+	entry := w.elemStack[len(w.elemStack)-1]
+	w.elemStack = w.elemStack[:len(w.elemStack)-1]
+
+	if w.state == stateName && entry.empty {
+		// Self-closing: emit pending NS then close
+		w.emitPendingNS()
+		w.writeStr("/>")
+	} else {
+		if w.state == stateName {
+			w.closeTagIfOpen()
+		}
+
+		if entry.hasChild && !entry.hasText {
+			w.writeEndIndent()
+		}
+
+		w.writeStr("</")
+		w.writeStr(entry.name)
+		w.writeByte('>')
+	}
+
+	// Pop namespace scope
+	w.popNSScope()
+
+	// Restore state
+	if len(w.elemStack) > 0 {
+		w.state = stateText
+	} else {
+		w.state = stateDocument
+	}
+
+	return w.err
+}
+
+// FullEndElement closes the current element with an explicit end tag
+// even when empty.
+func (w *Writer) FullEndElement() error {
+	if w.err != nil {
+		return w.err
+	}
+
+	if len(w.elemStack) == 0 {
+		return errors.New("stream: FullEndElement called with no open element")
+	}
+
+	if w.state == stateAttribute {
+		if err := w.EndAttribute(); err != nil {
+			return err
+		}
+	}
+
+	// Force close the opening tag if still open
+	if w.state == stateName {
+		w.closeTagIfOpen()
+	}
+
+	w.depth--
+	entry := w.elemStack[len(w.elemStack)-1]
+	w.elemStack = w.elemStack[:len(w.elemStack)-1]
+
+	if entry.hasChild && !entry.hasText {
+		w.writeEndIndent()
+	}
+
+	w.writeStr("</")
+	w.writeStr(entry.name)
+	w.writeByte('>')
+
+	// Pop namespace scope
+	w.popNSScope()
+
+	if len(w.elemStack) > 0 {
+		w.state = stateText
+	} else {
+		w.state = stateDocument
+	}
+
+	return w.err
+}
+
+// WriteElement is a convenience for StartElement + WriteString + EndElement.
+func (w *Writer) WriteElement(name, content string) error {
+	if w.err != nil {
+		return w.err
+	}
+	// Pre-validate content before StartElement emits the opening tag, so a
+	// rejected write leaves the writer unmutated.
+	if err := w.validateContentChars("text", content); err != nil {
+		return err
+	}
+
+	if err := w.StartElement(name); err != nil {
+		return err
+	}
+
+	if err := w.WriteString(content); err != nil {
+		return err
+	}
+
+	return w.EndElement()
+}
+
+// WriteElementNS is a convenience for StartElementNS + WriteString + EndElement.
+func (w *Writer) WriteElementNS(prefix, localName, namespaceURI, content string) error {
+	if w.err != nil {
+		return w.err
+	}
+	// Pre-validate content before StartElementNS declares the namespace or
+	// emits markup, so a rejected write leaves the writer unmutated.
+	if err := w.validateContentChars("text", content); err != nil {
+		return err
+	}
+
+	if err := w.StartElementNS(prefix, localName, namespaceURI); err != nil {
+		return err
+	}
+
+	if err := w.WriteString(content); err != nil {
+		return err
+	}
+
+	return w.EndElement()
+}
+
+// --- Attributes ---
+
+// StartAttribute opens an attribute on the current element.
+func (w *Writer) StartAttribute(name string) error {
+	if name == "" {
+		return errors.New("stream: attribute name must not be empty")
+	}
+
+	if w.err != nil {
+		return w.err
+	}
+	// Validate the name before writing, so an untrusted name cannot inject
+	// markup (extra attributes, '>') into the start tag. The xmlns/xmlns:
+	// declaration idiom and namespaced names are valid QNames and remain
+	// accepted (this is a low-level xmlTextWriter-style API).
+	if !xmlchar.IsValidQName(name) {
+		return fmt.Errorf("stream: invalid attribute name %q", name)
+	}
+
+	if w.state != stateName {
+		return errors.New("stream: StartAttribute called outside element opening tag")
+	}
+
+	w.writeByte(' ')
+	w.writeStr(name)
+	w.writeByte('=')
+	w.writeByte(w.quoteChar)
+	w.stateStack = append(w.stateStack, w.state)
+	w.state = stateAttribute
+
+	return w.err
+}
+
+// StartAttributeNS opens a namespace-qualified attribute.
+func (w *Writer) StartAttributeNS(prefix, localName, namespaceURI string) error {
+	if w.err != nil {
+		return w.err
+	}
+	// Validate parts before declareNS mutates the namespace scope, so an
+	// invalid prefix/local name never leaks a declaration or markup.
+	if err := validateNSParts("attribute", prefix, localName); err != nil {
+		return err
+	}
+	// Reject reserved-prefix/namespace misuse before declareNS records a
+	// declaration or StartAttribute emits anything.
+	if err := validateReservedNS("attribute", prefix, namespaceURI); err != nil {
+		return err
+	}
+	// Validate the namespace URI before declareNS records a declaration or
+	// StartAttribute emits anything, so an untrusted URI cannot inject markup
+	// as an xmlns attribute value and a rejected call leaves the writer
+	// unmutated.
+	if err := validateXMLChars("namespace URI", namespaceURI); err != nil {
+		return err
+	}
+	// Verify the writer is in the correct state before declareNS records a
+	// declaration, so a call made after the start tag is closed is rejected
+	// without leaking a namespace declaration into the scope (which would make
+	// a later child element skip emitting its xmlns:prefix binding). This
+	// mirrors the state check StartAttribute performs below.
+	if w.state != stateName {
+		return errors.New("stream: StartAttribute called outside element opening tag")
+	}
+
+	if namespaceURI != "" && prefix != "" {
+		// Reject a same-scope prefix conflict before emitting markup: declareNS
+		// would otherwise silently keep the existing binding, producing an
+		// attribute whose prefix resolves to the wrong namespace.
+		if w.nsPrefixConflict(prefix, namespaceURI) {
+			return fmt.Errorf("stream: attribute prefix %q already bound to a different namespace in this element", prefix)
+		}
+
+		w.declareNS(prefix, namespaceURI)
+	}
+
+	return w.StartAttribute(qualifiedName(prefix, localName))
+}
+
+// EndAttribute closes the current attribute.
+func (w *Writer) EndAttribute() error {
+	if w.err != nil {
+		return w.err
+	}
+
+	if w.state != stateAttribute {
+		return errors.New("stream: EndAttribute called outside attribute")
+	}
+
+	w.writeByte(w.quoteChar)
+	// Restore previous state
+	w.popState(stateName)
+
+	return w.err
+}
+
+// WriteAttribute is a convenience for StartAttribute + WriteString + EndAttribute.
+func (w *Writer) WriteAttribute(name, value string) error {
+	if w.err != nil {
+		return w.err
+	}
+	// Pre-validate the value before StartAttribute emits ` name="`, so a
+	// rejected write leaves the writer unmutated.
+	if err := w.validateContentChars("attribute", value); err != nil {
+		return err
+	}
+
+	if err := w.StartAttribute(name); err != nil {
+		return err
+	}
+
+	if err := w.WriteString(value); err != nil {
+		return err
+	}
+
+	return w.EndAttribute()
+}
+
+// WriteAttributeNS is a convenience for StartAttributeNS + WriteString + EndAttribute.
+func (w *Writer) WriteAttributeNS(prefix, localName, namespaceURI, value string) error {
+	if w.err != nil {
+		return w.err
+	}
+	// Pre-validate the value before StartAttributeNS declares the namespace or
+	// emits markup, so a rejected write leaves the writer unmutated.
+	if err := w.validateContentChars("attribute", value); err != nil {
+		return err
+	}
+
+	if err := w.StartAttributeNS(prefix, localName, namespaceURI); err != nil {
+		return err
+	}
+
+	if err := w.WriteString(value); err != nil {
+		return err
+	}
+
+	return w.EndAttribute()
+}
+
+// --- Text content ---
+
+// WriteString writes text content with automatic XML escaping appropriate
+// for the current context.
+func (w *Writer) WriteString(content string) error {
+	if w.err != nil {
+		return w.err
+	}
+
+	switch w.state {
+	case stateName, stateNone, stateText, stateDocument:
+		if err := w.validateContentChars("text", content); err != nil {
+			return err
+		}
+
+		if w.state == stateName {
+			w.closeTagIfOpen()
+		}
+
+		if len(w.elemStack) > 0 {
+			w.elemStack[len(w.elemStack)-1].hasText = true
+		}
+
+		w.writeTextEscaped(content)
+	case stateAttribute:
+		if err := w.validateContentChars("attribute", content); err != nil {
+			return err
+		}
+
+		w.writeAttrEscaped(content)
+	case stateComment:
+		if err := validateXMLChars("comment", content); err != nil {
+			return err
+		}
+
+		if w.commentDash && strings.HasPrefix(content, "-") {
+			return errors.New("stream: comment content must not contain '--'")
+		}
+
+		if strings.Contains(content, "--") {
+			return errors.New("stream: comment content must not contain '--'")
+		}
+
+		w.writeStr(content)
+
+		if content != "" {
+			w.commentDash = strings.HasSuffix(content, "-")
+		}
+	case statePI, statePIText:
+		if err := validateXMLChars("processing instruction", content); err != nil {
+			return err
+		}
+
+		if w.piQuestion && strings.HasPrefix(content, ">") {
+			return errors.New("stream: processing instruction content must not contain '?>'")
+		}
+
+		if strings.Contains(content, "?>") {
+			return errors.New("stream: processing instruction content must not contain '?>'")
+		}
+
+		w.writeStr(content)
+
+		if content != "" {
+			w.piQuestion = strings.HasSuffix(content, "?")
+		}
+
+		w.state = statePIText
+	case stateCDATA:
+		if err := validateXMLChars("CDATA", content); err != nil {
+			return err
+		}
+
+		w.writeCDATAEscaped(content)
+	default:
+		return errors.New("stream: WriteString called in invalid state")
+	}
+
+	return w.err
+}
+
+// WriteRaw writes content directly without any escaping.
+// Callers must ensure the content is well-formed XML; passing
+// untrusted input may produce malformed output or introduce
+// XML injection vulnerabilities.
+func (w *Writer) WriteRaw(content string) error {
+	if w.err != nil {
+		return w.err
+	}
+
+	switch w.state {
+	case stateName:
+		w.closeTagIfOpen()
+
+		if len(w.elemStack) > 0 {
+			w.elemStack[len(w.elemStack)-1].hasText = true
+		}
+
+		w.writeStr(content)
+	case stateNone, stateText, stateDocument:
+		if len(w.elemStack) > 0 {
+			w.elemStack[len(w.elemStack)-1].hasText = true
+		}
+
+		w.writeStr(content)
+	case stateAttribute:
+		w.writeStr(content)
+	default:
+		return errors.New("stream: WriteRaw called in invalid state")
+	}
+
+	return w.err
+}
+
+// --- Comments ---
+
+// StartComment opens a comment (<!--).
+func (w *Writer) StartComment() error {
+	if w.err != nil {
+		return w.err
+	}
+
+	switch w.state {
+	case stateNone, stateDocument, stateText:
+		// ok
+	case stateName:
+		w.closeTagIfOpen()
+	default:
+		return errors.New("stream: StartComment called in invalid state")
+	}
+
+	w.markParentChild()
+	w.writeStr("<!--")
+	w.commentDash = false
+	w.stateStack = append(w.stateStack, w.state)
+	w.state = stateComment
+
+	return w.err
+}
+
+// EndComment closes a comment (-->).
+func (w *Writer) EndComment() error {
+	if w.err != nil {
+		return w.err
+	}
+
+	if w.state != stateComment {
+		return errors.New("stream: EndComment called outside comment")
+	}
+
+	if w.commentDash {
+		return errors.New("stream: comment content must not end with '-'")
+	}
+
+	w.writeStr("-->")
+
+	if w.indent != "" {
+		w.writeStr("\n")
+		w.wroteNL = true
+	}
+
+	w.popState(stateDocument)
+
+	return w.err
+}
+
+// WriteComment is a convenience for StartComment + WriteString + EndComment.
+func (w *Writer) WriteComment(content string) error {
+	// A prior sticky I/O error must win over the new content validation below.
+	if w.err != nil {
+		return w.err
+	}
+	// Pre-validate content before StartComment emits "<!--", so a rejected
+	// write leaves the writer unmutated.
+	if err := validateXMLChars("comment", content); err != nil {
+		return err
+	}
+
+	if strings.Contains(content, "--") {
+		return errors.New("stream: comment content must not contain '--'")
+	}
+
+	if strings.HasSuffix(content, "-") {
+		return errors.New("stream: comment content must not end with '-'")
+	}
+
+	if err := w.StartComment(); err != nil {
+		return err
+	}
+
+	if err := w.WriteString(content); err != nil {
+		return err
+	}
+
+	return w.EndComment()
+}
+
+// --- Processing Instructions ---
+
+// StartPI opens a processing instruction (<?target).
+func (w *Writer) StartPI(target string) error {
+	if target == "" {
+		return errors.New("stream: PI target must not be empty")
+	}
+
+	if w.err != nil {
+		return w.err
+	}
+	// Validate the target before touching any writer state or output, so a bad
+	// target never closes an open start tag or otherwise mutates the writer.
+	if strings.EqualFold(target, "xml") {
+		return errors.New("stream: PI target cannot be 'xml'")
+	}
+
+	if !isValidPITarget(target) {
+		return fmt.Errorf("stream: invalid PI target %q", target)
+	}
+
+	switch w.state {
+	case stateNone, stateDocument, stateText:
+		// ok
+	case stateName:
+		w.closeTagIfOpen()
+	default:
+		return errors.New("stream: StartPI called in invalid state")
+	}
+
+	w.markParentChild()
+	w.writeStr("<?")
+	w.writeStr(target)
+	w.piQuestion = false
+	w.stateStack = append(w.stateStack, w.state)
+	w.state = statePI
+
+	return w.err
+}
+
+// isValidPITarget reports whether target is a valid XML processing
+// instruction target. A PI target is an XML Name, which is an NCName
+// optionally containing colons. The reserved "xml" target is rejected by
+// StartPI separately (with a dedicated error) before this is reached, so the
+// shared predicate's "xml" rejection is harmless here.
+func isValidPITarget(target string) bool {
+	return xmlchar.IsValidPITarget(target)
+}
+
+// EndPI closes a processing instruction (?>).
+func (w *Writer) EndPI() error {
+	if w.err != nil {
+		return w.err
+	}
+
+	if w.state != statePI && w.state != statePIText {
+		return errors.New("stream: EndPI called outside processing instruction")
+	}
+
+	w.writeStr("?>")
+
+	if w.indent != "" {
+		w.writeStr("\n")
+		w.wroteNL = true
+	}
+
+	w.popState(stateDocument)
+
+	return w.err
+}
+
+// WritePI is a convenience for StartPI + WriteString + EndPI.
+func (w *Writer) WritePI(target, content string) error {
+	// A prior sticky I/O error must win over the new content validation below.
+	if w.err != nil {
+		return w.err
+	}
+	// Pre-validate content before StartPI emits "<?target", so a rejected
+	// write leaves the writer unmutated.
+	if err := validateXMLChars("processing instruction", content); err != nil {
+		return err
+	}
+
+	if strings.Contains(content, "?>") {
+		return errors.New("stream: processing instruction content must not contain '?>'")
+	}
+
+	if err := w.StartPI(target); err != nil {
+		return err
+	}
+
+	if content != "" {
+		w.writeByte(' ')
+
+		if err := w.WriteString(content); err != nil {
+			return err
+		}
+	}
+
+	return w.EndPI()
+}
+
+// --- CDATA ---
+
+// StartCDATA opens a CDATA section.
+func (w *Writer) StartCDATA() error {
+	if w.err != nil {
+		return w.err
+	}
+
+	switch w.state {
+	case stateText:
+		// ok
+	case stateName:
+		w.closeTagIfOpen()
+	default:
+		return errors.New("stream: StartCDATA called in invalid state")
+	}
+
+	if len(w.elemStack) > 0 {
+		w.elemStack[len(w.elemStack)-1].empty = false
+		w.elemStack[len(w.elemStack)-1].hasText = true
+	}
+
+	w.writeStr("<![CDATA[")
+	w.cdataBrackets = 0
+	w.stateStack = append(w.stateStack, w.state)
+	w.state = stateCDATA
+
+	return w.err
+}
+
+// EndCDATA closes a CDATA section.
+func (w *Writer) EndCDATA() error {
+	if w.err != nil {
+		return w.err
+	}
+
+	if w.state != stateCDATA {
+		return errors.New("stream: EndCDATA called outside CDATA section")
+	}
+
+	w.writeStr("]]>")
+	w.popState(stateText)
+
+	return w.err
+}
+
+// WriteCDATA is a convenience for StartCDATA + WriteString + EndCDATA.
+// If content contains "]]>", it is split into multiple CDATA sections
+// per the XML serialization spec (e.g., "]]>" becomes "]]]]><![CDATA[>").
+func (w *Writer) WriteCDATA(content string) error {
+	if w.err != nil {
+		return w.err
+	}
+	// Pre-validate content before StartCDATA emits "<![CDATA[", so a rejected
+	// write leaves the writer unmutated.
+	if err := validateXMLChars("CDATA", content); err != nil {
+		return err
+	}
+
+	for {
+		idx := strings.Index(content, "]]>")
+		if idx < 0 {
+			break
+		}
+		// Write everything up to and including "]]" as one CDATA section
+		if err := w.StartCDATA(); err != nil {
+			return err
+		}
+
+		if err := w.WriteString(content[:idx+2]); err != nil {
+			return err
+		}
+
+		if err := w.EndCDATA(); err != nil {
+			return err
+		}
+		// Continue with ">" onwards in the next CDATA section
+		content = content[idx+2:]
+	}
+
+	if err := w.StartCDATA(); err != nil {
+		return err
+	}
+
+	if err := w.WriteString(content); err != nil {
+		return err
+	}
+
+	return w.EndCDATA()
+}
+
+// --- DTD ---
+
+// StartDTD opens a DOCTYPE declaration. pubid and sysid may be empty.
+// If pubid is non-empty, sysid must also be non-empty.
+func (w *Writer) StartDTD(name, pubid, sysid string) error {
+	if name == "" {
+		return errors.New("stream: DTD name must not be empty")
+	}
+
+	if w.err != nil {
+		return w.err
+	}
+
+	if w.state != stateDocument {
+		return errors.New("stream: StartDTD called in invalid state")
+	}
+
+	if pubid != "" && sysid == "" {
+		return errors.New("stream: StartDTD requires sysid when pubid is provided")
+	}
+	// Validate name and external identifiers before writing, so an untrusted
+	// value cannot inject markup into (or produce an unquotable) DOCTYPE.
+	if !xmlchar.IsValidName(name) {
+		return fmt.Errorf("stream: invalid DTD name %q", name)
+	}
+
+	if pubid != "" && !validatePubid(pubid) {
+		return fmt.Errorf("stream: invalid DTD public identifier %q", pubid)
+	}
+
+	if sysid != "" && !validateSystemID(sysid) {
+		return fmt.Errorf("stream: invalid DTD system identifier %q", sysid)
+	}
+
+	if w.indent != "" {
+		w.writeStr("\n")
+	}
+
+	w.writeStr("<!DOCTYPE ")
+	w.writeStr(name)
+
+	if pubid != "" {
+		if w.indent != "" {
+			w.writeStr("\nPUBLIC ")
+		} else {
+			w.writeStr(" PUBLIC ")
+		}
+
+		w.writeQuotedID(pubid)
+
+		if w.indent != "" {
+			w.writeStr("\n       ")
+		} else {
+			w.writeByte(' ')
+		}
+
+		w.writeQuotedID(sysid)
+	} else if sysid != "" {
+		if w.indent != "" {
+			w.writeStr("\nSYSTEM ")
+		} else {
+			w.writeStr(" SYSTEM ")
+		}
+
+		w.writeQuotedID(sysid)
+	}
+
+	w.state = stateDTD
+
+	return w.err
+}
+
+// isPubidChar reports whether r is a valid XML PubidChar (XML 1.0 §2.3):
+//
+//	PubidChar ::= #x20 | #xD | #xA | [a-zA-Z0-9] | [-'()+,./:=?;!*#@$_%]
+func validatePubid(s string) bool { return xmloutput.ValidPublicID(s) }
+
+func validateSystemID(s string) bool { return xmloutput.ValidSystemID(s) }
+
+// EndDTD closes the DOCTYPE declaration.
+func (w *Writer) EndDTD() error {
+	if w.err != nil {
+		return w.err
+	}
+
+	if w.state != stateDTD {
+		return errors.New("stream: EndDTD called outside DTD")
+	}
+
+	w.writeByte('>')
+
+	if w.indent != "" {
+		w.writeStr("\n")
+		w.wroteNL = true
+	}
+
+	w.state = stateDocument
+
+	return w.err
+}
+
+// WriteDTD writes a validated output DOCTYPE without an internal subset.
+func (w *Writer) WriteDTD(name, pubid, sysid string) error {
+	if err := w.StartDTD(name, pubid, sysid); err != nil {
+		return err
+	}
+
+	return w.EndDTD()
+}
+
+// --- Flush ---
+
+// Flush delegates to the underlying writer's Flush method if it
+// implements one (e.g. *bufio.Writer). It is a no-op otherwise.
+func (w *Writer) Flush() error {
+	if w.err != nil {
+		return w.err
+	}
+
+	if f, ok := w.out.(interface{ Flush() error }); ok {
+		w.err = f.Flush()
+	}
+
+	return w.err
+}
+
+func (w *Writer) ensureWritable() bool {
+	if w.err != nil {
+		return false
+	}
+
+	if w.out == nil {
+		w.err = errNilOutputWriter
+		return false
+	}
+
+	return true
+}
+
+func (w *Writer) writeStr(s string) {
+	if !w.ensureWritable() {
+		return
+	}
+
+	n, err := io.WriteString(w.out, s)
+	if err == nil && n != len(s) {
+		err = io.ErrShortWrite
+	}
+
+	w.err = err
+}
+
+func (w *Writer) writeEscaped(s string, escape escapeMode) {
+	if !w.ensureWritable() {
+		return
+	}
+
+	if escape == escapeNone {
+		_, w.err = io.WriteString(w.out, s)
+		return
+	}
+
+	start := 0
+
+	for i := range len(s) {
+		replacement := ""
+		writeRawByte := false
+
+		switch s[i] {
+		case '&':
+			replacement = "&amp;"
+		case '<':
+			replacement = "&lt;"
+		case '>':
+			replacement = "&gt;"
+		case '\r':
+			replacement = "&#13;"
+		case '"':
+			if escape == escapeAttr && w.quoteChar == '"' {
+				replacement = "&quot;"
+			} else {
+				writeRawByte = true
+			}
+		case '\'':
+			if escape == escapeAttr && w.quoteChar == '\'' {
+				replacement = "&apos;"
+			} else {
+				writeRawByte = true
+			}
+		case '\n':
+			if escape == escapeAttr {
+				replacement = "&#10;"
+			} else {
+				writeRawByte = true
+			}
+		case '\t':
+			if escape == escapeAttr {
+				replacement = "&#9;"
+			} else {
+				writeRawByte = true
+			}
+		default:
+			// In XML 1.1 output, a restricted control character (and the
+			// NEL/LINE SEPARATOR end-of-line characters) is valid but may not
+			// appear literally: emit it as a decimal character reference. Only
+			// decode a rune for bytes that could begin one (C0 controls and any
+			// non-ASCII lead byte), so the ASCII fast path and all XML 1.0 output
+			// stay byte-identical.
+			writeEscapedXml11(w, s, i, &start)
+
+			continue
+		}
+
+		if start < i {
+			w.writeStr(s[start:i])
+		}
+
+		if replacement != "" {
+			w.writeStr(replacement)
+		} else if writeRawByte {
+			w.writeByte(s[i])
+		}
+
+		start = i + 1
+	}
+
+	if start < len(s) {
+		w.writeStr(s[start:])
+	}
+}
+
+func writeEscapedXml11(w *Writer, s string, i int, start *int) {
+	if w.xml11 {
+		if b := s[i]; b < 0x20 || b >= 0x7F {
+			if r, width := utf8.DecodeRuneInString(s[i:]); xmlchar.IsXML11SerializeAsCharRef(r) {
+				if (*start) < i {
+					w.writeStr(s[(*start):i])
+				}
+
+				w.writeDecimalCharRef(r)
+
+				(*start) = i + width
+			}
+		}
+	}
+}
+
+func (w *Writer) writeDecimalCharRef(r rune) {
+	var buf [12]byte
+
+	n := len(buf)
+	n--
+	buf[n] = ';'
+
+	v := int(r)
+	if v <= 0 {
+		n--
+		buf[n] = '0'
+	}
+
+	for v > 0 {
+		n--
+		buf[n] = byte('0' + v%10)
+		v /= 10
+	}
+
+	n--
+	buf[n] = '#'
+	n--
+	buf[n] = '&'
+	w.writeStr(string(buf[n:]))
+}
+
+func (w *Writer) writeByte(b byte) {
+	if !w.ensureWritable() {
+		return
+	}
+
+	if bw, ok := w.out.(io.ByteWriter); ok {
+		w.err = bw.WriteByte(b)
+		return
+	}
+
+	w.singleByte[0] = b
+
+	n, err := w.out.Write(w.singleByte[:])
+	if err == nil && n != 1 {
+		err = io.ErrShortWrite
+	}
+
+	w.err = err
+}
+
+func (w *Writer) writeIndent() {
+	if w.indent == "" {
+		return
+	}
+
+	if !w.hasOutput {
+		// Don't write a leading newline before the very first output
+		return
+	}
+
+	if w.wroteNL {
+		// EndComment/EndPI already wrote \n; skip the extra one.
+		w.wroteNL = false
+	} else if w.depth > 0 {
+		// At depth 0 (root level), StartDocument already wrote a trailing
+		// newline, so skip the extra newline that writeIndent would add.
+		w.writeStr("\n")
+	}
+
+	for range w.depth {
+		w.writeStr(w.indent)
+	}
+}
+
+func (w *Writer) writeEndIndent() {
+	if w.indent == "" {
+		return
+	}
+
+	if w.wroteNL {
+		w.wroteNL = false
+	} else {
+		w.writeStr("\n")
+	}
+
+	for range w.depth {
+		w.writeStr(w.indent)
+	}
+}
+
+// closeTagIfOpen closes the element opening tag (writes ">") if we are
+// in stateName. This is called before writing any element content.
+func (w *Writer) closeTagIfOpen() {
+	if w.state != stateName {
+		return
+	}
+	// Emit any pending namespace declarations
+	w.emitPendingNS()
+	w.writeByte('>')
+
+	w.state = stateText
+	if len(w.elemStack) > 0 {
+		w.elemStack[len(w.elemStack)-1].empty = false
+	}
+}
+
+// emitPendingNS writes xmlns declarations for the current element scope
+// that haven't been emitted yet. Called when closing the opening tag.
+// Declarations are kept in the scope for namespace lookup by child elements.
+func (w *Writer) emitPendingNS() {
+	if len(w.nsStack) == 0 {
+		return
+	}
+
+	scope := &w.nsStack[len(w.nsStack)-1]
+	for i := scope.emitted; i < len(scope.decls); i++ {
+		ns := scope.decls[i]
+		if ns.prefix == "" {
+			w.writeStr(" xmlns=")
+			w.writeByte(w.quoteChar)
+			w.writeAttrEscaped(ns.uri)
+			w.writeByte(w.quoteChar)
+		} else {
+			w.writeStr(" xmlns:")
+			w.writeStr(ns.prefix)
+			w.writeByte('=')
+			w.writeByte(w.quoteChar)
+			w.writeAttrEscaped(ns.uri)
+			w.writeByte(w.quoteChar)
+		}
+	}
+
+	scope.emitted = len(scope.decls)
+}
+
+// lookupNS reports whether the prefix's current in-scope binding is uri.
+// An inner rebinding shadows an outer one, so this reports false once a
+// closer scope has rebound the prefix to a different URI even if an
+// ancestor scope still declares uri.
+func (w *Writer) lookupNS(prefix, uri string) bool {
+	cur, ok := w.ownNSBind()[prefix]
+	return ok && cur == uri
+}
+
+// hasDefaultNSInScope returns true if any ancestor has declared a
+// non-empty default namespace (xmlns="...") that is still in scope.
+func (w *Writer) hasDefaultNSInScope() bool {
+	cur, ok := w.ownNSBind()[""]
+	return ok && cur != ""
+}
+
+// ownNSBind returns the prefix -> URI index for w's open scopes, making w
+// its exclusive owner first.
+//
+// Writer is a value type, so w2 := w1 produces two Writers that point at one
+// nsBindings while each pushes and pops its own nsStack. Only one of them may
+// go on mutating that shared index. nsSeq records the revision this Writer
+// last wrote and nsBindings.seq the revision the index now holds; the two
+// differ exactly when another copy has changed the index since this copy was
+// taken, and that copy's bindings say nothing about this Writer's scopes. w
+// then rebuilds a private index from its own nsStack, which is the
+// authoritative record of the declarations it has open: visiting the scopes
+// outermost-first leaves each prefix bound by its innermost declaration,
+// which is the binding a scan from the innermost scope outward would report.
+//
+// Reads do not claim ownership, so a copy that only reads keeps using the
+// shared index for as long as nobody changes it. Two copies that alternate
+// declarations each rebuild on their turn; that is correctness-first, and the
+// common case of a single writer never rebuilds at all.
+func (w *Writer) ownNSBind() map[string]string {
+	if w.nsBind != nil && w.nsBind.seq == w.nsSeq {
+		return w.nsBind.m
+	}
+
+	m := make(map[string]string)
+
+	for _, scope := range w.nsStack {
+		for _, ns := range scope.decls {
+			m[ns.prefix] = ns.uri
+		}
+	}
+
+	w.nsBind = &nsBindings{m: m, seq: 1}
+	w.nsSeq = 1
+
+	return m
+}
+
+// revNSBind records that w has just changed its namespace-binding index, so
+// that any other Writer copy still pointing at that index rebuilds its own
+// before reading it again.
+func (w *Writer) revNSBind() {
+	w.nsBind.seq++
+	w.nsSeq = w.nsBind.seq
+}
+
+// declareNS adds a namespace declaration to the current element scope
+// if the prefix is not already bound to the given URI.
+func (w *Writer) declareNS(prefix, uri string) {
+	if w.lookupNS(prefix, uri) {
+		return
+	}
+
+	if len(w.nsStack) == 0 {
+		return
+	}
+
+	scope := &w.nsStack[len(w.nsStack)-1]
+	for _, ns := range scope.decls {
+		if ns.prefix == prefix {
+			return // already declared at this level
+		}
+	}
+
+	m := w.ownNSBind()
+	prev, had := m[prefix]
+	scope.decls = append(scope.decls, nsEntry{prefix: prefix, uri: uri, prevURI: prev, prevHad: had})
+	m[prefix] = uri
+
+	w.revNSBind()
+}
+
+// popNSScope closes the innermost namespace scope, restoring each
+// prefix it declared to the binding that scope's declarations shadowed.
+// Declarations are undone in reverse order, matching the LIFO scope
+// exit that StartElement/EndElement enforce.
+func (w *Writer) popNSScope() {
+	if len(w.nsStack) == 0 {
+		return
+	}
+
+	scope := w.nsStack[len(w.nsStack)-1]
+	if len(scope.decls) > 0 {
+		m := w.ownNSBind()
+
+		for _, ns := range slices.Backward(scope.decls) {
+			if ns.prevHad {
+				m[ns.prefix] = ns.prevURI
+				continue
+			}
+
+			delete(m, ns.prefix)
+		}
+
+		w.revNSBind()
+	}
+
+	w.nsStack = w.nsStack[:len(w.nsStack)-1]
+}
+
+// nsPrefixConflict reports whether prefix is already declared in the current
+// element scope bound to a different namespace URI. Redeclaring a prefix to a
+// conflicting URI within the same scope would silently corrupt the binding (the
+// existing declaration wins), so callers reject it instead.
+func (w *Writer) nsPrefixConflict(prefix, uri string) bool {
+	if len(w.nsStack) == 0 {
+		return false
+	}
+
+	scope := &w.nsStack[len(w.nsStack)-1]
+	for _, ns := range scope.decls {
+		if ns.prefix == prefix {
+			return ns.uri != uri
+		}
+	}
+
+	return false
+}
+
+// validateContentChars validates text or attribute content that will be
+// escaped before emission. In XML 1.1 output the restricted control characters
+// are permitted because writeEscaped serializes them as character references;
+// otherwise this is identical to validateXMLChars. It is used only for text and
+// attribute content — comment, PI, and CDATA content cannot carry a character
+// reference, so those keep the strict validateXMLChars check.
+func (w *Writer) validateContentChars(kind, s string) error {
+	if !w.xml11 {
+		return validateXMLChars(kind, s)
+	}
+
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("stream: invalid UTF-8 byte sequence in %s content", kind)
+	}
+
+	for _, r := range s {
+		if !isXML11Char(r) {
+			return fmt.Errorf("stream: invalid XML character %#U in %s content", r, kind)
+		}
+	}
+
+	return nil
+}
+
+// isXML11Char implements the XML 1.1 Char production (excluding U+0000):
+// Char ::= [#x1-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF].
+func isXML11Char(r rune) bool {
+	return (r >= 0x1 && r <= 0xD7FF) ||
+		(r >= 0xE000 && r <= 0xFFFD) ||
+		(r >= 0x10000 && r <= 0x10FFFF)
+}
+
+// --- Escaping ---
+
+func (w *Writer) writeTextEscaped(s string) {
+	w.writeEscaped(s, escapeText)
+}
+
+func (w *Writer) writeAttrEscaped(s string) {
+	w.writeEscaped(s, escapeAttr)
+}
+
+// writeCDATAEscaped writes content into the current CDATA section, splitting
+// any "]]>" terminator across two CDATA sections so the emitted bytes never
+// contain a raw "]]>" inside a single section. The "]]>" sequence is broken
+// after the "]]" by closing and reopening the section, yielding
+// "]]" + "]]><![CDATA[" + ">". The count of trailing ']' is tracked across
+// calls so a "]]>" split over multiple WriteString calls is also handled.
+func (w *Writer) writeCDATAEscaped(s string) {
+	start := 0
+
+	for i := range len(s) {
+		c := s[i]
+		if c == '>' && w.cdataBrackets >= 2 {
+			// "]]>" detected: the preceding "]]" has already been
+			// written into this section, so flush up to here, close the
+			// section, and reopen a new one before emitting the '>'.
+			// Guard against an empty write when "]]>" straddles a call
+			// boundary (start == i), which would emit an avoidable empty
+			// write and could trip side-effecting io.StringWriter impls.
+			if start < i {
+				w.writeStr(s[start:i])
+			}
+
+			w.writeStr("]]><![CDATA[")
+
+			start = i
+			w.cdataBrackets = 0
+		}
+
+		if c == ']' {
+			w.cdataBrackets++
+			continue
+		}
+
+		w.cdataBrackets = 0
+	}
+
+	w.writeStr(s[start:])
+}
+
+// writeQuotedID emits a DTD identifier wrapped in a quote character chosen so
+// the value itself never breaks the quoting (see dtdQuoteFor).
+func (w *Writer) writeQuotedID(s string) {
+	q := dtdQuoteFor(s, w.quoteChar)
+	w.writeByte(q)
+	w.writeStr(s)
+	w.writeByte(q)
+}
+
+// dtdQuoteFor returns the appropriate quote character for a DTD identifier.
+// If the value contains the preferred quote, use the other one.
+func dtdQuoteFor(value string, preferred byte) byte { return xmloutput.Quote(value, preferred) }
+
+// popState restores the state saved on stateStack, falling back to the given
+// state when the stack is empty.
+func (w *Writer) popState(fallback writerState) {
+	if len(w.stateStack) > 0 {
+		w.state = w.stateStack[len(w.stateStack)-1]
+		w.stateStack = w.stateStack[:len(w.stateStack)-1]
+
+		return
+	}
+
+	w.state = fallback
+}
+
+// markParentChild marks the enclosing element (if any) as non-empty and as
+// having child content.
+func (w *Writer) markParentChild() {
+	if len(w.elemStack) > 0 {
+		w.elemStack[len(w.elemStack)-1].empty = false
+		w.elemStack[len(w.elemStack)-1].hasChild = true
+	}
+}
+
+// validateNSParts validates the prefix and local name supplied to a
+// namespace-aware method. The local name must be a valid NCName; the prefix,
+// if non-empty, must also be a valid NCName (no colon). This prevents an
+// untrusted prefix or local name from injecting markup into the start tag.
+// kind is "element" or "attribute" and only shapes the error message.
+func validateNSParts(kind, prefix, localName string) error {
+	if prefix != "" && !xmlchar.IsValidNCName(prefix) {
+		return fmt.Errorf("stream: invalid %s prefix %q", kind, prefix)
+	}
+
+	if !xmlchar.IsValidNCName(localName) {
+		return fmt.Errorf("stream: invalid %s local name %q", kind, localName)
+	}
+
+	return nil
+}
+
+// validateReservedNS rejects misuse of the reserved "xml" and "xmlns" prefixes
+// and their reserved namespace names (Namespaces in XML 1.0 §3). Binding
+// "xmlns" as a prefix, rebinding "xml" to a foreign URI, binding the XML
+// namespace to any prefix other than "xml", or declaring the xmlns namespace
+// all produce non-conformant output, so they are rejected before any markup is
+// emitted. An empty namespaceURI on the "xml" prefix means "use the implicit
+// xml binding" and is allowed. kind is "element" or "attribute".
+func validateReservedNS(kind, prefix, namespaceURI string) error {
+	if prefix == "xmlns" {
+		return fmt.Errorf("stream: reserved %s prefix %q must not be used", kind, prefix)
+	}
+
+	if prefix == "xml" && namespaceURI != "" && namespaceURI != xmlNamespaceURI {
+		return fmt.Errorf("stream: reserved prefix \"xml\" must be bound to %q, not %q", xmlNamespaceURI, namespaceURI)
+	}
+
+	if namespaceURI == xmlNamespaceURI && prefix != "xml" {
+		return fmt.Errorf("stream: XML namespace %q must be bound only to the \"xml\" prefix", xmlNamespaceURI)
+	}
+
+	if namespaceURI == xmlnsNamespaceURI {
+		return fmt.Errorf("stream: reserved namespace %q must not be declared", xmlnsNamespaceURI)
+	}
+
+	return nil
+}
+
+// validateXMLChars reports whether s contains only valid XML 1.0 Chars.
+// kind shapes the error message. It is used to reject control characters
+// (e.g. NUL) from text, attribute, comment, PI, and CDATA output.
+func validateXMLChars(kind, s string) error {
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("stream: invalid UTF-8 byte sequence in %s content", kind)
+	}
+
+	for _, r := range s {
+		if !xmlchar.IsChar(r) {
+			return fmt.Errorf("stream: invalid XML character %#U in %s content", r, kind)
+		}
+	}
+
+	return nil
+}
+
+func qualifiedName(prefix, localName string) string {
+	if prefix == "" {
+		return localName
+	}
+
+	return prefix + ":" + localName
+}

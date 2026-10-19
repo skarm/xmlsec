@@ -1,0 +1,583 @@
+package xmldsig_test
+
+import (
+	"bytes"
+	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/asn1"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
+	"math/big"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/skarm/xmlsec/c14n"
+	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/reference"
+	"github.com/skarm/xmlsec/xmldsig"
+)
+
+const (
+	uriUrnXML    = "urn:xml"
+	nameBad      = "bad"
+	nameEmptyDat = "empty.dat"
+	uriUrnA      = "urn:a"
+	uriUrnB      = "urn:b"
+	uriUrnBinary = "urn:binary"
+)
+
+func TestDetachedAlgorithmsAndTransforms(t *testing.T) {
+	keyRSA := rsaKey(t)
+
+	_, keyEd, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keys := []struct {
+		name, method string
+		key          crypto.Signer
+	}{
+		{"RSA256", xmldsig.RSASHA256, keyRSA},
+		{"RSA384", xmldsig.RSASHA384, keyRSA},
+		{"RSA512", xmldsig.RSASHA512, keyRSA},
+		{"EC256", xmldsig.ECDSASHA256, ecKey(t, elliptic.P256())},
+		{"EC384", xmldsig.ECDSASHA384, ecKey(t, elliptic.P384())},
+		{"EC521", xmldsig.ECDSASHA512, ecKey(t, elliptic.P521())},
+		{"Ed25519", xmldsig.Ed25519, keyEd},
+		{"Ed25519ph", xmldsig.Ed25519ph, keyEd},
+	}
+	raw := []byte{0, 255, 10, 11, 22}
+	encodedXML := []byte(base64.StdEncoding.EncodeToString([]byte(`<r z="2" a="1"><!--comment--><x>text</x></r>`)))
+	resources := map[string][]byte{uriUrnBinary: raw, uriUrnXML: encodedXML, nameEmptyDat: {}}
+	refs := []xmldsig.DetachedReference{
+		{URI: uriUrnBinary, Type: "urn:example:binary"},
+		{URI: uriUrnXML, DigestMethod: xmldsig.SHA512, Transforms: []reference.Transform{{Algorithm: reference.Base64}, {Algorithm: c14n.Canonical11WithComments}}},
+		{URI: nameEmptyDat, DigestMethod: xmldsig.SHA384},
+	}
+	expected := []string{nameEmptyDat, uriUrnXML, uriUrnBinary}
+	cms := []string{c14n.Exclusive, c14n.ExclusiveWithComments, c14n.Canonical10, c14n.Canonical10WithComments, c14n.Canonical11, c14n.Canonical11WithComments}
+
+	for _, k := range keys {
+		t.Run(k.name, func(t *testing.T) {
+			testDetachedAlgorithmsAndTransformsCase(t, &cms, &k, &refs, &resources, &expected, &raw)
+		})
+	}
+}
+
+func testDetachedAlgorithmsAndTransformsCase(t *testing.T, cms *[]string, k *struct {
+	name   string
+	method string
+	key    crypto.Signer
+}, refs *[]xmldsig.DetachedReference, resources *map[string][]byte, expected *[]string, raw *[]byte,
+) {
+	for _, cm := range *cms {
+		t.Run(cm, func(t *testing.T) {
+			sig := signDetached(t, k.key, (*refs), sourceMap((*resources)), xmldsig.DetachedSignOptions{SignatureMethod: k.method, Canonicalization: reference.Transform{Algorithm: cm}, Policy: xmldsig.ModernPolicy()})
+
+			result, err := xmldsig.VerifyDetached(context.Background(), sig, k.key.Public(), sourceMap((*resources)), xmldsig.DetachedVerifyOptions{ExpectedURIs: (*expected), AllowedCanonicalizationMethods: []string{cm}, Policy: xmldsig.ModernPolicy()})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if result.SignatureMethod() != k.method || len(result.KeyFingerprintSHA256()) != 64 || len(result.References()) != 3 {
+				t.Fatal("bad result metadata")
+			}
+
+			checked := result.References()
+			if checked[0].Target().Valid() || checked[0].IsCanonicalXML() || checked[0].Type() != "urn:example:binary" || !bytes.Equal(digestInput(t, checked[0]), (*raw)) {
+				t.Fatal("raw reference metadata")
+			}
+
+			if !checked[1].IsCanonicalXML() || string(digestInput(t, checked[1])) != `<r a="1" z="2"><!--comment--><x>text</x></r>` || len(checked[1].Steps()) != 3 {
+				t.Fatal(string(digestInput(t, checked[1])), checked[1].Steps())
+			}
+
+			if checked[1].InputKind() != reference.OctetStream || checked[2].DigestMethod() != xmldsig.SHA384 || len(digestInput(t, checked[2])) != 0 {
+				t.Fatal("bad digest metadata")
+			}
+
+			digestInput(t, checked[0])[0] = 44
+			checked[1].Transforms()[0].Algorithm = nameBad
+
+			checked[1].Steps()[0].Algorithm = nameBad
+			if digestInput(t, checked[0])[0] != 0 || checked[1].Transforms()[0].Algorithm == nameBad || checked[1].Steps()[0].Algorithm == nameBad {
+				t.Fatal("mutable result")
+			}
+			// The root-enveloped profile rejects a standalone detached signature.
+			if result, err := xmldsig.Verify(context.Background(), sig, k.key.Public(), xmldsig.VerifyOptions{}); result != nil || !errors.Is(err, xmldsig.ErrStructure) {
+				t.Fatal(result, err)
+			}
+		})
+	}
+}
+
+func TestDetachedPreauthenticationAndExactSet(t *testing.T) {
+	key := ecKey(t, elliptic.P256())
+	resources := map[string][]byte{uriUrnA: []byte("a"), uriUrnB: []byte("b")}
+	refs := []xmldsig.DetachedReference{{URI: uriUrnA}, {URI: uriUrnB, Transforms: []reference.Transform{{Algorithm: reference.Base64}}}}
+	// b's source is valid base64 (not the literal value above).
+	resources[uriUrnB] = []byte("Yg==")
+	sig := signDetached(t, key, refs, sourceMap(resources), xmldsig.DetachedSignOptions{})
+	source := xmlString(t, sig)
+	wrong := ecKey(t, elliptic.P256())
+
+	cases := []struct {
+		name string
+		key  crypto.PublicKey
+		xml  string
+		opt  xmldsig.DetachedVerifyOptions
+		want error
+	}{
+		{"wrong key", wrong.Public(), source, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}}, xmldsig.ErrSignature},
+		{"no expected set", key.Public(), source, xmldsig.DetachedVerifyOptions{}, xmldsig.ErrPolicy},
+		{"subset", key.Public(), source, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}}, xmldsig.ErrPolicy},
+		{"superset", key.Public(), source, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB, "urn:c"}}, xmldsig.ErrPolicy},
+		{"different set", key.Public(), source, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, "urn:c"}}, xmldsig.ErrPolicy},
+		{"duplicate expected", key.Public(), source, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnA}}, xmldsig.ErrPolicy},
+		{"unknown last transform", key.Public(), strings.Replace(source, reference.Base64, "urn:unknown", 1), xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}}, xmldsig.ErrAlgorithm},
+		{"disallowed transform", key.Public(), source, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}, Processing: reference.Options{AllowedTransforms: []string{c14n.Exclusive}}}, xmldsig.ErrPolicy},
+		{"duplicate reference", key.Public(), strings.Replace(source, `URI="urn:b"`, `URI="urn:a"`, 1), xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}}, xmldsig.ErrReference},
+		{"external fragment", key.Public(), strings.Replace(source, `URI="urn:b"`, `URI="urn:b#x"`, 1), xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}}, xmldsig.ErrReference},
+		{"missing URI", key.Public(), strings.Replace(source, ` URI="urn:b"`, "", 1), xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}}, xmldsig.ErrStructure},
+		{"enveloped on external", key.Public(), strings.Replace(source, reference.Base64, reference.EnvelopedSignature, 1), xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}}, xmldsig.ErrPolicy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { calls++; return nil, errors.New("must not run") })
+
+			result, err := xmldsig.VerifyDetached(context.Background(), parse(t, tc.xml), tc.key, resolver, tc.opt)
+			if result != nil || !errors.Is(err, tc.want) || calls != 0 {
+				t.Fatalf("result=%v err=%v calls=%d", result, err, calls)
+			}
+		})
+	}
+
+	t.Run("new canonicalization requires explicit permission", func(t *testing.T) {
+		sig := signDetached(t, key, []xmldsig.DetachedReference{{URI: uriUrnA}}, sourceMap(resources), xmldsig.DetachedSignOptions{Canonicalization: reference.Transform{Algorithm: c14n.Canonical11}})
+		calls := 0
+		resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { calls++; return nil, nil })
+
+		out, err := xmldsig.VerifyDetached(context.Background(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}})
+		if out != nil || !errors.Is(err, xmldsig.ErrPolicy) || calls != 0 {
+			t.Fatal(out, err, calls)
+		}
+	})
+}
+
+func TestDetachedEveryDigestAndTypedError(t *testing.T) {
+	key := ecKey(t, elliptic.P256())
+	resources := map[string][]byte{uriUrnA: []byte("first"), uriUrnB: []byte("second")}
+	refs := []xmldsig.DetachedReference{{URI: uriUrnA}, {URI: uriUrnB}}
+	sig := signDetached(t, key, refs, sourceMap(resources), xmldsig.DetachedSignOptions{})
+	corrupted := wrongSecondDigest(t, sig, key)
+	calls := 0
+	resolver := xmldsig.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
+		calls++
+		return sourceMap(resources).Resolve(ctx, uri)
+	})
+	out, err := xmldsig.VerifyDetached(context.Background(), corrupted, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}})
+
+	var detail *xmldsig.ReferenceError
+	if out != nil || !errors.Is(err, xmldsig.ErrDigest) || !errors.As(err, &detail) || detail.Index != 1 || detail.URI != uriUrnB || detail.Stage != "digest" || calls != 2 {
+		t.Fatal(out, err, calls)
+	}
+
+	resources[uriUrnB] = []byte("changed")
+
+	out, err = xmldsig.VerifyDetached(context.Background(), sig, key.Public(), sourceMap(resources), xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}})
+	if out != nil || !errors.Is(err, xmldsig.ErrDigest) {
+		t.Fatal(out, err)
+	}
+}
+
+// Replace the second digest then independently recompute the SignedInfo ECDSA
+// signature with stdlib. This proves the verifier checks the second Reference,
+// rather than rejecting solely due to a corrupted SignatureValue.
+func wrongSecondDigest(t testing.TB, doc *document.Document, key *ecdsa.PrivateKey) *document.Document {
+	t.Helper()
+	src := xmlString(t, doc)
+	open, closer := "<ds:DigestValue>", "</ds:DigestValue>"
+	first := strings.Index(src, open) + len(open)
+	second := strings.Index(src[first:], open) + first + len(open)
+	end := strings.Index(src[second:], closer) + second
+	src = src[:second] + base64.StdEncoding.EncodeToString(make([]byte, 32)) + src[end:]
+	changed := parse(t, src)
+	si := changed.Root().Children()[0]
+
+	var canonical bytes.Buffer
+	if err := c14n.WriteElement(context.Background(), &canonical, si, c14n.Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	digest := sha256.Sum256(canonical.Bytes())
+
+	der, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var rs struct{ R, S *big.Int }
+	if rest, err := asn1.Unmarshal(der, &rs); err != nil || len(rest) != 0 {
+		t.Fatal(err)
+	}
+
+	value := make([]byte, 64)
+	rs.R.FillBytes(value[:32])
+	rs.S.FillBytes(value[32:])
+
+	start := strings.Index(src, "<ds:SignatureValue>") + len("<ds:SignatureValue>")
+	end = strings.Index(src[start:], "</ds:SignatureValue>") + start
+
+	return parse(t, src[:start]+base64.StdEncoding.EncodeToString(value)+src[end:])
+}
+
+func TestDetachedResourceLimitsAndCleanup(t *testing.T) {
+	key := ecKey(t, elliptic.P256())
+	refs := []xmldsig.DetachedReference{{URI: uriUrnA}}
+	sig := signDetached(t, key, refs, sourceMap(map[string][]byte{uriUrnA: []byte("abc")}), xmldsig.DetachedSignOptions{})
+	readErr := errors.New("read failed")
+	closeErr := errors.New("close failed")
+	resolveErr := errors.New("resolver failed")
+
+	cases := []struct {
+		name                 string
+		reader               io.Reader
+		closeErr, resolveErr error
+		limits               xmldsig.ResourceLimits
+		want                 error
+	}{
+		{name: "exact limit", reader: strings.NewReader("abc"), limits: xmldsig.ResourceLimits{MaxResourceBytes: 3}},
+		{name: "one past limit", reader: strings.NewReader("abcd"), limits: xmldsig.ResourceLimits{MaxResourceBytes: 3}, want: xmldsig.ErrPolicy},
+		{name: "read error", reader: errorReader{readErr}, want: readErr},
+		{name: "close error", reader: strings.NewReader("abc"), closeErr: closeErr, want: closeErr},
+		{name: "reader with resolver error", reader: strings.NewReader("abc"), resolveErr: resolveErr, want: resolveErr},
+		{name: "no progress", reader: stuckReader{}, want: io.ErrNoProgress},
+		{name: "bad reader count", reader: badCountReader{}, want: xmldsig.ErrReference},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			observed := &observedReader{Reader: tc.reader, closeErr: tc.closeErr}
+			resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return observed, tc.resolveErr })
+
+			out, err := xmldsig.VerifyDetached(context.Background(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}, Limits: tc.limits})
+			if tc.want == nil {
+				if err != nil || out == nil {
+					t.Fatal(out, err)
+				}
+			} else if out != nil || !errors.Is(err, tc.want) {
+				t.Fatal(out, err)
+			}
+
+			if observed.closes != 1 {
+				t.Fatal("reader not closed exactly once", observed.closes)
+			}
+
+			if tc.resolveErr != nil && observed.reads != 0 {
+				t.Fatal("read after resolver error")
+			}
+		})
+	}
+
+	t.Run("total limit", func(t *testing.T) {
+		refs := []xmldsig.DetachedReference{{URI: uriUrnA}, {URI: uriUrnB}}
+		src := sourceMap(map[string][]byte{uriUrnA: []byte("abc"), uriUrnB: []byte("def")})
+
+		sig := signDetached(t, key, refs, src, xmldsig.DetachedSignOptions{})
+		if out, err := xmldsig.VerifyDetached(context.Background(), sig, key.Public(), src, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}, Limits: xmldsig.ResourceLimits{MaxTotalResourceBytes: 5}}); out != nil || !errors.Is(err, xmldsig.ErrPolicy) {
+			t.Fatal(out, err)
+		}
+
+		if out, err := xmldsig.SignDetached(context.Background(), refs, key, src, xmldsig.DetachedSignOptions{Limits: xmldsig.ResourceLimits{MaxTotalResourceBytes: 5}}); out != nil || !errors.Is(err, xmldsig.ErrPolicy) {
+			t.Fatal(out, err)
+		}
+	})
+	t.Run("nil reader", func(t *testing.T) {
+		resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { var r *observedReader; return r, nil })
+
+		out, err := xmldsig.VerifyDetached(context.Background(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}})
+		if out != nil || !errors.Is(err, xmldsig.ErrReference) {
+			t.Fatal(out, err)
+		}
+	})
+	t.Run("cancel after resolver returns", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		r := &observedReader{Reader: strings.NewReader("abc")}
+		resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { cancel(); return r, nil })
+
+		out, err := xmldsig.VerifyDetached(ctx, sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}})
+		if out != nil || !errors.Is(err, context.Canceled) || r.closes != 1 || r.reads != 0 {
+			t.Fatal(out, err, r.closes, r.reads)
+		}
+	})
+}
+
+func TestDetachedValidationBeforeSigningIO(t *testing.T) {
+	key := ecKey(t, elliptic.P256())
+
+	cases := append(make([]struct {
+		name string
+		refs []xmldsig.DetachedReference
+		opt  xmldsig.DetachedSignOptions
+	}, 0, 15), []struct {
+		name string
+		refs []xmldsig.DetachedReference
+		opt  xmldsig.DetachedSignOptions
+	}{
+		{"no refs", nil, xmldsig.DetachedSignOptions{}},
+		{"duplicate", []xmldsig.DetachedReference{{URI: uriUrnA}, {URI: uriUrnA}}, xmldsig.DetachedSignOptions{}},
+		{"unknown last", []xmldsig.DetachedReference{{URI: uriUrnA}, {URI: uriUrnB, Transforms: []reference.Transform{{Algorithm: nameBad}}}}, xmldsig.DetachedSignOptions{}},
+		{"enveloped", []xmldsig.DetachedReference{{URI: uriUrnA, Transforms: []reference.Transform{{Algorithm: reference.EnvelopedSignature}}}}, xmldsig.DetachedSignOptions{}},
+		{"bad method", []xmldsig.DetachedReference{{URI: uriUrnA}}, xmldsig.DetachedSignOptions{SignatureMethod: xmldsig.RSASHA256}},
+		{"negative limits", []xmldsig.DetachedReference{{URI: uriUrnA}}, xmldsig.DetachedSignOptions{Limits: xmldsig.ResourceLimits{MaxResourceBytes: -1}}},
+		{"bad c14n", []xmldsig.DetachedReference{{URI: uriUrnA}}, xmldsig.DetachedSignOptions{Canonicalization: reference.Transform{Algorithm: nameBad}}},
+		{"bad Type char", []xmldsig.DetachedReference{{URI: uriUrnA, Type: "\x00"}}, xmldsig.DetachedSignOptions{}},
+	}...)
+	for _, uri := range []string{"", "#id", "http://example.invalid/a#id", "has space", "has\\slash", "bad%escape", "\x00uri"} {
+		cases = append(cases, struct {
+			name string
+			refs []xmldsig.DetachedReference
+			opt  xmldsig.DetachedSignOptions
+		}{"URI-" + uri, []xmldsig.DetachedReference{{URI: uri}}, xmldsig.DetachedSignOptions{}})
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { calls++; return nil, errors.New("called") })
+
+			out, err := xmldsig.SignDetached(context.Background(), tc.refs, key, resolver, tc.opt)
+			if out != nil || err == nil || calls != 0 {
+				t.Fatal(out, err, calls)
+			}
+		})
+	}
+}
+
+func TestDetachedByteBudgetAndExternalSigner(t *testing.T) {
+	key := ecKey(t, elliptic.P256())
+	adapter := &controlledSigner{Signer: key}
+	refs := []xmldsig.DetachedReference{{URI: uriUrnA}}
+	resolver := sourceMap(map[string][]byte{uriUrnA: []byte("abc")})
+
+	sig := signDetached(t, adapter, refs, resolver, xmldsig.DetachedSignOptions{})
+	if adapter.calls != 1 {
+		t.Fatal(adapter.calls)
+	}
+
+	var si bytes.Buffer
+	if err := c14n.WriteElement(context.Background(), &si, sig.Root().Children()[0], c14n.Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	total := si.Len() + 3
+	for _, size := range []int{total, total - 1} {
+		result, err := xmldsig.VerifyDetached(context.Background(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}, Policy: xmldsig.Policy{MaxCanonicalBytes: size}})
+
+		doc, signErr := xmldsig.SignDetached(context.Background(), refs, key, resolver, xmldsig.DetachedSignOptions{Policy: xmldsig.Policy{MaxCanonicalBytes: size}})
+		if size == total {
+			if err != nil || signErr != nil {
+				t.Fatal(err, signErr)
+			}
+		} else if result != nil || doc != nil || err == nil || signErr == nil {
+			t.Fatal(result, doc, err, signErr)
+		}
+	}
+}
+
+func TestDetachedConcurrencyAndZeroValues(t *testing.T) {
+	key := ecKey(t, elliptic.P256())
+	resolver := sourceMap(map[string][]byte{uriUrnA: []byte("abc")})
+	refs := []xmldsig.DetachedReference{{URI: uriUrnA}}
+	sig := signDetached(t, key, refs, resolver, xmldsig.DetachedSignOptions{})
+
+	var wg sync.WaitGroup
+	for range 12 {
+		wg.Go(func() {
+			if _, err := xmldsig.VerifyDetached(context.Background(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}}); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+
+	wg.Wait()
+
+	if out, err := xmldsig.SignDetached(nil, refs, key, resolver, xmldsig.DetachedSignOptions{}); out != nil || err == nil {
+		t.Fatal(out, err)
+	}
+
+	if out, err := xmldsig.VerifyDetached(nil, sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{}); out != nil || err == nil {
+		t.Fatal(out, err)
+	}
+
+	var fn xmldsig.ResolverFunc
+	if out, err := xmldsig.SignDetached(context.Background(), refs, key, fn, xmldsig.DetachedSignOptions{}); out != nil || err == nil {
+		t.Fatal(out, err)
+	}
+
+	if out, err := xmldsig.VerifyDetached(context.Background(), nil, key.Public(), resolver, xmldsig.DetachedVerifyOptions{}); out != nil || err == nil {
+		t.Fatal(out, err)
+	}
+
+	var r *xmldsig.DetachedResult
+	if r.SignatureMethod() != "" || r.KeyFingerprintSHA256() != "" || r.References() != nil {
+		t.Fatal("nonzero result")
+	}
+
+	var rr xmldsig.ReferenceResult
+	if rr.Digest() != nil || rr.Size() != 0 || rr.IsCanonicalXML() || rr.InputKind() != reference.Invalid || rr.Steps() != nil {
+		t.Fatal("nonzero reference")
+	}
+}
+
+func FuzzVerifyDetached(f *testing.F) {
+	seed, err := os.ReadFile(filepath.Join("..", "testdata", "detached", "ec256-cm0.java.xml"))
+	if err != nil {
+		f.Fatal(err)
+	}
+
+	key := loadDetachedKey(f, "ec256.pub.pem")
+	uris, resolver := loadDetachedResources(f)
+	f.Add(seed)
+	f.Add([]byte(`<r/>`))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 64<<10 {
+			t.Skip()
+		}
+
+		doc, err := document.Parse(t.Context(), data, document.DefaultLimits())
+		if err != nil {
+			return
+		}
+
+		result, err := xmldsig.VerifyDetached(context.Background(), doc, key, resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: uris})
+		if err != nil && result != nil {
+			t.Fatal("partial verification result")
+		}
+
+		if err == nil && len(result.References()) != len(uris) {
+			t.Fatal("incomplete reference set")
+		}
+	})
+}
+
+func loadDetachedResources(t testing.TB) ([]string, xmldsig.Resolver) {
+	t.Helper()
+
+	dir := filepath.Join("..", "testdata", "detached")
+
+	data, err := os.ReadFile(filepath.Join(dir, "resources.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var entries []struct {
+		URI  string `json:"uri"`
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatal(err)
+	}
+
+	uris := make([]string, 0, len(entries))
+
+	resources := map[string][]byte{}
+
+	for _, e := range entries {
+		contents, err := os.ReadFile(filepath.Join(dir, e.Path))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		resources[e.URI] = contents
+		uris = append(uris, e.URI)
+	}
+
+	return uris, sourceMap(resources)
+}
+
+func loadDetachedKey(t testing.TB, name string) crypto.PublicKey {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join("..", "testdata", "detached", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	block, _ := pem.Decode(data)
+	if block == nil {
+		t.Fatal("bad fixture PEM")
+	}
+
+	key, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return key
+}
+
+func sourceMap(resources map[string][]byte) xmldsig.Resolver {
+	return xmldsig.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		data, ok := resources[uri]
+		if !ok {
+			return nil, fmt.Errorf("resource not allowed: %s", uri)
+		}
+
+		return io.NopCloser(bytes.NewReader(data)), nil
+	})
+}
+
+func signDetached(t testing.TB, key crypto.Signer, refs []xmldsig.DetachedReference, resolver xmldsig.Resolver, opt xmldsig.DetachedSignOptions) *document.Document {
+	t.Helper()
+
+	doc, err := xmldsig.SignDetached(context.Background(), refs, key, resolver, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return parse(t, xmlString(t, doc))
+}
+
+type observedReader struct {
+	io.Reader
+	closes, reads int
+	closeErr      error
+}
+
+func (r *observedReader) Read(p []byte) (int, error) { r.reads++; return r.Reader.Read(p) }
+
+func (r *observedReader) Close() error { r.closes++; return r.closeErr }
+
+type errorReader struct{ err error }
+
+func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
+
+type stuckReader struct{}
+
+func (stuckReader) Read([]byte) (int, error) { return 0, nil }
+
+type badCountReader struct{}
+
+func (badCountReader) Read([]byte) (int, error) { return -1, nil }

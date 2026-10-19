@@ -1,0 +1,404 @@
+[
+  {
+    "group": "cms",
+    "name": "cms-rsa-256-attached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": false,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-rsa-256-detached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": true,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-rsa-256-pss-attached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": false,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-rsa-256-pss-detached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": true,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-rsa-384-attached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": false,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-rsa-384-detached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": true,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-rsa-384-pss-attached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": false,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-rsa-384-pss-detached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": true,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-rsa-512-attached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": false,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-rsa-512-detached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": true,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-rsa-512-pss-attached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": false,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-rsa-512-pss-detached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": true,
+    "valid": true
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-rsa-sha1-HASH-GOOD",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "good"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-rsa-sha1-HASH-REVOKED",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "revoked"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-rsa-sha1-HASH-UNKNOWN",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "unknown"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-rsa-sha1-NAME-GOOD",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "good"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-rsa-sha1-NAME-REVOKED",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "revoked"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-rsa-sha1-NAME-UNKNOWN",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "unknown"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-rsa-sha256-HASH-GOOD",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "good"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-rsa-sha256-HASH-REVOKED",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "revoked"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-rsa-sha256-HASH-UNKNOWN",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "unknown"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-rsa-sha256-NAME-GOOD",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "good"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-rsa-sha256-NAME-REVOKED",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "revoked"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-rsa-sha256-NAME-UNKNOWN",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "unknown"
+  },
+  {
+    "group": "timestamp",
+    "name": "ts-rsa-256",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  },
+  {
+    "group": "timestamp",
+    "name": "ts-rsa-384",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  },
+  {
+    "group": "timestamp",
+    "name": "ts-rsa-512",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  },
+  {
+    "group": "xades",
+    "name": "xades-t-rsa-go",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  },
+  {
+    "group": "xades",
+    "name": "xades-t-rsa-python",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  },
+  {
+    "group": "archive",
+    "name": "archive-rsa-exclusive",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  },
+  {
+    "group": "archive",
+    "name": "archive-rsa-inclusive",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-ecdsa-256-attached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": false,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-ecdsa-256-detached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": true,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-ecdsa-384-attached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": false,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-ecdsa-384-detached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": true,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-ecdsa-512-attached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": false,
+    "valid": true
+  },
+  {
+    "group": "cms",
+    "name": "cms-ecdsa-512-detached",
+    "at": "2026-10-08T00:02:41+00:00",
+    "detached": true,
+    "valid": true
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-ecdsa-sha1-HASH-GOOD",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "good"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-ecdsa-sha1-HASH-REVOKED",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "revoked"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-ecdsa-sha1-HASH-UNKNOWN",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "unknown"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-ecdsa-sha1-NAME-GOOD",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "good"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-ecdsa-sha1-NAME-REVOKED",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "revoked"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-ecdsa-sha1-NAME-UNKNOWN",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "unknown"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-ecdsa-sha256-HASH-GOOD",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "good"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-ecdsa-sha256-HASH-REVOKED",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "revoked"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-ecdsa-sha256-HASH-UNKNOWN",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "unknown"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-ecdsa-sha256-NAME-GOOD",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "good"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-ecdsa-sha256-NAME-REVOKED",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "revoked"
+  },
+  {
+    "group": "ocsp",
+    "name": "ocsp-ecdsa-sha256-NAME-UNKNOWN",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": false,
+    "nonce": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "status": "unknown"
+  },
+  {
+    "group": "timestamp",
+    "name": "ts-ecdsa-256",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  },
+  {
+    "group": "timestamp",
+    "name": "ts-ecdsa-384",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  },
+  {
+    "group": "timestamp",
+    "name": "ts-ecdsa-512",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  },
+  {
+    "group": "xades",
+    "name": "xades-t-ecdsa-go",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  },
+  {
+    "group": "xades",
+    "name": "xades-t-ecdsa-python",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  },
+  {
+    "group": "archive",
+    "name": "archive-ecdsa-exclusive",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  },
+  {
+    "group": "archive",
+    "name": "archive-ecdsa-inclusive",
+    "at": "2026-10-08T00:02:41+00:00",
+    "valid": true
+  }
+]
