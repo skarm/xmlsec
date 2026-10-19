@@ -90,7 +90,7 @@ func startToken(unit []byte) (xml.StartElement, bool, error) {
 	start := xml.StartElement{Name: tokenName(string(unit[1:end]))}
 
 	empty := unit[len(unit)-2] == '/'
-	for at := lexicalSpaceEnd(unit, end); at < len(unit)-1 && unit[at] != '/'; {
+	for at := lexicalSpaceEnd(unit, end); at < len(unit)-1 && unit[at] != '/' && unit[at] != '>'; {
 		end = at
 		for end < len(unit) && !spaceByte(unit[end]) && unit[end] != '=' {
 			end++

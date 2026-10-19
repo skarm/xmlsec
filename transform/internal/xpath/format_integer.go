@@ -969,41 +969,8 @@ func int64ToGermanWords(n int64) string {
 		return "minus " + int64ToGermanWords(-n)
 	}
 
-	ones := []string{
-		"", nameEins, "zwei", nameDrei, "vier", "fünf", "sechs", wordGermanSeven, nameAcht, "neun", "zehn",
-		"elf", "zwölf", "dreizehn", "vierzehn", "fünfzehn", "sechzehn", "siebzehn", "achtzehn", "neunzehn",
-	}
-	tens := []string{"", "", "zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig"}
-
-	if n < 20 {
-		return ones[n]
-	}
-
-	if n < 100 {
-		if n%10 == 0 {
-			return tens[n/10]
-		}
-
-		unit := ones[n%10]
-		if n%10 == 1 {
-			unit = nameEin
-		}
-
-		return unit + "und" + tens[n/10]
-	}
-
 	if n < 1000 {
-		w := ones[n/100]
-		if w == nameEins {
-			w = nameEin
-		}
-
-		w += "hundert"
-		if n%100 != 0 {
-			w += int64ToGermanWords(n % 100)
-		}
-
-		return w
+		return germanWordsUnderThousand(n)
 	}
 
 	if n < 1000000 {
@@ -1042,6 +1009,43 @@ func int64ToGermanWords(n int64) string {
 	}
 
 	return fmt.Sprintf("%d", n)
+}
+
+func germanWordsUnderThousand(n int64) string {
+	ones := []string{
+		"", nameEins, "zwei", nameDrei, "vier", "fünf", "sechs", wordGermanSeven, nameAcht, "neun", "zehn",
+		"elf", "zwölf", "dreizehn", "vierzehn", "fünfzehn", "sechzehn", "siebzehn", "achtzehn", "neunzehn",
+	}
+	tens := []string{"", "", "zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig"}
+
+	if n < 20 {
+		return ones[n]
+	}
+
+	if n < 100 {
+		if n%10 == 0 {
+			return tens[n/10]
+		}
+
+		unit := ones[n%10]
+		if n%10 == 1 {
+			unit = nameEin
+		}
+
+		return unit + "und" + tens[n/10]
+	}
+
+	w := ones[n/100]
+	if w == nameEins {
+		w = nameEin
+	}
+
+	w += "hundert"
+	if n%100 != 0 {
+		w += int64ToGermanWords(n % 100)
+	}
+
+	return w
 }
 
 func applyOrdinalWordsDe(words, caseStyle, suffix string) string {

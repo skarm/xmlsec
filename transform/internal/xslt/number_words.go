@@ -220,41 +220,8 @@ func germanCardinal(n int64) string {
 		return "minus " + germanCardinal(-n)
 	}
 
-	ones := []string{
-		"", germanOne, "zwei", "drei", "vier", "fünf", "sechs", "sieben", nameAcht, "neun",
-		"zehn", "elf", "zwölf", "dreizehn", "vierzehn", "fünfzehn", "sechzehn", "siebzehn", "achtzehn", "neunzehn",
-	}
-	tens := []string{"", "", "zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig"}
-
-	if n < 20 {
-		return ones[int(n)]
-	}
-
-	if n < 100 {
-		if n%10 == 0 {
-			return tens[int(n/10)]
-		}
-
-		o := ones[int(n%10)]
-		if o == germanOne {
-			o = germanOnePrefix
-		}
-
-		return o + "und" + tens[int(n/10)]
-	}
-
 	if n < 1000 {
-		w := ones[int(n/100)]
-		if w == germanOne {
-			w = germanOnePrefix
-		}
-
-		w += "hundert"
-		if n%100 != 0 {
-			w += germanCardinal(n % 100)
-		}
-
-		return w
+		return germanCardinalUnderThousand(n)
 	}
 
 	if n < 1000000 {
@@ -293,6 +260,43 @@ func germanCardinal(n int64) string {
 	}
 
 	return strconv.FormatInt(n, 10)
+}
+
+func germanCardinalUnderThousand(n int64) string {
+	ones := []string{
+		"", germanOne, "zwei", "drei", "vier", "fünf", "sechs", "sieben", nameAcht, "neun",
+		"zehn", "elf", "zwölf", "dreizehn", "vierzehn", "fünfzehn", "sechzehn", "siebzehn", "achtzehn", "neunzehn",
+	}
+	tens := []string{"", "", "zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig"}
+
+	if n < 20 {
+		return ones[int(n)]
+	}
+
+	if n < 100 {
+		if n%10 == 0 {
+			return tens[int(n/10)]
+		}
+
+		o := ones[int(n%10)]
+		if o == germanOne {
+			o = germanOnePrefix
+		}
+
+		return o + "und" + tens[int(n/10)]
+	}
+
+	w := ones[int(n/100)]
+	if w == germanOne {
+		w = germanOnePrefix
+	}
+
+	w += "hundert"
+	if n%100 != 0 {
+		w += germanCardinal(n % 100)
+	}
+
+	return w
 }
 
 func germanOrdinal(n int64, ordinal string) string {

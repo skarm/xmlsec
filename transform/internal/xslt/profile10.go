@@ -513,31 +513,7 @@ func checkPattern10(ast xpath.Expr) error {
 
 		return nil
 	case xpath.FunctionCall:
-		if e.Prefix != "" || e.Name != "id" && e.Name != nameKey2 {
-			break
-		}
-
-		want := 1
-		if e.Name == nameKey2 {
-			want = 2
-		}
-
-		if len(e.Args) != want {
-			break
-		}
-
-		for _, arg := range e.Args {
-			v, ok := arg.(xpath.LiteralExpr)
-			if !ok {
-				return staticError("XTSE0340", "id/key patterns require string literals")
-			}
-
-			if _, ok := v.Value.(string); !ok {
-				return staticError("XTSE0340", "id/key patterns require string literals")
-			}
-		}
-
-		return nil
+		return checkFunctionPattern10(e)
 	case xpath.PathExpr:
 		if err := checkPattern10(e.Filter); err != nil {
 			return err
@@ -551,6 +527,34 @@ func checkPattern10(ast xpath.Expr) error {
 	}
 
 	return staticError("XTSE0340", "invalid XSLT 1.0 match pattern")
+}
+
+func checkFunctionPattern10(e xpath.FunctionCall) error {
+	if e.Prefix != "" || e.Name != "id" && e.Name != nameKey2 {
+		return staticError("XTSE0340", "invalid XSLT 1.0 match pattern")
+	}
+
+	want := 1
+	if e.Name == nameKey2 {
+		want = 2
+	}
+
+	if len(e.Args) != want {
+		return staticError("XTSE0340", "invalid XSLT 1.0 match pattern")
+	}
+
+	for _, arg := range e.Args {
+		v, ok := arg.(xpath.LiteralExpr)
+		if !ok {
+			return staticError("XTSE0340", "id/key patterns require string literals")
+		}
+
+		if _, ok := v.Value.(string); !ok {
+			return staticError("XTSE0340", "id/key patterns require string literals")
+		}
+	}
+
+	return nil
 }
 
 func finalizeOutput10(s *Stylesheet) {

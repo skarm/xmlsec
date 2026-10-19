@@ -166,10 +166,12 @@ func walkProfile(value reflect.Value, visit func(any) error) error {
 		}
 
 		for i := 0; i < value.NumField(); i++ {
-			if value.Type().Field(i).IsExported() {
-				if err := walkProfile(value.Field(i), visit); err != nil {
-					return err
-				}
+			if !value.Type().Field(i).IsExported() {
+				continue
+			}
+
+			if err := walkProfile(value.Field(i), visit); err != nil {
+				return err
 			}
 		}
 	case reflect.Slice:

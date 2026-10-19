@@ -142,9 +142,7 @@ func appendPrefixChecks(plan *prefixPlanBuilder, node Expr) {
 
 	switch n := node.(type) {
 	case FunctionCall:
-		for _, arg := range n.Args {
-			appendPrefixChecks(plan, arg)
-		}
+		appendPrefixChecksList(plan, n.Args)
 	case CastExpr:
 		appendPrefixChecks(plan, n.Expr)
 	case CastableExpr:
@@ -177,10 +175,7 @@ func appendPrefixChecks(plan *prefixPlanBuilder, node Expr) {
 		}
 	case DynamicFunctionCall:
 		appendPrefixChecks(plan, n.Func)
-
-		for _, arg := range n.Args {
-			appendPrefixChecks(plan, arg)
-		}
+		appendPrefixChecksList(plan, n.Args)
 	case InlineFunctionExpr:
 		appendPrefixChecks(plan, n.Body)
 	case MapConstructorExpr:
@@ -189,17 +184,19 @@ func appendPrefixChecks(plan *prefixPlanBuilder, node Expr) {
 			appendPrefixChecks(plan, p.Value)
 		}
 	case ArrayConstructorExpr:
-		for _, item := range n.Items {
-			appendPrefixChecks(plan, item)
-		}
+		appendPrefixChecksList(plan, n.Items)
 	case SequenceExpr:
-		for _, item := range n.Items {
-			appendPrefixChecks(plan, item)
-		}
+		appendPrefixChecksList(plan, n.Items)
 	case BinaryExpr, UnaryExpr, ConcatExpr, SimpleMapExpr, RangeExpr, UnionExpr, IntersectExceptExpr:
 		appendOperatorPrefixChecks(plan, node)
 	case PathExpr, PathStepExpr, FilterExpr, LookupExpr, UnaryLookupExpr:
 		appendPathPrefixChecks(plan, node)
+	}
+}
+
+func appendPrefixChecksList(plan *prefixPlanBuilder, nodes []Expr) {
+	for _, node := range nodes {
+		appendPrefixChecks(plan, node)
 	}
 }
 
