@@ -395,10 +395,6 @@ func (ec *execContext) execResultDocument(ctx context.Context, inst *resultDocum
 }
 
 func (ec *execContext) recordInitialResources(ctx context.Context, selection xdm.Sequence) error {
-	if ec.stylesheet.processorLanguage() < 30 {
-		return nil
-	}
-
 	if _, err := ec.existingDocumentRead(ctx, ec.sourceDoc); err != nil {
 		return err
 	}
@@ -425,11 +421,34 @@ func (ec *execContext) recordInitialResources(ctx context.Context, selection xdm
 }
 
 func (ec *execContext) recordInputNode(ctx context.Context, node xdm.Node) error {
-	if doc, ok := xdm.DocumentRoot(node).(*xdm.Document); ok && !doc.HasProperty(xdm.DocInternal) {
+	if doc := ec.cacheInputDocument(node); doc != nil {
 		return ec.RecordRead(ctx, doc.URL())
 	}
 
 	return nil
+}
+
+// Initial trees remain available to doc() without a new resolver read. The host
+// may supply distinct trees with the same URI; preserve their node identities
+// and keep the first available-document mapping instead of merging their data.
+func (ec *execContext) cacheInputDocument(node xdm.Node) *xdm.Document {
+	if xdm.IsNilNode(node) {
+		return nil
+	}
+
+	doc, ok := xdm.DocumentRoot(node).(*xdm.Document)
+	if !ok || doc.HasProperty(xdm.DocInternal) {
+		return nil
+	}
+
+	if doc.URL() != "" {
+		key := ec.docCacheKey(doc.URL())
+		if _, found := ec.docCache[key]; !found {
+			ec.docCache[key] = doc
+		}
+	}
+
+	return doc
 }
 
 func resourceURIKey(uri string) string {

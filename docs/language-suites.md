@@ -93,7 +93,9 @@ Every catalog case receives one outcome:
 
 Unknown dependencies fail unless another known dependency conclusively makes
 the case inapplicable. The selected profile excludes XQuery, schema awareness,
-normative streaming, DTD processing and XML 1.1. Unknown optional features are
+normative streaming and XML 1.1. DTD dependencies are enabled for bounded
+nonvalidating language input; external DTD/entities stay inside the declared
+checkout resolver and invocation budgets. Unknown optional features are
 reported as dependency failures until their meaning is resolved. The report
 records the suite pin, library Git revision and modification state, executable
 and source SHA-256, Go/platform, selected version, filters and implementation
@@ -165,6 +167,11 @@ An environment `ref` selects the named environment. Its local children are
 ignored, following the publisher's `runner/run-tests.xsl` `c:get-environment`
 function; they do not extend the referenced environment.
 
+Inline source XML is parsed with the content element's catalog base URI,
+including inherited `xml:base`, following the publisher's `c:parse-xml` runner.
+This base is independent of the environment's XPath static base; a constructed
+source's base does not give it a retrieval document URI.
+
 Environment and invocation modules can supply a principal stylesheet/package
 and secondary modules. Declared packages are resolved by name and version;
 each source version retains its own file/base URI, even when catalog package
@@ -180,16 +187,24 @@ do not replace distinct file retrieval URIs. Source shorthand XML-ID fragments s
 variables and context items. File URI paths are decoded separately from their
 fragments; retrieval mappings and document-uri use the fragment-free URI, while
 uri-collection retains the member URI. A per-case source cache preserves repeated
-collection members and their common root. Missing IDs, general XPointer schemes,
+collection members and their common root. Role-free file sources are registered
+without eager XML parsing: doc()/document() performs the load, so malformed
+resources can produce the runtime errors asserted by the catalog. Missing IDs, general XPointer schemes,
 conflicting fragments/mappings and paths outside the suite root are harness
 failures. Source schema validation and resource-valued collections remain harness gaps. A case requiring one fails
-with a reason; schema-bearing QT3 environments retain their separate boundary.
+with a reason. QT3's file-free import of the built-in functions namespace is
+recognized for untyped `json-to-xml`; `validate=true` reaches the evaluator's
+`FOJS0004` without enabling schema validation. Other QT3 schema declarations
+retain their separate harness boundary.
 
 Assertions include standard errors, boolean/count/empty/type/value checks,
 XPath predicates, XML fragments, exact serialization, serialization regex,
 atomic permutations with multiplicities, `all-of`, `any-of` and `not`. XML comparison preserves comments and prefix
-differences unless `ignore-prefixes` is explicit; fragments are wrapped only
-for comparison. String whitespace follows the respective catalog defaults.
+differences unless `ignore-prefixes` is explicit. Parsed nodes are compared
+through public immutable handles, preserving PI names/data, text and attribute
+values while ignoring attribute order and unused namespace declarations. Relative
+namespace names remain literal; C14N is unsuitable because it must reject them.
+Complete documents discard outer layout whitespace; fragments retain their text. String whitespace follows the respective catalog defaults.
 Expected UTF-8, ASCII and ISO-8859-1 serialization files normalize CRLF
 to LF, following the pinned publisher runner's text comparison. Bare CR data,
 inline expectations and the actual serializer bytes are retained. UTF-16 files

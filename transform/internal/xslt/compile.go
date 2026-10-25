@@ -9,14 +9,11 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net/url"
-	"path/filepath"
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
-	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -213,8 +210,7 @@ func compilePrepared(ctx context.Context, doc *xdm.Document, cfg *compileConfig)
 	}
 
 	if root.URI() != lexicon.NamespaceXSLT {
-		// Could be a simplified stylesheet (literal result element)
-		return compileSimplified(ctx, doc, root, cfg)
+		return nil, staticError(errCodeXTSE0150, "unprepared simplified stylesheet module")
 	}
 
 	localName := root.LocalName()
@@ -244,16 +240,14 @@ func compilePrepared(ctx context.Context, doc *xdm.Document, cfg *compileConfig)
 	c.applyPreparedConfig(cfg)
 	// Namespace and base URI are available to root shadow expressions. Other
 	// root attributes are interpreted only after their shadows have replaced them.
-	if xmlBase := getAttr(root, lexicon.QNameXMLBase); xmlBase != "" {
+	if xmlBase, present := root.GetAttributeNS("base", lexicon.NamespaceXML); present {
 		c.baseURI = resolveRootXMLBase(c.baseURI, xmlBase)
 	}
 
 	c.collectNamespaces(ctx, root)
 
-	if c.stylesheet.processorLanguage() >= 30 {
-		if err := c.resolveShadowAttributes(ctx, root); err != nil {
-			return nil, err
-		}
+	if _, err := c.preprocessConditionalElement(ctx, root, true); err != nil {
+		return nil, err
 	}
 
 	if err := c.readPackageMetadata(root, localName); err != nil {
@@ -300,6 +294,7 @@ func compilePrepared(ctx context.Context, doc *xdm.Document, cfg *compileConfig)
 		return nil, err
 	}
 
+	c.completeLiteralResultAliases(ctx)
 	c.finalizeCompiledStylesheet()
 
 	return c.stylesheet, nil
@@ -353,19 +348,6 @@ type pendingPatternValidation struct {
 	source  string
 }
 
-type staticParamDefinition struct {
-	name       string
-	selectExpr string
-}
-
-type staticDependencyState uint8
-
-const (
-	staticDependencyUnvisited staticDependencyState = iota
-	staticDependencyVisiting
-	staticDependencyComplete
-)
-
 type compiler struct {
 	invocation                 context.Context
 	resolver                   URIResolver
@@ -373,18 +355,21 @@ type compiler struct {
 	stylesheet                 *Stylesheet
 	nsBindings                 map[string]string
 	originalVariableVisibility string
-	importStack                map[string]int                  // module URI -> active module-path position
-	parseOptions               *xdm.ParseOptions               // injected base parseOptions governing parse policy (nil = hardened default)
-	moduleRoot                 *xdm.Element                    // embedded (fragment-selected) module root; descendant xml:base walks stop here. nil = stop before the document element
-	localExcludes              map[string]struct{}             // accumulated LRE-level exclude-result-prefixes (stores URIs, not prefixes)
-	extensionURIs              map[string]struct{}             // namespace URIs declared as extension-element-prefixes
-	includeRoots               map[string]*xdm.Element         // cached parsed roots from collectIncludeImports for reuse in compileIncludeTemplates
-	useWhenExcluded            map[string]struct{}             // import keys excluded by use-when="false()" on the root element
+	importStack                map[string]int          // module URI -> active module-path position
+	parseOptions               *xdm.ParseOptions       // injected base parseOptions governing parse policy (nil = hardened default)
+	moduleRoot                 *xdm.Element            // embedded (fragment-selected) module root; descendant xml:base walks stop here. nil = stop before the document element
+	localExcludes              map[string]struct{}     // accumulated LRE-level exclude-result-prefixes (stores URIs, not prefixes)
+	extensionURIs              map[string]struct{}     // namespace URIs declared as extension-element-prefixes
+	includeRoots               map[string]*xdm.Element // cached parsed roots from collectIncludeImports for reuse in compileIncludeTemplates
+	moduleAliases              *[]*xdm.Element
+	modulePackageUses          *[]pendingPackageUse
+	includedDeclarationRoots   map[*xdm.Element]*xdm.Element
+	deferredLanguageChecks     map[*xdm.Element]bool
+	pendingLiteralResults      []pendingLiteralResult
+	staticImportScope          *staticImportScope
+	staticValueScopes          map[string]*staticImportScope
+	staticDeclarations         map[string][]staticDeclarationBinding
 	staticVars                 map[string]xdm.Sequence         // static="yes" params evaluated at compile time
-	staticVarKinds             map[string]string               // tracks "param" or "variable" for each static var (XTSE3450)
-	mainStaticVarValues        map[string]xdm.Sequence         // values set by main module only (for XTSE3450 value conflict)
-	importedStaticVarKinds     map[string]string               // kinds set by imported modules only
-	importedStaticVarValues    map[string]xdm.Sequence         // values set by imported modules only
 	externalStaticParams       map[string]xdm.Sequence         // externally supplied static param overrides
 	charMapModuleKeys          map[string]string               // character-map name -> moduleKey that first defined it (for XTSE1580)
 	moduleSources              map[*xdm.Document]*xdm.Document // original source of normalized 1.0 modules
@@ -623,233 +608,43 @@ func (c *compiler) setStaticVar(_ context.Context, name string, value xdm.Sequen
 	c.staticVars[name] = value
 }
 
-// setStaticVarWithKind sets a static variable value and records its
-// kind ("param" or "variable") for XTSE3450 conflict detection.
-// When called from an imported module, the kind is recorded in
-// importedStaticVarKinds. When called from the main module, it
-// checks against previously imported kinds for conflicts.
-func (c *compiler) setStaticVarWithKind(ctx context.Context, name, kind string, value xdm.Sequence) error { //nolint:unparam // always nil but callers check for future-proofing
-	if c.insideImport {
-		if c.importedStaticVarKinds == nil {
-			c.importedStaticVarKinds = make(map[string]string)
-		}
-
-		if c.importedStaticVarValues == nil {
-			c.importedStaticVarValues = make(map[string]xdm.Sequence)
-		}
-		// Record the import's kind. If two imports disagree, record
-		// the conflict (first import wins for kind tracking).
-		if _, exists := c.importedStaticVarKinds[name]; !exists {
-			c.importedStaticVarKinds[name] = kind
-			c.importedStaticVarValues[name] = value
-		}
-
-		c.setStaticVar(ctx, name, value)
-
-		return nil
-	}
-	// Main module: check against imported kinds for conflicts.
-	if c.staticVarKinds == nil {
-		c.staticVarKinds = make(map[string]string)
+// setStaticVarWithKind enforces XSLT 3.0 section 9.6 at the declaration's
+// tree-order position, including nested and sibling imports.
+func (c *compiler) setStaticVarWithKind(ctx context.Context, name, kind string, value xdm.Sequence) error {
+	previous := c.staticDeclarations[name]
+	if err := xpath.Charge(ctx, len(previous)+1); err != nil {
+		return err
 	}
 
-	if c.mainStaticVarValues == nil {
-		c.mainStaticVarValues = make(map[string]xdm.Sequence)
-	}
-
-	c.staticVarKinds[name] = kind
-	c.mainStaticVarValues[name] = value
-	c.setStaticVar(ctx, name, value)
-
-	return nil
-}
-
-// detectStaticParamCycles checks for circular references among
-// static params/variables. Even if external values break the cycle
-// at runtime, the circularity in definitions is XPST0008.
-func (c *compiler) detectStaticParamCycles(_ context.Context, root *xdm.Element) error {
-	defs := collectStaticParamDefinitions(root)
-	if len(defs) < 2 {
-		return nil
-	}
-
-	deps := staticParamDependencies(defs)
-	state := make(map[string]staticDependencyState)
-
-	for _, def := range defs {
-		if state[def.name] == staticDependencyUnvisited && hasStaticDependencyCycle(def.name, deps, state) {
-			return staticError(errCodeXPST0008,
-				"circular reference among static parameters/variables")
-		}
-	}
-
-	return nil
-}
-
-func collectStaticParamDefinitions(root *xdm.Element) []staticParamDefinition {
-	var defs []staticParamDefinition
-
-	for child := range xdm.Children(root) {
-		elem, ok := child.(*xdm.Element)
-		if !ok || elem.URI() != lexicon.NamespaceXSLT {
+	_, supplied := c.externalStaticParams[name]
+	for _, binding := range previous {
+		if binding.scope == c.staticImportScope || lowerStaticScope(c.staticImportScope, binding.scope) {
 			continue
 		}
 
-		local := elem.LocalName()
-		if local != lexicon.XSLTElementParam && local != lexicon.XSLTElementVariable {
-			continue
-		}
+		consistent := kind == binding.kind
+		if consistent && !(kind == nameParam && supplied) {
+			var err error
 
-		if !xsdBoolTrue(getAttr(elem, nameStatic)) {
-			continue
-		}
-
-		name := getAttr(elem, xslAttrName)
-		selectExpr := getAttr(elem, xslAttrSelect)
-
-		if name != "" && selectExpr != "" {
-			defs = append(defs, staticParamDefinition{name: name, selectExpr: selectExpr})
-		}
-	}
-
-	return defs
-}
-
-func staticParamDependencies(defs []staticParamDefinition) map[string][]string {
-	deps := make(map[string][]string)
-
-	for _, def := range defs {
-		for _, other := range defs {
-			if other.name != def.name && containsStaticParamReference(def.selectExpr, other.name) {
-				deps[def.name] = append(deps[def.name], other.name)
+			consistent, err = staticSequenceIdentical(ctx, value, binding.value)
+			if err != nil {
+				return err
 			}
 		}
-	}
 
-	return deps
-}
-
-// containsStaticParamReference retains the static scan's name-boundary rule:
-// a reference to $foo must not also match $foobar, $foo_1 or $foo-bar.
-func containsStaticParamReference(expr, name string) bool {
-	ref := "$" + name
-	for offset := 0; offset < len(expr); {
-		match := strings.Index(expr[offset:], ref)
-		if match < 0 {
-			return false
-		}
-
-		end := offset + match + len(ref)
-		if end == len(expr) || !isStaticParamNameByte(expr[end]) {
-			return true
-		}
-
-		offset = end
-	}
-
-	return false
-}
-
-func isStaticParamNameByte(ch byte) bool {
-	return ch == '_' || ch == '-' || ch == '.' ||
-		(ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
-}
-
-func hasStaticDependencyCycle(name string, deps map[string][]string, state map[string]staticDependencyState) bool {
-	state[name] = staticDependencyVisiting
-	for _, dep := range deps[name] {
-		switch state[dep] {
-		case staticDependencyVisiting:
-			return true
-		case staticDependencyUnvisited:
-			if hasStaticDependencyCycle(dep, deps, state) {
-				return true
-			}
+		if !consistent {
+			return staticError(errCodeXTSE3450, "static %s $%s conflicts with a prior declaration at lower import precedence", kind, name)
 		}
 	}
 
-	state[name] = staticDependencyComplete
-
-	return false
-}
-
-// checkStaticVarKindConflicts checks for XTSE3450 conflicts between
-// the main module's static declarations and imported modules' declarations.
-// Must be called after all imports have been processed.
-func (c *compiler) checkStaticVarKindConflicts(_ context.Context, root *xdm.Element) error {
-	if len(c.importedStaticVarKinds) == 0 || len(c.staticVarKinds) == 0 {
-		return nil
+	if c.staticDeclarations == nil {
+		c.staticDeclarations = make(map[string][]staticDeclarationBinding)
 	}
-	// Walk the main module's children in document order. When we see
-	// an xsl:import followed (later in document order) by a static
-	// param/variable with the same name but different kind than what
-	// the import declared, raise XTSE3450.
-	// Also raise XTSE3450 when the kind matches but the value differs.
-	seenImport := false
 
-	for child := range xdm.Children(root) {
-		elem, ok := child.(*xdm.Element)
-		if !ok || elem.URI() != lexicon.NamespaceXSLT {
-			continue
-		}
-
-		ln := elem.LocalName()
-		if ln == nameImport {
-			seenImport = true
-			continue
-		}
-
-		if !seenImport {
-			continue
-		}
-
-		if (ln == lexicon.XSLTElementParam || ln == lexicon.XSLTElementVariable) && xsdBoolTrue(getAttr(elem, nameStatic)) {
-			name := resolveQName(getAttr(elem, xslAttrName), inScopeNamespaces(elem))
-			if importedKind, ok := c.importedStaticVarKinds[name]; ok {
-				if importedKind != ln {
-					return staticError(errCodeXTSE3450,
-						"static %s $%s conflicts with imported declaration as %s", ln, name, importedKind)
-				}
-				// Same kind: check for value conflict.
-				if importedVal, haveVal := c.importedStaticVarValues[name]; haveVal {
-					mainVal := c.mainStaticVarValues[name]
-					if !staticSequenceEqual(mainVal, importedVal) {
-						return staticError(errCodeXTSE3450,
-							"static %s $%s has conflicting values between main module and imported module", ln, name)
-					}
-				}
-			}
-		}
-	}
+	c.staticDeclarations[name] = append(previous, staticDeclarationBinding{scope: c.staticImportScope, kind: kind, value: value})
+	c.bindStaticValue(ctx, name, value)
 
 	return nil
-}
-
-// staticSequenceEqual compares two xdm.Sequence values for equality
-// by comparing their string representations. Suitable for static variable
-// values which are simple atomic types.
-func staticSequenceEqual(a, b xdm.Sequence) bool {
-	aLen := 0
-	if a != nil {
-		aLen = xdm.SequenceLen(a)
-	}
-
-	bLen := 0
-	if b != nil {
-		bLen = b.Len()
-	}
-
-	if aLen != bLen {
-		return false
-	}
-
-	for i := range aLen {
-		if fmt.Sprint(a.Get(i)) != fmt.Sprint(b.Get(i)) {
-			return false
-		}
-	}
-
-	return true
 }
 
 // checkQNamePrefix validates that if a QName has a prefix, that prefix is declared
@@ -969,32 +764,6 @@ func (c *compiler) staticEvaluator(ctx context.Context) xpath.Evaluator {
 	}
 
 	return eval
-}
-
-// resolveXMLBaseEvaluator resolves an xml:base attribute value against the
-// compiler's base URI and returns an evaluator with the updated base URI.
-func (c *compiler) resolveXMLBaseEvaluator(_ context.Context, eval xpath.Evaluator, xmlBase string) xpath.Evaluator {
-	if strings.Contains(xmlBase, "://") {
-		return eval.BaseURI(xmlBase)
-	}
-
-	if c.baseURI == "" {
-		return eval
-	}
-
-	base, err := url.Parse(c.baseURI)
-	if err != nil {
-		return eval
-	}
-
-	ref, err := url.Parse(xmlBase)
-	if err != nil {
-		return eval
-	}
-
-	resolved := base.ResolveReference(ref).String()
-
-	return eval.BaseURI(resolved)
 }
 
 // staticFnTransform implements fn:transform for compile-time evaluation of
@@ -1287,48 +1056,10 @@ func resolveDefaultCollation(list string) string {
 	return ""
 }
 
-// resolveRootXMLBase resolves a root-element xml:base value against the current
-// module base URI to produce the new effective base URI.
-//
-// Absoluteness is decided with [uripath.URIScheme] (RFC 3986), not a "://"
-// substring check: an absolute-URI xml:base may carry a scheme with no "//"
-// authority (e.g. xml:base="urn:base") and must be used as-is, while a
-// relative/root-relative xml:base under a URI base must be resolved per RFC
-// 3986 so the base scheme/authority survives. Only when both the current base
-// and xml:base are local filesystem paths is filepath used.
-//
-// To mirror the local-path branch — which re-appends the stylesheet filename so
-// filepath.Dir() recovers the directory downstream — the URI branch resolves
-// xml:base as a directory and re-resolves the original filename against it:
-// xml:base="innerdoc/" under "mem:/a/b/style.xsl" yields
-// "mem:/a/b/innerdoc/style.xsl".
+// Resolve xml:base as a URI reference. A directory result stays a directory;
+// appending the old module filename would change the XPath static base URI.
 func resolveRootXMLBase(baseURI, xmlBase string) string {
-	switch {
-	case uripath.URIScheme(xmlBase) != "":
-		// Absolute URI — use as-is.
-		return xmlBase
-	case baseURI != "" && uripath.URIScheme(baseURI) != "":
-		baseName := filepath.Base(baseURI)
-
-		dirURI, err := uripath.ResolveSchemaURI(xmlBase, baseURI)
-		if err != nil {
-			return baseURI
-		}
-
-		resolved, err := uripath.ResolveSchemaURI(baseName, dirURI)
-		if err != nil {
-			return baseURI
-		}
-
-		return resolved
-	case baseURI != "":
-		baseDir := filepath.Dir(baseURI)
-		baseName := filepath.Base(baseURI)
-
-		return filepath.Join(baseDir, xmlBase, baseName)
-	default:
-		return baseURI
-	}
+	return foldXMLBases(baseURI, []string{xmlBase})
 }
 
 func (c *compiler) readRootVersion(ctx context.Context, root *xdm.Element, localName string) error {
@@ -2087,41 +1818,6 @@ func isValidEQName(s string) bool {
 	local := s[closeIdx+1:]
 
 	return xmlchar.IsValidNCName(local)
-}
-
-// isForwardRef checks whether an ErrUndefinedVariable error references a
-// variable that has NOT been declared yet in the module. moduleStaticNames
-// lists the names seen so far (including currentName). If the undefined
-// variable name is NOT in that list, it may come from an import that has
-// not been processed yet, which is not a forward-reference error.
-func isForwardRef(err error, moduleStaticNames []string, currentName string) bool {
-	msg := err.Error()
-	// Extract the variable name from "xpath: undefined variable: $NAME"
-	const prefix = "$"
-
-	idx := strings.LastIndex(msg, prefix)
-	if idx < 0 {
-		return false
-	}
-
-	refName := msg[idx+1:]
-
-	// The referenced name must be declared in this module's static
-	// names list but AFTER the current name.
-	foundCurrent := false
-
-	for _, n := range moduleStaticNames {
-		if n == currentName {
-			foundCurrent = true
-			continue
-		}
-
-		if foundCurrent && n == refName {
-			return true // forward reference within same module
-		}
-	}
-
-	return false
 }
 
 type templateCallParam struct {

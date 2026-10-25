@@ -205,28 +205,18 @@ func (ec *execContext) fnCurrent(_ context.Context, _ []xdm.Sequence) (xdm.Seque
 }
 
 // document(uri, base?) loads an external XML document.
-// Per XSLT spec 14.1:
-//   - First argument can be a string or a sequence of strings/nodes.
-//   - When it is a sequence, each item is atomized to a URI and the
-//     corresponding documents are returned as a sequence.
-//   - An empty string returns the stylesheet document itself.
-//   - Fragment identifiers (#frag) are stripped before loading.
-//   - Second argument (optional) is a node whose base URI is used for
-//     resolving relative URIs instead of the stylesheet base URI.
+// fnDocument resolves string-like references against their argument node or
+// captured static base (XSLT 2.0 section 16.1; XSLT 3.0 section 20.1).
+// Fragments select nodes only after the absolute document URI is loaded.
 func (ec *execContext) fnDocument(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	if xdm.SequenceLen(args[0]) == 0 {
 		return nil, nil
 	}
 
-	baseDir, err := documentFunctionBaseDir(args, ec.baseDir())
-	if err != nil {
-		return nil, err
-	}
-
 	var nodes []xdm.Node
 
 	for item := range xdm.SequenceItems(args[0]) {
-		selected, err := ec.documentItemNodes(ctx, item, baseDir, len(args) < 2)
+		selected, err := ec.documentItemNodes(ctx, item, args)
 		if err != nil {
 			return nil, err
 		}
@@ -244,7 +234,7 @@ func (ec *execContext) fnDocument(ctx context.Context, args []xdm.Sequence) (xdm
 		ec.docOrderCache = xpath.NewDocOrderCache()
 	}
 
-	nodes, err = xdm.DeduplicateNodes(nodes, ec.docOrderCache, xpath.NodeLimit(ctx, xdm.DefaultMaxNodeSetLength))
+	nodes, err := xdm.DeduplicateNodes(nodes, ec.docOrderCache, xpath.NodeLimit(ctx, xdm.DefaultMaxNodeSetLength))
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +247,7 @@ func (ec *execContext) fnDocument(ctx context.Context, args []xdm.Sequence) (xdm
 	return result, nil
 }
 
-func (ec *execContext) documentItemNodes(ctx context.Context, item xdm.Item, baseDir string, implicitBase bool) ([]xdm.Node, error) {
+func (ec *execContext) documentItemNodes(ctx context.Context, item xdm.Item, args []xdm.Sequence) ([]xdm.Node, error) {
 	var nodes []xdm.Node
 
 	switch item.(type) {
@@ -286,18 +276,24 @@ func (ec *execContext) documentItemNodes(ctx context.Context, item xdm.Item, bas
 			return nil, err
 		}
 
-		itemBaseDir, err := documentArgumentBase(item, baseDir, implicitBase)
+		resolved, err := ec.documentItemURI(ctx, uri, item, args)
 		if err != nil {
 			return nil, err
 		}
 
-		doc, err := ec.loadDocument(ctx, uri, itemBaseDir)
+		doc, err := ec.loadDocument(ctx, resolved, "")
 		if err != nil {
 			return nil, err
 		}
 
 		var node xdm.Node = doc
-		if _, fragment, found := strings.Cut(uri, "#"); found && fragment != "" {
+
+		if _, fragment, found := strings.Cut(resolved, "#"); found && fragment != "" {
+			fragment, err = url.PathUnescape(fragment)
+			if err != nil {
+				return nil, dynamicErrorCause(errCodeXTDE1160, err, "invalid document URI fragment")
+			}
+
 			node = findElementByID(doc, fragment)
 			if xdm.IsNilNode(node) {
 				continue
@@ -318,70 +314,43 @@ func (ec *execContext) documentItemNodes(ctx context.Context, item xdm.Item, bas
 	return nodes, nil
 }
 
-// documentBaseURI walks up a node to its owning Document and returns its URL.
-func documentBaseURI(n xdm.Node) string {
-	for n != nil {
-		if doc, ok := n.(*xdm.Document); ok {
-			return doc.URL()
-		}
-
-		n = n.Parent()
+// documentItemURI resolves only relative references against the selected node
+// or expression base. Absolute URIs do not require a base node to have a URI.
+func (ec *execContext) documentItemURI(ctx context.Context, uri string, item xdm.Item, args []xdm.Sequence) (string, error) {
+	if uripath.URIScheme(uri) != "" {
+		return xpath.ResolveURIReference(uri, "")
 	}
 
-	return ""
-}
-
-// nodeHasDocumentRoot reports whether n belongs to a tree rooted at a
-// Document node (even if that document has no URL/base URI).
-func nodeHasDocumentRoot(n xdm.Node) bool {
-	for n != nil {
-		if _, ok := n.(*xdm.Document); ok {
-			return true
-		}
-
-		n = n.Parent()
+	base := ec.effectiveStaticBaseURI()
+	if captured, present := xpath.ContextBaseURI(ctx); present {
+		base = captured
 	}
 
-	return false
-}
-
-func documentFunctionBaseDir(args []xdm.Sequence, baseDir string) (string, error) {
-	if len(args) >= 2 && args[1] != nil && xdm.SequenceLen(args[1]) > 0 {
-		if ni, ok := args[1].Get(0).(xdm.NodeItem); ok {
-			nodeBase := documentBaseURI(ni.Node)
-			if nodeBase != "" {
-				baseDir = documentBaseDir(nodeBase)
-			} else if !nodeHasDocumentRoot(ni.Node) {
-				// XTDE1162: second argument is an orphan node (no
-				// document root) with no base URI.
-				return "", dynamicError(errCodeXTDE1162,
-					"document() second argument node has no base URI")
-			}
-			// Node belongs to a document tree but the document has no
-			// URL — fall back to the stylesheet-derived baseDir.
+	if len(args) >= 2 {
+		if node, ok := args[1].Get(0).(xdm.NodeItem); ok {
+			base = xpath.NodeBaseURI(node.Node)
 		}
+	} else if node, ok := item.(xdm.NodeItem); ok {
+		base = xpath.NodeBaseURI(node.Node)
+	} else if uri == "" && base == "" {
+		// Preserve the public API's anonymous stylesheet self-document extension.
+		return "", nil
 	}
 
-	return baseDir, nil
-}
-
-func documentArgumentBase(item xdm.Item, defaultDir string, implicitBase bool) (string, error) {
-	itemBaseDir := defaultDir
-
-	if implicitBase {
-		if ni, ok := item.(xdm.NodeItem); ok {
-			if nodeBase := documentBaseURI(ni.Node); nodeBase != "" {
-				itemBaseDir = documentBaseDir(nodeBase)
-			} else if !nodeHasDocumentRoot(ni.Node) {
-				// XTDE1162: first argument node has no base URI
-				// and no document root (parentless text node).
-				return "", dynamicError(errCodeXTDE1162,
-					"document() argument node has no base URI")
-			}
-		}
+	if base == "" {
+		return "", dynamicError(errCodeXTDE1162, "document() relative reference has no base URI")
 	}
 
-	return itemBaseDir, nil
+	if uripath.URIScheme(base) == "" {
+		// Compiler.BaseURI also accepts application-owned local file paths.
+		if uri == "" {
+			return base, nil
+		}
+
+		return resolveModuleURI(uri, base)
+	}
+
+	return xpath.ResolveURIReference(uri, base)
 }
 
 // fnDoc is an XSLT-aware wrapper around fn:doc() that applies
@@ -419,24 +388,17 @@ func (ec *execContext) fnDoc(ctx context.Context, args []xdm.Sequence) (xdm.Sequ
 // loadDocument loads a single XML document by URI, using baseDir for
 // resolving relative paths.
 func (ec *execContext) loadDocument(ctx context.Context, uri string, baseDir string) (*xdm.Document, error) {
-	// Fragment-only URI ("#id") refers to the source document.
-	if strings.HasPrefix(uri, "#") {
-		if ec.sourceDoc != nil {
-			return ec.existingDocumentRead(ctx, ec.sourceDoc)
-		}
-
-		return nil, dynamicError(errCodeFODC0002, "cannot load document %q: no source document", uri)
-	}
-
 	// Empty string means the stylesheet module itself (XSLT spec 14.1).
 	// When called from an included/imported module, return that module's
 	// document, not the top-level stylesheet.
 	// However, if xml:base changes the effective base URI, resolve against
 	// that URI instead (the base URI may point to a different file).
 	if uri == "" {
+		sheet := ec.effectiveStylesheet()
+
 		effectiveBase := ec.effectiveStaticBaseURI()
 		if ec.currentTemplate != nil && ec.currentTemplate.BaseURI != "" {
-			if modDoc, ok := ec.stylesheet.moduleDocs[ec.currentTemplate.BaseURI]; ok {
+			if modDoc, ok := sheet.moduleDocs[ec.currentTemplate.BaseURI]; ok {
 				// Only return the module doc if the effective base URI
 				// matches the template's module. If xml:base overrides,
 				// fall through to load the overridden URI.
@@ -444,10 +406,10 @@ func (ec *execContext) loadDocument(ctx context.Context, uri string, baseDir str
 					return ec.existingDocumentRead(ctx, modDoc)
 				}
 			} else if effectiveBase == ec.currentTemplate.BaseURI || effectiveBase == "" {
-				return ec.existingDocumentRead(ctx, ec.stylesheet.sourceDoc)
+				return ec.existingDocumentRead(ctx, sheet.sourceDoc)
 			}
-		} else if effectiveBase == "" || effectiveBase == ec.stylesheet.baseURI {
-			return ec.existingDocumentRead(ctx, ec.stylesheet.sourceDoc)
+		} else if effectiveBase == "" || effectiveBase == sheet.baseURI {
+			return ec.existingDocumentRead(ctx, sheet.sourceDoc)
 		}
 		// xml:base overrides the base URI — resolve the empty string
 		// against the effective base URI to load the target document.
@@ -468,13 +430,28 @@ func (ec *execContext) loadDocument(ctx context.Context, uri string, baseDir str
 
 	// If the resolved URI matches the source document, return it directly
 	// to preserve node identity (spec: doc(document-uri(X)) is X).
-	if ec.sourceDoc != nil && ec.resolveDocumentURI(ec.sourceDoc.URL(), "") == resolvedURI {
-		return ec.existingDocumentRead(ctx, ec.sourceDoc)
+	if ec.sourceDoc != nil && !ec.sourceDoc.HasProperty(xdm.DocInternal) && ec.resolveDocumentURI(ec.sourceDoc.URL(), "") == resolvedURI {
+		return ec.cachedDocumentRead(ctx, resolvedURI, ec.sourceDoc)
 	}
 
 	cacheKey := ec.docCacheKey(resolvedURI)
 	if doc, ok := ec.docCache[cacheKey]; ok {
-		return ec.existingDocumentRead(ctx, doc)
+		return ec.cachedDocumentRead(ctx, resolvedURI, doc)
+	}
+
+	module, err := ec.stylesheetDocument(ctx, cleanURI, resolvedURI)
+	if err != nil {
+		return nil, err
+	}
+
+	if module != nil {
+		if ec.docCache == nil {
+			ec.docCache = make(map[string]*xdm.Document)
+		}
+
+		ec.docCache[cacheKey] = module
+
+		return ec.cachedDocumentRead(ctx, resolvedURI, module)
 	}
 
 	reader, err := ec.retrieveDocumentReader(ctx, resolvedURI)
@@ -484,16 +461,15 @@ func (ec *execContext) loadDocument(ctx context.Context, uri string, baseDir str
 
 	doc, err := parseXMLResource(ctx, ec.inputParseOptions(), reader, resolvedURI, ec.resourceLimit())
 	if err != nil {
-		return nil, dynamicErrorCause(errCodeFODC0002, err, "cannot parse document %q: %v", uri, err)
+		return nil, documentParsingError(uri, err)
 	}
 
 	doc.SetURL(resolvedURI)
 
-	// Apply xsl:strip-space rules to the loaded document so that
-	// whitespace-only text nodes are removed consistently with how
-	// the source document is treated.
-	if len(ec.effectiveStripSpace()) > 0 {
-		ec.stripWhitespaceFromDoc(doc)
+	// Retain the original tree for packages with different preprocessing rules.
+	doc, err = ec.existingDocumentRead(ctx, doc)
+	if err != nil {
+		return nil, err
 	}
 
 	if ec.docCache == nil {
@@ -510,6 +486,32 @@ func (ec *execContext) loadDocument(ctx context.Context, uri string, baseDir str
 	}
 
 	return doc, nil
+}
+
+// Stylesheet modules are already available XML resources in their declaring
+// package. Cache a normalized alias after the first lookup; graph traversal is
+// charged to the same operation budget as document retrieval.
+func (ec *execContext) stylesheetDocument(ctx context.Context, uri, resolved string) (*xdm.Document, error) {
+	sheet := ec.effectiveStylesheet()
+	if doc := sheet.moduleDocs[uri]; doc != nil {
+		return doc, nil
+	}
+
+	if doc := sheet.moduleDocs[resolved]; doc != nil {
+		return doc, nil
+	}
+
+	for key, doc := range sheet.moduleDocs {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return nil, err
+		}
+
+		if ec.resolveDocumentURI(key, "") == resolved {
+			return doc, nil
+		}
+	}
+
+	return nil, nil
 }
 
 func loadDocumentEffectiveAccumulators(ctx context.Context, ec *execContext, doc *xdm.Document) error {
@@ -529,6 +531,14 @@ func loadDocumentEffectiveAccumulators(ctx context.Context, ec *execContext, doc
 	return nil
 }
 
+func documentParsingError(uri string, err error) error {
+	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+		return err
+	}
+
+	return dynamicErrorCause(errCodeFODC0002, err, "cannot parse document %q: %v", uri, err)
+}
+
 func documentRetrievalError(uri string, err error) error {
 	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
 		return err
@@ -543,12 +553,29 @@ func documentRetrievalError(uri string, err error) error {
 
 func (ec *execContext) existingDocumentRead(ctx context.Context, doc *xdm.Document) (*xdm.Document, error) {
 	if doc != nil {
+		prepared, err := ec.prepareInputNode(ctx, doc)
+		if err != nil {
+			return nil, err
+		}
+
+		doc = prepared.(*xdm.Document) //nolint:forcetypeassert // preprocessing retains node kinds
+	}
+
+	if doc != nil && !doc.HasProperty(xdm.DocInternal) {
 		if err := ec.RecordRead(ctx, doc.URL()); err != nil {
 			return nil, err
 		}
 	}
 
 	return doc, nil
+}
+
+func (ec *execContext) cachedDocumentRead(ctx context.Context, uri string, doc *xdm.Document) (*xdm.Document, error) {
+	if err := ec.RecordRead(ctx, uri); err != nil {
+		return nil, err
+	}
+
+	return ec.existingDocumentRead(ctx, doc)
 }
 
 func (ec *execContext) retrieveDocumentReader(ctx context.Context, uri string) (io.ReadCloser, error) {
@@ -620,7 +647,14 @@ func (ec *execContext) resourceLimit() int64 {
 // for runtime XML parses (nil = hardened default).
 func (ec *execContext) inputParseOptions() *xdm.ParseOptions {
 	if ec != nil && ec.transformConfig != nil {
-		return ec.transformConfig.parseOptions
+		if configured := ec.transformConfig.parseOptions; configured != nil {
+			options := *configured
+			if options.AllowDTD {
+				options.DTDOpen = ec.retrieveDocumentReader
+			}
+
+			return &options
+		}
 	}
 
 	return nil

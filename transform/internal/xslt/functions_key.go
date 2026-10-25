@@ -14,6 +14,7 @@ import (
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -366,19 +367,20 @@ func fnAvailableSystemProperties(_ context.Context, _ []xdm.Sequence) (xdm.Seque
 
 // unparsed-entity-uri(name [, doc]) returns the URI of an unparsed entity.
 func (ec *execContext) fnUnparsedEntityURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return ec.emptyUnparsedEntity(ctx, args, "unparsed-entity-uri", errCodeXTDE1370)
+	return ec.unparsedEntity(ctx, args, "unparsed-entity-uri", errCodeXTDE1370)
 }
 
 // unparsed-entity-public-id(name) returns the public identifier of an unparsed entity.
 func (ec *execContext) fnUnparsedEntityPublicID(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return ec.emptyUnparsedEntity(ctx, args, "unparsed-entity-public-id", errCodeXTDE1380)
+	return ec.unparsedEntity(ctx, args, "unparsed-entity-public-id", errCodeXTDE1380)
 }
 
 // xslMultiArityFunc wraps multiple xsl:function overloads (same QName,
 // different arity) as a single xpath.Function that dispatches by arg count.
 
-// emptyUnparsedEntity validates the document context in the DTD-free input model.
-func (ec *execContext) emptyUnparsedEntity(ctx context.Context, args []xdm.Sequence, functionName, errorCode string) (xdm.Sequence, error) {
+// unparsedEntity retains the prescribed context checks before looking up
+// identifiers from the parsed document, without retrieving an unparsed entity.
+func (ec *execContext) unparsedEntity(ctx context.Context, args []xdm.Sequence, functionName, errorCode string) (xdm.Sequence, error) {
 	var item xdm.Item
 	if len(args) == 2 {
 		item = args[1].Get(0) // The declared node() signature enforces cardinality.
@@ -404,15 +406,39 @@ func (ec *execContext) emptyUnparsedEntity(ctx context.Context, args []xdm.Seque
 		return nil, dynamicError(errCodeXPTY0004, "%s requires a node", functionName)
 	}
 
-	if documentNodeFromNode(node.Node) == nil {
+	doc := documentNodeFromNode(node.Node)
+	if doc == nil {
 		return nil, dynamicError(errorCode, "%s requires a document-rooted tree", functionName)
 	}
 
-	if functionName == nameUnparsedEntityUri {
-		return xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: ""}}, nil
+	atom, err := xpath.AtomizeItem(args[0].Get(0))
+	if err != nil {
+		return nil, err
 	}
 
-	return xdm.SingleString(""), nil
+	name, err := xpath.AtomicToString(atom)
+	if err != nil {
+		return nil, err
+	}
+
+	entity, found := doc.UnparsedEntity(name)
+	value := ""
+
+	if found {
+		value = entity.PublicID
+		if functionName == nameUnparsedEntityUri {
+			value, err = uripath.ResolveIRIReference(entity.SystemID, entity.BaseURI)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	if functionName == nameUnparsedEntityUri {
+		return xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: value}}, nil
+	}
+
+	return xdm.SingleString(value), nil
 }
 
 // documentNodeFromNode walks up to the root of a node's tree and returns

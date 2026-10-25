@@ -12,6 +12,66 @@ import (
 	"github.com/skarm/xmlsec/transform"
 )
 
+func relativeNamespaceExpressions() map[string]string {
+	return map[string]string{
+		`namespace-uri(parse-xml('<p:r xmlns:p="relative" xml:base="https://example.test/"/>')/*)`:                "relative",
+		`namespace-uri(parse-xml('<r xmlns="../relative#name"/>')/*)`:                                             "../relative#name",
+		`namespace-uri(parse-xml-fragment('<p:r xmlns:p="relative"/><r/>')/*[1])`:                                 "relative",
+		`let $d := parse-xml('<r xmlns:a="%7e" xmlns:b="%7E" a:x="1" b:x="2"/>') return count($d/r/@*)`:           "2",
+		`let $d := parse-xml('<r xmlns:a="relative" xmlns:b="relative" a:x="1" b:x="2"/>') return count($d/r/@*)`: errCodeFODC0006,
+	}
+}
+
+func TestRelativeNamespaceLanguageInput(t *testing.T) {
+	e := engine(t, transform.Config{})
+	const source = `<p:r xmlns:p="relative" xml:base="https://example.test/"><p:child p:a="v"/></p:r>`
+	for _, read := range []func() (*transform.Document, error){
+		func() (*transform.Document, error) { return e.Parse(t.Context(), []byte(source)) },
+		func() (*transform.Document, error) { return e.ParseReader(t.Context(), strings.NewReader(source)) },
+	} {
+		doc, err := read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := query(t, e, `namespace-uri(/*/*)`, transform.XPath31).Evaluate(t.Context(), doc, transform.XPathContext{})
+		if err != nil || text(t, got) != "relative" {
+			t.Fatal(got, err)
+		}
+		exported, err := e.Export(t.Context(), doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if exported.Root().Name().Space != "relative" || exported.Root().Children()[0].Name().Space != "relative" {
+			t.Fatal("namespace URI was resolved against xml:base")
+		}
+		if _, err := document.Parse(t.Context(), []byte(source), document.DefaultLimits()); !errors.Is(err, document.ErrUnsupported) {
+			t.Fatal("security parser accepted a relative namespace", err)
+		}
+	}
+	compiled := stylesheet(t, e, sheet(version30, `<xsl:template match="/"><xsl:value-of select="namespace-uri(/*)"/></xsl:template>`))
+	var out bytes.Buffer
+	_, err := compiled.WriteRecords(t.Context(), &out, strings.NewReader(source), transform.StreamOptions{Records: document.RecordOptions{Path: []document.Name{{Space: "relative", Local: "r"}, {Space: "relative", Local: "child"}}}})
+	if err != nil || out.String() != "relative" {
+		t.Fatal("record input has a different namespace policy", out.String(), err)
+	}
+	for expression, want := range relativeNamespaceExpressions() {
+		value, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+		if comparisonErrorCode(want) {
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != want {
+				t.Fatal(expression, err, want)
+			}
+		} else if got := text(t, value); err != nil || got != want {
+			t.Fatal(expression, got, err, want)
+		}
+	}
+	for _, source := range []string{`<r xmlns:xml="relative"/>`, `<r xmlns:p="http://www.w3.org/XML/1998/namespace"/>`, `<r xmlns:xmlns="relative"/>`, `<r xmlns:p=""/>`, `<r xmlns="http://www.w3.org/2000/xmlns/"/>`} {
+		if _, err := e.Parse(t.Context(), []byte(source)); err == nil {
+			t.Fatal("reserved namespace accepted", source)
+		}
+	}
+}
+
 func TestParseXMLCharacterInput(t *testing.T) {
 	e := engine(t, transform.Config{})
 
@@ -31,7 +91,6 @@ func TestParseXMLCharacterInput(t *testing.T) {
 			`<?xml version="1.0" encoding="ISO-8859-1" encoding="UTF-8"?><r/>`,
 			`<?xml version="1.1" encoding="UTF-16"?><r/>`,
 			`<?xml version="1.0" standalone="perhaps"?><r/>`,
-			`<?xml version="1.0" encoding="ISO-8859-1"?><!DOCTYPE r><r/>`,
 		} {
 			_, err := query(t, e, `parse-xml($source)`, version).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: sourceName}: transform.Values(transform.String(source))}})
 
@@ -515,6 +574,154 @@ func TestXSLTDefaultNamespaceInheritance(t *testing.T) {
 			got, err := resourceStylesheetResult(t, e, source, true)
 			if err != nil || got != nameTrue {
 				t.Fatal(got, err)
+			}
+		})
+	}
+}
+
+func TestXMLBaseURIReferences(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, base := range []string{"https://example.test/modules/main.xml", "file:///modules/main.xml", "file:///C:/modules/main.xml"} {
+		for _, reference := range []string{"?query", "#fragment", "", "dir/"} {
+			want := base + reference
+			if reference == "dir/" {
+				want = base[:strings.LastIndexByte(base, '/')+1] + reference
+			}
+			program, err := e.CompileXPath(t.Context(), `string(base-uri(parse-xml($xml)/*))`, transform.XPathOptions{Version: transform.XPath31, BaseURI: base})
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, err := program.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "xml"}: transform.Values(transform.String(`<r xml:base="` + reference + `"/>`))}})
+			if err != nil || text(t, value) != want {
+				t.Fatal(base, reference, value, err, want)
+			}
+		}
+	}
+}
+
+type languageDTDCase struct{ name, expression, want string }
+
+func languageDTDCases() []languageDTDCase {
+	return []languageDTDCase{
+		{"empty DTD", `string(parse-xml('<!DOCTYPE r><r>ok</r>'))`, "ok"},
+		{"character declaration", `string(parse-xml('<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE r><r>é</r>'))`, "é"},
+		{"text entity", `string(parse-xml('<!DOCTYPE r [<!ENTITY e "ok">]><r>&e;</r>'))`, "ok"},
+		{"markup entity", `name(parse-xml('<!DOCTYPE r [<!ENTITY e "<n/>">]><r>&e;</r>')/r/*)`, "n"},
+		{"nested entities", `string(parse-xml('<!DOCTYPE r [<!ENTITY a "ok"><!ENTITY b "&a;&a;">]><r>&b;</r>'))`, "okok"},
+		{"default attribute", `string(parse-xml('<!DOCTYPE r [<!ATTLIST r a CDATA "a&amp;b">]><r/>')/r/@a)`, "a&b"},
+		{"explicit attribute", `string(parse-xml('<!DOCTYPE r [<!ATTLIST r a CDATA "default">]><r a="explicit"/>')/r/@a)`, "explicit"},
+		{"token normalization", `string(parse-xml('<!DOCTYPE r [<!ATTLIST r a NMTOKENS #IMPLIED>]><r a=" a&#9; b "/>')/r/@a)`, "a\t b"},
+		{"default namespace", `namespace-uri(parse-xml('<!DOCTYPE r [<!ATTLIST r xmlns CDATA "urn:r">]><r/>')/*)`, "urn:r"},
+		{"default prefixed attribute", `string(parse-xml('<!DOCTYPE r [<!ATTLIST r xmlns:p CDATA "urn:p" p:a CDATA "v">]><r/>')/r/@Q{urn:p}a)`, "v"},
+		{"ID flags", `let $d:=parse-xml('<!DOCTYPE r [<!ATTLIST n identity ID #REQUIRED>]><r><n identity="n1"/></r>') return count(id('n1',$d))`, "1"},
+		{"IDREF flags", `let $d:=parse-xml('<!DOCTYPE r [<!ATTLIST n refs IDREFS #IMPLIED>]><r><n refs="a b"/></r>') return count(idref('b',$d))`, "1"},
+		{"untyped attributes", `let $d:=parse-xml('<!DOCTYPE r [<!ATTLIST r a NMTOKEN "v">]><r/>') return data($d/r/@a) instance of xs:untypedAtomic`, "true"},
+		{"parameter declaration", `string(parse-xml('<!DOCTYPE r [<!ENTITY % d ''<!ENTITY e "ok">''>%d;]><r>&e;</r>'))`, "ok"},
+		{"declaration first wins", `string(parse-xml('<!DOCTYPE r [<!ENTITY e "first"><!ENTITY e "second">]><r>&e;</r>'))`, "first"},
+		{"content CR", `string-join(string-to-codepoints(string(parse-xml('<!DOCTYPE r [<!ENTITY e "&#13;&#9;">]><r>&e;</r>')))!string(.),',')`, "13,9"},
+		{"attribute CR", `string-join(string-to-codepoints(string(parse-xml('<!DOCTYPE r [<!ENTITY e "&#13;&#9;">]><r a="&e;"/>')/r/@a))!string(.),',')`, "32,32"},
+		{"comment CR", `string-join(string-to-codepoints(string(parse-xml('<!DOCTYPE r [<!ENTITY e "<!--&#13;-->">]><r>&e;</r>')/r/comment()))!string(.),',')`, "13"},
+		{"PI CR", `string-join(string-to-codepoints(string(parse-xml('<!DOCTYPE r [<!ENTITY e "<?p x&#13;?>">]><r>&e;</r>')/r/processing-instruction()))!string(.),',')`, "120,13"},
+		{"CDATA CR", `string-join(string-to-codepoints(string(parse-xml('<!DOCTYPE r [<!ENTITY e "<![CDATA[&#13;]]>">]><r>&e;</r>')))!string(.),',')`, "13"},
+		{"double escaped amp", `string(parse-xml('<!DOCTYPE r [<!ENTITY e "&#38;#38;">]><r>&e;</r>'))`, "&"},
+		{"predefined declarations", `string(parse-xml('<!DOCTYPE r [<!ENTITY amp "&#38;#38;"><!ENTITY lt "&#38;#60;"><!ENTITY gt "&#62;">]><r>&amp;&lt;&gt;</r>'))`, "&<>"},
+		{"quoted delimiters", `string(parse-xml('<!DOCTYPE r [<!-- ] > --><!ENTITY e "]>">]><r>&e;</r>'))`, "]>"},
+		{"document URI absent", `exists(document-uri(parse-xml('<!DOCTYPE r><r/>')))`, "false"},
+		{"malformed declaration", `parse-xml('<!DOCTYPE r [<!ELEMENT r (a|)>]><r/>')`, errCodeFODC0006},
+		{"recursive entity", `parse-xml('<!DOCTYPE r [<!ENTITY e "&e;">]><r>&e;</r>')`, errCodeFODC0006},
+		{"unbalanced entity", `parse-xml('<!DOCTYPE r [<!ENTITY e "<n>">]><r>&e;</n></r>')`, errCodeFODC0006},
+		{"external attribute entity", `parse-xml('<!DOCTYPE r [<!ENTITY e SYSTEM "urn:e">]><r a="&e;"/>')`, errCodeFODC0006},
+		{"invalid predefined entity", `parse-xml('<!DOCTYPE r [<!ENTITY amp "wrong">]><r/>')`, errCodeFODC0006},
+		{"late XML declaration", `parse-xml('<!DOCTYPE r><?xml version="1.0"?><r/>')`, errCodeFODC0006},
+		{"entity NCName", `parse-xml('<!DOCTYPE r [<!ENTITY p:e "v">]><r/>')`, errCodeFODC0006},
+		{"notation NCName", `parse-xml('<!DOCTYPE r [<!NOTATION p:n SYSTEM "urn:n">]><r/>')`, errCodeFODC0006},
+		{"DTD PI NCName", `parse-xml('<!DOCTYPE r [<?p:n v?>]><r/>')`, errCodeFODC0006},
+		{"notation enumeration NCName", `parse-xml('<!DOCTYPE r [<!ATTLIST r a NOTATION (p:n) #IMPLIED>]><r/>')`, errCodeFODC0006},
+		{"notation enumeration", `string(parse-xml('<!DOCTYPE r [<!ATTLIST r a NOTATION (n|m) "n">]><r/>')/r/@a)`, "n"},
+		{"NMTOKEN enumeration", `string(parse-xml('<!DOCTYPE r [<!ATTLIST r a (1|p:n) "p:n">]><r/>')/r/@a)`, "p:n"},
+		{"fragment rejects DTD", `parse-xml-fragment('<!DOCTYPE r><r/>')`, errCodeFODC0006},
+	}
+}
+
+func TestLanguageDTDContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range languageDTDCases() {
+		t.Run(test.name, func(t *testing.T) {
+			value, err := query(t, e, test.expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if test.want == errCodeFODC0006 {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != test.want {
+					t.Fatal(value, err, test.want)
+				}
+			} else if err != nil || text(t, value) != test.want {
+				t.Fatal(value, err, test.want)
+			}
+		})
+	}
+}
+
+func FuzzLanguageXML(f *testing.F) {
+	for _, source := range []string{`<r/>`, `<!DOCTYPE r><r/>`, `<!DOCTYPE r [<!ENTITY e "&#13;">]><r>&e;</r>`, `<!DOCTYPE r [<!ENTITY % p '<!ENTITY e "v">'>%p;]><r>&e;</r>`, `<!DOCTYPE r [<!ATTLIST r a ID "n">]><r/>`, `<!DOCTYPE r [<!ENTITY e "&e;">]><r>&e;</r>`} {
+		f.Add(source)
+	}
+	e, err := transform.NewEngine(transform.Config{Limits: transform.Limits{MaxInputBytes: 16384, MaxNodes: 256, MaxDepth: 32, MaxOutputBytes: 32768}})
+	if err != nil {
+		f.Fatal(err)
+	}
+	q, err := e.CompileXPath(f.Context(), `parse-xml($source)`, transform.XPathOptions{Version: transform.XPath31})
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Fuzz(func(t *testing.T, source string) {
+		if len(source) > 16384 {
+			return
+		}
+		value, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: sourceName}: transform.Values(transform.String(source))}})
+		if err != nil && value.Len() != 0 {
+			t.Fatal("partial XML result on failure", value, err)
+		}
+	})
+}
+
+func languageDTDCopyCases() []languageDTDCase {
+	const selectSource = `parse-xml('&lt;!DOCTYPE r [&lt;!ATTLIST n identity ID #IMPLIED refs IDREFS #IMPLIED>]>&lt;r>&lt;n identity="a" refs="a"/>&lt;/r>')`
+	var cases []languageDTDCase
+	for _, validation := range []string{"strip", "preserve"} {
+		for _, construction := range []string{
+			`<xsl:copy-of select="$d" validation="` + validation + `"/>`,
+			`<xsl:document validation="` + validation + `"><xsl:copy-of select="$d/r"/></xsl:document>`,
+			`<xsl:document><r><n><xsl:copy-of select="$d/r/n/@*" validation="` + validation + `"/></n></r></xsl:document>`,
+			`<xsl:document><r><n><xsl:for-each select="$d/r/n/@*"><xsl:copy validation="` + validation + `"/></xsl:for-each></n></r></xsl:document>`,
+			`<xsl:document><xsl:copy-of select="$d/r" copy-namespaces="no" validation="` + validation + `"/></xsl:document>`,
+		} {
+			body := `<xsl:output method="text"/><xsl:template name="start"><xsl:variable name="d" select="` + strings.ReplaceAll(selectSource, `"`, `&quot;`) + `"/><xsl:variable name="c" as="document-node()">` + construction + `</xsl:variable><xsl:value-of select="concat(count(id('a',$c)),'|',count(idref('a',$c)))"/></xsl:template>`
+			cases = append(cases, languageDTDCase{validation + " " + construction, body, "1|1"})
+		}
+	}
+	const entities = `parse-xml('&lt;!DOCTYPE r [&lt;!NOTATION n SYSTEM "urn:n">&lt;!ENTITY image PUBLIC "identifier" "urn:image" NDATA n>]>&lt;r/>')`
+	for construction, want := range map[string]string{
+		`<xsl:copy-of select="$d"/>`:                              "urn:image|identifier",
+		`<xsl:for-each select="$d"><xsl:copy/></xsl:for-each>`:    "urn:image|identifier",
+		`<xsl:document><xsl:copy-of select="$d"/></xsl:document>`: "|",
+	} {
+		body := `<xsl:output method="text"/><xsl:template name="start"><xsl:variable name="d" select="` + strings.ReplaceAll(entities, `"`, `&quot;`) + `"/><xsl:variable name="c" as="document-node()">` + construction + `</xsl:variable><xsl:value-of select="concat(unparsed-entity-uri('image',$c),'|',unparsed-entity-public-id('image',$c))"/></xsl:template>`
+		cases = append(cases, languageDTDCase{"unparsed entities " + construction, body, want})
+	}
+
+	return cases
+}
+
+func TestLanguageDTDCopies(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range languageDTDCopyCases() {
+		t.Run(test.name, func(t *testing.T) {
+			compiled, err := e.CompileXSLT(t.Context(), []byte(sheet(version30, test.expression)), transform.XSLTOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+			if err != nil || string(got.Primary) != test.want {
+				t.Fatal(got, err, test.want)
 			}
 		})
 	}

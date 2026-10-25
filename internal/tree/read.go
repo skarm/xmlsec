@@ -23,23 +23,23 @@ import (
 // ParseReader constructs a snapshot incrementally, without retaining source XML.
 // The snapshot itself occupies memory proportional to its nodes and text.
 func ParseReader(ctx context.Context, src io.Reader, limits Limits) (*Document, error) {
-	return parseXMLReader(ctx, src, limits, false, false)
+	return parseXMLReader(ctx, src, limits, false, false, false)
 }
 
 // ParseReaderWithSingleByteEncodings additionally accepts declared, ASCII-
 // compatible IANA single-byte encodings. The DTD-free grammar and limits remain.
 func ParseReaderWithSingleByteEncodings(ctx context.Context, src io.Reader, limits Limits) (*Document, error) {
-	return parseXMLReader(ctx, src, limits, false, true)
+	return parseXMLReader(ctx, src, limits, false, true, false)
 }
 
 // ParseText parses Unicode characters. A declaration's encoding has no effect
 // on characters already decoded by the caller, but its grammar is still checked.
 func ParseText(ctx context.Context, text string, limits Limits) (*Document, error) {
-	return parseXMLReader(ctx, strings.NewReader(text), limits, true, false)
+	return parseXMLReader(ctx, strings.NewReader(text), limits, true, false, false)
 }
 
-func parseXMLReader(ctx context.Context, src io.Reader, limits Limits, characterInput, singleByteEncodings bool) (*Document, error) {
-	parser, err := newDocumentReader(ctx, src, limits, characterInput, singleByteEncodings)
+func parseXMLReader(ctx context.Context, src io.Reader, limits Limits, characterInput, singleByteEncodings, relativeNamespaces bool) (*Document, error) {
+	parser, err := newDocumentReader(ctx, src, limits, characterInput, singleByteEncodings, relativeNamespaces)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func parseXMLReader(ctx context.Context, src io.Reader, limits Limits, character
 // CheckXMLProlog validates XML through the first complete element start tag.
 // It uses the document parser's encoding, namespace, DTD and resource policy.
 func CheckXMLProlog(ctx context.Context, src io.Reader, limits Limits, singleByteEncodings bool) error {
-	parser, err := newDocumentReader(ctx, src, limits, false, singleByteEncodings)
+	parser, err := newDocumentReader(ctx, src, limits, false, singleByteEncodings, false)
 	if err != nil {
 		return err
 	}
@@ -72,7 +72,7 @@ func CheckXMLProlog(ctx context.Context, src io.Reader, limits Limits, singleByt
 	return err
 }
 
-func newDocumentReader(ctx context.Context, src io.Reader, limits Limits, characterInput, singleByteEncodings bool) (documentParser, error) {
+func newDocumentReader(ctx context.Context, src io.Reader, limits Limits, characterInput, singleByteEncodings, relativeNamespaces bool) (documentParser, error) {
 	if ctx == nil || nilcheck.IsNil(src) {
 		return documentParser{}, ErrMalformed
 	}
@@ -89,6 +89,7 @@ func newDocumentReader(ctx context.Context, src io.Reader, limits Limits, charac
 	parser := readerParser(input, limits)
 	parser.characterInput = characterInput
 	parser.singleByteEncodings = singleByteEncodings
+	parser.relativeNamespaces = relativeNamespaces
 
 	return parser, nil
 }
@@ -116,6 +117,7 @@ type xmlInput struct {
 	hasPending       bool
 	outside          bool
 	ascii            bool
+	dtdProbe         bool
 }
 
 func newXMLInput(ctx context.Context, src io.Reader, maximum int64, tokenLimit int) (*xmlInput, error) {
@@ -263,6 +265,10 @@ func (r *xmlInput) utf16Rune() (rune, error) {
 }
 
 func (r *xmlInput) singleByteEncoding(label string) error {
+	if strings.EqualFold(label, "ASCII") {
+		label = "US-ASCII"
+	}
+
 	codec, err := ianaindex.IANA.Encoding(label)
 	if err != nil || codec == nil {
 		return fmt.Errorf("%w: unknown XML encoding", ErrUnsupported)
@@ -308,7 +314,7 @@ func (r *xmlInput) nextUnit() ([]byte, error) {
 			return nil, fmt.Errorf("%w: XML token bytes", ErrLimit)
 		}
 
-		complete, err := lexicalUnitComplete(unit, markup, quote, inReference)
+		complete, err := r.unitComplete(unit, markup, quote, inReference)
 		if err != nil {
 			return nil, err
 		}
@@ -317,13 +323,9 @@ func (r *xmlInput) nextUnit() ([]byte, error) {
 			break
 		}
 
-		value, e := r.rune()
-		if errors.Is(e, io.EOF) && !markup {
-			break
-		}
-
+		value, e := r.unitRune(markup)
 		if errors.Is(e, io.EOF) {
-			return nil, fmt.Errorf("%w: unterminated XML token", ErrMalformed)
+			break
 		}
 
 		if e != nil {
@@ -348,7 +350,7 @@ func (r *xmlInput) nextUnit() ([]byte, error) {
 		unit = utf8.AppendRune(unit, value)
 	}
 
-	if r.outside && (!markup && !IsXMLSpace(string(unit)) || bytes.HasPrefix(unit, []byte("<![CDATA["))) {
+	if r.outside && (!markup && len(bytes.Trim(unit, " \t\r\n")) != 0 || bytes.HasPrefix(unit, []byte("<![CDATA["))) {
 		return nil, fmt.Errorf("%w: content outside root", ErrMalformed)
 	}
 
@@ -407,10 +409,8 @@ func lexicalUnitComplete(unit []byte, markup bool, quote rune, inReference bool)
 		return len(unit) >= 4 && bytes.HasSuffix(unit, []byte("?>")), nil
 	case bytes.HasPrefix(unit, []byte("<!")):
 		// Partial declaration openers are accepted only until they can be classified.
-		candidate := string(unit)
-
-		comment, cdata := "<!--", "<![CDATA["
-		if !strings.HasPrefix(comment, candidate) && !strings.HasPrefix(cdata, candidate) {
+		comment, cdata := []byte("<!--"), []byte("<![CDATA[")
+		if !bytes.HasPrefix(comment, unit) && !bytes.HasPrefix(cdata, unit) {
 			return false, ErrUnsupported
 		}
 
@@ -438,4 +438,25 @@ func lexicalQuote(unit []byte, value, quote rune) rune {
 	}
 
 	return 0
+}
+
+func (r *xmlInput) unitComplete(unit []byte, markup bool, quote rune, inReference bool) (bool, error) {
+	if r.dtdProbe && len(unit) <= len(dtdDoctypeOpen) && bytes.Equal(unit, []byte(dtdDoctypeOpen)[:len(unit)]) {
+		if len(unit) == len(dtdDoctypeOpen) {
+			return false, errDTDPresent
+		}
+
+		return false, nil
+	}
+
+	return lexicalUnitComplete(unit, markup, quote, inReference)
+}
+
+func (r *xmlInput) unitRune(markup bool) (rune, error) {
+	value, err := r.rune()
+	if markup && errors.Is(err, io.EOF) {
+		return 0, fmt.Errorf("%w: unterminated XML token", ErrMalformed)
+	}
+
+	return value, err
 }

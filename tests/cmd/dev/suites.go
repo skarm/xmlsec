@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -116,6 +117,7 @@ type suiteNode struct {
 	Text       string       `xml:",chardata"`
 	Children   []*suiteNode `xml:",any"`
 	namespaces map[string]string
+	baseURI    string
 }
 
 func (n *suiteNode) attr(name string) string {
@@ -465,12 +467,31 @@ func readSuiteNode(root, base, name string) (*suiteNode, string, error) {
 		return nil, "", fmt.Errorf("suite catalog XML: %w", err)
 	}
 
-	bindSuiteNamespaces(&node, nil)
+	if err := bindSuiteStaticContext(&node, nil, suiteFileURI(path)); err != nil {
+		return nil, "", err
+	}
 
 	return &node, path, nil
 }
 
-func bindSuiteNamespaces(node *suiteNode, inherited map[string]string) {
+func bindSuiteStaticContext(node *suiteNode, inherited map[string]string, baseURI string) error {
+	node.baseURI = baseURI
+	for _, attribute := range node.Attributes {
+		if attribute.Name.Space == "http://www.w3.org/XML/1998/namespace" && attribute.Name.Local == "base" {
+			base, err := url.Parse(baseURI)
+			if err != nil {
+				return err
+			}
+
+			ref, err := url.Parse(attribute.Value)
+			if err != nil {
+				return err
+			}
+
+			node.baseURI = base.ResolveReference(ref).String()
+		}
+	}
+
 	node.namespaces = inherited
 	for _, attribute := range node.Attributes {
 		if attribute.Name.Space == "xmlns" {
@@ -483,8 +504,12 @@ func bindSuiteNamespaces(node *suiteNode, inherited map[string]string) {
 	}
 
 	for _, child := range node.Children {
-		bindSuiteNamespaces(child, node.namespaces)
+		if err := bindSuiteStaticContext(child, node.namespaces, node.baseURI); err != nil {
+			return err
+		}
 	}
+
+	return nil
 }
 
 func writeSuiteReport(path string, out io.Writer, report *suiteReport) error {

@@ -52,8 +52,8 @@ func (d *xmlTokenizer) RawToken() (xml.Token, error) {
 
 		return xml.ProcInst{Target: string(content[:end]), Inst: content[lexicalSpaceEnd(content, end):]}, nil
 	case bytes.HasPrefix(unit, []byte("</")):
-		name := strings.TrimRight(string(unit[2:len(unit)-1]), " \t\r\n")
-		return xml.EndElement{Name: tokenName(name)}, nil
+		name := bytes.TrimRight(unit[2:len(unit)-1], " \t\r\n")
+		return xml.EndElement{Name: tokenName(string(name))}, nil
 	case unit[0] == '<':
 		start, empty, err := startToken(unit)
 		if err != nil {
@@ -149,7 +149,7 @@ func tokenValue(value []byte, attribute bool) ([]byte, error) {
 		var r rune
 
 		switch entity {
-		case "amp":
+		case entityAmp:
 			r = '&'
 		case "lt":
 			r = '<'

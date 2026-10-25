@@ -118,7 +118,7 @@ func TestParseUsesProjectParser(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, xml := range []string{`<r xmlns="urn:r">a<![CDATA[b]]>&amp;c<!--note--><?pi v?></r>`, `<r p:a="1"/>`, `<!DOCTYPE r [<!ENTITY x "value">]><r>&x;</r>`, `<r xmlns:p="relative"/>`, `<r a="1" a="2"/>`} {
+	for _, xml := range []string{`<r xmlns="urn:r">a<![CDATA[b]]>&amp;c<!--note--><?pi v?></r>`, `<r p:a="1"/>`, `<!DOCTYPE r [<!ENTITY x "value">]><r>&x;</r>`, `<r a="1" a="2"/>`} {
 		d, parseErr := document.Parse(t.Context(), []byte(xml), document.DefaultLimits())
 
 		view, viewErr := e.Parse(context.Background(), []byte(xml))

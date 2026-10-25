@@ -534,6 +534,15 @@ func (ec *execContext) functionInvocation(ctx context.Context) *execContext {
 	local.preservedIDAnnotations = maps.Clone(ec.preservedIDAnnotations)
 	local.nilledElements = maps.Clone(ec.nilledElements)
 	local.validatedDocs = maps.Clone(ec.validatedDocs)
+	// Input tree copies are immutable lexical context, like captured globals.
+	// Clone the indexes so later invocations can add their own prepared trees.
+	local.inputTrees = maps.Clone(ec.inputTrees)
+	local.inputOriginalNodes = maps.Clone(ec.inputOriginalNodes)
+	local.cacheInputDocument(ec.sourceDoc)
+
+	if item, ok := ec.globalContextItem.(xdm.NodeItem); ok {
+		local.cacheInputDocument(item.Node)
+	}
 
 	return local
 }

@@ -71,7 +71,7 @@ func (e *Engine) languageContext(ctx context.Context) context.Context {
 
 func (e *Engine) transformFunction(baseURI string) xpath.Function {
 	options := []xslt.TransformOption{
-		xslt.WithTransformBaseURI(baseURI), xslt.WithTransformParseOptions(e.parseOptions()),
+		xslt.WithTransformBaseURI(baseURI), xslt.WithTransformParseOptions(e.languageParseOptions()),
 		xslt.WithTransformMaxResourceBytes(int64(e.limits.MaxInputBytes)),
 		xslt.WithTransformCollectionResolver(e.collectionResolver()),
 	}

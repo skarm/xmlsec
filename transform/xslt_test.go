@@ -67,6 +67,33 @@ func TestXSLTResultDelivery(t *testing.T) {
 		})
 	}
 
+	for _, mode := range []string{"shallow-copy", "deep-copy"} {
+		source := sheet(version30, `<xsl:mode on-no-match="`+mode+`"/><xsl:template name="start"><xsl:apply-templates select="parse-xml('&lt;r/>')"/></xsl:template>`)
+		result, err := stylesheet(t, e, source).Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, ResultMode: transform.ResultRaw})
+		if err != nil {
+			t.Fatal(mode, err)
+		}
+		value, err := query(t, e, `$result instance of document-node() and count($result/r) eq 1`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: resultBindingName}: result.Primary()}})
+		if err != nil || text(t, value) != nameTrue {
+			t.Fatal(mode, value, err)
+		}
+	}
+
+	for _, mode := range []string{"shallow-copy", "deep-copy"} {
+		for _, selection := range []string{"@a", "namespace::p"} {
+			source := sheet(version30, `<xsl:mode on-no-match="`+mode+`"/><xsl:template name="start"><xsl:apply-templates select="parse-xml('&lt;r xmlns:p=&quot;urn:p&quot; a=&quot;v&quot;/>')/r/`+selection+`"/></xsl:template>`)
+			result, err := stylesheet(t, e, source).Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, ResultMode: transform.ResultRaw})
+			if err != nil || result.Primary().Len() != 1 {
+				t.Fatal(mode, selection, result, err)
+			}
+			value, err := result.Primary().Single()
+			node, ok := value.Node()
+			if err != nil || !ok || node.Kind() != map[string]string{"@a": "attribute", "namespace::p": "namespace"}[selection] {
+				t.Fatal(mode, selection, node, err)
+			}
+		}
+	}
+
 	for _, item := range []string{emptyMapExpression, `string#1`, `parse-xml('<r a="x"/>')/r/@a`, `parse-xml('<r/>')/r/namespace::xml`} {
 		var escaped strings.Builder
 		if err := xml.EscapeText(&escaped, []byte(item)); err != nil {
@@ -1443,6 +1470,61 @@ func TestXSLTHostFunctionContracts(t *testing.T) {
 	}
 }
 
+func conditionalCompilationCases() []hostFunctionCase {
+	return []hostFunctionCase{
+		{"excluded type", "", `<xsl:element use-when="false()" type="xs:string" name="n"/>ok`, "ok", "ok"},
+		{"excluded subtree", "", `<xsl:if use-when="false()" test="true()"><xsl:element type="xs:string"/><xsl:text use-when="error()">bad</xsl:text></xsl:if>ok`, "ok", "ok"},
+		{"excluded template attributes", `<xsl:template name="unused" use-when="false()" bogus="x"><xsl:element type="xs:string"/></xsl:template>`, "ok", "ok", "ok"},
+		{"empty condition", "", `<xsl:text use-when="">bad</xsl:text>ok`, "XPST0003", "XPST0003"},
+		{"instruction type namespace", "", `<xsl:text xpath-default-namespace="http://www.w3.org/2001/XMLSchema" use-when="1 instance of integer">ok</xsl:text>`, "ok", "ok"},
+		{"literal type namespace", "", `<n xsl:xpath-default-namespace="http://www.w3.org/2001/XMLSchema" xsl:use-when="1 instance of integer">ok</n>`, "ok", "ok"},
+		{"shadow exclusion", "", `<xsl:value-of _use-when="false()" select="error()"/>ok`, "XTSE0090", "ok"},
+		{"shadow precedence", "", `<xsl:value-of use-when="error()" _use-when="false()" select="error()"/>ok`, "FOER0000", "ok"},
+		{"shadow type namespace", "", `<xsl:text _xpath-default-namespace="http://www.w3.org/2001/XMLSchema" _use-when="1 instance of integer">ok</xsl:text>`, "XTSE0090", "ok"},
+		{"shadow declaration namespaces", `<xsl:output xmlns:t="http://www.w3.org/2001/XMLSchema" _method="{if(t:integer('1')=1) then 'text' else 'xml'}"/>`, "ok", "XTSE0090", "ok"},
+		{"forward static condition", `<xsl:template name="earlier"><xsl:text use-when="$later">bad</xsl:text></xsl:template><xsl:variable name="later" static="yes" select="true()"/>`, "ok", "XTSE0090", "XPST0008"},
+		{"forward static shadow", `<xsl:template name="earlier"><xsl:value-of _select="{$later}"/></xsl:template><xsl:variable name="later" static="yes" select="42"/>`, "ok", "XTSE0090", "XPST0008"},
+		{"prior static condition", `<xsl:variable name="enabled" static="yes" select="true()"/>`, `<xsl:text use-when="$enabled">ok</xsl:text>`, "XTSE0090", "ok"},
+		{"excluded sort", "", `<xsl:for-each select="(2,1)"><xsl:sort use-when="false()" select="error()"/><xsl:value-of select="."/></xsl:for-each>`, "21", "21"},
+		{"excluded choose branch", "", `<xsl:choose><xsl:when use-when="false()" test="error()">bad</xsl:when><xsl:when test="true()">ok</xsl:when></xsl:choose>`, "ok", "ok"},
+		{"source preservation", `<xsl:template name="excluded" use-when="false()">bad</xsl:template>`, `<xsl:value-of select="exists(document('')/*/xsl:template[@name='excluded']/@use-when)"/>`, "true", "true"},
+	}
+}
+
+func TestXSLTConditionalCompilation(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range conditionalCompilationCases() {
+		t.Run(test.name, func(t *testing.T) {
+			// The nested fn:transform path independently selects its 3.0 processor.
+			for _, version := range []string{version20, version30} {
+				for _, nested := range []bool{false, true} {
+					want := test.want30
+					if version == version20 && !nested {
+						want = test.want20
+					}
+					got, err := resourceStylesheetResult(t, e, hostFunctionSheet(version, test), nested)
+					if comparisonErrorCode(want) {
+						var detail *transform.Error
+						if !errors.As(err, &detail) || detail.Code != want {
+							t.Fatal(version, nested, got, err, want)
+						}
+					} else if err != nil || got != want {
+						t.Fatal(version, nested, got, err, want)
+					}
+				}
+			}
+		})
+	}
+	for _, version := range []string{version20, version30} {
+		source := strings.Replace(sheet(version, `<xsl:template name="start"><xsl:element type="xs:string"/></xsl:template>`), `version="`+version+`"`, `version="`+version+`" use-when="false()"`, 1)
+		got, err := resourceStylesheetResult(t, e, source, false)
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != "XTDE0040" {
+			t.Fatal(version, got, err)
+		}
+	}
+}
+
 func TestXSLTStaticFunctionResolution(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, tc := range []struct{ version, body, code string }{
@@ -2653,6 +2735,159 @@ func TestXSLTFunctionReturns(t *testing.T) {
 
 type dynamicXPathCase struct{ name, global, body, want string }
 
+func builtinTemplateCases() []dynamicXPathCase {
+	cases := make([]dynamicXPathCase, 0, 43)
+	for _, mode := range []string{"text-only-copy", "shallow-copy", "deep-copy", "shallow-skip", "deep-skip", "fail"} {
+		declaration := `<xsl:mode name="m" on-no-match="` + mode + `"/>`
+		for _, value := range []struct{ name, expression, check string }{
+			{"atomic", `42`, `$v instance of xs:integer and $v eq 42`},
+			{"map", `map{'a':1}`, `$v instance of map(*) and $v?a eq 1`},
+			{"array", `[1,[2]]`, `$v instance of array(*) and $v?1 eq 1 and $v?2 instance of array(*)`},
+			{"function", `function(){7}`, `$v instance of function(*) and $v() eq 7`},
+		} {
+			check, want := value.check, nameTrue
+			if mode == "shallow-skip" || mode == "deep-skip" || mode == "text-only-copy" {
+				check = `empty($v)`
+				if mode == "text-only-copy" && value.name == "atomic" {
+					check = `$v instance of text() and string($v) eq '42'`
+				}
+				if mode == "text-only-copy" && value.name == "array" {
+					check = `count($v) eq 2 and (every $n in $v satisfies $n instance of text()) and string-join($v ! string(.),'') eq '12'`
+				}
+			}
+			if mode == "fail" {
+				want = "XTDE0555"
+			}
+			body := `<xsl:variable name="v" as="item()*"><xsl:apply-templates select="` + value.expression + `" mode="m"/></xsl:variable><xsl:value-of select="` + check + `"/>`
+			cases = append(cases, dynamicXPathCase{mode + " " + value.name, declaration, body, want})
+		}
+	}
+	for _, mode := range []string{"shallow-copy", "deep-copy"} {
+		for _, selected := range []string{"@a", "namespace::p"} {
+			body := `<xsl:variable name="source" select="parse-xml('&lt;r xmlns:p=&quot;urn:p&quot; a=&quot;v&quot;/>')/r"/><xsl:variable name="v" as="item()*"><xsl:apply-templates select="$source/` + selected + `" mode="m"/></xsl:variable>`
+			check := `$v instance of attribute(a) and string($v) eq 'v' and not($v is $source/@a) and empty($v/parent::node())`
+			if selected == "namespace::p" {
+				check = `$v instance of namespace-node() and name($v) eq 'p' and string($v) eq 'urn:p' and empty($v/parent::node())`
+			}
+			cases = append(cases, dynamicXPathCase{mode + " " + selected, `<xsl:mode name="m" on-no-match="` + mode + `"/>`, body + `<xsl:value-of select="` + check + `"/>`, nameTrue})
+		}
+		body := `<xsl:variable name="source" select="parse-xml('&lt;r xml:base=&quot;https://example.test/source.xml&quot;>&lt;n a=&quot;v&quot;/>text&lt;!--c-->&lt;?go ok?>&lt;/r>')"/><xsl:variable name="v" as="item()*"><xsl:apply-templates select="$source" mode="m"/></xsl:variable><xsl:value-of select="$v instance of document-node() and not($v is $source) and root($v/r) is $v and deep-equal($v,$source) and base-uri($v/r) eq base-uri($source/r) and count($v/r/node()) eq 4"/>`
+		cases = append(cases, dynamicXPathCase{mode + " document", `<xsl:mode name="m" on-no-match="` + mode + `"/>`, body, nameTrue})
+	}
+	for _, action := range []string{`<xsl:copy-of select="$source"/>`, `<xsl:copy select="$source"><xsl:copy-of select="node()"/></xsl:copy>`, `<xsl:apply-templates select="$source" mode="shallow"/>`, `<xsl:apply-templates select="$source" mode="deep"/>`} {
+		global := `<xsl:mode name="shallow" on-no-match="shallow-copy"/><xsl:mode name="deep" on-no-match="deep-copy"/><xsl:variable xml:base="https://example.test/source.xml" name="source" select="parse-xml('&lt;r/>')"/>`
+		body := `<xsl:variable name="v" as="document-node()">` + action + `</xsl:variable><xsl:value-of select="base-uri($v) eq 'https://example.test/source.xml' and base-uri($v/r) eq base-uri($v) and empty(document-uri($v))"/>`
+		cases = append(cases, dynamicXPathCase{"document metadata " + action, global, body, nameTrue})
+	}
+	for _, mode := range []string{"text-only-copy", "shallow-copy", "shallow-skip"} {
+		global := `<xsl:mode name="m" on-no-match="` + mode + `"/><xsl:template match="@*|n" mode="m"><xsl:value-of select="concat(name(),position(),'/',last(),';')"/></xsl:template>`
+		want := "a1/2;b2/2;n1/2;n2/2;"
+		if mode == "text-only-copy" {
+			want = "n1/2;n2/2;"
+		}
+		cases = append(cases, dynamicXPathCase{mode + " focus", global, `<xsl:apply-templates select="parse-xml('&lt;r a=&quot;1&quot; b=&quot;2&quot;>&lt;n/>&lt;n/>&lt;/r>')/r" mode="m"/>`, want})
+	}
+	cases = append(cases,
+		dynamicXPathCase{"copied document constructor order", `<xsl:variable name="source" select="parse-xml('&lt;r/>')"/>`, `<xsl:variable name="v"><before/><xsl:copy select="$source"><middle/></xsl:copy><after/></xsl:variable><xsl:value-of select="string-join($v/* ! local-name(),',')"/>`, "before,middle,after"},
+		dynamicXPathCase{"array member focus", `<xsl:template match=".[. instance of xs:integer]"><xsl:value-of select="concat(position(),'/',last(),':',.,';')"/></xsl:template>`, `<xsl:apply-templates select="[(1,2),3]"/>`, "1/3:1;2/3:2;3/3:3;"},
+		dynamicXPathCase{"array shallow skip rules", `<xsl:mode name="m" on-no-match="shallow-skip"/><xsl:template match=".[. instance of xs:integer and . eq 2]" mode="m"><xsl:value-of select="concat(position(),'/',last(),':',.)"/></xsl:template>`, `<xsl:apply-templates select="[(1,2),3]" mode="m"/>`, "2/3:2"},
+		dynamicXPathCase{"fail document before children", `<xsl:mode name="m" on-no-match="fail"/><xsl:template match="r" mode="m">matched</xsl:template>`, `<xsl:apply-templates select="parse-xml('&lt;r/>')" mode="m"/>`, "XTDE0555"},
+		dynamicXPathCase{"next match atomic copy", `<xsl:mode name="m" on-no-match="deep-copy"/><xsl:template match=".[. instance of xs:integer]" mode="m"><xsl:next-match/></xsl:template>`, `<xsl:variable name="v" as="item()*"><xsl:apply-templates select="42" mode="m"/></xsl:variable><xsl:value-of select="$v instance of xs:integer and $v eq 42"/>`, nameTrue},
+		dynamicXPathCase{"apply imports map copy", `<xsl:mode name="m" on-no-match="deep-copy"/><xsl:template match=".[. instance of map(*)]" mode="m"><xsl:apply-imports/></xsl:template>`, `<xsl:variable name="v" as="item()*"><xsl:apply-templates select="map{'a':42}" mode="m"/></xsl:variable><xsl:value-of select="$v instance of map(*) and $v?a eq 42"/>`, nameTrue},
+	)
+	return cases
+}
+
+func TestXSLTBuiltinTemplates(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range builtinTemplateCases() {
+		t.Run(test.name, func(t *testing.T) {
+			for _, nested := range []bool{false, true} {
+				got, err := resourceStylesheetResult(t, e, dynamicXPathSheet(test), nested)
+				if comparisonErrorCode(test.want) {
+					var detail *transform.Error
+					if !errors.As(err, &detail) || detail.Code != test.want {
+						t.Fatal(nested, got, err, test.want)
+					}
+				} else if err != nil || got != test.want {
+					t.Fatal(nested, got, err, test.want)
+				}
+			}
+		})
+	}
+	capped := engine(t, transform.Config{Limits: transform.Limits{MaxDepth: 32}})
+	for _, expression := range []string{`fold-left(1 to 100,1,function($a,$b){[$a]})`, `42`} {
+		global := ``
+		if expression == `42` {
+			global = `<xsl:template match=".[. instance of xs:integer]"><xsl:apply-templates select="."/></xsl:template>`
+		}
+		_, err := resourceStylesheetResult(t, capped, dynamicXPathSheet(dynamicXPathCase{global: global, body: `<xsl:apply-templates select="` + expression + `"/>`}), false)
+		if !errors.Is(err, transform.ErrLimit) {
+			t.Fatal("unbounded template recursion", expression, err)
+		}
+	}
+}
+
+func builtinInitialCases() []struct{ mode, expression, check, code string } {
+	return []struct{ mode, expression, check, code string }{
+		{"deep-copy", `map{'a':42}`, `$result instance of map(*) and $result?a eq 42`, ""},
+		{"shallow-copy", `function(){42}`, `$result instance of function(*) and $result() eq 42`, ""},
+		{"deep-copy", `[1,[2]]`, `$result instance of array(*) and $result?2 instance of array(*)`, ""},
+		{"deep-copy", `42`, `$result instance of xs:integer and $result eq 42`, ""},
+		{"text-only-copy", `map{'a':42}`, `empty($result)`, ""},
+		{"text-only-copy", `[1,[2]]`, `count($result) eq 2 and string-join($result ! string(.),'') eq '12'`, ""},
+		{"shallow-skip", `[1,[2]]`, `empty($result)`, ""},
+		{"fail", `map{'a':42}`, "", "XTDE0555"},
+	}
+}
+
+func builtinInitialSheet(mode string) string {
+	return sheet(version30, `<xsl:mode name="m" on-no-match="`+mode+`"/>`)
+}
+
+func builtinInitialExpression(test struct{ mode, expression, check, code string }) string {
+	source := strings.ReplaceAll(builtinInitialSheet(test.mode), "'", "''")
+	expression := `transform(map{'stylesheet-text':'` + source + `','initial-match-selection':` + test.expression + `,'initial-mode':QName('','m'),'delivery-format':'raw'})?output`
+	if test.code != "" {
+		return expression
+	}
+	return `let $result := ` + expression + ` return ` + test.check
+}
+
+func TestXSLTBuiltinInitialItems(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range builtinInitialCases() {
+		t.Run(test.mode+test.expression, func(t *testing.T) {
+			selection := evaluate(t, e, test.expression, transform.XPath31)
+			compiled := stylesheet(t, e, builtinInitialSheet(test.mode))
+			result, err := compiled.ApplyTemplates(t.Context(), nil, selection, transform.XSLTContext{Mode: transform.Name{Local: "m"}, ResultMode: transform.ResultRaw})
+			if test.code != "" {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != test.code {
+					t.Fatal(result, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				value, err := query(t, e, test.check, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: resultBindingName}: result.Primary()}})
+				if err != nil || text(t, value) != nameTrue {
+					t.Fatal(value, err)
+				}
+			}
+			nested, err := query(t, e, builtinInitialExpression(test), transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if test.code != "" {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != test.code {
+					t.Fatal(err)
+				}
+			} else if err != nil || text(t, nested) != nameTrue {
+				t.Fatal(nested, err)
+			}
+		})
+	}
+}
+
 func xmlIDConstructionCases() []dynamicXPathCase {
 	return []dynamicXPathCase{
 		{"literal", "", `<xsl:variable name="v"><r xml:id=" root "/></xsl:variable><xsl:value-of select="string($v/r/@xml:id) eq 'root' and id('root',$v) is $v/r"/>`, nameTrue},
@@ -3266,5 +3501,171 @@ func TestXSLTDefaultPatternPriorities(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type inputPreprocessingCase struct {
+	name, globals, template, context, selection, want string
+}
+
+func inputPreprocessingCases() []inputPreprocessingCase {
+	return []inputPreprocessingCase{
+		{"orphan global tree", "", `concat(root(.) instance of element(),':',count(.//text()),':',base-uri(.))`, `$orphan`, "", "true:0:https://example.test/sources/main.xsl"},
+		{"orphan selection tree", "", `concat(root(.) instance of element(),':',count(.//text()),':',base-uri(.))`, `$a`, `$orphan`, "true:0:https://example.test/sources/main.xsl"},
+		{"computed global tree", "", `concat(root(.) instance of element(),':',count(.//text()),':',base-uri(.))`, `$computed`, "", "true:0:https://example.test/sources/main.xsl"},
+		{"computed selection tree", "", `concat(root(.) instance of element(),':',count(.//text()),':',base-uri(.))`, `$a`, `$computed`, "true:0:https://example.test/sources/main.xsl"},
+		{"global document", "", `count(.//text())`, `$a`, "", "0"},
+		{"global element", "", `count(root(.)//text())`, `$a/r/a`, "", "0"},
+		{"global attribute", "", `count(root(.)//text())`, `$a/r/@id`, "", "0"},
+		{"global namespace", "", `count(root(.)//text())`, `$namespace($a)`, "", "0"},
+		{"global stripped text", `<xsl:variable name="global" select="."/>`, `$global`, `$a/r/text()[1]`, "", "XPDY0002"},
+		{"global required stripped text", `<xsl:global-context-item use="required"/>`, `42`, `$a/r/text()[1]`, "", "XTDE3086"},
+		{"global preserved text", "", `count(root(.)//text())`, `$b/r/keep/text()`, "", "1"},
+		{"different selection document", "", `count(root(.)//text())`, `$a`, `$b/r/a`, "1"},
+		{"two selection documents", "", `concat(count(root(.)//text()),':',position(),':',last(),'|')`, `$a`, `($a/r/a,$b/r/a,$a/r/a)`, "0:1:3|1:2:3|0:3:3|"},
+		{"stripped selection focus", "", `concat(local-name(),':',position(),':',last(),'|')`, `$a`, `($a/r/text()[1],$a/r/a,$b/r/text()[1],$b/r/a)`, "a:1:2|a:2:2|"},
+		{"empty stripped selection", "", `42`, `$a`, `($a/r/text()[1],$b/r/text()[1])`, ""},
+		{"global and selection identity", `<xsl:variable name="global" select="."/>`, `. is $global`, `$b/r/a`, `($b/r/a,$b/r/a)`, "truetrue"},
+		{"selected attributes", "", `concat(count(root(.)//text()),':',name())`, `$a`, `$b/r/@id`, "1:id"},
+		{"selected namespaces", "", `concat(count(root(.)//text()),':',name())`, `$a`, `$namespace($b)`, "1:p"},
+	}
+}
+
+func inputPreprocessingSource(test inputPreprocessingCase) string {
+	return sheet(version30, `<xsl:strip-space elements="*"/><xsl:preserve-space elements="keep"/>`+test.globals+`<xsl:template name="start" match="."><xsl:value-of select="`+test.template+`"/></xsl:template>`)
+}
+
+const preprocessingInputs = `let $make-tree := function($body) {transform(map{'stylesheet-text':concat('<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xml:base="https://example.test/sources/main.xsl" version="3.0"><xsl:template name="start">',$body,'</xsl:template></xsl:stylesheet>'),'stylesheet-base-uri':'https://example.test/sources/main.xsl','base-output-uri':'https://example.test/sources/main.xsl','initial-template':QName('', 'start'),'delivery-format':'raw'})('https://example.test/sources/main.xsl')}, $orphan := $make-tree('<r><xsl:text> </xsl:text><a/><xsl:text> </xsl:text></r>'), $computed := $make-tree('<xsl:element name="r"><xsl:text> </xsl:text><a/><xsl:text> </xsl:text></xsl:element>'), $a := parse-xml('<r xmlns:p="urn:p" id="a"> <a/> </r>'), $b := parse-xml('<r xmlns:p="urn:p" id="b"> <a/> <keep xml:space="preserve"> </keep> </r>'), $namespace := function($doc) { transform(map{'stylesheet-text':'<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:template match="/"><xsl:sequence select="*/namespace::p"/></xsl:template></xsl:stylesheet>','source-node':$doc,'delivery-format':'raw'})?output } `
+
+func inputPreprocessingExpression(test inputPreprocessingCase) string {
+	entry := `,'initial-template':QName('', 'start')`
+	if test.selection != "" {
+		entry = `,'initial-match-selection':` + test.selection
+	}
+	return preprocessingInputs + `return transform(map{'stylesheet-text':'` + strings.ReplaceAll(inputPreprocessingSource(test), "'", "''") + `','global-context-item':` + test.context + entry + `,'delivery-format':'serialized'})?output`
+}
+
+func TestXSLTInputPreprocessing(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range inputPreprocessingCases() {
+		t.Run(test.name, func(t *testing.T) {
+			compiled := stylesheet(t, e, inputPreprocessingSource(test))
+			item := evaluate(t, e, preprocessingInputs+`return `+test.context, transform.XPath31)
+			global, err := item.Single()
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := transform.XSLTContext{ContextItem: &global, ResultMode: transform.ResultDocument}
+			var result *transform.Result
+			if test.selection == "" {
+				result, err = compiled.CallTemplate(t.Context(), nil, transform.Name{Local: nameStart}, options)
+			} else {
+				// One evaluation preserves the identity shared by context and selection.
+				bindings := evaluate(t, e, preprocessingInputs+`return map{'context':`+test.context+`,'selection':`+test.selection+`}`, transform.XPath31)
+				values := transform.XPathContext{Variables: transform.Bindings{{Local: "inputs"}: bindings}}
+				contextValue, evalErr := query(t, e, `$inputs?context`, transform.XPath31).Evaluate(t.Context(), nil, values)
+				if evalErr != nil {
+					t.Fatal(evalErr)
+				}
+				global, err = contextValue.Single()
+				if err != nil {
+					t.Fatal(err)
+				}
+				selection, evalErr := query(t, e, `$inputs?selection`, transform.XPath31).Evaluate(t.Context(), nil, values)
+				if evalErr != nil {
+					t.Fatal(evalErr)
+				}
+				result, err = compiled.ApplyTemplates(t.Context(), nil, selection, options)
+			}
+			if comparisonErrorCode(test.want) {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != test.want {
+					t.Fatal(result, err, test.want)
+				}
+			} else if err != nil || text(t, result.Primary()) != test.want {
+				t.Fatal(result, err, test.want)
+			}
+			value, err := query(t, e, inputPreprocessingExpression(test), transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if comparisonErrorCode(test.want) {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != test.want {
+					t.Fatal("fn:transform", value, err, test.want)
+				}
+			} else if err != nil || text(t, value) != test.want {
+				t.Fatal("fn:transform", value, err, test.want)
+			}
+		})
+	}
+}
+
+type transformExpressionCase struct{ name, expression, want string }
+
+func transformNodeContextCases() []transformExpressionCase {
+	cases := make([]transformExpressionCase, 0, 14)
+	for _, selection := range []string{`$a`, `$a/r`, `$a/r/@id`, `$namespace($a)`, `42`, `map{}`, `[]`, `string#1`} {
+		program := sheet(version30, `<xsl:variable name="global" select="."/><xsl:template match="."><xsl:value-of select="$global"/></xsl:template>`)
+		cases = append(cases, transformExpressionCase{"selection " + selection, preprocessingInputs + `return transform(map{'stylesheet-text':'` + strings.ReplaceAll(program, "'", "''") + `','initial-match-selection':` + selection + `,'delivery-format':'serialized'})?output`, "XPDY0002"})
+	}
+	for _, test := range []struct{ name, global, options, want string }{
+		{"required selection context", `<xsl:global-context-item use="required"/><xsl:variable name="global" select="42"/>`, `'initial-match-selection':$a`, "XTDE3086"},
+		{"explicit selection context", `<xsl:variable name="global" select="."/>`, `'initial-match-selection':$a,'global-context-item':42`, "42"},
+		{"source document root", `<xsl:variable name="global" select=". instance of document-node()"/>`, `'source-node':$a/r/a`, nameTrue},
+		{"source namespace root", `<xsl:variable name="global" select=". instance of document-node()"/>`, `'source-node':$namespace($a)`, nameTrue},
+		{"parentless source root", `<xsl:variable name="global" select=". instance of element()"/>`, `'source-node':$orphan`, nameTrue},
+		{"explicit source context", `<xsl:variable name="global" select="."/>`, `'source-node':$a/r/a,'global-context-item':42`, "42"},
+	} {
+		program := sheet(version30, test.global+`<xsl:template match="."><xsl:value-of select="$global"/></xsl:template>`)
+		cases = append(cases, transformExpressionCase{test.name, preprocessingInputs + `return transform(map{'stylesheet-text':'` + strings.ReplaceAll(program, "'", "''") + `',` + test.options + `,'delivery-format':'serialized'})?output`, test.want})
+	}
+	return cases
+}
+
+func transformStylesheetNodeCases() []transformExpressionCase {
+	const uri = "https://example.test/modules/"
+	const stylesheetHeader = `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"`
+	const stylesheetBody = `><xsl:output method="text"/><xsl:template name="start"><xsl:value-of select="static-base-uri()"/></xsl:template></xsl:stylesheet>`
+	cases := make([]transformExpressionCase, 0, 5)
+	for _, test := range []struct{ name, input, selection, want string }{
+		{"document node", stylesheetHeader + ` xml:base="` + uri + `main.xsl"` + stylesheetBody, `$module`, uri + "main.xsl"},
+		{"root element", stylesheetHeader + ` xml:base="` + uri + `main.xsl"` + stylesheetBody, `$module/*`, uri + "main.xsl"},
+		{"root relative base", `<wrapper xml:base="` + uri + `">` + stylesheetHeader + ` xml:base="inner/"` + stylesheetBody + `</wrapper>`, `$module/*/*`, uri + "inner/"},
+		{"inherited base", `<wrapper xml:base="` + uri + `outer/">` + stylesheetHeader + stylesheetBody + `</wrapper>`, `$module/*/*`, uri + "outer/"},
+	} {
+		expression := `let $module := parse-xml('` + strings.ReplaceAll(test.input, "'", "''") + `') return transform(map{'stylesheet-node':` + test.selection + `,'initial-template':QName('', 'start'),'delivery-format':'serialized'})?output`
+		cases = append(cases, transformExpressionCase{test.name, expression, test.want})
+	}
+	generator := sheet(version30, `<xsl:template name="start"><xsl:element name="xsl:stylesheet"><xsl:attribute name="version">3.0</xsl:attribute><xsl:attribute name="xml:base">`+uri+`generated.xsl</xsl:attribute><xsl:element name="xsl:output"><xsl:attribute name="method">text</xsl:attribute></xsl:element><xsl:element name="xsl:template"><xsl:attribute name="name">start</xsl:attribute><xsl:element name="xsl:value-of"><xsl:attribute name="select">static-base-uri()</xsl:attribute></xsl:element></xsl:element></xsl:element></xsl:template>`)
+	expression := `let $module := transform(map{'stylesheet-text':'` + strings.ReplaceAll(generator, "'", "''") + `','initial-template':QName('', 'start'),'delivery-format':'raw'})?output return transform(map{'stylesheet-node':$module,'initial-template':QName('', 'start'),'delivery-format':'serialized'})?output`
+	cases = append(cases, transformExpressionCase{"parentless module", expression, uri + "generated.xsl"})
+	return cases
+}
+
+func TestTransformNodeContexts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range append(transformNodeContextCases(), transformStylesheetNodeCases()...) {
+		t.Run(test.name, func(t *testing.T) {
+			value, err := query(t, e, test.expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if comparisonErrorCode(test.want) {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != test.want {
+					t.Fatal(value, err, test.want)
+				}
+			} else if err != nil || text(t, value) != test.want {
+				t.Fatal(value, err, test.want)
+			}
+		})
+	}
+}
+
+func TestTransformStylesheetNodeKinds(t *testing.T) {
+	e := engine(t, transform.Config{})
+	program := sheet(version30, `<xsl:template name="start"><!--comment--><?pi value?><xsl:text>ok</xsl:text></xsl:template>`)
+	for _, selection := range []string{`$module/*/*/comment()`, `$module/*/*/processing-instruction()`, `$module/*/*/*/text()`, `$module/*/@version`, `$module/*/namespace::xsl`} {
+		expression := `let $module := parse-xml('` + program + `') return transform(map{'stylesheet-node':` + selection + `,'initial-template':QName('', 'start')})`
+		_, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != "FOXT0002" {
+			t.Fatal(selection, err)
+		}
 	}
 }

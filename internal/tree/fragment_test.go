@@ -121,3 +121,55 @@ func TestFragmentUsesSemanticLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestLanguageDTDProcessing(t *testing.T) {
+	options := treepkg.ParseOptions{Limits: treepkg.DefaultLimits(), AllowDTD: true, AllowRelativeNamespaces: true}
+	for _, test := range []struct{ input, want string }{
+		{`<!DOCTYPE a [<!ELEMENT a (#PCDATA)>]><a>foo</a>`, `<a>foo</a>`},
+		{`<?xml version="1.0" encoding="iso-8859-1"?><!DOCTYPE a [<!ELEMENT a (#PCDATA)>]><a>é</a>`, `<a>é</a>`},
+		{`<!DOCTYPE a [<!ENTITY e "hello">]><a>&e;</a>`, `<a>hello</a>`},
+		{`<!DOCTYPE a [<!ENTITY e "<b>ok</b>">]><a>&e;</a>`, `<a><b>ok</b></a>`},
+		{`<!DOCTYPE a [<!ATTLIST a x CDATA "x&amp;y" y NMTOKENS " a  b ">]><a/>`, `<a x="x&amp;y" y="a b"></a>`},
+		{`<!DOCTYPE a [<!ATTLIST a x NMTOKENS #IMPLIED>]><a x=" a&#9; b "/>`, `<a x="a&#x9; b"></a>`},
+		{`<!DOCTYPE a [<!ENTITY % d '<!ENTITY e "ok">'>%d;]><a>&e;</a>`, `<a>ok</a>`},
+		{`<!DOCTYPE a [<!ELEMENT a (b,(c|d)?,e*)><!ELEMENT b EMPTY><!ELEMENT c ANY>]><a/>`, `<a></a>`},
+		{`<!DOCTYPE a [<!NOTATION n PUBLIC "a"><!ENTITY e SYSTEM "urn:e" NDATA n>]><a/>`, `<a></a>`},
+		{`<!DOCTYPE a [<!--x--><?p a?>]><a/>`, `<a></a>`},
+	} {
+		t.Run(test.input, func(t *testing.T) {
+			doc, err := options.ParseText(t.Context(), test.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var output strings.Builder
+			if _, err := doc.WriteXML(t.Context(), &output, options.Limits.MaxBytes); err != nil || output.String() != test.want {
+				t.Fatal(output.String(), err, "want", test.want)
+			}
+		})
+	}
+	for _, input := range []string{
+		`<!DOCTYPE a [<!BOGUS a>]><a/>`,
+		`<!DOCTYPE a [<!ELEMENT a (a|)>]><a/>`,
+		`<!DOCTYPE a [<!ELEMENT a (a,b|c)>]><a/>`,
+		`<!DOCTYPE a [<!ELEMENT a (#PCDATA|b)>]><a/>`,
+		`<!DOCTYPE a [<!ATTLIST a x BAD #IMPLIED>]><a/>`,
+		`<!DOCTYPE a [<!ENTITY % d "a"><!ELEMENT a (%d;)>]><a/>`,
+		`<!DOCTYPE a [<!ENTITY e "&f;"><!ENTITY f "&e;">]><a>&e;</a>`,
+		`<!DOCTYPE a [<!ENTITY e "<b>">]><a>&e;</b></a>`,
+		`<!DOCTYPE a [<!ENTITY e "</a>">]><a>&e;`,
+		`<!DOCTYPE a [<!ENTITY e SYSTEM "urn:e">]><a x="&e;"/>`,
+		`<!DOCTYPE a [<!ENTITY e SYSTEM "urn:e" NDATA n>]><a>&e;</a>`,
+		`<!DOCTYPE a [<!ENTITY e "%bad;">]><a/>`,
+		`<!DOCTYPE a [<!--a--b-->]><a/>`,
+		`<!DOCTYPE a [<?xml bad?>]><a/>`,
+		`<!DOCTYPE a><!DOCTYPE a><a/>`,
+		`<a/><!DOCTYPE a>`,
+		`<!DOCTYPE a [<!ATTLIST a x CDATA "&missing;">]><a/>`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			if _, err := options.ParseText(t.Context(), input); err == nil {
+				t.Fatal("accepted malformed DTD/XML")
+			}
+		})
+	}
+}

@@ -34,6 +34,11 @@ type RecordOptions struct {
 // their output are not rolled back if a later record or the enclosing XML fails.
 // src remains caller-owned. Namespaces and inherited xml:* context are preserved.
 func ReadRecords(ctx context.Context, src io.Reader, options RecordOptions, emit func(*Document) error) error {
+	return (ParseOptions{}).ReadRecords(ctx, src, options, emit)
+}
+
+// ReadRecords applies the parser policy; per-record limits come from options.
+func (o ParseOptions) ReadRecords(ctx context.Context, src io.Reader, options RecordOptions, emit func(*Document) error) error {
 	if ctx == nil || nilcheck.IsNil(src) || emit == nil || len(options.Path) == 0 {
 		return ErrMalformed
 	}
@@ -68,6 +73,8 @@ func ReadRecords(ctx context.Context, src io.Reader, options RecordOptions, emit
 	}
 
 	p := readerParser(input, limits)
+	p.relativeNamespaces = o.AllowRelativeNamespaces
+	p.singleByteEncodings = o.AllowSingleByteEncodings
 	records := recordState{parser: &p, options: options, emit: emit}
 
 	for {

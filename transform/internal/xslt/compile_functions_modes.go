@@ -133,11 +133,19 @@ func (c *compiler) declarationTypeKey(elem *xdm.Element, as string) string {
 }
 
 func (c *compiler) declarationDefaultNamespace(elem *xdm.Element) (string, bool) {
-	defaultNS, hasDefault := c.xpathDefaultNS, c.hasXPathDefaultNS
+	var (
+		defaultNS  string
+		hasDefault bool
+	)
 
 	for node := xdm.Node(elem); node != nil; node = node.Parent() {
 		if e, ok := node.(*xdm.Element); ok {
-			if value, present := e.GetAttribute(nameXpathDefaultNamespace); present {
+			value, present := e.GetAttribute(nameXpathDefaultNamespace)
+			if e.URI() != lexicon.NamespaceXSLT {
+				value, present = e.GetAttributeNS(nameXpathDefaultNamespace, lexicon.NamespaceXSLT)
+			}
+
+			if present {
 				defaultNS, hasDefault = value, true
 				break
 			}

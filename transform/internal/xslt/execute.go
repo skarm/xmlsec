@@ -125,6 +125,8 @@ type execContext struct {
 	depth                        int                     // recursion depth
 	outputStack                  []*outputFrame
 	keyTables                    map[string]*keyTable
+	inputTrees                   map[inputTreeKey]inputTreeCopy
+	inputOriginalNodes           map[xdm.Node]xdm.Node
 	docCache                     map[string]*xdm.Document
 	collectionCache              map[string]xdm.Sequence
 	uriCollectionCache           map[string][]string
@@ -1406,43 +1408,6 @@ func (ec *execContext) collectionResolver() xpath.CollectionResolver {
 	}
 }
 
-func (ec *execContext) copyCollectionNode(node xdm.Node) (xdm.Node, error) {
-	if node == nil {
-		return nil, nil //nolint:nilnil
-	}
-
-	if doc, ok := node.(*xdm.Document); ok {
-		copied, err := xdm.CopyDoc(doc)
-		if err != nil {
-			return nil, err
-		}
-
-		copied.SetURL(doc.URL())
-		ec.stripWhitespaceFromDoc(copied)
-
-		return copied, nil
-	}
-
-	dst := xdm.NewDefaultDocument()
-
-	copied, err := xdm.CopyNode(node, dst)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := dst.AddChild(copied); err != nil {
-		return nil, err
-	}
-
-	if owner := node.OwnerDocument(); owner != nil {
-		dst.SetURL(owner.URL())
-	}
-
-	ec.stripWhitespaceFromDoc(dst)
-
-	return copied, nil
-}
-
 // sortXPathEvalState creates a reusable xpath.EvalState from the base context.
 // Used by sort to avoid per-item newEvalContext allocations.
 func (ec *execContext) sortXPathEvalState(ctx context.Context) *xpath.EvalState {
@@ -2456,7 +2421,10 @@ func (r executionCollectionResolver) ResolveCollection(ctx context.Context, uri 
 			return nil, err
 		}
 
-		out = append(out, xdm.NodeItem{Node: node})
+		if node != nil {
+			ni.Node = node
+			out = append(out, ni)
+		}
 	}
 
 	r.ec.collectionCache[key] = out
@@ -2469,14 +2437,12 @@ func (r executionCollectionResolver) prepareNode(ctx context.Context, node xdm.N
 		return nil, err
 	}
 
-	if len(r.ec.effectiveStripSpace()) > 0 || len(r.ec.effectivePreserveSpace()) > 0 {
-		copied, err := r.ec.copyCollectionNode(node)
-		if err != nil {
-			return nil, err
-		}
-
-		node = copied
+	prepared, err := r.ec.prepareInputNode(ctx, node)
+	if err != nil || prepared == nil {
+		return prepared, err
 	}
+
+	node = prepared
 
 	if doc, ok := xdm.DocumentRoot(node).(*xdm.Document); ok && !doc.HasProperty(xdm.DocInternal) && doc.URL() != "" {
 		cacheKey := r.ec.docCacheKey(doc.URL())

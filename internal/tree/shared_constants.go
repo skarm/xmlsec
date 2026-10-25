@@ -1,6 +1,10 @@
 package tree
 
 const (
+	dtdDoctypeOpen  = "<!DOCTYPE"
+	nameXMLVersion  = "version"
+	entityAmp       = "amp"
+	dtdCDATA        = "CDATA"
 	nameBase        = "base"
 	encodingUTF16BE = "UTF-16BE"
 	encodingUTF16LE = "UTF-16LE"

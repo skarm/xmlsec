@@ -39,7 +39,7 @@ func copySubtreeContext(node *Node, insertion bool) *Node {
 
 	prefixes := make([]string, 0, len(scope))
 	for prefix := range scope {
-		if prefix != "xml" {
+		if prefix != nameXML {
 			prefixes = append(prefixes, prefix)
 		}
 	}

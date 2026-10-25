@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
@@ -29,6 +30,8 @@ import (
 func (c *compiler) enterModuleNamespaceScope(root *xdm.Element) func() {
 	savedNS := c.nsBindings
 	savedExcludes := c.localExcludes
+	defaultNS, hasDefault := c.xpathDefaultNS, c.hasXPathDefaultNS
+	c.xpathDefaultNS, c.hasXPathDefaultNS = c.declarationDefaultNamespace(root)
 
 	inScope := inScopeNamespaces(root)
 	newBindings := make(map[string]string, len(savedNS)+len(inScope))
@@ -45,6 +48,7 @@ func (c *compiler) enterModuleNamespaceScope(root *xdm.Element) func() {
 	return func() {
 		c.nsBindings = savedNS
 		c.localExcludes = savedExcludes
+		c.xpathDefaultNS, c.hasXPathDefaultNS = defaultNS, hasDefault
 	}
 }
 
@@ -171,6 +175,12 @@ func (c *compiler) collectIncludeImports(ctx context.Context, elem *xdm.Element)
 		return err
 	}
 
+	if c.includedDeclarationRoots == nil {
+		c.includedDeclarationRoots = make(map[*xdm.Element]*xdm.Element)
+	}
+
+	c.includedDeclarationRoots[elem] = root
+
 	if root == nil {
 		// Simplified stylesheet — no imports to collect.
 		return nil
@@ -205,41 +215,28 @@ func (c *compiler) collectIncludeImports(ctx context.Context, elem *xdm.Element)
 		return err
 	}
 
-	if err := c.compileIncludedNamespaceAliases(ctx, root); err != nil {
+	if err := c.collectTopLevelImports(ctx, root); err != nil {
 		return err
 	}
 
-	for child := range xdm.Children(root) {
-		ce, ok := child.(*xdm.Element)
-		if !ok || ce.URI() != lexicon.NamespaceXSLT {
-			continue
-		}
-
-		if ce.LocalName() == nameImport || ce.LocalName() == nameInclude {
-			if err := c.collectTopLevelModule(ctx, ce); err != nil {
-				return err
-			}
-		}
+	if err := c.validatePreparedLanguage(root); err != nil {
+		return err
 	}
 
-	return nil
-}
-
-func (c *compiler) compileIncludedNamespaceAliases(ctx context.Context, root *xdm.Element) error {
-	for child := range xdm.Children(root) {
-		ce, ok := child.(*xdm.Element)
-		if !ok || ce.URI() != lexicon.NamespaceXSLT {
-			continue
-		}
-
-		if ce.LocalName() == lexicon.XSLTElementNamespaceAlias {
-			if err := c.compileNamespaceAlias(ctx, ce); err != nil {
-				return err
-			}
-		}
+	if err := validateTopLevelText(root); err != nil {
+		return err
 	}
 
-	return nil
+	restoreVersion := c.pushElementVersion(root)
+	err = c.validateKnownElementAttributes(ctx, root)
+
+	restoreVersion()
+
+	if err != nil {
+		return err
+	}
+
+	return c.collectTopLevelNamespaceAliases(ctx, root)
 }
 
 // loadModuleDoc resolves, reads, and parses a stylesheet module document at uri.
@@ -329,14 +326,17 @@ func (c *compiler) loadAndCacheInclude(ctx context.Context, uri, importKey strin
 	}
 
 	if root.URI() != lexicon.NamespaceXSLT {
-		if _, ok := root.GetAttributeNS(paramVersion, lexicon.NamespaceXSLT); ok {
-			// Simplified stylesheet — no XSLT root, cache as nil to signal
-			// that compileIncludeTemplates should fall back to compileInclude.
-			c.includeRoots[importKey] = nil
-			return nil, nil //nolint:nilnil
+		expanded, err := expandSimplifiedModule(ctx, doc, root)
+		if err != nil {
+			return nil, err
 		}
 
-		return nil, staticError(errCodeXTSE0010, "included document %q is not a stylesheet", uri)
+		if c.moduleSources == nil {
+			c.moduleSources = make(map[*xdm.Document]*xdm.Document)
+		}
+
+		c.moduleSources[expanded] = c.sourceModule(doc)
+		doc, root = expanded, expanded.DocumentElement()
 	}
 
 	// Also cache the module document under its FOLDED effective base (the
@@ -357,26 +357,13 @@ func (c *compiler) loadAndCacheInclude(ctx context.Context, uri, importKey strin
 	// the module's effective static base (its root xml:base folded into the
 	// module URI) so doc-available()/doc() in the root use-when resolve like the
 	// module's own globals, not the including module's base.
-	if uw, present := root.GetAttribute(xslAttrUseWhen); present {
-		savedBase := c.baseURI
-		c.baseURI = moduleEffectiveBaseURI(root, uri)
-		include, err := c.evaluateDeclarationUseWhen(ctx, root, uw)
-		c.baseURI = savedBase
+	savedBase := c.baseURI
+	c.baseURI = moduleEffectiveBaseURI(root, uri)
+	_, conditionalErr := c.preprocessConditionalElement(ctx, root, true)
+	c.baseURI = savedBase
 
-		if err != nil {
-			return nil, err
-		}
-
-		if !include {
-			c.includeRoots[importKey] = nil
-			if c.useWhenExcluded == nil {
-				c.useWhenExcluded = make(map[string]struct{})
-			}
-
-			c.useWhenExcluded[importKey] = struct{}{}
-
-			return nil, nil //nolint:nilnil
-		}
+	if conditionalErr != nil {
+		return nil, conditionalErr
 	}
 
 	c.includeRoots[importKey] = root
@@ -399,12 +386,6 @@ func (c *compiler) compileIncludeTemplates(ctx context.Context, elem *xdm.Elemen
 
 	root := c.includeRoots[importKey]
 	if root == nil {
-		// If this module was excluded by use-when on its root element, skip entirely.
-		if _, excluded := c.useWhenExcluded[importKey]; excluded {
-			return nil
-		}
-		// Simplified stylesheet — fall back to the original full include path.
-		// Simplified stylesheets have no imports, so document order is trivially correct.
 		return c.loadExternalStylesheet(ctx, stylesheetBaseURI(elem, c.baseURI, c.moduleRoot), getAttr(elem, nameHref), false)
 	}
 
@@ -466,80 +447,7 @@ func (c *compiler) compileIncludeTemplates(ctx context.Context, elem *xdm.Elemen
 		return err
 	}
 
-	if err := c.evaluateStaticDeclarations(ctx, root, false, nil); err != nil {
-		return err
-	}
-
-	return c.compileIncludedDeclarations(ctx, root)
-}
-
-func (c *compiler) compileIncludedDeclarations(ctx context.Context, root *xdm.Element) error {
-	// Compile non-import elements in document order, with includes
-	// interleaved to preserve effective document order.
-	for child := range xdm.Children(root) {
-		ce, ok := child.(*xdm.Element)
-		if !ok || ce.URI() != lexicon.NamespaceXSLT {
-			continue
-		}
-
-		if c.ignoredTopLevelDeclaration(ce) {
-			continue
-		}
-
-		// Resolve shadow attributes before processing.
-		if err := c.resolveShadowAttributes(ctx, ce); err != nil {
-			return err
-		}
-
-		if err := c.compileIncludedDeclaration(ctx, ce); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (c *compiler) compileIncludedDeclaration(ctx context.Context, ce *xdm.Element) error {
-	switch ce.LocalName() {
-	case lexicon.XSLTElementImport, lexicon.XSLTElementNamespaceAlias:
-		// Already processed in collectIncludeImports
-	case lexicon.XSLTElementInclude:
-		return c.compileIncludeTemplates(ctx, ce)
-	case lexicon.XSLTElementUsePackage:
-		return c.compileUsePackage(ctx, ce)
-	case lexicon.XSLTElementTemplate:
-		return c.compileTemplate(ctx, ce)
-	case lexicon.XSLTElementVariable:
-		return c.compileGlobalVariable(ctx, ce)
-	case lexicon.XSLTElementParam:
-		return c.compileGlobalParam(ctx, ce)
-	case lexicon.XSLTElementKey:
-		return c.compileKey(ctx, ce)
-	case lexicon.XSLTElementOutput:
-		return c.compileOutput(ctx, ce)
-	case lexicon.XSLTElementStripSpace:
-		return c.compileSpaceHandling(ctx, ce, true)
-	case lexicon.XSLTElementPreserveSpace:
-		return c.compileSpaceHandling(ctx, ce, false)
-	case lexicon.XSLTElementFunction:
-		return c.compileFunction(ctx, ce)
-	case lexicon.XSLTElementDecimalFormat:
-		return c.compileDecimalFormat(ctx, ce)
-	case lexicon.XSLTElementMode:
-		return c.compileMode(ctx, ce)
-	case lexicon.XSLTElementImportSchema:
-		return c.compileImportSchema(ctx, ce)
-	case lexicon.XSLTElementAccumulator:
-		return c.compileAccumulator(ctx, ce)
-	case lexicon.XSLTElementAttributeSet:
-		return c.compileAttributeSet(ctx, ce)
-	case lexicon.XSLTElementGlobalContextItem:
-		return c.compileGlobalContextItem(ctx, ce)
-	case lexicon.XSLTElementCharacterMap:
-		return c.compileCharacterMap(ctx, ce)
-	}
-
-	return nil
+	return c.compileTopLevelDeclarations(ctx, root)
 }
 
 // checkModuleInputAnnotations reconciles the shared strip/preserve setting,
@@ -648,128 +556,63 @@ func (c *compiler) loadExternalStylesheet(ctx context.Context, baseURI, href str
 	}
 
 	if importedRoot.URI() != lexicon.NamespaceXSLT {
-		return c.compileExternalSimplified(ctx, doc, importedRoot, uri, isImport)
+		expanded, err := expandSimplifiedModule(ctx, doc, importedRoot)
+		if err != nil {
+			return err
+		}
+
+		if c.moduleSources == nil {
+			c.moduleSources = make(map[*xdm.Document]*xdm.Document)
+		}
+
+		c.moduleSources[expanded] = c.sourceModule(doc)
+		doc, importedRoot = expanded, expanded.DocumentElement()
 	}
 
 	return c.compileExternalModule(ctx, doc, importedRoot, uri, isImport)
 }
 
-func (c *compiler) compileExternalSimplified(ctx context.Context, doc *xdm.Document, importedRoot *xdm.Element, uri string, isImport bool) error {
-	if _, ok := importedRoot.GetAttributeNS(paramVersion, lexicon.NamespaceXSLT); ok {
-		// Simplified stylesheet — compile as a single template matching "/"
-		simplified, err := compileSimplified(ctx, doc, importedRoot, &compileConfig{
-			baseURI:          uri,
-			processorVersion: c.stylesheet.processorLanguage(),
-			resolver:         c.resolver,
-			packageResolver:  c.packageResolver,
-			maxResourceBytes: c.maxResourceBytes,
-
-			parseOptions: c.parseOptions,
-		})
-		if err != nil {
-			return err
-		}
-		// Carry over the simplified module's backwards-compatible expression set
-		// so its expressions still evaluate in XPath 1.0 compatibility mode (the
-		// module's xsl:version < 2.0 marks them compat during compileSimplified).
-		for e := range simplified.compatExprs {
-			c.markCompatExpr(e)
-		}
-		// Merge the simplified stylesheet's templates into ours
-		for _, tmpl := range simplified.templates {
-			tmpl.ImportPrec = c.importPrec
-			tmpl.MinImportPrec = c.importPrec // simplified stylesheets have no sub-imports
-			c.stylesheet.templates = append(c.stylesheet.templates, tmpl)
-			mode := tmpl.Mode
-			c.stylesheet.modeTemplates[mode] = append(c.stylesheet.modeTemplates[mode], tmpl)
-		}
-		// Bump import precedence so the importing module's templates
-		// have higher precedence than the imported simplified stylesheet.
-		if isImport {
-			c.importPrec++
-		}
-
-		return nil
+// expandSimplifiedModule applies the equivalence in XSLT section 3.8. The
+// original source remains available to document(""); only a private module tree
+// receives the implicit stylesheet/template wrappers.
+func expandSimplifiedModule(ctx context.Context, doc *xdm.Document, root *xdm.Element) (*xdm.Document, error) {
+	version := root.GetAttributeNodeNS(paramVersion, lexicon.NamespaceXSLT)
+	if version == nil {
+		return nil, staticError(errCodeXTSE0150, "simplified stylesheet requires xsl:version")
 	}
 
-	return staticError(errCodeXTSE0010, "imported document %q is not a stylesheet", uri)
-}
+	_, raw := tree.UnwrapNode(root.Reference())
 
-func compileSimplified(ctx context.Context, doc *xdm.Document, root *xdm.Element, cfg *compileConfig) (*Stylesheet, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// XTSE0150: simplified stylesheet must have xsl:version attribute
-	if _, ok := root.GetAttributeNS(paramVersion, lexicon.NamespaceXSLT); !ok {
-		return nil, staticError(errCodeXTSE0150,
-			"simplified stylesheet (literal result element) must have an xsl:version attribute")
-	}
-
-	c := &compiler{
-		invocation: ctx,
-		stylesheet: &Stylesheet{
-			version:          lexicon.XSLTVersion30,
-			namedTemplates:   make(map[string]*template),
-			modeTemplates:    make(map[string][]*template),
-			keys:             make(map[string][]*keyDef),
-			outputs:          make(map[string]*OutputDef),
-			functions:        make(map[funcKey]*xslFunction),
-			namespaces:       make(map[string]string),
-			accumulators:     make(map[string]*accumulatorDef),
-			accumulatorOrder: make([]string, 0),
-		},
-		nsBindings:    make(map[string]string),
-		importStack:   make(map[string]int),
-		localExcludes: make(map[string]struct{}),
-	}
-
-	if cfg != nil {
-		c.stylesheet.processorVersion = cfg.processorVersion
-		c.baseURI = cfg.baseURI
-		c.resolver = cfg.resolver
-		c.packageResolver = cfg.packageResolver
-		c.maxResourceBytes = cfg.maxResourceBytes
-		c.parseOptions = cfg.parseOptions
-	}
-
-	c.stylesheet.maxResourceBytes = c.maxResourceBytes
-	c.stylesheet.parseOptions = c.parseOptions
-
-	version, _ := root.GetAttributeNS(paramVersion, lexicon.NamespaceXSLT)
-	c.stylesheet.version = version
-	c.effectiveVersion = version
-
-	c.collectNamespaces(ctx, root)
-
-	inst, err := c.compileInstruction(ctx, root)
+	cloned, err := tree.Clone(ctx, tree.FromNodes([]*tree.Node{tree.ExtractSubtree(raw)}, tree.DefaultLimits()))
 	if err != nil {
 		return nil, err
 	}
 
-	tmpl := &template{
-		Match: &pattern{
-			source: "/",
-			Alternatives: []*patternAlt{
-				{
-					expr:     xpath.RootExpr{},
-					priority: -0.5,
-				},
-			},
-		},
-		Body:    []instruction{inst},
-		BaseURI: c.baseURI,
+	literal := tree.Root(cloned)
+
+	wrapper := &tree.Node{
+		Kind: tree.ElementNode, Name: tree.Name{Space: lexicon.NamespaceXSLT, Local: nameStylesheet}, Prefix: version.Prefix(), SourceLine: literal.SourceLine,
+		NS: []tree.Namespace{{Prefix: version.Prefix(), URI: lexicon.NamespaceXSLT}}, Attrs: []tree.Attribute{{Name: tree.Name{Local: paramVersion}, Value: version.Value()}},
+	}
+	if base := xpath.NodeBaseURI(root.Parent()); base != "" && base != doc.URL() {
+		wrapper.Attrs = append(wrapper.Attrs, tree.Attribute{Name: tree.Name{Space: lexicon.NamespaceXML, Local: "base"}, Prefix: "xml", Value: base})
 	}
 
-	c.stylesheet.templates = append(c.stylesheet.templates, tmpl)
-	c.stylesheet.modeTemplates[""] = append(c.stylesheet.modeTemplates[""], tmpl)
+	tmpl := &tree.Node{
+		Kind: tree.ElementNode, Name: tree.Name{Space: lexicon.NamespaceXSLT, Local: nameTemplate}, Prefix: version.Prefix(), SourceLine: literal.SourceLine, Parent: wrapper,
+		Attrs: []tree.Attribute{{Name: tree.Name{Local: lexicon.AttrMatch}, Value: "/"}}, Children: []*tree.Node{literal},
+	}
+	literal.Parent = tmpl
+	wrapper.Children = []*tree.Node{tmpl}
 
-	c.stylesheet.sourceDoc = doc
-	c.stylesheet.baseURI = c.baseURI
+	prepared, err := xdm.WrapDocument(ctx, tree.FromNodes([]*tree.Node{wrapper}, tree.DefaultLimits()))
+	if err != nil {
+		return nil, err
+	}
 
-	finalizeOutput10(c.stylesheet)
+	prepared.SetURL(doc.URL())
 
-	return c.stylesheet, nil
+	return prepared, nil
 }
 
 func (c *compiler) compileExternalModule(ctx context.Context, doc *xdm.Document, importedRoot *xdm.Element, uri string, isImport bool) error {
@@ -801,19 +644,8 @@ func (c *compiler) compileExternalModule(ctx context.Context, doc *xdm.Document,
 	// already gives the module's full effective base (folding the embedded root's
 	// xml:base and any wrapper/document xml:base for a fragment-selected root), so
 	// c.baseURI is the correct base for the root use-when.
-	if uw, present := importedRoot.GetAttribute(xslAttrUseWhen); present {
-		savedUseWhenBase := c.baseURI
-		c.baseURI = moduleEffectiveBaseURI(importedRoot, uri)
-		include, err := c.evaluateDeclarationUseWhen(ctx, importedRoot, uw)
-		c.baseURI = savedUseWhenBase
-
-		if err != nil {
-			return err
-		}
-
-		if !include {
-			return nil
-		}
+	if _, err := c.preprocessConditionalElement(ctx, importedRoot, true); err != nil {
+		return err
 	}
 
 	// Save/restore expand-text: each stylesheet module has its own setting.
@@ -980,7 +812,7 @@ func isWindowsDrivePath(s string) bool {
 // the boundary that descendant walks stop at.
 func moduleEffectiveBaseURI(root *xdm.Element, uri string) string {
 	if _, isDoc := root.Parent().(*xdm.Document); isDoc {
-		if xmlBase := getAttr(root, lexicon.QNameXMLBase); xmlBase != "" {
+		if xmlBase, present := root.GetAttributeNS("base", lexicon.NamespaceXML); present {
 			return resolveRootXMLBase(uri, xmlBase)
 		}
 
@@ -996,7 +828,7 @@ func moduleEffectiveBaseURI(root *xdm.Element, uri string) string {
 			continue
 		}
 
-		if xmlBase, ok := elem.GetAttributeNS("base", lexicon.NamespaceXML); ok && xmlBase != "" {
+		if xmlBase, ok := elem.GetAttributeNS("base", lexicon.NamespaceXML); ok {
 			bases = append(bases, xmlBase)
 		}
 	}
@@ -1047,8 +879,13 @@ func stylesheetBaseURI(n xdm.Node, fallback string, stopAt *xdm.Element) string 
 			}
 		}
 
-		if xmlBase, ok := elem.GetAttributeNS("base", lexicon.NamespaceXML); ok && xmlBase != "" {
+		if xmlBase, ok := elem.GetAttributeNS("base", lexicon.NamespaceXML); ok {
 			bases = append(bases, xmlBase)
+		}
+		// An external parsed entity supplies a new physical base, independent
+		// of the containing stylesheet's URI and ancestor xml:base values.
+		if override := xdm.NodeBaseOverride(elem); override != "" {
+			return foldXMLBases(override, bases)
 		}
 	}
 

@@ -141,9 +141,9 @@ func ignoredOptional10(e *xdm.Element, a *xdm.Attribute) bool {
 	return true
 }
 
-// prepareModule privately expands modern shadow attributes or hides future
-// attributes from older processors, preserving the source seen by document("").
-// Modules needing neither preprocessing step reuse their original storage.
+// prepareModule privately expands simplified modules and modern shadow
+// attributes, or hides future attributes from older processors. The original
+// source remains available to document(""); unchanged modules reuse their storage.
 func prepareModule(ctx context.Context, doc *xdm.Document, processor int) (*xdm.Document, error) {
 	root := doc.DocumentElement()
 
@@ -162,9 +162,27 @@ func prepareModule(ctx context.Context, doc *xdm.Document, processor int) (*xdm.
 		ignored = unknownAttribute10
 	}
 
-	needed, err := inspectModuleAttributes(ctx, root, false, ignored)
+	needed, err := inspectModuleAttributes(ctx, root, false, func(elem *xdm.Element, attr *xdm.Attribute) bool {
+		conditional := attr.LocalName() == xslAttrUseWhen && (elem.URI() == lexicon.NamespaceXSLT && attr.URI() == "" || elem.URI() != lexicon.NamespaceXSLT && attr.URI() == lexicon.NamespaceXSLT)
+		return ignored(elem, attr) || processor >= 20 && conditional
+	})
 	if err != nil {
 		return nil, err
+	}
+
+	if root.URI() != lexicon.NamespaceXSLT {
+		if _, simplified := root.GetAttributeNS(paramVersion, lexicon.NamespaceXSLT); simplified {
+			prepared, err := expandSimplifiedModule(ctx, doc, root)
+			if err != nil {
+				return nil, err
+			}
+
+			if processor < 30 {
+				filterModuleAttributes(prepared.DocumentElement(), ignored)
+			}
+
+			return prepared, ctx.Err()
+		}
 	}
 
 	if !needed {

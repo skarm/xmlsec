@@ -77,8 +77,8 @@ type Config struct {
 	// stylesheets and nested transforms. xsl:fallback remains available.
 	DisableXSLTDynamicEvaluation bool
 	// AllowSingleByteEncodings permits ASCII-compatible IANA single-byte XML
-	// encodings in addition to UTF-8/UTF-16. DTDs remain disabled. Raw and decoded
-	// bytes share the input limit. The zero value retains the security profile.
+	// encodings in addition to UTF-8/UTF-16. Raw and decoded bytes share the
+	// input limit. Engine.Parse and the XMLDSig input profile remain DTD-free.
 	AllowSingleByteEncodings bool
 	// Functions registers application functions by expanded name. The registry
 	// is copied; callbacks must honor context and support concurrent calls.
@@ -227,7 +227,17 @@ func (e *Engine) parseOptions() xdm.ParseOptions {
 	limits.MaxDepth = e.limits.MaxDepth
 	limits.MaxNodes = e.limits.MaxNodes
 
-	return xdm.ParseOptions{Limits: limits, AllowSingleByteEncodings: e.allowSingleByteEncodings}
+	return xdm.ParseOptions{Limits: limits, AllowSingleByteEncodings: e.allowSingleByteEncodings, AllowRelativeNamespaces: true}
+}
+
+// Language parsing supports DTD semantics; security snapshots and approved
+// XMLDSig transforms keep parseOptions' DTD-free input policy.
+func (e *Engine) languageParseOptions() xdm.ParseOptions {
+	options := e.parseOptions()
+	options.AllowDTD = true
+	options.DTDOpen = resourceAdapter{engine: e}.Resolve
+
+	return options
 }
 
 // Error describes an operation and preserves the standard XPath/XSLT error

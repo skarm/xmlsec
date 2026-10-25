@@ -10,6 +10,7 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/transform"
 )
 
 const (
@@ -106,6 +107,45 @@ func TestCanonicalErrors(t *testing.T) {
 
 	if err := c14n.WriteElement(context.Background(), io.Discard, document.Element{}, c14n.Options{}); err == nil {
 		t.Fatal("zero element accepted")
+	}
+}
+
+func TestCanonicalRejectsRelativeNamespaces(t *testing.T) {
+	e, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{
+		`<r xmlns="relative"><c/></r>`,
+		`<r xmlns:unused="../relative"><c/></r>`,
+		`<r><c/><outside xmlns:unused="#relative"/></r>`,
+	} {
+		languageDoc, err := e.Parse(t.Context(), []byte(source))
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, err := e.Export(t.Context(), languageDoc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		selected := doc.Root().Children()[0]
+		set, err := document.NewNodeSet(doc, selected.Node())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, algorithm := range []string{c14n.Canonical10, c14n.Canonical10WithComments, c14n.Canonical11, c14n.Canonical11WithComments, c14n.Exclusive, c14n.ExclusiveWithComments} {
+			options := c14n.Options{Algorithm: algorithm}
+			for _, write := range []func(io.Writer) error{
+				func(dst io.Writer) error { return c14n.WriteDocument(t.Context(), dst, doc, options) },
+				func(dst io.Writer) error { return c14n.WriteElement(t.Context(), dst, selected, options) },
+				func(dst io.Writer) error { return c14n.WriteNodeSet(t.Context(), dst, set, options) },
+			} {
+				var out bytes.Buffer
+				if err := write(&out); !errors.Is(err, document.ErrUnsupported) || out.Len() != 0 {
+					t.Fatal(algorithm, source, out.String(), err)
+				}
+			}
+		}
 	}
 }
 

@@ -26,6 +26,10 @@ func ParseFragment(ctx context.Context, data []byte, limits Limits) (*Document, 
 // ParseFragmentText accepts an already decoded external parsed entity. Its
 // optional TextDecl selects no byte decoder, but must satisfy XML 1.0 [77].
 func ParseFragmentText(ctx context.Context, text string, limits Limits) (*Document, error) {
+	return parseFragmentText(ctx, text, limits, false)
+}
+
+func parseFragmentText(ctx context.Context, text string, limits Limits, relativeNamespaces bool) (*Document, error) {
 	if ctx == nil {
 		return nil, ErrMalformed
 	}
@@ -47,7 +51,7 @@ func ParseFragmentText(ctx context.Context, text string, limits Limits) (*Docume
 		return nil, err
 	}
 
-	doc, err := ParseFragmentReader(ctx, strings.NewReader(content), limits)
+	doc, err := parseFragmentReader(ctx, strings.NewReader(content), limits, relativeNamespaces)
 	if err != nil {
 		return nil, err
 	}
@@ -67,12 +71,12 @@ func stripTextDeclaration(text string) (string, error) {
 		return "", fmt.Errorf("%w: unterminated text declaration", ErrMalformed)
 	}
 
-	attrs, err := declarationAttributes(text[5:end])
+	attrs, err := declarationAttributes([]byte(text[5:end]))
 	if err != nil {
 		return "", err
 	}
 
-	if attrs[0].Name == (xml.Name{Local: "version"}) {
+	if attrs[0].Name == (xml.Name{Local: nameXMLVersion}) {
 		if attrs[0].Value != "1.0" {
 			return "", fmt.Errorf("%w: XML 1.0 is required", ErrUnsupported)
 		}
@@ -90,6 +94,10 @@ func stripTextDeclaration(text string) (string, error) {
 // ParseFragmentReader constructs a fragment without copying a complete source
 // into a synthetic XML wrapper. The source remains caller-owned.
 func ParseFragmentReader(ctx context.Context, src io.Reader, limits Limits) (*Document, error) {
+	return parseFragmentReader(ctx, src, limits, false)
+}
+
+func parseFragmentReader(ctx context.Context, src io.Reader, limits Limits, relativeNamespaces bool) (*Document, error) {
 	if ctx == nil || nilcheck.IsNil(src) {
 		return nil, ErrMalformed
 	}
@@ -121,6 +129,7 @@ func ParseFragmentReader(ctx context.Context, src io.Reader, limits Limits) (*Do
 	}
 
 	parser := readerParser(input, wrapped)
+	parser.relativeNamespaces = relativeNamespaces
 
 	d, err := parser.parse(ctx)
 	if err != nil {

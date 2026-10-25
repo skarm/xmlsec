@@ -18,6 +18,10 @@ func TestResolveSchemaURI(t *testing.T) {
 		{"schemas", "parts/a.xsd", "schemas/parts/a.xsd"},
 		{`schemas\parts`, `a.xsd`, "schemas/parts/a.xsd"},
 		{"schemas", "urn:external", "urn:external"},
+		{"file:///schemas/main.xsd?old#frag", "", "file:///schemas/main.xsd?old"},
+		{"file:///schemas/main.xsd", "?query", "file:///schemas/main.xsd?query"},
+		{"file:///schemas/main.xsd", "#", "file:///schemas/main.xsd#"},
+		{"https://example.org/путь/main.xsd", "../%D0%B0?ключ=#", "https://example.org/%D0%B0?ключ=#"},
 	} {
 		t.Run(tc.base+"/"+tc.ref, func(t *testing.T) {
 			got, err := uripath.ResolveSchemaURI(tc.ref, tc.base)

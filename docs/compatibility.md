@@ -67,6 +67,9 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
   Explicit `transform.Config.AllowSingleByteEncodings` additionally permits
   ASCII-compatible IANA single-byte XML encodings under the same raw/decoded
   input limits. Default XML byte parsing remains UTF-8/UTF-16 and DTD-free.
+  Language input accepts deprecated Namespaces 1.0 relative namespace names and
+  preserves their literal values. The document security parser requires absolute
+  names; C14N rejects relative names even outside the selected nodes.
   `XSLTOptions.ProcessorVersion` selects a modern processor independently of lower
   stylesheet declarations, preserving local backwards-compatible behavior and
   module semantics. Higher/future declarations enable fallback and deferred-error

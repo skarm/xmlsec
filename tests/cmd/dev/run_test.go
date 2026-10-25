@@ -307,6 +307,15 @@ func TestSuiteXMLAndStringAssertions(t *testing.T) {
 		{"XML fragment declaration", `parse-xml-fragment('<a/>text<b/>')`, `<assert-xml>&lt;?xml version="1.0"?>&lt;a/>text&lt;b/></assert-xml>`, suiteQT3, true},
 		{"XML unterminated declaration", xmlOne, `<assert-xml>&lt;?xml version="1.0" &lt;a>one&lt;/a></assert-xml>`, suiteQT3, false},
 		{"XML text change", xmlOne, `<assert-xml>&lt;a>two&lt;/a></assert-xml>`, suiteQT3, false},
+		{"relative namespace", `parse-xml('<a xmlns="relative"/>')`, `<assert-xml>&lt;a xmlns="relative"/></assert-xml>`, suiteQT3, true},
+		{"relative namespace literal identity", `parse-xml('<a xmlns="relative"/>')`, `<assert-xml>&lt;a xmlns="./relative"/></assert-xml>`, suiteQT3, false},
+		{"relative namespace fragment", `parse-xml-fragment('<a xmlns="relative"/>text<b/>')`, `<assert-xml>&lt;a xmlns="relative"/>text&lt;b/></assert-xml>`, suiteQT3, true},
+		{"XML attribute order and unused namespace", `parse-xml('<a xmlns:unused="relative" b="2" a="1"/>')`, `<assert-xml>&lt;a a="1" b="2"/></assert-xml>`, suiteQT3, true},
+		{"XML attribute prefix retained", `parse-xml('<a xmlns:p="relative" p:n="1"/>')`, `<assert-xml>&lt;a xmlns:q="relative" q:n="1"/></assert-xml>`, suiteQT3, false},
+		{"XML attribute prefix ignored", `parse-xml('<a xmlns:p="relative" p:n="1"/>')`, `<assert-xml ignore-prefixes="true">&lt;a xmlns:q="relative" q:n="1"/></assert-xml>`, suiteQT3, true},
+		{"XML comment retained", `parse-xml('<a><!--one--></a>')`, `<assert-xml>&lt;a>&lt;!--two-->&lt;/a></assert-xml>`, suiteQT3, false},
+		{"XML comment retained ignoring prefixes", `parse-xml('<a><!--one--></a>')`, `<assert-xml ignore-prefixes="true">&lt;a/></assert-xml>`, suiteQT3, false},
+		{"XML PI retained", `parse-xml('<a><?one data?></a>')`, `<assert-xml ignore-prefixes="true">&lt;a>&lt;?two data?>&lt;/a></assert-xml>`, suiteQT3, false},
 		{"XML prefix preserved", `parse-xml('<p:a xmlns:p="urn:a"/>')`, `<assert-xml>&lt;q:a xmlns:q="urn:a"/></assert-xml>`, suiteQT3, false},
 		{"XML prefix explicitly ignored", `parse-xml('<p:a xmlns:p="urn:a"/>')`, `<assert-xml ignore-prefixes="true">&lt;q:a xmlns:q="urn:a"/></assert-xml>`, suiteQT3, true},
 		{"XML document boundary whitespace", xmlOne, "<assert-xml>\n&lt;a>one&lt;/a>\n </assert-xml>", suiteQT3, true},
@@ -636,6 +645,8 @@ func TestSuiteEnvironmentStylesheet(t *testing.T) {
 	writeFixture(t, root, "main.xsl", `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:include href="urn:part"/><xsl:param name="flag" static="yes" select="false()"/><xsl:param name="required" required="yes"/><xsl:template name="start"><out><xsl:call-template name="part"/><xsl:value-of select="$required"/><xsl:if test="$flag">static</xsl:if></out></xsl:template></xsl:stylesheet>`)
 	writeFixture(t, root, "part.xsl", `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:template name="part">included</xsl:template></xsl:stylesheet>`)
 	writeFixture(t, root, "mode.xsl", `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:template match="/"><out>document</out></xsl:template><xsl:template match="n"><out>selected</out></xsl:template><xsl:template name="start"><out><xsl:value-of select="name(.)"/></out></xsl:template></xsl:stylesheet>`)
+	writeFixture(t, root, "content-base/source.xml", `<loaded/>`)
+	writeFixture(t, root, "inline-base.xsl", `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:template match="/"><out><xsl:value-of select="document(r/@href) is document('source.xml', /) and contains(base-uri(/),'content-base/')"/></out></xsl:template></xsl:stylesheet>`)
 	writeFixture(t, root, "environment.xml", `<test-set xmlns="`+namespace+`" name="environment">
 	  <environment name="modules"><stylesheet file="main.xsl" uri="urn:main" role="principal"/><stylesheet file="part.xsl" uri="urn:part" role="secondary"/></environment>
 	  <test-case name="principal"><environment ref="modules"/><test><param name="required" select="' supplied '"/><param name="flag" select="true()" static="yes"/><initial-template name="start"/></test><result><assert-xml>&lt;out>included supplied static&lt;/out></assert-xml></result></test-case>
@@ -648,6 +659,8 @@ func TestSuiteEnvironmentStylesheet(t *testing.T) {
       <test-case name="selected-global"><environment><source role="." select="/r/n"><content>&lt;r>&lt;n/>&lt;/r></content></source></environment><test><stylesheet file="mode.xsl"/><initial-template name="start"/></test><result><assert-xml>&lt;out>n&lt;/out></assert-xml></result></test-case>
       <test-case name="empty-source-selection"><environment><source role="." select="()"><content>&lt;r/></content></source></environment><test><stylesheet file="mode.xsl"/></test><result><error code="*"/></result></test-case>
       <test-case name="multiple-source-selection"><environment><source role="." select="(.,.)"><content>&lt;r/></content></source></environment><test><stylesheet file="mode.xsl"/></test><result><error code="*"/></result></test-case>
+      <test-case name="inline-source-base"><environment><source role="."><content xml:base="content-base/">&lt;r href="source.xml"/></content></source></environment><test><stylesheet file="inline-base.xsl"/></test><result><assert-xml>&lt;out>true&lt;/out></assert-xml></result></test-case>
+      <test-case name="inline-base-independent"><environment><static-base-uri uri="#UNDEFINED"/><source role="."><content xml:base="content-base/">&lt;r href="source.xml"/></content></source></environment><test><stylesheet file="inline-base.xsl"/></test><result><assert-xml>&lt;out>true&lt;/out></assert-xml></result></test-case>
 	</test-set>`)
 	options := suiteOptions{kind: suiteXSLT, directory: root, version: suiteVersion30, timeout: time.Second, setMatch: regexp.MustCompile(".*"), caseMatch: regexp.MustCompile(".*")}
 
@@ -656,12 +669,12 @@ func TestSuiteEnvironmentStylesheet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(report.Cases) != 10 {
+	if len(report.Cases) != 12 {
 		t.Fatal("case inventory changed", len(report.Cases))
 	}
 
 	for _, outcome := range report.Cases {
-		if outcome.Name == "principal" || outcome.Name == "source-param" || outcome.Name == "output-override" || outcome.Name == "context-item" || outcome.Name == "selected-source" || outcome.Name == "selected-global" {
+		if outcome.Name == "principal" || outcome.Name == "source-param" || outcome.Name == "output-override" || outcome.Name == "context-item" || outcome.Name == "selected-source" || outcome.Name == "selected-global" || outcome.Name == "inline-source-base" || outcome.Name == "inline-base-independent" {
 			if outcome.Status != suitePassed {
 				t.Fatal("parameter invocation failed", outcome)
 			}
@@ -984,5 +997,36 @@ func TestSuiteTimeoutClassification(t *testing.T) {
 				t.Fatal("budget/deadline satisfied an expected language error", timeout, outcome)
 			}
 		}
+	}
+}
+
+func TestSuiteDTDInput(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, root, suiteCatalog, `<catalog xmlns="`+suiteQTNamespace+`"><test-set name="dtd" file="dtd.xml"/></catalog>`)
+	writeFixture(t, root, "source.xml", `<!DOCTYPE r SYSTEM "defaults.dtd"><r/>`)
+	writeFixture(t, root, "defaults.dtd", `<!ATTLIST r identity ID "a">`)
+	writeFixture(t, root, "dtd.xml", `<test-set xmlns="`+suiteQTNamespace+`"><test-case name="enabled"><dependency type="feature" value="infoset-dtd"/><environment><source role="." file="source.xml"/></environment><test>count(id('a',.))</test><result><assert-eq>1</assert-eq></result></test-case><test-case name="disabled"><dependency type="feature" value="dtd" satisfied="false"/><test>error()</test><result><assert-eq>1</assert-eq></result></test-case></test-set>`)
+	options := suiteOptions{kind: suiteQT3, directory: root, version: suiteVersion31, timeout: time.Second, setMatch: regexp.MustCompile(".*"), caseMatch: regexp.MustCompile(".*")}
+	report, err := executeSuite(t.Context(), options, suitePin{Catalog: suiteCatalog, Namespace: suiteQTNamespace})
+	if err != nil || report.Totals[suitePassed] != 1 || report.Totals[suiteNotApplicable] != 1 || report.Totals[suiteFailed] != 0 {
+		t.Fatal(report, err)
+	}
+}
+
+func TestSuiteDeferredXMLSources(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, root, suiteCatalog, `<catalog xmlns="`+suiteQTNamespace+`"><test-set name="deferred" file="deferred.xml"/></catalog>`)
+	writeFixture(t, root, "bad.xml", `<r a=unquoted/>`)
+	writeFixture(t, root, "deferred.xml", `<test-set xmlns="`+suiteQTNamespace+`"><environment name="source"><source file="bad.xml" uri="urn:bad"/></environment><test-case name="unused"><environment ref="source"/><test>1</test><result><assert-eq>1</assert-eq></result></test-case><test-case name="load-error"><environment ref="source"/><test>doc('urn:bad')</test><result><error code="FODC0002"/></result></test-case></test-set>`)
+	options := suiteOptions{kind: suiteQT3, directory: root, version: suiteVersion31, timeout: time.Second, setMatch: regexp.MustCompile(".*"), caseMatch: regexp.MustCompile(".*")}
+	report, err := executeSuite(t.Context(), options, suitePin{Catalog: suiteCatalog, Namespace: suiteQTNamespace})
+	if err != nil || report.Totals[suitePassed] != 2 || report.Totals[suiteFailed] != 0 {
+		t.Fatal(report, err)
 	}
 }

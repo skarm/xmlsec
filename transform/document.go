@@ -97,6 +97,8 @@ func (n Node) Kind() string {
 		return "comment"
 	case xdm.ProcessingInstructionNode:
 		return "processing-instruction"
+	case xdm.NamespaceNode:
+		return "namespace"
 	default:
 		return strings.ToLower(n.native.Type().String())
 	}

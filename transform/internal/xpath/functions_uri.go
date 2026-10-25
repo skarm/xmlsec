@@ -139,29 +139,58 @@ func fnResolveURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 		}
 	}
 
+	result, err := resolveRelativeURIReference(relative, base)
+	if err != nil {
+		return nil, err
+	}
+
+	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: result}), nil
+}
+
+// ResolveURIReference applies fn:resolve-uri's IRI rules to explicit strings.
+// An absolute reference does not inspect the base. Hosts can share the standard
+// URI semantics without invoking an XPath evaluator or rewriting IRI characters.
+func ResolveURIReference(relative, base string) (string, error) {
+	if err := validateIRI(relative); err != nil {
+		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid relative URI: " + relative}
+	}
+
+	parsed, err := parseURIReference(relative)
+	if err != nil {
+		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid relative URI: " + relative}
+	}
+
+	if parsed.IsAbs() {
+		return relative, nil
+	}
+
+	return resolveRelativeURIReference(relative, base)
+}
+
+func resolveRelativeURIReference(relative, base string) (string, error) {
 	if err := validateIRI(base); err != nil {
-		return nil, &xdm.Error{Code: errCodeFORG0002, Message: "invalid base URI: " + base}
+		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid base URI: " + base}
 	}
 
 	parsedBase, err := parseURIReference(base)
 	if err != nil {
-		return nil, &xdm.Error{Code: errCodeFORG0002, Message: "invalid base URI: " + base}
+		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid base URI: " + base}
 	}
 
 	if !parsedBase.IsAbs() || parsedBase.Opaque != "" {
-		return nil, &xdm.Error{Code: errCodeFORG0002, Message: "base URI is not absolute and hierarchical: " + base}
+		return "", &xdm.Error{Code: errCodeFORG0002, Message: "base URI is not absolute and hierarchical: " + base}
 	}
 
 	if strings.Contains(base, "#") {
-		return nil, &xdm.Error{Code: errCodeFORG0002, Message: "base URI must not contain a fragment: " + base}
+		return "", &xdm.Error{Code: errCodeFORG0002, Message: "base URI must not contain a fragment: " + base}
 	}
 
 	result, err := resolveURIReference(base, relative)
 	if err != nil {
-		return nil, &xdm.Error{Code: errCodeFORG0002, Message: "invalid relative URI: " + relative}
+		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid relative URI: " + relative}
 	}
 
-	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: result}), nil
+	return result, nil
 }
 
 // validateIRI checks that a string is a valid IRI reference.

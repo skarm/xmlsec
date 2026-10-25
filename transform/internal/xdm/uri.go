@@ -63,22 +63,20 @@ func BuildURI(systemID, base string) string {
 		return buildLocalPathURI(systemID, base)
 	}
 
-	u, err := url.Parse(systemID)
-	if err != nil {
-		return ""
-	}
+	// URI bases, including file:, keep their scheme, query, fragment and IRI
+	// spelling. Filesystem conversion belongs to resource retrieval.
+	if uripath.HasURIScheme(base) {
+		resolved, err := uripath.ResolveIRIReference(systemID, base)
+		if err != nil {
+			return ""
+		}
 
-	if u.IsAbs() {
-		return systemID
+		return resolved
 	}
 
 	baseURL, err := url.Parse(base)
 	if err != nil {
 		return ""
-	}
-
-	if baseURL.Scheme != "" && baseURL.Scheme != "file" {
-		return baseURL.ResolveReference(u).String()
 	}
 
 	if uripath.IsPOSIXAbsolute(systemID) {
@@ -101,17 +99,6 @@ func BuildURI(systemID, base string) string {
 	result := path.Join(dir, systemID)
 	if strings.HasSuffix(systemID, "/") && !strings.HasSuffix(result, "/") {
 		result += "/"
-	}
-	// A "file:" base with a Windows drive letter (url.Parse("file:///D:/x").Path
-	// == "/D:/x") yields a drive-rooted "/D:/..." result here, which is neither a
-	// usable native path nor a "file:" URI: an fs.FS keyed on native paths can't
-	// open "/D:/...". Re-attach the "file://" scheme so the value round-trips as
-	// a proper file: URI ("file:///D:/...") that downstream file-URI-aware
-	// loaders (normalizingFS, the entity resolver, catalogs) convert back to a
-	// native path. A POSIX file: base ("file:///tmp/x" -> "/tmp/...") is left
-	// untouched, so POSIX behavior is identical.
-	if baseURL.Scheme == "file" && isDriveRootedPath(result) {
-		return "file://" + result
 	}
 
 	return result
@@ -149,8 +136,4 @@ func buildLocalPathURI(systemID, base string) string {
 	}
 
 	return result
-}
-
-func isDriveRootedPath(p string) bool {
-	return len(p) >= 3 && p[0] == '/' && uripath.IsWindowsDriveLetter(p[1]) && p[2] == ':'
 }

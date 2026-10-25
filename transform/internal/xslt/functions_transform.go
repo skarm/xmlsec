@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"path"
 
@@ -100,6 +101,14 @@ func TransformFunction(options ...TransformOption) xpath.TypedFunctionByArity {
 	// nested compile and stylesheet-location reads.
 	if cfg.innerURIResolver != nil && cfg.stylesheetResolver == nil {
 		cfg.stylesheetResolver = cfg.innerURIResolver
+	}
+
+	if cfg.parseOptions != nil && cfg.parseOptions.AllowDTD {
+		opts := *cfg.parseOptions
+		opts.DTDOpen = func(ctx context.Context, uri string) (io.ReadCloser, error) {
+			return openDocumentVia(ctx, uri, cfg.stylesheetResolver, cfg.httpClient)
+		}
+		cfg.parseOptions = &opts
 	}
 
 	c := NewCompiler()
@@ -642,7 +651,7 @@ func lookuptransformCapabilities(ctx context.Context, key string) (bool, bool) {
 }
 
 // validateTransformOptions enforces the fn:transform option-map constraints that
-// are independent of the compiled stylesheet (F&O 3.1 §14.8.3): exactly one
+// are independent of the compiled stylesheet (F&O 3.1 §16.3.2): exactly one
 // stylesheet source, mutually-exclusive invocation options, a legal
 // delivery-format, correctly-typed option values, and satisfiable requested
 // properties. The no-invocation check is applied post-compile in run(), because
@@ -1028,7 +1037,7 @@ func (cfg *transformFnConfig) compileTransformText(ctx context.Context, nestedCo
 
 	doc, parseErr := parseOptions.WithByteLimit(cfg.programLimit(ctx)).ParseText(ctx, stylesheetText)
 	if parseErr != nil {
-		return nil, dynamicErrorCause(errCodeFOXT0003, parseErr, "fn:transform: cannot parse stylesheet-text: %v", parseErr)
+		return nil, transformFailure(parseErr, "fn:transform: cannot parse stylesheet-text: %v", parseErr)
 	}
 
 	compiler := nestedCompiler.BaseURI(baseURI)
@@ -1051,17 +1060,20 @@ func (cfg *transformFnConfig) compileTransformNode(ctx context.Context, compiler
 		return nil, dynamicError(errCodeFOXT0002, "fn:transform: no stylesheet specified (stylesheet-location, stylesheet-node, stylesheet-text, or package-name required)")
 	}
 
-	owner := owningDocument(node.Node)
-	if owner == nil {
-		return nil, dynamicError(errCodeFOXT0003, "fn:transform: stylesheet-node is not part of a document")
+	if node.Node.Type() != xdm.DocumentNode && node.Node.Type() != xdm.ElementNode {
+		return nil, dynamicError(errCodeFOXT0002, "fn:transform: stylesheet-node must be a document or element node")
 	}
 
-	baseURI := xdm.NodeGetBase(owner, node.Node)
+	owner := owningDocument(node.Node)
+
+	// Compilation applies the root's own xml:base once. Include inherited and
+	// construction bases here, without pre-applying that same attribute.
+	baseURI := xdm.NodeGetBaseBeforeXMLBase(node.Node.OwnerDocument(), node.Node)
 	if stylesheetBaseURI != "" {
 		baseURI = resolveStylesheetLocation(cfg.baseURI, stylesheetBaseURI)
 	}
 
-	compileDoc, err := stylesheetNodeCompileDocument(node.Node, owner)
+	compileDoc, err := stylesheetNodeCompileDocument(ctx, node.Node, owner)
 	if err != nil {
 		return nil, dynamicErrorCause(errCodeFOXT0003, err, "fn:transform: cannot prepare stylesheet node: %v", err)
 	}
@@ -1085,34 +1097,20 @@ func (cfg *transformFnConfig) compileTransformNode(ctx context.Context, compiler
 	return stylesheet, nil
 }
 
-// stylesheetNodeCompileDocument returns the document that fn:transform should
-// compile for a stylesheet-node value. When n is an element that is not owner's
-// document element (a simplified/literal-result stylesheet supplied as a
-// fragment child, or an element nested in a larger tree), a fresh document is
-// built with a deep copy of that element as its document element, so the element
-// itself becomes the stylesheet root. Otherwise owner is compiled unchanged.
-func stylesheetNodeCompileDocument(n xdm.Node, owner *xdm.Document) (*xdm.Document, error) {
+// A stylesheet-node element defines the module root, even when it is
+// parentless or embedded in a larger input tree. Extraction preserves in-scope
+// namespaces and avoids adding a synthetic default namespace declaration.
+func stylesheetNodeCompileDocument(ctx context.Context, n xdm.Node, owner *xdm.Document) (*xdm.Document, error) {
 	elem, ok := n.(*xdm.Element)
 	if !ok {
 		return owner, nil
 	}
 
-	if de := owner.DocumentElement(); de != nil && xdm.Node(de) == n {
+	if owner != nil && owner.DocumentElement() == elem {
 		return owner, nil
 	}
 
-	doc := xdm.NewDefaultDocument()
-
-	copied, err := xdm.CopyNode(elem, doc)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := doc.AddChild(copied); err != nil {
-		return nil, err
-	}
-
-	return doc, nil
+	return xdm.ElementDocument(ctx, elem)
 }
 
 // resolveRelativeURI resolves a reference against a base URI.
@@ -1351,8 +1349,14 @@ func (request transformRequest) prepareSource(invocation *transformConfig) *xdm.
 		}
 	}
 
-	if sourceDoc == nil && invocation.globalContextItem == nil {
-		invocation.globalContextAbsent = true
+	// Only source-node supplies the default global context. An initial match
+	// selection drives template matching independently (F&O 3.1 §16.3.2).
+	if invocation.globalContextItem == nil {
+		if sourceNode != nil {
+			invocation.globalContextItem = xdm.NodeItem{Node: xdm.DocumentRoot(sourceNode)}
+		} else {
+			invocation.globalContextAbsent = true
+		}
 	}
 
 	return sourceDoc
@@ -1468,7 +1472,7 @@ func applySerializationParams(base *OutputDef, seq xdm.Sequence) *OutputDef {
 		}
 		// A recognized parameter present with an empty-sequence value overrides
 		// the inherited xsl:output value by resetting the parameter to its
-		// serialization default (F&O 3.1 §14.8.3), leaving no
+		// serialization default (F&O 3.1 §16.3.2), leaving no
 		// inherited value in place.
 		if !transformOptionPresent(val) {
 			resetSerializationParam(out, name)
@@ -1635,7 +1639,7 @@ func serializationQNameClarkName(item xdm.Item) string {
 // mergeSerializationQNames unions the Clark names of the xs:QName items in val
 // into base. The cdata-section-elements / suppress-indentation values supplied
 // via serialization-params accumulate onto the stylesheet's xsl:output set,
-// replacing none of it (F&O 3.1 §14.8.3), skipping duplicates.
+// replacing none of it (F&O 3.1 §16.3.2), skipping duplicates.
 func mergeSerializationQNames(base []string, val xdm.Sequence) []string {
 	seen := make(map[string]struct{}, len(base))
 	for _, n := range base {

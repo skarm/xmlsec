@@ -70,7 +70,7 @@ func executeTransform(ctx context.Context, source *xdm.Document, ss *Stylesheet,
 
 	resultDoc := ec.resultDoc
 
-	matchSelection, err := ec.prepareTransformSource(matchSelection)
+	matchSelection, err := ec.prepareTransformSource(ctx, matchSelection)
 	if err != nil {
 		return nil, err
 	}
@@ -201,6 +201,10 @@ func newTransformExecContext(ctx context.Context, source *xdm.Document, ss *Styl
 		ec.size = 1
 	}
 
+	if cfg != nil {
+		ec.globalContextItem, ec.globalContextAbsent = cfg.globalContextItem, cfg.globalContextAbsent
+	}
+
 	if cfg != nil && cfg.msgHandler != nil {
 		ec.msgHandler = cfg.msgHandler
 	}
@@ -230,111 +234,67 @@ func newTransformExecContext(ctx context.Context, source *xdm.Document, ss *Styl
 	return ec
 }
 
-func (ec *execContext) prepareTransformSource(matchSelection xdm.Sequence) (xdm.Sequence, error) {
-	effectiveSource := ec.sourceDoc
-	ss := ec.stylesheet
-
-	// Whitespace stripping uses a private project-tree clone. Unchanged source
-	// snapshots retain their original node identity and are never mutated.
-	if effectiveSource != nil && len(ss.stripSpace) > 0 {
-		needSelectionMap := matchSelection != nil && xdm.SequenceLen(matchSelection) > 0
-
-		srcCopy, nodeMap, copyErr := copyAndStrip(effectiveSource, ss.stripSpace, ss.preserveSpace, needSelectionMap || len(ec.typeAnnotations) > 0)
-		if copyErr != nil {
-			return nil, copyErr
+// Prepare every tree supplied through the source, global context or initial
+// match selection. Other parameter values are not preprocessed (XSLT 3.0 §4.4).
+func (ec *execContext) prepareTransformSource(ctx context.Context, matchSelection xdm.Sequence) (xdm.Sequence, error) {
+	if ec.sourceDoc != nil {
+		node, err := ec.prepareInputNode(ctx, ec.sourceDoc)
+		if err != nil {
+			return nil, err
 		}
 
-		if needSelectionMap {
-			matchSelection = remapSelectionToCopy(matchSelection, effectiveSource, nodeMap)
-		}
-
-		if nodeMap != nil {
-			ec.remapAnnotationsToCopy(nodeMap)
-		}
-
-		ec.sourceDoc = srcCopy
-		ec.currentNode = srcCopy
-		ec.contextNode = srcCopy
+		ec.sourceDoc = node.(*xdm.Document) //nolint:forcetypeassert // preprocessing retains node kinds
+		ec.currentNode, ec.contextNode = ec.sourceDoc, ec.sourceDoc
 	}
 
-	// Apply input-type-annotations="strip": remove all type annotations from
-	// the source document so elements are xs:untyped and attributes xs:untypedAtomic.
-	// The is-id and is-idref properties are preserved (per XSLT 3.0 §3.12)
-	// so that fn:id() and fn:idref() still work.
-	if ss.inputTypeAnnotations == validationStrip && ec.typeAnnotations != nil {
-		ec.preserveIDAnnotations()
+	if item, ok := ec.globalContextItem.(xdm.NodeItem); ok {
+		node, err := ec.prepareInputNode(ctx, item.Node)
+		if err != nil {
+			return nil, err
+		}
 
-		for k := range ec.typeAnnotations {
-			delete(ec.typeAnnotations, k)
+		if node == nil {
+			ec.globalContextItem, ec.globalContextAbsent = nil, true
+		} else {
+			item.Node = node
+			ec.globalContextItem = item
 		}
 	}
 
-	return matchSelection, nil
-}
+	if matchSelection != nil {
+		items := make(xdm.ItemSlice, 0, xdm.SequenceLen(matchSelection))
+		for item := range xdm.SequenceItems(matchSelection) {
+			if err := xpath.Charge(ctx, 1); err != nil {
+				return nil, err
+			}
 
-// remapSelectionToCopy rewrites the node items of an initial match selection so
-// that any node belonging to the original source document points instead to the
-// corresponding node in the stripped copy. Items that are not nodes, or that
-// belong to a different document (e.g. fn:doc()-loaded), are passed through
-// unchanged. A node that DID belong to the original source but has no copy (a
-// whitespace-only text/CDATA node that strip-space omitted) is DROPPED from the
-// selection, so it neither points at the unstripped original nor inflates the
-// sequence length that drives position()/last() in the apply loop.
-//
-// src is the original source document the selection was computed against; it is
-// used only to distinguish an omitted source node (drop) from a node in another
-// document (pass through).
-//
-// nodeMap is the original->copy correspondence built by copyAndStrip during the
-// single-pass copy. Because whitespace-only nodes are omitted from the copy, the
-// two trees no longer share a child shape, so the map (not a parallel walk) is
-// the only correct source of correspondence. It already covers elements,
-// text/comment/PI leaves, the document node, and each element's attributes (keyed
-// by expanded name). Namespace nodes are wrappers off the child spine; a selected
-// *xdm.NamespaceNodeWrapper is remapped by locating the mapped owner element
-// and rebuilding an equivalent wrapper bound to a matching namespace declaration
-// in scope on the copy. This ensures every selected node (element, text, comment,
-// PI, attribute, namespace) points into the stripped copy, so XPath navigation
-// from a matched template observes the same tree as the context node.
-func remapSelectionToCopy(sel xdm.Sequence, src *xdm.Document, nodeMap map[xdm.Node]xdm.Node) xdm.Sequence {
-	items := make(xdm.ItemSlice, 0, xdm.SequenceLen(sel))
-	for i := range xdm.SequenceLen(sel) {
-		item := sel.Get(i)
+			if ni, ok := item.(xdm.NodeItem); ok {
+				node, err := ec.prepareInputNode(ctx, ni.Node)
+				if err != nil {
+					return nil, err
+				}
 
-		ni, ok := item.(xdm.NodeItem)
-		if !ok {
-			items = append(items, item)
-			continue
-		}
-		// Namespace nodes are wrappers off the child spine: remap by relocating
-		// the owner element onto the copy and rebuilding an equivalent wrapper.
-		if nsw, ok := ni.Node.(*xdm.NamespaceNodeWrapper); ok {
-			if mapped := remapNamespaceWrapper(nodeMap, nsw); mapped != nil {
-				items = append(items, xdm.NodeItem{Node: mapped})
-				continue
+				if node == nil {
+					continue
+				}
+
+				ni.Node = node
+				item = ni
 			}
 
 			items = append(items, item)
-
-			continue
 		}
 
-		if mapped, found := nodeMap[ni.Node]; found {
-			items = append(items, xdm.NodeItem{Node: mapped})
-			continue
-		}
-		// No copy exists. If the node belonged to the original source, strip-space
-		// omitted it (whitespace-only text/CDATA): drop it so it is absent from the
-		// stripped selection and does not skew position()/last(). Nodes from other
-		// documents (e.g. fn:doc()-loaded) keep their identity and pass through.
-		if ni.Node != nil && ni.Node.OwnerDocument() == src {
-			continue
-		}
-
-		items = append(items, item)
+		matchSelection = items
 	}
 
-	return items
+	// Preserve ID properties before discarding schema type annotations.
+	if ec.stylesheet.inputTypeAnnotations == validationStrip && ec.typeAnnotations != nil {
+		ec.preserveIDAnnotations()
+		clear(ec.typeAnnotations)
+	}
+
+	return matchSelection, nil
 }
 
 // remapNamespaceWrapper rebuilds an initial-selection namespace node so that it
@@ -409,8 +369,8 @@ func (ec *execContext) prepareTransformGlobalContext(ctx context.Context, cfg *t
 	}
 
 	// Establish the global context item used when evaluating global
-	// variables/parameters, per F&O 3.1 §14.8 (the global-context-item option is
-	// an item()) and XSLT 3.0 §5.4.3.1 (xsl:global-context-item).
+	// variables/parameters, per F&O 3.1 §16.3.2 (the global-context-item option is
+	// an item()) and XSLT 3.0 §2.3.2 (xsl:global-context-item).
 	//   - use="absent": the global context item is absent regardless of any
 	//     supplied option, so a supplied global-context-item is NOT installed and
 	//     a global "." reference raises XPDY0002.
@@ -427,10 +387,9 @@ func (ec *execContext) prepareTransformGlobalContext(ctx context.Context, cfg *t
 	switch {
 	case ss.globalContextItem != nil && ss.globalContextItem.Use == ctxItemAbsent:
 		ec.globalContextAbsent = true
-	case cfg != nil && cfg.globalContextItem != nil:
-		ec.globalContextItem = cfg.globalContextItem
-		if _, isNode := cfg.globalContextItem.(xdm.NodeItem); !isNode {
-			ec.contextItem = cfg.globalContextItem
+	case ec.globalContextItem != nil:
+		if _, isNode := ec.globalContextItem.(xdm.NodeItem); !isNode {
+			ec.contextItem = ec.globalContextItem
 			restoreGlobalContextItem = true
 		}
 	case cfg != nil && cfg.globalContextAbsent:
@@ -672,6 +631,7 @@ func (ec *execContext) applyInitialSelection(ctx context.Context, selection xdm.
 
 		switch v := item.(type) {
 		case xdm.NodeItem:
+			ec.contextItem = nil
 			ec.contextNode = v.Node
 			ec.currentNode = v.Node
 			ec.position = i + 1
@@ -680,54 +640,18 @@ func (ec *execContext) applyInitialSelection(ctx context.Context, selection xdm.
 			if err := ec.applyTemplates(ctx, v.Node, initialMode, params); err != nil {
 				return err
 			}
-		case xdm.AtomicValue:
-			ec.contextItem = v
-			ec.position = i + 1
-			ec.size = selLen
+		default:
+			ec.contextItem = item
+			ec.contextNode, ec.currentNode = nil, nil
 
-			if err := ec.applyInitialAtomic(ctx, v, initialMode, params); err != nil {
+			ec.position, ec.size = i+1, selLen
+			if err := ec.dispatchApplyTemplatesItem(ctx, item, initialMode, params); err != nil {
 				return err
 			}
 		}
 	}
 
 	return nil
-}
-
-func (ec *execContext) applyInitialAtomic(ctx context.Context, value xdm.AtomicValue, mode string, params map[string]xdm.Sequence) error {
-	initialCall := ec.initialTemplateCall
-	ec.initialTemplateCall = false
-
-	mode, restoreMode := ec.pushMode(mode)
-	defer restoreMode()
-
-	tmpl, err := ec.findAtomicTemplate(ctx, value, mode)
-	if err != nil {
-		return err
-	}
-
-	if tmpl != nil {
-		if initialCall {
-			if err := ec.checkInitialTemplateParameters(tmpl); err != nil {
-				return err
-			}
-		}
-
-		return ec.executeAtomicTemplate(ctx, tmpl, value, mode, params)
-	}
-
-	// Built-in atomic template: emit its string value and preserve conversion errors.
-	atomic, err := xpath.AtomizeItem(value)
-	if err != nil {
-		return err
-	}
-
-	text, err := xpath.AtomicToString(atomic)
-	if err != nil {
-		return err
-	}
-
-	return ec.addNode(ec.resultDoc.CreateText(text))
 }
 
 func (ec *execContext) checkInitialTemplateParameters(tmpl *template) error {

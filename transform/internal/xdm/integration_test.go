@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"math/big"
 	"strings"
 	"testing"
@@ -55,6 +56,32 @@ func TestCopyNodePreservesNamespaceContext(t *testing.T) {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("missing %s in %s", want, output.String())
 		}
+	}
+}
+
+func TestCopyDocPreservesXDMProperties(t *testing.T) {
+	source, err := (xdm.ParseOptions{BaseURI: "https://example.test/source.xml"}).Parse(t.Context(), []byte(`<r><n/></r>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.SetProperties(xdm.DocInternal)
+	xdm.SetNodeBaseURI(source.DocumentElement(), "https://example.test/constructed/")
+	copied, err := xdm.CopyDoc(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copied.URL() != source.URL() || copied.Properties() != source.Properties() || xdm.NodeGetBase(copied, copied.DocumentElement().FirstChild()) != xdm.NodeGetBase(source, source.DocumentElement().FirstChild()) {
+		t.Fatal("snapshot clone lost XDM properties")
+	}
+	if copied.Snapshot() == source.Snapshot() {
+		t.Fatal("copy shares source nodes")
+	}
+	orphan, err := xdm.CopyTree(source.DocumentElement())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if orphan.Parent() != nil || orphan.Type() != xdm.ElementNode || orphan.OwnerDocument().Properties() != source.Properties() || xdm.NodeGetBase(orphan.OwnerDocument(), orphan.FirstChild()) != "https://example.test/constructed/" {
+		t.Fatal("tree clone lost the parentless root, document metadata or construction base")
 	}
 }
 
@@ -319,5 +346,59 @@ func TestDetachedNamespaceNode(t *testing.T) {
 
 	if n.Name() != "p" || xdm.CharacterData(n) != "urn:detached" {
 		t.Fatal("detached namespace lost its binding")
+	}
+}
+
+func TestDTDSnapshotProperties(t *testing.T) {
+	const base = "https://example.test/source.xml"
+	const source = `<!DOCTYPE r [<!NOTATION bin SYSTEM "urn:bin"><!ENTITY image SYSTEM "image.bin" NDATA bin><!ENTITY external SYSTEM "parts/value.ent"><!ATTLIST n identity ID #IMPLIED refs IDREFS #IMPLIED>]><r>&external;</r>`
+	original, err := (xdm.ParseOptions{AllowDTD: true, BaseURI: base, DTDOpen: func(_ context.Context, uri string) (io.ReadCloser, error) {
+		if uri != "https://example.test/parts/value.ent" {
+			t.Fatal(uri)
+		}
+		return io.NopCloser(strings.NewReader(`<?p value?><n identity="a" refs="a"/>`)), nil
+	}}).ParseText(t.Context(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied, err := xdm.CopyDoc(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := xdm.WrapDocument(t.Context(), copied.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, doc := range []*xdm.Document{original, copied, wrapped} {
+		item := doc.DocumentElement().LastChild().(*xdm.Element)
+		if item.GetAttributeNodeNS("identity", "").IDType() != xdm.IDAttribute || item.GetAttributeNodeNS("refs", "").IDType() != xdm.IDRefsAttribute || doc.GetElementByID("a") != item {
+			t.Fatal("snapshot lost DTD ID properties")
+		}
+		entity, ok := doc.UnparsedEntity("image")
+		if !ok || entity.SystemID != "image.bin" || entity.BaseURI != base {
+			t.Fatal(entity, ok)
+		}
+		for _, node := range []xdm.Node{item, doc.DocumentElement().FirstChild()} {
+			if got := xdm.NodeGetBase(doc, node); got != "https://example.test/parts/value.ent" {
+				t.Fatal("snapshot lost external entity base", got)
+			}
+		}
+	}
+	item := copied.DocumentElement().LastChild().(*xdm.Element)
+	if err := item.SetAttribute("identity", "b"); err != nil {
+		t.Fatal(err)
+	}
+	if copied.GetElementByID("a") != nil || copied.GetElementByID("b") != item || original.GetElementByID("a") == nil {
+		t.Fatal("ID index did not follow cloned attribute mutation")
+	}
+	item.RemoveAttribute("identity")
+	if copied.GetElementByID("b") != nil {
+		t.Fatal("removed DTD ID remains indexed")
+	}
+	if err := item.SetAttribute("identity", "c"); err != nil {
+		t.Fatal(err)
+	}
+	if item.GetAttributeNodeNS("identity", "").IDType() != xdm.UntypedAttribute {
+		t.Fatal("new attribute inherited removed DTD declaration")
 	}
 }

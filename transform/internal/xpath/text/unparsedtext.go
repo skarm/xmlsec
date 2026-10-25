@@ -35,10 +35,10 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
-	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/resource"
 	iencoding "github.com/skarm/xmlsec/transform/internal/xdm/encoding"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 )
 
 // DefaultMaxBytes is the default per-resource read cap applied when
@@ -424,21 +424,7 @@ func EncodingsCompatible(specified, detected string) bool {
 // ValidatePercentEncoding verifies that every '%' in uri is followed by two
 // hexadecimal digits, returning a descriptive error otherwise.
 func ValidatePercentEncoding(uri string) error {
-	for i := 0; i < len(uri); i++ {
-		if uri[i] == '%' {
-			if i+2 >= len(uri) {
-				return fmt.Errorf("incomplete percent-encoding at position %d", i)
-			}
-
-			if !xmlchar.IsHexDigit(uri[i+1]) || !xmlchar.IsHexDigit(uri[i+2]) {
-				return fmt.Errorf("invalid percent-encoding %%%c%c", uri[i+1], uri[i+2])
-			}
-
-			i += 2
-		}
-	}
-
-	return nil
+	return uripath.ValidatePercentEncoding(uri)
 }
 
 // OpenURI opens an explicitly configured XML resource without buffering it.

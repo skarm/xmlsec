@@ -322,12 +322,15 @@ func (e *Engine) CompileXSLT(ctx context.Context, source []byte, options XSLTOpt
 		return nil, wrap("compile XSLT", ErrLimit)
 	}
 
-	d, err := e.parse(ctx, source, options.BaseURI)
+	parse := e.languageParseOptions().WithByteLimit(int64(e.limits.MaxProgramBytes))
+	parse.BaseURI = options.BaseURI
+
+	native, err := parse.Parse(ctx, source)
 	if err != nil {
 		return nil, err
 	}
 
-	return e.compileStylesheet(ctx, d.native, options)
+	return e.compileStylesheet(ctx, native, options)
 }
 
 // CompileXSLTReader incrementally reads a stylesheet under the program byte limit.
@@ -344,7 +347,7 @@ func (e *Engine) CompileXSLTReader(ctx context.Context, src io.Reader, options X
 	}
 
 	ctx = e.languageContext(ctx)
-	parse := e.parseOptions().WithByteLimit(int64(e.limits.MaxProgramBytes))
+	parse := e.languageParseOptions().WithByteLimit(int64(e.limits.MaxProgramBytes))
 	parse.BaseURI = options.BaseURI
 
 	doc, err := parse.ParseReader(ctx, src)
@@ -375,7 +378,7 @@ func (e *Engine) compileStylesheet(ctx context.Context, doc *xdm.Document, optio
 		parameters.Set(name, value)
 	}
 
-	compiler := xslt.NewCompiler().ProcessorVersion(version).ParseOptions(e.parseOptions()).BaseURI(options.BaseURI).StaticParameters(parameters).MaxResourceBytes(int64(e.limits.MaxInputBytes))
+	compiler := xslt.NewCompiler().ProcessorVersion(version).ParseOptions(e.languageParseOptions()).BaseURI(options.BaseURI).StaticParameters(parameters).MaxResourceBytes(int64(e.limits.MaxInputBytes))
 	if e.packages != nil {
 		compiler = compiler.PackageResolver(packageAdapter{engine: e})
 	}

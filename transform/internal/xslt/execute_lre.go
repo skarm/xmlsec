@@ -47,6 +47,12 @@ func (ec *execContext) execLiteralResultElement(ctx context.Context, inst *liter
 		return returned0
 	}
 
+	// A parentless constructor retains its instruction's static base. Nodes
+	// constructed directly as children inherit the result parent's base instead.
+	if ec.currentOutput().sequenceMode {
+		xdm.SetNodeBaseURI(elem, ec.effectiveStaticBaseURI())
+	}
+
 	out := ec.currentOutput()
 
 	// Always add element to the DOM tree.

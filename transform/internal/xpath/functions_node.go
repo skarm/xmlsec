@@ -424,9 +424,24 @@ func fnBaseURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	if n == nil {
 		return nil, nil
 	}
+
+	base := NodeBaseURI(n)
+	if base == "" {
+		return nil, nil
+	}
+
+	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: base}), nil
+}
+
+// NodeBaseURI applies the XDM base-uri accessor, including xml:base and
+// construction-time bases. Parentless non-element nodes have no base URI.
+func NodeBaseURI(n xdm.Node) string {
+	if xdm.IsNilNode(n) {
+		return ""
+	}
 	// Namespace nodes have no base URI per the XPath data model.
 	if n.Type() == xdm.NamespaceNode {
-		return nil, nil
+		return ""
 	}
 	// Per XDM: attribute, text, comment, and PI nodes derive their base URI
 	// from their parent element. If they have no parent, their base URI is
@@ -435,7 +450,7 @@ func fnBaseURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	if nodeType == xdm.AttributeNode || nodeType == xdm.TextNode ||
 		nodeType == xdm.CommentNode || nodeType == xdm.ProcessingInstructionNode {
 		if n.Parent() == nil {
-			return nil, nil
+			return ""
 		}
 	}
 	// Walk up the parent chain to find the actual document the node lives
@@ -458,12 +473,7 @@ func fnBaseURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		}
 	}
 
-	base := xdm.NodeGetBase(doc, n)
-	if base == "" {
-		return nil, nil
-	}
-
-	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: base}), nil
+	return xdm.NodeGetBase(doc, n)
 }
 
 func fnDocumentURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -881,14 +891,18 @@ func fnParseXML(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 	}
 
 	ec := getFnContext(ctx)
+	opts := ec.xmlParseOptions()
 
-	parseOptions := ec.xmlParseOptions()
 	if ec != nil && ec.baseURI != "" {
-		parseOptions.BaseURI = ec.baseURI
+		opts.BaseURI = ec.baseURI
 	}
 
-	doc, err := parseOptions.ParseText(ctx, s)
+	doc, err := opts.ParseText(ctx, s)
 	if err != nil {
+		if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+			return nil, err
+		}
+
 		return nil, &xdm.Error{Code: errCodeFODC0006, Message: fmt.Sprintf("parse-xml: %v", err), Cause: err}
 	}
 
@@ -1409,9 +1423,9 @@ func ResolveDocumentURI(ctx context.Context, uri string) (string, error) {
 func loadResolvedDoc(ctx context.Context, resolved string) (xdm.Node, error) {
 	ec := getFnContext(ctx)
 
-	parseOptions := xdm.ParseOptions{}
+	options := xdm.ParseOptions{}
 	if ec != nil {
-		parseOptions = ec.xmlParseOptions().WithByteLimit(ec.maxResourceBytes)
+		options = ec.xmlParseOptions().WithByteLimit(ec.maxResourceBytes)
 		if ec.resourceReads != nil {
 			if err := ec.resourceReads.CheckRead(ctx, resolved); err != nil {
 				return nil, &xdm.ResourceAccessError{Cause: err}
@@ -1438,8 +1452,14 @@ func loadResolvedDoc(ctx context.Context, resolved string) (xdm.Node, error) {
 		return nil, &xdm.Error{Code: errCodeFODC0002, Message: fmt.Sprintf("fn:doc: cannot retrieve resource: %v", err), Cause: err}
 	}
 
-	doc, parseErr := parseOptions.ParseReader(ctx, reader)
+	options.BaseURI = resolved
+
+	doc, parseErr := options.ParseReader(ctx, reader)
 	if err := errors.Join(parseErr, reader.Close()); err != nil {
+		if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+			return nil, err
+		}
+
 		return nil, &xdm.Error{Code: errCodeFODC0002, Message: fmt.Sprintf("fn:doc: cannot parse document: %v", err), Cause: err}
 	}
 
@@ -1519,10 +1539,6 @@ func resolveDocURI(ctx context.Context, uri string) (string, error) {
 	}
 
 	if parsed.Scheme != "" {
-		if ec := getFnContext(ctx); !isSupportedResourceScheme(parsed.Scheme) && (ec == nil || ec.uriResolver == nil) {
-			return "", &xdm.Error{Code: errCodeFODC0002, Message: fmt.Sprintf("fn:doc: unsupported URI scheme: %s", parsed.Scheme)}
-		}
-
 		return uri, nil
 	}
 

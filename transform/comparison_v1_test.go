@@ -3,6 +3,7 @@
 package transform_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -148,6 +149,35 @@ func TestCompareSaxonLanguageSemantics(t *testing.T) {
 	}
 }
 
+func TestCompareSaxonBuiltinTemplates(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, test := range builtinTemplateCases() {
+		t.Run(test.name, func(t *testing.T) {
+			source := dynamicXPathSheet(test)
+			expression := `transform(map{'stylesheet-text':'` + strings.ReplaceAll(source, "'", "''") + `','initial-template':QName('', 'start'),'delivery-format':'serialized'})?output`
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, test.want)
+		})
+	}
+	for _, test := range builtinInitialCases() {
+		t.Run("initial "+test.mode+test.expression, func(t *testing.T) {
+			want := nameTrue
+			if test.code != "" {
+				want = test.code
+			}
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, builtinInitialExpression(test), want)
+		})
+	}
+}
+
+func TestCompareSaxonRelativeNamespaceInput(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for expression, want := range relativeNamespaceExpressions() {
+		t.Run(expression, func(t *testing.T) { compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want) })
+	}
+}
+
 func TestCompareSaxonDocumentFunctionContracts(t *testing.T) {
 	classpath, binary := saxonRuntime(t)
 	path := filepath.Join(t.TempDir(), "resource.xml")
@@ -194,6 +224,51 @@ func TestCompareSaxonDocumentFunctionContracts(t *testing.T) {
 				oracle = "FOTY0014"
 			}
 			compareSaxonStylesheet(t, t.Context(), e, binary, classpath, `<xsl:template name="start">`+valueOfExpression(expression)+`</xsl:template>`, test.want, oracle)
+		})
+	}
+}
+
+func TestCompareSaxonDocumentBaseURI(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	for _, test := range documentBaseCases() {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			styles := filepath.Join(directory, "styles")
+			docs := filepath.Join(directory, "docs")
+			for _, path := range []string{styles, docs} {
+				if err := os.MkdirAll(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dataPath := filepath.Join(docs, "data.xml")
+			mainPath := filepath.Join(styles, "main.xsl")
+			docURI := (&url.URL{Scheme: "file", Path: filepath.ToSlash(dataPath)}).String()
+			baseURI := (&url.URL{Scheme: "file", Path: filepath.ToSlash(mainPath)}).String()
+			source := documentBaseSource(test, docURI)
+			for path, data := range map[string]string{dataPath: `<loaded/>`, mainPath: source} {
+				if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
+				if uri != dataPath && uri != docURI {
+					return nil, transform.ErrResource
+				}
+				return io.NopCloser(strings.NewReader(`<loaded/>`)), ctx.Err()
+			})})
+			expression := `transform(map{'stylesheet-text':'` + strings.ReplaceAll(source, "'", "''") + `','stylesheet-base-uri':'` + baseURI + `','source-node':parse-xml('<src xml:id="picked"/>'),'initial-template':QName('', 'start'),'delivery-format':'serialized'})?output`
+			oracle := test.want
+			if test.name == "absolute orphan base" || test.name == "empty URI sequence" {
+				// Saxon checks the second node's base before an absolute or
+				// empty URI sequence needs it; XTDE1162 applies only to relative URIs.
+				oracle = "XTDE1162"
+			}
+			if test.name == "encoded stylesheet fragment" {
+				// XPointer Framework section 4.1 requires URI escaping to be
+				// reversed before interpreting the shorthand pointer.
+				oracle = "XTDE1160"
+			}
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, test.want, oracle)
 		})
 	}
 }
@@ -299,8 +374,12 @@ func TestCompareSaxonReadWriteConflicts(t *testing.T) {
 						if order == 1 {
 							oracle = nameFalse
 						}
-					case "JSON":
+					case "JSON", "parsed entity":
+						// XSLT 3.0 section 25.2 applies XTDE1500 to external
+						// resources, including parser-driven entity retrieval.
 						oracle = "1"
+					case "external DTD":
+						oracle = "ok"
 					case "text available":
 						oracle = nameTrue
 					case "text", "text lookup", "text apply", "text lines", "evaluate text":
@@ -413,12 +492,19 @@ func TestCompareSaxon20CompilerContracts(t *testing.T) {
 			tests = append(tests, struct{ name, source, module, want string }{kind + strconv.FormatBool(rootCondition), source, module, "42:false"})
 		}
 	}
+	for _, test := range staticModuleCompilationCases() {
+		if strings.Contains(test.name, "2.0 simplified alias") {
+			tests = append(tests, test)
+		}
+	}
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) { compareSaxon20Compiler(t, binary, classpath, test.source, test.module, test.want) })
+		t.Run(test.name, func(t *testing.T) {
+			compareSaxonCompiler(t, binary, classpath, test.source, test.module, test.want, transform.XSLT20)
+		})
 	}
 }
 
-func compareSaxon20Compiler(t *testing.T, binary, classpath, source, module, want string) {
+func compareSaxonCompiler(t *testing.T, binary, classpath, source, module, want string, processor transform.XSLTVersion, oracle ...string) {
 	t.Helper()
 	directory := t.TempDir()
 	main := filepath.Join(directory, "main.xsl")
@@ -433,7 +519,7 @@ func compareSaxon20Compiler(t *testing.T, binary, classpath, source, module, wan
 		}
 		return io.NopCloser(strings.NewReader(module)), ctx.Err()
 	})})
-	compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: transform.XSLT20, BaseURI: (&url.URL{Scheme: "file", Path: filepath.ToSlash(main)}).String()})
+	compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: processor, BaseURI: (&url.URL{Scheme: "file", Path: filepath.ToSlash(main)}).String()})
 	got := ""
 	if err == nil {
 		result, executeErr := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
@@ -450,11 +536,14 @@ func compareSaxon20Compiler(t *testing.T, binary, classpath, source, module, wan
 		got = detail.Code
 	}
 	if got != want {
-		t.Fatal("native 2.0", got, err, want)
+		t.Fatal("native", processor, got, err, want)
+	}
+	if len(oracle) > 0 {
+		want = oracle[0]
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, binary, "-cp", classpath, "net.sf.saxon.Transform", "-xsltversion:2.0", "-xsl:"+main, "-it:start").Output()
+	output, err := exec.CommandContext(ctx, binary, saxonCompilerArguments(classpath, main, processor)...).Output()
 	got = string(output)
 	if err != nil {
 		got = saxonDiagnosticCode(err)
@@ -462,9 +551,66 @@ func compareSaxon20Compiler(t *testing.T, binary, classpath, source, module, wan
 	if got != want {
 		var detail *exec.ExitError
 		if errors.As(err, &detail) {
-			t.Fatalf("Saxon 2.0: %q, %s; want %q", output, detail.Stderr, want)
+			t.Fatalf("Saxon: %q, %s; want %q", output, detail.Stderr, want)
 		}
-		t.Fatalf("Saxon 2.0: %q, %v; want %q", output, err, want)
+		t.Fatalf("Saxon: %q, %v; want %q", output, err, want)
+	}
+}
+
+func saxonCompilerArguments(classpath, main string, processor transform.XSLTVersion) []string {
+	args := []string{"-cp", classpath, "net.sf.saxon.Transform"}
+	if processor == transform.XSLT20 {
+		args = append(args, "-xsltversion:2.0")
+	}
+	return append(args, "-xsl:"+main, "-it:start")
+}
+
+func TestCompareSaxonConditionalCompilation(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	for _, test := range conditionalCompilationCases() {
+		t.Run(test.name, func(t *testing.T) {
+			oracle := test.want30
+			if test.name == "shadow type namespace" {
+				// Saxon evaluates this condition before its computed type namespace.
+				// Native makes the computed namespace available during preprocessing.
+				oracle = "XPST0051"
+			}
+			compareSaxonCompiler(t, binary, classpath, hostFunctionSheet(version30, test), sheet(version30, ""), test.want30, transform.XSLT30, oracle)
+		})
+	}
+	for _, test := range staticModuleCompilationCases() {
+		t.Run(test.name, func(t *testing.T) {
+			oracle := test.want
+			if strings.Contains(test.name, "prior shadow type") {
+				oracle = "XPST0051"
+			}
+			if test.name == "QName value identity" {
+				// F&O 3.0 section 1.6.4 defines atomic identity with same type
+				// and eq; QName prefixes do not participate in that equality.
+				oracle = "XTSE3450"
+			}
+			compareSaxonCompiler(t, binary, classpath, test.source, test.module, test.want, transform.XSLT30, oracle)
+		})
+	}
+}
+
+func TestCompareSaxonSimplifiedStylesheets(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, test := range simplifiedStylesheetCases() {
+		t.Run(test.name, func(t *testing.T) {
+			oracle := test.want
+			if test.name == "root exclusion" {
+				oracle = "XPST0010"
+			}
+			if test.name == "original source" {
+				oracle = "FODC0002"
+			}
+			// Saxon preprocesses an excluded simplified root before expansion
+			// and retrieves inline stylesheets by base URI for document("").
+			// Keep both outcomes separate from exact agreement evidence.
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, simplifiedStylesheetExpression(test.source), test.want, oracle)
+		})
 	}
 }
 
@@ -1907,6 +2053,149 @@ func TestCompareSaxonDefaultPatternPriorities(t *testing.T) {
 			source := dynamicXPathSheet(test)
 			expression := `transform(map{'stylesheet-text':'` + strings.ReplaceAll(source, "'", "''") + `','initial-template':QName('', 'start'),'delivery-format':'serialized'})?output`
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, test.want)
+		})
+	}
+}
+
+func TestCompareSaxonInputPreprocessing(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, test := range inputPreprocessingCases() {
+		t.Run(test.name, func(t *testing.T) {
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, inputPreprocessingExpression(test), test.want)
+		})
+	}
+}
+
+func TestCompareSaxonTransformNodeContexts(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, test := range append(transformNodeContextCases(), transformStylesheetNodeCases()...) {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name == "root relative base" {
+				expression := `ends-with((` + test.expression + `),'/modules/inner/')`
+				compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, nameTrue, nameFalse)
+				t.Log("Saxon resolves the selected module's relative xml:base against the query URI; native retains its ancestor base")
+				return
+			}
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, test.expression, test.want)
+		})
+	}
+}
+
+func TestCompareSaxonRootXMLBase(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, test := range rootXMLBaseCases() {
+		t.Run(test.name, func(t *testing.T) {
+			expression, want := test.expression, test.want
+			if strings.HasPrefix(test.name, "file ") {
+				expression = `replace((` + expression + `),'^file:/+','file:/')`
+				want = strings.Replace(want, "file:///", "file:/", 1)
+			}
+			if test.name == "empty with fragment" {
+				compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want, want+"#fragment")
+				t.Log("Saxon retains the base fragment for an empty xml:base; native resolves the empty reference using RFC 3986")
+				return
+			}
+			if test.name == "?query" || test.name == "file ?query" {
+				oracle := "https://example.test/modules/?query"
+				if test.name == "file ?query" {
+					oracle = "file:/modules/?query"
+				}
+				compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want, oracle)
+				t.Log("Saxon drops the base filename for a query-only reference; native follows XML Base section 4.4 and RFC 3986")
+				return
+			}
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want)
+		})
+	}
+}
+
+func TestCompareSaxonLanguageDTDContracts(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, test := range languageDTDCases() {
+		t.Run(test.name, func(t *testing.T) {
+			oracle := test.want
+			switch test.name {
+			case "content CR":
+				oracle = "10,9"
+			case "comment CR", "CDATA CR":
+				oracle = "10"
+			case "invalid predefined entity", "entity NCName", "notation NCName", "DTD PI NCName", "notation enumeration NCName":
+				oracle = ""
+			}
+			// XML 1.0 section 2.11 normalizes physical external entities only;
+			// section 4.6 constrains predefined declarations even when unused.
+			// Namespaces 1.0 section 7 requires NCName in these DTD names.
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, test.expression, test.want, oracle)
+		})
+	}
+}
+
+func TestCompareSaxonLanguageDTDCopies(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, test := range languageDTDCopyCases() {
+		t.Run(test.name, func(t *testing.T) {
+			// XSLT 3.0 section 25.4.1.1 preserves is-id/is-idrefs even
+			// with validation="strip". Saxon loses DTD ID on tree copies,
+			// and both flags when copying individual attributes.
+			if strings.HasPrefix(test.name, "unparsed entities ") {
+				oracle := test.want
+				if test.want == "|" {
+					// XSLT 3.0 section 11.1.1 sets the new document's
+					// unparsed-entities property to empty, even with copied children.
+					oracle = "urn:image|identifier"
+					t.Log("Recorded Saxon constructed-document metadata difference")
+				}
+				compareSaxonStylesheet(t, t.Context(), e, binary, classpath, test.expression, test.want, oracle)
+				return
+			}
+			oracle := "0|1"
+			if strings.Contains(test.expression, `select="$d/r/n/@*"`) {
+				oracle = "0|0"
+			}
+			t.Log("Recorded Saxon DTD copy-property difference; excluded from exact agreements")
+			compareSaxonStylesheet(t, t.Context(), e, binary, classpath, test.expression, test.want, oracle)
+		})
+	}
+}
+
+func TestCompareSaxonLanguageDTDExternalEntities(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	directory := t.TempDir()
+	resources := map[string][]byte{}
+	for path, data := range languageDTDExternalFixtures() {
+		filename := filepath.Join(directory, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(filename), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filename, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(filename)}).String()
+		resources[uri] = data
+		resources[filepath.ToSlash(filename)] = data
+	}
+	base := (&url.URL{Scheme: "file", Path: filepath.ToSlash(directory) + "/"}).String()
+	e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
+		data, ok := resources[uri]
+		if !ok {
+			return nil, transform.ErrResource
+		}
+		return io.NopCloser(bytes.NewReader(data)), ctx.Err()
+	})})
+	compareSaxonExpression(t, t.Context(), e, binary, classpath, languageDTDExternalExpression(base), "é\nvalue|1|1|ready|true|true")
+	for _, function := range []string{"doc", "document"} {
+		expression := strings.Replace(languageDTDExternalExpression(base), "doc(", function+"(", 1)
+		body := `<xsl:output method="text"/><xsl:template name="start"><xsl:value-of select="` + expression + `"/></xsl:template>`
+		compareSaxonStylesheet(t, t.Context(), e, binary, classpath, body, "é\nvalue|1|1|ready|true|true")
+	}
+	for _, test := range languageDTDExternalStylesheets(base) {
+		t.Run(test.name, func(t *testing.T) {
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, test.expression, test.want)
 		})
 	}
 }

@@ -113,6 +113,12 @@ func languageVersionAttribute(elem *xdm.Element) string {
 }
 
 func checkModernLanguage(elem *xdm.Element, effective string, selected int) error {
+	// Conditional inclusion and shadow attributes are evaluated by the compiler
+	// with the declaration's static scope. Validate this subtree after that pass.
+	if hasConditionalAttributes(elem, selected) {
+		return nil
+	}
+
 	own := languageVersionAttribute(elem)
 	if _, shadow := elem.GetAttribute("_version"); shadow && elem.URI() == lexicon.NamespaceXSLT && selected >= 30 {
 		own = lexicon.XSLTVersion30

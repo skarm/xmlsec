@@ -68,7 +68,12 @@ type Node interface {
 
 func CopyNode(src Node, d *Document) (Node, error) {
 	if a, ok := src.(*Attribute); ok {
-		return d.CreateAttribute(a.LocalName(), a.Value(), a.Namespace())
+		copied, err := d.CreateAttribute(a.LocalName(), a.Value(), a.Namespace())
+		if err == nil {
+			copied.SetIDType(a.IDType())
+		}
+
+		return copied, err
 	}
 
 	root := src.view().raw
@@ -87,6 +92,8 @@ func CopyNode(src Node, d *Document) (Node, error) {
 	if err = d.wrap(context.Background(), r, -1); err != nil {
 		return nil, err
 	}
+
+	copyIDProperties(src, d.nodes[r])
 
 	return d.nodes[r], nil
 }
@@ -175,10 +182,75 @@ func CopyDoc(src *Document) (*Document, error) {
 		d.url = src.url
 		d.encoding = src.encoding
 		d.version = src.version
+		d.standalone = src.standalone
+		d.properties = src.properties
+		copyDocumentBases(src, d)
 		CopyDoctype(src, d)
 	}
 
 	return d, err
+}
+
+// CopyTree clones a snapshot tree, retaining its root kind and construction
+// bases without attaching the root to a new parent.
+func CopyTree(src Node) (Node, error) {
+	if doc, ok := src.(*Document); ok {
+		return CopyDoc(doc)
+	}
+
+	if namespace, ok := src.(*NamespaceNodeWrapper); ok {
+		return NewNamespaceNodeWrapper(NewNamespace(namespace.Name(), CharacterData(namespace)), nil), nil
+	}
+
+	doc := NewDefaultDocument()
+	if owner := src.OwnerDocument(); owner != nil {
+		doc.url, doc.encoding, doc.version = owner.url, owner.encoding, owner.version
+		doc.standalone, doc.properties = owner.standalone, owner.properties
+		CopyDoctype(owner, doc)
+	}
+
+	copied, err := CopyNode(src, doc)
+	if err != nil {
+		return nil, err
+	}
+
+	copyDocumentBases(src, copied)
+
+	return copied, nil
+}
+
+func copyIDProperties(source, destination Node) {
+	first, ok := source.(*Element)
+	if ok {
+		if second, ok := destination.(*Element); ok {
+			for _, attribute := range first.Attributes() {
+				if kind := attribute.IDType(); kind != UntypedAttribute {
+					if target := second.GetAttributeNodeNS(attribute.LocalName(), attribute.URI()); target != nil {
+						target.SetIDType(kind)
+					}
+				}
+			}
+		}
+	}
+
+	a, b := source.FirstChild(), destination.FirstChild()
+	for a != nil && b != nil {
+		copyIDProperties(a, b)
+		a, b = a.NextSibling(), b.NextSibling()
+	}
+}
+
+// Snapshot cloning preserves construction bases stored outside XML attributes.
+// Language copies into new parents apply their own inheritance rules separately.
+func copyDocumentBases(source, destination Node) {
+	destination.view().baseURI = source.view().baseURI
+	destination.OwnerDocument().native.SetNodeBase(destination.view().raw, source.view().baseURI)
+
+	first, second := source.FirstChild(), destination.FirstChild()
+	for first != nil && second != nil {
+		copyDocumentBases(first, second)
+		first, second = first.NextSibling(), second.NextSibling()
+	}
 }
 
 // FromDocument returns a stable read-only view, so repeated imports of the
@@ -345,6 +417,10 @@ func (d *Document) HasProperty(p DocProperties) bool { return d.properties&p != 
 
 func (d *Document) RegisterID(id string, e *Element) { d.ids[id] = e }
 
+func (d *Document) UnparsedEntity(name string) (tree.UnparsedEntity, bool) {
+	return d.native.UnparsedEntity(name)
+}
+
 func (d *Document) GetElementByID(id string) *Element { return d.ids[id] }
 
 func (d *Document) wrap(ctx context.Context, r *tree.Node, slot int) error {
@@ -356,7 +432,7 @@ func (d *Document) wrap(ctx context.Context, r *tree.Node, slot int) error {
 		return nil
 	}
 
-	v := nodeView{raw: r, doc: d, slot: slot, line: int(r.SourceLine)}
+	v := nodeView{raw: r, doc: d, slot: slot, line: int(r.SourceLine), baseURI: d.native.NodeBase(r)}
 
 	var n Node
 
@@ -384,7 +460,7 @@ func (d *Document) wrap(ctx context.Context, r *tree.Node, slot int) error {
 		for _, a := range r.Attrs {
 			d.attribute(e, a.Name)
 
-			if a.Name == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
+			if d.native.AttributeDTDType(r, a.Name) == tree.DTDID || a.Name == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
 				d.ids[d.attrs[attrKey{r, a.Name}].Value()] = e
 			}
 		}
@@ -407,6 +483,7 @@ func (d *Document) sync() {
 
 func (d *Document) adopt(n Node) {
 	old := n.OwnerDocument()
+	d.native.SetNodeBase(n.view().raw, n.view().baseURI)
 	n.view().doc = d
 
 	d.nodes[n.view().raw] = n
@@ -418,10 +495,12 @@ func (d *Document) adopt(n Node) {
 
 			key := attrKey{e.raw, entry.Name}
 			if a := old.attrs[key]; a != nil {
+				kind := a.IDType()
 				a.doc = d
 				a.owner = e
 				a.parent = e
 				d.attrs[key] = a
+				a.SetIDType(kind)
 			} else {
 				d.attribute(e, entry.Name)
 			}
@@ -565,16 +644,21 @@ func (e *Element) SetAttributeNS(local, value string, ns *Namespace) error {
 
 	for i, a := range e.raw.Attrs {
 		if a.Name == name {
+			view := e.doc.attrs[attrKey{e.raw, name}]
+			isID := view.IDType() == IDAttribute
 			e.raw.Attrs[i].Value = value
 
 			e.raw.Attrs[i].Prefix = prefix
-			if uri == tree.XMLNamespace && local == "id" {
+			if isID {
 				if oldID := xmlchar.CollapseSpace(a.Value); e.doc.ids[oldID] == e {
 					delete(e.doc.ids, oldID)
 				}
 
 				e.doc.RegisterID(value, e)
-				e.doc.attrs[attrKey{e.raw, name}].xmlIDValue = value
+
+				if uri == tree.XMLNamespace && local == "id" {
+					view.xmlIDValue = value
+				}
 			}
 
 			return nil
@@ -664,16 +748,21 @@ func (e *Element) RemoveAttributeNS(local, uri string) bool {
 
 	for i, a := range e.raw.Attrs {
 		if a.Name == (tree.Name{Space: uri, Local: local}) {
+			view := e.doc.attrs[attrKey{e.raw, a.Name}]
+
 			e.raw.Attrs = slices.Delete(e.raw.Attrs, i, i+1)
-			if uri == tree.XMLNamespace && local == "id" {
+			if view != nil && view.IDType() == IDAttribute {
 				if id := xmlchar.CollapseSpace(a.Value); e.doc.ids[id] == e {
 					delete(e.doc.ids, id)
 				}
 			}
 
-			if view := e.doc.attrs[attrKey{e.raw, a.Name}]; view != nil {
+			if view != nil {
 				view.detached = true
 			}
+
+			e.doc.native.SetAttributeDTDType(e.raw, a.Name, tree.DTDNoType)
+			delete(e.doc.attrs, attrKey{e.raw, a.Name})
 
 			return true
 		}
@@ -771,10 +860,45 @@ func (a *Attribute) IDType() AttributeIDType {
 		return IDAttribute
 	}
 
+	if a.atype != 0 {
+		return a.atype
+	}
+
+	switch a.doc.native.AttributeDTDType(a.owner.raw, a.key) {
+	case tree.DTDID:
+		return IDAttribute
+	case tree.DTDIDRef:
+		return IDRefAttribute
+	case tree.DTDIDRefs:
+		return IDRefsAttribute
+	}
+
 	return a.atype
 }
 
-func (a *Attribute) SetIDType(t AttributeIDType) { a.atype = t }
+func (a *Attribute) SetIDType(t AttributeIDType) {
+	if a.IDType() == IDAttribute && a.doc.ids[a.Value()] == a.owner {
+		delete(a.doc.ids, a.Value())
+	}
+
+	a.atype = t
+	kind := tree.DTDNoType
+
+	switch t {
+	case IDAttribute:
+		kind = tree.DTDID
+	case IDRefAttribute:
+		kind = tree.DTDIDRef
+	case IDRefsAttribute:
+		kind = tree.DTDIDRefs
+	}
+
+	a.doc.native.SetAttributeDTDType(a.owner.raw, a.key, kind)
+
+	if t == IDAttribute {
+		a.doc.RegisterID(a.Value(), a.owner)
+	}
+}
 
 func (a *Attribute) entry() tree.Attribute {
 	for _, v := range a.owner.raw.Attrs {
@@ -1018,7 +1142,26 @@ func NodeGetBase(doc *Document, n Node) string {
 	return base
 }
 
+// NodeGetBaseBeforeXMLBase returns the base against which this node's own
+// xml:base is resolved. It includes inherited and construction bases, allowing
+// a selected stylesheet root to be compiled without resolving xml:base twice.
+func NodeGetBaseBeforeXMLBase(doc *Document, node Node) string {
+	if node == nil {
+		return NodeGetBase(doc, nil)
+	}
+
+	base := NodeGetBase(doc, node.Parent())
+	if node.view().baseURI != "" {
+		base = node.view().baseURI
+	}
+
+	return base
+}
+
 func SetNodeBaseURI(n Node, uri string) { n.view().baseURI = uri }
+
+// NodeBaseOverride returns the parser/construction base before xml:base.
+func NodeBaseOverride(n Node) string { return n.view().baseURI }
 
 // FilterChildren edits a private result/draft in one pass; source views are frozen.
 func FilterChildren(n Node, keep func(Node) bool) {
@@ -1150,7 +1293,13 @@ func (nv *nodeView) AddChild(child Node) error {
 
 	if a, ok := child.(*Attribute); ok {
 		if e, ok := nv.self.(*Element); ok {
-			return e.SetAttributeNS(a.LocalName(), a.Value(), a.Namespace())
+			if err := e.SetAttributeNS(a.LocalName(), a.Value(), a.Namespace()); err != nil {
+				return err
+			}
+
+			e.GetAttributeNodeNS(a.LocalName(), a.URI()).SetIDType(a.IDType())
+
+			return nil
 		}
 
 		return errors.New("attribute parent must be an element")

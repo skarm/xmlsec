@@ -6,11 +6,11 @@ package xslt
 import (
 	"context"
 	"maps"
-	"slices"
 	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
 func (c *compiler) compileValueOf(ctx context.Context, elem *xdm.Element) (*valueOfInst, error) {
@@ -838,13 +838,17 @@ func (c *compiler) compileLiteralResultElement(ctx context.Context, elem *xdm.El
 		c.extensionURIs = savedExtURIs
 	}()
 
-	lre.Namespaces = c.literalResultNamespaces(elem)
 	if err := c.compileLiteralResultAttrs(elem, lre); err != nil {
 		return nil, err
 	}
 
-	c.applyLiteralResultAliases(ctx, lre)
-	lre.NamespacePrefixes = slices.Sorted(maps.Keys(lre.Namespaces))
+	if err := xpath.Charge(ctx, len(c.nsBindings)+len(c.localExcludes)+1); err != nil {
+		return nil, err
+	}
+
+	c.pendingLiteralResults = append(c.pendingLiteralResults, pendingLiteralResult{
+		element: elem, result: lre, namespaces: maps.Clone(c.nsBindings), excludes: maps.Clone(c.localExcludes),
+	})
 
 	if err := c.compileLiteralResultOptions(ctx, elem, lre); err != nil {
 		return nil, err

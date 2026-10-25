@@ -148,14 +148,78 @@ func (l Limits) nodeSetLimit() int {
 	return l.MaxNodeSetNodes
 }
 
+type DTDAttributeType uint8
+
+const (
+	DTDNoType DTDAttributeType = iota
+	DTDID
+	DTDIDRef
+	DTDIDRefs
+)
+
+type dtdAttributeKey struct {
+	owner *Node
+	name  Name
+}
+
+// UnparsedEntity preserves an XML declaration's identifiers without fetching it.
+type UnparsedEntity struct{ SystemID, PublicID, BaseURI string }
+
 // Document is an immutable, namespace-aware XML 1.0 snapshot.
 // It owns its data and may be read concurrently.
 type Document struct {
-	children   []*Node
-	root       *Node
-	limits     Limits
-	inputBytes int
-	views      sync.Map
+	children         []*Node
+	root             *Node
+	limits           Limits
+	inputBytes       int
+	unparsedEntities map[string]UnparsedEntity
+	nodeBases        map[*Node]string
+	dtdTypes         map[dtdAttributeKey]DTDAttributeType
+	views            sync.Map
+}
+
+func (d *Document) NodeBase(node *Node) string { return d.nodeBases[node] }
+
+// CopyUnparsedEntities retains immutable declaration metadata on document copies.
+func (d *Document) CopyUnparsedEntities(source *Document) {
+	d.unparsedEntities = source.unparsedEntities
+}
+
+func (d *Document) SetNodeBase(node *Node, base string) {
+	if base == "" {
+		delete(d.nodeBases, node)
+		return
+	}
+
+	if d.nodeBases == nil {
+		d.nodeBases = make(map[*Node]string)
+	}
+
+	d.nodeBases[node] = base
+}
+
+func (d *Document) AttributeDTDType(node *Node, name Name) DTDAttributeType {
+	return d.dtdTypes[dtdAttributeKey{node, name}]
+}
+
+func (d *Document) SetAttributeDTDType(node *Node, name Name, kind DTDAttributeType) {
+	key := dtdAttributeKey{node, name}
+
+	if kind == DTDNoType {
+		delete(d.dtdTypes, key)
+		return
+	}
+
+	if d.dtdTypes == nil {
+		d.dtdTypes = make(map[dtdAttributeKey]DTDAttributeType)
+	}
+
+	d.dtdTypes[key] = kind
+}
+
+func (d *Document) UnparsedEntity(name string) (UnparsedEntity, bool) {
+	entity, ok := d.unparsedEntities[name]
+	return entity, ok
 }
 
 // Unwrap returns the private snapshot and node represented by an immutable handle.
@@ -186,7 +250,7 @@ func Clone(ctx context.Context, d *Document) (*Document, error) {
 		return nil, err
 	}
 
-	out := &Document{limits: d.limits, inputBytes: d.inputBytes, children: make([]*Node, len(d.children))}
+	out := &Document{limits: d.limits, inputBytes: d.inputBytes, unparsedEntities: d.unparsedEntities, children: make([]*Node, len(d.children))}
 
 	var cp func(*Node, *Node) (*Node, error)
 
@@ -200,6 +264,21 @@ func Clone(ctx context.Context, d *Document) (*Document, error) {
 			Attrs: append([]Attribute(nil), n.Attrs...), NS: append([]Namespace(nil), n.NS...),
 			SourceLine: n.SourceLine,
 		}
+
+		if base := d.nodeBases[n]; base != "" {
+			if out.nodeBases == nil {
+				out.nodeBases = make(map[*Node]string)
+			}
+
+			out.nodeBases[x] = base
+		}
+
+		for _, attribute := range n.Attrs {
+			if kind := d.AttributeDTDType(n, attribute.Name); kind != DTDNoType {
+				out.SetAttributeDTDType(x, attribute.Name, kind)
+			}
+		}
+
 		if len(n.Children) != 0 {
 			x.Children = make([]*Node, len(n.Children))
 		}

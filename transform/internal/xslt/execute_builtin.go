@@ -22,23 +22,17 @@ type stripStackFrame struct {
 func (ec *execContext) applyBuiltinRules(ctx context.Context, node xdm.Node, mode string, paramValues ...map[string]xdm.Sequence) error {
 	defer ec.pushPackage(ec.activeModePackage())()
 
-	onNoMatch := onNoMatchTextOnlyCopy // XSLT 3.0 default
-
-	modeDefs := ec.effectiveModeDefs()
-	if md := modeDefs[mode]; md != nil {
-		if md.OnNoMatch != "" {
-			onNoMatch = md.OnNoMatch
-		}
-	} else if mode == "" {
-		if md := modeDefs[modeDefault]; md != nil {
-			if md.OnNoMatch != "" {
-				onNoMatch = md.OnNoMatch
-			}
-		}
-	}
 	// The current mode includes its package identity, including when a helper
 	// or an overriding rule is declared in a different package.
-	return ec.applyOnNoMatch(ctx, node, modeCurrent, onNoMatch, paramValues...)
+	return ec.applyOnNoMatch(ctx, node, modeCurrent, ec.builtinTemplateBehavior(mode), paramValues...)
+}
+
+func (ec *execContext) builtinTemplateBehavior(mode string) string {
+	if definition := ec.lookupModeDef(mode); definition != nil && definition.OnNoMatch != "" {
+		return definition.OnNoMatch
+	}
+
+	return onNoMatchTextOnlyCopy
 }
 
 func (ec *execContext) applyOnNoMatch(ctx context.Context, node xdm.Node, mode, behavior string, paramValues ...map[string]xdm.Sequence) error {
@@ -48,40 +42,26 @@ func (ec *execContext) applyOnNoMatch(ctx context.Context, node xdm.Node, mode, 
 	case onNoMatchDeepCopy:
 		return ec.onNoMatchDeepCopy(node)
 	case onNoMatchShallowSkip:
-		switch node.Type() {
-		case xdm.ElementNode:
-			// XSLT 3.0: shallow-skip for elements applies templates to
-			// attributes and children (but does not copy the element).
-			srcElem, _ := xdm.AsNode[*xdm.Element](node)
-			for _, attr := range srcElem.Attributes() {
-				if err := ec.applyTemplates(ctx, attr, mode, paramValues...); err != nil {
-					return err
-				}
+		if element, ok := node.(*xdm.Element); ok {
+			if err := ec.applyTemplatesToAttributes(ctx, element, mode, paramValues...); err != nil {
+				return err
 			}
+		}
 
-			return ec.applyTemplatesToChildren(ctx, node, mode, paramValues...)
-		case xdm.DocumentNode:
+		if node.Type() == xdm.DocumentNode || node.Type() == xdm.ElementNode {
 			return ec.applyTemplatesToChildren(ctx, node, mode, paramValues...)
 		}
 
 		return nil
 	case onNoMatchDeepSkip:
-		// Per XSLT 3.0 spec (bug #30219): the built-in template rule for
-		// document nodes always processes children, even with deep-skip.
 		if node.Type() == xdm.DocumentNode {
 			return ec.applyTemplatesToChildren(ctx, node, mode, paramValues...)
 		}
 
 		return nil
 	case onNoMatchFail:
-		// Per XSLT 3.0 spec (bug #30219): the built-in template rule for
-		// document nodes always processes children, even with on-no-match=fail.
-		if node.Type() == xdm.DocumentNode {
-			return ec.applyTemplatesToChildren(ctx, node, mode, paramValues...)
-		}
-
 		return dynamicError(errCodeXTDE0555, "no matching template in mode %q (on-no-match=fail)", mode)
-	default: // "text-only-copy"
+	default:
 		return ec.onNoMatchTextOnlyCopy(ctx, node, mode, paramValues...)
 	}
 }
@@ -90,23 +70,8 @@ func (ec *execContext) onNoMatchTextOnlyCopy(ctx context.Context, node xdm.Node,
 	switch node.Type() {
 	case xdm.DocumentNode, xdm.ElementNode:
 		return ec.applyTemplatesToChildren(ctx, node, mode, paramValues...)
-	case xdm.TextNode, xdm.CDATASectionNode:
-		if ec.shouldStripWhitespace(node) {
-			return nil
-		}
-
-		text := ec.resultDoc.CreateText(xdm.CharacterData(node))
-
-		return ec.addNode(text)
-	case xdm.AttributeNode:
-		attr, ok := node.(*xdm.Attribute)
-		if !ok {
-			return nil
-		}
-
-		text := ec.resultDoc.CreateText(attr.Value())
-
-		return ec.addNode(text)
+	case xdm.TextNode, xdm.CDATASectionNode, xdm.AttributeNode:
+		return ec.addNode(ec.resultDoc.CreateText(xdm.CharacterData(node)))
 	default:
 		return nil
 	}
@@ -165,10 +130,8 @@ func (ec *execContext) onNoMatchShallowCopy(ctx context.Context, node xdm.Node, 
 		}()
 		// Apply templates to attributes first (so user templates can
 		// intercept attribute nodes, e.g. match="w/@id"), then children.
-		for _, attr := range srcElem.Attributes() {
-			if err := ec.applyTemplates(ctx, attr, mode, paramValues...); err != nil {
-				return err
-			}
+		if err := ec.applyTemplatesToAttributes(ctx, srcElem, mode, paramValues...); err != nil {
+			return err
 		}
 
 		return ec.applyTemplatesToChildren(ctx, srcElem, mode, paramValues...)
@@ -183,14 +146,11 @@ func (ec *execContext) onNoMatchShallowCopy(ctx context.Context, node xdm.Node, 
 		return ec.addNode(pi)
 	case xdm.AttributeNode:
 		attr, _ := xdm.AsNode[*xdm.Attribute](node)
+		return ec.copyAttributeNodeToOutput(attr)
+	case xdm.NamespaceNode:
+		namespace, _ := xdm.AsNode[*xdm.NamespaceNodeWrapper](node)
+		return ec.copyNamespaceNodeToOutput(namespace)
 
-		out := ec.currentOutput()
-		if outElem, ok := xdm.AsNode[*xdm.Element](out.current); ok {
-			copyAttributeToElement(outElem, attr)
-			out.noteOutput()
-		}
-
-		return nil
 	default:
 		return nil
 	}
@@ -198,24 +158,24 @@ func (ec *execContext) onNoMatchShallowCopy(ctx context.Context, node xdm.Node, 
 
 func onNoMatchShallowCopyDocumentNode(ctx context.Context, ec *execContext, node xdm.Node, mode string, paramValues []map[string]xdm.Sequence) error {
 	out := ec.currentOutput()
-	if out.sequenceMode || (out.captureItems && out.current != nil && out.current.Type() != xdm.DocumentNode) {
-		tmpDoc := xdm.NewDefaultDocument()
-		// Preserve source document URL for fn:base-uri on the copy.
-		if srcDoc, ok := node.(*xdm.Document); ok {
-			tmpDoc.SetURL(srcDoc.URL())
-		}
+	if out.sequenceMode || out.captureItems {
+		tmpDoc := newCopyDocument(node)
 
-		frame := &outputFrame{doc: tmpDoc, current: tmpDoc}
-		ec.outputStack = append(ec.outputStack, frame)
-		err := ec.applyTemplatesToChildren(ctx, node, mode, paramValues...)
-		ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
+		err := func() error {
+			frame := &outputFrame{doc: tmpDoc, current: tmpDoc}
+			ec.outputStack = append(ec.outputStack, frame)
+			savedResult := ec.resultDoc
 
+			ec.resultDoc = tmpDoc
+			defer func() { ec.resultDoc = savedResult; ec.outputStack = ec.outputStack[:len(ec.outputStack)-1] }()
+
+			return ec.applyTemplatesToChildren(ctx, node, mode, paramValues...)
+		}()
 		if err != nil {
 			return err
 		}
 		// Always capture the document (even empty) so fn:base-uri works.
-		out.pendingItems = append(out.pendingItems, xdm.NodeItem{Node: tmpDoc})
-		out.noteOutput()
+		out.captureSequenceItems(xdm.ItemSlice{xdm.NodeItem{Node: tmpDoc}})
 
 		return nil
 	}
@@ -256,28 +216,12 @@ func (ec *execContext) onNoMatchDeepCopy(node xdm.Node) error {
 
 		return nil
 	case xdm.AttributeNode:
-		attr, ok := node.(*xdm.Attribute)
-		if !ok {
-			return nil
-		}
+		attribute, _ := xdm.AsNode[*xdm.Attribute](node)
+		return ec.copyAttributeNodeToOutput(attribute)
 
-		out := ec.currentOutput()
-		// In sequence mode (e.g. an xsl:variable with as="attribute()"), capture
-		// the copied attribute as a standalone item, attaching it to
-		// no capturing element, mirroring xsl:copy-of. Preserve the source
-		// attribute's type annotation per XSLT 3.0 §16.1.1.
-		if returned0, matchedBranch := onNoMatchDeepCopySequenceMode(out, attr, ec); matchedBranch {
-			return returned0
-		}
-
-		if outElem, ok := out.current.(*xdm.Element); ok {
-			copyAttributeToElement(outElem, attr)
-			out.noteOutput()
-
-			return nil
-		}
-
-		return nil
+	case xdm.NamespaceNode:
+		namespace, _ := xdm.AsNode[*xdm.NamespaceNodeWrapper](node)
+		return ec.copyNamespaceNodeToOutput(namespace)
 	default:
 		return nil
 	}
@@ -285,22 +229,15 @@ func (ec *execContext) onNoMatchDeepCopy(node xdm.Node) error {
 
 func onNoMatchDeepCopyDocumentNode(ec *execContext, node xdm.Node) error {
 	out := ec.currentOutput()
-	if out.sequenceMode || (out.captureItems && out.current != nil && out.current.Type() != xdm.DocumentNode) {
-		srcDoc, _ := node.(*xdm.Document)
-
-		copied, err := xdm.CopyNode(node, ec.resultDoc)
+	if out.sequenceMode || out.captureItems {
+		copied, err := ec.copyDocumentNode(node)
 		if err != nil {
 			return err
 		}
 
-		if srcDoc != nil {
-			if copiedDoc, ok := copied.(*xdm.Document); ok {
-				copiedDoc.SetURL(srcDoc.URL())
-			}
-		}
+		ec.deepTransferAnnotations(node, copied)
 
-		out.pendingItems = append(out.pendingItems, xdm.NodeItem{Node: copied})
-		out.noteOutput()
+		out.captureSequenceItems(xdm.ItemSlice{xdm.NodeItem{Node: copied}})
 
 		return nil
 	}
@@ -312,34 +249,6 @@ func onNoMatchDeepCopyDocumentNode(ec *execContext, node xdm.Node) error {
 	}
 
 	return nil
-}
-
-func onNoMatchDeepCopySequenceMode(out *outputFrame, attr *xdm.Attribute, ec *execContext) (returned0 error, matchedBranch bool) {
-	if out.sequenceMode {
-		var attrNS *xdm.Namespace
-
-		if attr.URI() != "" {
-			if ns, nsErr := out.doc.CreateNamespace(attr.Prefix(), attr.URI()); nsErr == nil {
-				attrNS = ns
-			}
-		}
-
-		copiedAttr, err := newStandaloneAttribute(out.doc, attr.LocalName(), attr.Value(), attrNS)
-		if err != nil {
-			return err, true
-		}
-
-		if ann, found := ec.typeAnnotations[attr]; found {
-			ec.annotateNode(copiedAttr, ann)
-		}
-
-		out.pendingItems = append(out.pendingItems, xdm.NodeItem{Node: copiedAttr, TypeAnnotation: ec.typeAnnotations[attr]})
-		out.noteOutput()
-
-		return nil, true
-	}
-
-	return
 }
 
 // stripVerdict reports whether elem's whitespace-only text-node children would
@@ -637,17 +546,36 @@ func childXMLSpacePreserve(node xdm.Node, inherited bool) bool {
 // node, in document order, as the built-in template rules do. A DOCTYPE
 // declaration or an entity reference is not an XDM child, so no rule sees it.
 func (ec *execContext) applyTemplatesToChildren(ctx context.Context, node xdm.Node, mode string, paramValues ...map[string]xdm.Sequence) error {
-	for child := range xdm.Children(node) {
-		if !xdm.IsXDMChild(child) {
-			continue
-		}
+	var items xdm.ItemSlice
 
-		if err := ec.applyTemplates(ctx, child, mode, paramValues...); err != nil {
-			return err
+	for child := range xdm.Children(node) {
+		if xdm.IsXDMChild(child) {
+			items = append(items, xdm.NodeItem{Node: child})
 		}
 	}
 
-	return nil
+	var params map[string]xdm.Sequence
+	if len(paramValues) > 0 {
+		params = paramValues[0]
+	}
+
+	return ec.applyTemplatesToSequence(ctx, items, mode, params)
+}
+
+func (ec *execContext) applyTemplatesToAttributes(ctx context.Context, element *xdm.Element, mode string, paramValues ...map[string]xdm.Sequence) error {
+	attributes := element.Attributes()
+
+	items := make(xdm.ItemSlice, 0, len(attributes))
+	for _, attribute := range attributes {
+		items = append(items, xdm.NodeItem{Node: attribute})
+	}
+
+	var params map[string]xdm.Sequence
+	if len(paramValues) > 0 {
+		params = paramValues[0]
+	}
+
+	return ec.applyTemplatesToSequence(ctx, items, mode, params)
 }
 
 // textStripParent returns the element whose strip/preserve verdict applies to

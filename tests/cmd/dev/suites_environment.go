@@ -233,7 +233,7 @@ func suiteLanguageMatches(options suiteOptions, required string) bool {
 
 func suiteFeature(options suiteOptions, name string) (bool, bool) {
 	switch name {
-	case "schemaImport", "schemaValidation", "typedData", "schema_aware", "schema-location-hint", "staticTyping", "moduleImport", "fn-load-xquery-module", "xquery_invocation", "streaming", "streaming-fallback", "infoset-dtd", "dtd", "XML_1.1", "remote_http", "directory-as-collection-uri", "xsl-stylesheet-processing-instruction":
+	case "schemaImport", "schemaValidation", "typedData", "schema_aware", "schema-location-hint", "staticTyping", "moduleImport", "fn-load-xquery-module", "xquery_invocation", "streaming", "streaming-fallback", "XML_1.1", "remote_http", "directory-as-collection-uri", "xsl-stylesheet-processing-instruction":
 		return false, true
 	case "xpath-1.0-compatibility":
 		return options.xpath10Compatibility, true
@@ -243,7 +243,7 @@ func suiteFeature(options suiteOptions, name string) (bool, bool) {
 		return suiteXSDVersion(options) == transform.XMLSchema11, true
 	case "higherOrderFunctions", "higher_order_functions":
 		return options.version != suiteVersion20, true
-	case "serialization", "namespace-axis", "namespace_axis", "arbitraryPrecisionDecimal", "backwards_compatibility", "built_in_derived_types", "disabling_output_escaping", "dynamic_evaluation", "collection-stability", "non_empty_sequence_collection", "non_unicode_codepoint_collation", "fn-transform-XSLT", "fn-transform-XSLT30", "HTML4", "HTML5":
+	case "infoset-dtd", "dtd", "serialization", "namespace-axis", "namespace_axis", "arbitraryPrecisionDecimal", "backwards_compatibility", "built_in_derived_types", "disabling_output_escaping", "dynamic_evaluation", "collection-stability", "non_empty_sequence_collection", "non_unicode_codepoint_collation", "fn-transform-XSLT", "fn-transform-XSLT30", "HTML4", "HTML5":
 		return true, true
 	case "XPath_3.1":
 		return options.version == suiteVersion30 || options.version == suiteVersion31, true
@@ -704,6 +704,13 @@ func suiteParameterValue(ctx context.Context, environment *preparedSuiteEnvironm
 }
 
 func loadSuiteSource(ctx context.Context, root, base string, resources *suiteResourceResolver, environment *preparedSuiteEnvironment, node *suiteNode) error {
+	// Sources without a role only declare retrievable resources. Defer their
+	// XML parse to doc()/document(), where the test can assert loading errors.
+	if node.attr("role") == "" && node.attr(suiteFile) != "" && node.attr("validation") == "" {
+		_, err := registerSuiteResource(root, base, resources, environment.baseURI, node)
+		return err
+	}
+
 	doc, uri, err := readSuiteSource(ctx, root, base, resources, environment, node)
 	if err != nil {
 		return err
@@ -787,17 +794,10 @@ func readSuiteSource(ctx context.Context, root, base string, resources *suiteRes
 			return nil, "", suiteHarness("load source: %v", err)
 		}
 
-		value, err := result.Single()
+		doc, err = suiteParsedDocument(result)
 		if err != nil {
 			return nil, "", err
 		}
-
-		native, ok := value.Node()
-		if !ok {
-			return nil, "", suiteHarness("source is not a document node")
-		}
-
-		doc = native.Document()
 
 		if environment.documents == nil {
 			environment.documents = make(map[string]*transform.Document)
@@ -805,17 +805,39 @@ func readSuiteSource(ctx context.Context, root, base string, resources *suiteRes
 
 		environment.documents[uri] = doc
 	} else if content := node.child("content"); content != nil {
-		var err error
+		// The publisher's c:parse-xml uses the content element's own base,
+		// independently of the transformation's static base URI.
+		scoped := *environment
+		scoped.baseURI = content.baseURI
 
-		doc, err = environment.engine.Parse(ctx, []byte(content.Text))
+		result, err := scoped.query(ctx, "parse-xml($inlineSource)", transform.Bindings{{Local: "inlineSource"}: transform.Values(transform.String(content.Text))})
 		if err != nil {
 			return nil, "", suiteHarness("inline source: %v", err)
+		}
+
+		doc, err = suiteParsedDocument(result)
+		if err != nil {
+			return nil, "", err
 		}
 	} else {
 		return nil, "", suiteHarness("source requires file or textual content")
 	}
 
 	return doc, sourceURI, nil
+}
+
+func suiteParsedDocument(result transform.Sequence) (*transform.Document, error) {
+	value, err := result.Single()
+	if err != nil {
+		return nil, suiteHarness("source must be a singleton document: %v", err)
+	}
+
+	native, ok := value.Node()
+	if !ok {
+		return nil, suiteHarness("source is not a document node")
+	}
+
+	return native.Document(), nil
 }
 
 func suiteSourceValue(ctx context.Context, environment *preparedSuiteEnvironment, doc *transform.Document, uri string, node *suiteNode) (transform.Value, bool, error) {

@@ -4,11 +4,14 @@
 package uripath
 
 import (
+	"bytes"
 	"fmt"
 	"net/url"
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/skarm/xmlsec/internal/xmlchar"
 )
 
 // ResolveSchemaURI resolves a schema-location reference ref against a base
@@ -52,7 +55,7 @@ func ResolveSchemaURI(ref, base string) (string, error) {
 	}
 	// Relative ref against a URI base: resolve per RFC 3986.
 	if URIScheme(base) != "" {
-		return resolveURIReference(base, ref)
+		return ResolveIRIReference(ref, base)
 	}
 	// Local filesystem base + ref. Resolve in FORWARD-SLASH space so the
 	// returned name — used as a key into the configured fs.FS, whose contract
@@ -83,34 +86,190 @@ func ResolveSchemaURI(ref, base string) (string, error) {
 	return p, nil
 }
 
-// resolveURIReference resolves a relative reference against a URI base using
-// RFC 3986 semantics. The base is the FULL schema URI (e.g.
-// "https://example.com/s/main.xsd"); url.URL.ResolveReference treats its last
-// path segment as the document and replaces it, so a sibling "part.xsd"
-// resolves to "https://example.com/s/part.xsd".
-//
-// It re-applies the base's OmitHost flag when the base had no authority and the
-// resolved reference introduced none: net/url's ResolveReference returns a
-// fresh URL that does NOT carry OmitHost, so a no-authority base like
-// "mem:/schemas/main.xsd" would otherwise emit an empty "//" authority
-// ("mem:///schemas/part.xsd") and miss an exact-match loader keyed on
-// "mem:/...". Canonical empty-authority bases like "file:///..." (OmitHost
-// false) keep their "///".
-func resolveURIReference(baseURI, ref string) (string, error) {
-	base, err := url.Parse(baseURI)
+// ResolveIRIReference implements RFC 3986 section 5.2 without escaping Unicode
+// or discarding empty query/fragment delimiters. It is shared by XML base,
+// schema/module resources and XPath URI functions.
+func ResolveIRIReference(ref, base string) (string, error) {
+	b, err := splitIRIReference(base)
 	if err != nil {
-		return "", fmt.Errorf("%w: invalid base URI %q", ErrInvalidURI, baseURI)
+		return "", err
 	}
 
-	refURL, err := url.Parse(ref)
+	r, err := splitIRIReference(ref)
 	if err != nil {
-		return "", fmt.Errorf("%w: invalid reference %q", ErrInvalidURI, ref)
+		return "", err
 	}
 
-	resolved := base.ResolveReference(refURL)
-	if base.OmitHost && resolved.Host == "" && resolved.User == nil {
-		resolved.OmitHost = true
+	// RFC 3986 section 5.2, applied directly to IRI components. Serializing
+	// through net/url would escape Unicode and lose an empty fragment; decoding
+	// that result would also rewrite pre-existing percent escapes (F&O 6.1).
+	t := r
+	if r.scheme != "" {
+		t.path = removeIRIDotSegments(r.path)
+	} else {
+		t.scheme = b.scheme
+		if r.hasAuthority {
+			t.path = removeIRIDotSegments(r.path)
+		} else {
+			t.authority, t.hasAuthority = b.authority, b.hasAuthority
+			if r.path == "" {
+				t.path = b.path
+				if !r.hasQuery {
+					t.query, t.hasQuery = b.query, b.hasQuery
+				}
+			} else if strings.HasPrefix(r.path, "/") {
+				t.path = removeIRIDotSegments(r.path)
+			} else {
+				prefix := ""
+				if b.hasAuthority && b.path == "" {
+					prefix = "/"
+				} else if slash := strings.LastIndexByte(b.path, '/'); slash >= 0 {
+					prefix = b.path[:slash+1]
+				}
+
+				t.path = removeIRIDotSegments(prefix + r.path)
+			}
+		}
 	}
 
-	return resolved.String(), nil
+	return t.String(), nil
+}
+
+type iriReference struct {
+	scheme, authority, path, query, fragment string
+	hasAuthority, hasQuery, hasFragment      bool
+}
+
+func (r iriReference) String() string {
+	var b strings.Builder
+	if r.scheme != "" {
+		b.WriteString(r.scheme)
+		b.WriteByte(':')
+	}
+
+	if r.hasAuthority {
+		b.WriteString("//")
+		b.WriteString(r.authority)
+	}
+
+	b.WriteString(r.path)
+
+	if r.hasQuery {
+		b.WriteByte('?')
+		b.WriteString(r.query)
+	}
+
+	if r.hasFragment {
+		b.WriteByte('#')
+		b.WriteString(r.fragment)
+	}
+
+	return b.String()
+}
+
+func splitIRIReference(raw string) (iriReference, error) {
+	if err := ValidatePercentEncoding(raw); err != nil {
+		return iriReference{}, err
+	}
+
+	if _, err := url.Parse(raw); err != nil {
+		return iriReference{}, err
+	}
+
+	r := iriReference{}
+	raw, r.fragment, r.hasFragment = strings.Cut(raw, "#")
+
+	raw, r.query, r.hasQuery = strings.Cut(raw, "?")
+	if colon := indexScheme(raw); colon > 0 {
+		r.scheme, raw = raw[:colon], raw[colon+1:]
+	}
+
+	if strings.HasPrefix(raw, "//") {
+		r.hasAuthority = true
+
+		raw = raw[2:]
+		if slash := strings.IndexByte(raw, '/'); slash >= 0 {
+			r.authority, raw = raw[:slash], raw[slash:]
+		} else {
+			r.authority, raw = raw, ""
+		}
+	}
+
+	r.path = raw
+
+	return r, nil
+}
+
+func removeIRIDotSegments(input string) string {
+	output := make([]byte, 0, len(input))
+	for input != "" {
+		switch {
+		case strings.HasPrefix(input, "../"):
+			input = input[3:]
+		case strings.HasPrefix(input, "./"):
+			input = input[2:]
+		case strings.HasPrefix(input, "/./"):
+			input = input[2:]
+		case input == "/.":
+			input = "/"
+		case strings.HasPrefix(input, "/../"), input == "/..":
+			if input == "/.." {
+				input = "/"
+			} else {
+				input = input[3:]
+			}
+
+			if slash := bytes.LastIndexByte(output, '/'); slash >= 0 {
+				output = output[:slash]
+			} else {
+				output = output[:0]
+			}
+		case input == ".", input == "..":
+			input = ""
+		default:
+			end := strings.IndexByte(input[1:], '/')
+			if end < 0 {
+				end = len(input)
+			} else {
+				end++
+			}
+
+			output = append(output, input[:end]...)
+			input = input[end:]
+		}
+	}
+
+	return string(output)
+}
+
+func indexScheme(raw string) int {
+	for i := range len(raw) {
+		switch raw[i] {
+		case ':':
+			return i
+		case '/', '?', '#':
+			return -1
+		}
+	}
+
+	return -1
+}
+
+// ValidatePercentEncoding checks every percent escape, including query and fragment.
+func ValidatePercentEncoding(uri string) error {
+	for i := 0; i < len(uri); i++ {
+		if uri[i] == '%' {
+			if i+2 >= len(uri) {
+				return fmt.Errorf("incomplete percent-encoding at position %d", i)
+			}
+
+			if !xmlchar.IsHexDigit(uri[i+1]) || !xmlchar.IsHexDigit(uri[i+2]) {
+				return fmt.Errorf("invalid percent-encoding %%%c%c", uri[i+1], uri[i+2])
+			}
+
+			i += 2
+		}
+	}
+
+	return nil
 }

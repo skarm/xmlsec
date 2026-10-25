@@ -29,12 +29,13 @@ fmt.Println(total)
 See the runnable [XPath/XSLT example](../examples/transforms/main.go) and
 `go doc ./transform` for complete option contracts.
 
-XML byte input defaults to the DTD-free UTF-8/UTF-16 profile. Explicit
+`Engine.Parse` and `ParseReader`, record input and approved XMLDSig programs
+retain the DTD-free UTF-8/UTF-16 security profile. Explicit
 `Config.AllowSingleByteEncodings` also permits declared ASCII-compatible IANA
 single-byte encodings, including ASCII, ISO-8859-1 and Windows-1252. It applies
 to source documents, stylesheet modules and resolved XML resources. Undefined
 bytes, BOM conflicts and unsupported encodings fail; raw input and decoded UTF-8
-both obey `MaxInputBytes`. The option does not enable DTDs or external entities.
+both obey `MaxInputBytes`. This encoding option is independent of DTD processing.
 
 `parse-xml` and `fn:transform`'s `stylesheet-text` consume already decoded
 characters. Their XML encoding declarations are checked for syntax and do not
@@ -42,6 +43,19 @@ reinterpret those characters as encoded bytes. `parse-xml-fragment` accepts the
 external-entity TextDecl grammar, including a required encoding declaration,
 without re-decoding characters. The complete original string counts against
 the input limit before any declaration is removed.
+
+Language XML input (`parse-xml`, `doc`, XSLT stylesheets and document resources)
+uses a separate bounded nonvalidating DTD mode. It expands parsed entities,
+parameter entities and default attributes, normalizes declared non-CDATA
+attributes, and retains DTD ID/IDREF flags, external-entity base URIs and
+unparsed-entity identifiers. XDM attributes remain untyped; no DTD or schema
+validation is performed. Fragments still reject DOCTYPE declarations.
+Every external DTD/entity must use the explicit resolver and invocation read
+policy; there is no implicit file or network access. Original and expanded
+XML, aggregate resource bytes, declarations, expansion work and entity depth
+are bounded. Cycles and malformed included entities fail without a partial
+result; resource streams close on success, failure and cancellation.
+These local controls do not establish complete XML processor conformance.
 
 ## Contexts and values
 

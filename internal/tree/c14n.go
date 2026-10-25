@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
@@ -76,6 +77,13 @@ func Canonical(ctx context.Context, w io.Writer, d *Document, start *Node, set *
 		return err
 	}
 
+	// Canonical XML requires failure for a document containing relative
+	// namespace names, including declarations outside the selected node set.
+	// Language snapshots can contain them; validate before emitting any bytes.
+	if err := canonicalNamespaces(ctx, d.children); err != nil {
+		return err
+	}
+
 	var parent *Node
 	if start != nil {
 		parent = start.Parent
@@ -94,6 +102,48 @@ func Canonical(ctx context.Context, w io.Writer, d *Document, start *Node, set *
 	}
 
 	return errors.Join(err, ctx.Err())
+}
+
+func canonicalNamespaces(ctx context.Context, nodes []*Node) error {
+	for _, node := range nodes {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		for _, binding := range node.NS {
+			if binding.URI != "" && !absoluteNamespaceURI(binding.URI) {
+				return fmt.Errorf("%w: canonicalization requires absolute namespace names", ErrUnsupported)
+			}
+		}
+
+		if err := canonicalNamespaces(ctx, node.Children); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// The snapshot already contains parsed namespace names. Checking only the URI
+// scheme avoids allocating a url.URL for every declaration on every sibling.
+func absoluteNamespaceURI(uri string) bool {
+	scheme, _, found := strings.Cut(uri, ":")
+	if !found || scheme == "" {
+		return false
+	}
+
+	for i := range len(scheme) {
+		c := scheme[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' {
+			continue
+		}
+
+		if i == 0 || !(c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.') {
+			return false
+		}
+	}
+
+	return true
 }
 
 func normalizeCanonicalOptions(opt CanonicalOptions) (CanonicalOptions, error) {

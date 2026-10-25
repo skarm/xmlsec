@@ -288,7 +288,7 @@ func (e *Engine) CompileXPath(ctx context.Context, source string, options XPathO
 		return nil, wrapXPath("compile XPath", ErrUnsupported, options.Version)
 	}
 
-	evaluator := xpath.NewEvaluator(xpath.DefaultEvaluatorOptions).Namespaces(namespaces).DefaultCollation(options.DefaultCollation).BaseURI(options.BaseURI).ParseOptions(e.parseOptions()).MaxResourceBytes(int64(e.limits.MaxInputBytes)).OpLimit(e.limits.MaxOperations)
+	evaluator := xpath.NewEvaluator(xpath.DefaultEvaluatorOptions).Namespaces(namespaces).DefaultCollation(options.DefaultCollation).BaseURI(options.BaseURI).ParseOptions(e.languageParseOptions()).MaxResourceBytes(int64(e.limits.MaxInputBytes)).OpLimit(e.limits.MaxOperations)
 	if options.XPath10Compatibility {
 		evaluator = evaluator.XPath10Compat()
 	}

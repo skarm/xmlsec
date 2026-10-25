@@ -38,6 +38,7 @@ type documentParser struct {
 	characterInput      bool
 	singleByteEncodings bool
 	stopAtRoot          bool
+	relativeNamespaces  bool
 }
 
 func (p *documentParser) parse(ctx context.Context) (*Document, error) {
@@ -98,7 +99,7 @@ func (p *documentParser) consumeToken(token xml.Token, offset int64) error {
 	case xml.CharData:
 		return p.characterData(token)
 	case xml.Comment:
-		if strings.Contains(string(token), "--") || strings.HasSuffix(string(token), "-") {
+		if bytes.Contains(token, []byte("--")) || bytes.HasSuffix(token, []byte("-")) {
 			return fmt.Errorf("%w: invalid comment", ErrMalformed)
 		}
 
@@ -173,7 +174,7 @@ func (p *documentParser) startElement(element xml.StartElement) error {
 
 	var err error
 
-	n.NS, err = parseNamespaceAttributes(element.Attr)
+	n.NS, err = parseNamespaceAttributes(element.Attr, p.relativeNamespaces)
 	if err != nil {
 		return err
 	}
@@ -208,7 +209,7 @@ func (p *documentParser) startElement(element xml.StartElement) error {
 	return nil
 }
 
-func parseNamespaceAttributes(attrs []xml.Attr) ([]Namespace, error) {
+func parseNamespaceAttributes(attrs []xml.Attr, relativeNamespaces bool) ([]Namespace, error) {
 	lexical := make(map[xml.Name]bool, len(attrs))
 
 	var namespaces []Namespace
@@ -228,7 +229,7 @@ func parseNamespaceAttributes(attrs []xml.Attr) ([]Namespace, error) {
 			prefix = ""
 		}
 
-		if err := validateNamespace(prefix, attribute.Value); err != nil {
+		if err := validateNamespace(prefix, attribute.Value, relativeNamespaces); err != nil {
 			return nil, err
 		}
 
@@ -287,7 +288,7 @@ func parseExpandedAttributes(attrs []xml.Attr, scope *namespaceContext) ([]Attri
 
 func validQName(n xml.Name) bool { return NCName(n.Local) && (n.Space == "" || NCName(n.Space)) }
 
-func validateNamespace(p, v string) error {
+func validateNamespace(p, v string, relativeNamespaces bool) error {
 	if p == nameXmlns || v == XMLNSNamespace || p == nameXML && v != XMLNamespace || p != nameXML && v == XMLNamespace {
 		return fmt.Errorf("%w: reserved namespace binding", ErrMalformed)
 	}
@@ -298,7 +299,7 @@ func validateNamespace(p, v string) error {
 
 	if v != "" {
 		u, e := url.Parse(v)
-		if e != nil || !u.IsAbs() || strings.ContainsAny(v, " \t\r\n") {
+		if e != nil || !relativeNamespaces && !u.IsAbs() || strings.ContainsAny(v, " \t\r\n") {
 			return fmt.Errorf("%w: namespace URI must be absolute", ErrUnsupported)
 		}
 	}
@@ -344,7 +345,7 @@ func (p *documentParser) processingInstruction(instruction xml.ProcInst, offset 
 			return fmt.Errorf("%w: XML declaration position", ErrMalformed)
 		}
 
-		if err := p.declaration(string(instruction.Inst)); err != nil {
+		if err := p.declaration(instruction.Inst); err != nil {
 			return err
 		}
 
@@ -594,7 +595,7 @@ func lexicalSpaceEnd(out []byte, index int) int {
 
 func spaceByte(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\r' }
 
-func (p *documentParser) declaration(s string) error {
+func (p *documentParser) declaration(s []byte) error {
 	label, err := validateDeclaration(s)
 	if err != nil {
 		return err
@@ -619,13 +620,13 @@ func (p *documentParser) declaration(s string) error {
 	return p.input.singleByteEncoding(label)
 }
 
-func validateDeclaration(s string) (string, error) {
+func validateDeclaration(s []byte) (string, error) {
 	attrs, err := declarationAttributes(s)
 	if err != nil {
 		return "", err
 	}
 
-	if attrs[0].Name != (xml.Name{Local: "version"}) || attrs[0].Value != "1.0" {
+	if attrs[0].Name != (xml.Name{Local: nameXMLVersion}) || attrs[0].Value != "1.0" {
 		return "", fmt.Errorf("%w: XML 1.0 is required", ErrUnsupported)
 	}
 
@@ -656,12 +657,17 @@ func validateDeclaration(s string) (string, error) {
 	return label, nil
 }
 
-func declarationAttributes(s string) ([]xml.Attr, error) {
-	if strings.ContainsAny(s, "&<>") {
+func declarationAttributes(s []byte) ([]xml.Attr, error) {
+	if bytes.ContainsAny(s, "&<>") {
 		return nil, fmt.Errorf("%w: declaration content", ErrMalformed)
 	}
 	// Parse declaration pseudo-attributes with the same lexical checks.
-	b, err := normalizeLexical([]byte("<decl " + s + "/>"))
+	b := make([]byte, 0, len(s)+8)
+	b = append(b, "<decl "...)
+	b = append(b, s...)
+	b = append(b, "/>"...)
+
+	b, err := normalizeOwnedLexical(b)
 	if err != nil {
 		return nil, err
 	}
@@ -679,7 +685,9 @@ func validEncodingName(label string) bool {
 		return false
 	}
 
-	for i, b := range []byte(label) {
+	for i := range len(label) {
+		b := label[i]
+
 		letter := b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
 		if !letter && (i == 0 || !(b >= '0' && b <= '9' || b == '.' || b == '_' || b == '-')) {
 			return false
@@ -700,15 +708,15 @@ func validateCharReference(s []byte) error {
 		return fmt.Errorf("%w: character reference", ErrMalformed)
 	}
 
-	digits := string(s[2:end])
+	digits := s[2:end]
 
 	base := 10
-	if strings.HasPrefix(digits, "x") {
+	if len(digits) > 0 && digits[0] == 'x' {
 		base = 16
 		digits = digits[1:]
 	}
 
-	if digits == "" {
+	if len(digits) == 0 {
 		return fmt.Errorf("%w: character reference", ErrMalformed)
 	}
 
@@ -718,7 +726,7 @@ func validateCharReference(s []byte) error {
 		}
 	}
 
-	r, err := strconv.ParseUint(digits, base, 32)
+	r, err := strconv.ParseUint(string(digits), base, 32)
 	if err != nil || r > utf8.MaxRune || !xmlchar.IsChar(rune(r)) {
 		return fmt.Errorf("%w: illegal character reference", ErrMalformed)
 	}

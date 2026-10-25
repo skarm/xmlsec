@@ -179,6 +179,7 @@ func TestUnicodeNormalizationConformance(t *testing.T) {
 					t.Fatalf("line %d form %d column %d: %U != %U", lineNo+1, tc.form, column+1, []rune(got), []rune(want))
 				}
 
+				assertByteNormalization(t, tc.form, input, want)
 				assertNormalizationWriter(t, tc.form, input, want)
 			}
 
@@ -220,6 +221,8 @@ func TestExactNormalizationWriter(t *testing.T) {
 		if strings.Count(want, "\u034f") != 1 {
 			t.Fatal("inserted or removed CGJ")
 		}
+
+		assertByteNormalization(t, form, input, want)
 
 		var borrowed bytes.Buffer
 		if err := form.EachBytes(t.Context(), input, func(part []byte) error { _, err := borrowed.Write(part); return err }); err != nil || borrowed.String() != want {
@@ -273,6 +276,10 @@ func TestExactNormalizationWriter(t *testing.T) {
 		t.Fatal("close ignored cancellation", err)
 	}
 
+	if _, err := normalization.IsNormal(ctx, normalization.NFC, []byte("é")); !errors.Is(err, context.Canceled) {
+		t.Fatal("normalization check ignored cancellation", err)
+	}
+
 	writer = normalization.NewWriter(t.Context(), normalizationFailWriter{}, normalization.NFC)
 	if _, err := writer.Write([]byte("abc")); err != nil {
 		t.Fatal(err)
@@ -289,6 +296,29 @@ func TestExactNormalizationWriter(t *testing.T) {
 
 	if err := writer.Close(); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatal("incomplete UTF-8 accepted", err)
+	}
+}
+
+func TestByteNormalizationBoundaries(t *testing.T) {
+	for _, form := range []normalization.Form{normalization.NFC, normalization.NFD, normalization.NFKC, normalization.NFKD} {
+		for _, input := range []string{"", "\xff", "e\u0301\xff", "a" + strings.Repeat("\u0315", 4100) + "\xe2\x82", strings.Repeat("é", 2100) + "e\u0301"} {
+			assertByteNormalization(t, form, input, form.String(input))
+		}
+	}
+}
+
+func assertByteNormalization(t *testing.T, form normalization.Form, input, want string) {
+	t.Helper()
+
+	source := []byte(input)
+
+	got := form.Bytes(source)
+	if string(got) != want || string(source) != input {
+		t.Fatalf("byte normalization form %d: got %U, source %U; want %U", form, []rune(string(got)), []rune(string(source)), []rune(want))
+	}
+
+	if input == want && len(source) != 0 && &got[0] != &source[0] {
+		t.Fatal("already normalized bytes were copied")
 	}
 }
 

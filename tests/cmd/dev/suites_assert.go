@@ -5,14 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"strconv"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
 
-	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/transform"
 
@@ -353,74 +351,108 @@ func suiteXMLAssertion(ctx context.Context, e *suiteEvaluation, assertion *suite
 		return suiteHarness("result serialization: %v", err)
 	}
 
-	left, err := parseSuiteXMLFragment(ctx, []byte(actual))
+	left, err := parseSuiteXMLFragment(ctx, e.environment, []byte(actual))
 	if err != nil {
 		return fmt.Errorf("actual result is not an XML fragment: %w", err)
 	}
 
-	right, err := parseSuiteXMLFragment(ctx, expected)
+	right, err := parseSuiteXMLFragment(ctx, e.environment, expected)
 	if err != nil {
 		return suiteHarness("expected XML fragment: %v", err)
 	}
 
-	if assertion.attr("ignore-prefixes") == suiteTrue || assertion.attr("ignore-prefixes") == "1" {
-		return suiteXMLDeepEqual(ctx, e, left, right)
-	}
+	ignorePrefixes := assertion.attr("ignore-prefixes") == suiteTrue || assertion.attr("ignore-prefixes") == "1"
 
-	var leftBytes, rightBytes bytes.Buffer
-	if err := c14n.WriteDocument(ctx, &leftBytes, left, c14n.Options{WithComments: true}); err != nil {
-		return suiteHarness("actual XML comparison: %v", err)
-	}
-
-	if err := c14n.WriteDocument(ctx, &rightBytes, right, c14n.Options{WithComments: true}); err != nil {
-		return suiteHarness("expected XML comparison: %v", err)
-	}
-
-	return compareSuiteBytes("canonical XML", leftBytes.Bytes(), rightBytes.Bytes())
+	return compareSuiteXMLNodes(ctx, left, right, ignorePrefixes)
 }
 
-func parseSuiteXMLFragment(ctx context.Context, data []byte) (*document.Document, error) {
+func parseSuiteXMLFragment(ctx context.Context, environment *preparedSuiteEnvironment, data []byte) (document.Node, error) {
 	data = bytes.TrimPrefix(data, []byte("\uFEFF"))
 	if bytes.HasPrefix(data, []byte("<?xml ")) {
 		_, tail, ok := bytes.Cut(data, []byte("?>"))
 		if !ok {
-			return nil, errors.New("invalid XML declaration")
+			return document.Node{}, errors.New("invalid XML declaration")
 		}
 
 		data = tail
 	}
 
-	// The catalog defines comparison of parsed/canonical XML. Parse a complete
-	// document as such so whitespace outside its root is not content. A wrapper
-	// is needed only for results that are XML fragments rather than documents.
-	if parsed, err := document.Parse(ctx, data, document.DefaultLimits()); err == nil {
-		normalized, err := parsed.XML(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		data = normalized
-	} else if errors.Is(err, document.ErrLimit) || ctx.Err() != nil {
-		return nil, err
+	// Parse a complete document as such: whitespace outside its root is not
+	// content. Fragments use the same language parser, which permits relative
+	// namespace names. C14N cannot compare those names, since it must reject them.
+	if parsed, err := environment.engine.Parse(ctx, data); err == nil {
+		node, _ := parsed.Root().Node()
+		return node.Reference(), nil
+	} else if errors.Is(err, transform.ErrLimit) || ctx.Err() != nil {
+		return document.Node{}, err
 	}
 
-	wrapped := io.MultiReader(strings.NewReader("<_xmlsec_test_result>"), bytes.NewReader(data), strings.NewReader("</_xmlsec_test_result>"))
+	parsed, err := environment.query(ctx, "parse-xml-fragment($xml)", transform.Bindings{{Local: "xml"}: transform.Values(transform.String(string(data)))})
+	if err != nil {
+		return document.Node{}, err
+	}
 
-	return document.ParseReader(ctx, wrapped, document.DefaultLimits())
+	value, err := parsed.Single()
+	if err != nil {
+		return document.Node{}, err
+	}
+
+	node, ok := value.Node()
+	if !ok {
+		return document.Node{}, errors.New("XML parser did not return a node")
+	}
+
+	return node.Reference(), nil
 }
 
-func suiteXMLDeepEqual(ctx context.Context, e *suiteEvaluation, left, right *document.Document) error {
-	first, err := e.environment.engine.Import(ctx, left)
-	if err != nil {
-		return suiteHarness("actual XML import: %v", err)
+// Compare parsed XML rather than fn:deep-equal, which ignores comment and PI
+// children of elements. Namespace prefixes remain significant unless requested
+// otherwise; unused declarations and attribute order do not affect equality.
+func compareSuiteXMLNodes(ctx context.Context, left, right document.Node, ignorePrefixes bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
-	second, err := e.environment.engine.Import(ctx, right)
-	if err != nil {
-		return suiteHarness("expected XML import: %v", err)
+	if left.Kind() != right.Kind() || left.Name() != right.Name() || !ignorePrefixes && left.Prefix() != right.Prefix() {
+		return fmt.Errorf("XML node names differ: %s:%v != %s:%v", left.Prefix(), left.Name(), right.Prefix(), right.Name())
 	}
 
-	return e.assertionTrue(ctx, "deep-equal($first/node(), $second/node())", transform.Bindings{{Local: "first"}: transform.Values(first.Root()), {Local: "second"}: transform.Values(second.Root())})
+	if left.Kind() != document.DocumentNode && left.Kind() != document.ElementNode && left.Value() != right.Value() {
+		return fmt.Errorf("XML node values differ: %.100q != %.100q", left.Value(), right.Value())
+	}
+
+	first, _ := left.Element()
+	second, _ := right.Element()
+
+	leftAttrs, rightAttrs := first.Attributes(), second.Attributes()
+	if len(leftAttrs) != len(rightAttrs) {
+		return errors.New("XML attribute counts differ")
+	}
+
+	attributes := make(map[document.Name]document.Attribute, len(rightAttrs))
+	for _, attribute := range rightAttrs {
+		attributes[attribute.Name] = attribute
+	}
+
+	for _, attribute := range leftAttrs {
+		other, found := attributes[attribute.Name]
+		if !found || attribute.Value != other.Value || !ignorePrefixes && attribute.Prefix != other.Prefix {
+			return fmt.Errorf("XML attribute differs: %v", attribute.Name)
+		}
+	}
+
+	leftChildren, rightChildren := left.Children(), right.Children()
+	if len(leftChildren) != len(rightChildren) {
+		return errors.New("XML child counts differ")
+	}
+
+	for i, child := range leftChildren {
+		if err := compareSuiteXMLNodes(ctx, child, rightChildren[i], ignorePrefixes); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func suiteSerializationAssertion(ctx context.Context, e *suiteEvaluation, assertion *suiteNode) error {

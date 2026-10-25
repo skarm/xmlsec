@@ -25,6 +25,8 @@ func TestSingleByteXMLInputs(t *testing.T) {
 
 	for _, tc := range []struct{ encoding, content, want string }{
 		{xmlASCIIEncoding, "ascii text", "ascii text"},
+		{"ASCII", "alias text", "alias text"},
+		{"aScIi", "alias text", "alias text"},
 		{xmlASCIIEncoding, "caf&#233;", xmlLatinText},
 		{xmlLatinEncoding, "caf\xe9", xmlLatinText},
 		{"ISO-8859-15", "\xa4", "€"},
@@ -85,9 +87,13 @@ func TestLimitsCancellationAndResources(t *testing.T) {
 		t.Fatal("DTD accepted")
 	}
 
-	_, err = query(t, e, `parse-xml('<!DOCTYPE r [<!ENTITY e "boom">]><r>&e;</r>')`, transform.XPath31).Evaluate(ctx, nil, transform.XPathContext{})
-	if err == nil {
-		t.Fatal("dynamic DTD accepted")
+	value, err := query(t, e, `string(parse-xml('<!DOCTYPE r [<!ENTITY e "boom">]><r>&e;</r>'))`, transform.XPath31).Evaluate(ctx, nil, transform.XPathContext{})
+	if err != nil || text(t, value) != "boom" {
+		t.Fatal("language DTD processing", value, err)
+	}
+	_, err = query(t, e, `string(parse-xml('<!DOCTYPE r [<!ENTITY e "`+strings.Repeat("x", 128)+`">]><r>&e;</r>'))`, transform.XPath31).Evaluate(ctx, nil, transform.XPathContext{})
+	if !errors.Is(err, transform.ErrLimit) {
+		t.Fatal("DTD result escaped the output budget", err)
 	}
 
 	cancelled, cancel := context.WithCancel(ctx)

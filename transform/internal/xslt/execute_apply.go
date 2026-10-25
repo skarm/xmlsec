@@ -122,7 +122,7 @@ func (ec *execContext) execApplyTemplates(ctx context.Context, inst *applyTempla
 			continue
 		}
 
-		if err := ec.dispatchApplyTemplatesItem(ctx, item, inst, mode, paramValues); err != nil {
+		if err := ec.dispatchApplyTemplatesItem(ctx, item, mode, paramValues); err != nil {
 			return err
 		}
 	}
@@ -197,11 +197,19 @@ func (ec *execContext) sortApplyTemplateItems(ctx context.Context, items xdm.Ite
 	return items, nil
 }
 
-// dispatchApplyTemplatesItem applies templates to a single non-node item
-// (atomic value, array, or map) per the XSLT 3.0 rules: try template matching
-// first, then the built-in rules for arrays/maps, then fall back to built-in
-// text output unless the mode's on-no-match skips unmatched atomic items.
-func (ec *execContext) dispatchApplyTemplatesItem(ctx context.Context, item xdm.Item, inst *applyTemplatesInst, mode string, paramValues map[string]xdm.Sequence) error {
+// dispatchApplyTemplatesItem matches a non-node item before using the current
+// mode's built-in rule. Maps/functions are not implicitly traversed.
+func (ec *execContext) dispatchApplyTemplatesItem(ctx context.Context, item xdm.Item, mode string, params map[string]xdm.Sequence) error {
+	initialCall := ec.initialTemplateCall
+	ec.initialTemplateCall = false
+
+	ec.depth++
+	if ec.depth > xpath.DepthLimit(ctx, maxRecursionDepth) {
+		ec.depth--
+		return dynamicErrorCause(errCodeXTDE0820, xpath.ErrBudget, "recursion depth exceeded")
+	}
+	defer func() { ec.depth-- }()
+
 	mode, restoreMode := ec.pushMode(mode)
 	defer restoreMode()
 
@@ -211,104 +219,113 @@ func (ec *execContext) dispatchApplyTemplatesItem(ctx context.Context, item xdm.
 	}
 
 	if tmpl != nil {
-		return ec.executeAtomicTemplate(ctx, tmpl, item, mode, paramValues)
-	}
-
-	if handled, err := ec.applyCompoundTemplateItem(ctx, item, inst, mode, paramValues); handled || err != nil {
-		return err
-	}
-	// Check mode's on-no-match: for "deep-skip" and "shallow-skip",
-	// unmatched atomic items are silently skipped.
-	modeKey := mode
-	if modeKey == "" || modeKey == modeUnnamed {
-		modeKey = modeDefault
-	}
-
-	modeDef := ec.effectiveModeDefs()[modeKey]
-	if modeDef != nil && (modeDef.OnNoMatch == onNoMatchDeepSkip || modeDef.OnNoMatch == onNoMatchShallowSkip) {
-		return nil
-	}
-
-	return ec.outputBuiltinTemplateItem(item)
-}
-
-func (ec *execContext) applyCompoundTemplateItem(ctx context.Context, item xdm.Item, inst *applyTemplatesInst, mode string, params map[string]xdm.Sequence) (bool, error) {
-	switch value := item.(type) {
-	case xdm.ArrayItem:
-		for index := 1; index <= value.Size(); index++ {
-			member, err := value.Get(index)
-			if err != nil {
-				return true, err
-			}
-
-			if err := ec.applyTemplatesToSequence(ctx, member, inst, mode, params); err != nil {
-				return true, err
+		if initialCall {
+			if err := ec.checkInitialTemplateParameters(tmpl); err != nil {
+				return err
 			}
 		}
 
-		return true, nil
-	case xdm.MapItem:
-		return true, value.ForEach(func(_ xdm.AtomicValue, member xdm.Sequence) error {
-			return ec.applyTemplatesToSequence(ctx, member, inst, mode, params)
-		})
+		return ec.executeAtomicTemplate(ctx, tmpl, item, mode, params)
+	}
+
+	return ec.applyBuiltinTemplateItem(ctx, item, mode, params)
+}
+
+func (ec *execContext) applyBuiltinTemplateItem(ctx context.Context, item xdm.Item, mode string, params map[string]xdm.Sequence) error {
+	defer ec.pushPackage(ec.activeModePackage())()
+
+	if err := xpath.Charge(ctx, 1); err != nil {
+		return err
+	}
+
+	switch ec.builtinTemplateBehavior(mode) {
+	case onNoMatchDeepCopy, onNoMatchShallowCopy:
+		return ec.outputSequence(xdm.ItemSlice{item})
+	case onNoMatchDeepSkip:
+		return nil
+	case onNoMatchFail:
+		return dynamicError(errCodeXTDE0555, "no matching template in mode %q (on-no-match=fail)", mode)
+	case onNoMatchShallowSkip:
+		if array, ok := item.(xdm.ArrayItem); ok {
+			return ec.applyBuiltinArray(ctx, array, mode, params)
+		}
+
+		return nil
 	default:
-		return false, nil
-	}
-}
+		if array, ok := item.(xdm.ArrayItem); ok {
+			return ec.applyBuiltinArray(ctx, array, mode, params)
+		}
 
-func (ec *execContext) outputBuiltinTemplateItem(item xdm.Item) error {
-	av, err := xpath.AtomizeItem(item)
-	if err != nil {
-		return err
-	}
-
-	s, err := xpath.AtomicToString(av)
-	if err != nil {
-		return err
-	}
-
-	text := ec.resultDoc.CreateText(s)
-
-	return ec.addNode(text)
-}
-
-// applyTemplatesToSequence applies templates to each item in a sequence,
-// implementing the built-in template rules for arrays and maps (XSLT 3.0).
-func (ec *execContext) applyTemplatesToSequence(ctx context.Context, seq xdm.Sequence, inst *applyTemplatesInst, mode string, params map[string]xdm.Sequence) error {
-	for item := range xdm.SequenceItems(seq) {
-		if node, ok := item.(xdm.NodeItem); ok {
-			if err := ec.applyTemplates(ctx, node.Node, modeCurrent, params); err != nil {
+		if atomic, ok := item.(xdm.AtomicValue); ok {
+			value, err := xpath.AtomicToString(atomic)
+			if err != nil {
 				return err
 			}
 
+			return ec.addNode(ec.resultDoc.CreateText(value))
+		}
+
+		return nil
+	}
+}
+
+// The implicit ?* selection concatenates members without recursively flattening
+// nested arrays. Matching sees the whole selection's position and size.
+func (ec *execContext) applyBuiltinArray(ctx context.Context, array xdm.ArrayItem, mode string, params map[string]xdm.Sequence) error {
+	var items xdm.ItemSlice
+
+	for _, member := range array.MembersView() {
+		for item := range xdm.SequenceItems(member) {
+			if err := xpath.Charge(ctx, 1); err != nil {
+				return err
+			}
+
+			if len(items) >= xpath.NodeLimit(ctx, 1_000_000) {
+				return xpath.ErrNodeSetLimit
+			}
+
+			items = append(items, item)
+		}
+	}
+
+	return ec.applyTemplatesToSequence(ctx, items, mode, params)
+}
+
+func (ec *execContext) applyTemplatesToSequence(ctx context.Context, seq xdm.Sequence, mode string, params map[string]xdm.Sequence) error {
+	items := xdm.Materialize(seq)
+
+	filtered := items[:0]
+	for _, item := range items {
+		if node, ok := item.(xdm.NodeItem); ok && ec.shouldStripWhitespace(node.Node) {
 			continue
 		}
 
-		if err := ec.applyBuiltinSequenceItem(ctx, item, inst, mode, params); err != nil {
+		filtered = append(filtered, item)
+	}
+
+	items = filtered
+	savedPos, savedSize, savedMerge := ec.position, ec.size, ec.inMergeAction
+
+	ec.inMergeAction = false
+	defer func() { ec.position, ec.size, ec.inMergeAction = savedPos, savedSize, savedMerge }()
+
+	ec.size = len(items)
+	for i, item := range items {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		ec.position = i + 1
+		if node, ok := item.(xdm.NodeItem); ok {
+			if err := ec.applyTemplates(ctx, node.Node, mode, params); err != nil {
+				return err
+			}
+		} else if err := ec.dispatchApplyTemplatesItem(ctx, item, mode, params); err != nil {
 			return err
 		}
 	}
 
 	return nil
-}
-
-// applyBuiltinSequenceItem retains the recursive array/map rule: unmatched
-// atomics in a member sequence use text output without the outer mode skip gate.
-func (ec *execContext) applyBuiltinSequenceItem(ctx context.Context, item xdm.Item, inst *applyTemplatesInst, mode string, params map[string]xdm.Sequence) error {
-	tmpl, err := ec.findAtomicTemplate(ctx, item, mode)
-	if err != nil {
-		return err
-	}
-
-	if tmpl != nil {
-		return ec.executeAtomicTemplate(ctx, tmpl, item, mode, params)
-	}
-
-	if handled, err := ec.applyCompoundTemplateItem(ctx, item, inst, mode, params); handled || err != nil {
-		return err
-	}
-
-	return ec.outputBuiltinTemplateItem(item)
 }
 
 func (ec *execContext) evaluateWithParam(ctx context.Context, wp *withParam) (xdm.Sequence, error) {
@@ -618,20 +635,8 @@ func (ec *execContext) execNextAtomicMatch(ctx context.Context, mode string, pv 
 			return ec.executeAtomicTemplate(ctx, tmpl, ec.contextItem, mode, pv)
 		}
 	}
-	// No next match for atomic items — output string value as built-in rule
-	av, ok := ec.contextItem.(xdm.AtomicValue)
-	if !ok {
-		return nil
-	}
 
-	s, err := xpath.AtomicToString(av)
-	if err != nil {
-		return err
-	}
-
-	text := ec.resultDoc.CreateText(s)
-
-	return ec.addNode(text)
+	return ec.applyBuiltinTemplateItem(ctx, ec.contextItem, mode, pv)
 }
 
 func (ec *execContext) execApplyImports(ctx context.Context, inst *applyImportsInst) error {
@@ -670,8 +675,8 @@ func (ec *execContext) execApplyImports(ctx context.Context, inst *applyImportsI
 
 	// XSLT 3.0: when the context item is an atomic value (e.g. from
 	// xsl:apply-templates select="1 to 5"), search for matching atomic
-	// templates with lower import precedence, then fall back to outputting
-	// the string value of the atomic item (built-in rule for atomic values).
+	// templates with lower import precedence, then use the current mode
+	// for the built-in rule on the original item.
 	if ec.contextItem != nil {
 		templates := ec.activeModePackage().modeTemplates[mode]
 		for _, tmpl := range templates {
@@ -683,20 +688,8 @@ func (ec *execContext) execApplyImports(ctx context.Context, inst *applyImportsI
 				return ec.executeAtomicTemplate(ctx, tmpl, ec.contextItem, mode, pv)
 			}
 		}
-		// Built-in rule for atomic values: output string value
-		av, err := xpath.AtomizeItem(ec.contextItem)
-		if err != nil {
-			return err
-		}
 
-		s, err := xpath.AtomicToString(av)
-		if err != nil {
-			return err
-		}
-
-		text := ec.resultDoc.CreateText(s)
-
-		return ec.addNode(text)
+		return ec.applyBuiltinTemplateItem(ctx, ec.contextItem, mode, pv)
 	}
 
 	templates := ec.activeModePackage().modeTemplates[mode]

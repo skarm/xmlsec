@@ -14,6 +14,7 @@ import (
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
 const maxNodeSetLength = xdm.DefaultMaxNodeSetLength
@@ -85,6 +86,12 @@ func (ec *evalContext) xmlParseOptions() xdm.ParseOptions {
 	p := xdm.ParseOptions{}
 	if ec != nil && ec.parseOptions != nil {
 		p = *ec.parseOptions
+	}
+
+	if p.AllowDTD {
+		p.DTDOpen = func(ctx context.Context, uri string) (io.ReadCloser, error) {
+			return unparsedtext.OpenURI(ctx, unparsedTextConfig(ctx), uri)
+		}
 	}
 
 	return p

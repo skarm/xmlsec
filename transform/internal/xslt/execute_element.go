@@ -52,6 +52,12 @@ func (ec *execContext) execElement(ctx context.Context, inst *elementInst) error
 		return err
 	}
 
+	// A parentless constructor retains its instruction's static base. Nodes
+	// constructed directly as children inherit the result parent's base instead.
+	if ec.currentOutput().sequenceMode {
+		xdm.SetNodeBaseURI(elem, ec.effectiveStaticBaseURI())
+	}
+
 	if err := ec.addNode(elem); err != nil {
 		return err
 	}
@@ -1151,6 +1157,12 @@ func prefixBoundTo(elem *xdm.Element, prefix string) string {
 // namespace URI and prefix. For non-namespaced attributes, falls back to
 // SetAttribute.
 func copyAttributeToElement(elem *xdm.Element, attr *xdm.Attribute) {
+	defer func() {
+		if copied := elem.GetAttributeNodeNS(attr.LocalName(), attr.URI()); copied != nil {
+			copied.SetIDType(attr.IDType())
+		}
+	}()
+
 	if uri := attr.URI(); uri != "" {
 		prefix := attr.Prefix()
 		name := attr.Name()

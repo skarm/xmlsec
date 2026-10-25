@@ -87,7 +87,7 @@ func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocum
 
 		doc, err = parseXMLResource(ctx, ec.inputParseOptions(), reader, resolvedURI, ec.resourceLimit())
 		if err != nil {
-			return dynamicErrorCause(errCodeFODC0002, err, "xsl:source-document cannot parse %q: %v", uri, err)
+			return documentParsingError(uri, err)
 		}
 
 		// Apply xsl:strip-space to the loaded document so that whitespace-only

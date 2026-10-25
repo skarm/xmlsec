@@ -398,8 +398,7 @@ func (ec *execContext) execCopyDocument(ctx context.Context, source xdm.Node, bo
 	}
 
 	if capture {
-		out.pendingItems = append(out.pendingItems, xdm.NodeItem{Node: newDoc})
-		out.noteOutput()
+		out.captureSequenceItems(xdm.ItemSlice{xdm.NodeItem{Node: newDoc}})
 
 		return nil
 	}
@@ -438,8 +437,12 @@ func (ec *execContext) executeDocumentCopyBody(ctx context.Context, doc *xdm.Doc
 // copyAttributeNodeToOutput either captures a standalone copy or attaches it
 // to the current element, enforcing the attribute-before-content rule.
 func (ec *execContext) copyAttributeNodeToOutput(attr *xdm.Attribute) error {
+	if err := xpath.ChargeTree(ec.budgetCtx, attr); err != nil {
+		return err
+	}
+
 	out := ec.currentOutput()
-	if out.sequenceMode {
+	if out.sequenceMode || out.captureItems {
 		var attrNS *xdm.Namespace
 
 		if attr.URI() != "" {
@@ -453,8 +456,13 @@ func (ec *execContext) copyAttributeNodeToOutput(attr *xdm.Attribute) error {
 			return err
 		}
 
-		out.pendingItems = append(out.pendingItems, xdm.NodeItem{Node: copiedAttr})
-		out.noteOutput()
+		copiedAttr.SetIDType(attr.IDType())
+
+		if annotation, found := ec.typeAnnotations[attr]; found {
+			ec.annotateNode(copiedAttr, annotation)
+		}
+
+		out.captureSequenceItems(xdm.ItemSlice{xdm.NodeItem{Node: copiedAttr, TypeAnnotation: ec.typeAnnotations[attr]}})
 
 		return nil
 	}
@@ -844,7 +852,7 @@ func (ec *execContext) copyNodeToOutput(node xdm.Node, copyNamespaces ...bool) e
 
 func (ec *execContext) copyDocumentToOutput(node xdm.Node, copyNS bool) error {
 	out := ec.currentOutput()
-	if out.sequenceMode {
+	if out.sequenceMode || out.captureItems {
 		return ec.captureCopiedDocument(node)
 	}
 
@@ -865,9 +873,12 @@ func (ec *execContext) copyDocumentToOutput(node xdm.Node, copyNS bool) error {
 	return nil
 }
 
-// captureCopiedDocument preserves one document item, rather than emitting its
-// children as separate items. Doctype metadata is copied outside the XDM tree.
-func (ec *execContext) captureCopiedDocument(source xdm.Node) error {
+// copyDocumentNode preserves one document item and its separate output metadata.
+func (ec *execContext) copyDocumentNode(source xdm.Node) (*xdm.Document, error) {
+	if err := xpath.ChargeTree(ec.budgetCtx, source); err != nil {
+		return nil, err
+	}
+
 	doc := newCopyDocument(source)
 	for child := range xdm.Children(source) {
 		if !xdm.IsXDMChild(child) {
@@ -876,31 +887,42 @@ func (ec *execContext) captureCopiedDocument(source xdm.Node) error {
 
 		copied, err := xdm.CopyNode(child, doc)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		if err := doc.AddChild(copied); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
+	return doc, nil
+}
+
+func (ec *execContext) captureCopiedDocument(source xdm.Node) error {
+	doc, err := ec.copyDocumentNode(source)
+	if err != nil {
+		return err
+	}
+
 	out := ec.currentOutput()
-	out.pendingItems = append(out.pendingItems, xdm.NodeItem{Node: doc})
-	out.noteOutput()
+	out.captureSequenceItems(xdm.ItemSlice{xdm.NodeItem{Node: doc}})
 
 	return nil
 }
 
 func (ec *execContext) copyNamespaceNodeToOutput(ns *xdm.NamespaceNodeWrapper) error {
+	if err := xpath.ChargeTree(ec.budgetCtx, ns); err != nil {
+		return err
+	}
+
 	out := ec.currentOutput()
-	if out.sequenceMode {
+	if out.sequenceMode || out.captureItems {
 		copied, err := out.doc.CreateNamespace(ns.Name(), xdm.CharacterData(ns))
 		if err != nil {
 			return err
 		}
 
-		out.pendingItems = append(out.pendingItems, xdm.NodeItem{Node: xdm.NewNamespaceNodeWrapper(copied, nil)})
-		out.noteOutput()
+		out.captureSequenceItems(xdm.ItemSlice{xdm.NodeItem{Node: xdm.NewNamespaceNodeWrapper(copied, nil)}})
 
 		return nil
 	}
@@ -943,23 +965,8 @@ func (ec *execContext) copyElementNoNamespaces(src *xdm.Element) error {
 		}
 	}
 
-	for _, a := range src.Attributes() {
-		if a.URI() != "" {
-			if !hasNSDecl(elem, a.Prefix(), a.URI()) {
-				if err := elem.DeclareNamespace(a.Prefix(), a.URI()); err != nil {
-					return err
-				}
-			}
-
-			ns, nsErr := ec.resultDoc.CreateNamespace(a.Prefix(), a.URI())
-			if nsErr != nil {
-				return nsErr
-			}
-
-			_ = elem.SetAttributeNS(a.LocalName(), a.Value(), ns)
-		} else {
-			_ = elem.SetAttribute(a.Name(), a.Value())
-		}
+	for _, attribute := range src.Attributes() {
+		copyAttributeToElement(elem, attribute)
 	}
 
 	// Recursively copy children (also without namespaces).
@@ -1218,8 +1225,11 @@ func evaluateCopyBoolean(ctx context.Context, node xdm.Node, shadow *avt, fallba
 // newCopyDocument preserves document metadata without modifying the source.
 func newCopyDocument(source xdm.Node) *xdm.Document {
 	doc := xdm.NewDefaultDocument()
+	doc.SetProperties(xdm.DocInternal)
+
 	if src, ok := source.(*xdm.Document); ok && src != nil {
 		xdm.CopyDoctype(src, doc)
+		xdm.CopyUnparsedEntities(src, doc)
 		doc.SetURL(src.URL())
 	}
 
