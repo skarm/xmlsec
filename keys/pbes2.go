@@ -14,9 +14,11 @@ import (
 )
 
 type pbes2Parameters struct {
-	hash                 crypto.Hash
-	salt, iv             []byte
-	iterations, keyBytes int
+	hash       crypto.Hash
+	salt       []byte
+	iv         []byte
+	iterations int
+	keyBytes   int
 }
 
 func algorithm(v asn1.RawValue) (asn1.ObjectIdentifier, asn1.RawValue, error) {

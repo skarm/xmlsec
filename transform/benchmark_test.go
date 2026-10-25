@@ -46,7 +46,11 @@ func BenchmarkEngineXPath(b *testing.B) {
 func BenchmarkXPathEscaping(b *testing.B) {
 	const uriInput = " é/😀"
 
-	for _, tc := range []struct{ name, expression, input string }{
+	for _, tc := range []struct {
+		name       string
+		expression string
+		input      string
+	}{
 		{"URI", `encode-for-uri($source)`, uriInput},
 		{"IRI", `iri-to-uri($source)`, uriInput},
 		{"HTMLURI", `escape-html-uri($source)`, uriInput},
@@ -72,7 +76,10 @@ func BenchmarkXPathEscaping(b *testing.B) {
 
 func BenchmarkEngineXSLT(b *testing.B) {
 	b.Run("Compile", func(b *testing.B) {
-		for _, tc := range []struct{ name, pattern string }{
+		for _, tc := range []struct {
+			name    string
+			pattern string
+		}{
 			{"Simple", "n"},
 			{"Pipe", "n | r/m"},
 			{"Keyword", "n union r/m"},

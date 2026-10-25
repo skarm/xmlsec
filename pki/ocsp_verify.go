@@ -462,16 +462,17 @@ func validateOCSPEntry(produced, at time.Time, s *singleResponse, o OCSPOptions)
 // ocspEvidence borrows operation-local evidence and parses each response once,
 // including when path building presents several candidate chains.
 type ocspEvidence struct {
-	authorization       *ocspResponderEvidence
-	provenanceSources   map[evidenceBinding][]*evidence.Observation
-	authenticated, used []*VerifiedEvidence
-	raw                 [][]byte
-	options             OCSPOptions
-	sources             []*ocspSource
-	parsed              []parsedOCSP
-	errors              []error
-	initialized         bool
-	initErr             error
+	authorization     *ocspResponderEvidence
+	provenanceSources map[evidenceBinding][]*evidence.Observation
+	authenticated     []*VerifiedEvidence
+	used              []*VerifiedEvidence
+	raw               [][]byte
+	options           OCSPOptions
+	sources           []*ocspSource
+	parsed            []parsedOCSP
+	errors            []error
+	initialized       bool
+	initErr           error
 }
 
 func (e *ocspEvidence) parse(ctx context.Context) (err error) {

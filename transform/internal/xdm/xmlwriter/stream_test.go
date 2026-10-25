@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -37,11 +38,11 @@ func TestWriterNamespaceScopesAndCDATAChunks(t *testing.T) {
 
 	for {
 		token, err := decoder.Token()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
 			t.Fatalf("malformed writer output %q: %v", output.String(), err)
 		}
 
@@ -163,3 +164,36 @@ func (w *failingWriter) Write([]byte) (int, error) { w.calls++; return 0, w.err 
 type shortStringWriter struct{ strings.Builder }
 
 func (*shortStringWriter) WriteString(string) (int, error) { return 0, nil }
+
+func BenchmarkNamespaceWriterDepth(b *testing.B) {
+	for _, depth := range []int{4, 64} {
+		prefixes := make([]string, depth)
+		uris := make([]string, depth)
+		for i := range depth {
+			prefixes[i] = "p" + strconv.Itoa(i)
+			uris[i] = "urn:depth:" + strconv.Itoa(i)
+		}
+		b.Run(strconv.Itoa(depth), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				w := stream.NewWriter(io.Discard)
+				for i := range depth {
+					if err := w.StartElementNS(prefixes[i], "node", uris[i]); err != nil {
+						b.Fatal(err)
+					}
+				}
+				if err := w.WriteString("text<&>é"); err != nil {
+					b.Fatal(err)
+				}
+				for range depth {
+					if err := w.EndElement(); err != nil {
+						b.Fatal(err)
+					}
+				}
+				if err := w.Flush(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

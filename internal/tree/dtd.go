@@ -20,32 +20,52 @@ import (
 type DTDEntityResolver func(context.Context, string, string) (io.ReadCloser, string, error)
 
 type dtdEntity struct {
-	value, systemID, publicID, notation, base string
-	external                                  bool
+	value    string
+	systemID string
+	publicID string
+	notation string
+	base     string
+	external bool
 }
 
 type dtdAttribute struct {
-	name, kind, value string
-	hasDefault        bool
+	name       string
+	kind       string
+	value      string
+	hasDefault bool
 }
 
-type dtdLoaded struct{ text, base string }
+type dtdLoaded struct {
+	text string
+	base string
+}
 
 type dtdState struct {
-	ctx                  context.Context
-	options              ParseOptions
-	entities, parameters map[string]dtdEntity
-	attributes           map[string]map[string]dtdAttribute
-	defaults             map[string][]dtdAttribute
-	active               map[string]bool
-	work                 int
-	declarations         int
-	inputBytes           int
-	loaded               map[string]dtdLoaded
+	ctx          context.Context
+	options      ParseOptions
+	entities     map[string]dtdEntity
+	parameters   map[string]dtdEntity
+	attributes   map[string]map[string]dtdAttribute
+	defaults     map[string][]dtdAttribute
+	active       map[string]struct{}
+	work         int
+	declarations int
+	inputBytes   int
+	loaded       map[string]dtdLoaded
 }
 
 func newDTDState(ctx context.Context, options ParseOptions) *dtdState {
-	return &dtdState{ctx: ctx, options: options, entities: make(map[string]dtdEntity), parameters: make(map[string]dtdEntity), attributes: make(map[string]map[string]dtdAttribute), defaults: make(map[string][]dtdAttribute), active: make(map[string]bool), work: options.Limits.MaxBytes, loaded: make(map[string]dtdLoaded)}
+	return &dtdState{
+		ctx:        ctx,
+		options:    options,
+		entities:   make(map[string]dtdEntity),
+		parameters: make(map[string]dtdEntity),
+		attributes: make(map[string]map[string]dtdAttribute),
+		defaults:   make(map[string][]dtdAttribute),
+		active:     make(map[string]struct{}),
+		work:       options.Limits.MaxBytes,
+		loaded:     make(map[string]dtdLoaded),
+	}
 }
 
 func (d *dtdState) declare() error {
@@ -72,7 +92,7 @@ func (d *dtdState) charge(n int) error {
 }
 
 func (d *dtdState) enter(name string, size int) (func(), error) {
-	if d.active[name] {
+	if _, exists := d.active[name]; exists {
 		return nil, fmt.Errorf("%w: recursive entity %q", ErrMalformed, name)
 	}
 
@@ -84,7 +104,7 @@ func (d *dtdState) enter(name string, size int) (func(), error) {
 		return nil, err
 	}
 
-	d.active[name] = true
+	d.active[name] = struct{}{}
 
 	return func() { delete(d.active, name) }, nil
 }
@@ -149,11 +169,11 @@ func decodeDTDInput(ctx context.Context, source io.Reader, options ParseOptions,
 		}
 
 		r, err := p.input.rune()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
 			return "", err
 		}
 
@@ -615,10 +635,11 @@ func processDTDDeclaration(p *documentParser, prefix string, external bool) erro
 }
 
 type dtdMetadata struct {
-	doc                 *Document
-	state               *dtdState
-	output              *dtdOutput
-	baseIndex, fixIndex int
+	doc       *Document
+	state     *dtdState
+	output    *dtdOutput
+	baseIndex int
+	fixIndex  int
 }
 
 func (m *dtdMetadata) visit(node *Node) error {

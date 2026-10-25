@@ -457,9 +457,10 @@ func (ec *execContext) evaluateKeyUse(ctx context.Context, def *keyDef, node xdm
 
 func (ec *execContext) evaluateKeyBody(ctx context.Context, body []instruction) (xdm.Sequence, error) {
 	ec.temporaryOutputDepth++
-	defer func() { ec.temporaryOutputDepth-- }()
+	value, err := ec.evaluateBodyAsSequence(ctx, body)
+	ec.temporaryOutputDepth--
 
-	return ec.evaluateBodyAsSequence(ctx, body)
+	return value, err
 }
 
 // lookupKey looks up nodes by key name and typed value in the given document root.

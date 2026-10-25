@@ -20,7 +20,7 @@ func XPath10FunctionArity(name string) ([2]int, bool) {
 		return v, true
 	}
 
-	v, ok := lookupxslt10Functions(name)
+	v, ok := lookupXSLT10FunctionArity(name)
 
 	return v, ok
 }
@@ -28,11 +28,11 @@ func XPath10FunctionArity(name string) ([2]int, bool) {
 // XSLT10ElementAttributes shares the immutable grammar metadata with XMLDSig
 // preflight; its resource policy is enforced independently of language syntax.
 func XSLT10ElementAttributes(name string) (string, bool) {
-	v, ok := lookupxslt10Attributes(name)
+	v, ok := lookupXSLT10Attribute(name)
 	return v, ok
 }
 
-func lookupxslt10Attributes(key string) (string, bool) {
+func lookupXSLT10Attribute(key string) (string, bool) {
 	switch key {
 	case nameStylesheet, fnNameTransform:
 		return "version id extension-element-prefixes exclude-result-prefixes", true
@@ -87,7 +87,7 @@ func lookupxslt10Attributes(key string) (string, bool) {
 	return zero, false
 }
 
-func xslt10Attributes(key string) string { value, _ := lookupxslt10Attributes(key); return value }
+func xslt10Attributes(key string) string { value, _ := lookupXSLT10Attribute(key); return value }
 
 func forwards10(e *xdm.Element) bool {
 	for n := xdm.Node(e); n != nil; n = n.Parent() {
@@ -458,7 +458,7 @@ func elementLanguageVersion10(root, elem *xdm.Element, inherited float64) (float
 }
 
 func checkXSLTElement10(elem *xdm.Element, effective float64) error {
-	allowed, known := lookupxslt10Attributes(elem.LocalName())
+	allowed, known := lookupXSLT10Attribute(elem.LocalName())
 	if !known && effective <= 1 {
 		return staticError("XTSE0010", "xsl:%s is unavailable in XSLT 1.0", elem.LocalName())
 	}
@@ -505,7 +505,7 @@ func (c *compiler) forwardsCompatible(version string) bool {
 	return valid && comparison > 0
 }
 
-func lookupxslt10Functions(key string) ([2]int, bool) {
+func lookupXSLT10FunctionArity(key string) ([2]int, bool) {
 	switch key {
 	case "current":
 		return [2]int{0, 0}, true
@@ -515,7 +515,7 @@ func lookupxslt10Functions(key string) ([2]int, bool) {
 		return [2]int{2, 2}, true
 	case lexicon.FnFormatNumber:
 		return [2]int{2, 3}, true
-	case lexicon.FnGenerateID, nameUnparsedEntityUri, funcSystemProperty, "element-available", "function-available":
+	case lexicon.FnGenerateID, nameUnparsedEntityURI, funcSystemProperty, "element-available", "function-available":
 		return [2]int{1, 1}, true
 	}
 
@@ -553,7 +553,7 @@ func (f function10) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence
 		if err := prepareFormatNumberArguments10(ctx, args); err != nil {
 			return nil, err
 		}
-	case funcSystemProperty, "element-available", "function-available", nameUnparsedEntityUri:
+	case funcSystemProperty, "element-available", "function-available", nameUnparsedEntityURI:
 		if err := convertStringArgument10(ctx, args, 0); err != nil {
 			return nil, err
 		}
@@ -653,7 +653,7 @@ func prepareFormatNumberArguments10(ctx context.Context, args []xdm.Sequence) er
 	return nil
 }
 
-func xslt10Functions(key string) [2]int { value, _ := lookupxslt10Functions(key); return value }
+func xslt10Functions(key string) [2]int { value, _ := lookupXSLT10FunctionArity(key); return value }
 
 func checkPattern10(ast xpath.Expr) error {
 	switch e := ast.(type) {

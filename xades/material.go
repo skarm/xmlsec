@@ -20,10 +20,17 @@ import (
 // Namespace141 is the XAdES 1.4.1 namespace URI.
 const Namespace141 = "http://uri.etsi.org/01903/v1.4.1#"
 
-// ValidationMaterial is an owned copy of embedded certificates and revocation
-// objects. OCSPResponses contain COMPLETE OCSPResponse, not BasicOCSPResponse.
-// An embedded certificate never becomes a trust anchor by being present here.
-type ValidationMaterial struct{ Certificates, CRLs, OCSPResponses [][]byte }
+// ValidationMaterial contains owned copies of embedded certificates and revocation
+// objects. OCSPResponses contains complete OCSPResponse encodings. Embedded
+// certificates remain untrusted and cannot become trust anchors through inclusion.
+type ValidationMaterial struct {
+	// Certificates contains owned DER certificate encodings without assigning trust.
+	Certificates [][]byte
+	// CRLs contains owned DER certificate revocation list encodings.
+	CRLs [][]byte
+	// OCSPResponses contains owned complete DER OCSPResponse encodings.
+	OCSPResponses [][]byte
+}
 
 func (m ValidationMaterial) evidence() pki.Evidence {
 	// Parsed material is privately owned and PKI verification does not mutate it.
@@ -339,9 +346,10 @@ func checkRawMaterial(ctx context.Context, m ValidationMaterial) error {
 }
 
 type preservation struct {
-	unsigned    document.Element
-	signer, tsa ValidationMaterial
-	archives    []document.Element
+	unsigned document.Element
+	signer   ValidationMaterial
+	tsa      ValidationMaterial
+	archives []document.Element
 }
 
 func parsePreservation(ctx context.Context, sig document.Element, maxArchives int) (preservation, error) {
@@ -426,11 +434,14 @@ func validateEmbeddedOCSP(b []byte) error {
 }
 
 type preservationParser struct {
-	ctx                           context.Context
-	value                         preservation
-	haveCV, haveRV, haveTimestamp bool
-	phase, maxArchives            int
-	previous                      document.Name
+	ctx           context.Context
+	value         preservation
+	haveCV        bool
+	haveRV        bool
+	haveTimestamp bool
+	phase         int
+	maxArchives   int
+	previous      document.Name
 }
 
 func (r *preservationParser) accept(x document.Element) error {

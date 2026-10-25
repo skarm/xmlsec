@@ -22,10 +22,19 @@ import (
 )
 
 type task struct {
-	Mode, Method                                string
-	Hash, MGF, Salt, Bits                       int
-	DefaultParams                               bool
-	Input, SPKI, Private, Secret, Value, Digest []byte
+	Mode          string
+	Method        string
+	Hash          int
+	MGF           int
+	Salt          int
+	Bits          int
+	DefaultParams bool
+	Input         []byte
+	SPKI          []byte
+	Private       []byte
+	Secret        []byte
+	Value         []byte
+	Digest        []byte
 }
 
 type answer struct {
@@ -61,7 +70,7 @@ func main() {
 	}
 }
 
-func hash(bits int) crypto.Hash {
+func hashFromBits(bits int) crypto.Hash {
 	switch bits {
 	case 256:
 		return crypto.SHA256
@@ -74,13 +83,13 @@ func hash(bits int) crypto.Hash {
 	return 0
 }
 
-func params(t task) xmldsig.SignatureParameters {
+func signatureParameters(t task) xmldsig.SignatureParameters {
 	if t.Method == xmldsig.RSAPSS {
 		if t.DefaultParams {
 			return xmldsig.SignatureParameters{}
 		}
 
-		return xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{Hash: hash(t.Hash), MGFHash: hash(t.MGF), SaltLength: t.Salt, TrailerField: 1}}
+		return xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{Hash: hashFromBits(t.Hash), MGFHash: hashFromBits(t.MGF), SaltLength: t.Salt, TrailerField: 1}}
 	}
 
 	return xmldsig.SignatureParameters{HMACOutputLength: t.Bits}
@@ -110,8 +119,12 @@ func run(t task) (a answer, err error) {
 		}
 	}
 
-	if returned0, returned1, matched := runMode(ctx, &t, &a, isMAC, &opt, key); matched {
-		return returned0, returned1
+	if !isMAC && !t.DefaultParams && (t.Hash != 0 && hashFromBits(t.Hash) == 0 || t.MGF != 0 && hashFromBits(t.MGF) == 0) {
+		return a, fmt.Errorf("%w: unsupported hash bit selector", xmldsig.ErrAlgorithm)
+	}
+
+	if t.Mode == "verify" {
+		return verify(ctx, t, isMAC, opt, key)
 	}
 
 	var (
@@ -130,7 +143,7 @@ func run(t task) (a answer, err error) {
 	case "sign":
 		first, second := "independent payload α", "second payload β"
 
-		draft, selected, err = xmldsig.BuildTemplate(ctx, nil, document.Element{}, xmldsig.SignatureTemplate{ID: "s", SignatureMethod: t.Method, SignatureParameters: params(t), References: []xmldsig.ReferenceTemplate{{URI: "#a", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}, {URI: "#b", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}}, Objects: []xmldsig.ObjectTemplate{{ID: "a", Text: &first}, {ID: "b", Text: &second}}})
+		draft, selected, err = xmldsig.BuildTemplate(ctx, nil, document.Element{}, xmldsig.SignatureTemplate{ID: "s", SignatureMethod: t.Method, SignatureParameters: signatureParameters(t), References: []xmldsig.ReferenceTemplate{{URI: "#a", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}, {URI: "#b", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}}, Objects: []xmldsig.ObjectTemplate{{ID: "a", Text: &first}, {ID: "b", Text: &second}}})
 		if err != nil {
 			return a, err
 		}
@@ -147,7 +160,7 @@ func run(t task) (a answer, err error) {
 			prepared *preparedSigner
 		)
 		if t.Mode == "provider-sign" {
-			prepared = &preparedSigner{key: key, signature: t.Value, digest: t.Digest, expected: *params(t).PSS}
+			prepared = &preparedSigner{key: key, signature: t.Value, digest: t.Digest, expected: providerParameters(t)}
 			signer = prepared
 		} else {
 			private, e := x509.ParsePKCS8PrivateKey(t.Private)
@@ -180,36 +193,28 @@ func run(t task) (a answer, err error) {
 	return a, err
 }
 
-func runMode(ctx context.Context, t *task, a *answer, isMAC bool, opt *xmldsig.SignatureOptions, key crypto.PublicKey) (returned0 answer, returned1 error, matched bool) {
-	if t.Mode == "verify" {
-		doc, e := document.Parse(ctx, t.Input, document.DefaultLimits())
-		if e != nil {
-			return *a, e, true
-		}
-
-		if isMAC {
-			r, report, e := xmldsig.VerifyHMACSignatureDetailed(ctx, doc, doc.Root(), t.Secret, *opt)
-			a.Valid = r != nil && e == nil
-			a.Report = report
-
-			return *a, e, true
-		}
-
-		r, report, e := xmldsig.VerifySignatureDetailed(ctx, doc, doc.Root(), key, *opt)
-		a.Valid = r != nil && e == nil
-		a.Report = report
-
-		return *a, e, true
+func verify(ctx context.Context, t task, isMAC bool, options xmldsig.SignatureOptions, key crypto.PublicKey) (answer, error) {
+	doc, err := document.Parse(ctx, t.Input, document.DefaultLimits())
+	if err != nil {
+		return answer{}, err
 	}
 
-	return
+	if isMAC {
+		result, report, err := xmldsig.VerifyHMACSignatureDetailed(ctx, doc, doc.Root(), t.Secret, options)
+		return answer{Valid: result != nil && err == nil, Report: report}, err
+	}
+
+	result, report, err := xmldsig.VerifySignatureDetailed(ctx, doc, doc.Root(), key, options)
+
+	return answer{Valid: result != nil && err == nil, Report: report}, err
 }
 
 type preparedSigner struct {
-	key               crypto.PublicKey
-	signature, digest []byte
-	expected          xmldsig.PSSParameters
-	calls             int
+	key       crypto.PublicKey
+	signature []byte
+	digest    []byte
+	expected  xmldsig.PSSParameters
+	calls     int
 }
 
 func (s *preparedSigner) Public() crypto.PublicKey { return s.key }
@@ -229,4 +234,23 @@ func (s *preparedSigner) SignPSS(ctx context.Context, _ io.Reader, d []byte, p x
 	}
 
 	return bytes.Clone(s.signature), nil
+}
+
+// providerParameters mirrors the documented normalization observed by SignPSS.
+func providerParameters(t task) xmldsig.PSSParameters {
+	parameters := signatureParameters(t).PSS
+	if parameters == nil {
+		return xmldsig.PSSParameters{Hash: crypto.SHA256, MGFHash: crypto.SHA256, SaltLength: 32, TrailerField: 1}
+	}
+
+	expected := *parameters
+	if expected.Hash == 0 {
+		expected.Hash = crypto.SHA256
+	}
+
+	if expected.MGFHash == 0 {
+		expected.MGFHash = expected.Hash
+	}
+
+	return expected
 }

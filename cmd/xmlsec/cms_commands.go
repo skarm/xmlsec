@@ -60,7 +60,28 @@ func runCMS(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	}
 	defer cancel()
 
-	options := cmsCommand{command: cmd, input: *input, output: *out, key: *keyFile, certificate: *certFile, signersFile: *config, hash: *hashName, pss: *pss, ski: *ski, detached: *detached, content: *contentFile, contentType: *contentType, extract: *extract, omitCertificates: *omitCerts, legacyESS: *legacyESS, trust: *trustFile, at: *atValue, certificates: certs, extra: extra, flags: flags}
+	options := cmsCommand{
+		command:          cmd,
+		input:            *input,
+		output:           *out,
+		key:              *keyFile,
+		certificate:      *certFile,
+		signersFile:      *config,
+		hash:             *hashName,
+		pss:              *pss,
+		ski:              *ski,
+		detached:         *detached,
+		content:          *contentFile,
+		contentType:      *contentType,
+		extract:          *extract,
+		omitCertificates: *omitCerts,
+		legacyESS:        *legacyESS,
+		trust:            *trustFile,
+		at:               *atValue,
+		certificates:     certs,
+		extra:            extra,
+		flags:            flags,
+	}
 
 	return options.run(ctx, stdin, stdout)
 }
@@ -77,10 +98,26 @@ type cmsSignerFile struct {
 }
 
 type cmsCommand struct {
-	command, input, output, key, certificate, signersFile, hash, content, contentType, extract, trust, at string
-	pss, ski, detached, omitCertificates, legacyESS                                                       bool
-	certificates, extra                                                                                   []string
-	flags                                                                                                 *privateKeyFlags
+	command          string
+	input            string
+	output           string
+	key              string
+	certificate      string
+	signersFile      string
+	hash             string
+	content          string
+	contentType      string
+	extract          string
+	trust            string
+	at               string
+	pss              bool
+	ski              bool
+	detached         bool
+	omitCertificates bool
+	legacyESS        bool
+	certificates     []string
+	extra            []string
+	flags            *privateKeyFlags
 }
 
 func (c cmsCommand) run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
@@ -98,18 +135,28 @@ func (c cmsCommand) run(ctx context.Context, stdin io.Reader, stdout io.Writer) 
 		return c.sign(ctx, stdin, stdout, cms.SignOptions{ContentType: oid, Detached: c.detached, OmitCertificates: c.omitCertificates, Limits: limits})
 	}
 
-	raw, err := readInputContext(ctx, c.input, stdin, execution(ctx).xml.MaxBytes)
-	if err != nil {
-		return err
-	}
+	var container *cms.SignedData
 
-	container, err := cms.Parse(ctx, raw, limits)
+	err = consumeInput(ctx, c.input, stdin, execution(ctx).xml.MaxBytes, func(r io.Reader) error {
+		var parseErr error
+
+		container, parseErr = cms.ParseReader(ctx, r, limits)
+
+		return parseErr
+	})
 	if err != nil {
 		return err
 	}
 
 	if c.command == nameInspect {
-		return jsonOutput(ctx, c.output, stdout, map[string]any{fieldStatus: statusUnverified, "content_type": container.ContentType().String(), "detached": container.Detached(), "signer_count": container.SignerCount(), "certificate_count": len(container.Certificates()), "content_bytes": len(container.UnverifiedContent())})
+		return jsonOutput(ctx, c.output, stdout, map[string]any{
+			fieldStatus:         statusUnverified,
+			"content_type":      container.ContentType().String(),
+			"detached":          container.Detached(),
+			"signer_count":      container.SignerCount(),
+			"certificate_count": len(container.Certificates()),
+			"content_bytes":     len(container.UnverifiedContent()),
+		})
 	}
 
 	return c.verify(ctx, container, cms.VerifyOptions{ExpectedContentType: oid, RequireCertificateBinding: true, AllowLegacyESSCertID: c.legacyESS}, stdout)
@@ -121,27 +168,30 @@ func (c cmsCommand) sign(ctx context.Context, stdin io.Reader, stdout io.Writer,
 		return err
 	}
 
-	content, err := readInputContext(ctx, c.input, stdin, execution(ctx).xml.MaxBytes)
-	if err != nil {
-		return err
-	}
-
 	opt.ExtraCertificates, err = readCertificates(ctx, "", c.extra)
 	if err != nil {
 		return err
 	}
 
-	raw, err := cms.Sign(ctx, content, signers, opt)
-	if err != nil {
-		return err
-	}
-
-	return writeOutputContext(ctx, c.output, stdout, raw)
+	return produceOutput(ctx, c.output, stdout, func(w io.Writer) error {
+		return consumeInput(ctx, c.input, stdin, execution(ctx).xml.MaxBytes, func(r io.Reader) error {
+			_, err := cms.SignReader(ctx, w, r, signers, opt)
+			return err
+		})
+	})
 }
 
 func (c cmsCommand) signers(ctx context.Context) ([]cms.Signer, error) {
 	if c.signersFile == "" {
-		signer, err := c.signer(ctx, "", cmsSignerFile{Key: c.key, Certificate: c.certificate, Hash: c.hash, PSS: c.pss, SubjectKeyIdentifier: c.ski, KeyFormat: c.flags.format, PasswordFile: c.flags.passwordFile})
+		signer, err := c.signer(ctx, "", cmsSignerFile{
+			Key:                  c.key,
+			Certificate:          c.certificate,
+			Hash:                 c.hash,
+			PSS:                  c.pss,
+			SubjectKeyIdentifier: c.ski,
+			KeyFormat:            c.flags.format,
+			PasswordFile:         c.flags.passwordFile,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -208,7 +258,14 @@ func (c cmsCommand) signer(ctx context.Context, base string, spec cmsSignerFile)
 		return cms.Signer{}, err
 	}
 
-	return cms.Signer{Key: key, CertificateDER: cert.Raw, Hash: h, RSAPSS: spec.PSS, SubjectKeyIdentifier: spec.SubjectKeyIdentifier, Attributes: spec.Attributes}, nil
+	return cms.Signer{
+		Key:                  key,
+		CertificateDER:       cert.Raw,
+		Hash:                 h,
+		RSAPSS:               spec.PSS,
+		SubjectKeyIdentifier: spec.SubjectKeyIdentifier,
+		Attributes:           spec.Attributes,
+	}, nil
 }
 
 func (c cmsCommand) verify(ctx context.Context, container *cms.SignedData, opt cms.VerifyOptions, stdout io.Writer) error {

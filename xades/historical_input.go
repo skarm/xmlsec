@@ -14,12 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/skarm/xmlsec/internal/historicalproof"
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/historical"
+	"github.com/skarm/xmlsec/internal/historicalproof"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/pki"
@@ -36,13 +35,14 @@ const (
 )
 
 type historicalObjects struct {
-	ctx                context.Context
-	maximum, remaining int
-	objects            []historical.Object
-	index              map[[32]byte]int
-	references         [][32]byte
-	signedInfo         [32]byte
-	signedInfoOptions  c14n.Options
+	ctx               context.Context
+	maximum           int
+	remaining         int
+	objects           []historical.Object
+	index             map[[32]byte]int
+	references        [][32]byte
+	signedInfo        [32]byte
+	signedInfoOptions c14n.Options
 }
 
 func (b *historicalObjects) add(raw []byte, kind historicalproof.Kind, contains [][32]byte) ([32]byte, error) {

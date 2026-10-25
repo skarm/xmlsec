@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
 // enterValue bounds recursive JSON/adaptive containers independently of the
@@ -226,4 +227,136 @@ func serializedJSONRune(r rune, canEncode func(rune) bool) string {
 	unit(6, lo)
 
 	return string(data[:])
+}
+
+// WriteJSONNode fuses XML node serialization with JSON escaping when character
+// expansion needs no cross-write state. Other node methods and mapped/normalized
+// values retain their established value-local expansion path.
+func WriteJSONNode(ctx context.Context, dst io.Writer, value xdm.NodeItem, method string, charMap map[rune]string, normalizationForm string, canEncode func(rune) bool) error {
+	if method != "" && method != lexicon.MethodXML || len(charMap) != 0 || serializeNormalizationActive(normalizationForm) {
+		text, err := SerializeNodeForJSON(ctx, value, method)
+		if err != nil {
+			return err
+		}
+
+		return WriteJSONString(ctx, dst, text, charMap, normalizationForm, canEncode)
+	}
+
+	opts := serializeOptions{ctx: ctx, method: lexicon.MethodXML, omitXMLDeclaration: true, standalone: lexicon.ValueOmit, includeContentType: true, escapeURIAttributes: true}
+	if err := opts.validate(); err != nil {
+		return err
+	}
+
+	if err := writeSerializationString(dst, `"`); err != nil {
+		return err
+	}
+
+	escaped := jsonNodeWriter{ctx: ctx, dst: dst, canEncode: canEncode}
+	if err := writeXMLSequence(xdm.ItemSlice{value}, opts, &escaped); err != nil {
+		return err
+	}
+
+	if escaped.tailSize != 0 {
+		return io.ErrUnexpectedEOF
+	}
+
+	return writeSerializationString(dst, `"`)
+}
+
+type jsonNodeWriter struct {
+	ctx       context.Context
+	dst       io.Writer
+	canEncode func(rune) bool
+	tail      [utf8.UTFMax]byte
+	tailSize  int
+}
+
+func (w *jsonNodeWriter) Write(p []byte) (int, error) {
+	if err := ChargeString(w.ctx, len(p)); err != nil {
+		return 0, err
+	}
+	// Preserve work accounting for the former XML buffer and its two JSON
+	// expansion passes. Chunk boundaries may conservatively charge more work.
+	if err := Charge(w.ctx, 3+3*(len(p)/64)); err != nil {
+		return 0, err
+	}
+
+	offset := 0
+	if w.tailSize != 0 {
+		for offset < len(p) && !utf8.FullRune(w.tail[:w.tailSize]) {
+			w.tail[w.tailSize] = p[offset]
+			w.tailSize++
+			offset++
+		}
+
+		if !utf8.FullRune(w.tail[:w.tailSize]) {
+			return len(p), nil
+		}
+
+		r, size := utf8.DecodeRune(w.tail[:w.tailSize])
+		if r == utf8.RuneError && size == 1 {
+			return offset, io.ErrUnexpectedEOF
+		}
+
+		if err := w.rune(r, w.tail[:w.tailSize]); err != nil {
+			return offset, err
+		}
+
+		w.tailSize = 0
+	}
+
+	start := offset
+	for offset < len(p) {
+		r, size := utf8.DecodeRune(p[offset:])
+		if r == utf8.RuneError && size == 1 {
+			if utf8.FullRune(p[offset:]) {
+				return offset, io.ErrUnexpectedEOF
+			}
+
+			break
+		}
+
+		if replacement := serializedJSONRune(r, w.canEncode); replacement != "" {
+			if err := w.bytes(p[start:offset]); err != nil {
+				return offset, err
+			}
+
+			if err := writeSerializationString(w.dst, replacement); err != nil {
+				return offset, err
+			}
+
+			start = offset + size
+		}
+
+		offset += size
+	}
+
+	if err := w.bytes(p[start:offset]); err != nil {
+		return offset, err
+	}
+
+	w.tailSize = copy(w.tail[:], p[offset:])
+
+	return len(p), nil
+}
+
+func (w *jsonNodeWriter) rune(r rune, encoded []byte) error {
+	if replacement := serializedJSONRune(r, w.canEncode); replacement != "" {
+		return writeSerializationString(w.dst, replacement)
+	}
+
+	return w.bytes(encoded)
+}
+
+func (w *jsonNodeWriter) bytes(p []byte) error {
+	if len(p) == 0 {
+		return nil
+	}
+
+	n, err := w.dst.Write(p)
+	if err == nil && n != len(p) {
+		return io.ErrShortWrite
+	}
+
+	return err
 }

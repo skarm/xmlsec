@@ -98,7 +98,7 @@ func suiteEnvironmentApplicability(item suiteCase) (string, string) {
 		return "", ""
 	}
 
-	ref, err := resolveSuiteEnvironment(item, suiteEnvironmentRef{node: selected, base: item.base}, make(map[*suiteNode]bool))
+	ref, err := resolveSuiteEnvironment(item, suiteEnvironmentRef{node: selected, base: item.base}, make(map[*suiteNode]struct{}))
 	if err != nil {
 		return "", ""
 	} // Preparation retains its existing harness error.
@@ -361,26 +361,29 @@ func suiteFeature(options suiteOptions, name string) (bool, bool) {
 }
 
 type preparedSuiteEnvironment struct {
-	engine             *transform.Engine
-	document           *transform.Document
-	namespaces         map[string]string
-	variables          transform.Bindings
-	baseURI, collation string
-	contextItem        transform.Value
-	contextSpecified   bool
-	staticParameters   transform.Bindings
-	stylesheet         suiteEnvironmentRef
-	decimalFormats     map[transform.Name]map[string]string
-	resources          *suiteResourceResolver
-	documents          map[string]*transform.Document
-	output             *suiteNode
-	baseOutputURI      string
-	executionVersion   string
-	currentTime        time.Time
+	engine           *transform.Engine
+	document         *transform.Document
+	namespaces       map[string]string
+	variables        transform.Bindings
+	baseURI          string
+	collation        string
+	contextItem      transform.Value
+	contextSpecified bool
+	staticParameters transform.Bindings
+	stylesheet       suiteEnvironmentRef
+	decimalFormats   map[transform.Name]map[string]string
+	resources        *suiteResourceResolver
+	documents        map[string]*transform.Document
+	output           *suiteNode
+	baseOutputURI    string
+	executionVersion string
+	currentTime      time.Time
 }
 
 type suitePackage struct {
-	name, version, uri string
+	name    string
+	version string
+	uri     string
 }
 
 type suiteResourceResolver struct {
@@ -515,7 +518,7 @@ func prepareSuiteEnvironmentWithLimits(ctx context.Context, options suiteOptions
 		return environment, nil
 	}
 
-	ref, err := resolveSuiteEnvironment(item, suiteEnvironmentRef{node: selected, base: item.base}, make(map[*suiteNode]bool))
+	ref, err := resolveSuiteEnvironment(item, suiteEnvironmentRef{node: selected, base: item.base}, make(map[*suiteNode]struct{}))
 	if err != nil {
 		return nil, err
 	}
@@ -550,12 +553,12 @@ func prepareSuiteEnvironmentWithLimits(ctx context.Context, options suiteOptions
 	return environment, nil
 }
 
-func resolveSuiteEnvironment(item suiteCase, ref suiteEnvironmentRef, seen map[*suiteNode]bool) (suiteEnvironmentRef, error) {
-	if seen[ref.node] || len(seen) >= 64 {
+func resolveSuiteEnvironment(item suiteCase, ref suiteEnvironmentRef, seen map[*suiteNode]struct{}) (suiteEnvironmentRef, error) {
+	if _, exists := seen[ref.node]; exists || len(seen) >= 64 {
 		return suiteEnvironmentRef{}, suiteHarness("environment reference cycle or depth limit")
 	}
 
-	seen[ref.node] = true
+	seen[ref.node] = struct{}{}
 
 	if name := ref.node.attr("ref"); name != "" {
 		parent, ok := item.environments[name]

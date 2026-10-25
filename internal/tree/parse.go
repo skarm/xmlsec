@@ -53,15 +53,15 @@ func (p *documentParser) parse(ctx context.Context) (*Document, error) {
 		p.input.outside = len(p.stack) == 0
 
 		token, err := p.decoder.RawToken()
-		if errors.Is(err, io.EOF) {
-			if err := p.flushText(); err != nil {
-				return nil, err
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				if err := p.flushText(); err != nil {
+					return nil, err
+				}
+
+				break
 			}
 
-			break
-		}
-
-		if err != nil {
 			return nil, fmt.Errorf("%w at byte %d: %w", ErrMalformed, offset, err)
 		}
 
@@ -211,16 +211,20 @@ func (p *documentParser) startElement(element xml.StartElement) error {
 }
 
 func parseNamespaceAttributes(attrs []xml.Attr, relativeNamespaces bool) ([]Namespace, error) {
-	lexical := make(map[xml.Name]bool, len(attrs))
+	lexical := make(map[xml.Name]struct{}, len(attrs))
 
 	var namespaces []Namespace
 
 	for _, attribute := range attrs {
-		if !validQName(attribute.Name) || lexical[attribute.Name] {
+		if !validQName(attribute.Name) {
 			return nil, fmt.Errorf("%w: invalid or duplicate attribute", ErrMalformed)
 		}
 
-		lexical[attribute.Name] = true
+		if _, exists := lexical[attribute.Name]; exists {
+			return nil, fmt.Errorf("%w: invalid or duplicate attribute", ErrMalformed)
+		}
+
+		lexical[attribute.Name] = struct{}{}
 		if !isNamespaceAttribute(attribute.Name) {
 			continue
 		}
@@ -245,8 +249,7 @@ func isNamespaceAttribute(name xml.Name) bool {
 }
 
 func parseExpandedAttributes(attrs []xml.Attr, scope *namespaceContext) ([]Attribute, error) {
-	expanded := make(map[Name]bool, len(attrs))
-
+	expanded := make(map[Name]struct{}, len(attrs))
 	count := 0
 
 	for _, attribute := range attrs {
@@ -276,11 +279,11 @@ func parseExpandedAttributes(attrs []xml.Attr, scope *namespaceContext) ([]Attri
 			prefix = strings.Clone(prefix)
 		}
 
-		if expanded[name] {
+		if _, exists := expanded[name]; exists {
 			return nil, fmt.Errorf("%w: duplicate expanded attribute", ErrMalformed)
 		}
 
-		expanded[name] = true
+		expanded[name] = struct{}{}
 		attributes = append(attributes, Attribute{Name: name, Prefix: prefix, Value: attribute.Value})
 	}
 

@@ -179,7 +179,11 @@ func TestXPathMultilineFinalNewline(t *testing.T) {
 func TestXPathXMLSchemaEditions(t *testing.T) {
 	for _, edition := range []transform.XMLSchemaVersion{transform.XMLSchema10, transform.XMLSchema11} {
 		e := engine(t, transform.Config{XMLSchemaVersion: edition})
-		for _, tc := range []struct{ expression, modern, legacyCode string }{
+		for _, tc := range []struct {
+			expression string
+			modern     string
+			legacyCode string
+		}{
 			{`xs:double('+INF')`, namePositiveInfinity, errCodeFORG0001},
 			{`xs:float('+INF')`, namePositiveInfinity, errCodeFORG0001},
 			{`xs:double#1('+INF')`, namePositiveInfinity, errCodeFORG0001},
@@ -316,7 +320,10 @@ func TestXPathDurationOverflowCodes(t *testing.T) {
 
 func TestXPathDurationCanonicalFormatting(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, tc := range []struct{ expression, want string }{
+	for _, tc := range []struct {
+		expression string
+		want       string
+	}{
 		{`string(xs:duration('P14M1DT25H61M1.2300S'))`, "P1Y2M2DT2H1M1.23S"},
 		{`string(xs:duration('-P1Y2M3DT4H5M6.0000012300S'))`, "-P1Y2M3DT4H5M6.00000123S"},
 		{`string(xs:duration('PT0S'))`, "PT0S"},
@@ -335,7 +342,10 @@ func TestXPathDurationCanonicalFormatting(t *testing.T) {
 
 func TestXPathURIEscapeBytes(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, tc := range []struct{ expression, want string }{
+	for _, tc := range []struct {
+		expression string
+		want       string
+	}{
 		{`encode-for-uri('~é/😀')`, "~%C3%A9%2F%F0%9F%98%80"},
 		{`iri-to-uri('https://example.test/é%2F?q=a b#😀')`, "https://example.test/%C3%A9%2F?q=a%20b#%F0%9F%98%80"},
 		{`escape-html-uri('é/&%2F')`, "%C3%A9/&%2F"},
@@ -845,31 +855,82 @@ func contextualKeywordXML() string {
 	return xml.String()
 }
 
-func contextualKeywordOperandCases() []struct{ expression, want string } {
-	cases := make([]struct{ expression, want string }, 0, 2*len(contextualOperatorKeywords())+20)
+func contextualKeywordOperandCases() []struct {
+	expression string
+	want       string
+} {
+	cases := make([]struct {
+		expression string
+		want       string
+	}, 0, 2*len(contextualOperatorKeywords())+20)
 	for _, keyword := range contextualOperatorKeywords() {
 		// The preceding '*' is multiplication, so the following keyword is
 		// an operand's name. Prefixes and names use the same grammar rule.
-		cases = append(cases, struct{ expression, want string }{`6 * ` + keyword, "12"})
-		cases = append(cases, struct{ expression, want string }{`6 * ` + keyword + `:abs(-2)`, "12"})
+		cases = append(cases, struct {
+			expression string
+			want       string
+		}{`6 * ` + keyword, "12"})
+		cases = append(cases, struct {
+			expression string
+			want       string
+		}{`6 * ` + keyword + `:abs(-2)`, "12"})
 	}
 	for _, keyword := range []string{"for", "let", "some", "every", "if", "try", "map", "array"} {
-		cases = append(cases, struct{ expression, want string }{"count(" + keyword + ")", "1"})
+		cases = append(cases, struct {
+			expression string
+			want       string
+		}{"count(" + keyword + ")", "1"})
 	}
 
 	cases = append(cases,
-		struct{ expression, want string }{`6 * *:div`, "12"},
-		struct{ expression, want string }{`6 * div[1]`, "12"},
-		struct{ expression, want string }{`6 * div * mod`, "24"},
-		struct{ expression, want string }{`div * mod div 2`, "2"},
-		struct{ expression, want string }{`*[name() eq 'div'] div 2`, "1"},
-		struct{ expression, want string }{`1 instance of xs:integer* and 2 eq 2`, nameTrue},
-		struct{ expression, want string }{`(1 treat as xs:integer*) eq 1`, nameTrue},
-		struct{ expression, want string }{`for $x in div return $x * mod`, "4"},
-		struct{ expression, want string }{`for $x in 6 * div return $x`, "12"},
-		struct{ expression, want string }{`6 * div eq 12 and 6 * mod eq 12`, nameTrue},
-		struct{ expression, want string }{`(6 * div) instance of xs:double`, nameTrue},
-		struct{ expression, want string }{`if (6 * div) then 6 * mod else 0`, "12"},
+		struct {
+			expression string
+			want       string
+		}{`6 * *:div`, "12"},
+		struct {
+			expression string
+			want       string
+		}{`6 * div[1]`, "12"},
+		struct {
+			expression string
+			want       string
+		}{`6 * div * mod`, "24"},
+		struct {
+			expression string
+			want       string
+		}{`div * mod div 2`, "2"},
+		struct {
+			expression string
+			want       string
+		}{`*[name() eq 'div'] div 2`, "1"},
+		struct {
+			expression string
+			want       string
+		}{`1 instance of xs:integer* and 2 eq 2`, nameTrue},
+		struct {
+			expression string
+			want       string
+		}{`(1 treat as xs:integer*) eq 1`, nameTrue},
+		struct {
+			expression string
+			want       string
+		}{`for $x in div return $x * mod`, "4"},
+		struct {
+			expression string
+			want       string
+		}{`for $x in 6 * div return $x`, "12"},
+		struct {
+			expression string
+			want       string
+		}{`6 * div eq 12 and 6 * mod eq 12`, nameTrue},
+		struct {
+			expression string
+			want       string
+		}{`(6 * div) instance of xs:double`, nameTrue},
+		struct {
+			expression string
+			want       string
+		}{`if (6 * div) then 6 * mod else 0`, "12"},
 	)
 	return cases
 }
@@ -1167,7 +1228,10 @@ func TestXPathVariableScope(t *testing.T) {
 			})
 		}
 
-		for _, test := range []struct{ source, want string }{
+		for _, test := range []struct {
+			source string
+			want   string
+		}{
 			{`for $p:x in 1 return $q:x`, "1"},
 			{`count($empty)`, "0"},
 			{`sum(for $p:x in 1 return ((for $q:x in 2 return $p:x), $p:x))`, "3"},
@@ -1314,7 +1378,11 @@ func TestXPathCastTargetContracts(t *testing.T) {
 func TestXPathVersionedSchemaTypes(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
-		for _, tc := range []struct{ source, want, oldCode string }{
+		for _, tc := range []struct {
+			source  string
+			want    string
+			oldCode string
+		}{
 			{`xs:numeric(1) instance of xs:integer`, nameTrue, "XPST0017"},
 			{`xs:numeric(xs:float('2')) instance of xs:float`, nameTrue, "XPST0017"},
 			{`xs:numeric(2.5) instance of xs:decimal`, nameTrue, "XPST0017"},
@@ -1385,7 +1453,11 @@ func TestXPathVersionedSchemaTypes(t *testing.T) {
 			})
 		}
 
-		for _, test := range []struct{ source, want, code string }{
+		for _, test := range []struct {
+			source string
+			want   string
+			code   string
+		}{
 			{`empty(xs:error(()))`, nameTrue, "XPST0017"},
 			{`() castable as xs:error?`, nameTrue, "XPST0051"},
 			{`1 castable as xs:error`, nameFalse, "XPST0051"},
@@ -1485,7 +1557,10 @@ func TestXPathListCastContracts(t *testing.T) {
 					t.Fatal(version, expression, got)
 				}
 			}
-			for _, invalid := range []struct{ source, code string }{
+			for _, invalid := range []struct {
+				source string
+				code   string
+			}{
 				{`12`, errCodeXPTY0004},
 				{`true()`, errCodeXPTY0004},
 				{`xs:anyURI('a')`, errCodeXPTY0004},
@@ -1535,7 +1610,10 @@ func TestXPathStaticNamespaceAndSchemaErrors(t *testing.T) {
 	e := engine(t, transform.Config{})
 
 	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
-		for _, test := range []struct{ source, code string }{
+		for _, test := range []struct {
+			source string
+			code   string
+		}{
 			{`schema-element()`, errCodeXPST0003},
 			{`schema-attribute()`, errCodeXPST0003},
 			{`schema-element(missing)`, errCodeXPST0008},
@@ -1636,7 +1714,10 @@ func TestXPathStaticNamespaceAndSchemaErrors(t *testing.T) {
 
 func TestJSONOptionConversionsAndCodes(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, test := range []struct{ expression, want string }{
+	for _, test := range []struct {
+		expression string
+		want       string
+	}{
 		{`parse-json('true', map{'liberal': xs:untypedAtomic('false')})`, nameTrue},
 		{`parse-json('true', map{'escape': [true()]})`, nameTrue},
 		{`string(json-to-xml('1', map{'escape': xs:untypedAtomic('true')}))`, "1"},
@@ -1660,7 +1741,10 @@ func TestJSONOptionConversionsAndCodes(t *testing.T) {
 	}
 
 	for _, function := range []string{"parse-json", "json-to-xml"} {
-		for _, test := range []struct{ options, code string }{
+		for _, test := range []struct {
+			options string
+			code    string
+		}{
 			{`map{'liberal': ()}`, errCodeXPTY0004},
 			{`map{'escape': (true(), false())}`, errCodeXPTY0004},
 			{`map{'liberal': 1}`, errCodeXPTY0004},
@@ -2010,7 +2094,10 @@ func TestSubsequenceArgumentCardinality(t *testing.T) {
 			})
 		}
 
-		for _, tt := range []struct{ args, want string }{
+		for _, tt := range []struct {
+			args string
+			want string
+		}{
 			{`2`, "2 3"},
 			{`2, 0`, ""},
 			{`2, -1`, ""},
@@ -2110,8 +2197,10 @@ func TestXPathBuiltinArgumentContracts(t *testing.T) {
 
 	for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
 		for _, tc := range []struct {
-			name, args, code string
-			arity            int
+			name  string
+			args  string
+			code  string
+			arity int
 		}{
 			{functionCodepointsToString, `'hello'`, errCodeXPTY0004, 1},
 			{functionCodepointsToString, `xs:decimal('65.0')`, errCodeXPTY0004, 1},
@@ -2171,7 +2260,12 @@ func TestXPathCalendarPictureErrorCodes(t *testing.T) {
 	e := engine(t, transform.Config{})
 
 	for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
-		for _, tc := range []struct{ function, value, picture, code string }{
+		for _, tc := range []struct {
+			function string
+			value    string
+			picture  string
+			code     string
+		}{
 			{functionFormatDate, calendarDateExpression, "[b]", errCodeFOFD1340},
 			{functionFormatDate, calendarDateExpression, "[y]", errCodeFOFD1340},
 			{functionFormatTime, calendarTimeExpression, "[b]", errCodeFOFD1340},
@@ -2395,9 +2489,10 @@ func TestXPathVersionedFunctionContracts(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for versionIndex, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
 		for _, tc := range []struct {
-			name, args string
-			arity      int
-			want       [3]string // XPath 2.0, 3.0, 3.1.
+			name  string
+			args  string
+			arity int
+			want  [3]string // XPath 2.0, 3.0, 3.1.
 		}{
 			{"string-join", `(1,2,3),''`, 2, [3]string{errCodeXPTY0004, errCodeXPTY0004, "123"}},
 			{"string-join", `(xs:untypedAtomic('a'),xs:anyURI('b')),'/'`, 2, [3]string{"a/b", "a/b", "a/b"}},
@@ -2479,7 +2574,11 @@ func TestXPathVersionedFunctionContracts(t *testing.T) {
 
 func TestXPathQNameCastVersions(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, tc := range []struct{ expression, old, modern string }{
+	for _, tc := range []struct {
+		expression string
+		old        string
+		modern     string
+	}{
 		{`'local' cast as xs:QName`, "local", "local"},
 		{`'local' castable as xs:QName`, nameTrue, nameTrue},
 		{`for $v in 'local' return $v cast as xs:QName`, errCodeXPTY0004, "local"},
@@ -2561,7 +2660,11 @@ func TestXPathFunctionRetainsLibraryVersion(t *testing.T) {
 			}
 		}
 
-		for _, tc := range []struct{ source, args, want string }{
+		for _, tc := range []struct {
+			source string
+			args   string
+			want   string
+		}{
 			{`string-join#2`, `(1,2),''`, "12"},
 			{`function-lookup(xs:QName('fn:string-join'),2)`, `(1,2),''`, "12"},
 			{`string-join(?,'')`, `(1,2)`, "12"},
@@ -2673,7 +2776,11 @@ func sequenceSubtypeCases() map[string]string {
 			cases[`(function() as `+empty+` {()}) instance of function() as `+target] = nameFalse
 		}
 	}
-	for _, tc := range []struct{ source, target, want string }{
+	for _, tc := range []struct {
+		source string
+		target string
+		want   string
+	}{
 		{`processing-instruction(p)`, `processing-instruction(p)`, nameTrue},
 		{`processing-instruction(p)`, `processing-instruction()`, nameTrue},
 		{`processing-instruction()`, `processing-instruction(p)`, nameFalse},
@@ -2877,10 +2984,22 @@ func TestXPathStaticNamespaceWhitespace(t *testing.T) {
 	}
 }
 
-func xpathLineEndingCases() []struct{ name, literal, raw, xml10, xml11 string } {
+func xpathLineEndingCases() []struct {
+	name    string
+	literal string
+	raw     string
+	xml10   string
+	xml11   string
+} {
 	// XML 1.0/1.1 §2.11 and §3.3.3: literal attribute line ends
 	// normalize before XPath parsing, while character references bypass it.
-	return []struct{ name, literal, raw, xml10, xml11 string }{
+	return []struct {
+		name    string
+		literal string
+		raw     string
+		xml10   string
+		xml11   string
+	}{
 		{"CRLF", "\r\n", "13 10", "32", "32"},
 		{"CR", "\r", "13", "32", "32"},
 		{"CRNEL", "\r\u0085", "13 133", "32 133", "32"},

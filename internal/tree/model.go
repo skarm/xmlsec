@@ -40,12 +40,19 @@ type Name struct {
 
 // Attribute is a copy of a non-namespace attribute.
 type Attribute struct {
-	Name          Name
-	Prefix, Value string
+	// Name is the expanded attribute name. Unprefixed attributes have no namespace.
+	Name Name
+	// Prefix is the lexical namespace prefix, or empty for an unprefixed attribute.
+	Prefix string
+	// Value is the XML-normalized attribute value after character and entity reference expansion.
+	Value string
 }
 
 // Namespace is one lexical namespace declaration.
-type Namespace struct{ Prefix, URI string }
+type Namespace struct {
+	Prefix string
+	URI    string
+}
 
 // Kind identifies an XML or XPath node kind.
 type Kind uint8
@@ -152,6 +159,7 @@ func (l Limits) nodeSetLimit() int {
 	return l.MaxNodeSetNodes
 }
 
+// DTDAttributeType records the DTD classifications needed for ID and IDREF lookup.
 type DTDAttributeType uint8
 
 const (
@@ -167,7 +175,14 @@ type dtdAttributeKey struct {
 }
 
 // UnparsedEntity preserves an XML declaration's identifiers without fetching it.
-type UnparsedEntity struct{ SystemID, PublicID, BaseURI string }
+type UnparsedEntity struct {
+	// SystemID is the declared system identifier, without retrieving its resource.
+	SystemID string
+	// PublicID is the optional declared public identifier.
+	PublicID string
+	// BaseURI is the retrieval base used to resolve the system identifier.
+	BaseURI string
+}
 
 // Document is an immutable, namespace-aware XML 1.0 snapshot.
 // It owns its data and may be read concurrently.
@@ -182,6 +197,8 @@ type Document struct {
 	views            sync.Map
 }
 
+// NodeBase returns the retained retrieval base for a private node, or empty when none is
+// recorded.
 func (d *Document) NodeBase(node *Node) string { return d.nodeBases[node] }
 
 // CopyUnparsedEntities retains immutable declaration metadata on document copies.
@@ -189,6 +206,8 @@ func (d *Document) CopyUnparsedEntities(source *Document) {
 	d.unparsedEntities = source.unparsedEntities
 }
 
+// SetNodeBase changes retrieval metadata on an internal draft. An empty base removes the
+// entry. Callers must not mutate published snapshots.
 func (d *Document) SetNodeBase(node *Node, base string) {
 	if base == "" {
 		delete(d.nodeBases, node)
@@ -202,10 +221,14 @@ func (d *Document) SetNodeBase(node *Node, base string) {
 	d.nodeBases[node] = base
 }
 
+// AttributeDTDType returns the retained DTD ID or IDREF classification, or DTDNoType
+// when absent.
 func (d *Document) AttributeDTDType(node *Node, name Name) DTDAttributeType {
 	return d.dtdTypes[dtdAttributeKey{node, name}]
 }
 
+// SetAttributeDTDType changes DTD metadata on an internal draft. DTDNoType removes the
+// entry. Callers must not mutate published snapshots.
 func (d *Document) SetAttributeDTDType(node *Node, name Name, kind DTDAttributeType) {
 	key := dtdAttributeKey{node, name}
 
@@ -221,6 +244,8 @@ func (d *Document) SetAttributeDTDType(node *Node, name Name, kind DTDAttributeT
 	d.dtdTypes[key] = kind
 }
 
+// UnparsedEntity returns a retained unparsed entity declaration and reports whether it
+// exists. It performs no resource retrieval.
 func (d *Document) UnparsedEntity(name string) (UnparsedEntity, bool) {
 	entity, ok := d.unparsedEntities[name]
 	return entity, ok

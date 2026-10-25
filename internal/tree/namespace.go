@@ -59,8 +59,9 @@ func copySubtreeContext(node *Node, insertion bool) *Node {
 }
 
 type namespaceUndo struct {
-	prefix, previous string
-	existed          bool
+	prefix   string
+	previous string
+	existed  bool
 }
 
 // namespaceContext maintains source bindings during a depth-first walk. Undo

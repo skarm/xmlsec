@@ -1622,7 +1622,10 @@ func appendAnalyzeStringTextElement(doc *xdm.Document, parent *xdm.Element, loca
 // All XPath regular expressions use one immutable, bounded pattern program.
 type (
 	compiledXPathRegex struct{ program *pattern.Program }
-	xpathRegexCacheKey struct{ pattern, flags string }
+	xpathRegexCacheKey struct {
+		pattern string
+		flags   string
+	}
 )
 
 func (r *compiledXPathRegex) MatchString(ctx context.Context, s string) (bool, error) {

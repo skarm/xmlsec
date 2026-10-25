@@ -27,8 +27,11 @@ func TestIndependentSignedSAMLFixtures(t *testing.T) {
 	}
 
 	var cases []struct {
-		Name, Kind, Certificate, At string
-		Valid                       bool
+		Name        string
+		Kind        string
+		Certificate string
+		At          string
+		Valid       bool
 	}
 	if e := json.Unmarshal(read("manifest.json"), &cases); e != nil {
 		t.Fatal(e)

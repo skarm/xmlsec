@@ -1,9 +1,19 @@
 # XPath and XSLT
 
+## Contents
+
+- [XML input profiles](#xml-input-profiles)
+- [Contexts and values](#contexts-and-values)
+- [XSLT results and XML identity](#xslt-results-and-xml-identity)
+- [Extensions and resources](#extensions-and-resources)
+- [XPath host context choices](#xpath-host-context-choices)
+- [Policy, limits and errors](#policy-limits-and-errors)
+- [XMLDSig v1 compatibility](#xmldsig-v1-compatibility)
+
 `transform` implements selected features of XPath 1.0/2.0/3.0/3.1 and XSLT
 1.0/2.0/3.0 through one pure-Go engine. Complete Basic XSLT conformance remains
-open; [suite results](language-baseline.md) record the current failures. Compiled
-programs and published documents support concurrent reuse with independent
+open; [validation profiles](language-baseline.md) define the required suite checks.
+Compiled programs and published documents support concurrent reuse with independent
 invocation contexts and budgets.
 
 ```go
@@ -28,6 +38,8 @@ fmt.Println(total)
 
 See the runnable [XPath/XSLT example](../examples/transforms/main.go) and
 `go doc ./transform` for complete option contracts.
+
+## XML input profiles
 
 `Engine.Parse` and `ParseReader`, record input and approved XMLDSig programs
 retain the DTD-free UTF-8/UTF-16 security profile. Explicit
@@ -257,7 +269,7 @@ product/capability report `FOXT0001`. `initial-function` requires `function-para
 reports `FOXT0002` before compilation. Compilation and execution retain more
 specific language errors; cancellation and exhausted implementation budgets keep
 their control causes. See the measured [suite diagnostics](language-suites.md)
-and [baseline](language-baseline.md) for the bounded Basic profiles and residuals.
+and [validation profiles](language-baseline.md) for reproducible Basic-profile checks.
 
 Package exposure uses the winning explicit, declared or wildcard visibility
 in that priority order, with the last rule winning only within one priority.

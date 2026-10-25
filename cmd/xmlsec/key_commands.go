@@ -69,12 +69,22 @@ func runKey(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 }
 
 type keyCommand struct {
-	command, input, output, algorithm, format string
-	outputPassword, kind, certificate, hash   string
-	bits, iterations, encryptionBits          int
-	pem, classic                              bool
-	extra                                     []string
-	flags                                     *privateKeyFlags
+	command        string
+	input          string
+	output         string
+	algorithm      string
+	format         string
+	outputPassword string
+	kind           string
+	certificate    string
+	hash           string
+	bits           int
+	iterations     int
+	encryptionBits int
+	pem            bool
+	classic        bool
+	extra          []string
+	flags          *privateKeyFlags
 }
 
 func (c keyCommand) run(ctx context.Context, stdout io.Writer) error {

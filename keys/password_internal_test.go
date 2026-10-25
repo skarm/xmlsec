@@ -482,8 +482,9 @@ func testState(ctx context.Context, t testing.TB) *passwordState {
 // cancelOnCheck cancels at a deterministic checkpoint, avoiding timing races.
 type cancelOnCheck struct {
 	context.Context
-	cancel     context.CancelFunc
-	at, checks int
+	cancel context.CancelFunc
+	at     int
+	checks int
 }
 
 func (c *cancelOnCheck) Err() error {

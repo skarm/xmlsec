@@ -36,24 +36,29 @@ var errNilOutputWriter = errors.New("stream: output writer is nil")
 //
 // (libxml2: xmlTextWriter)
 type Writer struct {
-	out           io.Writer
-	err           error       // sticky error
-	nsBind        *nsBindings // in-scope prefix -> URI index; a Writer copy shares it until either copy changes it (ownNSBind)
-	indent        string      // indent string per level; empty = no indentation
-	elemStack     []elementEntry
-	nsStack       []nsScope
-	stateStack    []writerState // for comment/PI/CDATA nesting
+	// out is the borrowed destination; the writer never closes it.
+	out    io.Writer
+	err    error       // sticky error
+	nsBind *nsBindings // in-scope prefix -> URI index; a Writer copy shares it until either copy changes it (ownNSBind)
+	indent string      // indent string per level; empty = no indentation
+	// elemStack retains names and content state for currently open elements.
+	elemStack []elementEntry
+	// nsStack tracks namespace declarations and their emission at each element depth.
+	nsStack    []nsScope
+	stateStack []writerState // for comment/PI/CDATA nesting
+	// state selects which XML constructs the next write may emit.
 	state         writerState
 	nsSeq         uint64 // revision of nsBind this Writer wrote; it owns nsBind while nsSeq == nsBind.seq
 	depth         int    // current element nesting depth (for indentation)
 	cdataBrackets int    // count (0,1,2) of trailing ']' in the current CDATA body, to detect ']]>' across writes
 	quoteChar     byte   // attribute quote character ('"' or '\'')
-	singleByte    [1]byte
-	hasOutput     bool // true after first output has been written
-	wroteNL       bool // true after EndComment/EndPI wrote trailing \n (suppresses writeIndent's \n)
-	commentDash   bool // true if the current comment body ends with '-' (would form '--->' on close)
-	piQuestion    bool // true if the current PI body ends with '?' (would form '?>' across writes)
-	xml11         bool // true when serializing XML 1.1: restricted control chars are emitted as decimal character references instead of being rejected
+	// singleByte provides reusable storage for single-byte output operations.
+	singleByte  [1]byte
+	hasOutput   bool // true after first output has been written
+	wroteNL     bool // true after EndComment/EndPI wrote trailing \n (suppresses writeIndent's \n)
+	commentDash bool // true if the current comment body ends with '-' (would form '--->' on close)
+	piQuestion  bool // true if the current PI body ends with '?' (would form '?>' across writes)
+	xml11       bool // true when serializing XML 1.1: restricted control chars are emitted as decimal character references instead of being rejected
 }
 
 type writerState int
@@ -1272,7 +1277,7 @@ func (w *Writer) writeEscaped(s string, escape escapeMode) {
 			// decode a rune for bytes that could begin one (C0 controls and any
 			// non-ASCII lead byte), so the ASCII fast path and all XML 1.0 output
 			// stay byte-identical.
-			writeEscapedXml11(w, s, i, &start)
+			writeEscapedXML11(w, s, i, &start)
 
 			continue
 		}
@@ -1295,7 +1300,7 @@ func (w *Writer) writeEscaped(s string, escape escapeMode) {
 	}
 }
 
-func writeEscapedXml11(w *Writer, s string, i int, start *int) {
+func writeEscapedXML11(w *Writer, s string, i int, start *int) {
 	if w.xml11 {
 		if b := s[i]; b < 0x20 || b >= 0x7F {
 			if r, width := utf8.DecodeRuneInString(s[i:]); xmlchar.IsXML11SerializeAsCharRef(r) {

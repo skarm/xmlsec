@@ -71,7 +71,7 @@ func TestRecordsOwnLexicalTokenValues(t *testing.T) {
 			t.Fatal("attribute storage was reused", i)
 		}
 
-		if saved[i].Root().Text() != value+"<&raw" || !strings.Contains(string(xml), "<!--"+value+"-->") || !strings.Contains(string(xml), "<?p "+value+"?>") {
+		if saved[i].Root().Text() != value+"<&raw" || !bytes.Contains(xml, []byte("<!--"+value+"-->")) || !bytes.Contains(xml, []byte("<?p "+value+"?>")) {
 			t.Fatal("text, comment or PI storage was reused", i)
 		}
 	}
@@ -202,7 +202,7 @@ func TestRecordContextAndChunkBoundaries(t *testing.T) {
 		t.Fatal(base)
 	}
 	raw, err := saved.XML(t.Context())
-	if err != nil || !strings.Contains(string(raw), `xmlns:p="urn:new"`) || !strings.Contains(string(raw), `xml:lang="ru"`) {
+	if err != nil || !bytes.Contains(raw, []byte(`xmlns:p="urn:new"`)) || !bytes.Contains(raw, []byte(`xml:lang="ru"`)) {
 		t.Fatal(string(raw), err)
 	}
 	if saved.Root().Children()[0].Text() != "🙂\r"+strings.Repeat("я", 4096) {

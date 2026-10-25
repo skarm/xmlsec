@@ -10137,7 +10137,7 @@
     },
     {
       "id": "MODERN-TRANSFORMS",
-      "notes": "One Go engine with immutable XDM values, language version checks, typed parameters, independent XSLT global context, bounded static XPath decimal formats, explicit resource/collection/package resolvers and owned primary/secondary outputs. Standalone XPath/XSLT 1.0 and approved XMLDSig v1 programs share the compiler and evaluator. Full pinned QT3 2.0/3.0/3.1 and xslt30-test 2.0/3.0 diagnostics are recorded in docs/language-baseline.md, with mandatory failures retained. They do not establish full language conformance; schema awareness and W3C streaming remain unsupported. Numeric intermediates use cumulative binary-magnitude accounting, including rational numerator/denominator, conservative arithmetic/rounding preflight and AST/VM/XSLT paths. Required subsequence length cardinality follows F&O 2.0/3.0/3.1. Text resources retain MIME type/charset through resource.TypedReader and HTTP adapters, with bounded decoding and normative encoding precedence. Calendar/duration overflow codes, calendar formatter signatures and quantified regex anchors have local and independent Saxon regressions.",
+      "notes": "One Go engine with immutable XDM values, language version checks, typed parameters, independent XSLT global context, bounded static XPath decimal formats, explicit resource/collection/package resolvers and owned primary/secondary outputs. Standalone XPath/XSLT 1.0 and approved XMLDSig v1 programs share the compiler and evaluator. Full pinned QT3 2.0/3.0/3.1 and xslt30-test 2.0/3.0 configurations are defined in docs/language-baseline.md; source-bound reports retain mandatory failures. They do not establish full language conformance; schema awareness and W3C streaming remain unsupported. Numeric intermediates use cumulative binary-magnitude accounting, including rational numerator/denominator, conservative arithmetic/rounding preflight and AST/VM/XSLT paths. Required subsequence length cardinality follows F&O 2.0/3.0/3.1. Text resources retain MIME type/charset through resource.TypedReader and HTTP adapters, with bounded decoding and normative encoding precedence. Calendar/duration overflow codes, calendar formatter signatures and quantified regex anchors have local and independent Saxon regressions.",
       "source": "https://www.w3.org/TR/xpath-31/",
       "status": "implemented-restricted",
       "tests": [
@@ -113989,7 +113989,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114046,7 +114046,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114105,7 +114105,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114162,7 +114162,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114219,7 +114219,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114276,7 +114276,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114333,7 +114333,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114390,7 +114390,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114447,7 +114447,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114504,7 +114504,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114561,7 +114561,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114620,7 +114620,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114677,7 +114677,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114736,7 +114736,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114793,7 +114793,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114850,7 +114850,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114909,7 +114909,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -114966,7 +114966,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -115025,7 +115025,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -115084,7 +115084,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -115143,7 +115143,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -115202,7 +115202,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -115261,7 +115261,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -115320,7 +115320,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -115380,7 +115380,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -115439,7 +115439,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -115498,7 +115498,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -115558,7 +115558,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -115615,7 +115615,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures stay visible in language-baseline.md.",
+      "gap": "The public bounded evaluator implements the documented language subset. Complete clause-specific static/dynamic cases, XML/DTD/type-model boundaries, version differences and independent evidence remain open; applicable QT3 failures remain visible in source-bound suite reports described in language-suites.md.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523084,7 +523084,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523142,7 +523142,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523197,7 +523197,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523252,7 +523252,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523307,7 +523307,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523365,7 +523365,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523420,7 +523420,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523475,7 +523475,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523530,7 +523530,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523587,7 +523587,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523642,7 +523642,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523697,7 +523697,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523752,7 +523752,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523807,7 +523807,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523864,7 +523864,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523919,7 +523919,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -523974,7 +523974,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524029,7 +524029,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524087,7 +524087,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524142,7 +524142,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524197,7 +524197,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524252,7 +524252,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524307,7 +524307,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524362,7 +524362,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524417,7 +524417,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524472,7 +524472,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524527,7 +524527,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524582,7 +524582,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524637,7 +524637,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524694,7 +524694,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524751,7 +524751,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524808,7 +524808,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524863,7 +524863,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524918,7 +524918,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -524973,7 +524973,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525030,7 +525030,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525085,7 +525085,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525140,7 +525140,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525195,7 +525195,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525253,7 +525253,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525311,7 +525311,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525366,7 +525366,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525421,7 +525421,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525476,7 +525476,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525531,7 +525531,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525592,7 +525592,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525649,7 +525649,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525706,7 +525706,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525763,7 +525763,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525820,7 +525820,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525878,7 +525878,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525936,7 +525936,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -525994,7 +525994,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526049,7 +526049,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526107,7 +526107,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526166,7 +526166,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526223,7 +526223,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526280,7 +526280,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526337,7 +526337,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526392,7 +526392,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526447,7 +526447,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526502,7 +526502,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526559,7 +526559,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526614,7 +526614,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526674,7 +526674,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526729,7 +526729,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526784,7 +526784,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526839,7 +526839,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526894,7 +526894,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -526949,7 +526949,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in language-baseline.md. Schema awareness and normative W3C streaming are separate features.",
+      "gap": "The selected bounded processor implements a subset of this clause. Complete Basic semantics, module/version/typing/resource/output combinations and local/independent evidence remain open; official-suite failures are retained in source-bound reports described in language-suites.md. Schema awareness and normative W3C streaming are separate features.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {

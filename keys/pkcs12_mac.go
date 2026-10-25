@@ -19,8 +19,7 @@ import (
 	"github.com/skarm/xmlsec/internal/der"
 )
 
-func oidSHA1() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 3, 14, 3, 2, 26} }
-
+func oidSHA1() asn1.ObjectIdentifier   { return asn1.ObjectIdentifier{1, 3, 14, 3, 2, 26} }
 func oidSHA256() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1} }
 
 func oidSHA384() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 2} }
@@ -37,6 +36,8 @@ func repeatBlock(pattern []byte, size int) []byte {
 	return bytes.Repeat(pattern, (n+len(pattern)-1)/len(pattern))[:n]
 }
 
+// bmpPassword converts UTF-8 password content to big-endian BMP code units followed
+// by a zero terminator. Invalid UTF-8 and non-BMP characters fail policy validation.
 func bmpPassword(password []byte) ([]byte, error) {
 	if !utf8.Valid(password) {
 		return nil, ErrPolicy
@@ -58,10 +59,12 @@ func bmpPassword(password []byte) ([]byte, error) {
 	return append(out, 0, 0), nil
 }
 
-// Password bytes are UTF-8 content, not a NUL-terminated API argument. Neither
-// an embedded U+0000 nor U+FEFF is discarded or interpreted as framing.
+// validPKCS12Password checks UTF-8 password content without treating embedded U+0000
+// or U+FEFF as framing. Classic MAC derivation separately requires BMP characters.
 func validPKCS12Password(password []byte) bool { return utf8.Valid(password) }
 
+// classicMACKey derives a PKCS#12 diversifier-3 MAC key after hash, salt and
+// iteration-budget checks. The caller must clear the returned key after use.
 func classicMACKey(state *passwordState, hash crypto.Hash, salt []byte, iterations int) ([]byte, error) {
 	if !state.acceptHash(hash) || len(salt) < 8 || len(salt) > 64 {
 		return nil, ErrPolicy
@@ -133,6 +136,9 @@ func digestHash(v asn1.RawValue) (crypto.Hash, error) {
 	return 0, ErrPolicy
 }
 
+// pkcs12MACKey validates MacData and derives either a classic PKCS#12 or PBMAC1 key.
+// It returns the digest algorithm, owned key bytes and borrowed expected MAC; callers
+// must clear the key.
 func pkcs12MACKey(state *passwordState, mac asn1.RawValue) (crypto.Hash, []byte, []byte, error) {
 	f, err := der.Sequence(mac, 2, 3)
 	if err != nil || !der.Is(f[1], 0, asn1.TagOctetString, false) {
@@ -207,6 +213,8 @@ func pkcs12MACKey(state *passwordState, mac asn1.RawValue) (crypto.Hash, []byte,
 	return hash, key, info[1].Bytes, err
 }
 
+// verifyPKCS12MAC checks the authenticated content with constant-time MAC comparison
+// and clears derived key bytes before returning.
 func verifyPKCS12MAC(state *passwordState, mac asn1.RawValue, message []byte) error {
 	hash, key, expected, err := pkcs12MACKey(state, mac)
 	if err != nil {

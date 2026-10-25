@@ -89,7 +89,15 @@ type trustConfig struct {
 }
 
 func (c trustConfig) load(ctx context.Context, base string) (pki.Config, pki.Evidence, error) {
-	opt := pki.Config{Revocation: c.Revocation, RequiredKeyUsage: c.RequiredKeyUsage, AllowCALeaf: c.AllowCALeaf, MaxChainDepth: c.MaxChainDepth, MaxEvidenceBytes: c.MaxEvidenceBytes, MaxCRLs: c.MaxCRLs, MaxOCSPResponses: c.MaxOCSPResponses}
+	opt := pki.Config{
+		Revocation:       c.Revocation,
+		RequiredKeyUsage: c.RequiredKeyUsage,
+		AllowCALeaf:      c.AllowCALeaf,
+		MaxChainDepth:    c.MaxChainDepth,
+		MaxEvidenceBytes: c.MaxEvidenceBytes,
+		MaxCRLs:          c.MaxCRLs,
+		MaxOCSPResponses: c.MaxOCSPResponses,
+	}
 
 	var err error
 
@@ -231,7 +239,14 @@ func loadTSA(ctx context.Context, path string) (*timestamp.Verifier, pki.Evidenc
 		return nil, evidence, err
 	}
 
-	opt := timestamp.Config{PKI: trust, AllowUncheckedRevocation: c.AllowUncheckedRevocation, AllowLegacyESSCertID: c.AllowLegacyESS, RequireAccuracy: c.RequireAccuracy, MaxBytes: c.MaxBytes}
+	opt := timestamp.Config{
+		PKI:                      trust,
+		AllowUncheckedRevocation: c.AllowUncheckedRevocation,
+		AllowLegacyESSCertID:     c.AllowLegacyESS,
+		RequireAccuracy:          c.RequireAccuracy,
+		MaxBytes:                 c.MaxBytes,
+	}
+
 	for _, s := range c.Policies {
 		oid, err := parseOID(s)
 		if err != nil {

@@ -14,12 +14,23 @@ import (
 // ParseOptions configures XML-to-XDM construction through internal/tree.
 // DTD resources can only use the explicitly supplied invocation opener.
 type ParseOptions struct {
-	Limits                   tree.Limits
-	BaseURI                  string
+	// Limits bounds the XML tree and parser work. A zero MaxBytes selects the complete
+	// default limits.
+	Limits tree.Limits
+	// BaseURI supplies the retrieval base retained by the resulting document view.
+	BaseURI string
+	// AllowSingleByteEncodings permits supported ASCII-compatible single-byte XML byte
+	// encodings.
 	AllowSingleByteEncodings bool
-	AllowRelativeNamespaces  bool
-	AllowDTD                 bool
-	DTDOpen                  func(context.Context, string) (io.ReadCloser, error)
+	// AllowRelativeNamespaces permits deprecated relative namespace names and preserves
+	// their literal spelling.
+	AllowRelativeNamespaces bool
+	// AllowDTD enables bounded nonvalidating DTD processing. False retains the DTD-free
+	// security profile.
+	AllowDTD bool
+	// DTDOpen opens explicitly authorized external DTD or entity URIs. Nil supplies no
+	// external entity resolver.
+	DTDOpen func(context.Context, string) (io.ReadCloser, error)
 }
 
 // WithByteLimit intersects a resource byte cap with the XML input limit.

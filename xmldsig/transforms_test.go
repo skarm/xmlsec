@@ -202,7 +202,10 @@ func TestV1TransformURIsRequireV1Processor(t *testing.T) {
 }
 
 func TestTransformBuilderRejectsReservedPrefixRebinding(t *testing.T) {
-	for _, test := range []struct{ algorithm, prefix string }{{reference.XPath, "ds"}, {reference.XPathFilter2, "xf"}} {
+	for _, test := range []struct {
+		algorithm string
+		prefix    string
+	}{{reference.XPath, "ds"}, {reference.XPathFilter2, "xf"}} {
 		t.Run(test.prefix, func(t *testing.T) {
 			parameter := reference.XPathExpression{Expression: "true()", Namespaces: map[string]string{test.prefix: "urn:wrong-transform-namespace"}}
 			if test.algorithm == reference.XPathFilter2 {
@@ -272,7 +275,12 @@ func TestTemplateStylesheetNamespaceImport(t *testing.T) {
 }
 
 func TestImportedStylesheetDefaultNamespaceAndQNames(t *testing.T) {
-	for _, tt := range []struct{ name, declarations, body, expected string }{
+	for _, tt := range []struct {
+		name         string
+		declarations string
+		body         string
+		expected     string
+	}{
 		{"default", `xmlns="urn:literal"`, `<result><empty xmlns=""/></result>`, `<result xmlns="urn:literal"><empty xmlns=""/></result>`},
 		{"QName", `xmlns:p="urn:source"`, `<xsl:element name="p:result"><xsl:value-of select="//p:value"/></xsl:element>`, `<p:result xmlns:p="urn:source">123</p:result>`},
 	} {

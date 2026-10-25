@@ -60,6 +60,7 @@ func (s *Stylesheet) WriteRecords(ctx context.Context, dst io.Writer, src io.Rea
 	records := options.Records
 	records.Limits = s.recordLimits(records.Limits)
 	first := true
+
 	err = s.engine.parseOptions().ReadRecords(ctx, src, records, func(record *document.Document) error {
 		if !first {
 			if _, err := writer.WriteString(options.Separator); err != nil {

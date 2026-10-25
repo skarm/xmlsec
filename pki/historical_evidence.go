@@ -20,7 +20,8 @@ import (
 
 type historicalClaim struct {
 	fact              *VerifiedEvidence
-	target, issuer    *x509.Certificate
+	target            *x509.Certificate
+	issuer            *x509.Certificate
 	signer            *x509.Certificate
 	signerPath        *HistoricalPath
 	crl               *parsedCRL

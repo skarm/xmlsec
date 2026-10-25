@@ -10,70 +10,59 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
-// TypeNameRef is a QName reference (a type name or a function-call callee) named
-// by an expression. URI is the namespace the name RESOLVES to in the expression's
-// static context (the convergent identity for an allowlist check — uniform across
-// prefixed, unprefixed, and braced-URI Q{uri}local forms); Prefix and Name are the
-// lexical spelling, retained for diagnostics. Prefix is empty for an unprefixed (or
-// braced-URI) name.
+// TypeNameRef identifies a referenced type by its resolved namespace URI and local
+// name. Prefix retains the lexical spelling for diagnostics and is empty for
+// unprefixed or URI-qualified names.
 type TypeNameRef struct {
+	// Prefix retains the lexical prefix, or empty for an unprefixed or URI-qualified
+	// name.
 	Prefix string
-	Name   string
-	URI    string
+	// Name is the local type name retained for diagnostics.
+	Name string
+	// URI is the namespace resolved from the expression's static context.
+	URI string
 }
 
-// FunctionNameRef is a static function-reference callee (a FunctionCall — including
-// constructor calls and arrow targets — or a NamedFunctionRef). URI is the resolved
-// function namespace (unprefixed → fn); Arity is the static argument count (the
-// call's argument count, an arrow's count INCLUDING its prepended left operand, or a
-// NamedFunctionRef's #arity). A caller checks (URI, Name, Arity) against a function
-// registry to reject unknown or wrong-arity functions. Prefix/Name are the lexical
-// spelling for diagnostics.
+// FunctionNameRef identifies a static function call or named function reference by its
+// resolved namespace, local name and arity. Arrow-call arity includes the implicit
+// left operand; Prefix retains the lexical spelling for diagnostics.
 type FunctionNameRef struct {
+	// Prefix retains the lexical prefix for diagnostics.
 	Prefix string
-	Name   string
-	URI    string
-	Arity  int
+	// Name is the local function name.
+	Name string
+	// URI is the resolved function namespace, independent of the default element
+	// namespace.
+	URI string
+	// Arity is the static argument count, including the implicit left operand of an arrow
+	// call.
+	Arity int
 }
 
-// StaticReferences summarizes the variable and type-name references in a compiled
-// expression, for callers that must impose static-context restrictions beyond the
-// namespace-prefix validation done by Validate. XSD 1.1 conditional type
-// assignment is one such caller: an xs:alternative @test XPath has no in-scope
-// variables and may reference only built-in (xs:) atomic types, so the schema
-// compiler rejects any FreeVariable and any non-built-in TypeName.
+// StaticReferences summarizes names and schema-component tests in a compiled
+// expression. Hosts can use it to impose restrictions beyond namespace validation.
+// Reporting a schema reference does not make that component available or enable
+// schema-aware processing.
 type StaticReferences struct {
-	// FreeVariables lists the variable references ("prefix:local" or, when
-	// unprefixed, "local") that are NOT bound by an enclosing for/let/quantified
-	// binding or inline-function parameter within the expression itself.
+	// FreeVariables lists lexical variable names not bound by an enclosing for, let,
+	// quantified expression or inline-function parameter.
 	FreeVariables []string
-	// TypeNames lists the type names named by cast / castable / instance of / treat
-	// as, AND the type annotations of element()/attribute()/document-node() kind
-	// tests, wherever they appear (including nested array/map/function item types and
-	// path-step node tests). Each carries its RESOLVED namespace URI (an unprefixed
-	// type name resolves to the default element namespace).
+	// TypeNames lists resolved type references in type operators, kind tests and nested
+	// item types. Unprefixed names use the default element/type namespace.
 	TypeNames []TypeNameRef
-	// FunctionNames lists the callee QNames of every static function reference — a
-	// FunctionCall (which includes user-defined-type CONSTRUCTOR calls like
-	// t:smallInt(...), and arrow targets) or a NamedFunctionRef (f#arity). Each carries
-	// its RESOLVED namespace URI (unprefixed → fn, NOT the default element namespace)
-	// and its static ARITY. CTA uses (URI, Name, Arity) to reject any function that is
-	// not a known standard-library function / built-in constructor of that arity.
+	// FunctionNames lists static call targets and named function references, including
+	// constructor calls and arrow targets. Unprefixed function names use the function
+	// namespace rather than the default element namespace.
 	FunctionNames []FunctionNameRef
-	// SchemaComponentTests lists every schema-element()/schema-attribute() node test
-	// (rendered as "schema-element(NAME)"), which reference GLOBAL element/attribute
-	// declarations. A conformance-restricted caller whose static context lacks those
-	// schema components (XSD 1.1 CTA, §F.2) rejects an expression that uses them.
+	// SchemaComponentTests lists schema-element() and schema-attribute() tests as
+	// diagnostic strings for hosts that restrict references to schema declarations.
 	SchemaComponentTests []string
 }
 
-// StaticReferences walks the expression's syntax tree and reports its free variable
-// references, type-name references, and function-call callees, with every type and
-// function name RESOLVED to a namespace URI using the supplied in-scope namespaces
-// (the same bindings Validate takes) plus xpath's predeclared prefixes — so a
-// caller does a pure URI check with no prefix/Q{}-form handling of its own. It is
-// side-effect free and intended for schema-compile-time analysis, not the
-// evaluation hot path.
+// StaticReferences walks the compiled syntax and resolves type and function names
+// using the supplied namespace bindings and predeclared prefixes. It reports
+// references for static analysis without evaluating the expression or retrieving
+// resources.
 func (e *Expression) StaticReferences(namespaces map[string]string) StaticReferences {
 	ast := e.astExpr()
 	c := &staticRefCollector{bound: map[string]int{}, namespaces: namespaces}

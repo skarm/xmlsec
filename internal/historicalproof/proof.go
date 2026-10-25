@@ -63,6 +63,10 @@ func New(ctx context.Context, now time.Time, facts []Fact) (*Set, error) {
 		return nil, ErrProof
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	objects := make(map[[32]byte]struct{}, min(len(facts), 2048))
 
 	owned := make([]Fact, 0, len(facts))
@@ -86,6 +90,10 @@ func New(ctx context.Context, now time.Time, facts []Fact) (*Set, error) {
 
 	slices.SortFunc(owned, compare)
 	owned = slices.Compact(owned)
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	return &Set{now: now.UTC(), facts: owned}, nil
 }
@@ -143,8 +151,26 @@ func (s *Set) EarliestKind(digest [32]byte, kind Kind) (time.Time, bool) {
 	}
 
 	var earliest time.Time
-	for _, fact := range s.facts {
-		if fact.Digest == digest && (kind == "" || fact.Kind == kind) && (earliest.IsZero() || fact.At.Before(earliest)) {
+	// Small workflow snapshots are cheaper to scan than to binary-search.
+	if len(s.facts) <= 64 {
+		for _, fact := range s.facts {
+			if fact.Digest == digest && (kind == "" || fact.Kind == kind) && (earliest.IsZero() || fact.At.Before(earliest)) {
+				earliest = fact.At
+			}
+		}
+
+		return earliest, !earliest.IsZero()
+	}
+
+	start, _ := slices.BinarySearchFunc(s.facts, digest, func(fact Fact, key [32]byte) int {
+		return slices.Compare(fact.Digest[:], key[:])
+	})
+	for _, fact := range s.facts[start:] {
+		if fact.Digest != digest {
+			break
+		}
+
+		if (kind == "" || fact.Kind == kind) && (earliest.IsZero() || fact.At.Before(earliest)) {
 			earliest = fact.At
 		}
 	}

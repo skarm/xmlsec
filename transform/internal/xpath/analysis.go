@@ -7,20 +7,36 @@ import (
 	"strings"
 )
 
+// FunctionReference identifies a statically named function and its argument count.
 type FunctionReference struct {
-	Name  QualifiedName
+	// Name is the resolved namespace URI and local function name.
+	Name QualifiedName
+	// Arity is the call or reference argument count.
 	Arity int
 }
+
+// ExpressionAnalysis reports syntactic properties without authorizing execution or
+// establishing W3C streamability.
 type ExpressionAnalysis struct {
-	Functions                                          []FunctionReference
-	DynamicCalls, ContextItem, NonMotionlessPredicates bool
-	DownwardSelections                                 int
+	// Functions lists unique statically named functions sorted by expanded name and
+	// arity.
+	Functions []FunctionReference
+	// DynamicCalls reports calls through computed function items.
+	DynamicCalls bool
+	// ContextItem reports focus-sensitive syntax, not proof that the initial focus is
+	// required.
+	ContextItem bool
+	// NonMotionlessPredicates reports predicates with navigation or focus-sensitive
+	// syntax.
+	NonMotionlessPredicates bool
+	// DownwardSelections counts syntactic paths that use child or descendant navigation.
+	DownwardSelections int
 }
 
 // Analyze computes optional diagnostic properties on demand. It neither
 // evaluates the expression nor promises streamability or absence of effects.
 func (e *Expression) Analyze(ctx context.Context, namespaces map[string]string) (ExpressionAnalysis, error) {
-	a := expressionAnalyzer{ctx: ctx, namespaces: namespaces, seen: make(map[FunctionReference]bool)}
+	a := expressionAnalyzer{ctx: ctx, namespaces: namespaces, seen: make(map[FunctionReference]struct{})}
 	WalkExpr(e.astExpr(), a.visit)
 
 	if a.err != nil {
@@ -45,7 +61,7 @@ func (e *Expression) Analyze(ctx context.Context, namespaces map[string]string) 
 type expressionAnalyzer struct {
 	ctx        context.Context
 	namespaces map[string]string
-	seen       map[FunctionReference]bool
+	seen       map[FunctionReference]struct{}
 	result     ExpressionAnalysis
 	err        error
 }
@@ -143,8 +159,8 @@ func (a *expressionAnalyzer) function(prefix, name string, arity int) {
 	}
 
 	reference := FunctionReference{Name: QualifiedName{URI: uri, Name: name}, Arity: arity}
-	if !a.seen[reference] {
-		a.seen[reference] = true
+	if _, present := a.seen[reference]; !present {
+		a.seen[reference] = struct{}{}
 		a.result.Functions = append(a.result.Functions, reference)
 	}
 }

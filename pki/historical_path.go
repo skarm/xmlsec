@@ -128,12 +128,15 @@ type historicalConstraintFailure struct{}
 func (historicalConstraintFailure) Error() string {
 	return "configured historical certificate usage is not satisfied"
 }
+
 func (historicalConstraintFailure) Unwrap() error { return ErrCertificate }
+
 func historicalPathFailure(err error) string {
 	var (
 		configured  historicalConstraintFailure
 		certificate x509.CertificateInvalidError
 	)
+
 	if errors.As(err, &configured) || errors.As(err, &certificate) && certificate.Reason == x509.IncompatibleUsage {
 		return "CHAIN_CONSTRAINTS_FAILURE"
 	}
@@ -154,13 +157,13 @@ func (s *HistoricalSession) pathsFor(ctx context.Context, target *x509.Certifica
 
 	sort.Slice(certificates, func(i, j int) bool { return bytes.Compare(certificates[i].Raw, certificates[j].Raw) < 0 })
 
-	roots := make(map[[32]byte]bool, len(s.verifier.anchorCertificates))
+	roots := make(map[[32]byte]struct{}, len(s.verifier.anchorCertificates))
 	for _, raw := range s.verifier.anchorCertificates {
-		roots[sha256.Sum256(raw)] = true
+		roots[sha256.Sum256(raw)] = struct{}{}
 	}
 
 	search := historicalPathSearch{session: s, certificates: certificates, roots: roots}
-	if err := search.visit(ctx, []*x509.Certificate{target}, map[[32]byte]bool{digest: true}); err != nil {
+	if err := search.visit(ctx, []*x509.Certificate{target}, map[[32]byte]struct{}{digest: {}}); err != nil {
 		return nil, err
 	}
 
@@ -172,17 +175,17 @@ func (s *HistoricalSession) pathsFor(ctx context.Context, target *x509.Certifica
 type historicalPathSearch struct {
 	session      *HistoricalSession
 	certificates []*x509.Certificate
-	roots        map[[32]byte]bool
+	roots        map[[32]byte]struct{}
 	paths        []*HistoricalPath
 }
 
-func (search *historicalPathSearch) visit(ctx context.Context, chain []*x509.Certificate, seen map[[32]byte]bool) error {
+func (search *historicalPathSearch) visit(ctx context.Context, chain []*x509.Certificate, seen map[[32]byte]struct{}) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	current := chain[len(chain)-1]
-	if search.roots[sha256.Sum256(current.Raw)] {
+	if _, exists := search.roots[sha256.Sum256(current.Raw)]; exists {
 		if len(search.paths) >= search.session.options.MaxPaths {
 			return fmt.Errorf("%w: %w: historical path count", ErrPolicy, ErrLimit)
 		}
@@ -208,7 +211,7 @@ func (search *historicalPathSearch) visit(ctx context.Context, chain []*x509.Cer
 
 	for _, issuer := range search.certificates {
 		digest := sha256.Sum256(issuer.Raw)
-		if seen[digest] {
+		if _, exists := seen[digest]; exists {
 			continue
 		}
 
@@ -234,7 +237,7 @@ func (search *historicalPathSearch) visit(ctx context.Context, chain []*x509.Cer
 			return fmt.Errorf("%w: %w: historical path depth", ErrPolicy, ErrLimit)
 		}
 
-		seen[digest] = true
+		seen[digest] = struct{}{}
 		if err := search.visit(ctx, append(chain, issuer), seen); err != nil {
 			return err
 		}

@@ -14,7 +14,7 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
-func lookupFunctionsQname(name string) (*builtinFunc, bool) {
+func lookupFunctionsQName(name string) (*builtinFunc, bool) {
 	switch name {
 	case lexicon.TypeQName:
 		return &builtinFunc{name: name, min: 2, max: 2, fn: fnQName}, true
@@ -356,7 +356,7 @@ func fnInScopePrefixes(_ context.Context, args []xdm.Sequence) (xdm.Sequence, er
 
 	// Walk from the context element outward so namespace undeclarations mask
 	// ancestor bindings for the same prefix.
-	prefixes := map[string]bool{lexicon.PrefixXML: true}
+	prefixes := map[string]struct{}{lexicon.PrefixXML: {}}
 	resolved := map[string]struct{}{lexicon.PrefixXML: {}}
 
 	for cur := elem; cur != nil; {
@@ -366,7 +366,10 @@ func fnInScopePrefixes(_ context.Context, args []xdm.Sequence) (xdm.Sequence, er
 				continue
 			}
 
-			prefixes[prefix] = ns.URI() != ""
+			if ns.URI() != "" {
+				prefixes[prefix] = struct{}{}
+			}
+
 			resolved[prefix] = struct{}{}
 		}
 
@@ -385,10 +388,8 @@ func fnInScopePrefixes(_ context.Context, args []xdm.Sequence) (xdm.Sequence, er
 	// Collect active prefixes into a sorted slice to ensure deterministic
 	// output order (the XPath 3.1 spec leaves order implementation-defined).
 	sorted := make([]string, 0, len(prefixes))
-	for prefix, active := range prefixes {
-		if active {
-			sorted = append(sorted, prefix)
-		}
+	for prefix := range prefixes {
+		sorted = append(sorted, prefix)
 	}
 
 	sort.Strings(sorted)

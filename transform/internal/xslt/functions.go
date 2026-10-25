@@ -22,7 +22,7 @@ import (
 )
 
 // XSLT/XPath function names referenced from multiple sites. Kept as constants
-// alongside xsltFunctionArities (the single source of truth for arities) so the
+// alongside lookupXSLTFunctionArity (the single source of truth for arities) so the
 // repeated literals stay consistent across the package.
 const (
 	fnNameCurrent            = "current"
@@ -53,8 +53,8 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 		nameKey2:                   &keyFunction{ec: ec, scope: ec.effectiveStylesheet()},
 		lexicon.FnGenerateID:       xpath.HostBuiltin(ec.stylesheet.xpathVersion(), lexicon.FnGenerateID),
 		funcSystemProperty:         newIntrospectionFunc(funcSystemProperty, ec.fnSystemProperty),
-		nameUnparsedEntityUri:      &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityURI},
-		nameUnparsedEntityPublicId: &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityPublicID},
+		nameUnparsedEntityURI:      &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityURI},
+		nameUnparsedEntityPublicID: &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityPublicID},
 		fnNameElementAvailable:     newIntrospectionFunc(fnNameElementAvailable, ec.fnElementAvailable),
 		fnNameFunctionAvailable:    newIntrospectionFunc(fnNameFunctionAvailable, ec.fnFunctionAvailable),
 		fnNameTypeAvailable:        newIntrospectionFunc(fnNameTypeAvailable, ec.fnTypeAvailable),
@@ -92,7 +92,7 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 
 	if ec.stylesheet.processorLanguage() == 10 {
 		for name, fn := range ec.cachedFns {
-			if _, ok := lookupxslt10Functions(name); ok {
+			if _, ok := lookupXSLT10FunctionArity(name); ok {
 				ec.cachedFns[name] = function10{name, fn}
 			} else {
 				delete(ec.cachedFns, name)
@@ -119,7 +119,7 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 
 func (ec *execContext) prepareHostFunction(name string, function *xsltFunc) {
 	function.name = name
-	if ec.stylesheet.processorLanguage() < 30 && (name == nameUnparsedEntityUri || name == nameUnparsedEntityPublicId) {
+	if ec.stylesheet.processorLanguage() < 30 && (name == nameUnparsedEntityURI || name == nameUnparsedEntityPublicID) {
 		function.max = 1
 	}
 
@@ -787,19 +787,19 @@ func documentBaseDir(base string) string {
 	return path.Dir(uripath.ToSlash(base))
 }
 
-// xsltFunctionArities is the static arity table for XSLT-defined functions that
+// lookupXSLTFunctionArity returns the static arities for XSLT-defined functions that
 // live in the fn: namespace. It is the single source of truth consulted by
 // compile-time checks (e.g. validatePatternFunctions) that run without an
 // execContext. The runtime registries in xsltFunctions / xsltFunctionsNS must
-// stay consistent with this table; TestXSLTFunctionAritiesMatchRegistry guards
+// stay consistent with these arities; TestXSLTFunctionAritiesMatchRegistry guards
 // against drift.
-func lookupxsltFunctionArities(key string) ([2]int, bool) {
+func lookupXSLTFunctionArity(key string) ([2]int, bool) {
 	switch key {
 	case lexicon.FnGenerateID, nameCurrentMergeGroup, fnNameCopyOf, funcSnapshot:
 		return [2]int{0, 1}, true
 	case fnNameCurrent, fnNameCurrentGroup, fnNameCurrentGroupingKey, nameCurrentMergeKey, funcAvailableSystemProperties, fnNameCurrentOutputURI:
 		return [2]int{0, 0}, true
-	case fnNameDocument, nameUnparsedEntityUri, nameUnparsedEntityPublicId, fnNameFunctionAvailable:
+	case fnNameDocument, nameUnparsedEntityURI, nameUnparsedEntityPublicID, fnNameFunctionAvailable:
 		return [2]int{1, 2}, true
 	case nameDoc, funcSystemProperty, fnNameElementAvailable, fnNameTypeAvailable, nameAccumulatorBefore, nameAccumulatorAfter, nameRegexGroup, fnNameTransform, nameStreamAvailable:
 		return [2]int{1, 1}, true
@@ -813,7 +813,7 @@ func lookupxsltFunctionArities(key string) ([2]int, bool) {
 }
 
 func xsltFunctionAcceptsVersionArity(version int, name string, arity int) bool {
-	if version < 30 && (name == nameUnparsedEntityUri || name == nameUnparsedEntityPublicId) && arity > 1 {
+	if version < 30 && (name == nameUnparsedEntityURI || name == nameUnparsedEntityPublicID) && arity > 1 {
 		return false
 	}
 
@@ -823,7 +823,7 @@ func xsltFunctionAcceptsVersionArity(version int, name string, arity int) bool {
 // xsltFunctionAcceptsArity reports whether an XSLT-defined function (fn:
 // namespace) with the given local name exists and accepts the given arity.
 func xsltFunctionAcceptsArity(name string, arity int) bool {
-	bounds, ok := lookupxsltFunctionArities(name)
+	bounds, ok := lookupXSLTFunctionArity(name)
 	if !ok {
 		return false
 	}

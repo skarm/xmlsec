@@ -1,5 +1,6 @@
 package main
 
 const (
-	nameRequest = "_request"
+	nameRequest        = "_request"
+	modeVerifyResponse = "verify-response"
 )

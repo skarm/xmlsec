@@ -82,8 +82,9 @@ func (k *Kind) UnmarshalText(text []byte) error {
 	return nil
 }
 
-// Data is an immutable input. Its zero value is invalid; an empty octet stream
-// or initialized empty node set is allowed. [Octets] copies its input bytes.
+// Data holds immutable octets or an initialized XPath node set. The zero value is
+// invalid, but an empty octet stream or initialized empty node set is valid.
+// Octets copies the supplied bytes.
 type Data struct {
 	kind   Kind
 	octets []byte
@@ -129,8 +130,8 @@ func (d Data) Bytes() ([]byte, bool) {
 // Nodes returns the node set and whether this value contains a valid node set.
 func (d Data) Nodes() (document.NodeSet, bool) { return d.nodes, d.kind == NodeSet && d.nodes.Valid() }
 
-// Transform contains only parameters of implemented algorithms. InclusivePrefixes
-// is allowed exclusively with Exclusive C14N. A blank Algorithm is an error.
+// Transform selects an implemented algorithm and its parameters. Algorithm must
+// be nonempty. InclusivePrefixes is permitted only for Exclusive C14N.
 type Transform struct {
 	// Algorithm is the required transform URI; an empty value is rejected.
 	Algorithm string `json:"algorithm"`
@@ -143,24 +144,30 @@ type Transform struct {
 	Stylesheet []byte `json:"stylesheet,omitempty"`
 }
 
-// Step records diagnostics for a completed transform or implicit conversion.
+// Step records a completed transform or implicit conversion and its input and output
+// sizes.
 type Step struct {
+	// Algorithm identifies the transform or implicit conversion.
 	Algorithm string `json:"algorithm"`
-	// InputSize and OutputSize count bytes for OctetStream and selected nodes for NodeSet.
-	InputSize  int  `json:"input_size"`
-	OutputSize int  `json:"output_size"`
-	InputKind  Kind `json:"input_kind"`
+	// InputSize counts input bytes for OctetStream or selected nodes for NodeSet.
+	InputSize int `json:"input_size"`
+	// OutputSize counts output bytes for OctetStream or selected nodes for NodeSet.
+	OutputSize int `json:"output_size"`
+	// InputKind identifies the representation before this step.
+	InputKind Kind `json:"input_kind"`
+	// OutputKind identifies the representation after this step.
 	OutputKind Kind `json:"output_kind"`
 	// Implicit marks a required conversion or final C14N step absent from the explicit chain.
 	Implicit bool `json:"implicit"`
 }
 
-// Report records a completed transform chain without retaining its output bytes.
+// Report records a completed transform chain without retaining the final output bytes.
 type Report struct {
 	input            Kind
 	size             int
 	steps            []Step
-	produced, visits int
+	produced         int
+	visits           int
 	canonicalization string
 }
 
@@ -218,7 +225,7 @@ func (o *Report) Canonicalization() string {
 	return o.canonicalization
 }
 
-// Output contains explicitly buffered transform bytes and their processing report.
+// Output retains buffered transform bytes and their processing report.
 type Output struct {
 	report *Report
 	bytes  []byte
@@ -287,13 +294,16 @@ func (o *Output) Canonicalization() string {
 	return o.report.Canonicalization()
 }
 
-// StepError preserves errors.Is/As, with a zero-based explicit transform index.
-// Index == -1 denotes the final implicit conversion or raw output validation.
+// StepError identifies a failed transform and preserves its error for errors.Is
+// and errors.As. Index is zero-based; -1 identifies the final implicit conversion
+// or raw output validation.
 type StepError struct {
 	// Index is zero-based; -1 identifies implicit final conversion or raw output validation.
-	Index     int
+	Index int
+	// Algorithm identifies the transform or conversion that failed.
 	Algorithm string
-	Err       error
+	// Err is the underlying error exposed by Unwrap.
+	Err error
 }
 
 // Error returns the diagnostic error message.
@@ -308,11 +318,12 @@ func (e *StepError) Unwrap() error { return e.Err }
 // and stylesheet bytes.
 func CloneTransforms(ts []Transform) []Transform {
 	out := append([]Transform(nil), ts...)
+
 	for i := range out {
 		out[i].InclusivePrefixes = append([]string(nil), out[i].InclusivePrefixes...)
 		out[i].Stylesheet = append([]byte(nil), out[i].Stylesheet...)
-
 		out[i].XPath = append([]XPathExpression(nil), out[i].XPath...)
+
 		for j := range out[i].XPath {
 			ns := make(map[string]string, len(out[i].XPath[j].Namespaces))
 			maps.Copy(ns, out[i].XPath[j].Namespaces)

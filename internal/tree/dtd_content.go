@@ -93,7 +93,10 @@ func (d *dtdState) attributeReference(text string) (string, string, error) {
 	return value, rest, err
 }
 
-type dtdRawAttribute struct{ name, value string }
+type dtdRawAttribute struct {
+	name  string
+	value string
+}
 
 func readDTDAttribute(text string) (dtdRawAttribute, int, error) {
 	end := dtdNameEnd(text)
@@ -188,15 +191,15 @@ func (d *dtdState) startTag(text string, output *dtdOutput) (string, bool, error
 		return "", false, err
 	}
 
-	seen := make(map[string]bool, len(attributes))
+	seen := make(map[string]struct{}, len(attributes))
 
 	count := len(attributes)
 	for _, attribute := range attributes {
-		if seen[attribute.name] {
+		if _, exists := seen[attribute.name]; exists {
 			return "", false, fmt.Errorf("%w: duplicate attribute", ErrMalformed)
 		}
 
-		seen[attribute.name] = true
+		seen[attribute.name] = struct{}{}
 
 		value, err := d.attributeValue(attribute.value)
 		if err != nil {
@@ -213,7 +216,7 @@ func (d *dtdState) startTag(text string, output *dtdOutput) (string, bool, error
 	}
 
 	for _, declaration := range d.defaults[name] {
-		if seen[declaration.name] {
+		if _, exists := seen[declaration.name]; exists {
 			continue
 		}
 
@@ -263,11 +266,16 @@ func (d *dtdState) entityContent(text, base string, output *dtdOutput, document 
 }
 
 type dtdContentParser struct {
-	state                                  *dtdState
-	text, base, rootBase                   string
-	output                                 *dtdOutput
-	stack                                  []string
-	document, first, seenRoot, seenDoctype bool
+	state       *dtdState
+	text        string
+	base        string
+	rootBase    string
+	output      *dtdOutput
+	stack       []string
+	document    bool
+	first       bool
+	seenRoot    bool
+	seenDoctype bool
 }
 
 func (p *dtdContentParser) step() error {

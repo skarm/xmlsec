@@ -1,7 +1,7 @@
 // Derived from lestrrat-go/helium at 7362c0a70122a757780f4d0b545a9b370dead6ab.
 // Copyright (c) 2015 lestrrat. MIT License; see licenses/MIT-helium.txt at the repository root.
 
-package value
+package lexical
 
 import (
 	"encoding/base64"
@@ -141,7 +141,7 @@ func validateInteger(value string) error {
 	return nil
 }
 
-func lookupintegerRanges(key string) (integerRange, bool) {
+func lookupIntegerRange(key string) (integerRange, bool) {
 	switch key {
 	case lexicon.TypeByte:
 		return integerRange{big.NewInt(-128), big.NewInt(127)}, true
@@ -184,7 +184,7 @@ func validateIntegerWithRange(value, typeName string) error {
 		return err
 	}
 
-	r, ok := lookupintegerRanges(typeName)
+	r, ok := lookupIntegerRange(typeName)
 	if !ok {
 		return nil
 	}

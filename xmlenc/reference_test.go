@@ -25,11 +25,12 @@ const (
 )
 
 type cipherReferenceFixture struct {
-	profile    cipherReferenceProfile
-	uri        string
-	external   *document.Document
-	wire, body []byte
-	plain      []byte
+	profile  cipherReferenceProfile
+	uri      string
+	external *document.Document
+	wire     []byte
+	body     []byte
+	plain    []byte
 }
 
 func TestCipherReferenceProfiles(t *testing.T) {
@@ -1136,6 +1137,130 @@ func TestKeyGraphCountsActualCipherResourceBytes(t *testing.T) {
 						t.Fatal("encoded whitespace escaped aggregate raw-byte budget", err, calls)
 					}
 				}
+			}
+		})
+	}
+}
+
+type sizedCipherReader struct {
+	io.ReadCloser
+	size int64
+}
+
+func (r sizedCipherReader) Size() int64 { return r.size }
+
+func BenchmarkExternalCiphertext(b *testing.B) {
+	for _, size := range []int{256, 16 << 10, 8 << 20} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			profile := cipherReferenceProfile{secret: make([]byte, 32)}
+			plain := bytes.Repeat([]byte("x"), size)
+			encrypted, err := profile.encrypt(b.Context(), plain)
+			if err != nil {
+				b.Fatal(err)
+			}
+			const uri = "urn:benchmark:ciphertext"
+			external, _, body, err := xmlenc.ExternalizeCiphertext(b.Context(), encrypted, encrypted.Root(), uri)
+			if err != nil {
+				b.Fatal(err)
+			}
+			for _, known := range []bool{false, true} {
+				b.Run(strconv.FormatBool(known), func(b *testing.B) {
+					options := xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+						r := io.NopCloser(bytes.NewReader(body))
+						if known {
+							return sizedCipherReader{r, int64(len(body))}, nil
+						}
+						return r, nil
+					})}}
+					b.ReportAllocs()
+					b.SetBytes(int64(size))
+					for b.Loop() {
+						out, err := profile.decrypt(b.Context(), external, options)
+						if err != nil || !bytes.Equal(out, plain) {
+							b.Fatal(err)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestSizedCiphertextVerifiesActualStream(t *testing.T) {
+	profile := cipherReferenceProfile{secret: make([]byte, 32)}
+	encrypted, err := profile.encrypt(t.Context(), []byte("protected"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const uri = "urn:test:sized-ciphertext"
+	external, _, body, err := xmlenc.ExternalizeCiphertext(t.Context(), encrypted, encrypted.Root(), uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	late := errors.New("late read")
+	for _, name := range []string{"exact", "unknown", "short", "long", "limit", "late", "joined EOF", "no progress", "close", "cancel", "tampered"} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			size := int64(len(body))
+			source := &resourceReader{Reader: bytes.NewReader(body)}
+			var want error
+			switch name {
+			case "unknown":
+				size = -1
+			case "short":
+				size--
+				want = xmlenc.ErrPolicy
+			case "long":
+				size++
+				want = io.ErrUnexpectedEOF
+			case "limit":
+				size = 64 << 20
+				want = xmlenc.ErrPolicy
+			case "close":
+				source.closeErr = late
+				want = late
+			case "no progress":
+				source.Reader = cipherReaderFunc(func([]byte) (int, error) { return 0, nil })
+				want = io.ErrNoProgress
+			case "late", "joined EOF", "cancel":
+				reader := bytes.NewReader(body)
+				source.Reader = cipherReaderFunc(func(p []byte) (int, error) {
+					n, err := reader.Read(p)
+					if reader.Len() == 0 && n > 0 {
+						switch name {
+						case "cancel":
+							cancel()
+							err = context.Canceled
+						case "joined EOF":
+							err = errors.Join(io.EOF, late)
+						default:
+							err = late
+						}
+					}
+					return n, err
+				})
+				want = late
+				if name == "cancel" {
+					want = context.Canceled
+				}
+			case "tampered":
+				changed := bytes.Clone(body)
+				changed[len(changed)-1] ^= 1
+				source.Reader = bytes.NewReader(changed)
+				want = xmlenc.ErrDecrypt
+			}
+			options := xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return sizedCipherReader{source, size}, nil })}}
+			out, err := profile.decrypt(ctx, external, options)
+			if !source.closed {
+				t.Fatal("source not closed")
+			}
+			if want != nil {
+				if out != nil || !errors.Is(err, want) {
+					t.Fatalf("plaintext %q error %v, want %v", out, err, want)
+				}
+			} else if err != nil || string(out) != "protected" {
+				t.Fatal(string(out), err)
 			}
 		})
 	}

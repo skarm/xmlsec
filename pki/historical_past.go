@@ -19,18 +19,19 @@ import (
 )
 
 type historicalStatus struct {
-	claims     []historicalClaim
-	primary    historicalClaim
-	revoked    bool
-	revokedAt  time.Time
-	reason     int
-	this, next time.Time
+	claims    []historicalClaim
+	primary   historicalClaim
+	revoked   bool
+	revokedAt time.Time
+	reason    int
+	this      time.Time
+	next      time.Time
 }
 
 type pastEvaluation struct {
 	session *HistoricalSession
 	proofs  *historicalproof.Set
-	active  map[[32]byte]bool
+	active  map[[32]byte]struct{}
 	steps   []TimeTransition
 	used    []*VerifiedEvidence
 	work    int
@@ -90,7 +91,7 @@ func (s *HistoricalSession) validatePastPath(ctx context.Context, path *Historic
 		return reject(historicalPathFailure(err), err)
 	}
 
-	evaluator := &pastEvaluation{session: s, proofs: proofs, active: make(map[[32]byte]bool)}
+	evaluator := &pastEvaluation{session: s, proofs: proofs, active: make(map[[32]byte]struct{})}
 	bound := s.now
 
 	anchor := sha256.Sum256(path.chain[len(path.chain)-1].Raw)
@@ -119,11 +120,11 @@ func (e *pastEvaluation) slide(ctx context.Context, path *HistoricalPath, contro
 		return time.Time{}, err
 	}
 
-	if e.active[path.fingerprint] {
+	if _, exists := e.active[path.fingerprint]; exists {
 		return time.Time{}, fmt.Errorf("%w: historical authorization cycle", ErrUnavailable)
 	}
 
-	e.active[path.fingerprint] = true
+	e.active[path.fingerprint] = struct{}{}
 	defer delete(e.active, path.fingerprint)
 
 	if len(e.active) > e.session.verifier.maxDepth {
@@ -640,14 +641,14 @@ func (e *pastEvaluation) protectCrypto(certificate *x509.Certificate, status his
 	}
 
 	for _, claim := range status.claims {
-		certificate := claim.signer
+		signer := claim.signer
 
 		algorithm := claim.ocspSignatureAlgorithm()
 		if claim.crl != nil {
 			algorithm = claim.crlSignatureAlgorithm()
 		}
 
-		if cutoff := e.materialCutoff(algorithm, certificate); !cutoff.IsZero() && !e.session.now.Before(cutoff) {
+		if cutoff := e.materialCutoff(algorithm, signer); !cutoff.IsZero() && !e.session.now.Before(cutoff) {
 			proof, found := e.proofs.EarliestKind(claim.fact.fingerprint, historicalproof.Kind(claim.fact.kind))
 			if !found || !proof.Before(cutoff) {
 				return ErrUnavailable

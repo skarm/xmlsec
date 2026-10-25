@@ -17,13 +17,21 @@ const (
 // evaluationRuntime owns reusable execution resources for an evaluator family.
 // Configuration copies share this owner; no cache outlives its evaluator family.
 type evaluationRuntime struct {
-	probes        chan *pathProbe
-	probesOnce    sync.Once
-	regexOnce     sync.Once
-	regexes       *regexLRUCache
-	collations    sync.Map
-	collationMu   sync.Mutex
+	// probes bounds retained idle path probes shared by an evaluator family.
+	probes chan *pathProbe
+	// probesOnce initializes the probe pool on first use.
+	probesOnce sync.Once
+	// regexOnce initializes the bounded regex cache on first use.
+	regexOnce sync.Once
+	// regexes retains reusable compiled regex programs behind its own synchronization.
+	regexes *regexLRUCache
+	// collations supplies concurrent reads of cached collation implementations.
+	collations sync.Map
+	// collationMu serializes collation insertion and eviction.
+	collationMu sync.Mutex
+	// collationKeys retains the bounded FIFO of URI and base-URI cache keys.
 	collationKeys [][2]string
+	// collationNext identifies the next FIFO slot to evict once the cache is full.
 	collationNext int
 }
 

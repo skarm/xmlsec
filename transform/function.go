@@ -13,11 +13,13 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xslt"
 )
 
-// Function registers an application-owned function with fixed arity. Use an
-// application namespace; standard XPath, XML and XSLT namespaces are reserved.
-// Its parameters and result have the generic XPath type item()*.
+// Function registers an application callback with fixed arity. Name must use an
+// application namespace; XPath, XML and XSLT standard namespaces are reserved.
+// Each parameter and the result have the generic XPath type item()*.
 type Function struct {
-	Name  Name
+	// Name is the function's expanded name in an application namespace.
+	Name Name
+	// Arity is the fixed number of arguments accepted by Call, including zero.
 	Arity int
 	// Call receives immutable arguments and may run concurrently. It must honor
 	// cancellation; returned errors propagate to XPath or XSLT execution.

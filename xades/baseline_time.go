@@ -13,9 +13,13 @@ import (
 // values, within an explicit 4096-byte lexical resource bound. Years are stored
 // in astronomical numbering internally; XML Schema 1.0 has no lexical year zero.
 type baselineUTC struct {
-	year                             big.Int
-	month, day, hour, minute, second int
-	fraction                         string
+	year     big.Int
+	month    int
+	day      int
+	hour     int
+	minute   int
+	second   int
+	fraction string
 }
 
 func parseBaselineTime(element document.Element) (string, time.Time, error) {

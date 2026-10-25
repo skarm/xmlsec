@@ -64,15 +64,19 @@ func (r *Reader) Read(p []byte) (int, error) {
 
 // WriteTo copies through Read so cancellation, limits and source errors remain
 // enforced. Resident sources with Len need at most their remaining byte count
-// as scratch space; unknown streams use a fixed 32 KiB buffer.
+// as scratch space. Unknown streams start at 4 KiB and grow to 32 KiB only
+// after filling two initial chunks. Power-of-two write boundaries also keep
+// collecting destinations from growing to a misaligned backing-array size.
 func (r *Reader) WriteTo(dst io.Writer) (int64, error) {
 	if err := r.Context.Err(); err != nil {
 		return 0, err
 	}
 
-	size := 32 << 10
-	if source, ok := r.Source.(interface{ Len() int }); ok {
-		size = max(1, min(size, source.Len()))
+	size := 4 << 10
+
+	source, resident := r.Source.(interface{ Len() int })
+	if resident {
+		size = max(1, min(32<<10, source.Len()))
 	}
 
 	buffer := make([]byte, size)
@@ -80,7 +84,7 @@ func (r *Reader) WriteTo(dst io.Writer) (int64, error) {
 	var written int64
 
 	for {
-		n, readErr := r.Read(buffer)
+		n, readErr := r.Read(buffer[:size])
 		if n > 0 {
 			count, err := dst.Write(buffer[:n])
 			if count < 0 || count > n {
@@ -103,6 +107,16 @@ func (r *Reader) WriteTo(dst io.Writer) (int64, error) {
 			}
 
 			return written, readErr
+		}
+
+		if !resident && n == size && size < 32<<10 {
+			// Write 4, 4, 8, 16, then 32 KiB chunks. A 4+32 KiB start
+			// would make bytes.Buffer retain 36 KiB * 2^k instead of
+			// 32 KiB * 2^k when collecting a large opaque stream.
+			size = int(min(32<<10, written))
+			if size > len(buffer) {
+				buffer = make([]byte, 32<<10)
+			}
 		}
 	}
 }

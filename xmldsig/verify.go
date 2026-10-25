@@ -14,10 +14,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/streamio"
@@ -26,19 +25,20 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
-// VerifyOptions sets the expected root, application ID attribute and restricted enveloped
-// signature policy.
+// VerifyOptions sets the expected root name, application ID attribute and algorithms
+// for restricted enveloped verification.
 type VerifyOptions struct {
 	// IDAttribute selects the application ID attribute; it is never inferred from a schema.
 	IDAttribute document.Name
 	// ExpectedRoot, when nonzero, must equal the document root's expanded name.
 	ExpectedRoot document.Name
-	Policy       Policy
+	// Policy sets permitted signature and digest algorithms and key and processing limits.
+	Policy Policy
 }
 
-// Result is returned ONLY when SignatureValue and EVERY Reference passed.
-// It is not a PKIX, SAML or XAdES validation result. The key supplied by the
-// caller is the entire trust decision in this restricted profile.
+// Result records acceptance after SignatureValue and every Reference pass.
+// The caller-supplied key is the entire trust decision for this restricted profile.
+// The result does not establish PKIX trust or SAML or XAdES acceptance.
 type Result struct {
 	doc         *document.Document
 	signature   *tree.Node
@@ -48,12 +48,13 @@ type Result struct {
 }
 
 type parsedReference struct {
-	uri, digestMethod string
-	target            *tree.Node
-	digest            []byte
-	prefixes          []string
-	transforms        []reference.Transform
-	exclude           *tree.Node
+	uri          string
+	digestMethod string
+	target       *tree.Node
+	digest       []byte
+	prefixes     []string
+	transforms   []reference.Transform
+	exclude      *tree.Node
 }
 
 // Verify checks a single root-enveloped signature with an externally trusted
@@ -213,7 +214,7 @@ func parseEnvelopedReferenceSet(ctx context.Context, d *document.Document, idAtt
 	}
 
 	refs := make([]parsedReference, 0, len(nodes))
-	seen := map[string]bool{}
+	seen := map[string]struct{}{}
 	rootCovered := false
 
 	for _, n := range nodes {
@@ -222,11 +223,11 @@ func parseEnvelopedReferenceSet(ctx context.Context, d *document.Document, idAtt
 			return nil, err
 		}
 
-		if seen[ref.uri] {
+		if _, exists := seen[ref.uri]; exists {
 			return nil, fmt.Errorf("%w: duplicate reference", ErrReference)
 		}
 
-		seen[ref.uri] = true
+		seen[ref.uri] = struct{}{}
 		if ref.uri == "#"+rootID && ref.target == root {
 			rootCovered = true
 		}
@@ -568,23 +569,25 @@ func (r *Result) CoversElement(e document.Element) bool {
 	return false
 }
 
-// ReferenceResult keeps an authenticated digest and processing trace. Canonical
-// bytes are not retained. Explicit Manifest traversal additionally retains its
-// bounded original subresource bytes. Target is valid for a same-document
-// element reference, not a whole-document or external octet resource.
+// ReferenceResult retains an authenticated digest and processing trace without
+// canonical bytes. Explicit Manifest traversal also retains bounded original
+// subresource bytes. Target is valid only for a same-document element reference;
+// it is invalid for whole-document and external octet references.
 type ReferenceResult struct {
-	uri, digestMethod             string
-	typeURI                       string
-	target                        document.Element
-	processed                     *reference.Report
-	resolver                      *reference.SameDocumentResolver
-	external                      *referenceSource
-	processing                    reference.Options
-	digest                        []byte
-	manifestInput                 []byte
-	transforms                    []reference.Transform
-	coverageDoc                   *document.Document
-	coverageRoot, coverageExclude *tree.Node
+	uri             string
+	digestMethod    string
+	typeURI         string
+	target          document.Element
+	processed       *reference.Report
+	resolver        *reference.SameDocumentResolver
+	external        *referenceSource
+	processing      reference.Options
+	digest          []byte
+	manifestInput   []byte
+	transforms      []reference.Transform
+	coverageDoc     *document.Document
+	coverageRoot    *tree.Node
+	coverageExclude *tree.Node
 }
 
 // CoversElement conservatively proves original element/subtree membership for

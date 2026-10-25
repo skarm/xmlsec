@@ -7,10 +7,9 @@ import (
 	"io"
 	"time"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/pki"
@@ -21,6 +20,8 @@ import (
 // AddArchiveOptions selects the timestamp request and canonicalization for an archive
 // timestamp.
 type AddArchiveOptions struct {
+	// Request selects the archive timestamp request's imprint, policy, nonce and
+	// certificate options.
 	Request timestamp.RequestOptions
 	// Canonicalization defaults to Exclusive C14N.
 	Canonicalization string

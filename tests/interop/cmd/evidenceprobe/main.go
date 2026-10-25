@@ -54,7 +54,8 @@ func main() {
 
 	flag.Parse()
 
-	h := probeHash(*hash)
+	h, e := hashFromBits(*hash)
+	must(e)
 
 	t, e := time.Parse(time.RFC3339Nano, *at)
 	must(e)
@@ -73,7 +74,8 @@ func main() {
 
 	ctx := context.Background()
 
-	key := probeSigner(*kp)
+	key, e := loadSigner(*kp)
+	must(e)
 
 	var output []byte
 
@@ -234,44 +236,47 @@ func read(p string) []byte {
 	return b
 }
 
-func probeHash(bits int) crypto.Hash {
-	var h crypto.Hash
-
+func hashFromBits(bits int) (crypto.Hash, error) {
 	switch bits {
 	case 1:
-		h = crypto.SHA1
+		return crypto.SHA1, nil
 	case 256:
-		h = crypto.SHA256
+		return crypto.SHA256, nil
 	case 384:
-		h = crypto.SHA384
+		return crypto.SHA384, nil
 	case 512:
-		h = crypto.SHA512
+		return crypto.SHA512, nil
 	default:
-		must(errors.New("hash"))
+		return 0, errors.New("hash")
 	}
-
-	return h
 }
 
-func probeSigner(path string) crypto.Signer {
-	var key crypto.Signer
-
-	if path != "" {
-		b, _ := pem.Decode(read(path))
-		if b == nil {
-			must(errors.New("PEM"))
-		}
-
-		x, e := x509.ParsePKCS8PrivateKey(b.Bytes)
-		must(e)
-
-		var ok bool
-
-		key, ok = x.(crypto.Signer)
-		if !ok {
-			must(errors.New("signer"))
-		}
+func loadSigner(path string) (crypto.Signer, error) {
+	if path == "" {
+		return nil, nil
 	}
 
-	return key
+	raw, err := os.ReadFile(path) // #nosec G304 -- The local harness selects a private test fixture.
+	if err != nil {
+		return nil, err
+	}
+	defer clear(raw)
+
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return nil, errors.New("PEM")
+	}
+	defer clear(block.Bytes)
+
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	signer, ok := key.(crypto.Signer)
+	if !ok {
+		return nil, errors.New("signer")
+	}
+
+	return signer, nil
 }

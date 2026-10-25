@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -193,5 +194,40 @@ func TestParserReaderMaximumByteLimit(t *testing.T) {
 
 	if root := d.DocumentElement(); root == nil || root.LocalName() != "r" {
 		t.Fatal("reader lost the XML document")
+	}
+}
+
+func TestInvocationContextLifetime(t *testing.T) {
+	engine, err := NewEngine(Config{Limits: Limits{Timeout: time.Minute}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type valueKey struct{}
+	deadline := time.Now().Add(10 * time.Second)
+	parent, stop := context.WithDeadline(context.WithValue(t.Context(), valueKey{}, "caller"), deadline)
+	defer stop()
+	ctx, cancel, err := engine.invocation(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if actual, ok := ctx.Deadline(); !ok || !actual.Equal(deadline) || ctx.Value(valueKey{}) != "caller" {
+		t.Fatal("invocation lost the caller's deadline or values")
+	}
+	cancel()
+	if !errors.Is(ctx.Err(), context.Canceled) || parent.Err() != nil {
+		t.Fatal("invocation cancellation affected its parent", ctx.Err(), parent.Err())
+	}
+
+	parent, stopCause := context.WithCancelCause(t.Context())
+	ctx, cancel, err = engine.invocation(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	failure := errors.New("caller stopped")
+	stopCause(failure)
+	if !errors.Is(ctx.Err(), context.Canceled) || !errors.Is(context.Cause(ctx), failure) {
+		t.Fatal("caller cancellation/cause lost", ctx.Err(), context.Cause(ctx))
 	}
 }

@@ -12,7 +12,9 @@ import (
 
 // QualifiedName identifies a function in a specific namespace.
 type QualifiedName struct {
-	URI  string
+	// URI is the function namespace URI.
+	URI string
+	// Name is the local function name without its prefix.
 	Name string
 }
 
@@ -23,7 +25,11 @@ type URIResolver = xdm.URIResolver
 // CollectionResolver resolves fn:collection and fn:uri-collection lookups.
 // The empty string identifies the default collection.
 type CollectionResolver interface {
+	// ResolveCollection returns the members of the named collection. An empty URI
+	// requests the default collection.
 	ResolveCollection(context.Context, string) (xdm.Sequence, error)
+	// ResolveURICollection returns the member URIs of the named collection. An empty URI
+	// requests the default URI collection.
 	ResolveURICollection(context.Context, string) ([]string, error)
 }
 
@@ -32,12 +38,16 @@ type CollectionResolver interface {
 // evaluate global variables on demand. Names use the expanded Clark form,
 // matching the keys in the static variable scope.
 type VariableResolver interface {
+	// ResolveVariable looks up a Clark-name binding and reports whether it was found.
+	// Evaluation failures remain errors.
 	ResolveVariable(ctx context.Context, name string) (xdm.Sequence, bool, error)
 }
 
 // VariableResolverSnapshotProvider preserves host-language lexical bindings in
 // an inline function without retaining the producing invocation's mutable state.
 type VariableResolverSnapshotProvider interface {
+	// SnapshotVariableResolver captures lexical bindings without retaining mutable
+	// invocation state.
 	SnapshotVariableResolver() VariableResolver
 }
 
@@ -47,14 +57,21 @@ type VariableResolverSnapshotProvider interface {
 // resolved for direct function calls. This is used by xslt to resolve
 // xsl:original() without exposing it to function-lookup.
 type FunctionResolver interface {
+	// ResolveFunction resolves a direct call by namespace, local name and arity and
+	// reports whether a function exists.
 	ResolveFunction(ctx context.Context, uri, name string, arity int) (Function, bool, error)
 }
 
 // SchemaDeclarations provides schema element/attribute/type lookup for
 // schema-element(), schema-attribute() node tests and schema-aware casting.
 type SchemaDeclarations interface {
+	// LookupSchemaElement returns a declared element's type annotation and whether the
+	// declaration exists.
 	LookupSchemaElement(local, ns string) (typeName string, ok bool)
+	// LookupSchemaAttribute returns a declared attribute's type annotation and whether
+	// the declaration exists.
 	LookupSchemaAttribute(local, ns string) (typeName string, ok bool)
+	// LookupSchemaType returns the declared base type and whether the type exists.
 	LookupSchemaType(local, ns string) (baseType string, ok bool)
 	// IsSubtypeOf returns true if typeName is the same as or a subtype of baseTypeName.
 	// Both names use the annotation format: "xs:localName" for XSD built-ins,

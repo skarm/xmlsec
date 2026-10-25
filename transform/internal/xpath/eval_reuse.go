@@ -20,6 +20,7 @@ import (
 // EvaluateReuse call on the same EvalState — the result's backing
 // storage may be overwritten.
 type EvalState struct {
+	// ec retains mutable evaluation context and scratch storage between calls.
 	ec      evalContext
 	oneItem [1]xdm.Item // reusable backing for single-item results
 	// nodes is the reusable backing of a result that is a node list.
@@ -28,10 +29,15 @@ type EvalState struct {
 	// baseNode / baseContextItem capture the focus seeded by NewEvalState so
 	// each EvaluateReuse call starts from that base focus, and never a focus
 	// mutated by a prior call.
-	baseNode         xdm.Node
-	baseContextItem  xdm.Item
-	baseCompat       bool
-	baseNamespaces   map[string]string
+	baseNode xdm.Node
+	// baseContextItem restores the configured non-node focus before each evaluation.
+	baseContextItem xdm.Item
+	// baseCompat restores the host's XPath 1.0 compatibility setting.
+	baseCompat bool
+	// baseNamespaces retains the unbound expression's namespace context between
+	// evaluations.
+	baseNamespaces map[string]string
+	// baseXMLNamespace restores the host XML default namespace for unbound expressions.
 	baseXMLNamespace string
 
 	// explicitTime is true when the Evaluator had an explicitly configured
@@ -63,13 +69,13 @@ func (s *EvalState) SetPosition(pos int) { s.ec.position = pos }
 // SetSize sets the context size on the eval state.
 func (s *EvalState) SetSize(size int) { s.ec.size = size }
 
-// EvaluateReuse evaluates the expression using pre-allocated state,
-// resetting per-evaluation fields, and allocating none.
-// The node parameter replaces the context node for this evaluation.
+// EvaluateReuse evaluates the expression with reusable mutable state. The node
+// argument overrides the base context node for this call when non-nil. Evaluation can
+// allocate storage for intermediate values and results.
 //
-// The returned Result is only valid until the next EvaluateReuse call
-// on the same EvalState. Callers must extract all needed values from
-// the Result before calling EvaluateReuse again.
+// The returned Result can borrow state storage and is valid only until the next call
+// using that EvalState. Consume or copy needed values before reusing the state. An
+// EvalState must not be used concurrently.
 func (e *Expression) EvaluateReuse(ctx context.Context, state *EvalState, node xdm.Node) (Result, error) {
 	if err := e.requireCompiledProgram(); err != nil {
 		return Result{}, err

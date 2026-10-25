@@ -51,8 +51,8 @@ var (
 	ErrCorrelation = errors.New("SAML request correlation rejected")
 )
 
-// Limits bounds SAML XML, assertions and attribute values; zero fields use profile
-// defaults.
+// Limits bounds message age, assertion lifetime and attribute values. Zero fields
+// select profile defaults.
 type Limits struct {
 	// MaxMessageAge bounds response and request age; zero selects five minutes.
 	MaxMessageAge time.Duration
@@ -68,12 +68,18 @@ type Limits struct {
 	MaxValueBytes int
 }
 
-// SigningKey supplies a signer, its matching DER certificate and XML signature policy.
+// SigningKey pairs a local signer with its matching DER certificate and XML signature
+// policy.
 type SigningKey struct {
-	Key             crypto.Signer
-	CertificateDER  []byte
+	// Key is the local signing key. Its public key must match CertificateDER.
+	Key crypto.Signer
+	// CertificateDER is the matching DER certificate included as a key description.
+	CertificateDER []byte
+	// SignatureMethod selects the XML signature algorithm. Empty selects RSA-SHA256
+	// for RSA keys or ECDSA-SHA256 for ECDSA keys.
 	SignatureMethod string
-	Policy          xmldsig.Policy
+	// Policy sets signature algorithms and key limits. Zero selects xmldsig.DefaultPolicy.
+	Policy xmldsig.Policy
 }
 
 func normalize(l Limits) (Limits, error) {

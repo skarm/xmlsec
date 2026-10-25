@@ -22,8 +22,9 @@ func TestElementPlaintextProfile(t *testing.T) {
 	// plaintext. Relabeling Type does not corrupt the GCM authentication tag.
 	for _, rsaTransport := range []bool{false, true} {
 		for _, tc := range []struct {
-			name, xml string
-			valid     bool
+			name  string
+			xml   string
+			valid bool
 		}{
 			{"element", `<r>й é 😀</r>`, true},
 			{"empty element", `<r/>`, true},

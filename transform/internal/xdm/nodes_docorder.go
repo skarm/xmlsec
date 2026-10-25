@@ -21,6 +21,7 @@ import (
 // removing, or moving nodes), otherwise order results may be stale. Subsequent
 // lookups after Reset recompute order from the current tree.
 type DocOrderCache struct {
+	// mu guards document registration and cached node positions across evaluations.
 	mu sync.Mutex
 	// keys holds one entry per indexed node across every indexed document, so
 	// a position lookup costs a single hash probe with no parent-chain walk.
@@ -130,6 +131,8 @@ func (c *DocOrderCache) Compare(a, b Node) int {
 	return cmp.Compare(oa, ob)
 }
 
+// Less reports whether the first node precedes the second in the cache's document
+// order. Reset the cache after mutating indexed trees.
 func (c *DocOrderCache) Less(a, b Node) bool {
 	return c.Compare(a, b) < 0
 }
@@ -364,7 +367,9 @@ func unknownSortKey() sortKey { return sortKey{docOrder: -1, position: -1} }
 // NamespaceNodeWrapper objects are created fresh each time the namespace axis
 // is traversed, so pointer-based identity fails for deduplication.
 type NSNodeKey struct {
+	// Parent is the namespace node's logical owner element.
 	Parent Node
+	// Prefix distinguishes namespace nodes on the same owner.
 	Prefix string
 }
 

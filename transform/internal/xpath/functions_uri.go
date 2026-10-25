@@ -13,7 +13,7 @@ import (
 	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
-func lookupFunctionsUri(name string) (*builtinFunc, bool) {
+func lookupFunctionsURI(name string) (*builtinFunc, bool) {
 	switch name {
 	case "encode-for-uri":
 		return &builtinFunc{name: name, min: 1, max: 1, fn: fnEncodeForURI}, true

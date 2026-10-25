@@ -28,8 +28,9 @@ var (
 	ErrResource = resource.ErrResource
 )
 
-// Limits bounds both XPath and XSLT. Zero fields select defaults; negative
-// fields are invalid. MaxNodes also bounds intermediate sequences and trees.
+// Limits bounds XPath and XSLT compilation and execution. Zero fields select
+// defaults; negative values are rejected. MaxNodes also bounds intermediate
+// sequences and trees.
 type Limits struct {
 	// MaxInputBytes bounds XML input and each resolved resource; the default is 8 MiB.
 	MaxInputBytes int
@@ -62,9 +63,12 @@ func DefaultLimits() Limits {
 	return Limits{MaxInputBytes: 8 << 20, MaxResourceBytes: 32 << 20, MaxResources: 128, MaxProgramBytes: 64 << 10, MaxOutputBytes: 8 << 20, MaxNodes: 100_000, MaxOperations: 2_000_000, MaxDepth: 128, Timeout: 3 * time.Second}
 }
 
-// Config contains engine-wide policy. No implicit file or network access is
-// performed. Resolver may be used concurrently and must honor its context.
+// Config supplies immutable engine policy and explicit resource adapters.
+// The engine performs no implicit file or network access. Resolver can be called
+// concurrently and must honor its context.
 type Config struct {
+	// Limits bounds compilation, evaluation, resources and serialization. Zero fields
+	// select defaults.
 	Limits Limits
 	// XMLSchemaVersion selects builtin datatype lexical rules and the regular
 	// expression range grammar. Zero selects XMLSchema11. This does not enable
@@ -80,8 +84,8 @@ type Config struct {
 	// encodings in addition to UTF-8/UTF-16. Raw and decoded bytes share the
 	// input limit. Engine.Parse and the XMLDSig input profile remain DTD-free.
 	AllowSingleByteEncodings bool
-	// Functions registers application functions by expanded name. The registry
-	// is copied; callbacks must honor context and support concurrent calls.
+	// Functions registers callbacks by expanded name. Construction copies the registry.
+	// Callbacks must honor context and support concurrent calls.
 	Functions []Function
 	// PackageResolver enables xsl:use-package. Nil disables package loading.
 	PackageResolver PackageResolver
@@ -90,24 +94,25 @@ type Config struct {
 	CollectionResolver CollectionResolver
 	// Resolver authorizes external byte resources. Nil disables resource access.
 	Resolver Resolver
-	// Environment supplies the environment-variable functions. The map is copied;
-	// the process environment is never read implicitly.
+	// Environment supplies explicit environment-variable bindings. Construction copies the
+	// map and never reads the process environment implicitly.
 	Environment map[string]string
-	// AllowedPrograms enables exact XMLDSig 1.0 transform programs. It is an
-	// application-owned allowlist, independent of registered Functions.
+	// AllowedPrograms authorizes exact XMLDSig 1.0 transform programs. This application
+	// allowlist is independent of Functions registration.
 	AllowedPrograms []reference.Transform
 }
 
-// Resolver supplies application-approved resources for imports and URI functions.
-// Implementations must support concurrent use and honor cancellation, including
-// during reads. The engine closes every non-nil returned stream, even on error.
+// Resolver supplies application-approved bytes for imports and URI functions.
+// Implementations must support concurrent calls and honor cancellation while
+// resolving and reading. The engine closes every non-nil returned stream,
+// including a stream returned with an error.
 type Resolver = resource.Resolver
 
 // ResolverFunc adapts a function to Resolver.
 type ResolverFunc = resource.ResolverFunc
 
-// Engine owns immutable policy and creates compiled programs.
-// Its zero value is invalid; construct it with NewEngine.
+// Engine retains immutable policy for compilation and execution. Construct it with
+// NewEngine; its zero value is invalid.
 type Engine struct {
 	packages                      PackageResolver
 	collections                   CollectionResolver
@@ -139,7 +144,41 @@ func NewEngine(config Config) (*Engine, error) {
 	fields := []struct {
 		value    *int
 		fallback int
-	}{{&limits.MaxInputBytes, d.MaxInputBytes}, {&limits.MaxResourceBytes, d.MaxResourceBytes}, {&limits.MaxResources, d.MaxResources}, {&limits.MaxProgramBytes, d.MaxProgramBytes}, {&limits.MaxOutputBytes, d.MaxOutputBytes}, {&limits.MaxNodes, d.MaxNodes}, {&limits.MaxOperations, d.MaxOperations}, {&limits.MaxDepth, d.MaxDepth}}
+	}{
+		{
+			value:    &limits.MaxInputBytes,
+			fallback: d.MaxInputBytes,
+		},
+		{
+			value:    &limits.MaxResourceBytes,
+			fallback: d.MaxResourceBytes,
+		},
+		{
+			value:    &limits.MaxResources,
+			fallback: d.MaxResources,
+		},
+		{
+			value:    &limits.MaxProgramBytes,
+			fallback: d.MaxProgramBytes,
+		},
+		{
+			value:    &limits.MaxOutputBytes,
+			fallback: d.MaxOutputBytes,
+		},
+		{
+			value:    &limits.MaxNodes,
+			fallback: d.MaxNodes,
+		},
+		{
+			value:    &limits.MaxOperations,
+			fallback: d.MaxOperations,
+		},
+		{
+			value:    &limits.MaxDepth,
+			fallback: d.MaxDepth,
+		},
+	}
+
 	for _, field := range fields {
 		if *field.value < 0 {
 			return nil, wrap("configure", ErrInput)
@@ -223,12 +262,17 @@ func (e *Engine) invocation(ctx context.Context) (context.Context, context.Cance
 		return nil, nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, e.limits.Timeout)
+	// Keep the deadline outside the invocation values: hot cancellation checks
+	// can read it directly instead of traversing every value wrapper. Capture
+	// its start first so policy setup still counts toward the same timeout.
+	deadline := time.Now().Add(e.limits.Timeout)
 	ctx = xpath.WithFunctions(ctx, nil)
 	ctx = context.WithValue(ctx, resourceBudgetKey{}, &resourceBudget{bytes: e.limits.MaxResourceBytes, loads: e.limits.MaxResources})
 	ctx = xpath.WithEnvironment(ctx, e.environment)
+	ctx = xpath.WithBudget(ctx, e.limits.MaxOperations, e.limits.MaxNodes, e.limits.MaxOutputBytes, e.limits.MaxDepth)
+	ctx, cancel := context.WithDeadline(ctx, deadline)
 
-	return xpath.WithBudget(ctx, e.limits.MaxOperations, e.limits.MaxNodes, e.limits.MaxOutputBytes, e.limits.MaxDepth), cancel, nil
+	return ctx, cancel, nil
 }
 
 func (e *Engine) parseOptions() xdm.ParseOptions {
@@ -250,9 +294,11 @@ func (e *Engine) languageParseOptions() xdm.ParseOptions {
 	return options
 }
 
-// Error describes an operation and preserves the standard XPath/XSLT error
-// code, when available. errors.Is also preserves cancellation and limit errors.
+// Error identifies a failed operation and retains its XPath, XSLT or application
+// error code when available. errors.Is preserves underlying cancellation and
+// resource-limit errors.
 type Error struct {
+	// Operation identifies the library operation that failed.
 	Operation string
 	// Code is the local part of the XPath, XSLT or application error code,
 	// or empty when none is available. CodeName also preserves its namespace.

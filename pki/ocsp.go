@@ -18,29 +18,29 @@ import (
 	"github.com/skarm/xmlsec/internal/x509name"
 )
 
-// OCSPOptions configures offline evidence checks at the supplied verification
-// time; it does not authenticate the issuer itself. SHA-1 CertID/ResponderID
-// values are identifiers, not signature algorithms.
+// OCSPOptions selects offline response checks at an explicit verification time.
+// The caller must authenticate the issuer separately. SHA-1 CertID and ResponderID
+// hashes serve as identifiers and do not select a SHA-1 signature algorithm.
 type OCSPOptions struct {
 	// Sources optionally binds untrusted acquisition metadata to exact supplied
 	// response/certificate/CRL bytes, with at most 1024 observations totaling
 	// 8 MiB. It never establishes trust or freshness.
 	Sources []*evidence.Observation
-	// Authorities supplies at most 8 explicit issuer-scoped local signing pins,
-	// totaling at most 8MiB. Nil permits only the issuer or its delegated responder.
+	// Authorities supplies at most 8 explicit issuer-scoped signing pins, totaling at most
+	// 8 MiB. Nil permits only the issuer or its delegated responder.
 	Authorities []OCSPAuthority
 	// ExpectedNonce requires an exact response nonce match when nonempty.
 	// At most 128 bytes are accepted.
 	ExpectedNonce []byte
-	// MaxAge bounds evidence age; zero selects 24 hours, with a 30-day maximum.
+	// MaxAge bounds evidence age. Zero selects 24 hours. The maximum is 30 days.
 	MaxAge time.Duration
-	// ClockSkew permits time tolerance; zero permits none. Negative values and
-	// values greater than ten minutes are rejected.
+	// ClockSkew permits time tolerance up to ten minutes. Zero permits none. Negative
+	// values are rejected.
 	ClockSkew time.Duration
-	// MaxBytes bounds response DER; zero selects 1 MiB, with an 8 MiB maximum.
+	// MaxBytes bounds response DER. Zero selects 1 MiB. The maximum is 8 MiB.
 	MaxBytes int
-	// ResponderCRLs supplies offline revocation evidence for delegated responders.
-	// At most 32 CRLs totaling 8 MiB are accepted; nothing is fetched automatically.
+	// ResponderCRLs supplies offline revocation data for delegated responders. At most 32
+	// CRLs totaling 8 MiB are accepted. No evidence is fetched automatically.
 	ResponderCRLs [][]byte
 }
 
@@ -68,23 +68,40 @@ const (
 	OCSPAuthorityLocal OCSPAuthorization = "local-configuration"
 )
 
-// OCSPReport records OCSP signature, freshness and certificate-status checks.
+// OCSPReport records response signature, freshness and certificate status outcomes.
+// Diagnostic assertions can remain available after a failed check; accepting a
+// response requires a successful verification result.
 type OCSPReport struct {
-	evidence               []*VerifiedEvidence
-	Signature              Status     `json:"signature"`
-	Status                 OCSPStatus `json:"certificate_status,omitempty"`
-	ProducedAt, RevokedAt  time.Time
-	ThisUpdate, NextUpdate time.Time
-	RevocationReason       int
-	Delegated              bool
-	Authorization          OCSPAuthorization
-	Error                  string `json:"error,omitempty"`
+	evidence []*VerifiedEvidence
+	// Signature records the response signature check outcome.
+	Signature Status `json:"signature"`
+	// Status records the certificate status asserted by the selected response entry.
+	Status OCSPStatus `json:"certificate_status,omitempty"`
+	// ProducedAt is the response's asserted production time.
+	ProducedAt time.Time
+	// RevokedAt is the asserted revocation time when Status is OCSPRevoked.
+	RevokedAt time.Time
+	// ThisUpdate is the selected entry's asserted status update time.
+	ThisUpdate time.Time
+	// NextUpdate is the asserted next update time, or zero when omitted.
+	NextUpdate time.Time
+	// RevocationReason is the selected entry's reason code when supplied for a revoked
+	// certificate.
+	RevocationReason int
+	// Delegated reports whether an issuer-delegated responder signed the response.
+	Delegated bool
+	// Authorization records how the response signer was authorized.
+	Authorization OCSPAuthorization
+	// Error describes the verification failure, or is empty on success.
+	Error string `json:"error,omitempty"`
 }
 
-// OCSPResult is an immutable authenticated OCSP response and responder certificate.
+// OCSPResult retains an immutable authenticated response and its authorized responder
+// certificate.
 type OCSPResult struct {
-	response, responder []byte
-	report              OCSPReport
+	response  []byte
+	responder []byte
+	report    OCSPReport
 }
 
 // DER returns an owned copy of the original DER encoding.
@@ -114,11 +131,12 @@ func (r *OCSPResult) Report() OCSPReport {
 	return r.report
 }
 
-// OCSPRequest is one unsigned request. Unsupported extensions/signed requests
-// and requestorName are rejected, rather than silently dropping their meaning.
+// OCSPRequest is an unsigned request within the supported profile. Parsing rejects
+// signed requests, requestorName and unsupported extensions.
 type OCSPRequest struct {
-	id         certID
-	nonce, raw []byte
+	id    certID
+	nonce []byte
+	raw   []byte
 }
 
 // ParseOCSPRequest parses one complete bounded OCSP request without authenticating its
@@ -223,7 +241,7 @@ func extensions(v asn1.RawValue) ([]pkix.Extension, error) {
 
 	var out []pkix.Extension
 
-	seen := map[string]bool{}
+	seen := map[string]struct{}{}
 
 	for _, field := range fields {
 		f, e := der.Sequence(field, 2, 3)
@@ -232,11 +250,15 @@ func extensions(v asn1.RawValue) ([]pkix.Extension, error) {
 		}
 
 		var oid asn1.ObjectIdentifier
-		if der.Decode(f[0], &oid) != nil || seen[oid.String()] {
+		if der.Decode(f[0], &oid) != nil {
 			return nil, ErrEvidence
 		}
 
-		seen[oid.String()] = true
+		if _, exists := seen[oid.String()]; exists {
+			return nil, ErrEvidence
+		}
+
+		seen[oid.String()] = struct{}{}
 		x := pkix.Extension{Id: oid}
 		i := 1
 
@@ -416,9 +438,10 @@ func oidOCSPNoCheck() asn1.ObjectIdentifier {
 }
 
 type certID struct {
-	alg       pkix.AlgorithmIdentifier
-	name, key []byte
-	serial    *big.Int
+	alg    pkix.AlgorithmIdentifier
+	name   []byte
+	key    []byte
+	serial *big.Int
 }
 
 func sameCertID(a, b certID) bool {

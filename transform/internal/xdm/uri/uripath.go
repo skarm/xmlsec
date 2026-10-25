@@ -7,9 +7,9 @@
 //
 // Every helper here decides purely from the STRING shape of its input — it
 // never consults runtime.GOOS or filepath separators. This is deliberate: the
-// helium URI/path resolution code must behave the same way on every platform
+// URI/path resolver must behave the same way on every platform
 // (so that, e.g., a Windows drive-letter path embedded in a catalog or a
-// stylesheet base URI is recognized even when helium runs on POSIX), and so
+// stylesheet base URI is recognized even when the processor runs on POSIX), and so
 // that the Windows-specific behavior is exercised by the Linux test suite.
 package uripath
 
@@ -145,7 +145,7 @@ func ToSlash(s string) string {
 // on every OS. Both inputs are normalized with [ToSlash] first, then joined
 // with path.Join (slash semantics), so the resolution never depends on
 // runtime.GOOS or filepath.Separator. This keeps the documented forward-slash
-// contract of helium's URI-style resolvers on Windows, where filepath.Join
+// contract of URI-style resolvers on Windows, where filepath.Join
 // would otherwise emit backslashes and corrupt a POSIX-shaped base.
 //
 // The base may be a full file path ("/a/b/style.xsl") or a directory-like path

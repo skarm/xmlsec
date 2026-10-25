@@ -272,7 +272,10 @@ func TestCompareSaxonDocumentFunctionContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	encodingURI := (&url.URL{Scheme: "file", Path: filepath.ToSlash(encodingFile)}).String()
-	for _, test := range []struct{ expression, want string }{
+	for _, test := range []struct {
+		expression string
+		want       string
+	}{
 		{`unparsed-text('urn:invalid-encoding','')`, "FOUT1190"},
 		{`unparsed-text-available('urn:invalid-encoding','')`, "false"},
 		{`unparsed-text-lines('urn:invalid-encoding','')`, "FOUT1190"},
@@ -337,7 +340,10 @@ func TestCompareSaxonDocumentFunctionContracts(t *testing.T) {
 			compareSaxonStylesheet(t, t.Context(), e, binary, classpath, `<xsl:template name="start">`+valueOfExpression(expression)+`</xsl:template>`, test.want, oracle)
 		})
 	}
-	for _, test := range []struct{ argument, want string }{
+	for _, test := range []struct {
+		argument string
+		want     string
+	}{
 		{`42`, errCodeXPTY0004},
 		{`[]`, errCodeXPTY0004},
 		{`('urn:shared#b','urn:shared#a','urn:shared#a')`, "a,b"},
@@ -363,8 +369,11 @@ func TestCompareSaxonDocumentFunctionContracts(t *testing.T) {
 func compareSaxonDocumentSnapshots(t *testing.T, binary, classpath string) {
 	t.Helper()
 	for _, test := range []struct {
-		name, expression, want string
-		missing, mutable       bool
+		name       string
+		expression string
+		want       string
+		missing    bool
+		mutable    bool
 	}{
 		{"negative snapshot", `doc-available($uri) eq doc-available($uri)`, nameTrue, true, true},
 		{"negative snapshot named", `(doc-available#1)($uri) eq (doc-available#1)($uri)`, nameTrue, true, true},
@@ -635,7 +644,10 @@ func compareSaxonURICollections(t *testing.T, binary, classpath string) {
 		}
 		return []string{"file://" + filepath.ToSlash(filepath.Join(directory, "one.xml")), "file://" + filepath.ToSlash(filepath.Join(directory, "two.xml"))}, ctx.Err()
 	}}})
-	for name, test := range map[string]struct{ expression, want string }{
+	for name, test := range map[string]struct {
+		expression string
+		want       string
+	}{
 		"members":     {`count(uri-collection($uri))`, "2"},
 		"atomic type": {`every $uri in uri-collection($uri) satisfies $uri instance of xs:anyURI`, nameTrue},
 		"stable view": {`deep-equal(uri-collection($uri),uri-collection($uri))`, nameTrue},
@@ -890,8 +902,18 @@ func TestCompareSaxon20CompilerContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal("configured Saxon 2.0 requires java", err)
 	}
-	tests := make([]struct{ name, source, module, want string }, 0, 18)
-	for _, test := range []struct{ name, prefix, importAttribute, want string }{
+	tests := make([]struct {
+		name   string
+		source string
+		module string
+		want   string
+	}, 0, 18)
+	for _, test := range []struct {
+		name            string
+		prefix          string
+		importAttribute string
+		want            string
+	}{
 		{"ordered", "", "", "ok"},
 		{"after output", `<xsl:output method="text"/>`, "", "XTSE0200"},
 		{"after template", `<xsl:template name="earlier"/>`, "", "XTSE0200"},
@@ -901,13 +923,32 @@ func TestCompareSaxon20CompilerContracts(t *testing.T) {
 		{"excluded import", `<xsl:output method="text"/>`, ` use-when="false()"`, "ok"},
 	} {
 		source := sheetStart + version20 + `">` + test.prefix + `<xsl:import href="module.xsl"` + test.importAttribute + `/><xsl:output method="text"/><xsl:template name="start">ok</xsl:template></xsl:stylesheet>`
-		tests = append(tests, struct{ name, source, module, want string }{test.name, source, sheet(version20, ""), test.want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{test.name, source, sheet(version20, ""), test.want})
 	}
 	tests = append(tests,
-		struct{ name, source, module, want string }{"reported 2.0", sheet(version20, `<xsl:template name="start"><xsl:value-of select="system-property('xsl:version')"/></xsl:template>`), sheet(version20, ""), "2.0"},
-		struct{ name, source, module, want string }{"reject 3.0 instruction", sheet(version20, `<xsl:template name="start"><xsl:iterate select="1"/></xsl:template>`), sheet(version20, ""), "XTSE0010"},
+		struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"reported 2.0", sheet(version20, `<xsl:template name="start"><xsl:value-of select="system-property('xsl:version')"/></xsl:template>`), sheet(version20, ""), "2.0"},
+		struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"reject 3.0 instruction", sheet(version20, `<xsl:template name="start"><xsl:iterate select="1"/></xsl:template>`), sheet(version20, ""), "XTSE0010"},
 	)
-	for _, test := range []struct{ name, body, want string }{
+	for _, test := range []struct {
+		name string
+		body string
+		want string
+	}{
 		{"non-simple cast target", `<xsl:value-of select="'x' cast as xs:anyType"/>`, "XPST0051"},
 		{"non-simple castable target", `<xsl:value-of select="'x' castable as xs:untyped"/>`, "XPST0051"},
 		{"abstract cast target", `<xsl:value-of select="'x' cast as xs:anyAtomicType"/>`, "XPST0080"},
@@ -923,18 +964,33 @@ func TestCompareSaxon20CompilerContracts(t *testing.T) {
 		{"stylesheet comment coalescing", "A<!--merge-->\n  <xsl:text>X</xsl:text>", "A\n  X"},
 		{"stylesheet PI coalescing", "A<?merge ignored?>\n  <xsl:text>X</xsl:text>", "A\n  X"},
 	} {
-		tests = append(tests, struct{ name, source, module, want string }{test.name, sheet(version20, `<xsl:template name="start">`+test.body+`</xsl:template>`), sheet(version20, ""), test.want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{test.name, sheet(version20, `<xsl:template name="start">`+test.body+`</xsl:template>`), sheet(version20, ""), test.want})
 	}
 
 	for _, version := range []string{"-29", "0", "-0.0", "0.5", "+1.50"} {
 		source := sheet(version, `<xsl:template name="start"><xsl:value-of select="1 to 5"/></xsl:template>`)
-		tests = append(tests, struct{ name, source, module, want string }{"version " + version, source, sheet(version20, ""), "1"})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"version " + version, source, sheet(version20, ""), "1"})
 	}
 	for _, kind := range []string{nameInclude, nameImport} {
 		for _, rootCondition := range []bool{false, true} {
 			source, module := moduleUseWhenNamespaceSources(kind, rootCondition)
 			source = strings.ReplaceAll(source, "urn:module", "module.xsl")
-			tests = append(tests, struct{ name, source, module, want string }{kind + strconv.FormatBool(rootCondition), source, module, "42:false"})
+			tests = append(tests, struct {
+				name   string
+				source string
+				module string
+				want   string
+			}{kind + strconv.FormatBool(rootCondition), source, module, "42:false"})
 		}
 	}
 	for _, test := range staticModuleCompilationCases() {
@@ -943,13 +999,23 @@ func TestCompareSaxon20CompilerContracts(t *testing.T) {
 		}
 	}
 	for _, test := range booleanProfileCases() {
-		tests = append(tests, struct{ name, source, module, want string }{
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{
 			"boolean " + test.name, hostFunctionSheet(version20, test), sheet(version20, ""), test.want20,
 		})
 	}
 	for _, test := range serialization20Cases() {
 		source := serialization20Sheet(test)
-		tests = append(tests, struct{ name, source, module, want string }{"serialization20 " + test.name, source, sheet(version20, ""), test.want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"serialization20 " + test.name, source, sheet(version20, ""), test.want})
 	}
 
 	for expression, ordered := range binaryOperatorExpressions() {
@@ -958,50 +1024,105 @@ func TestCompareSaxon20CompilerContracts(t *testing.T) {
 			want = errCodeXPTY0004
 		}
 		source := sheet(version20, `<xsl:template name="start">`+valueOfExpression(expression)+`</xsl:template>`)
-		tests = append(tests, struct{ name, source, module, want string }{"binary operator " + expression, source, sheet(version20, ""), want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"binary operator " + expression, source, sheet(version20, ""), want})
 	}
 
 	for expression, want := range untypedNodeTypeCases() {
 		source := sheet(version20, `<xsl:variable name="d">`+untypedNodeTypeXML+`</xsl:variable><xsl:template name="start"><xsl:for-each select="$d">`+valueOfExpression(expression)+`</xsl:for-each></xsl:template>`)
-		tests = append(tests, struct{ name, source, module, want string }{"untyped node " + expression, source, sheet(version20, ""), want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"untyped node " + expression, source, sheet(version20, ""), want})
 	}
 	for expression, want := range processingInstructionTypeCases() {
 		source := sheet(version20, `<xsl:template name="start"><xsl:for-each select="document('module.xsl')">`+valueOfExpression(expression)+`</xsl:for-each></xsl:template>`)
-		tests = append(tests, struct{ name, source, module, want string }{"PI type " + strconv.QuoteToASCII(expression), source, processingInstructionTypeXML, want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"PI type " + strconv.QuoteToASCII(expression), source, processingInstructionTypeXML, want})
 	}
 	for expression, want := range namespaceNodeTypeCases() {
 		source := sheet(version20, `<xsl:variable name="d">`+namespaceNodeTypeXML+`</xsl:variable><xsl:template name="start"><xsl:for-each select="$d" xmlns:p="urn:node" xmlns:t="http://www.w3.org/2001/XMLSchema" xpath-default-namespace="urn:node">`+valueOfExpression(expression)+`</xsl:for-each></xsl:template>`)
-		tests = append(tests, struct{ name, source, module, want string }{"node type namespace " + expression, source, sheet(version20, ""), want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"node type namespace " + expression, source, sheet(version20, ""), want})
 	}
 
 	for expression, want := range qnameWhitespaceCases() {
 		source := sheet(version20, `<xsl:template name="start">`+valueOfExpression(expression)+`</xsl:template>`)
-		tests = append(tests, struct{ name, source, module, want string }{"QName whitespace " + expression, source, sheet(version20, ""), want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"QName whitespace " + expression, source, sheet(version20, ""), want})
 	}
 	for expression, want := range publishedFunctionArityCases(transform.XPath20) {
 		// The stylesheet's default function namespace supplies the same
 		// expanded names without requiring an explicit fn prefix binding.
 		source := sheet(version20, `<xsl:template name="start">`+valueOfExpression(strings.TrimPrefix(expression, "fn:"))+`</xsl:template>`)
-		tests = append(tests, struct{ name, source, module, want string }{"published arity " + expression, source, sheet(version20, ""), want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"published arity " + expression, source, sheet(version20, ""), want})
 	}
 	for expression, want := range basicNodeAccessorCases() {
 		source := basicNodeAccessorSheet(version20, expression)
-		tests = append(tests, struct{ name, source, module, want string }{"node accessor " + expression, source, sheet(version20, ""), want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"node accessor " + expression, source, sheet(version20, ""), want})
 	}
 	for expression, want := range sequenceConcatenationContractCases() {
 		source := sheet(version20, `<xsl:template name="start">`+valueOfExpression(expression)+`</xsl:template>`)
-		tests = append(tests, struct{ name, source, module, want string }{"sequence contract " + expression, source, sheet(version20, ""), want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"sequence contract " + expression, source, sheet(version20, ""), want})
 	}
 	for expression, want := range qnameLiteral20Cases() {
 		source := sheet(version20, `<xsl:template name="start">`+valueOfExpression(expression)+`</xsl:template>`)
-		tests = append(tests, struct{ name, source, module, want string }{"static QName " + expression, source, sheet(version20, ""), want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"static QName " + expression, source, sheet(version20, ""), want})
 	}
 
 	for _, test := range xsltHostNameCases() {
 		source := sheet(version20, `<xsl:key name="k" match="n" use="@k"/><xsl:variable name="d"><r><n k="a"/></r></xsl:variable><xsl:template name="start">`+valueOfExpression(test.expression)+`</xsl:template>`)
-		tests = append(tests, struct{ name, source, module, want string }{"host name " + test.expression, source, sheet(version20, ""), test.code20})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"host name " + test.expression, source, sheet(version20, ""), test.code20})
 	}
-	for _, test := range []struct{ name, expression, module, want string }{
+	for _, test := range []struct {
+		name       string
+		expression string
+		module     string
+		want       string
+	}{
 		{"empty text encoding", `unparsed-text-available((),())`, "", "false"},
 		{"empty text encoding with URI", `unparsed-text-available('module.xsl',())`, "ok", "true"},
 		{"missing text", `unparsed-text('missing.txt')`, "", "XTDE1170"},
@@ -1024,29 +1145,59 @@ func TestCompareSaxon20CompilerContracts(t *testing.T) {
 		{"binary max sequence", `max((xs:hexBinary('01'),xs:hexBinary('02')))`, "", "FORG0006"},
 	} {
 		source := sheet(version20, `<xsl:template name="start">`+valueOfExpression(test.expression)+`</xsl:template>`)
-		tests = append(tests, struct{ name, source, module, want string }{test.name, source, test.module, test.want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{test.name, source, test.module, test.want})
 	}
 
 	for expression, want := range xpathLexicalCases(transform.XPath20) {
 		source := sheet(version20, `<xsl:template name="start" xmlns:p="urn:test"><xsl:for-each select="document('module.xsl')">`+valueOfExpression(expression)+`</xsl:for-each></xsl:template>`)
-		tests = append(tests, struct{ name, source, module, want string }{"XPath lexical " + strconv.QuoteToASCII(expression), source, xpathLexicalXML, want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"XPath lexical " + strconv.QuoteToASCII(expression), source, xpathLexicalXML, want})
 	}
 
 	for _, expression := range xpathSyntaxErrorSources() {
 		source := sheet(version20, `<xsl:template name="start" xmlns:p="urn:syntax" xmlns:fn="http://www.w3.org/2005/xpath-functions">`+valueOfExpression(expression)+`</xsl:template>`)
-		tests = append(tests, struct{ name, source, module, want string }{"XPath syntax " + expression, source, sheet(version20, ""), errCodeXPST0003})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"XPath syntax " + expression, source, sheet(version20, ""), errCodeXPST0003})
 	}
 	for _, test := range hostFunctionCases() {
 		if test.name == "constructed attribute annotation" {
-			tests = append(tests, struct{ name, source, module, want string }{test.name, hostFunctionSheet(version20, test), sheet(version20, ""), test.want20})
+			tests = append(tests, struct {
+				name   string
+				source string
+				module string
+				want   string
+			}{test.name, hostFunctionSheet(version20, test), sheet(version20, ""), test.want20})
 		}
 	}
 
 	for _, name := range xpathReservedNames(transform.XPath20) {
 		source := reservedNameProofStylesheet(version20, name, true)
-		tests = append(tests, struct{ name, source, module, want string }{"reserved prefix " + name, source, sheet(version20, ""), "registered"})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"reserved prefix " + name, source, sheet(version20, ""), "registered"})
 		source = reservedNameProofStylesheet(version20, name, false)
-		tests = append(tests, struct{ name, source, module, want string }{"reserved bare " + name, source, sheet(version20, ""), errCodeXPST0003})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"reserved bare " + name, source, sheet(version20, ""), errCodeXPST0003})
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1741,7 +1892,12 @@ func TestCompareSaxonPackageContracts(t *testing.T) {
 
 	e := engine(t, transform.Config{})
 
-	for _, test := range []struct{ attributes, body, entry, want string }{
+	for _, test := range []struct {
+		attributes string
+		body       string
+		entry      string
+		want       string
+	}{
 		{`_xmlns="urn:injected"`, "", nameStart, errCodeXTSE0090},
 		{`__version="3.0"`, "", nameStart, errCodeXTSE0090},
 		{"", `<xsl:import-schema namespace="urn:unused" use-when="false()"/>`, nameStart, "ok"},
@@ -1796,7 +1952,12 @@ func TestCompareSaxonResultDelivery(t *testing.T) {
 
 	e := engine(t, transform.Config{})
 
-	for _, test := range []struct{ body, format, assertion, want string }{
+	for _, test := range []struct {
+		body      string
+		format    string
+		assertion string
+		want      string
+	}{
 		{mixedResultTemplate, deliveryRawOption, `count($r?output) eq 5 and $r?output[1] instance of xs:integer and $r?output[3] instance of text() and $r?output[5] instance of xs:boolean`, nameTrue},
 		{mixedResultTemplate, "", `$r?output instance of document-node() and string($r?output) eq '1 2true' and count($r?output/node()) eq 3`, nameTrue},
 		{`<xsl:output method="json"/><xsl:template name="start"><xsl:sequence select="map{'value':3}"/></xsl:template>`, deliveryRawOption, `$r?output instance of map(*) and $r?output?value eq 3`, nameTrue},
@@ -1964,7 +2125,11 @@ func TestCompareSaxonBuildTreeDiagnostic(t *testing.T) {
 
 	e := engine(t, transform.Config{})
 
-	for _, test := range []struct{ body, assertion, oracle string }{
+	for _, test := range []struct {
+		body      string
+		assertion string
+		oracle    string
+	}{
 		{`<xsl:output method="json" build-tree="no"/><xsl:template name="start"><xsl:sequence select="map{'value':3}"/></xsl:template>`, `$r?output instance of map(*) and $r?output?value eq 3`, errCodeSENR0001},
 		{unbuiltResultTemplate, `deep-equal($r?output,(1,2))`, nameFalse},
 	} {
@@ -2366,7 +2531,12 @@ func TestCompareSaxonModuleDiagnostics(t *testing.T) {
 	// In one mixed cycle Saxon classifies the closing include edge (XTSE0180),
 	// while the native processor classifies the cycle containing an import
 	// (XTSE0210). Preserve that diagnostic difference explicitly.
-	for _, tc := range []struct{ first, second, want, oracle string }{
+	for _, tc := range []struct {
+		first  string
+		second string
+		want   string
+		oracle string
+	}{
 		{nameInclude, nameInclude, errCodeXTSE0180, errCodeXTSE0180},
 		{nameImport, nameImport, errCodeXTSE0210, errCodeXTSE0210},
 		{nameInclude, nameImport, errCodeXTSE0210, errCodeXTSE0210},
@@ -2433,7 +2603,12 @@ func TestCompareSaxonEncodedXMLInputs(t *testing.T) {
 	classpath, binary := saxonRuntime(t)
 
 	e := engine(t, transform.Config{AllowSingleByteEncodings: true})
-	for _, tc := range []struct{ encoding, prefix, content, want string }{
+	for _, tc := range []struct {
+		encoding string
+		prefix   string
+		content  string
+		want     string
+	}{
 		{xmlLatinEncoding, "\xe9", "caf\xe9", "é:café"},
 		{"windows-1252", "\x80", "\x80", "€:€"},
 	} {
@@ -2776,7 +2951,10 @@ func TestCompareSaxonContextItemContracts(t *testing.T) {
 func TestCompareSaxonExtensionNamespacePolicies(t *testing.T) {
 	classpath, binary := saxonRuntime(t)
 	e := engine(t, transform.Config{})
-	for _, test := range []struct{ body, want string }{
+	for _, test := range []struct {
+		body string
+		want string
+	}{
 		{`<xsl:template name="start" extension-element-prefixes="xs"/>`, "XTSE0085"},
 		{`<xsl:template name="start"><r xsl:extension-element-prefixes="xs"/></xsl:template>`, "XTSE0085"},
 		{`<xsl:template name="start"><r xsl:extension-element-prefixes="missing"/></xsl:template>`, "XTSE1430"},
@@ -3390,7 +3568,11 @@ func TestCompareSerializationParameterSchemas(t *testing.T) {
 	e := engine(t, transform.Config{})
 	const selected = `for $p in parse-xml($params)/*/*[namespace-uri()='http://www.w3.org/2010/xslt-xquery-serialization'][local-name()=('allow-duplicate-names','byte-order-mark','cdata-section-elements','doctype-public','doctype-system','encoding','escape-uri-attributes','html-version','include-content-type','indent','item-separator','json-node-output-method','media-type','method','normalization-form','omit-xml-declaration','standalone','suppress-indentation','undeclare-prefixes','use-character-maps','version')] return serialize($p,map{'method':'xml','omit-xml-declaration':true()})`
 	extract := query(t, e, selected, transform.XPath31)
-	for _, edition := range []struct{ version, filename, checksum string }{
+	for _, edition := range []struct {
+		version  string
+		filename string
+		checksum string
+	}{
 		{"30", "ser30.xsd", "1cbcc49ac5ed8942ba58276699254469ca2144e229f68faeeb48f784c1037953"},
 		{"31", "ser31.xsd", "256736a2f4e7923e888047dee757c17bc3ee707e285f00639fd8fb1d962d11b0"},
 	} {
@@ -3691,8 +3873,12 @@ func compareSaxonTextResources(t *testing.T, binary, classpath string) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		name, mediaType, data, expression, want string
-		mutable                                 bool
+		name       string
+		mediaType  string
+		data       string
+		expression string
+		want       string
+		mutable    bool
 	}{
 		{"external charset before argument", "text/plain; charset=iso-8859-1", "\xe9", `unparsed-text($uri,'UTF-8') eq codepoints-to-string(233)`, nameTrue, false},
 		{"external UTF8 before argument", textUTF8MediaType, "é", `unparsed-text($uri,'ISO-8859-1') eq codepoints-to-string(233)`, nameTrue, false},

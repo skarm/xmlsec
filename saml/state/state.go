@@ -23,15 +23,32 @@ var (
 	ErrCapacity = errors.New("SAML request state capacity reached")
 )
 
-// Pending records a solicited request and its browser digest, requested conditions and
-// expiration.
+// Pending retains a solicited request, its browser-secret digest, requested
+// authentication conditions and expiration.
 type Pending struct {
-	SP, IDP, RequestID, RelayState, ACS, NameIDFormat string
-	IssuedAt, ExpiresAt                               time.Time
+	// SP is the requesting service provider's entity identifier.
+	SP string
+	// IDP is the selected identity provider's entity identifier.
+	IDP string
+	// RequestID is the XML ID of the soliciting authentication request.
+	RequestID string
+	// RelayState is the opaque binding value used to look up this request.
+	RelayState string
+	// ACS is the exact assertion consumer endpoint selected for the request.
+	ACS string
+	// NameIDFormat is the requested subject identifier format URI, if specified.
+	NameIDFormat string
+	// IssuedAt is the authentication request issuance time.
+	IssuedAt time.Time
+	// ExpiresAt is the pending request's expiration time.
+	ExpiresAt time.Time
 	// BrowserSHA256 binds the request to the browser secret without storing the secret.
-	BrowserSHA256     [32]byte
+	BrowserSHA256 [32]byte
+	// RequestedContexts contains the authentication context class URIs requested with exact
+	// comparison.
 	RequestedContexts []string
-	ForceAuthn        bool
+	// ForceAuthn records whether the request requires fresh authentication.
+	ForceAuthn bool
 }
 
 // Clone returns an owned copy of the request state and its context list.
@@ -58,9 +75,10 @@ func (p Pending) own() Pending {
 	return p
 }
 
-// Store retains pending requests. Put is insert-only. Get is non-destructive so unauthenticated responses
-// cannot burn a legitimate request. Final one-time consumption is atomic in the
-// separate replay.Store after both protocol and browser-correlation checks.
+// Store retains pending requests. Put inserts without replacing an unexpired
+// request. Get reads without consuming, so an unauthenticated response cannot
+// invalidate a legitimate request. After protocol and browser-correlation checks,
+// the separate replay.Store performs atomic one-time consumption.
 type Store interface {
 	// Put inserts owned state at the supplied time without replacing an unexpired request.
 	Put(context.Context, Pending, time.Time) error
@@ -69,7 +87,8 @@ type Store interface {
 	Get(context.Context, string, string, time.Time) (Pending, error)
 }
 
-// Config bounds the in-memory request store. Zero fields select defaults.
+// Config sets capacity and lifetime bounds for an in-memory request store. Zero fields
+// select defaults.
 type Config struct {
 	// Capacity bounds stored entries; zero selects 10000. Unexpired entries
 	// are never evicted to make room.
@@ -78,9 +97,9 @@ type Config struct {
 	MaxTTL time.Duration
 }
 
-// MemoryStore is a concurrent, bounded request store for one process. Expired entries are
-// removed during Put and Get. Stored URI fields use the protocol's 2048-byte
-// bounds (4096 bytes for ACS), checked before copying the input.
+// MemoryStore retains bounded pending requests for concurrent use within one
+// process. Put and Get remove expired entries. Before copying input, it checks URI
+// fields against the protocol's 2048-byte limit, or 4096 bytes for ACS.
 type MemoryStore struct {
 	mu       sync.Mutex
 	capacity int
@@ -90,7 +109,10 @@ type MemoryStore struct {
 	expiry   expiry.Queue[stateKey]
 }
 
-type stateKey struct{ sp, relay string }
+type stateKey struct {
+	sp    string
+	relay string
+}
 
 // NewMemoryStore creates an empty bounded request store using default limits for zero Config
 // fields.

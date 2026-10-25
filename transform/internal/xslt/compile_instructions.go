@@ -273,7 +273,7 @@ func (c *compiler) compileInstruction(ctx context.Context, elem *xdm.Element) (i
 func (c *compiler) compileInstructionPayload(ctx context.Context, elem *xdm.Element) (instruction, bool, error) {
 	if elem.URI() == lexicon.NamespaceXSLT {
 		if c.stylesheet.processorLanguage() == 10 {
-			if _, known := lookupxslt10Attributes(elem.LocalName()); !known {
+			if _, known := lookupXSLT10Attribute(elem.LocalName()); !known {
 				inst, err := c.compileForwardsCompat(ctx, elem)
 				return inst, false, err
 			}

@@ -149,7 +149,11 @@ func TestKeyWrapRejectsTamperingAndConfusion(t *testing.T) {
 		t.Helper()
 		return parse(t, []byte(strings.Replace(text, from, to, 1)))
 	}
-	for _, tc := range []struct{ name, from, to string }{
+	for _, tc := range []struct {
+		name string
+		from string
+		to   string
+	}{
 		{"data-algorithm", xmlenc.AES256GCM, xmlenc.AES128GCM},
 		{"key-algorithm", xmlenc.AES256KeyWrap, xmlenc.AES128KeyWrap},
 		{"key-transport", xmlenc.AES256KeyWrap, xmlenc.RSAOAEP},
@@ -708,9 +712,11 @@ func TestPublishedOAEPDecryptionVectors(t *testing.T) {
 		t.Fatal("publisher key is not RSA")
 	}
 	for _, tc := range []struct {
-		id                         int
-		message, ciphertext, label string
-		valid                      bool
+		id         int
+		message    string
+		ciphertext string
+		label      string
+		valid      bool
 	}{
 		// tc1: valid message
 		{1, "", "6e62bf24d95aff6868afec2a92a445b6458f16f688c19fe1212f66a63137831653cedd359d8cff4dd485d77dfd55812c181373201f54aafd65730d2a304e623455d51125d891e65d97fce52341cae45fb64c38a384a1c621e2713ee6794633f029a9fd4d774f56551eac2176162e162640f25eab873a3451c475570f19228bcede4c67c370a75ed7fabccd538c9819eff182481b10d42f1a9f6a05373b8cf9b71818d467bd3b8ebacb619e8ad42916e600c043effceb3855bc48a629e60ae886f51b2a7876b0e623fb2ce68af4b039242f963adb0e4240aed0ed07f65f1ee7c0cc77d210d0c2d1dc10c81b881aa0c9c9e9499665cf2970d2ccfeeb3191531765", "", true},
@@ -804,9 +810,10 @@ func TestPublishedOAEPDecryptionVectors(t *testing.T) {
 }
 
 type oaepVectorProvider struct {
-	key           *rsa.PrivateKey
-	calls, length int
-	failure       error
+	key     *rsa.PrivateKey
+	calls   int
+	length  int
+	failure error
 }
 
 func (p *oaepVectorProvider) Public() crypto.PublicKey { return &p.key.PublicKey }

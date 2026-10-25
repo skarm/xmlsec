@@ -14,13 +14,9 @@ import (
 // stylesheets are the common case in tests.
 const templateIndexThreshold = 16
 
-// nodeKind is a coarse classification of a dispatched node used to bucket
-// templates by the necessary condition their match pattern's terminal step
-// imposes. It mirrors the gates nodeMatchesStep applies before ever calling
-// nodeMatchesTest (document/attribute/namespace axis checks), not helium's
-// full ElementType enumeration — a text node and a CDATA section, for
-// example, are indistinguishable to a pattern (text() matches both) and so
-// share one kind here.
+// nodeKind groups nodes by the terminal match conditions used by template dispatch.
+// Text and CDATA share a group because text() matches both. The groups need not mirror
+// every storage node kind.
 type nodeKind uint8
 
 const (

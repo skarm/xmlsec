@@ -3,6 +3,8 @@ package uripath_test
 import (
 	"errors"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
@@ -11,7 +13,11 @@ import (
 func TestResolveSchemaURI(t *testing.T) {
 	const schemaPart = "part.xsd"
 
-	for _, tc := range []struct{ base, ref, want string }{
+	for _, tc := range []struct {
+		base string
+		ref  string
+		want string
+	}{
 		{"https://example.org/s/main.xsd", schemaPart, "https://example.org/s/part.xsd"},
 		{"mem:/schemas/main.xsd", schemaPart, "mem:/schemas/part.xsd"},
 		{"file:///schemas/main.xsd", schemaPart, "file:///schemas/part.xsd"},
@@ -73,5 +79,51 @@ func TestPortablePathShapes(t *testing.T) {
 
 	if got := uripath.SlashRel(`C:\a\b`, `C:\a\c\x.xml`); got != "../c/x.xml" {
 		t.Errorf("relative Windows path = %q", got)
+	}
+}
+
+func TestResolveIRIDotSegmentsAndEmptyComponents(t *testing.T) {
+	const base = "http://a/b/c/d;p?q"
+	for _, tc := range []struct{ ref, want string }{
+		{"g", "http://a/b/c/g"},
+		{"./g", "http://a/b/c/g"},
+		{"../g", "http://a/b/g"},
+		{"../../g", "http://a/g"},
+		{"../../../g", "http://a/g"},
+		{"g/./h", "http://a/b/c/g/h"},
+		{"g/../h", "http://a/b/c/h"},
+		{"g?y/../x", "http://a/b/c/g?y/../x"},
+		{"g#s/../x", "http://a/b/c/g#s/../x"},
+		{"?", "http://a/b/c/d;p?"},
+		{"#", "http://a/b/c/d;p?q#"},
+		{"g?#", "http://a/b/c/g?#"},
+		{"%2E%2E/g", "http://a/b/c/%2E%2E/g"},
+	} {
+		got, err := uripath.ResolveIRIReference(tc.ref, base)
+		if err != nil || got != tc.want {
+			t.Fatalf("resolve %q: %q, %v; want %q", tc.ref, got, err, tc.want)
+		}
+	}
+
+	for _, invalid := range []struct{ ref, base string }{{"g%", base}, {"g%0X", base}, {"g", "http://a/%Q0"}} {
+		if got, err := uripath.ResolveIRIReference(invalid.ref, invalid.base); err == nil || got != "" {
+			t.Fatalf("invalid URI accepted or partial result exposed: %q, %v", got, err)
+		}
+	}
+}
+
+func BenchmarkIRIResolution(b *testing.B) {
+	for _, size := range []int{4, 1024} {
+		ref := strings.Repeat("segment/../", size) + "file?query=#"
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(ref)))
+			for b.Loop() {
+				got, err := uripath.ResolveIRIReference(ref, "https://example.test/a/main.xsd")
+				if err != nil || got != "https://example.test/a/file?query=#" {
+					b.Fatal(got, err)
+				}
+			}
+		})
 	}
 }

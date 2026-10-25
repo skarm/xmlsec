@@ -30,9 +30,10 @@ func (*btSeq) isBTNode() {}
 
 // btRepeat is a quantified sub-expression. most < 0 means unbounded.
 type btRepeat struct {
-	node        btNode
-	least, most int
-	lazy        bool
+	node  btNode
+	least int
+	most  int
+	lazy  bool
 }
 
 func (*btRepeat) isBTNode() {}
@@ -74,7 +75,11 @@ type btBackref struct {
 
 func (*btBackref) isBTNode() {}
 
-type btAnchor struct{ end, absolute, multiline bool }
+type btAnchor struct {
+	end       bool
+	absolute  bool
+	multiline bool
+}
 
 func (*btAnchor) isBTNode() {}
 
@@ -98,7 +103,7 @@ type btParser struct {
 	// is "'\\' [1-9][0-9]*" constrained to a group that *precedes* it, so
 	// "\\1(abc)" and "(a\\1)" are malformed patterns, not patterns that match
 	// nothing. Resolving afterwards, when every group is known, accepted both.
-	closed map[int]bool
+	closed map[int]struct{}
 	dotAll bool
 	fold   bool
 	// multiline is the "m" flag, which decides whether ^ and $ match at line
@@ -394,10 +399,10 @@ func (p *btParser) parseGroup() (btNode, error) {
 	p.pos++
 	if index > 0 {
 		if p.closed == nil {
-			p.closed = map[int]bool{}
+			p.closed = map[int]struct{}{}
 		}
 
-		p.closed[index] = true
+		p.closed[index] = struct{}{}
 	}
 
 	return &btGroup{index: index, node: inner}, nil
@@ -485,13 +490,13 @@ func (p *btParser) parseBackref() (btNode, error) {
 	value, group, prefix := 0, 0, 0
 	for at := 0; at < len(digits) && value <= p.groups; at++ {
 		value = value*10 + int(digits[at]-'0')
-		if p.closed[value] {
+		if _, closed := p.closed[value]; closed {
 			group = value
 			prefix = at + 1
 		}
 	}
 
-	if value <= p.groups && !p.closed[value] {
+	if _, closed := p.closed[value]; value <= p.groups && !closed {
 		return nil, p.errf("backreference names a group that is not yet closed")
 	}
 

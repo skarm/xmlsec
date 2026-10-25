@@ -19,7 +19,7 @@ type PublicFixture struct {
 	Nonce       []byte
 }
 
-// LoadFixture loads a checksum-verified public interoperability fixture.
+// LoadFixture selects metadata for a checked-in public interoperability fixture.
 func LoadFixture(t testing.TB, base, name string) PublicFixture {
 	t.Helper()
 
@@ -28,7 +28,12 @@ func LoadFixture(t testing.TB, base, name string) PublicFixture {
 		t.Fatal(err)
 	}
 
-	var cases []struct{ Name, At, Certificate, Nonce string }
+	var cases []struct {
+		Name        string
+		At          string
+		Certificate string
+		Nonce       string
+	}
 	if err := json.Unmarshal(data, &cases); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +61,7 @@ func LoadFixture(t testing.TB, base, name string) PublicFixture {
 	return PublicFixture{}
 }
 
-// Read reads one checksum-verified fixture file.
+// Read reads a file from the selected fixture directory without authenticating it.
 func (f PublicFixture) Read(t testing.TB, path string) []byte {
 	t.Helper()
 

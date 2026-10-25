@@ -20,7 +20,7 @@
 // Every typed SignedProperties Reference must itself cover the complete selected
 // property subtree. Application coverage and external resources remain explicit
 // XMLDSig policy. Baseline properties use direct incorporation, as required by
-// clause6.3; indirect QualifyingPropertiesReference is rejected.
+// clause 6.3; indirect QualifyingPropertiesReference is rejected.
 //
 // The signed claims include SigningCertificateV2 (additional DER references and
 // issuer hints), complete format/object identifiers, commitments, production
@@ -55,8 +55,8 @@
 // CRL artifacts are rejected even though current-time PKI supports them.
 // It establishes trusted SignatureValue existence from verified timestamp
 // evidence, checks signer trust and revocation at the proof time, and checks TSA
-// trust at verification time. It does not recover expired TSA paths, slide control time or process
-// general archive evidence. Claimed SigningTime alone is never proof of
+// trust at verification time. It does not recover expired TSA paths, slide
+// control time or process general archive evidence. Claimed SigningTime alone is never proof of
 // existence.
 //
 // Successful results and diagnostic reports are distinct; inspect the returned
@@ -83,7 +83,7 @@
 //
 // Closed timestamp/augmentation methods stream canonical bytes without retaining
 // a complete archive input. Historical validation retains bounded exact objects
-// while constructing its proof graph. XML snapshots and embedded certificate, revocation and timestamp
-// models still occupy memory proportional to their content. Internal evidence
+// while constructing its proof graph. XML snapshots and embedded certificate,
+// revocation and timestamp models still occupy memory proportional to their content. Internal evidence
 // shares immutable DER; public evidence getters return copies.
 package xades

@@ -1,7 +1,9 @@
 // Derived from lestrrat-go/helium at 7362c0a70122a757780f4d0b545a9b370dead6ab.
 // Copyright (c) 2015 lestrrat. MIT License; see licenses/MIT-helium.txt at the repository root.
 
-package icu
+// Package number parses decimal pictures and formats numbers for XPath and XSLT.
+// It is implemented in Go and does not require an external ICU runtime.
+package number
 
 import (
 	"fmt"
@@ -11,25 +13,38 @@ import (
 	"strings"
 )
 
-// DecimalFormat holds the characters used for number formatting per the
-// ICU decimal format specification.
+// DecimalFormat defines picture symbols and special-value text for XPath and XSLT
+// format-number processing.
 type DecimalFormat struct {
-	Infinity          string
-	NaN               string
-	DecimalSeparator  rune
+	// Infinity is the string emitted for infinite values.
+	Infinity string
+	// NaN is the string emitted for a not-a-number value.
+	NaN string
+	// DecimalSeparator marks the decimal point in pictures and formatted output.
+	DecimalSeparator rune
+	// GroupingSeparator marks digit grouping in pictures and formatted output.
 	GroupingSeparator rune
-	Percent           rune
-	PerMille          rune
-	ZeroDigit         rune
-	Digit             rune
-	PatternSeparator  rune
+	// Percent selects percent scaling and its output symbol.
+	Percent rune
+	// PerMille selects per-mille scaling and its output symbol.
+	PerMille rune
+	// ZeroDigit is the first rune of the ten-digit alphabet used for output.
+	ZeroDigit rune
+	// Digit marks an optional digit position in a picture.
+	Digit rune
+	// PatternSeparator separates positive and negative subpictures.
+	PatternSeparator rune
+	// ExponentSeparator marks exponent syntax and output.
 	ExponentSeparator rune
-	MinusSign         rune
-	ExponentDisabled  bool
+	// MinusSign is the sign emitted for negative values when required.
+	MinusSign rune
+	// ExponentDisabled treats the exponent symbol as ordinary picture text for older host
+	// contracts.
+	ExponentDisabled bool
 }
 
-// DefaultDecimalFormat returns the standard ICU decimal format with default
-// characters.
+// DefaultDecimalFormat returns the default picture symbols and special-value text,
+// including e as the exponent separator.
 func DefaultDecimalFormat() DecimalFormat {
 	return DecimalFormat{
 		Infinity:          "Infinity",
@@ -49,20 +64,33 @@ func DefaultDecimalFormat() DecimalFormat {
 
 // ParsedPicture holds the parsed components of a number format picture string.
 type ParsedPicture struct {
-	Prefix          string
-	Suffix          string
-	GroupingSizes   []int // from right, repeating
-	FracGroupSizes  []int // from left
-	MinIntDigits    int
-	MaxIntDigits    int
-	MaxFracDigits   int
-	MinFracDigits   int
-	MinExpDigits    int
-	RepeatGrouping  bool
-	IsPercent       bool
-	IsPerMille      bool
+	// Prefix is literal text preceding the numeric part.
+	Prefix string
+	// Suffix is literal text following the numeric part.
+	Suffix         string
+	GroupingSizes  []int // from right, repeating
+	FracGroupSizes []int // from left
+	// MinIntDigits is the minimum required integer digit count.
+	MinIntDigits int
+	// MaxIntDigits is the integer digit-position count parsed from the picture.
+	MaxIntDigits int
+	// MaxFracDigits is the maximum fractional digit count.
+	MaxFracDigits int
+	// MinFracDigits is the minimum required fractional digit count.
+	MinFracDigits int
+	// MinExpDigits is the minimum exponent digit count.
+	MinExpDigits int
+	// RepeatGrouping repeats a regular integer grouping interval beyond explicitly marked
+	// positions.
+	RepeatGrouping bool
+	// IsPercent applies percent scaling.
+	IsPercent bool
+	// IsPerMille applies per-mille scaling.
+	IsPerMille bool
+	// HasDecimalPoint records an explicit decimal separator in the picture.
 	HasDecimalPoint bool
-	HasExponent     bool
+	// HasExponent records an exponent part in the picture.
+	HasExponent bool
 }
 
 // ParsePicture parses a single picture sub-pattern into its components.
@@ -696,8 +724,8 @@ func formatExponentDigits(exp, minDigits int, df DecimalFormat) string {
 	}
 
 	digits := big.NewInt(int64(exp)).String()
-	for len(digits) < minDigits {
-		digits = "0" + digits
+	if padding := minDigits - len(digits); padding > 0 {
+		digits = strings.Repeat("0", padding) + digits
 	}
 
 	s.WriteString(localizeDigits(digits, df.ZeroDigit))
@@ -826,8 +854,8 @@ func FormatBigInt(n *big.Int, minDigits int, groupingSizes []int, repeatGrouping
 		s = ""
 	}
 	// Pad to minDigits
-	for len(s) < minDigits {
-		s = "0" + s
+	if padding := minDigits - len(s); padding > 0 {
+		s = strings.Repeat("0", padding) + s
 	}
 
 	if len(groupingSizes) == 0 || len(s) == 0 {
@@ -901,14 +929,18 @@ func FormatRatFrac(frac *big.Rat, minDigits, maxDigits int, df DecimalFormat) st
 
 	var digits []byte
 
+	// Long division keeps the denominator fixed. Rebuilding and reducing a
+	// rational for each digit needlessly allocates big integers and runs GCD.
+	// The private remainder also preserves the caller's reusable fraction.
 	ten := big.NewInt(10)
-	rem := new(big.Rat).Set(frac)
+
+	var rem, digit big.Int
+	rem.Set(frac.Num())
 
 	for range maxDigits {
-		rem.Mul(rem, new(big.Rat).SetInt(ten))
-		intPart := new(big.Int).Quo(rem.Num(), rem.Denom())
-		digits = append(digits, byte('0'+intPart.Int64()))
-		rem.Sub(rem, new(big.Rat).SetInt(intPart))
+		rem.Mul(&rem, ten)
+		digit.QuoRem(&rem, frac.Denom(), &rem)
+		digits = append(digits, byte('0'+digit.Int64()))
 	}
 
 	end := len(digits)

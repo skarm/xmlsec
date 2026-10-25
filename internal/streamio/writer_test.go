@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -56,9 +57,11 @@ func TestWriterStringBudget(t *testing.T) {
 func TestWriterCounts(t *testing.T) {
 	failure := errors.New("destination failed")
 	for _, tc := range []struct {
-		n                    int
-		writerErr, errorWant error
-		countWant, remaining int
+		n         int
+		writerErr error
+		errorWant error
+		countWant int
+		remaining int
 	}{
 		{-1, nil, io.ErrShortWrite, 0, 3},
 		{4, nil, io.ErrShortWrite, 0, 3},
@@ -141,7 +144,7 @@ func TestReaderRetainsErrorsDeliveredWithData(t *testing.T) {
 }
 
 func TestReaderWriteTo(t *testing.T) {
-	for _, size := range []int{0, 1, 32768, 65537} {
+	for _, size := range []int{0, 1, 4095, 4096, 4097, 32768, 65537} {
 		text := strings.Repeat("x", size)
 		for _, knownSize := range []bool{false, true} {
 			var source io.Reader = strings.NewReader(text)
@@ -245,3 +248,47 @@ func (w countWriter) Write([]byte) (int, error) { return w.n, w.err }
 type inputFunc func([]byte) (int, error)
 
 func (f inputFunc) Read(dst []byte) (int, error) { return f(dst) }
+
+// BenchmarkReaderWriteTo separates resident buffers from opaque streams such
+// as canonicalization and decoder readers. Fixtures are outside the timed loop.
+func BenchmarkReaderWriteTo(b *testing.B) {
+	for _, size := range []int{256, 4096, 16384, 1 << 20} {
+		text := strings.Repeat("x", size)
+		for _, knownSize := range []bool{false, true} {
+			b.Run(strconv.Itoa(size)+"/"+strconv.FormatBool(knownSize), func(b *testing.B) {
+				b.ReportAllocs()
+				b.SetBytes(int64(size))
+				for b.Loop() {
+					var source io.Reader = strings.NewReader(text)
+					if !knownSize {
+						source = struct{ io.Reader }{source}
+					}
+					reader := &streamio.Reader{Context: b.Context(), Source: source, Limit: int64(size), LimitError: io.ErrShortBuffer}
+					if count, err := reader.WriteTo(io.Discard); err != nil || count != int64(size) {
+						b.Fatal(count, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkReaderCollection includes the destination's backing-array growth,
+// as pure Ed25519 and attached CMS must collect one complete opaque message.
+func BenchmarkReaderCollection(b *testing.B) {
+	for _, size := range []int{16384, 1 << 20, 8 << 20} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			text := strings.Repeat("x", size)
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+			for b.Loop() {
+				source := struct{ io.Reader }{strings.NewReader(text)}
+				reader := &streamio.Reader{Context: b.Context(), Source: source, Limit: int64(size), LimitError: io.ErrShortBuffer}
+				var target bytes.Buffer
+				if count, err := reader.WriteTo(&target); err != nil || count != int64(size) || target.Len() != size {
+					b.Fatal(count, err)
+				}
+			}
+		})
+	}
+}

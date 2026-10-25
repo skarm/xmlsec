@@ -19,8 +19,14 @@ import (
 
 // Chain contains disposable test identities and their private keys.
 type Chain struct {
-	Root, Leaf, TSA, Responder             *x509.Certificate
-	RootKey, LeafKey, TSAKey, ResponderKey *ecdsa.PrivateKey
+	Root         *x509.Certificate
+	Leaf         *x509.Certificate
+	TSA          *x509.Certificate
+	Responder    *x509.Certificate
+	RootKey      *ecdsa.PrivateKey
+	LeafKey      *ecdsa.PrivateKey
+	TSAKey       *ecdsa.PrivateKey
+	ResponderKey *ecdsa.PrivateKey
 }
 
 // New creates an ephemeral test chain and its signing keys.

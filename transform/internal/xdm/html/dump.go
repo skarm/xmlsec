@@ -42,9 +42,6 @@ const (
 	windows1252Bytes = "\x80\x82\x83\x84\x85\x86\x87\x88\x89\x8A\x8B\x8C\x8E\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9A\x9B\x9C\x9E\x9F"
 )
 
-// defaultHTMLDTD is the default DOCTYPE for HTML documents without one.
-// Mirrors libxml2's htmlDocContentDumpOutput behavior.
-
 // Write serializes an HTML node to the given writer using default settings.
 func Write(out io.Writer, node xdm.Node) error {
 	return NewWriter().WriteTo(out, node)
@@ -1381,16 +1378,20 @@ func modernBooleanAttributeElements(attribute string) string {
 }
 
 // writeURIAttribute normalizes an IRI to NFC and emits percent-encoded bytes,
-// escaping ampersands for the surrounding HTML attribute. Working storage does
-// not depend on the length of the attribute.
+// escaping ampersands for the surrounding HTML attribute. Output scratch is
+// capped; normalization may retain an incomplete combining sequence.
 func writeURIAttribute(ctx context.Context, out io.Writer, s string, htmlAttribute bool) error {
 	return writeURIAttributeMode(ctx, out, s, htmlAttribute, false)
 }
 
 func writeURIAttributeMode(ctx context.Context, out io.Writer, s string, htmlAttribute, raw bool) error {
+	if s == "" {
+		return ctx.Err()
+	}
+
 	const hex = "0123456789ABCDEF"
 
-	var buffer [4096]byte
+	buffer := make([]byte, min(4096, max(64, len(s))))
 
 	n := 0
 	flush := func() error {
@@ -1455,11 +1456,7 @@ func writeURIAttributeMode(ctx context.Context, out io.Writer, s string, htmlAtt
 		n += copy(buffer[n:], htmlAttrEscAmp)
 	}
 
-	if n > 0 {
-		return flush()
-	}
-
-	return nil
+	return flush()
 }
 
 func (d *htmlDumper) writeNSDecl(out io.Writer, prefix, uri string) {
@@ -1631,7 +1628,10 @@ func htmlNormalizationForm(form string) (norm.Form, bool) {
 
 // alignPoint records that consuming inputBytes of the source produced
 // outputBytes of encoded output at a clean rune boundary.
-type alignPoint struct{ inputBytes, outputBytes int }
+type alignPoint struct {
+	inputBytes  int
+	outputBytes int
+}
 
 // latin1EncodingWriter wraps an io.Writer and converts multi-byte UTF-8
 // runes in the Latin-1/Windows-1252 range back to single bytes.

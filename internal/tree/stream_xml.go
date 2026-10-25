@@ -11,7 +11,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	norm "github.com/skarm/xmlsec/internal/normalization"
 	"github.com/skarm/xmlsec/internal/streamio"
@@ -25,25 +24,33 @@ type XMLWriteOptions struct {
 	EmptyElement func(Name) EmptyElementMode
 	// PreserveContent disables added indentation throughout selected content;
 	// InlineElement also prevents whitespace adjacent to selected children.
-	PreserveContent, InlineElement func(Name) bool
+	PreserveContent func(Name) bool
+	InlineElement   func(Name) bool
 	// AttributeWriter handles selected values before ordinary character expansion.
 	// A handled value is already escaped for its surrounding double quotes.
 	AttributeWriter func(context.Context, io.Writer, Name, Attribute) (bool, error)
 	// CanEncode reports the output character repertoire. Unrepresentable content
 	// is written as numeric references; markup names still have to be encodable.
-	CanEncode                            func(rune) bool
-	CharacterMap                         map[rune]string
-	CDATA, SuppressIndent                map[string]struct{}
-	InheritedNamespaces                  map[string]string
-	IndentString, Version, Normalization string
+	CanEncode           func(rune) bool
+	CharacterMap        map[rune]string
+	CDATA               map[string]struct{}
+	SuppressIndent      map[string]struct{}
+	InheritedNamespaces map[string]string
+	IndentString        string
+	Version             string
+	Normalization       string
 	// NormalizeXMLID applies the XDM xml:id string value during serialization,
 	// without changing the original XML snapshot. Ordinary XML output leaves it off.
 	NormalizeXMLID bool
 	// EscapeControlChars applies serialization's C1/NEL/LS reference rules in
 	// both XML editions; ordinary document output leaves this disabled.
-	EscapeControlChars                                        bool
-	DOEMarkers                                                bool
-	Indent, SelfClose, ASCII, PrefixUndeclarations, Reconcile bool
+	EscapeControlChars   bool
+	DOEMarkers           bool
+	Indent               bool
+	SelfClose            bool
+	ASCII                bool
+	PrefixUndeclarations bool
+	Reconcile            bool
 }
 
 type EmptyElementMode uint8
@@ -446,10 +453,14 @@ func (w *xmlStream) writeElement(n *Node) {
 	w.text(QName(n.Prefix, n.Name.Local))
 	mark := len(w.ns.undo)
 	scope := w.ns.bindings
-	emitted := make(map[string]bool, len(n.NS)+2)
+	emitted := make(map[string]struct{}, len(n.NS)+2)
 
 	declare := func(prefix, uri string) {
-		if prefix == lexicon.PrefixXML || emitted[prefix] {
+		if prefix == lexicon.PrefixXML {
+			return
+		}
+
+		if _, exists := emitted[prefix]; exists {
 			return
 		}
 
@@ -458,11 +469,11 @@ func (w *xmlStream) writeElement(n *Node) {
 		}
 
 		if w.options.Reconcile && scope[prefix] == uri {
-			emitted[prefix] = true
+			emitted[prefix] = struct{}{}
 			return
 		}
 
-		emitted[prefix] = true
+		emitted[prefix] = struct{}{}
 		w.ns.push([]Namespace{{Prefix: prefix, URI: uri}})
 		w.text(" xmlns")
 

@@ -63,16 +63,55 @@ func runTimestamp(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	}
 	defer cancel()
 
-	options := timestampCommand{command: cmd, input: *input, output: *out, kind: *kind, hash: *hashName, policy: *policy, nonceFile: *nonceFile, omitNonce: *omitNonce, omitCertificates: *omitCerts, requestFile: *requestFile, dataFile: *dataFile, trust: *config, at: *atValue, serial: *serialValue, accuracy: *accuracy, ordering: *ordering, pss: *pss, key: *keyFile, certificate: *certificate, tokenOut: *tokenOut, flags: flags}
+	options := timestampCommand{
+		command:          cmd,
+		input:            *input,
+		output:           *out,
+		kind:             *kind,
+		hash:             *hashName,
+		policy:           *policy,
+		nonceFile:        *nonceFile,
+		omitNonce:        *omitNonce,
+		omitCertificates: *omitCerts,
+		requestFile:      *requestFile,
+		dataFile:         *dataFile,
+		trust:            *config,
+		at:               *atValue,
+		serial:           *serialValue,
+		accuracy:         *accuracy,
+		ordering:         *ordering,
+		pss:              *pss,
+		key:              *keyFile,
+		certificate:      *certificate,
+		tokenOut:         *tokenOut,
+		flags:            flags,
+	}
 
 	return options.run(ctx, stdin, stdout)
 }
 
 type timestampCommand struct {
-	command, input, output, kind, hash, policy, nonceFile, requestFile, dataFile, trust, at, serial, key, certificate, tokenOut string
-	omitNonce, omitCertificates, ordering, pss                                                                                  bool
-	accuracy                                                                                                                    time.Duration
-	flags                                                                                                                       *privateKeyFlags
+	command          string
+	input            string
+	output           string
+	kind             string
+	hash             string
+	policy           string
+	nonceFile        string
+	requestFile      string
+	dataFile         string
+	trust            string
+	at               string
+	serial           string
+	key              string
+	certificate      string
+	tokenOut         string
+	omitNonce        bool
+	omitCertificates bool
+	ordering         bool
+	pss              bool
+	accuracy         time.Duration
+	flags            *privateKeyFlags
 }
 
 func (c timestampCommand) run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
@@ -85,19 +124,29 @@ func (c timestampCommand) run(ctx context.Context, stdin io.Reader, stdout io.Wr
 		return err
 	}
 
+	if c.command == nameRequest {
+		var q *timestamp.Request
+
+		err := consumeInput(ctx, c.input, stdin, execution(ctx).xml.MaxBytes, func(src io.Reader) error {
+			var err error
+
+			q, err = timestamp.CreateRequestReader(ctx, src, opt)
+
+			return err
+		})
+		if err != nil {
+			return err
+		}
+
+		return writeOutputContext(ctx, c.output, stdout, q.DER())
+	}
+
 	raw, err := readInputContext(ctx, c.input, stdin, execution(ctx).xml.MaxBytes)
 	if err != nil {
 		return err
 	}
 
 	switch c.command {
-	case nameRequest:
-		q, err := timestamp.CreateRequest(ctx, raw, opt)
-		if err != nil {
-			return err
-		}
-
-		return writeOutputContext(ctx, c.output, stdout, q.DER())
 	case nameInspect:
 		value, err := inspectTimestamp(raw, c.kind)
 		if err != nil {
@@ -106,12 +155,9 @@ func (c timestampCommand) run(ctx context.Context, stdin io.Reader, stdout io.Wr
 
 		return jsonOutput(ctx, c.output, stdout, value)
 	case nameIssue:
-		response, err := c.issue(ctx, raw, opt)
-		if err != nil {
-			return err
-		}
-
-		return writeOutputContext(ctx, c.output, stdout, response)
+		return produceOutput(ctx, c.output, stdout, func(dst io.Writer) error {
+			return c.issue(ctx, dst, raw, opt)
+		})
 	default:
 		return c.verify(ctx, raw, opt, stdout)
 	}
@@ -125,7 +171,13 @@ func inspectTimestamp(raw []byte, kind string) (any, error) {
 			return nil, err
 		}
 
-		return map[string]any{fieldStatus: statusUnverified, "imprint": q.Imprint(), "nonce": q.Nonce(), "policy": q.Policy().String(), "certificates_requested": q.CertificatesRequested()}, nil
+		return map[string]any{
+			fieldStatus:              statusUnverified,
+			"imprint":                q.Imprint(),
+			"nonce":                  q.Nonce(),
+			"policy":                 q.Policy().String(),
+			"certificates_requested": q.CertificatesRequested(),
+		}, nil
 	case nameResponse:
 		r, err := timestamp.ParseResponse(context.Background(), raw)
 		if err != nil {
@@ -137,7 +189,11 @@ func inspectTimestamp(raw []byte, kind string) (any, error) {
 			return nil, err
 		}
 
-		return map[string]any{fieldStatus: statusUnverified, "response_status": r.Status(), nameToken: timestampInfo(info)}, nil
+		return map[string]any{
+			fieldStatus:       statusUnverified,
+			"response_status": r.Status(),
+			nameToken:         timestampInfo(info),
+		}, nil
 	case nameToken:
 		info, err := timestamp.InspectToken(context.Background(), raw)
 		if err != nil {
@@ -220,30 +276,40 @@ func (c timestampCommand) requestOptions(ctx context.Context) (timestamp.Request
 	return opt, err
 }
 
-func (c timestampCommand) issue(ctx context.Context, request []byte, opt timestamp.RequestOptions) ([]byte, error) {
+func (c timestampCommand) issue(ctx context.Context, dst io.Writer, request []byte, opt timestamp.RequestOptions) error {
 	at, err := parseTime(c.at)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	serial, _ := new(big.Int).SetString(c.serial, 10)
 
 	key, err := loadPrivateConfigured(ctx, c.key, c.flags)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	cert, err := readCertificate(ctx, c.certificate)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	spec := timestamp.IssueOptions{GenTime: at, SerialNumber: serial, Policy: opt.Policy, Hash: opt.Hash, Ordering: c.ordering, RSAPSS: c.pss}
+	spec := timestamp.IssueOptions{
+		GenTime:      at,
+		SerialNumber: serial,
+		Policy:       opt.Policy,
+		Hash:         opt.Hash,
+		Ordering:     c.ordering,
+		RSAPSS:       c.pss,
+	}
+
 	if c.accuracy > 0 {
 		spec.Accuracy = &c.accuracy
 	}
 
-	return timestamp.IssueResponse(ctx, request, key, cert.Raw, spec)
+	_, err = timestamp.WriteResponse(ctx, dst, request, key, cert.Raw, spec)
+
+	return err
 }
 
 func (c timestampCommand) verify(ctx context.Context, raw []byte, opt timestamp.RequestOptions, stdout io.Writer) error {
@@ -275,12 +341,15 @@ func (c timestampCommand) verify(ctx context.Context, raw []byte, opt timestamp.
 
 		result, verifyErr = verifier.VerifyResponse(ctx, raw, q, at, evidence)
 	} else {
-		data, err := readInputContext(ctx, c.dataFile, nil, execution(ctx).xml.MaxBytes)
-		if err != nil {
-			return err
-		}
+		var imprint timestamp.Imprint
 
-		imprint, err := timestamp.ImprintFor(ctx, data, opt.Hash)
+		err := consumeInput(ctx, c.dataFile, nil, execution(ctx).xml.MaxBytes, func(src io.Reader) error {
+			var err error
+
+			imprint, err = timestamp.ImprintReader(ctx, src, opt.Hash)
+
+			return err
+		})
 		if err != nil {
 			return err
 		}
@@ -313,5 +382,15 @@ func (c timestampCommand) verify(ctx context.Context, raw []byte, opt timestamp.
 
 func timestampInfo(info timestamp.Info) map[string]any {
 	accuracy, present := info.Accuracy()
-	return map[string]any{"policy": info.Policy().String(), "imprint": info.Imprint(), "serial": info.SerialNumber(), "nonce": info.Nonce(), "gen_time": info.GenTime(), "accuracy": accuracy.String(), "accuracy_present": present, "ordering": info.Ordering()}
+
+	return map[string]any{
+		"policy":           info.Policy().String(),
+		"imprint":          info.Imprint(),
+		"serial":           info.SerialNumber(),
+		"nonce":            info.Nonce(),
+		"gen_time":         info.GenTime(),
+		"accuracy":         accuracy.String(),
+		"accuracy_present": present,
+		"ordering":         info.Ordering(),
+	}
 }

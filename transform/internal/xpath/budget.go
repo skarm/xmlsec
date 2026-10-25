@@ -185,8 +185,13 @@ func WithEnvironment(ctx context.Context, values map[string]string) context.Cont
 type (
 	budgetKey struct{}
 	budget    struct {
-		operations, nodes, bytes, depth      int
-		usedOperations, usedNodes, usedBytes int
+		operations     int
+		nodes          int
+		bytes          int
+		depth          int
+		usedOperations int
+		usedNodes      int
+		usedBytes      int
 	}
 )
 

@@ -335,7 +335,7 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 		// A parameter-document value is explicit and must survive inheritance.
 		if !adnExplicit {
 			outDef.AllowDuplicateNames = existing.AllowDuplicateNames
-			adnExplicit = c.outputAllowDupExplicit[name]
+			_, adnExplicit = c.outputAllowDupExplicit[name]
 		}
 	}
 
@@ -348,10 +348,14 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 
 	c.stylesheet.outputs[name] = outDef
 	if c.outputAllowDupExplicit == nil {
-		c.outputAllowDupExplicit = make(map[string]bool)
+		c.outputAllowDupExplicit = make(map[string]struct{})
 	}
 
-	c.outputAllowDupExplicit[name] = adnExplicit
+	if adnExplicit {
+		c.outputAllowDupExplicit[name] = struct{}{}
+	} else {
+		delete(c.outputAllowDupExplicit, name)
+	}
 
 	return nil
 }
@@ -1491,17 +1495,17 @@ type parameterDocumentValues struct {
 func (p *parameterDocumentValues) applyValidated(parameters xpath.SerializationParameters) {
 	p.presence = make(paramDocPresence)
 	for name, value := range parameters.Booleans {
-		p.presence[name] = true
+		p.presence[name] = struct{}{}
 		p.applyBoolean(name, value)
 	}
 
 	for name, value := range parameters.Strings {
-		p.presence[name] = true
+		p.presence[name] = struct{}{}
 		p.applyString(name, value)
 	}
 
 	for name, values := range parameters.Names {
-		p.presence[name] = true
+		p.presence[name] = struct{}{}
 		switch name {
 		case lexicon.SerializationCDATASectionElements:
 			p.output.CDATASections = unionOutputNames(p.output.CDATASections, values)
@@ -1511,7 +1515,7 @@ func (p *parameterDocumentValues) applyValidated(parameters xpath.SerializationP
 	}
 
 	if parameters.CharactersSet {
-		p.presence[lexicon.SerializationUseCharacterMaps] = true
+		p.presence[lexicon.SerializationUseCharacterMaps] = struct{}{}
 		p.output.UseCharacterMaps = nil
 		p.output.ResolvedCharMap = make(map[rune]string, len(parameters.Characters))
 		maps.Copy(p.output.ResolvedCharMap, parameters.Characters)
@@ -1565,13 +1569,13 @@ func (p *parameterDocumentValues) applyString(name, value string) {
 }
 
 func unionOutputNames(left, right []string) []string {
-	seen := make(map[string]bool, len(left)+len(right))
+	seen := make(map[string]struct{}, len(left)+len(right))
 	result := make([]string, 0, len(left)+len(right))
 
 	for _, names := range [][]string{left, right} {
 		for _, name := range names {
-			if !seen[name] {
-				seen[name] = true
+			if _, present := seen[name]; !present {
+				seen[name] = struct{}{}
 				result = append(result, name)
 			}
 		}

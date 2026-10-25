@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto"
 	"errors"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -72,16 +73,16 @@ func testEndToEndSolicitedLoginCase(t *testing.T, kind *string) {
 	at := testcert.Now().Add(3 * time.Second)
 
 	wrongBrowser := bytes.Repeat([]byte{1}, 32)
-	if r, e := s.sp.ConsumePOST(context.Background(), issued.POSTBody(), sp.ConsumeOptions{At: at, BrowserBinding: wrongBrowser}); r != nil || !errors.Is(e, sp.ErrCorrelation) {
+	if r, e := s.sp.ConsumePOST(context.Background(), postBody(t, issued), sp.ConsumeOptions{At: at, BrowserBinding: wrongBrowser}); r != nil || !errors.Is(e, sp.ErrCorrelation) {
 		t.Fatal("browser not bound", e)
 	}
 
-	changed := bytes.Replace(issued.POSTBody(), []byte(out.RelayState()), []byte("different-unregistered-relay-value"), 1)
+	changed := bytes.Replace(postBody(t, issued), []byte(out.RelayState()), []byte("different-unregistered-relay-value"), 1)
 	if r, e := s.sp.ConsumePOST(context.Background(), changed, sp.ConsumeOptions{At: at, BrowserBinding: browser}); r != nil || e == nil {
 		t.Fatal("unknown request accepted")
 	}
 
-	r, e := s.sp.ConsumePOST(context.Background(), issued.POSTBody(), sp.ConsumeOptions{At: at, BrowserBinding: browser})
+	r, e := s.sp.ConsumePOST(context.Background(), postBody(t, issued), sp.ConsumeOptions{At: at, BrowserBinding: browser})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -90,7 +91,7 @@ func testEndToEndSolicitedLoginCase(t *testing.T, kind *string) {
 		t.Fatal("session result")
 	}
 
-	if r, e := s.sp.ConsumePOST(context.Background(), issued.POSTBody(), sp.ConsumeOptions{At: at, BrowserBinding: browser}); r != nil || !errors.Is(e, replay.ErrReplay) {
+	if r, e := s.sp.ConsumePOST(context.Background(), postBody(t, issued), sp.ConsumeOptions{At: at, BrowserBinding: browser}); r != nil || !errors.Is(e, replay.ErrReplay) {
 		t.Fatal("SP replay", e)
 	}
 }
@@ -104,7 +105,7 @@ func TestConcurrentSPOneWinner(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	form := issued.POSTBody()
+	form := postBody(t, issued)
 
 	var (
 		wins atomic.Int32
@@ -173,7 +174,7 @@ func TestUnspecifiedNameIDDoesNotRequireLiteralUnspecifiedFormat(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	grant, e := f.sp.ConsumePOST(ctx, answer.POSTBody(), sp.ConsumeOptions{At: testcert.Now().Add(2 * time.Second), BrowserBinding: browser})
+	grant, e := f.sp.ConsumePOST(ctx, postBody(t, answer), sp.ConsumeOptions{At: testcert.Now().Add(2 * time.Second), BrowserBinding: browser})
 	if e != nil || grant.NameIDFormat() != protocol.NameIDPersistent {
 		t.Fatal(e)
 	}
@@ -285,7 +286,7 @@ func begin(t testing.TB, s system, kind string) (*sp.Outbound, *idp.Request, []b
 			t.Fatal(err)
 		}
 	} else {
-		r, e = s.idp.AcceptPOST(context.Background(), o.POSTBody(), spID, ssoPost, testcert.Now())
+		r, e = s.idp.AcceptPOST(context.Background(), postBody(t, o), spID, ssoPost, testcert.Now())
 	}
 
 	if e != nil {
@@ -301,4 +302,139 @@ func begin(t testing.TB, s system, kind string) (*sp.Outbound, *idp.Request, []b
 
 func auth() idp.Authentication {
 	return idp.Authentication{NameID: "alice", NameIDFormat: protocol.NameIDPersistent, AuthnInstant: testcert.Now().Add(time.Second), AuthnContext: authClass, FreshAuthentication: true, InteractionUsed: true, CreatedNameID: true, SessionIndex: "_session", Attributes: []protocol.Attribute{{Name: "email", Values: []string{"alice@example.test"}}}}
+}
+
+type postSerializer interface {
+	WritePOST(context.Context, io.Writer) (int64, error)
+}
+
+func postBody(t testing.TB, message postSerializer) []byte {
+	t.Helper()
+	var body bytes.Buffer
+	if _, err := message.WritePOST(t.Context(), &body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Bytes()
+}
+
+func TestOutboundPOSTSerialization(t *testing.T) {
+	s := setup(t)
+	out, request, _ := begin(t, s, metadata.HTTPPost)
+	issued, err := s.idp.Issue(t.Context(), request, auth(), testcert.Now().Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("late sink failure")
+	for name, write := range map[string]func(context.Context, io.Writer) (int64, error){
+		"request": out.WritePOST, "response": issued.WritePOST,
+		"requestHTML": out.WritePOSTForm, "responseHTML": issued.WritePOSTForm,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var expected bytes.Buffer
+			count, err := write(t.Context(), &expected)
+			if err != nil || count != int64(expected.Len()) || expected.Len() == 0 {
+				t.Fatalf("output: %d %v", count, err)
+			}
+			var repeated bytes.Buffer
+			if _, err := write(t.Context(), &repeated); err != nil || !bytes.Equal(expected.Bytes(), repeated.Bytes()) {
+				t.Fatalf("repeatability: %v", err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			var untouched bytes.Buffer
+			if n, err := write(ctx, &untouched); n != 0 || untouched.Len() != 0 || !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled: %d %v", n, err)
+			}
+			if _, err := write(t.Context(), &postFailureWriter{}); !errors.Is(err, io.ErrShortWrite) {
+				t.Fatalf("short write: %v", err)
+			}
+			if n, err := write(t.Context(), &postFailureWriter{remaining: 512, err: sentinel}); n == 0 || !errors.Is(err, sentinel) {
+				t.Fatalf("late failure: %d %v", n, err)
+			}
+			repeated.Reset()
+			if _, err := write(t.Context(), &repeated); err != nil || !bytes.Equal(expected.Bytes(), repeated.Bytes()) {
+				t.Fatalf("failed writer mutated message: %v", err)
+			}
+
+			var workers sync.WaitGroup
+			for range 8 {
+				workers.Go(func() {
+					var concurrent bytes.Buffer
+					if _, err := write(t.Context(), &concurrent); err != nil || !bytes.Equal(expected.Bytes(), concurrent.Bytes()) {
+						t.Errorf("concurrent serialization: %v", err)
+					}
+				})
+			}
+			workers.Wait()
+		})
+	}
+	redirect, _, _ := begin(t, s, metadata.HTTPRedirect)
+	if _, err := redirect.WritePOST(t.Context(), io.Discard); !errors.Is(err, sp.ErrPolicy) {
+		t.Fatal(err)
+	}
+	if _, err := redirect.WritePOSTForm(t.Context(), io.Discard); !errors.Is(err, sp.ErrPolicy) {
+		t.Fatal(err)
+	}
+}
+
+type postFailureWriter struct {
+	remaining int
+	err       error
+}
+
+func (w *postFailureWriter) Write(p []byte) (int, error) {
+	if w.remaining <= 0 {
+		return 0, w.err
+	}
+	n := min(w.remaining, len(p))
+	w.remaining -= n
+	if n < len(p) {
+		return n, w.err
+	}
+	return n, nil
+}
+
+func TestPOSTLimitPrecedesStoreCommit(t *testing.T) {
+	s := setup(t)
+	requests, err := state.NewMemoryStore(state.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sr, err := replay.NewMemoryStore(replay.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := sp.NewServiceProvider(sp.Config{EntityID: spID, Metadata: s.registry, Signing: protocol.SigningKey{Key: s.cert.LeafKey, CertificateDER: s.cert.Leaf.Raw}, Requests: requests, Replay: sr, POSTLimits: binding.POSTLimits{MaxFormBytes: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := service.Begin(t.Context(), sp.BeginOptions{IDP: idpID, Binding: metadata.HTTPPost, At: testcert.Now(), BrowserBinding: bytes.Repeat([]byte{7}, 32)}); out != nil || !errors.Is(err, binding.ErrBinding) || requests.Len() != 0 {
+		t.Fatalf("pending commit: %v %d", err, requests.Len())
+	}
+	config := s.idpConfig
+	replayStore := &countReplayStore{Store: config.Replay}
+	config.Replay = replayStore
+	config.POSTLimits.MaxFormBytes = 1
+	identity, err := idp.NewIdentityProvider(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, _ := begin(t, s, metadata.HTTPRedirect)
+	request, err := identity.AcceptRedirect(t.Context(), out.RawQuery(), spID, ssoRedirect, testcert.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issued, err := identity.Issue(t.Context(), request, auth(), testcert.Now().Add(2*time.Second)); issued != nil || !errors.Is(err, binding.ErrBinding) || replayStore.calls != 0 {
+		t.Fatalf("replay commit: %v %d", err, replayStore.calls)
+	}
+}
+
+type countReplayStore struct {
+	replay.Store
+	calls int
+}
+
+func (s *countReplayStore) Consume(ctx context.Context, entries []replay.Entry, at time.Time) error {
+	s.calls++
+	return s.Store.Consume(ctx, entries, at)
 }

@@ -96,8 +96,10 @@ func rsaDecryptProfile(ctx context.Context, options Options, recipient crypto.De
 	}
 
 	p.transport = keyTransport{
-		algorithm: oaep.Algorithm, wrappedBytes: public.Size(), keyBits: public.N.BitLen(),
-		oaep: oaep,
+		algorithm:    oaep.Algorithm,
+		wrappedBytes: public.Size(),
+		keyBits:      public.N.BitLen(),
+		oaep:         oaep,
 		unwrap: func(ctx context.Context, ciphertext []byte) ([]byte, error) {
 			options := &rsa.OAEPOptions{Hash: oaep.Hash, MGFHash: oaep.MGFHash, Label: bytes.Clone(oaep.Label)}
 			if provider, ok := recipient.(contextualDecrypter); ok {

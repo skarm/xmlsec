@@ -15,18 +15,22 @@ import (
 	"github.com/skarm/xmlsec/internal/streamio"
 )
 
-// PKCS12Identity contains owned, mutable objects from a password-authenticated
-// container. Certificate matches PrivateKey by SPKI. ExtraCertificates are
-// unordered untrusted evidence, not a verified chain or trust anchors.
-// The container MAC proves password integrity, not sender identity or PKIX trust.
+// PKCS12Identity contains caller-owned mutable objects from a password-authenticated
+// container. Certificate and PrivateKey match by SubjectPublicKeyInfo.
+// ExtraCertificates is unordered untrusted evidence. The container MAC establishes
+// password integrity without establishing sender identity or certificate trust.
 type PKCS12Identity struct {
-	PrivateKey        crypto.Signer
-	Certificate       *x509.Certificate
+	// PrivateKey is the parsed signing key owned by the caller.
+	PrivateKey crypto.Signer
+	// Certificate is the owned certificate whose public key matches PrivateKey.
+	Certificate *x509.Certificate
+	// ExtraCertificates contains unordered, untrusted certificates from the container.
 	ExtraCertificates []*x509.Certificate
 }
 
-// PKCS12ParseOptions explicitly enables selected container forms. Zero retains
-// the strict flat DER profile. All contents authenticate before bag processing.
+// PKCS12ParseOptions enables selected container encodings and identity selection.
+// The zero value requires the strict flat DER profile. Container authentication
+// precedes bag processing for every identity.
 type PKCS12ParseOptions struct {
 	// AllowLegacy permits import-only HMAC-SHA-1 PBKDF2 and traditional SHA-1
 	// container MACs. RFC 9879 PBMAC1 remains SHA-2 only. FIPS rejects SHA-1.
@@ -38,7 +42,7 @@ type PKCS12ParseOptions struct {
 	// AllowBER enables indefinite container/ContentInfo/SafeBag wrappers and
 	// constructed OCTET STRING payloads. Keys, algorithms and attributes retain
 	// their strict DER rules. MAC parameters keep primitive/structure checks;
-	// the explicit PBMAC1 outer DEFAULT1 placeholder in RFC9879 vectors is
+	// the explicit PBMAC1 outer DEFAULT 1 placeholder in RFC 9879 vectors is
 	// tolerated independently of this option. Original MAC input stays unchanged.
 	AllowBER bool
 	// AllowNestedSafeContents enables bounded recursive safeContentsBag values.
@@ -265,11 +269,13 @@ func (p *identityParser) contentInfos(infos []asn1.RawValue) error {
 	return nil
 }
 
-// PKCS12Options selects encryption and integrity for DER PKCS#12 output.
-// Both integrity modes require a MAC and use independently generated salts.
-// No RC2, 3DES, SHA-1, BER or MAC-less output is supported. Password bytes are
-// UTF-8; empty passwords are import-only.
+// PKCS12Options selects encryption and integrity for one DER PKCS#12 identity.
+// Both integrity modes require a MAC and independently generated salts. Export
+// rejects RC2, 3DES, SHA-1, BER and containers without a MAC. Password bytes must be
+// UTF-8 and nonempty; only import accepts an empty password.
 type PKCS12Options struct {
+	// Encryption selects the private-key encryption parameters. Zero fields select
+	// defaults.
 	Encryption EncryptionOptions
 	// ClassicMAC selects RFC 7292 SHA-2 integrity and requires a BMP-only password.
 	// False selects RFC 9879 PBMAC1 with UTF-8 passwords.
@@ -336,12 +342,13 @@ type privateBag struct {
 }
 
 type identityParser struct {
-	state       *passwordState
-	options     PKCS12ParseOptions
-	keys        []privateBag
-	certs       []*x509.Certificate
-	certIDs     [][]byte
-	bags, depth int
+	state   *passwordState
+	options PKCS12ParseOptions
+	keys    []privateBag
+	certs   []*x509.Certificate
+	certIDs [][]byte
+	bags    int
+	depth   int
 }
 
 func (p *identityParser) identities() ([]*PKCS12Identity, error) {
@@ -660,7 +667,7 @@ func preparePKCS12(ctx context.Context, identity PKCS12Identity, password []byte
 	defer clear(private)
 
 	certs := make([]*x509.Certificate, 0, 1+len(identity.ExtraCertificates))
-	seen := make(map[[32]byte]bool)
+	seen := make(map[[32]byte]struct{})
 	totalBytes := len(private)
 	certificateLimits := state.limits
 	certificateLimits.MaxInputBytes = state.limits.MaxCertificateBytes
@@ -683,11 +690,11 @@ func preparePKCS12(ctx context.Context, identity PKCS12Identity, password []byte
 
 		fingerprint := sha256.Sum256(parsed.Raw)
 
-		if seen[fingerprint] {
+		if _, exists := seen[fingerprint]; exists {
 			return nil, ErrFormat
 		}
 
-		seen[fingerprint] = true
+		seen[fingerprint] = struct{}{}
 
 		certs = append(certs, parsed)
 	}

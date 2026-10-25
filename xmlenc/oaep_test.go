@@ -149,8 +149,9 @@ func checkOAEPXMLDefaults(t *testing.T, k *rsa.PrivateKey, p xmlenc.OAEPParamete
 	}
 	// Omitted XML parameters have SHA-1 defaults, independently for digest/MGF.
 	for _, field := range []struct {
-		prefix, uri string
-		hash        crypto.Hash
+		prefix string
+		uri    string
+		hash   crypto.Hash
 	}{
 		{"ds:DigestMethod", hashURI(p.Hash), p.Hash},
 		{"xenc11:MGF", mgfURI(p.MGFHash), p.MGFHash},

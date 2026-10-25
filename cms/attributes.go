@@ -17,11 +17,13 @@ import (
 	"github.com/skarm/xmlsec/internal/x509name"
 )
 
-// Attribute pairs an OID with complete DER-encoded values. A signature over an
-// attribute does not establish its application semantics. Result accessors return
-// owned copies of attributes and their value slices.
+// Attribute contains an attribute type OID and complete DER-encoded values.
+// Result accessors copy the attribute and its mutable values. Authenticating an
+// attribute does not establish its meaning for the application.
 type Attribute struct {
-	OID       asn1.ObjectIdentifier
+	// OID identifies the attribute type.
+	OID asn1.ObjectIdentifier
+	// ValuesDER contains the complete DER encoding of each attribute value.
 	ValuesDER [][]byte
 }
 
@@ -42,7 +44,10 @@ func CertificateBindingAttribute(b []byte) (Attribute, error) {
 	issuer := der.Seq(der.Seq(der.Ctx(4, cert.RawIssuer)), serial)
 	id := der.Seq(der.Octets(sum), issuer)
 
-	return Attribute{append(asn1.ObjectIdentifier(nil), oidSigningCertificateV2()...), [][]byte{der.Seq(der.Seq(id))}}, nil
+	return Attribute{
+		OID:       append(asn1.ObjectIdentifier(nil), oidSigningCertificateV2()...),
+		ValuesDER: [][]byte{der.Seq(der.Seq(id))},
+	}, nil
 }
 
 func verifyESS(ctx context.Context, attrs []Attribute, cert *x509.Certificate, legacy bool) (bool, error) {
@@ -287,8 +292,8 @@ func verifyProtection(attrs []Attribute, alg pkix.AlgorithmIdentifier, h crypto.
 	}
 
 	ha, ma, ea := signature.Details(actual)
-
 	hb, mb, eb := signature.Details(protected)
+
 	if ea != nil || eb != nil || ha != hb || ma != mb {
 		return ErrSignature
 	}
@@ -315,7 +320,7 @@ func parseAttributes(v asn1.RawValue, tag, maximum int) ([]Attribute, error) {
 	}
 
 	out := make([]Attribute, 0, len(f))
-	seen := map[string]bool{}
+	seen := map[string]struct{}{}
 
 	for _, field := range f {
 		a, e := der.Sequence(field, 2, 2)
@@ -324,11 +329,17 @@ func parseAttributes(v asn1.RawValue, tag, maximum int) ([]Attribute, error) {
 		}
 
 		var o asn1.ObjectIdentifier
-		if der.Decode(a[0], &o) != nil || seen[o.String()] || !attributePlacement(o, tag) {
+		if der.Decode(a[0], &o) != nil {
 			return nil, ErrSyntax
 		}
 
-		seen[o.String()] = true
+		key := o.String()
+
+		if _, exists := seen[key]; exists || !attributePlacement(o, tag) {
+			return nil, ErrSyntax
+		}
+
+		seen[key] = struct{}{}
 
 		vals, e := der.SetFields(a[1], 0, asn1.TagSet, 64)
 		if e != nil || len(vals) == 0 {
@@ -371,14 +382,15 @@ func encodeAttributes(attrs []Attribute, maximum int) ([]byte, error) {
 		return nil, ErrPolicy
 	}
 
-	seen := map[string]bool{}
+	seen := map[string]struct{}{}
 
 	var parts [][]byte
 
 	total := 0
 
 	for _, x := range attrs {
-		if seen[x.OID.String()] || len(x.ValuesDER) < 1 || len(x.ValuesDER) > 64 || !attributePlacement(x.OID, 0) {
+		key := x.OID.String()
+		if _, exists := seen[key]; exists || len(x.ValuesDER) < 1 || len(x.ValuesDER) > 64 || !attributePlacement(x.OID, 0) {
 			return nil, ErrPolicy
 		}
 
@@ -386,7 +398,7 @@ func encodeAttributes(attrs []Attribute, maximum int) ([]byte, error) {
 			return nil, ErrPolicy
 		}
 
-		seen[x.OID.String()] = true
+		seen[key] = struct{}{}
 
 		oid := der.OID(x.OID)
 		if len(oid) == 0 {

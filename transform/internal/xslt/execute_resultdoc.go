@@ -17,7 +17,7 @@ import (
 
 // paramDocPresence records every explicitly supplied canonical parameter,
 // including false booleans, empty strings/lists and an empty character map.
-type paramDocPresence map[string]bool
+type paramDocPresence map[string]struct{}
 
 type parameterDocumentResult struct {
 	output   *OutputDef
@@ -56,7 +56,7 @@ func (ec *execContext) getParamDocOutputDef(inst *resultDocumentInst) *OutputDef
 	return inst.ParameterDocOutputDef
 }
 
-// getParamDocPresence returns the plain-boolean presence flags that accompany
+// getParamDocPresence returns the parameter-presence set that accompanies
 // the effective parameter-document delta, mirroring getParamDocOutputDef's
 // cache-then-instruction lookup so the runtime AVT and compile-time static
 // parameter-document paths stay in sync.
@@ -201,8 +201,10 @@ func (ec *execContext) resolveResultDocFormat(ctx context.Context, inst *resultD
 // instruction, considering the method avt, compile-time method, named format, and
 // default output definition.
 func (ec *execContext) resolveResultDocMethod(ctx context.Context, inst *resultDocumentInst) string {
-	if parameters := ec.getParamDocOutputDef(inst); parameters != nil && ec.getParamDocPresence(inst)[lexicon.SerializationMethod] {
-		return parameters.Method
+	if parameters := ec.getParamDocOutputDef(inst); parameters != nil {
+		if _, present := ec.getParamDocPresence(inst)[lexicon.SerializationMethod]; present {
+			return parameters.Method
+		}
 	}
 	// Runtime avt takes priority.
 	if inst.MethodAVT != nil {
@@ -631,8 +633,10 @@ func (ec *execContext) resolveResultParameterDocument(ctx context.Context, inst 
 }
 
 func (ec *execContext) resolveResultItemSeparator(ctx context.Context, inst *resultDocumentInst, effectiveFormat string) (*string, error) {
-	if parameters := ec.getParamDocOutputDef(inst); parameters != nil && ec.getParamDocPresence(inst)[lexicon.SerializationItemSeparator] {
-		return parameters.ItemSeparator, nil
+	if parameters := ec.getParamDocOutputDef(inst); parameters != nil {
+		if _, present := ec.getParamDocPresence(inst)[lexicon.SerializationItemSeparator]; present {
+			return parameters.ItemSeparator, nil
+		}
 	}
 	// Resolve effective item-separator: xsl:result-document attribute takes
 	// priority (including #absent which blocks format inheritance),
@@ -1068,16 +1072,16 @@ func (ec *execContext) resultDocOutputBase(effectiveFormat string) OutputDef {
 // output-definition and local instruction values. The two element-name lists
 // are unions; every other present parameter replaces its prior value.
 func foldParamDocOverrides(base, pd *OutputDef, pres paramDocPresence) {
-	if pres[lexicon.SerializationMethod] {
+	if _, present := pres[lexicon.SerializationMethod]; present {
 		base.Method = pd.Method
 		base.MethodExplicit = pd.MethodExplicit
 	}
 
-	if pres[lexicon.SerializationEncoding] {
+	if _, present := pres[lexicon.SerializationEncoding]; present {
 		base.Encoding = pd.Encoding
 	}
 
-	if pres[lexicon.SerializationStandalone] {
+	if _, present := pres[lexicon.SerializationStandalone]; present {
 		base.Standalone = pd.Standalone
 	}
 
@@ -1085,31 +1089,31 @@ func foldParamDocOverrides(base, pd *OutputDef, pres paramDocPresence) {
 		base.CDATASections = unionOutputNames(base.CDATASections, pd.CDATASections)
 	}
 
-	if pres[lexicon.SerializationDoctypePublic] {
+	if _, present := pres[lexicon.SerializationDoctypePublic]; present {
 		base.DoctypePublic = pd.DoctypePublic
 	}
 
-	if pres[lexicon.SerializationDoctypeSystem] {
+	if _, present := pres[lexicon.SerializationDoctypeSystem]; present {
 		base.DoctypeSystem = pd.DoctypeSystem
 	}
 
-	if pres[lexicon.SerializationMediaType] {
+	if _, present := pres[lexicon.SerializationMediaType]; present {
 		base.MediaType = pd.MediaType
 	}
 
-	if pres[lexicon.SerializationVersion] {
+	if _, present := pres[lexicon.SerializationVersion]; present {
 		base.Version = pd.Version
 	}
 
-	if pres[lexicon.SerializationNormalizationForm] {
+	if _, present := pres[lexicon.SerializationNormalizationForm]; present {
 		base.NormalizationForm = pd.NormalizationForm
 	}
 
-	if pres[lexicon.SerializationHTMLVersion] {
+	if _, present := pres[lexicon.SerializationHTMLVersion]; present {
 		base.HTMLVersion = pd.HTMLVersion
 	}
 
-	if pres[lexicon.SerializationJSONNodeOutputMethod] {
+	if _, present := pres[lexicon.SerializationJSONNodeOutputMethod]; present {
 		base.JSONNodeOutputMethod = pd.JSONNodeOutputMethod
 	}
 
@@ -1137,7 +1141,7 @@ func foldParamDocOverrides(base, pd *OutputDef, pres paramDocPresence) {
 		base.ItemSeparator, base.ItemSeparatorAbsent = &v, false
 	}
 
-	if pres[lexicon.SerializationUseCharacterMaps] {
+	if _, present := pres[lexicon.SerializationUseCharacterMaps]; present {
 		base.UseCharacterMaps = nil
 		base.ResolvedCharMap = make(map[rune]string, len(pd.ResolvedCharMap))
 		maps.Copy(base.ResolvedCharMap, pd.ResolvedCharMap)
@@ -1148,19 +1152,19 @@ func foldParamDocOverrides(base, pd *OutputDef, pres paramDocPresence) {
 		base.OmitDeclarationExplicit = true
 	}
 
-	if pres[lexicon.SerializationIndent] {
+	if _, present := pres[lexicon.SerializationIndent]; present {
 		base.Indent = pd.Indent
 	}
 
-	if pres[lexicon.SerializationByteOrderMark] {
+	if _, present := pres[lexicon.SerializationByteOrderMark]; present {
 		base.ByteOrderMark = pd.ByteOrderMark
 	}
 
-	if pres[lexicon.SerializationAllowDuplicateNames] {
+	if _, present := pres[lexicon.SerializationAllowDuplicateNames]; present {
 		base.AllowDuplicateNames = pd.AllowDuplicateNames
 	}
 
-	if pres[lexicon.SerializationUndeclarePrefixes] {
+	if _, present := pres[lexicon.SerializationUndeclarePrefixes]; present {
 		base.UndeclarePrefixes = pd.UndeclarePrefixes
 	}
 }
@@ -1427,8 +1431,10 @@ func (ec *execContext) buildEffectiveOutputDef(ctx context.Context, inst *result
 // resultDocumentCharacterMap resolves package-local named maps before the
 // parameter-document's complete value, in the same precedence order as scalars.
 func (ec *execContext) resultDocumentCharacterMap(inst *resultDocumentInst, formatName string) map[rune]string {
-	if parameters := ec.getParamDocOutputDef(inst); parameters != nil && ec.getParamDocPresence(inst)[lexicon.SerializationUseCharacterMaps] {
-		return maps.Clone(parameters.ResolvedCharMap)
+	if parameters := ec.getParamDocOutputDef(inst); parameters != nil {
+		if _, present := ec.getParamDocPresence(inst)[lexicon.SerializationUseCharacterMaps]; present {
+			return maps.Clone(parameters.ResolvedCharMap)
+		}
 	}
 
 	var result map[rune]string

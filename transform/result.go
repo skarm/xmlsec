@@ -126,10 +126,11 @@ func (r *Result) Serialize(ctx context.Context) (*Output, error) {
 // WriterTo returns an io.WriterTo that serializes the primary result under ctx.
 // Each WriteTo call uses a fresh serialization budget and returns the byte count,
 // including partial output on error. Common XML, HTML, text and JSON output paths
-// write incrementally, including stateful encoding conversion. XHTML, adaptive
-// output, disable-output-escaping and FULLY-NORMALIZED may build an extra tree
-// or serialized buffer. JSON nodes, character maps and normalization can buffer
-// individual values as large as the result. These paths are selected automatically.
+// write incrementally, including stateful encoding conversion. Ordinary XML
+// nodes embedded in JSON and large unmapped adaptive strings without quote
+// characters avoid complete serialized copies. XHTML, other JSON node methods, mapped/normalized adaptive
+// values, disable-output-escaping and FULLY-NORMALIZED may build an extra tree
+// or a buffer as large as the result. These paths are selected automatically.
 // The complete Result remains in memory; collecting destinations retain output too.
 // The destination remains caller-owned; ctx must be non-nil and cannot interrupt
 // an arbitrary blocked Write.
@@ -326,7 +327,7 @@ type nodePublication struct {
 	limits Limits
 	count  int
 	nodes  []xdm.Node
-	seen   map[xdm.Node]bool
+	seen   map[xdm.Node]struct{}
 }
 
 func (p *nodePublication) visit(items xdm.Sequence, depth int) error {
@@ -343,11 +344,11 @@ func (p *nodePublication) visit(items xdm.Sequence, depth int) error {
 		switch v := item.(type) {
 		case xdm.NodeItem:
 			if p.seen == nil {
-				p.seen = make(map[xdm.Node]bool)
+				p.seen = make(map[xdm.Node]struct{})
 			}
 
-			if !p.seen[v.Node] {
-				p.seen[v.Node] = true
+			if _, published := p.seen[v.Node]; !published {
+				p.seen[v.Node] = struct{}{}
 				p.nodes = append(p.nodes, v.Node)
 			}
 		case xdm.MapItem:

@@ -12,8 +12,11 @@ import (
 
 // dataCipher records the wire layout independently of key transport.
 type dataCipher struct {
-	keyBytes, ivBytes, blockBytes, extraBytes int
-	tripleDES                                 bool
+	keyBytes   int
+	ivBytes    int
+	blockBytes int
+	extraBytes int
+	tripleDES  bool
 }
 
 func dataAlgorithm(algorithm string, allowLegacy bool) (dataCipher, error) {

@@ -65,8 +65,8 @@ func (v *Verifier) Authenticate(ctx context.Context, token *Token, want Expectat
 	}
 
 	signer := checked.Signers()[0]
-
 	digest := sha256.New()
+
 	if _, err := token.WriterTo(ctx).WriteTo(digest); err != nil {
 		return nil, err
 	}
@@ -74,7 +74,14 @@ func (v *Verifier) Authenticate(ctx context.Context, token *Token, want Expectat
 	var fingerprint [32]byte
 	copy(fingerprint[:], digest.Sum(nil))
 
-	return &AuthenticatedToken{token: token, certificate: bytes.Clone(chosen), hash: signer.SignatureHash(), algorithm: signer.SignatureAlgorithmOID(), digest: fingerprint, valid: true}, nil
+	return &AuthenticatedToken{
+		token:       token,
+		certificate: bytes.Clone(chosen),
+		hash:        signer.SignatureHash(),
+		algorithm:   signer.SignatureAlgorithmOID(),
+		digest:      fingerprint,
+		valid:       true,
+	}, nil
 }
 
 // Valid reports cryptographic authentication ONLY, never trust or existence.

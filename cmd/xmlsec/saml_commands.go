@@ -90,12 +90,22 @@ func runSAML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 }
 
 type samlCommand struct {
-	command, input, output, config, key, certificate, method, at, kind, extract, pin string
-	relay                                                                            *string
-	allowHTTP                                                                        bool
-	lifetime                                                                         time.Duration
-	trusted                                                                          []string
-	flags                                                                            *privateKeyFlags
+	command     string
+	input       string
+	output      string
+	config      string
+	key         string
+	certificate string
+	method      string
+	at          string
+	kind        string
+	extract     string
+	pin         string
+	relay       *string
+	allowHTTP   bool
+	lifetime    time.Duration
+	trusted     []string
+	flags       *privateKeyFlags
 }
 
 func (c samlCommand) run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
@@ -238,12 +248,10 @@ func (c samlCommand) post(ctx context.Context, stdin io.Reader, stdout io.Writer
 			return err
 		}
 
-		raw, err := binding.EncodePOST(ctx, doc, kind, c.relay, limits)
-		if err != nil {
+		return produceOutput(ctx, c.output, stdout, func(dst io.Writer) error {
+			_, err := binding.WritePOST(ctx, dst, doc, kind, c.relay, limits)
 			return err
-		}
-
-		return writeOutputContext(ctx, c.output, stdout, raw)
+		})
 	}
 
 	raw, err := readInputContext(ctx, c.input, stdin, e.xml.MaxBytes)
@@ -430,13 +438,25 @@ func metadataDescription(snapshot *metadata.Snapshot, at time.Time) any {
 
 			endpoints := map[string]any{}
 
-			for _, name := range []string{metadata.AssertionConsumerService, metadata.SingleSignOnService, metadata.SingleLogoutService, metadata.ArtifactResolutionService, metadata.ManageNameIDService} {
+			for _, name := range []string{
+				metadata.AssertionConsumerService,
+				metadata.SingleSignOnService,
+				metadata.SingleLogoutService,
+				metadata.ArtifactResolutionService,
+				metadata.ManageNameIDService,
+			} {
 				if list := role.Endpoints(name); len(list) > 0 {
 					endpoints[name] = list
 				}
 			}
 
-			roles = append(roles, map[string]any{fieldType: role.Type(), fieldExpiresAt: role.ExpiresAt(), "endpoints": endpoints, "signing_keys": len(role.SigningKeys()), "name_id_formats": role.NameIDFormats()})
+			roles = append(roles, map[string]any{
+				fieldType:         role.Type(),
+				fieldExpiresAt:    role.ExpiresAt(),
+				"endpoints":       endpoints,
+				"signing_keys":    len(role.SigningKeys()),
+				"name_id_formats": role.NameIDFormats(),
+			})
 		}
 
 		entities = append(entities, map[string]any{"id": entity.ID(), fieldExpiresAt: entity.ExpiresAt(), "roles": roles})
@@ -516,7 +536,14 @@ func (c samlCommand) verifyRequest(ctx context.Context, stdin io.Reader, stdout 
 
 	var detail any
 	if verifyErr == nil {
-		detail = map[string]any{"id": result.ID(), fieldIssuer: result.Issuer(), "destination": result.Destination(), "acs": result.ACS(), "issue_instant": result.IssueInstant(), "replay_checked": false}
+		detail = map[string]any{
+			"id":             result.ID(),
+			fieldIssuer:      result.Issuer(),
+			"destination":    result.Destination(),
+			"acs":            result.ACS(),
+			"issue_instant":  result.IssueInstant(),
+			"replay_checked": false,
+		}
 	}
 
 	return errors.Join(verifyErr, jsonOutput(ctx, c.output, stdout, resultReport("saml "+c.command, "explicit-protocol-key-pins-and-expectations", detail, verifyErr)))
@@ -553,7 +580,22 @@ func (c samlCommand) verifyResponse(ctx context.Context, stdin io.Reader, stdout
 
 	var detail any
 	if verifyErr == nil {
-		detail = map[string]any{"response_id": result.ResponseID(), "assertion_id": result.AssertionID(), fieldIssuer: result.Issuer(), "audience": result.Audience(), "recipient": result.Recipient(), "in_response_to": result.InResponseTo(), "name_id": result.NameID(), "name_id_format": result.NameIDFormat(), "attributes": result.Attributes(), fieldExpiresAt: result.NotOnOrAfter(), "authn_context": result.AuthnContext(), "response_authenticated": result.ResponseAuthenticated(), "replay_checked": false, "session_created": false}
+		detail = map[string]any{
+			"response_id":            result.ResponseID(),
+			"assertion_id":           result.AssertionID(),
+			fieldIssuer:              result.Issuer(),
+			"audience":               result.Audience(),
+			"recipient":              result.Recipient(),
+			"in_response_to":         result.InResponseTo(),
+			"name_id":                result.NameID(),
+			"name_id_format":         result.NameIDFormat(),
+			"attributes":             result.Attributes(),
+			fieldExpiresAt:           result.NotOnOrAfter(),
+			"authn_context":          result.AuthnContext(),
+			"response_authenticated": result.ResponseAuthenticated(),
+			"replay_checked":         false,
+			"session_created":        false,
+		}
 	}
 
 	return errors.Join(verifyErr, jsonOutput(ctx, c.output, stdout, resultReport("saml response-verify", "explicit-protocol-key-pins-and-expectations", detail, verifyErr)))

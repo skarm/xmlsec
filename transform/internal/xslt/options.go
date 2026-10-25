@@ -18,6 +18,8 @@ type URIResolver = xdm.URIResolver
 // PackageResolver resolves package name URIs to file paths or readers.
 // Used during compilation when xsl:use-package is encountered.
 type PackageResolver interface {
+	// ResolvePackage opens a package matching its name and version constraint and returns
+	// its retrieval base URI. The compiler closes the reader.
 	ResolvePackage(context.Context, string, string) (io.ReadCloser, string, error)
 }
 
@@ -28,6 +30,8 @@ type PackageResolver interface {
 // If you run transforms concurrently, your implementation must be safe for
 // concurrent use.
 type MessageHandler interface {
+	// HandleMessage receives serialized message content and its terminate flag. An error
+	// stops execution.
 	HandleMessage(msg string, terminate bool) error
 }
 
@@ -40,6 +44,8 @@ type MessageHandler interface {
 // If you run transforms concurrently, your implementation must be safe for
 // concurrent use.
 type ResultDocumentHandler interface {
+	// HandleResultDocument receives a secondary result URI, tree and effective
+	// serialization definition. An error stops execution.
 	HandleResultDocument(href string, doc *xdm.Document, outDef *OutputDef) error
 }
 
@@ -51,6 +57,8 @@ type ResultDocumentHandler interface {
 // If you run transforms concurrently, your implementation must be safe for
 // concurrent use.
 type RawResultHandler interface {
+	// HandleRawResult receives the principal XDM sequence before tree serialization. An
+	// error stops execution.
 	HandleRawResult(seq xdm.Sequence) error
 }
 
@@ -62,16 +70,18 @@ type RawResultHandler interface {
 // If you run transforms concurrently, your implementation must be safe for
 // concurrent use.
 type PrimaryItemsHandler interface {
+	// HandlePrimaryItems receives captured principal items for JSON or adaptive delivery.
+	// An error stops execution.
 	HandlePrimaryItems(seq xdm.Sequence) error
 }
 
-// AnnotationHandler receives type annotations and schema declarations
-// from schema-aware transformations. A non-nil error aborts the transform.
-//
-// Handler methods are called from the goroutine executing Do/Serialize/WriteTo.
-// If you run transforms concurrently, your implementation must be safe for
-// concurrent use.
+// AnnotationHandler receives optional internal type metadata supplied by a host. It
+// does not enable schema-aware processing in the public transform API. An error aborts
+// the transform. Callbacks run on the executing goroutine; handlers shared between
+// concurrent invocations must support concurrent calls.
 type AnnotationHandler interface {
+	// HandleAnnotations receives internal annotation metadata when a schema-aware host
+	// supplies it. This callback does not enable schema awareness in the public API.
 	HandleAnnotations(annotations map[xdm.Node]string, declarations xpath.SchemaDeclarations) error
 }
 
@@ -103,7 +113,7 @@ type transformConfig struct {
 	rawCapturedItems      xdm.Sequence // items captured during raw-delivery transform (set by executeTransform)
 	primaryItems          xdm.Sequence // items captured from primary output for json/adaptive serialization
 	primaryItemsHandler   PrimaryItemsHandler
-	traceWriter           io.Writer // destination for fn:trace output (nil = os.Stderr)
+	traceWriter           io.Writer // destination for fn:trace output (nil discards output)
 	globalContextItem     xdm.Item  // explicit global context item (fn:transform global-context-item option)
 	valueResults          map[string]ValueResult
 	sequenceParams        map[string]xdm.Sequence

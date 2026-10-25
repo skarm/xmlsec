@@ -39,6 +39,7 @@ linters:
     - prealloc
     - predeclared
     - protogetter
+    - revive
     - sloglint
     - sqlclosecheck
     - staticcheck
@@ -64,13 +65,7 @@ linters:
       require-specific: true
     revive:
       rules:
-        - name: exported
-        - name: context-as-argument
-        - name: context-keys-type
-        - name: error-return
-        - name: error-strings
         - name: error-naming
-        - name: increment-decrement
         - name: receiver-naming
         - name: var-naming
     staticcheck:
@@ -81,11 +76,10 @@ linters:
   exclusions:
     generated: strict
     rules:
-      # Adapted language/model sources retain their existing style exemptions.
-      # The public API remains fully linted; govet and correctness checks cover
-      # all three integrated packages.
+      # Adapted language/model sources retain selected style exemptions.
+      # Naming, govet and correctness checks cover these packages as well.
       - path: ^transform/internal/(xdm|xpath|xslt)/
-        linters: [ errorlint, gocritic, godot, gosec, misspell, nakedret, nolintlint, perfsprint, revive, makezero ]
+        linters: [ errorlint, gocritic, godot, gosec, misspell, nakedret, nolintlint, perfsprint, makezero ]
       # Native value/storage assertions already carry explicit forcetypeassert
       # exemptions. Keep ordinary unchecked-error detection enabled there.
       - path: ^transform/internal/(xdm|xpath|xslt)/

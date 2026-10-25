@@ -1,7 +1,7 @@
 // Derived from lestrrat-go/helium at 7362c0a70122a757780f4d0b545a9b370dead6ab.
 // Copyright (c) 2015 lestrrat. MIT License; see licenses/MIT-helium.txt at the repository root.
 
-package value
+package lexical
 
 import (
 	"bytes"
@@ -27,8 +27,9 @@ func XSDFields(s string) []string {
 }
 
 type durationReferenceDate struct {
-	year       int64
-	month, day int
+	year  int64
+	month int
+	day   int
 }
 
 type durationTimelinePoint struct {
@@ -1249,9 +1250,11 @@ type xsdDateTime struct {
 	// (e.g. 999999999999999999999999) compare correctly, with no
 	// fixed-width int to overflow. A nil year is treated as 0 (used by the
 	// year-agnostic gMonth/gDay/gMonthDay types).
-	year       *big.Int
-	month, day int
-	hour, min  int
+	year  *big.Int
+	month int
+	day   int
+	hour  int
+	min   int
 	// sec holds the seconds component (including any fractional digits) as an
 	// EXACT rational, in place of a float64, so that two distinct valid lexicals
 	// that differ only in trailing fractional precision (e.g. "00.1" vs

@@ -19,19 +19,19 @@ import (
 )
 
 var (
-	// ErrPolicy reports PKI policy violation.
+	// ErrPolicy reports a PKI policy violation.
 	ErrPolicy = errors.New("PKI policy violation")
-	// ErrCertificate reports invalid or untrusted certificate.
+	// ErrCertificate reports an invalid or untrusted certificate.
 	ErrCertificate = errors.New("invalid or untrusted certificate")
 	// ErrEvidence reports invalid revocation evidence.
 	ErrEvidence = errors.New("invalid revocation evidence")
-	// ErrUnavailable reports sufficient fresh revocation evidence unavailable.
+	// ErrUnavailable reports that sufficient fresh revocation evidence is unavailable.
 	ErrUnavailable = errors.New("sufficient fresh revocation evidence unavailable")
-	// ErrRevoked reports certificate revoked.
+	// ErrRevoked reports that a certificate is revoked.
 	ErrRevoked = errors.New("certificate revoked")
 	// ErrLimit reports an exhausted bounded implementation work budget.
 	ErrLimit = errors.New("PKI resource limit exceeded")
-	// ErrUnsupported reports unsupported revocation feature.
+	// ErrUnsupported reports an unsupported revocation feature.
 	ErrUnsupported = errors.New("unsupported revocation feature")
 )
 
@@ -49,8 +49,8 @@ const (
 	Indeterminate Status = "indeterminate"
 )
 
-// RevocationMode selects the required offline revocation evidence. NoRevocation does not
-// check revocation.
+// RevocationMode selects the required offline revocation checks. Its zero value,
+// NoRevocation, performs none.
 type RevocationMode string
 
 const (
@@ -62,76 +62,81 @@ const (
 	RequireOCSP RevocationMode = "require-ocsp"
 )
 
-// Config sets explicit trust anchors, required usages and offline revocation policy.
-// System roots are never used.
+// Config supplies explicit trust anchors, certificate usages and offline revocation
+// policy. It never selects system roots.
 type Config struct {
-	// Roots supplies required DER trust anchors. System roots are never used.
+	// Roots supplies the required DER trust anchors. System roots are never consulted.
 	Roots [][]byte
-	// Intermediates contains untrusted DER certificates used only to build paths to explicit
-	// roots.
+	// Intermediates supplies untrusted DER certificates for building paths to the
+	// configured roots.
 	Intermediates [][]byte
-	// KeyUsages selects acceptable extended key usages. Empty means ExtKeyUsageAny.
-	// Applications requiring an EKU, such as timeStamping or codeSigning, must configure
-	// it.
+	// KeyUsages selects acceptable extended key usages. Empty selects ExtKeyUsageAny.
+	// Applications requiring an EKU, such as timeStamping or codeSigning, must set it
+	// explicitly.
 	KeyUsages []x509.ExtKeyUsage
-	// RequiredKeyUsage selects bits required on the leaf certificate. Zero defaults to
+	// RequiredKeyUsage selects usage bits required on the leaf certificate. Zero selects
 	// DigitalSignature.
 	RequiredKeyUsage x509.KeyUsage
-	// AllowCALeaf explicitly permits a CA certificate as the leaf.
+	// AllowCALeaf permits a CA certificate to serve as the leaf when true.
 	AllowCALeaf bool
 	// Revocation selects required offline revocation checks.
 	Revocation RevocationMode
 	// CRL selects the offline CRL/delta and missing-NextUpdate freshness policy.
 	CRL CRLOptions
-	// MaxChainDepth bounds certificate chain depth; default 10, maximum 32.
+	// MaxChainDepth bounds certificate path depth. Zero selects 10. The maximum is 32.
 	MaxChainDepth int
-	// MaxEvidenceBytes bounds supplied revocation evidence bytes; default 8 MiB, maximum
-	// 64 MiB.
+	// MaxEvidenceBytes bounds supplied revocation evidence bytes. Zero selects 8 MiB. The
+	// maximum is 64 MiB.
 	MaxEvidenceBytes int
-	// MaxCRLs bounds supplied CRLs; default 32, maximum 256.
+	// MaxCRLs bounds supplied CRLs. Zero selects 32. The maximum is 256.
 	MaxCRLs int
-	// MaxOCSPResponses bounds supplied OCSP responses; default 32, maximum 256.
+	// MaxOCSPResponses bounds supplied OCSP responses. Zero selects 32. The maximum is
+	// 256.
 	MaxOCSPResponses int
 	// OCSPAuthorities supplies explicit issuer-scoped local responder authorities.
 	OCSPAuthorities []OCSPAuthority
-	// OCSPMaxAge bounds offline OCSP evidence age; zero selects 24 hours,
-	// with a 30-day maximum.
+	// OCSPMaxAge bounds offline OCSP evidence age. Zero selects 24 hours. The maximum is
+	// 30 days.
 	OCSPMaxAge time.Duration
-	// OCSPClockSkew permits OCSP time tolerance; zero permits none,
-	// with a ten-minute maximum.
+	// OCSPClockSkew permits OCSP time tolerance up to ten minutes. Zero permits none.
 	OCSPClockSkew time.Duration
 }
 
-// Evidence supplies untrusted DER intermediates and offline revocation evidence for an
-// operation.
+// Evidence supplies untrusted DER intermediates and revocation objects for one
+// validation operation.
 type Evidence struct {
-	// Sources optionally binds at most1024 immutable observations to exact
-	// suppliedDER kinds/digests. URI/time provenance never grants trust or PoE.
+	// Sources optionally binds at most 1024 immutable observations to exact
+	// supplied DER kinds and digests. URI and time provenance never grants trust
+	// or proof of existence.
 	Sources []*evidence.Observation
-	// Intermediates contains untrusted DER certificates used only to build paths to explicit
-	// roots.
+	// Intermediates supplies untrusted DER certificates for building paths to explicit
+	// trust anchors.
 	Intermediates [][]byte
-	// CRLs contains untrusted complete DER CRLs to authenticate and check.
+	// CRLs supplies untrusted complete DER CRLs for authentication and revocation checks.
 	CRLs [][]byte
-	// OCSPResponses contains untrusted DER OCSP responses to authenticate and check.
+	// OCSPResponses supplies untrusted DER OCSP responses for authentication and
+	// revocation checks.
 	OCSPResponses [][]byte
 }
 
-// Verifier holds an immutable PKIX and offline revocation policy and supports concurrent
-// verification.
+// Verifier retains immutable PKIX and offline revocation policy for concurrent
+// verification calls.
 type Verifier struct {
-	roots, intermediates        *x509.CertPool
-	usages                      []x509.ExtKeyUsage
-	required                    x509.KeyUsage
-	allowCA                     bool
-	revocation                  RevocationMode
-	maxDepth, maxBytes, maxCRLs int
-	maxOCSP                     int
-	ocspOptions                 OCSPOptions
-	crlOptions                  CRLOptions
-	issuerCertificates          [][]byte
-	anchorCertificates          [][]byte
-	originalCertificates        map[[32]byte]*x509.Certificate
+	roots                *x509.CertPool
+	intermediates        *x509.CertPool
+	usages               []x509.ExtKeyUsage
+	required             x509.KeyUsage
+	allowCA              bool
+	revocation           RevocationMode
+	maxDepth             int
+	maxBytes             int
+	maxCRLs              int
+	maxOCSP              int
+	ocspOptions          OCSPOptions
+	crlOptions           CRLOptions
+	issuerCertificates   [][]byte
+	anchorCertificates   [][]byte
+	originalCertificates map[[32]byte]*x509.Certificate
 }
 
 // NewVerifier validates and snapshots explicit trust and revocation policy for concurrent use.
@@ -397,7 +402,7 @@ func (v *Verifier) snapshotCertificates(roots, intermediates [][]byte) error {
 		ders [][]byte
 		pool *x509.CertPool
 		root bool
-	}{{roots, v.roots, true}, {intermediates, v.intermediates, false}} {
+	}{{ders: roots, pool: v.roots, root: true}, {ders: intermediates, pool: v.intermediates}} {
 		for _, der := range group.ders {
 			if len(der) > v.maxBytes-configuredBytes {
 				return fmt.Errorf("%w: configured certificate bytes", ErrPolicy)
@@ -590,20 +595,26 @@ func parseCertificate(der []byte) (*x509.Certificate, error) {
 	return parseBorrowedCertificate(bytes.Clone(der))
 }
 
-// Report records diagnostic chain and revocation outcomes; successful verification
-// additionally returns a Result.
+// Report contains certificate path and revocation diagnostics. Successful verification
+// also returns a Result.
 type Report struct {
 	evidence []*VerifiedEvidence
-	Chain    Status `json:"chain"`
+	// Chain records the certificate path check outcome.
+	Chain Status `json:"chain"`
 	// Revocation records the evidence-check outcome; NoRevocation leaves it NotChecked.
-	Revocation       Status    `json:"revocation"`
+	Revocation Status `json:"revocation"`
+	// VerificationTime is the explicit time supplied for certificate and revocation checks.
 	VerificationTime time.Time `json:"verification_time"`
-	ChainLength      int       `json:"chain_length,omitempty"`
-	Error            string    `json:"error,omitempty"`
+	// ChainLength is the number of certificates in the accepted path, including its trust
+	// anchor.
+	ChainLength int `json:"chain_length,omitempty"`
+	// Error describes the verification failure, or is empty on success.
+	Error string `json:"error,omitempty"`
 }
 
-// Result means the configured policy passed, not that every possible trust
-// policy or AdES historical-validation requirement has passed.
+// Result records acceptance under the configured certificate and revocation policy.
+// It does not establish acceptance under other trust policies or the historical
+// validation requirements of AdES.
 type Result struct {
 	chain      [][]byte
 	spki       []byte
@@ -653,9 +664,10 @@ func (r *Result) RevocationStatus() Status {
 	return r.revocation
 }
 
-// KeyPin pins only SubjectPublicKeyInfo. MatchCertificate intentionally does NOT
-// validate certificate validity dates, CA chains, revocation, or subject names.
-// This is a distinct trust primitive suitable for already-trusted metadata keys.
+// KeyPin matches SubjectPublicKeyInfo against an explicitly trusted public key.
+// Matching does not check certificate dates, CA paths, revocation or subject names.
+// Use this trust primitive when the application already trusts the key, such as
+// for a configured metadata signer.
 type KeyPin struct {
 	spki        []byte
 	fingerprint [32]byte

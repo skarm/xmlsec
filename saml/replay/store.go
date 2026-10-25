@@ -19,23 +19,28 @@ var (
 	ErrPolicy = errors.New("invalid replay-store policy or entry")
 )
 
-// Entry identifies one scoped SAML identifier and its expiration for atomic consumption.
+// Entry pairs a scoped SAML identifier with its expiration for atomic consumption.
 type Entry struct {
-	Scope     string
-	ID        string
+	// Scope separates identifier namespaces, such as the entity and message role.
+	Scope string
+	// ID is the identifier to consume exactly once within Scope.
+	ID string
+	// ExpiresAt is the time after which this identifier no longer blocks reuse.
 	ExpiresAt time.Time
 }
 
-// Store atomically consumes ALL entries or none. Call only after cryptographic
-// and protocol validation. Combining request and assertion IDs closes concurrent
-// request-reuse races that two independent check-then-put calls cannot close.
+// Store consumes every supplied entry atomically or consumes none. Call Consume
+// only after cryptographic and protocol validation. Combining request and
+// assertion identifiers in one operation prevents concurrent request reuse that
+// separate check-and-insert calls cannot prevent.
 type Store interface {
 	// Consume atomically records every supplied entry or none at the supplied time. It
 	// returns ErrReplay if an unexpired identifier was consumed already.
 	Consume(context.Context, []Entry, time.Time) error
 }
 
-// Config bounds the in-memory replay store. Zero fields select defaults.
+// Config sets capacity and lifetime bounds for an in-memory replay store. Zero fields
+// select defaults.
 type Config struct {
 	// Capacity bounds stored entries; zero selects 100000. Unexpired entries
 	// are never evicted to make room.
@@ -44,8 +49,8 @@ type Config struct {
 	MaxTTL time.Duration
 }
 
-// MemoryStore is a concurrent, bounded replay store for one process. Expired entries are
-// removed during Consume.
+// MemoryStore provides concurrent bounded replay protection within one process.
+// Consume removes expired entries.
 type MemoryStore struct {
 	mu       sync.Mutex
 	capacity int
@@ -55,7 +60,10 @@ type MemoryStore struct {
 	expiry   expiry.Queue[key]
 }
 
-type key struct{ scope, id string }
+type key struct {
+	scope string
+	id    string
+}
 
 // NewMemoryStore creates an empty bounded replay store using default limits for zero Config
 // fields.
@@ -90,18 +98,18 @@ func (m *MemoryStore) Consume(ctx context.Context, entries []Entry, now time.Tim
 
 	copied := snapshot[:copy(snapshot[:], entries)]
 
-	seen := make(map[key]bool, len(copied))
+	seen := make(map[key]struct{}, len(copied))
 	for _, e := range copied {
 		if e.Scope == "" || e.ID == "" || len(e.Scope) > 1024 || len(e.ID) > 1024 || !e.ExpiresAt.After(now) || e.ExpiresAt.After(now.Add(m.maxTTL)) {
 			return ErrPolicy
 		}
 
 		k := key{e.Scope, e.ID}
-		if seen[k] {
+		if _, exists := seen[k]; exists {
 			return ErrPolicy
 		}
 
-		seen[k] = true
+		seen[k] = struct{}{}
 	}
 
 	m.mu.Lock()

@@ -22,9 +22,11 @@ const (
 
 func TestExclusive(t *testing.T) {
 	tests := []struct {
-		name, input, want string
-		opt               c14n.Options
-		child             bool
+		name  string
+		input string
+		want  string
+		opt   c14n.Options
+		child bool
 	}{
 		{name: "empty", input: emptyRootXML, want: explicitEmptyRootXML},
 		{name: "attr order", input: `<r b="2" a="1"/>`, want: `<r a="1" b="2"></r>`},

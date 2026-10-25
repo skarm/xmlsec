@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -209,8 +210,9 @@ func TestRedirectRejectsAuthenticatedTrailingData(t *testing.T) {
 
 	valid := base64.StdEncoding.EncodeToString(compressed.Bytes())
 	for _, tc := range []struct {
-		name, message string
-		valid         bool
+		name    string
+		message string
+		valid   bool
 	}{
 		{"valid", valid, true},
 		{"trailing compressed byte", base64.StdEncoding.EncodeToString(append(bytes.Clone(compressed.Bytes()), 0)), false},
@@ -264,3 +266,70 @@ func doc(t testing.TB, text string) *document.Document {
 }
 
 func options() binding.Options { return binding.Options{SignatureMethod: xmldsig.ECDSASHA256} }
+
+// BenchmarkSignRedirect measures the complete public binding, including XML
+// output, raw DEFLATE, URL encoding and signing, on a reusable snapshot/key.
+func BenchmarkSignRedirect(b *testing.B) {
+	k := key(b)
+	d := doc(b, request)
+	b.Run("Serial", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := binding.SignRedirect(b.Context(), d, binding.Request, nil, k, options()); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("Parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				if _, err := binding.SignRedirect(b.Context(), d, binding.Request, nil, k, options()); err != nil {
+					b.Error(err)
+				}
+			}
+		})
+	})
+}
+
+func TestRedirectCompressionReuse(t *testing.T) {
+	t.Parallel()
+
+	k := key(t)
+	for _, size := range []int{0, 4097, 1 << 20, 1, 128} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			t.Parallel()
+			d := doc(t, strings.Replace(request, "/>", ">"+strings.Repeat("abcde", size/5)+strings.Repeat("x", size%5)+"</p:AuthnRequest>", 1))
+			limited := options()
+			limited.MaxCompressedBytes = 1
+			if _, err := binding.SignRedirect(t.Context(), d, binding.Request, nil, k, limited); !errors.Is(err, binding.ErrPolicy) {
+				t.Fatal("compressed limit lost", err)
+			}
+			for range 3 {
+				query, err := binding.SignRedirect(t.Context(), d, binding.Request, nil, k, options())
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := binding.VerifyRedirect(t.Context(), query, k.Public(), options())
+				if err != nil || result.Document().Root().Text() != d.Root().Text() {
+					t.Fatal("independent stream/round trip lost", err)
+				}
+				var expected bytes.Buffer
+				fresh, err := flate.NewWriter(&expected, flate.DefaultCompression)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := d.WriteXML(t.Context(), fresh, 2<<20); err != nil {
+					t.Fatal(err)
+				}
+				if err := fresh.Close(); err != nil {
+					t.Fatal(err)
+				}
+				values, err := url.ParseQuery(query)
+				if err != nil || values.Get("SAMLRequest") != base64.StdEncoding.EncodeToString(expected.Bytes()) {
+					t.Fatal("reused compression differs from a fresh stream", err)
+				}
+			}
+		})
+	}
+}

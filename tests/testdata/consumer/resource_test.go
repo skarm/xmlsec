@@ -180,7 +180,11 @@ func TestXMLResourceCloseFailuresKeepTheirCause(t *testing.T) {
 	failure := errors.New("close failed")
 	const parameters = `<serialization-parameters xmlns="http://www.w3.org/2010/xslt-xquery-serialization"/>`
 	const nested = `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:template name="start">inner</xsl:template></xsl:stylesheet>`
-	cases := []struct{ name, body, resource string }{
+	cases := []struct {
+		name     string
+		body     string
+		resource string
+	}{
 		{"static-parameters", `<xsl:output parameter-document="urn:params"/>`, parameters},
 		{"runtime-parameters", `<xsl:template name="start"><xsl:result-document href="extra" parameter-document="urn:params">extra</xsl:result-document></xsl:template>`, parameters},
 		{"nested-transform", `<xsl:template name="start"><xsl:sequence select="transform(map{'stylesheet-location':'urn:sheet','initial-template':QName('','start')})?output"/></xsl:template>`, nested},

@@ -1,5 +1,12 @@
 # Standards
 
+## Contents
+
+- [XML, canonicalization and signatures](#xml-canonicalization-and-signatures)
+- [Trust and evidence](#trust-and-evidence)
+- [Protocols and encryption](#protocols-and-encryption)
+- [Selected processing contracts](#selected-processing-contracts)
+
 These primary sources define supported profiles. Listing a standard does not claim
 complete conformance. [conformance.json](conformance.json) pins editions and errata
 sources, selected correction identifiers and their review date. Every declared
@@ -44,7 +51,7 @@ Implementation and local/independent evidence gaps remain explicit.
 - [RFC 6960](https://www.rfc-editor.org/rfc/rfc6960.html) and [RFC 9654](https://www.rfc-editor.org/rfc/rfc9654.html): OCSP and nonce
 - [RFC 3161](https://www.rfc-editor.org/rfc/rfc3161.html) and [RFC 5816](https://www.rfc-editor.org/rfc/rfc5816.html): timestamps
 - [ETSI EN 319 132-1 V1.3.1](https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf): XAdES properties
-- [ETSI EN 319 102-1 V1.4.1](https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf): future historical-validation baseline; the complete process is unimplemented
+- [ETSI EN 319 102-1 V1.4.1](https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf): bounded historical-validation workflow; complete EN processing remains unsupported
 
 ## Protocols and encryption
 
@@ -70,7 +77,7 @@ Implementation and local/independent evidence gaps remain explicit.
 
 The library does not perform XSD validation or download schemas.
 
-## Regression semantics checked on 21 October 2026
+## Selected processing contracts
 
 `fn:subsequence` uses a required single `xs:double` for a supplied length in
 [F&O 2.0 Second Edition §15.1.10](https://www.w3.org/TR/2010/REC-xpath-functions-20101214/#func-subsequence)
@@ -92,5 +99,5 @@ list no corrections.
 Transform parameters follow [XML Signature 1.1 §4.4.3.4](https://www.w3.org/TR/2013/REC-xmldsig-core1-20130411/#sec-Transforms)
 and its XPath/XSLT processing sections (11 April 2013), plus the linked Filter2
 and Exclusive C14N specifications. The [XML Signature 1.1 errata](https://www.w3.org/2008/xmlsec/errata/xmldsig-core-11-errata.html)
-do not change the parameter requirements used by these regressions. Numeric
+do not change the selected transform parameter requirements. Numeric
 resource accounting is an implementation policy, not a W3C memory guarantee.

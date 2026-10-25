@@ -27,10 +27,16 @@ const (
 	NSXS    = lexicon.NamespaceXSD
 )
 
-// Function is the interface for XPath 3.1 functions, both built-in and user-defined.
+// Function implements a built-in or host-supplied XPath function. Implementations
+// receive invocation context and argument sequences; shared implementations must
+// support concurrent evaluation.
 type Function interface {
+	// MinArity returns the minimum accepted argument count.
 	MinArity() int
-	MaxArity() int // -1 = variadic
+	// MaxArity returns the maximum accepted argument count, or -1 for variadic functions.
+	MaxArity() int
+	// Call invokes the function with the current evaluation context and argument
+	// sequences.
 	Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 }
 
@@ -39,21 +45,28 @@ type Function interface {
 // evaluator encounters a NamedFunctionRef for such a function, it
 // creates a function item that raises the specified error on call.
 type DynamicRefRestricted interface {
+	// NoDynamicRef reports whether dynamic reference invocation is restricted.
 	NoDynamicRef() bool
+	// DynRefErrorCode returns the error code raised when a restricted reference is
+	// invoked.
 	DynRefErrorCode() string
 }
 
-// DynamicRefSnapshotProvider marks a Function that needs to capture
-// state at reference creation time.  When the XPath evaluator creates
-// a NamedFunctionRef for such a function, it calls Snapshot() to obtain
-// a FunctionItem whose Invoke closure captures the current state.
+// DynamicRefSnapshotProvider captures dynamic state when a named function reference is
+// created. The evaluator calls DynamicRefSnapshot to obtain a function item whose
+// invocation retains that state.
 type DynamicRefSnapshotProvider interface {
+	// DynamicRefSnapshot captures a function item for arity and reports whether a
+	// snapshot was supplied.
 	DynamicRefSnapshot(ctx context.Context, arity int) (xdm.FunctionItem, bool)
 }
 
 // FunctionRefBinder captures adapter-specific lexical bindings while retaining
 // XPath's standard static-context/focus capture and live invocation budgets.
-type FunctionRefBinder interface{ BindFunctionReference() Function }
+type FunctionRefBinder interface {
+	// BindFunctionReference returns a function bound to adapter-specific lexical state.
+	BindFunctionReference() Function
+}
 
 func bindFunctionReference(fn Function) Function {
 	if binder, ok := fn.(FunctionRefBinder); ok {
@@ -68,7 +81,9 @@ func bindFunctionReference(fn Function) Function {
 // correct instance-of checks and function coercion for user-defined functions.
 type TypedFunction interface {
 	Function
+	// FuncParamTypes returns the declared parameter sequence types.
 	FuncParamTypes() []xdm.SequenceType
+	// FuncReturnType returns the declared result type, or nil when unspecified.
 	FuncReturnType() *xdm.SequenceType
 }
 
@@ -76,7 +91,9 @@ type TypedFunction interface {
 // that have different type signatures per arity.
 type TypedFunctionByArity interface {
 	Function
+	// FuncParamTypesForArity returns the parameter types for the selected argument count.
 	FuncParamTypesForArity(arity int) []xdm.SequenceType
+	// FuncReturnTypeForArity returns the result type for the selected argument count.
 	FuncReturnTypeForArity(arity int) *xdm.SequenceType
 }
 
@@ -166,12 +183,9 @@ func BuiltinFunctionAcceptsArity(uri, name string, arity int) bool {
 	return checkArity(fn, name, arity) == nil
 }
 
-// StandardFunctionAcceptsArity reports whether (uri, name) is a STANDARD F&O 3.1
-// function or a built-in type constructor (i.e. registered and NOT a helium
-// extension) that accepts the given arity. Conformance-restricted static contexts
-// such as XSD 1.1 conditional type assignment must use this, and never
-// BuiltinFunctionAcceptsArity, so that forward-looking extension functions (e.g.
-// fn:flatten) are not treated as available.
+// StandardFunctionAcceptsArity reports whether a registered F&O 3.1 function or
+// built-in type constructor accepts arity, excluding internal extension functions.
+// Language-profile visibility is checked separately.
 func StandardFunctionAcceptsArity(uri, name string, arity int) bool {
 	fn, ok := lookupBuiltin(QualifiedName{URI: uri, Name: name})
 	if !ok || isExtensionBuiltin(fn) {
@@ -266,6 +280,8 @@ func resolveFunctionInfo(ctx context.Context, ec *evalContext, prefix, name stri
 // error binding when XPath 1.0 compatibility applies. It is deliberately not
 // consulted by function-lookup or by strict dynamic-expression validation.
 type CompatibilityFunctionResolver interface {
+	// ResolveCompatibilityFunction resolves an extension function under the host's
+	// backwards-compatible policy.
 	ResolveCompatibilityFunction(context.Context, string, string, int) (Function, bool, error)
 }
 
@@ -375,7 +391,7 @@ type builtinFunc struct {
 	min     int
 	max     int // -1 = variadic
 	fn      func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
-	// extension is true for functions helium provides BEYOND the F&O 3.1 standard
+	// extension marks internal functions outside the F&O 3.1 standard
 	// function library (forward-looking XPath/XQuery 4.0 functions). They are available
 	// for evaluation, but are NOT part of a conformance-restricted static context such
 	// as XSD 1.1 conditional type assignment (§F.2 admits only the standard library and

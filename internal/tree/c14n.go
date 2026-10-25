@@ -187,8 +187,8 @@ func normalizeCanonicalOptions(opt CanonicalOptions) (CanonicalOptions, error) {
 	return opt, nil
 }
 
-func canonicalInclusivePrefixes(prefixes []string) (map[string]bool, error) {
-	inclusive := make(map[string]bool, len(prefixes))
+func canonicalInclusivePrefixes(prefixes []string) (map[string]struct{}, error) {
+	inclusive := make(map[string]struct{}, len(prefixes))
 
 	for _, prefix := range prefixes {
 		if prefix == "#default" {
@@ -197,7 +197,7 @@ func canonicalInclusivePrefixes(prefixes []string) (map[string]bool, error) {
 			return nil, fmt.Errorf("%w: inclusive namespace prefix", ErrMalformed)
 		}
 
-		inclusive[prefix] = true
+		inclusive[prefix] = struct{}{}
 	}
 
 	return inclusive, nil
@@ -256,14 +256,16 @@ type canonicalWriter struct {
 	out       streamio.Writer
 	escaper   xmlEscaper
 	scope     namespaceContext
-	inclusive map[string]bool
-	// Attributes are emitted before children, so one buffer serves the walk.
+	inclusive map[string]struct {
+		// Attributes are emitted before children, so one buffer serves the walk.
+	}
+
 	attrs          []Attribute
 	namespaceNames []string
 	// Scratch maps are private to a recursion depth and reused across siblings.
 	frames []canonicalFrame
 	// Namespace work sets are consumed before descending into children too.
-	prefixes     map[string]bool
+	prefixes     map[string]struct{}
 	declarations map[string]string
 	err          error
 }
@@ -435,7 +437,7 @@ func copyBindings(dst, src map[string]string) map[string]string {
 	return dst
 }
 
-func nextCanonicalFrame(frame canonicalFrame, selected map[string]string, utilized map[string]bool, toRender map[string]string, visible bool, scratch *canonicalFrame) canonicalFrame {
+func nextCanonicalFrame(frame canonicalFrame, selected map[string]string, utilized map[string]struct{}, toRender map[string]string, visible bool, scratch *canonicalFrame) canonicalFrame {
 	if !visible {
 		return frame
 	}
@@ -483,9 +485,9 @@ func (w *canonicalWriter) selectedNamespaces(n *Node, selected map[string]string
 	return selected
 }
 
-func (w *canonicalWriter) utilizedPrefixes(n *Node, visible bool) map[string]bool {
+func (w *canonicalWriter) utilizedPrefixes(n *Node, visible bool) map[string]struct{} {
 	if w.prefixes == nil {
-		w.prefixes = make(map[string]bool)
+		w.prefixes = make(map[string]struct{})
 	}
 
 	clear(w.prefixes)
@@ -495,18 +497,18 @@ func (w *canonicalWriter) utilizedPrefixes(n *Node, visible bool) map[string]boo
 		return utilized
 	}
 
-	utilized[n.Prefix] = true
+	utilized[n.Prefix] = struct{}{}
 
 	for i, attribute := range n.Attrs {
 		if attribute.Prefix != "" && w.sel.attribute(n, i) {
-			utilized[attribute.Prefix] = true
+			utilized[attribute.Prefix] = struct{}{}
 		}
 	}
 
 	return utilized
 }
 
-func (w *canonicalWriter) namespaceDeclarations(selected map[string]string, utilized map[string]bool, frame canonicalFrame, visible bool) map[string]string {
+func (w *canonicalWriter) namespaceDeclarations(selected map[string]string, utilized map[string]struct{}, frame canonicalFrame, visible bool) map[string]string {
 	if w.declarations == nil {
 		w.declarations = make(map[string]string)
 	}
@@ -519,7 +521,12 @@ func (w *canonicalWriter) namespaceDeclarations(selected map[string]string, util
 			continue
 		}
 
-		if w.opt.Algorithm != AlgorithmExclusive || w.inclusive[prefix] {
+		inclusive := w.opt.Algorithm != AlgorithmExclusive
+		if !inclusive {
+			_, inclusive = w.inclusive[prefix]
+		}
+
+		if inclusive {
 			if frame.selected[prefix] != uri {
 				toRender[prefix] = uri
 			}
@@ -527,10 +534,12 @@ func (w *canonicalWriter) namespaceDeclarations(selected map[string]string, util
 			continue
 		}
 
-		if visible && utilized[prefix] {
-			_, rendered := frame.rendered[prefix]
-			if !rendered || frame.utilized[prefix] != uri {
-				toRender[prefix] = uri
+		if visible {
+			if _, exists := utilized[prefix]; exists {
+				_, rendered := frame.rendered[prefix]
+				if !rendered || frame.utilized[prefix] != uri {
+					toRender[prefix] = uri
+				}
 			}
 		}
 	}
@@ -539,11 +548,16 @@ func (w *canonicalWriter) namespaceDeclarations(selected map[string]string, util
 		return toRender
 	}
 
-	if w.opt.Algorithm != AlgorithmExclusive || w.inclusive[""] {
+	inclusive := w.opt.Algorithm != AlgorithmExclusive
+	if !inclusive {
+		_, inclusive = w.inclusive[""]
+	}
+
+	if inclusive {
 		if frame.selected[""] != "" {
 			toRender[""] = ""
 		}
-	} else if utilized[""] && frame.utilized[""] != "" {
+	} else if _, exists := utilized[""]; exists && frame.utilized[""] != "" {
 		toRender[""] = ""
 	}
 
@@ -636,17 +650,21 @@ func canonicalAttributes(attrs []Attribute, n *Node, visible bool, sel canonical
 }
 
 func inheritedXMLAttributes(attrs []Attribute, n *Node, algorithm string) []Attribute {
-	have := make(map[string]bool)
+	have := make(map[string]struct{})
 
 	for _, attribute := range n.Attrs {
 		if attribute.Name.Space == XMLNamespace {
-			have[attribute.Name.Local] = true
+			have[attribute.Name.Local] = struct{}{}
 		}
 	}
 
 	for parent := n.Parent; parent != nil; parent = parent.Parent {
 		for _, attribute := range parent.Attrs {
-			if attribute.Name.Space != XMLNamespace || have[attribute.Name.Local] {
+			if attribute.Name.Space != XMLNamespace {
+				continue
+			}
+
+			if _, exists := have[attribute.Name.Local]; exists {
 				continue
 			}
 
@@ -654,7 +672,7 @@ func inheritedXMLAttributes(attrs []Attribute, n *Node, algorithm string) []Attr
 				continue
 			}
 
-			have[attribute.Name.Local] = true
+			have[attribute.Name.Local] = struct{}{}
 			attrs = append(attrs, attribute)
 		}
 	}

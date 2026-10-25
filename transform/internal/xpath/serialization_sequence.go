@@ -23,13 +23,15 @@ func SerializationItems(ctx context.Context, seq xdm.Sequence, separator *string
 }
 
 type serializationItems struct {
-	ctx                          context.Context
-	separator                    *string
-	yield                        func(xdm.XMLItem, error) bool
-	pending                      string
-	buffer                       strings.Builder
-	previousAtomic, previousItem bool
-	coalesce, hasText            bool
+	ctx            context.Context
+	separator      *string
+	yield          func(xdm.XMLItem, error) bool
+	pending        string
+	buffer         strings.Builder
+	previousAtomic bool
+	previousItem   bool
+	coalesce       bool
+	hasText        bool
 }
 
 func (s *serializationItems) fail(err error) bool { s.yield(xdm.XMLItem{}, err); return false }

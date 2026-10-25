@@ -287,7 +287,20 @@ func runInspect(ctx context.Context, args []string, stdin io.Reader, stdout, std
 }
 
 func algorithmInfo() any {
-	return map[string]any{"signature_policies": map[string]any{nameDefault: xmldsig.DefaultPolicy().AllowedSignatureMethods, "modern": xmldsig.ModernPolicy().AllowedSignatureMethods, "pss": xmldsig.ParameterizedPolicy().AllowedSignatureMethods, nameHMAC: xmldsig.HMACPolicy().AllowedSignatureMethods}, "digests": xmldsig.DefaultPolicy().AllowedDigestMethods, "canonicalization": []string{c14n.Exclusive, c14n.ExclusiveWithComments, c14n.Canonical10, c14n.Canonical10WithComments, c14n.Canonical11, c14n.Canonical11WithComments}, "transforms": append(reference.DefaultOptions().AllowedTransforms, reference.XPath, reference.XPathFilter2, reference.XSLT), nameEncryption: []string{xmlenc.AES128GCM, xmlenc.AES192GCM, xmlenc.AES256GCM, xmlenc.RSAOAEP, xmlenc.AES128KeyWrap, xmlenc.AES192KeyWrap, xmlenc.AES256KeyWrap}, nameXPath: []string{version10, version20, version30, version31}, nameXSLT: []string{version10, "2.0-basic", "3.0-basic"}}
+	return map[string]any{
+		"signature_policies": map[string]any{
+			nameDefault: xmldsig.DefaultPolicy().AllowedSignatureMethods,
+			"modern":    xmldsig.ModernPolicy().AllowedSignatureMethods,
+			"pss":       xmldsig.ParameterizedPolicy().AllowedSignatureMethods,
+			nameHMAC:    xmldsig.HMACPolicy().AllowedSignatureMethods,
+		},
+		"digests":          xmldsig.DefaultPolicy().AllowedDigestMethods,
+		"canonicalization": []string{c14n.Exclusive, c14n.ExclusiveWithComments, c14n.Canonical10, c14n.Canonical10WithComments, c14n.Canonical11, c14n.Canonical11WithComments},
+		"transforms":       append(reference.DefaultOptions().AllowedTransforms, reference.XPath, reference.XPathFilter2, reference.XSLT),
+		nameEncryption:     []string{xmlenc.AES128GCM, xmlenc.AES192GCM, xmlenc.AES256GCM, xmlenc.RSAOAEP, xmlenc.AES128KeyWrap, xmlenc.AES192KeyWrap, xmlenc.AES256KeyWrap},
+		nameXPath:          []string{version10, version20, version30, version31},
+		nameXSLT:           []string{version10, "2.0-basic", "3.0-basic"},
+	}
 }
 
 func fingerprint(raw []byte) string { sum := sha256.Sum256(raw); return hex.EncodeToString(sum[:]) }

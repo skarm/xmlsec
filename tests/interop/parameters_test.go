@@ -274,7 +274,10 @@ func verifySignatureValue(t *testing.T, fixture *interopFixture, d *tree.Documen
 			t.Fatal("ECDSA width")
 		}
 
-		der, err := asn1.Marshal(struct{ R, S *big.Int }{new(big.Int).SetBytes(value[:width]), new(big.Int).SetBytes(value[width:])})
+		der, err := asn1.Marshal(struct {
+			R *big.Int
+			S *big.Int
+		}{new(big.Int).SetBytes(value[:width]), new(big.Int).SetBytes(value[width:])})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -305,7 +308,10 @@ func ecdsaDER(t *testing.T, value []byte) []byte {
 
 	n := len(value) / 2
 
-	der, err := asn1.Marshal(struct{ R, S *big.Int }{new(big.Int).SetBytes(value[:n]), new(big.Int).SetBytes(value[n:])})
+	der, err := asn1.Marshal(struct {
+		R *big.Int
+		S *big.Int
+	}{new(big.Int).SetBytes(value[:n]), new(big.Int).SetBytes(value[n:])})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +322,10 @@ func ecdsaDER(t *testing.T, value []byte) []byte {
 func ecdsaRaw(t *testing.T, value []byte, width int) []byte {
 	t.Helper()
 
-	var pair struct{ R, S *big.Int }
+	var pair struct {
+		R *big.Int
+		S *big.Int
+	}
 
 	rest, err := asn1.Unmarshal(value, &pair)
 	if err != nil || len(rest) != 0 || pair.R == nil || pair.S == nil {
@@ -331,17 +340,21 @@ func ecdsaRaw(t *testing.T, value []byte, width int) []byte {
 }
 
 type signatureParameterCase struct {
-	kind                  string
-	hash, mgf, salt, bits int
-	defaultParams         bool
+	kind          string
+	hash          int
+	mgf           int
+	salt          int
+	bits          int
+	defaultParams bool
 }
 
 type parameterExchange struct {
-	cfg                    signatureParameterCase
-	fixture                *interopFixture
-	key                    testKey
-	secret                 []byte
-	messagePath, valuePath string
+	cfg         signatureParameterCase
+	fixture     *interopFixture
+	key         testKey
+	secret      []byte
+	messagePath string
+	valuePath   string
 }
 
 func (x parameterExchange) sign(t *testing.T, message []byte) []byte {

@@ -18,7 +18,7 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
-func lookupFunctionsJsonXml(name string) (*builtinFunc, bool) {
+func lookupFunctionsJSONXML(name string) (*builtinFunc, bool) {
 	switch name {
 	case "json-to-xml":
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnJSONToXML}, true
@@ -699,7 +699,7 @@ func jsonElementChildren(elem *xdm.Element, insideMap bool) ([]*xdm.Element, err
 		case *xdm.Comment, *xdm.ProcessingInstruction:
 			continue
 		default:
-			return nil, &xdm.Error{Code: errCodeFOJS0006, Message: textXmlToJsonInvalidChildNode}
+			return nil, &xdm.Error{Code: errCodeFOJS0006, Message: textXMLToJSONInvalidChildNode}
 		}
 	}
 
@@ -715,12 +715,12 @@ func scalarElementText(elem *xdm.Element, allowComments bool) (string, error) {
 			b.WriteString(xdm.CharacterData(child))
 		case xdm.CommentNode, xdm.ProcessingInstructionNode:
 			if !allowComments {
-				return "", &xdm.Error{Code: errCodeFOJS0006, Message: textXmlToJsonInvalidChildNode}
+				return "", &xdm.Error{Code: errCodeFOJS0006, Message: textXMLToJSONInvalidChildNode}
 			}
 		case xdm.ElementNode:
 			return "", &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: scalar value contains element children"}
 		default:
-			return "", &xdm.Error{Code: errCodeFOJS0006, Message: textXmlToJsonInvalidChildNode}
+			return "", &xdm.Error{Code: errCodeFOJS0006, Message: textXMLToJSONInvalidChildNode}
 		}
 	}
 
@@ -737,7 +737,7 @@ func validateNullElement(elem *xdm.Element) error {
 		case xdm.ElementNode:
 			return &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: null element must not contain child elements"}
 		default:
-			return &xdm.Error{Code: errCodeFOJS0006, Message: textXmlToJsonInvalidChildNode}
+			return &xdm.Error{Code: errCodeFOJS0006, Message: textXMLToJSONInvalidChildNode}
 		}
 	}
 

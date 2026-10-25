@@ -70,12 +70,13 @@ func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	modern := fs.Bool("modern-algorithms", false, "also permit fixed RSA-PSS, Ed25519 and Ed25519ph")
 
 	var (
-		xpathExpression                                                       string
-		xpathNamespaces                                                       repeatedFlag
-		keyFile, method, digest, refs, inclusive, selectID, rootLocal, rootNS string
-		comments                                                              bool
-		canonicalAlgorithm                                                    string
-		keyFlags                                                              *privateKeyFlags
+		xpathExpression                        string
+		xpathNamespaces                        repeatedFlag
+		keyFile, method, digest, refs          string
+		inclusive, selectID, rootLocal, rootNS string
+		comments                               bool
+		canonicalAlgorithm                     string
+		keyFlags                               *privateKeyFlags
 	)
 
 	switch cmd {
@@ -139,12 +140,7 @@ func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 		return err
 	}
 
-	data, err := readInputContext(ctx, *input, stdin, exec.xml.MaxBytes)
-	if err != nil {
-		return err
-	}
-
-	doc, err := document.Parse(ctx, data, exec.xml)
+	doc, err := readDocument(ctx, *input, stdin)
 	if err != nil {
 		return err
 	}
@@ -157,10 +153,9 @@ func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	case nameC14n:
 		opt := c14n.Options{MaxOutputBytes: exec.output, Algorithm: canonicalAlgorithm, WithComments: comments, InclusivePrefixes: strings.Fields(inclusive)}
 
-		out, err = canonicalizeSelection(ctx, doc, idName, selectID, xpathExpression, xpathNamespaces, opt)
-		if err != nil {
-			return err
-		}
+		return produceOutput(ctx, *output, stdout, func(w io.Writer) error {
+			return canonicalizeSelection(ctx, w, doc, idName, selectID, xpathExpression, xpathNamespaces, opt)
+		})
 
 	case nameSign:
 		opt := xmldsig.SignOptions{IDAttribute: idName, SignatureMethod: method, DigestMethod: digest, InclusivePrefixes: strings.Fields(inclusive)}
@@ -174,10 +169,12 @@ func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 			opt.ReferenceIDs = strings.Split(refs, ",")
 		}
 
-		out, err = signCLI(ctx, doc, signer, opt)
+		signed, err := xmldsig.SignEnveloped(ctx, doc, signer, opt)
 		if err != nil {
 			return err
 		}
+
+		return documentOutput(ctx, *output, stdout, signed)
 
 	case nameVerify:
 		out, err = verifyCLI(ctx, doc, public, idName, document.Name{Space: rootNS, Local: rootLocal}, *modern)
@@ -194,20 +191,31 @@ func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 }
 
 func writeAtomicOutput(ctx context.Context, path string, w io.Writer, b []byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	if path == "-" {
-		n, err := w.Write(b)
+	return writeAtomicOutputFunc(ctx, path, w, func(target io.Writer) error {
+		n, err := target.Write(b)
 		if err == nil && n != len(b) {
 			err = io.ErrShortWrite
 		}
 
 		return err
+	})
+}
+
+func writeAtomicOutputFunc(ctx context.Context, path string, w io.Writer, produce func(io.Writer) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if path == "-" {
+		return produce(w)
 	}
 	// Same-directory temporary output; rename atomicity depends on the OS.
-	f, err := os.CreateTemp(filepath.Dir(path), ".xmlsec-*") // #nosec G703 -- The operator selects the CLI output directory.
+	parent, _ := filepath.Split(path)
+	if parent == "" {
+		parent = "."
+	}
+
+	f, err := os.CreateTemp(parent, ".xmlsec-*") // #nosec G703 -- The operator selects the CLI output directory.
 	if err != nil {
 		return err
 	}
@@ -218,11 +226,7 @@ func writeAtomicOutput(ctx context.Context, path string, w io.Writer, b []byte) 
 	stopWrite := interruptIO(ctx, f)
 	defer stopWrite()
 
-	if _, err = f.Write(b); err != nil {
-		return errors.Join(err, f.Close())
-	}
-
-	if err = f.Close(); err != nil {
+	if err := errors.Join(produce(f), f.Close()); err != nil {
 		return err
 	}
 
@@ -233,14 +237,11 @@ func writeAtomicOutput(ctx context.Context, path string, w io.Writer, b []byte) 
 	return os.Rename(temp, path) // #nosec G703 -- The operator selects the CLI output path.
 }
 
-func canonicalizeCLI(ctx context.Context, doc *document.Document, idName document.Name, selectID string, opt c14n.Options) ([]byte, error) {
-	var (
-		err error
-		b   bytes.Buffer
-	)
+func canonicalizeCLI(ctx context.Context, w io.Writer, doc *document.Document, idName document.Name, selectID string, opt c14n.Options) error {
+	var err error
 
 	if selectID == "" {
-		err = c14n.WriteDocument(ctx, &b, doc, opt)
+		err = c14n.WriteDocument(ctx, w, doc, opt)
 	} else {
 		var target document.Element
 
@@ -261,17 +262,13 @@ func canonicalizeCLI(ctx context.Context, doc *document.Document, idName documen
 		walk(doc.Root())
 
 		if count != 1 {
-			return nil, fmt.Errorf("ID must match exactly one element; found %d", count)
+			return fmt.Errorf("ID must match exactly one element; found %d", count)
 		}
 
-		err = c14n.WriteElement(ctx, &b, target, opt)
+		err = c14n.WriteElement(ctx, w, target, opt)
 	}
 
-	if err != nil {
-		return nil, err
-	}
-
-	return b.Bytes(), nil
+	return err
 }
 
 func verifyCLI(ctx context.Context, doc *document.Document, key crypto.PublicKey, idName, expectedRoot document.Name, modern bool) ([]byte, error) {
@@ -318,32 +315,18 @@ func verifyCLI(ctx context.Context, doc *document.Document, key crypto.PublicKey
 	return append(out, '\n'), nil
 }
 
-func signCLI(ctx context.Context, doc *document.Document, key crypto.Signer, opt xmldsig.SignOptions) ([]byte, error) {
-	signed, err := xmldsig.SignEnveloped(ctx, doc, key, opt)
-	if err != nil {
-		return nil, err
-	}
-
-	out, err := signed.XML(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return out, nil
-}
-
-func canonicalizeSelection(ctx context.Context, doc *document.Document, idName document.Name, selectID, xpathExpression string, xpathNamespaces repeatedFlag, opt c14n.Options) ([]byte, error) {
+func canonicalizeSelection(ctx context.Context, w io.Writer, doc *document.Document, idName document.Name, selectID, xpathExpression string, xpathNamespaces repeatedFlag, opt c14n.Options) error {
 	if xpathExpression == "" {
-		return canonicalizeCLI(ctx, doc, idName, selectID, opt)
+		return canonicalizeCLI(ctx, w, doc, idName, selectID, opt)
 	}
 
 	if selectID != "" {
-		return nil, usageError("choose -xpath or -id")
+		return usageError("choose -xpath or -id")
 	}
 
 	ns, err := namespaces(xpathNamespaces)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	if opt.WithComments {
@@ -357,5 +340,5 @@ func canonicalizeSelection(ctx context.Context, doc *document.Document, idName d
 		}
 	}
 
-	return canonicalizeXPath(ctx, doc, xpathExpression, ns, opt)
+	return canonicalizeXPath(ctx, w, doc, xpathExpression, ns, opt)
 }

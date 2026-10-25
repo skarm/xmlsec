@@ -23,61 +23,74 @@ import (
 	"github.com/skarm/xmlsec/internal/streamio"
 )
 
-// Limits bounds a complete Collect call. Zero selects the documented default,
-// except MaxRedirects: zero denies redirects; a positive value opts into them.
+// Limits bounds one complete collection call. Zero fields select their documented
+// defaults, except MaxRedirects: zero denies redirects.
 type Limits struct {
-	// MaxResources bounds all HTTP requests, including redirects; default8, max64.
+	// MaxResources bounds all HTTP requests, including redirects. Zero selects 8.
+	// The maximum is 64.
 	MaxResources int
-	// MaxBytes bounds each delivered evidence body; default4MiB, maximum64MiB.
+	// MaxBytes bounds each delivered evidence body. Zero selects 4 MiB.
+	// The maximum is 64 MiB.
 	MaxBytes int
-	// MaxTotalBytes bounds all delivered evidence bodies; default16MiB, max64MiB.
+	// MaxTotalBytes bounds all delivered evidence bodies. Zero selects 16 MiB.
+	// The maximum is 64 MiB.
 	// HTTP framing/headers and redirect bodies belong to the supplied transport;
 	// their work is separately bounded by MaxResources, MaxRedirects and Timeout.
 	MaxTotalBytes int
-	// MaxRequestBytes bounds each OCSP POST body; default/max64KiB.
+	// MaxRequestBytes bounds each OCSP POST body. Zero selects 64 KiB, also the maximum.
 	MaxRequestBytes int
-	// MaxTotalRequestBytes bounds snapshotted POST bodies; default512KiB, max4MiB.
+	// MaxTotalRequestBytes bounds snapshotted POST bodies. Zero selects 512 KiB.
+	// The maximum is 4 MiB.
 	MaxTotalRequestBytes int
-	// MaxRedirects is the maximum per resource; zero denies, maximum10.
+	// MaxRedirects bounds redirects per resource. Zero denies redirects. The maximum is 10.
 	MaxRedirects int
-	// Timeout bounds the complete call, including response reads; default10s, max2m.
+	// Timeout bounds the complete call, including response reads. Zero selects ten seconds.
+	// The maximum is two minutes.
 	Timeout time.Duration
 }
 
-// Config requires an application-owned client and exact authorized URIs.
-// The client value is copied; Transport/Jar stay application-owned and must
-// support concurrency and cancellation. The application controls DNS, IP/proxy
-// access, TLS roots and credentials through that transport. No implicit client,
-// system fetch, certificate AIA traversal or revocation fallback is supplied.
+// Config authorizes exact resource URIs through an application-owned HTTP client.
+// Construction copies the client value. Its transport and cookie jar remain shared
+// and must support concurrent use and cancellation. The application configures DNS,
+// IP and proxy access, TLS roots and credentials. Collection requires this explicit
+// client and does not follow certificate AIA or revocation links automatically.
 type Config struct {
+	// Client is required. Its transport and jar remain owned by the application.
 	Client *http.Client
-	// AllowedURIs contains1..256 exact absolute HTTP(S) URI strings, no fragments
+	// AllowedURIs contains 1 to 256 exact absolute HTTP(S) URI strings, without fragments
 	// or userinfo. Every followed redirect must also be explicitly listed.
 	AllowedURIs []string
 	// AllowHTTP explicitly permits HTTP; HTTPS remains the default scheme policy.
 	// Transport protection never authenticates the contained evidence assertions.
 	AllowHTTP bool
-	Limits    Limits
+	// Limits bounds requests, bodies, redirects and the duration of one collection call.
+	Limits Limits
 	// Now supplies an untrusted observation clock; nil uses time.Now.
 	Now func() time.Time
 }
 
-// Request selects one opaque body. An empty Method means GET. POST is permitted
-// only for OCSP with a nonempty bounded request body; no other methods are used.
-// The caller independently carries expected OCSP request/nonce/CertID bindings
-// into offline verification. Inputs must stay unchanged during Collect.
+// Request identifies an untrusted evidence body to retrieve. Method defaults to GET.
+// POST requires OCSP kind and a nonempty bounded request body. Other methods are
+// rejected. Inputs must remain unchanged during collection. The caller separately
+// supplies expected OCSP request, nonce and CertID bindings for offline verification.
 type Request struct {
-	Kind   evidence.Kind
-	URI    string
+	// Kind selects the intended offline parser without asserting that the response is
+	// valid.
+	Kind evidence.Kind
+	// URI is the exact authorized absolute HTTP(S) resource URI.
+	URI string
+	// Method selects GET or OCSP POST. Empty selects GET.
 	Method string
-	Body   []byte
+	// Body contains the OCSP request bytes for POST. GET requires an empty body.
+	Body []byte
 }
 
-// HTTP is immutable after construction. Its client transport, jar and optional
-// clock must support concurrent calls. Per-call counters and redirects are local.
+// HTTP collects untrusted evidence under immutable resource policy. Construct it
+// with NewHTTP. Concurrent calls use separate counters and redirect state; the
+// shared transport, cookie jar and optional clock must also support concurrent use.
 type HTTP struct {
 	client  http.Client
-	allowed map[string]bool
+	allowed map[string]struct{}
 	limits  Limits
 	now     func() time.Time
 }
@@ -93,18 +106,22 @@ func NewHTTP(config Config) (*HTTP, error) {
 		return nil, err
 	}
 
-	c := &HTTP{client: *config.Client, allowed: make(map[string]bool, len(config.AllowedURIs)), limits: limits, now: config.Now}
+	c := &HTTP{client: *config.Client, allowed: make(map[string]struct{}, len(config.AllowedURIs)), limits: limits, now: config.Now}
 	if c.now == nil {
 		c.now = time.Now
 	}
 
 	for _, raw := range config.AllowedURIs {
 		u, err := collectionURI(raw)
-		if err != nil || u.Scheme != "https" && !(config.AllowHTTP && u.Scheme == "http") || c.allowed[raw] {
+		if err != nil || u.Scheme != "https" && !(config.AllowHTTP && u.Scheme == "http") {
 			return nil, evidence.ErrInput
 		}
 
-		c.allowed[raw] = true
+		if _, exists := c.allowed[raw]; exists {
+			return nil, evidence.ErrInput
+		}
+
+		c.allowed[raw] = struct{}{}
 	}
 
 	return c, nil
@@ -112,14 +129,15 @@ func NewHTTP(config Config) (*HTTP, error) {
 
 func normalizeLimits(limits Limits) (Limits, error) {
 	for _, field := range []struct {
-		value             *int
-		fallback, maximum int
+		value    *int
+		fallback int
+		maximum  int
 	}{
-		{&limits.MaxResources, 8, 64},
-		{&limits.MaxBytes, 4 << 20, 64 << 20},
-		{&limits.MaxTotalBytes, 16 << 20, 64 << 20},
-		{&limits.MaxRequestBytes, 64 << 10, 64 << 10},
-		{&limits.MaxTotalRequestBytes, 512 << 10, 4 << 20},
+		{value: &limits.MaxResources, fallback: 8, maximum: 64},
+		{value: &limits.MaxBytes, fallback: 4 << 20, maximum: 64 << 20},
+		{value: &limits.MaxTotalBytes, fallback: 16 << 20, maximum: 64 << 20},
+		{value: &limits.MaxRequestBytes, fallback: 64 << 10, maximum: 64 << 10},
+		{value: &limits.MaxTotalRequestBytes, fallback: 512 << 10, maximum: 4 << 20},
 	} {
 		if *field.value == 0 {
 			*field.value = field.fallback
@@ -159,14 +177,44 @@ func collectionURI(raw string) (*url.URL, error) {
 }
 
 type collection struct {
-	collector        *HTTP
-	requests, octets int
+	collector *HTTP
+	requests  int
+	octets    int
 }
 
 // Collect returns observations only when every requested retrieval succeeds.
 // On any HTTP, redirect, reader, close, budget or cancellation error it returns
 // no partial result. Returned bytes remain untrusted, including over HTTPS.
 func (c *HTTP) Collect(ctx context.Context, requests []Request) ([]*evidence.Observation, error) {
+	return collect(c, ctx, requests, evidence.ReadObservation)
+}
+
+// CollectTo stores exact response bytes in store, retaining only metadata in
+// heap. The caller owns store and each returned record. All records created by
+// this call are removed on any retrieval, close, cancellation or budget error.
+// The returned records remain untrusted and require offline authentication.
+func (c *HTTP) CollectTo(ctx context.Context, store *evidence.Store, requests []Request) ([]*evidence.Record, error) {
+	if store == nil {
+		return nil, evidence.ErrInput
+	}
+
+	return collect(c, ctx, requests, store.PutReader)
+}
+
+type (
+	collected                      interface{ Size() int }
+	observationReader[T collected] func(context.Context, evidence.Kind, io.Reader, evidence.Provenance, int) (T, error)
+)
+
+func release[T collected](item T) error {
+	if closer, ok := any(item).(io.Closer); ok {
+		return closer.Close()
+	}
+
+	return nil
+}
+
+func collect[T collected](c *HTTP, ctx context.Context, requests []Request, read observationReader[T]) ([]T, error) {
 	if ctx == nil || c == nil || c.allowed == nil || len(requests) == 0 {
 		return nil, evidence.ErrInput
 	}
@@ -187,8 +235,13 @@ func (c *HTTP) Collect(ctx context.Context, requests []Request) ([]*evidence.Obs
 	}()
 
 	remaining := c.limits.MaxTotalRequestBytes
+
 	for i, request := range requests {
-		if !evidence.ValidKind(request.Kind) || !c.allowed[request.URI] {
+		if !evidence.ValidKind(request.Kind) {
+			return nil, evidence.ErrPolicy
+		}
+
+		if _, allowed := c.allowed[request.URI]; !allowed {
 			return nil, evidence.ErrPolicy
 		}
 
@@ -214,10 +267,14 @@ func (c *HTTP) Collect(ctx context.Context, requests []Request) ([]*evidence.Obs
 
 	state := collection{collector: c, requests: c.limits.MaxResources, octets: c.limits.MaxTotalBytes}
 
-	observations := make([]*evidence.Observation, 0, len(plans))
+	observations := make([]T, 0, len(plans))
 	for _, request := range plans {
-		observation, err := state.fetch(ctx, request)
+		observation, err := fetch(&state, ctx, request, read)
 		if err != nil {
+			for _, item := range observations {
+				err = errors.Join(err, release(item))
+			}
+
 			return nil, err
 		}
 
@@ -227,13 +284,14 @@ func (c *HTTP) Collect(ctx context.Context, requests []Request) ([]*evidence.Obs
 	return observations, nil
 }
 
-func (s *collection) fetch(ctx context.Context, input Request) (*evidence.Observation, error) {
+func fetch[T collected](s *collection, ctx context.Context, input Request, read observationReader[T]) (T, error) {
+	var zero T
 	if s.requests == 0 || s.octets == 0 {
-		return nil, evidence.ErrLimit
+		return zero, evidence.ErrLimit
 	}
 
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return zero, err
 	}
 
 	s.requests--
@@ -260,7 +318,11 @@ func (s *collection) fetch(ctx context.Context, input Request) (*evidence.Observ
 			}
 		}
 
-		if request.URL == nil || !s.collector.allowed[request.URL.String()] || request.Method != input.Method {
+		if request.URL == nil {
+			return evidence.ErrPolicy
+		}
+
+		if _, allowed := s.collector.allowed[request.URL.String()]; !allowed || request.Method != input.Method {
 			return evidence.ErrPolicy
 		}
 
@@ -273,7 +335,7 @@ func (s *collection) fetch(ctx context.Context, input Request) (*evidence.Observ
 
 	request, err := http.NewRequestWithContext(ctx, input.Method, input.URI, bytes.NewReader(input.Body))
 	if err != nil {
-		return nil, errors.Join(evidence.ErrResource, err)
+		return zero, errors.Join(evidence.ErrResource, err)
 	}
 
 	if input.Method == http.MethodPost {
@@ -282,51 +344,33 @@ func (s *collection) fetch(ctx context.Context, input Request) (*evidence.Observ
 
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, errors.Join(evidence.ErrResource, err, transport.failure())
+		return zero, errors.Join(evidence.ErrResource, err, transport.failure())
 	}
-
-	data, err := s.read(ctx, response)
-	if closeErr := transport.failure(); err != nil || closeErr != nil {
-		clear(data)
-		return nil, errors.Join(evidence.ErrResource, err, closeErr)
-	}
-
-	s.octets -= len(data)
 
 	provenance := evidence.Provenance{URI: input.URI, Redirects: redirects, RetrievedAt: s.collector.now()}
 	if len(input.Body) != 0 {
 		provenance.RequestSHA256 = sha256.Sum256(input.Body)
 	}
 
-	observation, err := evidence.NewObservation(ctx, input.Kind, data, provenance)
-	clear(data)
+	var observation T
 
-	return observation, err
-}
-
-func (s *collection) read(ctx context.Context, response *http.Response) ([]byte, error) {
-	var (
-		data []byte
-		err  error
-	)
 	if response.StatusCode != http.StatusOK {
 		err = fmt.Errorf("%w: HTTP status %d", evidence.ErrResource, response.StatusCode)
 	} else {
-		reader := &streamio.Reader{Context: ctx, Source: response.Body, Limit: int64(min(s.collector.limits.MaxBytes, s.octets)), LimitError: evidence.ErrLimit}
+		observation, err = read(ctx, input.Kind, response.Body, provenance, min(s.collector.limits.MaxBytes, s.octets))
+	}
 
-		data, err = io.ReadAll(reader)
-		if err == nil && len(data) == 0 {
-			err = fmt.Errorf("%w: empty body", evidence.ErrResource)
+	if err := errors.Join(err, response.Body.Close(), transport.failure(), ctx.Err()); err != nil {
+		if observation.Size() != 0 {
+			err = errors.Join(err, release(observation))
 		}
+
+		return zero, errors.Join(evidence.ErrResource, err)
 	}
 
-	err = errors.Join(err, response.Body.Close(), ctx.Err())
-	if err != nil {
-		clear(data)
-		return nil, errors.Join(evidence.ErrResource, err)
-	}
+	s.octets -= observation.Size()
 
-	return data, nil
+	return observation, nil
 }
 
 // net/http closes intermediate redirect bodies itself and discards their Close

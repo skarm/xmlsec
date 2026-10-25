@@ -71,10 +71,15 @@ const (
 	IdentityProvider RoleType = "IDPSSODescriptor"
 )
 
-// Endpoint describes a binding and endpoint location, with an optional indexed service
-// selector.
+// Endpoint identifies a binding and its service URL, with optional response URL and
+// indexed service selection.
 type Endpoint struct {
-	Binding, Location, ResponseLocation string
+	// Binding is the SAML binding URI supported by this endpoint.
+	Binding string
+	// Location is the endpoint URL.
+	Location string
+	// ResponseLocation is the optional URL for responses associated with this endpoint.
+	ResponseLocation string
 	// Index identifies an indexed endpoint and applies only when Indexed is true.
 	Index uint16
 	// Indexed distinguishes an indexed endpoint, including index zero, from an unindexed one.
@@ -89,45 +94,49 @@ type Endpoint struct {
 // A nil index uses IndexedEndpointType's isDefault rules: first true, then first
 // unspecified, then first endpoint. Selection alone does not establish trust.
 func SelectACS(endpoints []Endpoint, binding string, index *uint16) (Endpoint, error) {
-	var candidates []Endpoint
+	var first, unspecified Endpoint
 
-	for _, e := range endpoints {
-		if e.Binding == binding && (index == nil || e.Index == *index) {
-			candidates = append(candidates, e)
+	haveFirst, haveUnspecified := false, false
+
+	for _, endpoint := range endpoints {
+		if endpoint.Binding != binding || index != nil && endpoint.Index != *index {
+			continue
+		}
+
+		if index != nil || endpoint.Default {
+			return endpoint, nil
+		}
+
+		if !haveFirst {
+			first, haveFirst = endpoint, true
+		}
+
+		if !endpoint.DefaultSet && !haveUnspecified {
+			unspecified, haveUnspecified = endpoint, true
 		}
 	}
 
-	if len(candidates) == 0 {
-		return Endpoint{}, ErrMetadata
+	if haveUnspecified {
+		return unspecified, nil
 	}
 
-	if index != nil {
-		return candidates[0], nil
+	if haveFirst {
+		return first, nil
 	}
 
-	for _, e := range candidates {
-		if e.Default {
-			return e, nil
-		}
-	}
-
-	for _, e := range candidates {
-		if !e.DefaultSet {
-			return e, nil
-		}
-	}
-	// IndexedEndpointType fallback is document order, not minimum index.
-	return candidates[0], nil
+	return Endpoint{}, ErrMetadata
 }
 
-// Role is an immutable metadata role with an effective expiration.
+// Role retains immutable role metadata and its effective expiration time.
 type Role struct {
-	kind                                               RoleType
-	keys                                               []key
-	endpoints                                          map[string][]Endpoint
-	formats                                            []string
-	expires                                            time.Time
-	authnSigned, wantAuthnSigned, wantAssertionsSigned bool
+	kind                 RoleType
+	keys                 []key
+	endpoints            map[string][]Endpoint
+	formats              []string
+	expires              time.Time
+	authnSigned          bool
+	wantAuthnSigned      bool
+	wantAssertionsSigned bool
 }
 
 // Type returns the metadata role type.
@@ -204,13 +213,13 @@ func (r *Role) SigningKeys() []crypto.PublicKey {
 
 	var out []crypto.PublicKey
 
-	seen := map[string]bool{}
+	seen := map[string]struct{}{}
 	for _, k := range r.keys {
-		if (k.use == "" || k.use == "signing") && !seen[string(k.spki)] {
+		if _, exists := seen[string(k.spki)]; (k.use == "" || k.use == "signing") && !exists {
 			pub, e := x509.ParsePKIXPublicKey(k.spki)
 			if e == nil {
 				out = append(out, pub)
-				seen[string(k.spki)] = true
+				seen[string(k.spki)] = struct{}{}
 			}
 		}
 	}
@@ -228,7 +237,8 @@ func (r *Role) ACS(binding string, index *uint16) (Endpoint, error) {
 	return SelectACS(r.endpoints[AssertionConsumerService], binding, index)
 }
 
-// Entity is an immutable metadata entity with supported roles and an effective expiration.
+// Entity retains immutable metadata for one entity, its supported roles and effective
+// expiration.
 type Entity struct {
 	id      string
 	expires time.Time
@@ -272,7 +282,7 @@ func (e *Entity) Role(kind RoleType, at time.Time) (*Role, error) {
 	return r, nil
 }
 
-// Snapshot is immutable metadata accepted under the caller's trust decision and expiration
+// Snapshot retains immutable metadata accepted under explicit trust and expiration
 // policy.
 type Snapshot struct {
 	entities      map[string]*Entity
@@ -354,7 +364,8 @@ func (s *Snapshot) Entities() []*Entity {
 	return append([]*Entity(nil), s.order...)
 }
 
-// Options sets metadata parsing limits, endpoint policy and XML signature policy.
+// Options sets metadata parsing budgets, endpoint restrictions and signature
+// algorithms.
 type Options struct {
 	// MaxBytes bounds metadata XML; zero selects 2 MiB, with a 16 MiB maximum.
 	MaxBytes int
@@ -369,10 +380,13 @@ type Options struct {
 	MaxLifetime time.Duration
 	// AllowHTTP permits HTTP endpoints; false requires HTTPS.
 	AllowHTTP bool
-	Policy    xmldsig.Policy
+	// Policy sets metadata signature algorithms and key limits. Zero selects
+	// xmldsig.DefaultPolicy.
+	Policy xmldsig.Policy
 }
 
-// Verifier authenticates metadata using an owned set of explicitly trusted public keys.
+// Verifier authenticates metadata against its own copy of explicitly trusted public
+// keys.
 type Verifier struct {
 	keys []crypto.PublicKey
 	o    Options
@@ -435,11 +449,14 @@ func (v *Verifier) verifyDocument(ctx context.Context, d *document.Document, at 
 	return s, nil
 }
 
-// Config supplies long-lived metadata signer trust and parsing policy.
-// TrustedKeys are copied; embedded metadata keys never expand this trust set.
+// Config supplies metadata signer keys and parsing policy. Construction copies
+// TrustedKeys. Embedded metadata keys cannot expand the trusted signer set.
 type Config struct {
+	// TrustedKeys supplies the explicit metadata signer keys. Embedded keys never extend
+	// this set.
 	TrustedKeys []crypto.PublicKey
-	Options     Options
+	// Options sets metadata parsing, endpoint and signature policy.
+	Options Options
 }
 
 type key struct {
@@ -911,16 +928,16 @@ func parseKey(ctx context.Context, c document.Element) ([]key, error) {
 
 func validateRoleEndpoints(role *Role) error {
 	for _, endpoints := range role.endpoints {
-		seen := map[uint16]bool{}
+		seen := map[uint16]struct{}{}
 		defaults := 0
 
 		for _, endpoint := range endpoints {
 			if endpoint.Indexed {
-				if seen[endpoint.Index] {
+				if _, exists := seen[endpoint.Index]; exists {
 					return ErrMetadata
 				}
 
-				seen[endpoint.Index] = true
+				seen[endpoint.Index] = struct{}{}
 			}
 
 			if endpoint.Default {

@@ -6,7 +6,7 @@ func lookupBuiltin(qn QualifiedName) (Function, bool) {
 	case NSArray:
 		return lookupFunctionsArray(qn.Name)
 	case NSFn:
-		for _, lookup := range [...]func(string) (*builtinFunc, bool){lookupFunctions, lookupFunctions2, lookupFunctionsAggregate, lookupFunctionsDatetime, lookupFunctionsHof, lookupFunctionsJson, lookupFunctionsJsonXml, lookupFunctionsMisc, lookupFunctionsNode, lookupFunctionsNumeric, lookupFunctionsQname, lookupFunctionsSequence, lookupFunctionsSerialize, lookupFunctionsString, lookupFunctionsUnparsedText, lookupFunctionsUri, lookupParseIetfDate} {
+		for _, lookup := range [...]func(string) (*builtinFunc, bool){lookupFunctions, lookupFunctions2, lookupFunctionsAggregate, lookupFunctionsDatetime, lookupFunctionsHof, lookupFunctionsJSON, lookupFunctionsJSONXML, lookupFunctionsMisc, lookupFunctionsNode, lookupFunctionsNumeric, lookupFunctionsQName, lookupFunctionsSequence, lookupFunctionsSerialize, lookupFunctionsString, lookupFunctionsUnparsedText, lookupFunctionsURI, lookupParseIETFDate} {
 			if fn, ok := lookup(qn.Name); ok {
 				return fn, true
 			}

@@ -61,8 +61,9 @@ func (a resourceAdapter) Resolve(ctx context.Context, uri string) (io.ReadCloser
 type (
 	resourceBudgetKey struct{}
 	resourceBudget    struct {
-		mu           sync.Mutex
-		bytes, loads int
+		mu    sync.Mutex
+		bytes int
+		loads int
 	}
 )
 
@@ -222,10 +223,11 @@ func checkSequence(ctx context.Context, seq xdm.Sequence, limits Limits, input b
 }
 
 type sequenceChecker struct {
-	ctx         context.Context
-	limits      Limits
-	input       bool
-	count, size int
+	ctx    context.Context
+	limits Limits
+	input  bool
+	count  int
+	size   int
 }
 
 func (c *sequenceChecker) walk(s xdm.Sequence, depth int) error {

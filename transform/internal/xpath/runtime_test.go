@@ -1,9 +1,11 @@
 package xpath //nolint:testpackage // Tests private evaluator budgets, caches, and runtime semantics.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/big"
 	"runtime"
@@ -550,7 +552,11 @@ func evaluateRuntimeAST(ctx context.Context, ec *evalContext, expr Expr) (xdm.Se
 
 func TestVersionedContractsASTAndVM(t *testing.T) {
 	for _, version := range []int{20, 30, 31} {
-		for _, tc := range []struct{ source, oldCode, modernCode string }{
+		for _, tc := range []struct {
+			source     string
+			oldCode    string
+			modernCode string
+		}{
 			{`'x' cast as xs:anyType`, "XPST0051", "XQST0052"},
 			{`'x' castable as xs:untyped`, "XPST0051", "XQST0052"},
 			{`'x' cast as xs:missing`, "XPST0051", "XQST0052"},
@@ -611,8 +617,9 @@ func TestVersionedContractsASTAndVM(t *testing.T) {
 
 func TestEvaluationErrorCodesASTAndVM(t *testing.T) {
 	for _, test := range []struct {
-		source, code string
-		cause        error
+		source string
+		code   string
+		cause  error
 	}{
 		{`$missing`, lexicon.ErrXPST0008, ErrUndefinedVariable},
 		{`1 union ()`, lexicon.ErrXPTY0004, ErrUnionNotNodeSet},
@@ -834,7 +841,11 @@ func TestSubstringScanHonorsCancellation(t *testing.T) {
 func TestWhitespaceNormalizationPreservesValues(t *testing.T) {
 	const word = "small"
 
-	for _, tc := range []struct{ source, normalized, cast string }{
+	for _, tc := range []struct {
+		source     string
+		normalized string
+		cast       string
+	}{
 		{"", "", ""},
 		{" \t\r\n", "", ""},
 		{word, word, word},
@@ -905,10 +916,11 @@ func checkSubstring(t *testing.T, source string, start, length float64, bounded 
 
 func TestFunctionConversionBudgets(t *testing.T) {
 	for _, tc := range []struct {
-		name              string
-		input             xdm.Sequence
-		nodes, operations int
-		want              error
+		name       string
+		input      xdm.Sequence
+		nodes      int
+		operations int
+		want       error
 	}{
 		{"type scan", xdm.NewRangeSequence(1, 1000), 2000, 16, ErrOpLimit},
 		{"array atomization", xdm.ItemSlice{xdm.NewArray([]xdm.Sequence{xdm.NewRangeSequence(1, 1000)})}, 2000, 16, ErrOpLimit},
@@ -916,12 +928,14 @@ func TestFunctionConversionBudgets(t *testing.T) {
 		{"small typed range", xdm.NewRangeSequence(1, 10), 20, 100, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			operations := 0
-			ec := &evalContext{version: 31, maxNodes: tc.nodes, opLimit: tc.operations, opCount: &operations}
+			for _, target := range []string{xdm.TypeInteger, xdm.TypeAnyAtomicType} {
+				operations := 0
+				ec := &evalContext{version: 31, maxNodes: tc.nodes, opLimit: tc.operations, opCount: &operations}
 
-			_, err := coerceToSequenceTypeE(t.Context(), tc.input, stAtomic(xdm.TypeInteger, xdm.OccurrenceZeroOrMore), ec)
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("got %v, want %v", err, tc.want)
+				_, err := coerceToSequenceTypeE(t.Context(), tc.input, stAtomic(target, xdm.OccurrenceZeroOrMore), ec)
+				if !errors.Is(err, tc.want) {
+					t.Fatalf("%s: got %v, want %v", target, err, tc.want)
+				}
 			}
 		})
 	}
@@ -1101,8 +1115,9 @@ func TestNumericPredicateASTAndVM(t *testing.T) {
 // subtype-itemtype(Ai,Bi)=true; integer/string instantiates it as false.
 func TestSequenceSubtypePublishedTable(t *testing.T) {
 	for _, pair := range []struct {
-		name, target string
-		same         bool
+		name   string
+		target string
+		same   bool
 	}{
 		{"same item type", "xs:integer", true},
 		{"disjoint item types", "xs:string", false},
@@ -1323,8 +1338,10 @@ func TestStreamFnLocalName(t *testing.T) {
 	const positionName = "position"
 
 	for _, tc := range []struct {
-		name, prefix, want string
-		builtin            bool
+		name    string
+		prefix  string
+		want    string
+		builtin bool
 	}{
 		{positionName, "", positionName, true},
 		{"last", "fn", "last", true},
@@ -1336,6 +1353,128 @@ func TestStreamFnLocalName(t *testing.T) {
 		got, builtin := lexicalFnLocalName(tc.name, tc.prefix)
 		if got != tc.want || builtin != tc.builtin {
 			t.Errorf("%q/%q = %q,%v; want %q,%v", tc.name, tc.prefix, got, builtin, tc.want, tc.builtin)
+		}
+	}
+}
+
+func TestFunctionConversionAtomizationBeforeCasting(t *testing.T) {
+	badNumber := xdm.AtomicValue{TypeName: xdm.TypeUntypedAtomic, Value: "bad"}
+	input := xdm.ItemSlice{badNumber, xdm.NewMap(nil)}
+	_, err := coerceToSequenceTypeE(t.Context(), input, stAtomic(xdm.TypeInteger, xdm.OccurrenceZeroOrMore), &evalContext{version: 31})
+	var detail *xdm.Error
+	if !errors.As(err, &detail) || detail.Code != lexicon.ErrFOTY0013 {
+		t.Fatal("cast hid a later typed-value error", err)
+	}
+
+	for _, target := range []string{xdm.TypeInteger, xdm.TypeAnyAtomicType} {
+		original := xdm.AtomicValue{TypeName: xdm.TypeUntypedAtomic, Value: "42"}
+		input := xdm.ItemSlice{xdm.NewArray([]xdm.Sequence{xdm.ItemSlice{original}})}
+		converted, err := coerceToSequenceTypeE(t.Context(), input, stAtomic(target, xdm.OccurrenceZeroOrMore), &evalContext{version: 31})
+		if err != nil || converted.Len() != 1 {
+			t.Fatal(target, err)
+		}
+		value, ok := converted.Get(0).(xdm.AtomicValue)
+		if !ok || target == xdm.TypeAnyAtomicType && (value.TypeName != xdm.TypeUntypedAtomic || value.StringVal() != "42") || target == xdm.TypeInteger && (value.TypeName != xdm.TypeInteger || value.BigInt().Cmp(big.NewInt(42)) != 0) {
+			t.Fatal("conversion changed atomic value/type", target, value)
+		}
+		array, ok := input[0].(xdm.ArrayItem)
+		if !ok {
+			t.Fatal("conversion replaced the caller's array")
+		}
+		if member := array.MembersView()[0].Get(0); member != original {
+			t.Fatal("conversion mutated an array member", member)
+		}
+	}
+}
+
+func TestJSONNodeWriterBoundaries(t *testing.T) {
+	input := strings.Repeat("abc", 1400) + "é雪😀/\"\\\n\t" + strings.Repeat("z", 4100)
+	for _, ascii := range []bool{false, true} {
+		var repertoire func(rune) bool
+		if ascii {
+			repertoire = func(r rune) bool { return r < 128 }
+		}
+		var want bytes.Buffer
+		if err := WriteJSONString(t.Context(), &want, input, nil, "", repertoire); err != nil {
+			t.Fatal(err)
+		}
+		expected := want.String()[1 : want.Len()-1]
+		for _, chunk := range []int{1, 2, 3, 4, 4095, 4096, 4097} {
+			var got bytes.Buffer
+			w := jsonNodeWriter{ctx: t.Context(), dst: &got, canEncode: repertoire}
+			for at := 0; at < len(input); {
+				end := min(len(input), at+chunk)
+				if n, err := w.Write([]byte(input[at:end])); err != nil || n != end-at {
+					t.Fatal(chunk, n, err)
+				}
+				at = end
+			}
+			if w.tailSize != 0 || got.String() != expected {
+				t.Fatalf("chunk %d ascii %v: incorrect escaped UTF-8", chunk, ascii)
+			}
+		}
+	}
+	for _, input := range []string{"x", "/", "é"} {
+		w := jsonNodeWriter{ctx: t.Context(), dst: jsonShortWriter{}}
+		if _, err := w.Write([]byte(input)); !errors.Is(err, io.ErrShortWrite) {
+			t.Fatal("short write lost", err)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	w := jsonNodeWriter{ctx: ctx, dst: io.Discard}
+	if _, err := w.Write([]byte("x")); !errors.Is(err, context.Canceled) {
+		t.Fatal("cancel lost", err)
+	}
+}
+
+type jsonShortWriter struct{}
+
+func (jsonShortWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
+
+func BenchmarkRegexRuntimeCache(b *testing.B) {
+	source := `^\i\c*[0-9]+$`
+	b.Run("ColdCompile", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := compileXPathRegexUncached(source, ""); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	owner := &evaluationRuntime{}
+	ctx := withFnContext(b.Context(), &evalContext{runtime: owner})
+	if _, err := compileXPathRegex(ctx, source, ""); err != nil {
+		b.Fatal(err)
+	}
+	b.Run("Warm", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := compileXPathRegex(ctx, source, ""); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("ParallelWarm", func(b *testing.B) {
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				if _, err := compileXPathRegex(ctx, source, ""); err != nil {
+					b.Error(err)
+					return
+				}
+			}
+		})
+	})
+}
+
+func TestJSONNodeWriterBudgets(t *testing.T) {
+	for _, limit := range []struct{ operations, bytes int }{{5, 64}, {100, 63}} {
+		var out bytes.Buffer
+		ctx := WithBudget(t.Context(), limit.operations, 100, limit.bytes, 100)
+		w := jsonNodeWriter{ctx: ctx, dst: &out}
+		if n, err := w.Write(bytes.Repeat([]byte{'x'}, 64)); n != 0 || !errors.Is(err, ErrBudget) || out.Len() != 0 {
+			t.Fatalf("escaped byte/work budget: %d, %v, %d", n, err, out.Len())
 		}
 	}
 }

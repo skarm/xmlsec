@@ -1,5 +1,13 @@
 # Supported profiles and compatibility
 
+## Contents
+
+- [Supported scope](#supported-scope)
+- [Unicode normalization](#unicode-normalization)
+- [Known oracle differences](#known-oracle-differences)
+- [Trust and operations](#trust-and-operations)
+- [Assertion and compatibility controls](#assertion-and-compatibility-controls)
+
 The library implements bounded profiles. Full standards conformance and an
 independent security audit have not been established. The [conformance register](conformance.json)
 separates capabilities from a partial normative clause matrix, tracking implementation,
@@ -10,9 +18,10 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
 
 ## Supported scope
 
-- XML 1.0 Fifth Edition in UTF-8/UTF-16, immutable namespace-aware content and
-  seven XPath node kinds. ID typing is explicit. DTDs, external entities,
-  XML 1.1, UTF-32, schema defaults and XSD validation are unsupported.
+- The `document` security parser supports XML 1.0 Fifth Edition in UTF-8/UTF-16,
+  immutable namespace-aware content and seven XPath node kinds. ID typing is
+  explicit. This parser rejects DTDs and external entities. XML 1.1, UTF-32,
+  schema defaults and XSD validation are unsupported.
 - Exclusive C14N and Canonical XML 1.0/1.1, with or without comments, over full
   documents, subtrees and explicit node sets. Sparse sets may produce fragments.
 - XMLDSig enveloped/enveloping/detached references, Objects, multiple signatures
@@ -54,8 +63,8 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
   responsibility. Signing a KeyInfo reference authenticates its metadata without
   establishing certificate or CRL trust.
 - Selected features of XPath 1.0/2.0/3.0/3.1 and XSLT 1.0/2.0/3.0. Complete
-  Basic XSLT conformance remains open; [suite results](language-baseline.md)
-  record the current failures. Package/collection resolvers and application
+  Basic XSLT conformance remains open; [validation profiles](language-baseline.md)
+  define the required suite checks. Package/collection resolvers and application
   functions are explicit. XMLDSig XPath 1.0, Filter2
   and restricted XSLT 1.0 need approved programs. Schema awareness and normative
   W3C streaming are unsupported. Streaming annotations use materialized trees;
@@ -66,7 +75,12 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
   See [transforms](transforms.md) and [streaming](streaming.md).
   Explicit `transform.Config.AllowSingleByteEncodings` additionally permits
   ASCII-compatible IANA single-byte XML encodings under the same raw/decoded
-  input limits. Default XML byte parsing remains UTF-8/UTF-16 and DTD-free.
+  input limits. `Engine.Parse`, record input and approved XMLDSig programs
+  remain DTD-free. Language XML input, including `doc`, `parse-xml` and XSLT
+  stylesheets, uses bounded nonvalidating DTD processing. External DTDs and
+  entities require the explicit resolver and invocation resource policy. This
+  does not establish complete XML processor conformance; see
+  [XML input profiles](transforms.md#xml-input-profiles).
   Language input accepts deprecated Namespaces 1.0 relative namespace names and
   preserves their literal values. The document security parser requires absolute
   names; C14N rejects relative names even outside the selected nodes.
@@ -188,11 +202,9 @@ is tested locally. Its notice is retained in the fixture and
 
 ## Known oracle differences
 
-Archive timestamp input now canonicalizes SignedInfo with the archive's selected
-algorithm, alongside SignatureValue and KeyInfo (EN319132-1 §5.5.2.3). Earlier
-output using a different SignedInfo algorithm can have an invalid archive imprint;
-the verifier does not accept that old computation as a compatibility mode.
-Archives with identical algorithms retain their input bytes.
+Archive timestamp input canonicalizes SignedInfo, SignatureValue and KeyInfo
+with the archive's selected algorithm (EN319132-1 §5.5.2.3). An imprint computed
+with a different SignedInfo method is rejected.
 
 [Native comparisons](testing.md#xmlsec1-comparisons) cover overlapping profiles
 and assert these differences separately:
@@ -228,9 +240,10 @@ and assert these differences separately:
   a separate diagnostic, excluded from successful query agreement counts.
 - Saxon HE 12.10 and two QT3 case-conversion expectations retain older Greek
   U+037F/U+03F3 mappings. The native Unicode 17.0 mappings agree with the
-  Unicode 7.0 data selected by those catalog cases. The corrected catalog dependency matcher treats a Unicode edition as exact:
-  those 7.0-only cases are inapplicable to the selected 17.0 data. Their historical
-  failures remain in the earlier baseline; the Saxon diagnostic still runs.
+  Unicode 7.0 data selected by those catalog cases. Catalog Unicode dependencies
+  require an exact edition:
+  those 7.0-only cases are inapplicable to the selected 17.0 data. The Saxon
+  diagnostic records the processor difference.
   No publisher fixture is rewritten.
 
 The libxml2 adapter translates empty default-namespace markers without changing
@@ -247,9 +260,8 @@ stores coordinate one process. Native libraries are optional test dependencies.
 
 ## Assertion and compatibility controls
 
-`Config.EnableXSLTAssertions` now selects assertion checking explicitly. The
-default disables `xsl:assert`, as XSLT 3.0 requires. Applications that relied on
-the earlier unconditional checking must enable it for direct invocations.
+`Config.EnableXSLTAssertions` selects assertion checking for direct invocations.
+The default disables `xsl:assert`, as XSLT 3.0 requires.
 Nested `fn:transform` calls independently use `enable-assertions`, defaulting to
 false as required by F&O 3.1. Disabled assertions do not evaluate their test/message.
 Application error namespaces survive public error reporting and `xsl:catch`.
@@ -260,12 +272,12 @@ package loading; availability queries report false/no, and `xsl:fallback` runs.
 An invoked disabled instruction without fallback reports `XTDE3175`.
 
 
-`Execute` still defaults to raw XDM values. `XSLTContext.ResultMode` additionally
+`Execute` defaults to raw XDM values. `XSLTContext.ResultMode` additionally
 offers explicit document normalization or stylesheet-directed `build-tree`.
-`fn:transform` now retains mixed item order and raw secondary values, constructs
+`fn:transform` retains mixed item order and raw secondary values, constructs
 normalized documents on request, and includes an empty principal result map
-entry under the published F&O 3.1 contract. Callers that tested map-key absence
-to detect empty output should inspect its value instead.
+entry under the published F&O 3.1 contract. Inspect the entry's value to detect
+empty output.
 
 `XPathOptions.XPath10Compatibility` selects the compatibility property without
 changing the modern grammar. Function values retain their originating static

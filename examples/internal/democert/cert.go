@@ -14,9 +14,15 @@ import (
 
 // Chain contains disposable certificates, private keys and a complete CRL for examples.
 type Chain struct {
-	Root, Signer, TSA, Peer             *x509.Certificate
-	RootKey, SignerKey, TSAKey, PeerKey *ecdsa.PrivateKey
-	CRL                                 []byte
+	Root      *x509.Certificate
+	Signer    *x509.Certificate
+	TSA       *x509.Certificate
+	Peer      *x509.Certificate
+	RootKey   *ecdsa.PrivateKey
+	SignerKey *ecdsa.PrivateKey
+	TSAKey    *ecdsa.PrivateKey
+	PeerKey   *ecdsa.PrivateKey
+	CRL       []byte
 }
 
 // New generates a disposable ECDSA trust chain valid at the explicit example time.

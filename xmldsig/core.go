@@ -9,59 +9,62 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/keyinfo"
 	"github.com/skarm/xmlsec/reference"
 )
 
-// SignatureOptions configures explicit signature verification. Same-document
-// references are enabled; external resources and Manifest recursion are opt-in.
-// Zero defaults do not require the root to be signed: applications should set
-// RequiredElements and/or ExpectedURIs. The signature is never auto-selected.
+// SignatureOptions verifies an explicitly selected signature. Same-document
+// references are enabled; external resources and recursive Manifest checks require
+// opt-in. Zero options do not require root coverage. Applications should set
+// RequiredElements or ExpectedURIs, or both, for their coverage contract.
 type SignatureOptions struct {
 	// External enables external references with a mandatory allowlist. Nil disables them.
 	External *ExternalReferences
-	// Manifests controls recursive Manifest validation. Zero preserves core XMLDSig
-	// semantics without checking Manifest contents.
+	// Manifests selects recursive Manifest validation. Zero retains core XMLDSig behavior
+	// without checking Manifest contents.
 	Manifests ManifestPolicy
 	// IDAttribute selects the application ID attribute; zero uses unqualified ID.
 	// Unqualified Id is also indexed on supported XMLDSig elements.
 	IDAttribute document.Name
 	// AdditionalIDRules adds explicit same-document ID attributes to the application rule.
 	AdditionalIDRules []reference.IDAttributeRule
-	Policy            Policy
+	// Policy sets permitted signature and digest algorithms and key and processing limits.
+	Policy Policy
 	// AllowedCanonicalizationMethods defaults to Exclusive C14N, independently of
 	// Reference transforms.
 	AllowedCanonicalizationMethods []string
-	Processing                     reference.Options
+	// Processing sets reference transform permissions, extensions and execution budgets.
+	Processing reference.Options
 	// MaxSignatures bounds Signature elements in the document; default 16, maximum 64.
 	MaxSignatures int
-	// RequiredElements requires conservative coverage of exact handles in this snapshot.
-	// Coverage does not establish semantics of comments, unused namespaces, QName-valued
-	// text or application protocols.
+	// RequiredElements requires conservative coverage of exact snapshot handles. Coverage
+	// does not establish the meaning of comments, unused namespaces, QName-valued text or
+	// application protocols.
 	RequiredElements []document.Element
-	// ExpectedURIs requires the exact reference URI multiset, independent of order. Nil
-	// disables this check. Repeated URIs with distinct transforms are legal XMLDSig.
+	// ExpectedURIs requires an exact multiset of direct reference URI spellings,
+	// independent of order. Nil disables this check. Repeated URIs with different
+	// transforms are permitted.
 	ExpectedURIs []string
 }
 
-// SignatureResult is available only after SignatureValue, EVERY direct Reference
-// and the requested application coverage and Manifest checks pass. Manifest
-// contents are checked only in recursive mode; other signatures, PKIX/SAML/XAdES
-// requirements and unreferenced Object data are not implicitly validated.
-// It intentionally has no Root() convenience method.
+// SignatureResult records acceptance after SignatureValue, every direct Reference
+// and requested coverage and Manifest checks pass. Manifest contents are checked
+// only in recursive mode. Other signatures, unreferenced Objects and PKIX, SAML
+// and XAdES requirements remain separate. The result has no Root convenience
+// method because core verification does not imply root coverage.
 type SignatureResult struct {
-	doc                    *document.Document
-	signature              document.Element
-	algorithm, fingerprint string
-	parameters             SignatureParameters
-	references             []ReferenceResult
-	manifests              []ManifestResult
+	doc         *document.Document
+	signature   document.Element
+	algorithm   string
+	fingerprint string
+	parameters  SignatureParameters
+	references  []ReferenceResult
+	manifests   []ManifestResult
 }
 
 // VerifySignature validates ONLY the explicitly selected signature with the
@@ -488,7 +491,8 @@ func (r *SignatureResult) CoversElement(e document.Element) bool {
 	return false
 }
 
-// CheckStatus is a diagnostic, not a source of partially trusted data.
+// CheckStatus records a diagnostic outcome. It grants no partial trust in returned
+// data.
 type CheckStatus string
 
 const (
@@ -506,29 +510,44 @@ const (
 	Indeterminate CheckStatus = "indeterminate"
 )
 
-// ReferenceReport records a reference digest check and transform diagnostics.
+// ReferenceReport records one reference digest outcome and its completed transform
+// steps.
 type ReferenceReport struct {
-	Index int    `json:"index"`
-	URI   string `json:"uri"`
+	// Index is the zero-based reference position within its SignedInfo or Manifest.
+	Index int `json:"index"`
+	// URI preserves the signed reference URI spelling.
+	URI string `json:"uri"`
 	// ResourceURI is the authorized resolver URI; URI preserves signed spelling.
-	ResourceURI string           `json:"resource_uri,omitempty"`
-	Status      CheckStatus      `json:"status"`
-	Stage       string           `json:"stage,omitempty"`
-	Error       string           `json:"error,omitempty"`
-	Steps       []reference.Step `json:"steps,omitempty"`
+	ResourceURI string `json:"resource_uri,omitempty"`
+	// Status records the reference digest check outcome.
+	Status CheckStatus `json:"status"`
+	// Stage identifies the failed reference processing stage, when present.
+	Stage string `json:"stage,omitempty"`
+	// Error describes the reference failure, or is empty on success.
+	Error string `json:"error,omitempty"`
+	// Steps records completed transforms and implicit conversions.
+	Steps []reference.Step `json:"steps,omitempty"`
 }
 
-// VerificationReport records signature, reference and Manifest checks. Inspect the
-// returned error before accepting a result.
+// VerificationReport contains signature, reference and Manifest diagnostics. Check the
+// returned error before accepting any result.
 type VerificationReport struct {
-	ManifestValidation CheckStatus       `json:"manifest_validation"`
-	Manifests          []ManifestReport  `json:"manifests,omitempty"`
-	Status             CheckStatus       `json:"status"`
-	SignatureValue     CheckStatus       `json:"signature_value"`
-	SignatureMethod    string            `json:"signature_method,omitempty"`
-	References         []ReferenceReport `json:"references,omitempty"`
-	FailureStage       string            `json:"failure_stage,omitempty"`
-	Error              string            `json:"error,omitempty"`
+	// ManifestValidation records the requested Manifest validation outcome.
+	ManifestValidation CheckStatus `json:"manifest_validation"`
+	// Manifests contains diagnostics for traversed Manifests in recursive mode.
+	Manifests []ManifestReport `json:"manifests,omitempty"`
+	// Status records the overall signature verification outcome.
+	Status CheckStatus `json:"status"`
+	// SignatureValue records the cryptographic signature check outcome.
+	SignatureValue CheckStatus `json:"signature_value"`
+	// SignatureMethod is the declared XMLDSig signature algorithm URI.
+	SignatureMethod string `json:"signature_method,omitempty"`
+	// References contains direct SignedInfo reference diagnostics in document order.
+	References []ReferenceReport `json:"references,omitempty"`
+	// FailureStage identifies the stage at which verification failed, when present.
+	FailureStage string `json:"failure_stage,omitempty"`
+	// Error describes the verification failure, or is empty on success.
+	Error string `json:"error,omitempty"`
 }
 
 // Signatures lists UNTRUSTED handles in document order, including nested ones.
@@ -549,24 +568,28 @@ func Signatures(doc *document.Document) []document.Element {
 }
 
 type coreReference struct {
-	uri, typeURI, method string
-	digest               []byte
-	digestNode           *tree.Node
-	transforms           []reference.Transform
+	uri        string
+	typeURI    string
+	method     string
+	digest     []byte
+	digestNode *tree.Node
+	transforms []reference.Transform
 }
 
 type corePlan struct {
-	sig, si, sv *tree.Node
-	method      string
-	spec        signatureSpec
-	cm          reference.Transform
-	value       []byte
-	refs        []coreReference
-	resolver    *reference.SameDocumentResolver
-	policy      Policy
-	processing  reference.Options
-	external    *resourceSession
-	graph       *manifestGraph
+	sig        *tree.Node
+	si         *tree.Node
+	sv         *tree.Node
+	method     string
+	spec       signatureSpec
+	cm         reference.Transform
+	value      []byte
+	refs       []coreReference
+	resolver   *reference.SameDocumentResolver
+	policy     Policy
+	processing reference.Options
+	external   *resourceSession
+	graph      *manifestGraph
 }
 
 func (plan *corePlan) prepareReferences(ctx context.Context, nodes []*tree.Node, opt SignatureOptions, template bool, report *VerificationReport) error {
@@ -732,7 +755,10 @@ func emptyValue(n *tree.Node, local string, allowed ...string) error {
 	return nil
 }
 
-type coreBudget struct{ bytes, visits int }
+type coreBudget struct {
+	bytes  int
+	visits int
+}
 
 func newCoreBudget(p *corePlan) *coreBudget {
 	v := p.processing.MaxNodeVisits

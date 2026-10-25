@@ -17,10 +17,10 @@ import (
 // ErrLanguageUnsupported identifies features outside the modern Basic profile.
 var ErrLanguageUnsupported = errors.New("unsupported XSLT language profile")
 
-// CheckLanguage validates version boundaries using the grammar table from
-// knroy/go-xml. It supplements helium's existing syntax checks and version
-// compatibility behavior. Schema awareness is unavailable; streaming requests
-// use the same semantics with materialized trees, without streamability claims.
+// CheckLanguage checks the declared stylesheet version against the selected language
+// profile and the compiler's syntax rules. Schema awareness is unavailable. Streaming
+// declarations do not change the materialized-tree execution model or establish W3C
+// streamability.
 func CheckLanguage(d *xdm.Document, want int) (int, error) {
 	return CheckProcessorLanguage(d, want, 0)
 }

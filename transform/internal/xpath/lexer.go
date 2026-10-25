@@ -38,7 +38,10 @@ func newVersionLexer(input string, version int) (*lexer, error) {
 	return newVersionLexerSpans(input, version, nil)
 }
 
-type sourceSpan struct{ start, end int }
+type sourceSpan struct {
+	start int
+	end   int
+}
 
 func newVersionLexerSpans(input string, version int, spans *[]sourceSpan) (*lexer, error) {
 	l := &lexer{

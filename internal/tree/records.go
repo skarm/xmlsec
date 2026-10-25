@@ -88,11 +88,11 @@ func (o ParseOptions) ReadRecords(ctx context.Context, src io.Reader, options Re
 		input.outside = len(p.stack) == 0
 
 		token, err := p.decoder.RawToken()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
 			return fmt.Errorf("%w: %w", ErrMalformed, err)
 		}
 
@@ -153,6 +153,7 @@ func (r *recordState) token(token xml.Token, offset int64) error {
 			node := r.selected
 
 			node.NS = inheritedRecordNamespaces(node)
+
 			if err := inheritRecordAttributes(node); err != nil {
 				return err
 			}
@@ -207,17 +208,23 @@ func inheritedRecordNamespaces(node *Node) []Namespace {
 }
 
 func inheritRecordAttributes(node *Node) error {
-	seen := make(map[Name]bool)
+	seen := make(map[Name]struct{})
 	for _, attr := range node.Attrs {
-		seen[attr.Name] = true
+		seen[attr.Name] = struct{}{}
 	}
 
 	for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
 		for _, attr := range ancestor.Attrs {
-			if attr.Name.Space == XMLNamespace && (attr.Name.Local == "lang" || attr.Name.Local == xmlSpaceName) && !seen[attr.Name] {
-				node.Attrs = append(node.Attrs, attr)
-				seen[attr.Name] = true
+			if attr.Name.Space != XMLNamespace || attr.Name.Local != "lang" && attr.Name.Local != xmlSpaceName {
+				continue
 			}
+
+			if _, exists := seen[attr.Name]; exists {
+				continue
+			}
+
+			node.Attrs = append(node.Attrs, attr)
+			seen[attr.Name] = struct{}{}
 		}
 	}
 	// Resolve the inherited base chain before detaching the record.

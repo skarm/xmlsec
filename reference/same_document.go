@@ -12,9 +12,9 @@ import (
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
-// SameDocumentResolver owns an immutable, explicitly configured ID index.
-// IDs must be unique NCNames. It is not schema-aware ID typing or an XPath engine.
-// Concurrent Resolve calls are safe.
+// SameDocumentResolver indexes explicitly typed IDs in one immutable snapshot.
+// IDs must be unique NCNames. Resolve supports concurrent calls; it performs no
+// schema-based typing or XPath evaluation.
 type SameDocumentResolver struct {
 	doc *document.Document
 	ids map[string]document.Element
@@ -232,24 +232,25 @@ func matchesIDRule(rules []IDAttributeRule, a, e document.Name) bool {
 	return false
 }
 
-// IDAttributeRule types an attribute as an ID only on the listed element QNames.
-// An empty Elements slice applies the rule to every element. Multiple matching
-// rules for the SAME attribute are harmless. Two different ID attributes on one
-// element are rejected, even when their values agree. No local-name guessing or
-// automatic xml:id/schema/DTD typing is performed.
+// IDAttributeRule treats an exact attribute name as an ID on selected element
+// names. Empty Elements applies the rule to every element. Repeating a rule for
+// the same attribute is allowed; two distinct ID attributes on one element are
+// rejected even if their values agree. ID typing does not use local-name guesses,
+// automatic xml:id recognition, schemas or DTD declarations.
 type IDAttributeRule struct {
+	// Attribute is the exact expanded name of the attribute to treat as an ID.
 	Attribute document.Name
 	// Elements restricts the rule to exact expanded names. Empty applies it to all elements.
 	Elements []document.Name
 }
 
-// Resolved describes an immutable same-document reference and its comment-selection
-// semantics.
+// Resolved retains an immutable same-document target and its comment-selection rules.
 type Resolved struct {
-	data            Data
-	target          document.Element
-	uri             string
-	whole, comments bool
+	data     Data
+	target   document.Element
+	uri      string
+	whole    bool
+	comments bool
 }
 
 // Data returns the immutable resolved transform input.

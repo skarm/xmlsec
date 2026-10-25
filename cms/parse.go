@@ -24,7 +24,8 @@ import (
 // SignedData is an immutable parsed container. Parsing does not authenticate
 // content or embedded certificates; use Verify with caller-selected certificates.
 type SignedData struct {
-	raw, content []byte
+	raw          []byte
+	content      []byte
 	contentType  asn1.ObjectIdentifier
 	detached     bool
 	signers      []parsedSigner
@@ -33,12 +34,15 @@ type SignedData struct {
 }
 
 type parsedSigner struct {
-	issuer           []byte
-	serial           *big.Int
-	ski              []byte
-	digest, alg      pkix.AlgorithmIdentifier
-	signed, unsigned []Attribute
-	signedInput, sig []byte
+	issuer      []byte
+	serial      *big.Int
+	ski         []byte
+	digest      pkix.AlgorithmIdentifier
+	alg         pkix.AlgorithmIdentifier
+	signed      []Attribute
+	unsigned    []Attribute
+	signedInput []byte
+	sig         []byte
 }
 
 // Parse copies a bounded definite-length container and validates supported DER
@@ -73,6 +77,11 @@ func ParseReader(ctx context.Context, src io.Reader, l Limits) (*SignedData, err
 		return nil, fmt.Errorf("%w: %w", ErrSyntax, e)
 	}
 
+	return parseOwned(ctx, v, l)
+}
+
+// parseOwned takes a strictly validated DER value backed by private storage.
+func parseOwned(ctx context.Context, v asn1.RawValue, l Limits) (*SignedData, error) {
 	b := v.FullBytes
 
 	ci, e := der.Sequence(v, 2, 2)
@@ -149,13 +158,13 @@ func ParseReader(ctx context.Context, src io.Reader, l Limits) (*SignedData, err
 	return s, nil
 }
 
-func parseDigestAlgorithms(value asn1.RawValue, l Limits) (map[crypto.Hash]bool, error) {
+func parseDigestAlgorithms(value asn1.RawValue, l Limits) (map[crypto.Hash]struct{}, error) {
 	ds, e := der.SetFields(value, 0, asn1.TagSet, l.MaxSigners)
 	if e != nil || len(ds) == 0 {
 		return nil, ErrSyntax
 	}
 
-	digests := map[crypto.Hash]bool{}
+	digests := map[crypto.Hash]struct{}{}
 
 	for _, rv := range ds {
 		a, e := signature.Algorithm(rv)
@@ -164,11 +173,15 @@ func parseDigestAlgorithms(value asn1.RawValue, l Limits) (map[crypto.Hash]bool,
 		}
 
 		h, e := signature.Hash(a, false)
-		if e != nil || digests[h] {
+		if e != nil {
 			return nil, ErrPolicy
 		}
 
-		digests[h] = true
+		if _, exists := digests[h]; exists {
+			return nil, ErrPolicy
+		}
+
+		digests[h] = struct{}{}
 	}
 
 	return digests, nil
@@ -308,7 +321,7 @@ func certificateMatch(ctx context.Context, p parsedSigner, c *x509.Certificate) 
 	return match, nil
 }
 
-func (s *SignedData) parseSigners(ctx context.Context, value asn1.RawValue, digests map[crypto.Hash]bool, version int) error {
+func (s *SignedData) parseSigners(ctx context.Context, value asn1.RawValue, digests map[crypto.Hash]struct{}, version int) error {
 	si, e := der.SetFields(value, 0, asn1.TagSet, s.limits.MaxSigners)
 	if e != nil || len(si) == 0 {
 		return ErrSyntax
@@ -330,7 +343,11 @@ func (s *SignedData) parseSigners(ctx context.Context, value asn1.RawValue, dige
 		}
 
 		h, e := signature.Hash(p.digest, false)
-		if e != nil || !digests[h] {
+		if e != nil {
+			return ErrPolicy
+		}
+
+		if _, exists := digests[h]; !exists {
 			return ErrPolicy
 		}
 

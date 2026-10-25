@@ -16,7 +16,10 @@ import (
 )
 
 func TestParseRejects(t *testing.T) {
-	tests := []struct{ name, xml string }{
+	tests := []struct {
+		name string
+		xml  string
+	}{
 		{"empty", ""},
 		{"surrogate reference", `<r>&#xD800;</r>`},
 		{"surrogate attribute", `<r a="&#55296;"/>`},
@@ -222,7 +225,10 @@ func TestNormalization(t *testing.T) {
 }
 
 func TestXMLLexicalObligations(t *testing.T) {
-	for _, tc := range []struct{ input, output string }{
+	for _, tc := range []struct {
+		input  string
+		output string
+	}{
 		{`<?xml version = '1.0' encoding = 'UTF-8' standalone = 'no'?><r/>`, `<r></r>`},
 		{`<?xml version="1.0" standalone="yes"?><r></r>`, `<r></r>`},
 		{`<?p?><r><!--%ignored;--><?p %ignored;?><![CDATA[<&%ignored;]]></r><?end data?>`, `<?p?><r><!--%ignored;--><?p %ignored;?>&lt;&amp;%ignored;</r><?end data?>`},
@@ -283,8 +289,9 @@ func TestNamespaceStringIdentity(t *testing.T) {
 
 func TestLimitsAndContext(t *testing.T) {
 	tests := []struct {
-		name, xml string
-		change    func(*document.Limits)
+		name   string
+		xml    string
+		change func(*document.Limits)
 	}{
 		{"bytes", "<a/>", func(l *document.Limits) { l.MaxBytes = 3 }},
 		{"depth", "<a><b/></a>", func(l *document.Limits) { l.MaxDepth = 1 }},
@@ -517,14 +524,14 @@ func BenchmarkLongCharacterReference(b *testing.B) {
 func BenchmarkXMLNamespaces(b *testing.B) {
 	for _, depth := range []int{8, 128} {
 		b.Run(strconv.Itoa(depth), func(b *testing.B) {
-			var raw strings.Builder
+			var raw bytes.Buffer
 			for i := range depth {
-				fmt.Fprintf(&raw, `<n xmlns:p%d="urn:p%d">`, i, i)
+				_, _ = fmt.Fprintf(&raw, `<n xmlns:p%d="urn:p%d">`, i, i)
 			}
 
 			raw.WriteString(strings.Repeat(`</n>`, depth))
 
-			d, err := document.Parse(b.Context(), []byte(raw.String()), document.DefaultLimits())
+			d, err := document.Parse(b.Context(), raw.Bytes(), document.DefaultLimits())
 			if err != nil {
 				b.Fatal(err)
 			}

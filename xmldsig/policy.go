@@ -4,16 +4,15 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
-// Policy bounds signature algorithms, key sizes and processing work. Numeric
-// zero values select DefaultPolicy, except MinPSSSaltBytes, which permits zero salt.
-// The policy is copied for each operation. Callers must not mutate supplied
-// options, keys or signers concurrently with an operation.
+// Policy restricts signature algorithms, key sizes and processing work.
+// Zero numeric fields select DefaultPolicy, except MinPSSSaltBytes: zero permits
+// zero-length salt. Each operation copies the policy. Callers must keep supplied
+// options, keys and signers unchanged until the operation returns.
 type Policy struct {
 	// AllowedSignatureMethods lists accepted signature algorithm URIs.
 	// Empty selects DefaultPolicy rather than denying all algorithms.
@@ -21,8 +20,10 @@ type Policy struct {
 	// AllowedDigestMethods lists accepted reference digest URIs.
 	// Empty selects DefaultPolicy rather than denying all algorithms.
 	AllowedDigestMethods []string
-	// MinRSABits and MaxRSABits bound RSA modulus size; zero selects 2048 and 8192.
-	MinRSABits, MaxRSABits int
+	// MinRSABits sets the minimum RSA modulus size. Zero selects 2048 bits.
+	MinRSABits int
+	// MaxRSABits bounds RSA modulus size. Zero selects 8192 bits.
+	MaxRSABits int
 	// MaxReferences bounds references in each SignedInfo or Manifest; zero selects 16.
 	MaxReferences int
 	// MaxCanonicalBytes bounds each C14N stream and the total canonical bytes
@@ -33,8 +34,10 @@ type Policy struct {
 	// MaxPSSSaltBytes bounds generic RSA-PSS salt length; zero selects 1024.
 	// The RSA modulus imposes an additional bound.
 	MaxPSSSaltBytes int
-	// MinHMACKeyBytes and MaxHMACKeyBytes bound shared secrets; zero selects 32 and 4096.
-	MinHMACKeyBytes, MaxHMACKeyBytes int
+	// MinHMACKeyBytes sets the minimum shared secret size. Zero selects 32 bytes.
+	MinHMACKeyBytes int
+	// MaxHMACKeyBytes bounds shared secret size. Zero selects 4096 bytes.
+	MaxHMACKeyBytes int
 	// MinHMACOutputBits sets the minimum accepted tag length; zero selects 128.
 	// Tags must also cover at least half the hash output, in whole bytes.
 	MinHMACOutputBits int

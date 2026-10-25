@@ -12,13 +12,14 @@ import (
 )
 
 func ExampleWriteElement() {
-	doc, err := document.Parse(context.Background(), []byte(`<r b="2" a="1"><empty/></r>`), document.DefaultLimits())
+	ctx := context.Background()
+	doc, err := document.Parse(ctx, []byte(`<r b="2" a="1"><empty/></r>`), document.DefaultLimits())
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	var out bytes.Buffer
-	if err := c14n.WriteElement(context.Background(), &out, doc.Root(), c14n.Options{}); err != nil {
+	if err := c14n.WriteElement(ctx, &out, doc.Root(), c14n.Options{}); err != nil {
 		// A failed write may leave partial bytes in out. Do not consume them.
 		log.Fatal(err)
 	}

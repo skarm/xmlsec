@@ -340,8 +340,9 @@ func TestRejectMalformedOrUnsupportedKeyInfo(t *testing.T) {
 	badPoint[0] = 4
 
 	cases := []struct {
-		name, body string
-		err        error
+		name string
+		body string
+		err  error
 	}{
 		{nameEmpty, "", keyinfo.ErrInput},
 		{"unknown", `<surprise xmlns="urn:other"/>`, keyinfo.ErrUnsupported},
@@ -382,9 +383,10 @@ func TestSameDocumentReferencesAndCycles(t *testing.T) {
 	prefix := `<root xmlns:ds="` + ns + `" xmlns:k="` + ns11 + `">`
 
 	cases := []struct {
-		name, xml string
-		opt       keyinfo.Options
-		err       error
+		name string
+		xml  string
+		opt  keyinfo.Options
+		err  error
 	}{
 		{"chain", prefix + `<ds:KeyInfo Id="a"><k:KeyInfoReference URI="#b"/></ds:KeyInfo><ds:KeyInfo Id="b">` + derXML(t, &k.PublicKey) + `</ds:KeyInfo></root>`, keyinfo.Options{}, nil},
 		{"cycle", prefix + `<ds:KeyInfo Id="a"><k:KeyInfoReference URI="#b"/></ds:KeyInfo><ds:KeyInfo Id="b"><k:KeyInfoReference URI="#a"/></ds:KeyInfo></root>`, keyinfo.Options{}, keyinfo.ErrCycle},
@@ -424,8 +426,9 @@ func TestRawCertificateRetrieval(t *testing.T) {
 
 	base64T := `<ds:Transforms><ds:Transform Algorithm="` + reference.Base64 + `"/></ds:Transforms>`
 	for _, test := range []struct {
-		name, transform string
-		data            []byte
+		name      string
+		transform string
+		data      []byte
 	}{{"raw", "", der}, {"base64", base64T, []byte(enc(der))}} {
 		t.Run(test.name, func(t *testing.T) {
 			d := parseXML(t, makeXML(uri, test.transform))
@@ -482,9 +485,10 @@ func TestExternalLifecycleLimitsAndCaching(t *testing.T) {
 	requireErr(t, xml, keyinfo.Options{External: &keyinfo.ExternalResources{Resolver: source, AllowedURIs: []string{"urn:not-remote"}}}, keyinfo.ErrPolicy)
 
 	for _, test := range []struct {
-		name                string
-		read                func([]byte) (int, error)
-		closeErr, errorWant error
+		name      string
+		read      func([]byte) (int, error)
+		closeErr  error
+		errorWant error
 	}{
 		{"no-progress", func([]byte) (int, error) { return 0, nil }, nil, io.ErrNoProgress},
 		{"read-error", func([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }, nil, io.ErrUnexpectedEOF},

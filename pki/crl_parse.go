@@ -19,33 +19,40 @@ import (
 )
 
 type parsedCRL struct {
-	work                        *crlWorkBudget
-	authentication              map[crlAuthenticationKey]*x509.Certificate
-	sources                     []*evidence.Observation
-	authenticated, used         []*VerifiedEvidence
-	ownedRaw                    []byte
-	raw, tbs, issuer, signature []byte
-	issuerKey                   string
-	algorithm                   pkix.AlgorithmIdentifier
-	version                     int
-	signatureAlgorithm          x509.SignatureAlgorithm
-	retainedFrom                time.Time
-	this, next                  time.Time
-	number, base                *big.Int
-	authorityKeyID              []byte
-	authorityIssuers            []crlGeneralName
-	authoritySerial             *big.Int
-	scope                       crlScope
-	entries                     []crlEntry
-	freshest                    []crlDistributionPoint
-	candidates                  [][]byte
+	work               *crlWorkBudget
+	authentication     map[crlAuthenticationKey]*x509.Certificate
+	sources            []*evidence.Observation
+	authenticated      []*VerifiedEvidence
+	used               []*VerifiedEvidence
+	ownedRaw           []byte
+	raw                []byte
+	tbs                []byte
+	issuer             []byte
+	signature          []byte
+	issuerKey          string
+	algorithm          pkix.AlgorithmIdentifier
+	version            int
+	signatureAlgorithm x509.SignatureAlgorithm
+	retainedFrom       time.Time
+	this               time.Time
+	next               time.Time
+	number             *big.Int
+	base               *big.Int
+	authorityKeyID     []byte
+	authorityIssuers   []crlGeneralName
+	authoritySerial    *big.Int
+	scope              crlScope
+	entries            []crlEntry
+	freshest           []crlDistributionPoint
+	candidates         [][]byte
 }
 
 type crlEntry struct {
-	serial              *big.Int
-	revoked, invalidity time.Time
-	reason              int
-	issuers             []crlGeneralName
+	serial     *big.Int
+	revoked    time.Time
+	invalidity time.Time
+	reason     int
+	issuers    []crlGeneralName
 }
 
 func parseCRL(ctx context.Context, raw []byte) (*parsedCRL, error) {
@@ -104,7 +111,9 @@ func parseCRL(ctx context.Context, raw []byte) (*parsedCRL, error) {
 func (l *parsedCRL) parseEntries(ctx context.Context, entries []x509.RevocationListEntry, issuerName crlGeneralName) error {
 	currentIssuer := []crlGeneralName{issuerName}
 
-	seen := make(map[string]bool, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+
+	l.entries = make([]crlEntry, 0, len(entries))
 	for index, parsed := range entries {
 		if index&255 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -381,37 +390,37 @@ func uniqueCRLExtensions(extensions []pkix.Extension) error {
 		return fmt.Errorf("%w: %w: CRL extension count", ErrPolicy, ErrLimit)
 	}
 
-	seen := make(map[string]bool, len(extensions))
+	seen := make(map[string]struct{}, len(extensions))
 	for _, extension := range extensions {
 		name := extension.Id.String()
-		if seen[name] {
+		if _, exists := seen[name]; exists {
 			return ErrEvidence
 		}
 
-		seen[name] = true
+		seen[name] = struct{}{}
 	}
 
 	return nil
 }
 
-func reserveCRLEntryNames(seen map[string]bool, entry *crlEntry) error {
-	names := make(map[string]bool, len(entry.issuers))
+func reserveCRLEntryNames(seen map[string]struct{}, entry *crlEntry) error {
+	names := make(map[string]struct{}, len(entry.issuers))
 	for _, name := range entry.issuers {
 		if name.tag != 4 {
 			continue
 		}
 
 		key := name.key + "/" + entry.serial.String()
-		if names[key] {
+		if _, exists := names[key]; exists {
 			continue
 		}
 
-		names[key] = true
-		if seen[key] {
+		names[key] = struct{}{}
+		if _, exists := seen[key]; exists {
 			return fmt.Errorf("%w: duplicate CRL issuer/serial", ErrEvidence)
 		}
 
-		seen[key] = true
+		seen[key] = struct{}{}
 	}
 
 	return nil

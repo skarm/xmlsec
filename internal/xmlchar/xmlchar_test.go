@@ -9,8 +9,10 @@ import (
 
 func TestCharacterBoundaries(t *testing.T) {
 	for _, tc := range []struct {
-		r                        rune
-		xml10, xml11, restricted bool
+		r          rune
+		xml10      bool
+		xml11      bool
+		restricted bool
 	}{
 		{-1, false, false, false},
 		{0, false, false, false},
@@ -63,8 +65,9 @@ func TestCharacterBoundaries(t *testing.T) {
 
 func TestXMLNames(t *testing.T) {
 	for _, tc := range []struct {
-		input        string
-		name, ncname bool
+		input  string
+		name   bool
+		ncname bool
 	}{
 		{"", false, false},
 		{"root", true, true},

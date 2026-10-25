@@ -1,5 +1,12 @@
 # XPath and XSLT suite diagnostics
 
+## Contents
+
+- [Inputs and licenses](#inputs-and-licenses)
+- [Run a selection](#run-a-selection)
+- [Deterministic environment and boundaries](#deterministic-environment-and-boundaries)
+- [Executable clause and failure evidence](#executable-clause-and-failure-evidence)
+
 The development runner reads external, unmodified checkouts of the official
 [QT3](https://github.com/w3c/qt3tests) and
 [XSLT 3.0](https://github.com/w3c/xslt30-test) suites. Revisions and catalog
@@ -9,13 +16,13 @@ pin, and tracked and untracked checkout changes are rejected.
 The checkout is checked again after execution. Library Go sources (including
 untracked Go files), module manifests and the suite-pin file contribute to
 `source_sha256`; a change during execution invalidates the run. This identifies
-the tested code even when documentation is edited before the stage commit.
+the exact tested source independently of documentation edits.
 
 These are development diagnostics. Passing a selection does not establish
 complete language coverage or authoritative W3C conformance. The
 [normative register](conformance.md) separately tracks obligations and gaps.
-The full-catalog [baseline](language-baseline.md) records results and a
-categorized backlog. Generated JSON reports stay outside the repository.
+The [validation profiles](language-baseline.md) define the full-catalog run
+configurations. Generated JSON reports stay outside the repository.
 
 ## Inputs and licenses
 
@@ -339,12 +346,12 @@ XMLSEC_REQUIRE_P3_PROOFS=1 XMLSEC_P3_TEST_EVENTS=/tmp/proof-events.json \
 Capture shards with the same command when splitting independent runs. Supply every
 capture to `proof merge`; the final gate checks the union of exact witnesses.
 Capture files retain their own identities inside the merged artifact. Ordinary
-`go test -json` streams and the former manually stamped envelope are not accepted.
+`go test -json` streams and manually stamped envelopes are not accepted.
 A failed capture or merge invalidates its selected output rather than leaving a
 previous successful file there. The runner prevents accidental reuse; it is not
 an authentication mechanism for artifacts intentionally edited by their owner.
 
-Supply all thirteen reports listed in the baseline, with the platform path-list
+Supply all thirteen reports listed in the [validation profiles](language-baseline.md), with the platform path-list
 separator (`:` on Unix). The final gate validates settings, pins, complete catalog
 inventories and totals; replays each cited publisher input with its original full
 assertion; checks exact passing subtests and oracle/vector markers; and requires a

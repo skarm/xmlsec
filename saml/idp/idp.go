@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
+	"io"
 	"slices"
 	"time"
 
@@ -26,7 +27,8 @@ import (
 // ErrPolicy reports SAML IdP policy rejected.
 var ErrPolicy = errors.New("SAML IdP policy rejected")
 
-// Config configures trusted metadata, signing, replay protection and assertion lifetimes.
+// Config supplies trusted metadata, signing keys, replay storage and assertion
+// lifetime policy.
 type Config struct {
 	// EntityID is the local entity identifier used for issuer and audience checks.
 	EntityID string
@@ -39,17 +41,21 @@ type Config struct {
 	VerificationPolicy xmldsig.Policy
 	// Replay atomically consumes scoped identifiers; use shared storage across service
 	// instances.
-	Replay         replay.Store
-	Limits         protocol.Limits
-	POSTLimits     binding.POSTLimits
+	Replay replay.Store
+	// Limits bounds protocol message age, assertion lifetime and attribute values.
+	Limits protocol.Limits
+	// POSTLimits bounds POST binding messages and generated forms.
+	POSTLimits binding.POSTLimits
+	// RedirectLimits sets Redirect binding signature policy and query, inflation and XML
+	// limits.
 	RedirectLimits binding.Options
 	// AssertionLifetime defaults to five minutes and must be at least one second
 	// and no greater than Limits.MaxAssertionLifetime.
 	AssertionLifetime time.Duration
 }
 
-// IdentityProvider implements solicited SAML response issuance using application-supplied
-// authentication.
+// IdentityProvider issues solicited SAML responses for identities authenticated by the
+// application.
 type IdentityProvider struct{ c Config }
 
 // NewIdentityProvider validates and snapshots IdentityProvider policy and required trusted adapters.
@@ -208,7 +214,7 @@ func (i *IdentityProvider) Issue(ctx context.Context, request *Request, a Authen
 		relay = &s
 	}
 
-	form, e := binding.EncodePOST(ctx, d, binding.Response, relay, i.c.POSTLimits)
+	_, e = binding.WritePOST(ctx, io.Discard, d, binding.Response, relay, i.c.POSTLimits)
 	if e != nil {
 		return nil, e
 	}
@@ -224,7 +230,7 @@ func (i *IdentityProvider) Issue(ctx context.Context, request *Request, a Authen
 		return nil, e
 	}
 
-	return &Issued{doc: d, form: form, destination: r.ACS()}, nil
+	return &Issued{doc: d, destination: r.ACS(), relay: request.relay, relayPresent: request.relayPresent, limits: i.c.POSTLimits}, nil
 }
 
 func keyAllowed(key crypto.PublicKey, role *metadata.Role) bool {
@@ -315,7 +321,7 @@ func (i *IdentityProvider) acceptsIssueRequest(ctx context.Context, request *Req
 	return !(i == nil || ctx == nil || request == nil || request.owner != i || request.verified == nil || at.IsZero() || !at.Before(request.expires))
 }
 
-// Request is an authenticated request proof bound to the IdentityProvider that accepted
+// Request retains an authenticated request bound to the IdentityProvider that accepted
 // it.
 type Request struct {
 	owner        *IdentityProvider
@@ -388,25 +394,42 @@ func (r *Request) ExpiresAt() time.Time {
 	return r.expires
 }
 
-// Authentication supplies the application-authenticated identity and authentication
-// conditions for response issuance.
+// Authentication supplies the identity and authentication conditions established by
+// the application for response issuance.
 type Authentication struct {
-	NameID, NameIDFormat       string
-	AuthnInstant               time.Time
-	AuthnContext, SessionIndex string
-	SessionNotOnOrAfter        time.Time
-	Attributes                 []protocol.Attribute
-	// FreshAuthentication, InteractionUsed and CreatedNameID are statements supplied by
-	// the authenticating application, not facts inferred by this library. They enforce
-	// ForceAuthn, IsPassive and AllowCreate respectively.
-	FreshAuthentication, InteractionUsed, CreatedNameID bool
+	// NameID is the subject identifier established by the application.
+	NameID string
+	// NameIDFormat identifies the subject identifier format to issue.
+	NameIDFormat string
+	// AuthnInstant is the time at which the application authenticated the subject.
+	AuthnInstant time.Time
+	// AuthnContext identifies the authentication context established by the application.
+	AuthnContext string
+	// SessionIndex is an optional identifier for the authenticated session.
+	SessionIndex string
+	// SessionNotOnOrAfter is an optional session expiration time. Zero omits it.
+	SessionNotOnOrAfter time.Time
+	// Attributes contains the subject attributes authorized for release to the service
+	// provider.
+	Attributes []protocol.Attribute
+	// FreshAuthentication reports fresh application authentication and is required
+	// for a ForceAuthn request. The library does not infer this fact.
+	FreshAuthentication bool
+	// InteractionUsed reports application interaction. A passive request rejects this value
+	// when true.
+	InteractionUsed bool
+	// CreatedNameID reports creation of a new identifier. The request must permit it.
+	CreatedNameID bool
 }
 
-// Issued is an immutable signed SAML response and its encoded POST form.
+// Issued retains an immutable signed response and the policy needed to serialize its
+// POST binding.
 type Issued struct {
-	doc         *document.Document
-	form        []byte
-	destination string
+	doc          *document.Document
+	limits       binding.POSTLimits
+	relay        string
+	relayPresent bool
+	destination  string
 }
 
 // Document returns the immutable document snapshot.
@@ -418,13 +441,33 @@ func (r *Issued) Document() *document.Document {
 	return r.doc
 }
 
-// POSTBody returns an owned copy of the encoded POST form body.
-func (r *Issued) POSTBody() []byte {
+// WritePOST writes the signed response directly to dst without retaining a
+// complete encoded form. It leaves dst open. Errors may leave partial output
+// which the caller must discard; the authenticated request is already consumed.
+func (r *Issued) WritePOST(ctx context.Context, dst io.Writer) (int64, error) {
 	if r == nil {
+		return 0, ErrPolicy
+	}
+
+	return binding.WritePOST(ctx, dst, r.doc, binding.Response, r.relayState(), r.limits)
+}
+
+// WritePOSTForm writes a complete HTML form to the metadata-selected endpoint.
+// It leaves dst open and may leave partial output on failure.
+func (r *Issued) WritePOSTForm(ctx context.Context, dst io.Writer) (int64, error) {
+	if r == nil {
+		return 0, ErrPolicy
+	}
+
+	return binding.WritePOSTForm(ctx, dst, r.destination, r.doc, binding.Response, r.relayState(), r.limits)
+}
+
+func (r *Issued) relayState() *string {
+	if !r.relayPresent {
 		return nil
 	}
 
-	return bytes.Clone(r.form)
+	return &r.relay
 }
 
 // Destination returns the validated destination endpoint.

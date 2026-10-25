@@ -94,7 +94,7 @@ func TestResultDocumentCopiesOnlySelectedElement(t *testing.T) {
 		t.Fatal("inherited namespace lost")
 	}
 	out, err := r.Serialize(t.Context())
-	if err != nil || strings.Contains(string(out.Primary), "secret") || !bytes.Contains(out.Primary, []byte(`xmlns:p="urn:p"`)) {
+	if err != nil || bytes.Contains(out.Primary, []byte("secret")) || !bytes.Contains(out.Primary, []byte(`xmlns:p="urn:p"`)) {
 		t.Fatal(out, err)
 	}
 	canceled, cancel := context.WithCancel(t.Context())
@@ -225,7 +225,11 @@ func TestSecondaryOutputMustBeConsumedExplicitly(t *testing.T) {
 }
 
 func TestStreamedSerializationPreservesOutputPolicy(t *testing.T) {
-	cases := []struct{ output, body, want string }{
+	cases := []struct {
+		output string
+		body   string
+		want   string
+	}{
 		{`method="xml" omit-xml-declaration="yes" normalization-form="NFC"`, `<r>e&#x301;</r>`, `<r>é</r>`},
 		{`method="xml" omit-xml-declaration="yes" cdata-section-elements="r"`, `<r>&lt;content&gt;</r>`, `<r><![CDATA[<content>]]></r>`},
 		{`method="xml" omit-xml-declaration="yes" encoding="US-ASCII"`, `<r>я</r>`, `<r>&#1103;</r>`},
@@ -274,10 +278,11 @@ func TestDoctypeSerialization(t *testing.T) {
 			decoder := xml.NewDecoder(strings.NewReader(s))
 			for {
 				_, err := decoder.Token()
-				if err == io.EOF {
-					break
-				}
 				if err != nil {
+					if err == io.EOF {
+						break
+					}
+
 					t.Fatal(err)
 				}
 			}
@@ -403,7 +408,14 @@ func TestEncodedSerializationPreservesCharactersAndEncoderState(t *testing.T) {
 
 func TestHTMLWritersBoundAttributesAndMappedRawText(t *testing.T) {
 	const count = 1 << 18
-	cases := []struct{ name, input, declarations, output, body, want string }{
+	cases := []struct {
+		name         string
+		input        string
+		declarations string
+		output       string
+		body         string
+		want         string
+	}{
 		// F&O escape-html-uri preserves printable ASCII, including space.
 		{"URI", strings.Repeat("e\u0301 &amp;", count), "", `method="html"`, `<a href="{/*}">link</a>`, `<a href="` + strings.Repeat("%C3%A9 &amp;", count) + `">link</a>`},
 		{"raw-text", strings.Repeat("a", count*4), `<xsl:character-map name="m"><xsl:output-character character="a" string="ab"/></xsl:character-map>`, `method="html" use-character-maps="m"`, `<script><xsl:value-of select="/*"/></script>`, `<script>` + strings.Repeat("ab", count*4) + `</script>`},
@@ -452,7 +464,11 @@ func TestJSONNodeSerializationKeepsEncoding(t *testing.T) {
 }
 
 func TestWriterSerializationSupportsBufferedOptions(t *testing.T) {
-	cases := []struct{ output, body, want string }{
+	cases := []struct {
+		output string
+		body   string
+		want   string
+	}{
 		{`method="xml" omit-xml-declaration="yes"`, `<r><xsl:text disable-output-escaping="yes">&lt;b&gt;raw&lt;/b&gt;</xsl:text></r>`, `<r><b>raw</b></r>`},
 		{`method="xhtml" omit-xml-declaration="yes"`, `<r><br/></r>`, `<r><br></br></r>`},
 		{`method="xhtml" html-version="5" omit-xml-declaration="yes"`, `<r xmlns="http://www.w3.org/1999/xhtml"><br/></r>`, `<r xmlns="http://www.w3.org/1999/xhtml"><br /></r>`},

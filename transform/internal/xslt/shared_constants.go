@@ -74,8 +74,8 @@ const (
 	nameTemplate                       = lexicon.XSLTElementTemplate
 	nameTunnel                         = "tunnel"
 	nameTyped                          = "typed"
-	nameUnparsedEntityPublicId         = "unparsed-entity-public-id"
-	nameUnparsedEntityUri              = "unparsed-entity-uri"
+	nameUnparsedEntityPublicID         = "unparsed-entity-public-id"
+	nameUnparsedEntityURI              = "unparsed-entity-uri"
 	nameUpperFirst                     = "upper-first"
 	nameUseAccumulators                = "use-accumulators"
 	nameUseAttributeSets               = "use-attribute-sets"

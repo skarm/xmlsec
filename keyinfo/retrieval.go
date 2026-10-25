@@ -7,16 +7,16 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/transformxml"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/reference"
 )
 
 type retrievalPlan struct {
-	uri, typ   string
+	uri        string
+	typ        string
 	transforms []reference.Transform
 	processing reference.Options
 	base64     bool
@@ -46,14 +46,15 @@ func (p *parser) configureRetrieval() error {
 
 	defaults := reference.DefaultOptions()
 	for _, limit := range []struct {
-		value             *int
-		fallback, maximum int
+		value    *int
+		fallback int
+		maximum  int
 	}{
-		{&o.MaxTransforms, defaults.MaxTransforms, 64},
-		{&o.MaxInputBytes, defaults.MaxInputBytes, p.limits.MaxBlobBytes * 2},
-		{&o.MaxOutputBytes, defaults.MaxOutputBytes, p.limits.MaxBlobBytes * 2},
-		{&o.MaxProducedBytes, defaults.MaxProducedBytes, p.limits.MaxTransformBytes},
-		{&o.MaxNodeVisits, defaults.MaxNodeVisits, p.limits.MaxTransformNodes},
+		{value: &o.MaxTransforms, fallback: defaults.MaxTransforms, maximum: 64},
+		{value: &o.MaxInputBytes, fallback: defaults.MaxInputBytes, maximum: p.limits.MaxBlobBytes * 2},
+		{value: &o.MaxOutputBytes, fallback: defaults.MaxOutputBytes, maximum: p.limits.MaxBlobBytes * 2},
+		{value: &o.MaxProducedBytes, fallback: defaults.MaxProducedBytes, maximum: p.limits.MaxTransformBytes},
+		{value: &o.MaxNodeVisits, fallback: defaults.MaxNodeVisits, maximum: p.limits.MaxTransformNodes},
 	} {
 		if *limit.value == 0 {
 			*limit.value = limit.fallback
@@ -156,8 +157,10 @@ func (p *parser) prepareRetrieval(s *scope, n *tree.Node) (retrievalPlan, error)
 		return plan, err
 	}
 
-	if externalURI(plan.uri) && !p.allow[plan.uri] {
-		return plan, fmt.Errorf("%w: external URI not allowed", ErrPolicy)
+	if externalURI(plan.uri) {
+		if _, allowed := p.allow[plan.uri]; !allowed {
+			return plan, fmt.Errorf("%w: external URI not allowed", ErrPolicy)
+		}
 	}
 
 	for _, t := range plan.transforms {

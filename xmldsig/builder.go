@@ -5,49 +5,62 @@ import (
 	"encoding/base64"
 	"fmt"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/reference"
 )
 
-// ReferenceTemplate describes one direct or Manifest reference. URI may be a
-// same-document reference or an externally allowlisted URI. An omitted transform
-// list does not mean Exclusive C14N: the XMLDSig input-type rules apply.
+// ReferenceTemplate describes one direct or Manifest reference to a same-document
+// target or an allowlisted external URI. An empty transform list follows XMLDSig
+// input-type conversion rules and does not select Exclusive C14N.
 type ReferenceTemplate struct {
 	// ID supplies an optional ds:Reference Id for signed data-object properties.
-	ID   string
-	URI  string
+	ID string
+	// URI identifies the same-document or explicitly authorized external reference target.
+	URI string
+	// Type is the optional reference type URI, including ManifestType for Manifest
+	// processing.
 	Type string
 	// DigestMethod defaults to SHA256.
 	DigestMethod string
-	Transforms   []reference.Transform
+	// Transforms lists reference transforms in execution order.
+	Transforms []reference.Transform
 }
 
-// ManifestTemplate supplies a local Manifest ID and its reference templates.
+// ManifestTemplate supplies a local Manifest identifier and its ordered child
+// references.
 type ManifestTemplate struct {
-	ID         string
+	// ID is the XML Id assigned to the Manifest element.
+	ID string
+	// References lists the Manifest's child references in document order.
 	References []ReferenceTemplate
 }
 
-// ObjectTemplate accepts exactly one content variant. XML inserts the complete
-// root subtree of a separately parsed document, not arbitrary unparsed markup.
-// Binary inserts Base64 text; include a Base64 transform on its Reference to sign
-// decoded octets. An empty object is represented by Text pointing to "".
+// ObjectTemplate supplies exactly one content variant. XML copies the complete
+// root subtree of a separately parsed document. Binary writes Base64 text; signing
+// the decoded bytes requires a Base64 transform on the Reference. Set Text to a
+// pointer to an empty string for an empty Object.
 type ObjectTemplate struct {
-	ID       string
+	// ID supplies an optional XML Id for the Object element.
+	ID string
+	// MIMEType supplies an optional media type claim for the Object.
 	MIMEType string
-	XML      *document.Document
-	Text     *string
-	Binary   []byte
+	// XML supplies the complete root subtree to insert into the Object.
+	XML *document.Document
+	// Text supplies literal character data, including an explicitly empty string.
+	Text *string
+	// Binary supplies bytes to encode as Base64 text.
+	Binary []byte
+	// Manifest supplies a Manifest element to insert into the Object.
 	Manifest *ManifestTemplate
 }
 
-// SignatureTemplate supplies explicit signature algorithms, references, objects and
+// SignatureTemplate supplies explicit algorithms, References and Objects, with
 // optional untrusted KeyInfo.
 type SignatureTemplate struct {
+	// ID supplies an optional XML Id for the Signature element.
 	ID string
 	// SignatureMethod is required; templates have no key-dependent default.
 	SignatureMethod string
@@ -55,8 +68,10 @@ type SignatureTemplate struct {
 	SignatureParameters SignatureParameters
 	// Canonicalization defaults to Exclusive C14N without comments.
 	Canonicalization reference.Transform
-	References       []ReferenceTemplate
-	Objects          []ObjectTemplate
+	// References lists direct SignedInfo references in document order.
+	References []ReferenceTemplate
+	// Objects supplies Object children in document order.
+	Objects []ObjectTemplate
 	// KeyInfo is an optional immutable ds:KeyInfo document (e.g. keyinfo.Build).
 	// Its root is copied. Contents and referenced keys are NOT trusted or resolved.
 	// Mutually exclusive with Certificates; signature algorithms/keys are separate.

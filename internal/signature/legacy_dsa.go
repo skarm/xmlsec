@@ -53,7 +53,11 @@ func MarshalPublicKey(key crypto.PublicKey) ([]byte, error) {
 		return nil, err
 	}
 
-	parameters, err := asn1.Marshal(struct{ P, Q, G *big.Int }{k.P, k.Q, k.G})
+	parameters, err := asn1.Marshal(struct {
+		P *big.Int
+		Q *big.Int
+		G *big.Int
+	}{P: k.P, Q: k.Q, G: k.G})
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +71,7 @@ func MarshalPublicKey(key crypto.PublicKey) ([]byte, error) {
 		Algorithm pkix.AlgorithmIdentifier
 		Key       asn1.BitString
 	}{
-		pkix.AlgorithmIdentifier{Algorithm: asn1.ObjectIdentifier{1, 2, 840, 10040, 4, 1}, Parameters: asn1.RawValue{FullBytes: parameters}},
-		asn1.BitString{Bytes: value, BitLength: len(value) * 8},
+		Algorithm: pkix.AlgorithmIdentifier{Algorithm: asn1.ObjectIdentifier{1, 2, 840, 10040, 4, 1}, Parameters: asn1.RawValue{FullBytes: parameters}},
+		Key:       asn1.BitString{Bytes: value, BitLength: len(value) * 8},
 	})
 }

@@ -124,7 +124,10 @@ func TestFragmentUsesSemanticLimits(t *testing.T) {
 
 func TestLanguageDTDProcessing(t *testing.T) {
 	options := treepkg.ParseOptions{Limits: treepkg.DefaultLimits(), AllowDTD: true, AllowRelativeNamespaces: true}
-	for _, test := range []struct{ input, want string }{
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
 		{`<!DOCTYPE a [<!ELEMENT a (#PCDATA)>]><a>foo</a>`, `<a>foo</a>`},
 		{`<?xml version="1.0" encoding="iso-8859-1"?><!DOCTYPE a [<!ELEMENT a (#PCDATA)>]><a>é</a>`, `<a>é</a>`},
 		{`<!DOCTYPE a [<!ENTITY e "hello">]><a>&e;</a>`, `<a>hello</a>`},

@@ -35,8 +35,8 @@ const (
 	ResultDefault
 )
 
-// XSLTOptions specifies the stylesheet's static context and language profile.
-// A 1.x declaration selects XSLT 1.0 with forwards processing.
+// XSLTOptions selects the static stylesheet context and language profile. A 1.x
+// declaration uses XSLT 1.0 with forwards-compatible processing.
 type XSLTOptions struct {
 	// Version is checked against the stylesheet's declared profile.
 	// Zero derives the profile from that declaration.
@@ -51,10 +51,11 @@ type XSLTOptions struct {
 	StaticParameters Bindings
 }
 
-// XSLTContext supplies parameters and an optional named entry point.
-// Zero values apply templates to the source document in the default mode.
-// A named template that needs no source document accepts a nil source.
+// XSLTContext supplies invocation parameters and an optional named entry point.
+// The zero value applies templates to the source in the default mode. A named
+// template that needs no source can be called with a nil source document.
 type XSLTContext struct {
+	// Context supplies invocation time, timezone, language and trace output.
 	Context DynamicContext
 	// ResultMode defaults to ResultRaw. It affects Execute and all entry points;
 	// serialized Transform output still follows the stylesheet's output settings.
@@ -81,7 +82,7 @@ type XSLTContext struct {
 	arguments     []Sequence
 }
 
-// Stylesheet is immutable and may be transformed concurrently.
+// Stylesheet retains immutable compiled XSLT and supports concurrent transformations.
 type Stylesheet struct {
 	engine  *Engine
 	native  *xslt.Stylesheet
@@ -297,19 +298,24 @@ func (s *Stylesheet) initialInvocation(ctx context.Context, source *xdm.Document
 	return invocation, nil
 }
 
-// Message records xsl:message output without writing to a global stream.
+// Message retains xsl:message output without publishing it to a global stream.
 type Message struct {
-	Text      string
+	// Text is the serialized xsl:message content.
+	Text string
+	// Terminate reports whether the message requested termination.
 	Terminate bool
 }
 
-// Output contains owned serialized primary and secondary results, and messages.
-// Secondary documents are returned to the application; they never write files.
+// Output contains owned serialized primary and secondary result bytes and messages.
+// The application receives secondary documents; serialization does not write files
+// for them.
 type Output struct {
+	// Primary contains the owned serialized principal result bytes.
 	Primary []byte
 	// Secondary maps resolved result URIs to owned bytes. Entries never write files.
 	Secondary map[string][]byte
-	Messages  []Message
+	// Messages contains xsl:message output in execution order.
+	Messages []Message
 }
 
 // CompileXSLT compiles a stylesheet under the same policy as CompileXPath.
@@ -434,9 +440,10 @@ func xsltError(operation string, err error) error {
 }
 
 type outputCollector struct {
-	ctx         context.Context
-	output      *Output
-	limit, used int
+	ctx    context.Context
+	output *Output
+	limit  int
+	used   int
 }
 
 func (c *outputCollector) HandleMessage(text string, terminate bool) error {

@@ -371,7 +371,7 @@ type resultDocumentInst struct {
 	SuppressIndentation     []string         // suppress-indentation element names
 	ParameterDocAVT         *avt             // parameter-document avt
 	ParameterDocOutputDef   *OutputDef       // resolved output def from parameter-document (compile-time)
-	ParameterDocPresence    paramDocPresence // plain-boolean presence flags for the compile-time parameter-document delta
+	ParameterDocPresence    paramDocPresence // parameter-presence set for the compile-time parameter-document delta
 	BuildTree               *avt             // build-tree avt: nil=default(true); evaluated as xs:boolean
 }
 

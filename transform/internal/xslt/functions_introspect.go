@@ -119,7 +119,7 @@ func (ec *execContext) functionAvailable(ctx context.Context, name xdm.QNameValu
 		}
 
 		_, core := xpath.XPath10FunctionArity(name.Local)
-		_, host := lookupxslt10Functions(name.Local)
+		_, host := lookupXSLT10FunctionArity(name.Local)
 
 		return core || host
 	}

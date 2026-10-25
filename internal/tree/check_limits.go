@@ -32,11 +32,12 @@ func CheckSnapshotLimits(ctx context.Context, d *Document, limits Limits) error 
 }
 
 type snapshotLimitChecker struct {
-	ctx          context.Context
-	document     *Document
-	limits       Limits
-	scope        namespaceContext
-	count, bytes int
+	ctx      context.Context
+	document *Document
+	limits   Limits
+	scope    namespaceContext
+	count    int
+	bytes    int
 }
 
 func (c *snapshotLimitChecker) visit(n *Node, depth int) error {

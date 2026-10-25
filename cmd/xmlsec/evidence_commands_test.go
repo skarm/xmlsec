@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	"crypto"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/skarm/xmlsec/internal/testutil"
@@ -20,6 +24,52 @@ import (
 )
 
 const testRequestID = "_request"
+
+func TestTimestampRequestInputCompletion(t *testing.T) {
+	data := bytes.Repeat([]byte("hash exact bytes\x00é"), 1024)
+	var output bytes.Buffer
+	args := []string{"timestamp", nameRequest, "-omit-nonce", "-max-input-bytes", strconv.Itoa(len(data))}
+	if err := run(t.Context(), args, iotest.DataErrReader(bytes.NewReader(data)), &output, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	request, err := timestamp.ParseRequest(output.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	imprint, err := timestamp.ImprintFor(t.Context(), data, crypto.SHA256)
+	if err != nil || !bytes.Equal(request.Imprint().Digest, imprint.Digest) {
+		t.Fatal("imprint changed", err)
+	}
+	failure := errors.New("late source failure")
+	for _, tc := range []struct {
+		name string
+		src  io.Reader
+		want error
+	}{
+		{"late", io.MultiReader(bytes.NewReader(data), iotest.ErrReader(failure)), failure},
+		{"no-progress", timestampReadFunc(func([]byte) (int, error) { return 0, nil }), io.ErrNoProgress},
+		{"invalid-count", timestampReadFunc(func(p []byte) (int, error) { return len(p) + 1, nil }), io.ErrShortBuffer},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output.Reset()
+			err := run(t.Context(), args, tc.src, &output, io.Discard)
+			if err == nil || output.Len() != 0 {
+				t.Fatal("published failed request", err, output.Len())
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatal("lost source error", err)
+			}
+		})
+	}
+	output.Reset()
+	if err := run(t.Context(), args, bytes.NewReader(append(data, 1)), &output, io.Discard); err == nil || output.Len() != 0 {
+		t.Fatal("input limit not enforced before publication", err)
+	}
+}
+
+type timestampReadFunc func([]byte) (int, error)
+
+func (f timestampReadFunc) Read(p []byte) (int, error) { return f(p) }
 
 func TestPKICMSAndProtectedIdentityCommands(t *testing.T) {
 	f := evidenceSetup(t)
@@ -226,8 +276,9 @@ func TestSAMLCommands(t *testing.T) {
 func TestProtocolJSONDoesNotOverrideSignaturePolicy(t *testing.T) {
 	for _, command := range []string{"request-verify", "response-verify"} {
 		for _, tc := range []struct {
-			name, policy string
-			reject       bool
+			name   string
+			policy string
+			reject bool
 		}{
 			{"empty policy", `{}`, false},
 			{"null policy", `null`, false},
@@ -250,8 +301,20 @@ func TestProtocolJSONDoesNotOverrideSignaturePolicy(t *testing.T) {
 }
 
 type evidenceFixture struct {
-	chain                                                                                                testcert.Chain
-	dir, key, cert, root, tsaKey, tsaCert, responderKey, responderCert, public, trust, tsaTrust, crl, at string
+	chain         testcert.Chain
+	dir           string
+	key           string
+	cert          string
+	root          string
+	tsaKey        string
+	tsaCert       string
+	responderKey  string
+	responderCert string
+	public        string
+	trust         string
+	tsaTrust      string
+	crl           string
+	at            string
 }
 
 func evidenceSetup(t *testing.T) evidenceFixture {

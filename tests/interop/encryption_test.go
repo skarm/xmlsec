@@ -188,29 +188,42 @@ func randomBytes(t *testing.T, n int) []byte {
 }
 
 type encryptionRecipe struct {
-	mode                          string
-	bits, wrap                    int
-	hash, mgf, algorithm, keyName string
-	data                          string
-	tripleWrap, dataLegacy        bool
-	legacy                        bool
-	label                         []byte
+	mode       string
+	bits       int
+	wrap       int
+	hash       string
+	mgf        string
+	algorithm  string
+	keyName    string
+	data       string
+	tripleWrap bool
+	dataLegacy bool
+	legacy     bool
+	label      []byte
 }
 
 type encryptionCase struct {
-	recipe                                              encryptionRecipe
-	xml                                                 bool
-	plain                                               []byte
-	source, ours, theirs, output                        string
-	keyfile, decryptKey, encryptArg, decryptArg, suffix string
-	task                                                map[string]any
+	recipe     encryptionRecipe
+	xml        bool
+	plain      []byte
+	source     string
+	ours       string
+	theirs     string
+	output     string
+	keyfile    string
+	decryptKey string
+	encryptArg string
+	decryptArg string
+	suffix     string
+	task       map[string]any
 }
 
 type encryptionSuite struct {
-	fixture          *interopFixture
-	dir              string
-	key              testKey
-	count, resources int
+	fixture   *interopFixture
+	dir       string
+	key       testKey
+	count     int
+	resources int
 }
 
 func (suite *encryptionSuite) prepare(t *testing.T, r encryptionRecipe, xml bool) *encryptionCase {
@@ -433,24 +446,38 @@ func comparePlain(t *testing.T, fixture *interopFixture, actual, expected []byte
 }
 
 type selectedEncryptionRecipe struct {
-	bits, wrap int
-	form, cm   string
+	bits int
+	wrap int
+	form string
+	cm   string
 }
 
 type selectedEncryptionCase struct {
-	recipe                                              selectedEncryptionRecipe
-	original, raw                                       []byte
-	source, ours, theirs, output                        string
-	keyfile, decryptKey, encryptArg, decryptArg, suffix string
-	task                                                map[string]any
-	empty                                               bool
+	recipe     selectedEncryptionRecipe
+	original   []byte
+	raw        []byte
+	source     string
+	ours       string
+	theirs     string
+	output     string
+	keyfile    string
+	decryptKey string
+	encryptArg string
+	decryptArg string
+	suffix     string
+	task       map[string]any
+	empty      bool
 }
 
 type selectedEncryptionSuite struct {
-	fixture                *interopFixture
-	dir, cli, buffer, kind string
-	key                    testKey
-	count, emptyCount      int
+	fixture    *interopFixture
+	dir        string
+	cli        string
+	buffer     string
+	kind       string
+	key        testKey
+	count      int
+	emptyCount int
 }
 
 func (suite *selectedEncryptionSuite) prepare(t *testing.T, forms map[string]string, r selectedEncryptionRecipe) *selectedEncryptionCase {
@@ -800,20 +827,23 @@ func TestXMLSecECDHAgreement(t *testing.T) {
 	fixture := newInteropFixture(t)
 	selected(t, "xmlsec")
 	for _, curve := range []struct {
-		name, openssl string
-		curve         ecdh.Curve
+		name    string
+		openssl string
+		curve   ecdh.Curve
 	}{{"P256", "P-256", ecdh.P256()}, {"P384", "P-384", ecdh.P384()}, {"P521", "P-521", ecdh.P521()}} {
 		recipient, err := curve.curve.GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, data := range []struct {
-			name, uri string
-			bits      int
+			name string
+			uri  string
+			bits int
 		}{{"GCM128", xmlenc.AES128GCM, 128}, {"GCM192", xmlenc.AES192GCM, 192}, {"GCM256", xmlenc.AES256GCM, 256}} {
 			for _, wrap := range []struct {
-				name, uri string
-				bytes     int
+				name  string
+				uri   string
+				bytes int
 			}{{"KW128", xmlenc.AES128KeyWrap, 16}, {"KW192", xmlenc.AES192KeyWrap, 24}, {"KW256", xmlenc.AES256KeyWrap, 32}} {
 				for _, hash := range []struct {
 					name string
@@ -960,8 +990,9 @@ func TestXMLSecECDHLegacyData(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, data := range []struct {
-		name, uri string
-		bits      int
+		name string
+		uri  string
+		bits int
 	}{{"CBC128", xmlenc.AES128CBC, 128}, {"CBC192", xmlenc.AES192CBC, 192}, {"CBC256", xmlenc.AES256CBC, 256}, {"TripleDES", xmlenc.TripleDESCBC, 192}} {
 		t.Run(data.name, func(t *testing.T) {
 			options := xmlenc.ECDHOptions{Data: xmlenc.Options{DataAlgorithm: data.uri, AllowLegacy: true}, KeyAlgorithm: xmlenc.AES256KeyWrap, RecipientKeyName: "recipient"}
@@ -1343,8 +1374,9 @@ func TestXMLSecKeyGraphSchemas(t *testing.T) {
 	path = write(t, filepath.Join(t.TempDir(), "derived-key.xml"), xmlBytes(t, derived))
 	command(t, fixture, true, nil, "xmllint", "--nonet", "--noout", "--schema", schema, path)
 	for _, body := range []struct {
-		name, content string
-		valid         bool
+		name    string
+		content string
+		valid   bool
 	}{{"foreign element", `<app:note xmlns:app="urn:app">hint</app:note>`, true}, {"empty", "", false}, {"text only", "hint", false}, {"same namespace", `<xenc:note/>`, false}, {"no namespace", `<note/>`, false}} {
 		t.Run(body.name, func(t *testing.T) {
 			wire := strings.Replace(string(xmlBytes(t, wrapped)), "<xenc:CarriedKeyName>", `<xenc:EncryptionProperties Id="properties"><xenc:EncryptionProperty Target="#data">`+body.content+`</xenc:EncryptionProperty></xenc:EncryptionProperties><xenc:CarriedKeyName>`, 1)

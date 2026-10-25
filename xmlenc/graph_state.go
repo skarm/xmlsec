@@ -12,9 +12,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -23,17 +22,23 @@ import (
 	"github.com/skarm/xmlsec/resource"
 )
 
-// KeyGraphKey is application-owned key material for one exact name/algorithm.
-// Name is an untrusted XML label matched exactly, including whitespace. The
-// algorithm is an application restriction, never inferred from the key length.
-// Exactly one of Secret, Decrypter, PublicKey, ECDHRecipient and ECDHPublicKey is supplied.
-// A public key is only accepted by EncryptKey; it cannot decrypt a graph. A ConcatKDF Secret is the
-// master secret rather than a directly usable data or wrapping key.
+// KeyGraphKey binds application-owned key material to an exact name and algorithm.
+// Name is an untrusted XML label matched with whitespace preserved. Algorithm is
+// an explicit restriction and is never inferred from key length.
+//
+// Supply exactly one of Secret, Decrypter, PublicKey, ECDHRecipient or ECDHPublicKey.
+// Public keys are accepted only for EncryptKey and cannot decrypt a graph. When
+// Algorithm selects ConcatKDF, Secret supplies the master secret.
 type KeyGraphKey struct {
-	Name      string
+	// Name is the exact key label to match in XML, including whitespace.
+	Name string
+	// Algorithm is the application-selected key algorithm URI.
 	Algorithm string
-	Secret    []byte
+	// Secret supplies a symmetric key or ConcatKDF master secret, as selected by Algorithm.
+	Secret []byte
+	// Decrypter supplies the private RSA operation for key unwrapping.
 	Decrypter crypto.Decrypter
+	// PublicKey supplies the RSA recipient key for EncryptKey only.
 	PublicKey *rsa.PublicKey
 	// ECDHPublicKey is accepted only by EncryptKey for ECDH/AESKW generation.
 	ECDHPublicKey *ecdh.PublicKey
@@ -42,43 +47,61 @@ type KeyGraphKey struct {
 	// graph Data supplies the data/resource policy. Name fixes RecipientKeyName,
 	// Algorithm fixes the AES key-wrap method, and KDF remains caller-selected.
 	ECDHRecipient ECDHRecipient
-	ECDH          *ECDHOptions
+	// ECDH optionally selects exact KDF and ECDH leaf parameters. Its Data field must be
+	// zero.
+	ECDH *ECDHOptions
 }
 
-// KeyGraphLimits bounds one graph operation across every loaded document and
-// traversed key. Zero fields select depth 8, 8192 nodes, 32 MiB and 8 resources.
-// MaxDepth concerns key dependencies, independently of each XML parser's limit.
+// KeyGraphLimits bounds one operation across loaded documents and key dependencies.
+// Zero fields select their documented defaults. MaxDepth bounds key dependencies
+// separately from XML parser depth.
 type KeyGraphLimits struct {
-	MaxDepth     int
-	MaxNodes     int
-	MaxBytes     int
+	// MaxDepth bounds key dependency depth. Zero selects 8.
+	MaxDepth int
+	// MaxNodes bounds aggregate graph processing nodes. Zero selects 8192.
+	MaxNodes int
+	// MaxBytes bounds aggregate graph processing bytes. Zero selects 32 MiB.
+	MaxBytes int
+	// MaxResources bounds external key resources. Zero selects 8.
 	MaxResources int
 }
 
-// KeyGraphResources permits external key documents at exact absolute URIs.
-// BaseURI is an optional absolute hierarchical, credential/fragment-free URI.
-// It opts into relative links and inherited xml:base; empty keeps literal URIs.
-// The URI identifies the principal document for links and backlinks;
-// it grants no I/O permission. Resolve and readers must honor cancellation.
+// KeyGraphResources authorizes exact absolute URIs for external key documents.
+// An optional BaseURI must be absolute and hierarchical, without credentials or a
+// fragment. It identifies the principal document for links and backlinks and enables
+// relative links and inherited xml:base. Empty preserves literal URI handling.
+// BaseURI grants no access by itself. Resolving and reading must honor cancellation.
 // The graph closes every returned reader, including readers returned with errors.
 type KeyGraphResources struct {
-	BaseURI     string
+	// BaseURI optionally enables relative key links and inherited xml:base resolution.
+	BaseURI string
+	// AllowedURIs lists exact absolute key resource URIs authorized for retrieval.
 	AllowedURIs []string
-	Resolver    resource.Resolver
+	// Resolver supplies authorized key document bytes and must honor cancellation while
+	// resolving and reading.
+	Resolver resource.Resolver
 }
 
-// KeyGraphOptions explicitly enables bounded XMLENC key relationships. Existing
-// strict decryption entry points do not enable this profile implicitly.
-// Data fixes the expected data cipher and OAEP parameters. KeyAlgorithms grants
-// additional exact key-method URIs; algorithms already bound in Keys are also
-// permitted. A nil ConcatKDF denies DerivedKey. Its non-nil value is the expected
-// algorithm/party context, compared as bitstrings before derivation.
+// KeyGraphOptions enables bounded XMLENC key relationships explicitly.
+// Strict decryption entry points do not enable this profile. Data fixes the
+// expected data cipher and OAEP parameters. KeyAlgorithms permits additional exact
+// key-method URIs alongside those bound in Keys. Nil ConcatKDF denies DerivedKey;
+// a non-nil context must match the declared algorithm and party bitstrings before
+// derivation.
 type KeyGraphOptions struct {
-	Data          Options
-	Keys          []KeyGraphKey
+	// Data selects the expected data cipher, OAEP parameters and ciphertext resource
+	// policy.
+	Data Options
+	// Keys supplies explicit application-owned key material and exact name and algorithm
+	// restrictions.
+	Keys []KeyGraphKey
+	// KeyAlgorithms permits additional exact key algorithm URIs beyond those bound in Keys.
 	KeyAlgorithms []string
-	ConcatKDF     *ConcatKDFParameters
-	External      *KeyGraphResources
+	// ConcatKDF supplies the exact expected derivation context. Nil denies DerivedKey
+	// processing.
+	ConcatKDF *ConcatKDFParameters
+	// External optionally authorizes external key documents. Nil denies them.
+	External *KeyGraphResources
 	// KeyURIs explicitly supplies standalone key candidates, including external
 	// keys discoverable through a ReferenceList without an inbound KeyInfo link.
 	KeyURIs []string
@@ -94,12 +117,16 @@ type KeyGraphOptions struct {
 	// Empty enables Base64 and the mandatory implicit Canonical XML 1.0 conversion.
 	// XPath, XSLT, enveloped signatures and application extension programs are denied.
 	CipherTransforms []string
-	Limits           KeyGraphLimits
+	// Limits bounds the complete graph operation. Zero fields select defaults.
+	Limits KeyGraphLimits
 }
 
 type (
-	graphBinding struct{ name, algorithm string }
-	graphNode    struct {
+	graphBinding struct {
+		name      string
+		algorithm string
+	}
+	graphNode struct {
 		document *graphDocument
 		node     *tree.Node
 	}
@@ -117,12 +144,12 @@ type keyGraph struct {
 	profile    profile
 	limits     KeyGraphLimits
 	bindings   map[graphBinding]KeyGraphKey
-	methods    map[string]bool
-	allowed    map[string]bool
+	methods    map[string]struct{}
+	allowed    map[string]struct{}
 	documents  map[string]*graphDocument
 	ordered    []*graphDocument
 	standalone []graphNode
-	active     map[graphPlanID]bool
+	active     map[graphPlanID]struct{}
 	plans      map[graphPlanID]*graphKeyPlan
 	baseURI    *url.URL
 	remaining  KeyGraphLimits
@@ -204,8 +231,8 @@ func newKeyGraph(ctx context.Context, doc *document.Document, options KeyGraphOp
 
 	g := &keyGraph{
 		ctx: ctx, options: options, profile: p, limits: limits, remaining: limits,
-		bindings: make(map[graphBinding]KeyGraphKey), methods: make(map[string]bool), allowed: make(map[string]bool), documents: make(map[string]*graphDocument),
-		active: make(map[graphPlanID]bool), plans: make(map[graphPlanID]*graphKeyPlan),
+		bindings: make(map[graphBinding]KeyGraphKey), methods: make(map[string]struct{}), allowed: make(map[string]struct{}), documents: make(map[string]*graphDocument),
+		active: make(map[graphPlanID]struct{}), plans: make(map[graphPlanID]*graphKeyPlan),
 	}
 	if err := g.configure(); err != nil {
 		g.close()
@@ -227,15 +254,15 @@ func newKeyGraph(ctx context.Context, doc *document.Document, options KeyGraphOp
 }
 
 func (g *keyGraph) configure() error {
-	seen := make(map[graphBinding]bool)
+	seen := make(map[graphBinding]struct{})
 
 	for _, binding := range g.options.Keys {
 		identity := graphBinding{binding.Name, binding.Algorithm}
-		if seen[identity] {
+		if _, exists := seen[identity]; exists {
 			return ErrPolicy
 		}
 
-		seen[identity] = true
+		seen[identity] = struct{}{}
 	}
 
 	if _, err := g.referenceOptions(1); err != nil {
@@ -243,11 +270,11 @@ func (g *keyGraph) configure() error {
 	}
 
 	for _, algorithm := range g.options.KeyAlgorithms {
-		if !graphKeyAlgorithm(algorithm) || g.methods[algorithm] {
+		if _, exists := g.methods[algorithm]; !graphKeyAlgorithm(algorithm) || exists {
 			return ErrPolicy
 		}
 
-		g.methods[algorithm] = true
+		g.methods[algorithm] = struct{}{}
 	}
 
 	for _, binding := range g.options.Keys {
@@ -277,7 +304,7 @@ func (g *keyGraph) configure() error {
 
 		g.bindings[identity] = binding
 		if graphKeyAlgorithm(binding.Algorithm) {
-			g.methods[binding.Algorithm] = true
+			g.methods[binding.Algorithm] = struct{}{}
 		}
 	}
 
@@ -314,11 +341,11 @@ func (g *keyGraph) configureExternal() error {
 
 	g.baseURI = base
 	for _, uri := range external.AllowedURIs {
-		if !validCipherURI(uri) || g.allowed[uri] {
+		if _, exists := g.allowed[uri]; !validCipherURI(uri) || exists {
 			return ErrPolicy
 		}
 
-		g.allowed[uri] = true
+		g.allowed[uri] = struct{}{}
 	}
 
 	return nil
@@ -487,7 +514,7 @@ func (g *keyGraph) externalDocument(uri string) (result *graphDocument, err erro
 		return found, nil
 	}
 
-	if !g.allowed[uri] || g.options.External == nil {
+	if _, exists := g.allowed[uri]; !exists || g.options.External == nil {
 		return nil, ErrPolicy
 	}
 

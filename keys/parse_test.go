@@ -28,9 +28,10 @@ const (
 )
 
 type keyFormatCase struct {
-	name, label string
-	raw         []byte
-	private     bool
+	name    string
+	label   string
+	raw     []byte
+	private bool
 }
 
 func multiPrimeRSA(t testing.TB) *rsa.PrivateKey {
@@ -246,10 +247,15 @@ func TestRejectAmbiguousAndOversizedMaterial(t *testing.T) {
 	}
 
 	oversized, err := asn1.Marshal(struct {
-		Version             int
-		N                   *big.Int
-		E                   int
-		D, P, Q, DP, DQ, QI *big.Int
+		Version int
+		N       *big.Int
+		E       int
+		D       *big.Int
+		P       *big.Int
+		Q       *big.Int
+		DP      *big.Int
+		DQ      *big.Int
+		QI      *big.Int
 	}{0, new(big.Int).Lsh(big.NewInt(1), 16384), 65537, big.NewInt(3), big.NewInt(3), big.NewInt(3), big.NewInt(1), big.NewInt(1), big.NewInt(1)})
 	if err != nil {
 		t.Fatal(err)

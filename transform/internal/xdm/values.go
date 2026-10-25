@@ -95,33 +95,22 @@ const (
 // Zone identity is carried in time.Time; each value owns its location.
 const noTimezoneName = "xmlsec:no-timezone"
 
-// Item is the interface implemented by all XPath 3.1 item types.
+// Item represents an atomic value, node, function, map or array in the shared XDM
+// value model. The selected language profile controls which item kinds expressions can
+// use.
 type Item interface {
+	// itemTag restricts XDM items to implementations declared in this package.
 	itemTag()
 }
 
-// CloneItem returns a value-semantics copy of an Item.
+// CloneItem copies mutable atomic payloads and item metadata while retaining XDM
+// identity. It clones pointer-backed numeric values, byte slices, duration rationals
+// and mutable node/function metadata slices.
 //
-// Only AtomicValue with a pointer- or slice-backed payload is actually copied:
-// those payloads (*big.Int, *big.Rat, *FloatValue, []byte, Duration's *big.Rat
-// fields) are the sole way a caller can hold a reference and later mutate a value
-// after it was inserted into a map/array.
-//
-// MapItem and ArrayItem are returned AS-IS, NOT recursively cloned. They are
-// immutable (Put/Append/Remove/SubArray are all copy-on-write — the backing
-// entry/member slices are never mutated in place), and every value placed inside
-// one passed through CloneSequence at ingress, so any pointer atomics they hold
-// were already detached from caller storage. Recursively re-cloning a nested
-// map/array on every insert would turn incremental construction of a
-// depth-N structure into O(N^2)/unbounded work and defeat the OpLimit/maxNodes
-// bounds, which charge per inserted value once — not per nesting level on every
-// insert.
-//
-// NodeItem keeps its underlying DOM node identity shared (the node itself is
-// never cloned), but copies its mutable metadata slice (UnionMemberTypes) so a
-// caller cannot mutate it after insertion. FunctionItem keeps its closure and
-// any DOM identity shared, but copies its mutable type-metadata (ParamTypes /
-// ReturnType) for the same reason.
+// Immutable maps and arrays share their entries; node storage and function closures
+// remain shared. This avoids recursively copying nested immutable structures. Callers
+// must keep shared nodes, metadata records and captured closure state valid for
+// readers.
 func CloneItem(item Item) Item {
 	switch v := item.(type) {
 	case AtomicValue:
@@ -160,72 +149,61 @@ func CloneItem(item Item) Item {
 	}
 }
 
-// NodeItem wraps a Node as an XPath item.
+// NodeItem pairs a shared node identity with optional internal atomization metadata.
+// Metadata can describe typed values when supplied by a host; it does not enable
+// schema-aware processing in the public profiles.
 type NodeItem struct {
+	// Node is the underlying node whose identity is retained by this item.
 	Node Node
-	// ActiveUnionMember is the value-dependent ACTIVE LEAF member of a union-typed
-	// node, precomputed in nodeItemFor via full schema-aware validation (nil when the
-	// node is not a union or no member resolved). It is the resolved LEAF — when the
-	// first validating member is itself a union, resolution descends into it (mirror
-	// of fixedUnionActiveMember) so a nested union reaches its atomic/list leaf. This
-	// agrees with the $value path's active-member selection.
+	// ActiveUnionMember retains the resolved atomic or list leaf for a union-typed node.
+	// Nil means no active member was supplied or resolved. Atomization uses this metadata
+	// without repeating member selection.
 	ActiveUnionMember *NodeItemUnionMember
 	TypeAnnotation    string   // optional xs:... type annotation (schema-aware)
 	AtomizedType      string   // optional built-in base type used for typed atomization
 	ListItemType      string   // non-empty when the type is a list; the item type name
 	ListItemAtomized  string   // built-in base of the list item type (e.g. xs:QName for a QName-derived item)
 	UnionMemberTypes  []string // member type names for union types (for atomization)
-	// ListItemLeaves is non-nil when the list ITEM type is a UNION: one entry per
-	// whitespace token of the node value (aligned with xsdListFields), the
-	// value-dependent ACTIVE leaf member for THAT token, precomputed in nodeItemFor.
-	// So a list of a union atomizes each token through its own active member, matching
-	// $value, instead of one static ListItemAtomized base. A nil entry means the token
-	// resolved no member (the atomizer falls back to the static path).
+	// ListItemLeaves aligns resolved union-member leaves with whitespace-separated list
+	// tokens. A nil entry falls back to static list-item metadata. Entries are immutable
+	// after construction and can be shared by clones.
 	ListItemLeaves []*NodeItemUnionMember
 	// ResultTreeFragment marks an XSLT 1.0 temporary tree (not a node-set).
 	ResultTreeFragment bool
-	// QNameNoDefaultNS, when true, atomizes an UNPREFIXED QName/NOTATION value to
-	// NO namespace instead of resolving the node's in-scope default namespace —
-	// XSD value-space semantics (a QName VALUE, unlike a name, does not pick up the
-	// default namespace). Set from the evaluator's QNameValueNoDefaultNamespace
-	// option (used by xsd assertions); off by default so general XPath/XQuery and
-	// XSLT atomization keep the default-namespace behavior.
+	// QNameNoDefaultNS suppresses default-namespace resolution when atomizing an
+	// unprefixed QName or NOTATION value. It is an internal host option and is false by
+	// default.
 	QNameNoDefaultNS bool
 }
 
 func (NodeItem) itemTag() {}
 
-// NodeItemUnionMember carries per-member atomization metadata for a union-typed
-// node, precomputed from SchemaDeclarations so value-dependent active-member
-// resolution during atomization needs no schema access.
+// NodeItemUnionMember retains the resolved atomic or list-member metadata needed for
+// typed atomization. Records are immutable after construction and can be shared by
+// NodeItem clones.
 type NodeItemUnionMember struct {
 	TypeName     string // member type annotation name
 	Atomized     string // built-in base of an atomic member (for typing)
 	ListItem     string // non-empty if the member is a list: its item type name
 	ListItemAtom string // built-in base of the list item (e.g. xs:QName)
-	// ListItemLeaves is non-nil when this member is a LIST whose item type is itself a
-	// UNION: one entry per whitespace token of the union value (aligned with
-	// xsdListFields), the value-dependent ACTIVE leaf member for THAT token, precomputed
-	// in resolveActiveUnionLeafRec. So a union whose active member is a list-of-union
-	// atomizes each token through its own active member (matching $value), not the static
-	// ListItemAtom base. A nil entry means the token resolved no member.
+	// ListItemLeaves aligns active union leaves with tokens when this member is a list
+	// whose item type is a union. Nil entries have no resolved leaf and use the atomizer's
+	// fallback path.
 	ListItemLeaves []*NodeItemUnionMember
 }
 
-// AtomicValue represents an XSD atomic value with its type name.
+// AtomicValue pairs a type name with its Go representation and optional built-in base
+// type. Callers must supply a representation compatible with the selected type and
+// keep shared payloads immutable.
 type AtomicValue struct {
 	TypeName string // e.g. "xs:string", "xs:integer"
-	Value    any    // Go native backing value (see type table in design doc)
+	Value    any    // string, bool, integer, rational, FloatValue, bytes, time, QName or Duration payload
 	BaseType string // built-in base type when TypeName is a user-defined schema type
 }
 
-// CloneMapKey returns a value-semantics copy of a map key. Map keys are single
-// AtomicValues, so this is O(1). A pointer-backed key (e.g. xs:integer backed by
-// *big.Int) could otherwise be mutated by the caller after insertion and, because
-// single-entry maps recompute the stored key in Get, the map's key would change
-// after construction. Cloning at every map ingress detaches the stored key from
-// caller-held storage. Immutable payloads keep their original (already-boxed)
-// AtomicValue and skip the re-allocation.
+// CloneMapKey copies mutable atomic key payloads before map insertion so later caller
+// mutations cannot change the stored key. Immutable payloads are shared. Copying cost
+// depends on the size of pointer-backed numeric or byte values.
 func CloneMapKey(key AtomicValue) AtomicValue {
 	if cloned, copied := deepCloneAtomicValue(key); copied {
 		return cloned
@@ -239,7 +217,9 @@ func (a AtomicValue) StringVal() string {
 	return a.Value.(string) //nolint:forcetypeassert
 }
 
-// IntegerVal returns the backing int64 value. Panics if the value exceeds int64 range.
+// IntegerVal returns an int64-backed value or delegates to big.Int.Int64. It does not
+// check overflow; use Int64Val when range validation is required. Other backing types
+// panic.
 func (a AtomicValue) IntegerVal() int64 {
 	if v, ok := a.Value.(int64); ok {
 		return v
@@ -264,9 +244,9 @@ func (a AtomicValue) Int64Val() (int64, bool) {
 	return 0, false
 }
 
-// BigInt returns the backing *big.Int value.
-// If the value is stored as int64, it promotes to *big.Int.
-// If the value is stored as a string, it attempts to parse it.
+// BigInt returns a borrowed big.Int, promotes an int64 or parses a decimal string.
+// Unsupported or invalid input returns a new zero integer. Callers must not mutate
+// borrowed value storage.
 func (a AtomicValue) BigInt() *big.Int {
 	switch v := a.Value.(type) {
 	case *big.Int:
@@ -283,9 +263,9 @@ func (a AtomicValue) BigInt() *big.Int {
 	return new(big.Int)
 }
 
-// BigRat returns the backing *big.Rat value.
-// If the value is stored as a string (e.g. from a type annotation mismatch),
-// it attempts to parse it.
+// BigRat returns a borrowed big.Rat or parses a rational string. Unsupported or
+// invalid input returns a new zero rational. Callers must not mutate borrowed value
+// storage.
 func (a AtomicValue) BigRat() *big.Rat {
 	if r, ok := a.Value.(*big.Rat); ok {
 		return r
@@ -348,7 +328,8 @@ func (a AtomicValue) DurationVal() Duration {
 	return a.Value.(Duration) //nolint:forcetypeassert
 }
 
-// BytesVal returns the backing []byte value.
+// BytesVal returns the borrowed byte-slice payload and panics for other backing types.
+// Callers must not mutate shared XDM value storage.
 func (a AtomicValue) BytesVal() []byte {
 	return a.Value.([]byte) //nolint:forcetypeassert
 }
@@ -476,19 +457,23 @@ func (a AtomicValue) effectiveNumericType() string {
 
 // QNameValue holds the components of an xs:QName value.
 type QNameValue struct {
+	// Prefix retains the lexical prefix for diagnostics and serialization.
 	Prefix string
-	Local  string
-	URI    string
+	// Local is the local name of the QName value.
+	Local string
+	// URI is the expanded namespace URI, or empty for no namespace.
+	URI string
 }
 
 // Duration is the value of an xs:duration, xs:yearMonthDuration, or
 // xs:dayTimeDuration. Months is an int: where int is 32 bits, a month total
 // above 2^31-1 is a duration overflow (FODT0002) wherever one is computed.
 type Duration struct {
-	Months   int      // total months (years*12 + months)
-	Seconds  float64  // total seconds (days*86400 + hours*3600 + minutes*60 + seconds)
-	FracSec  *big.Rat // exact fractional seconds component (the part after decimal in 'S'), nil if integer
-	SecRat   *big.Rat // exact total dayTime seconds magnitude (>=0); authoritative when non-nil, sign carried by Negative
+	Months  int      // total months (years*12 + months)
+	Seconds float64  // total seconds (days*86400 + hours*3600 + minutes*60 + seconds)
+	FracSec *big.Rat // exact fractional seconds component (the part after decimal in 'S'), nil if integer
+	SecRat  *big.Rat // exact total dayTime seconds magnitude (>=0); authoritative when non-nil, sign carried by Negative
+	// Negative carries the sign of the duration's component magnitudes.
 	Negative bool
 }
 
@@ -509,9 +494,12 @@ func (d Duration) clone() Duration {
 
 // FunctionItem represents a callable function value (inline, named ref, partial application).
 type FunctionItem struct {
-	Arity           int
-	Name            string // empty for anonymous
-	Namespace       string // namespace URI (empty for anonymous or default)
+	// Arity is the fixed number of arguments accepted by this function item.
+	Arity     int
+	Name      string // empty for anonymous
+	Namespace string // namespace URI (empty for anonymous or default)
+	// Invoke executes the captured function with the caller's context and argument
+	// sequences.
 	Invoke          func(ctx context.Context, args []Sequence) (Sequence, error)
 	ParamTypes      []SequenceType // parameter type annotations (nil if untyped)
 	RepeatParamType bool           // the sole parameter annotation applies to every argument
@@ -539,6 +527,7 @@ func FunctionParameterType(params []SequenceType, repeated bool, index int) (Seq
 
 // MapItem is an immutable key-value map. Put returns a new map (copy-on-write).
 type MapItem struct {
+	// entries retains map iteration order and borrowed immutable entry values.
 	entries []EntryView
 	index   map[MapKey]int // index into entries
 }
@@ -791,22 +780,31 @@ func (MapItem) itemTag() {}
 
 // MapEntry is a public key-value pair for constructing maps.
 type MapEntry struct {
-	Key   AtomicValue
+	// Key is the atomic key used for map lookup and duplicate detection.
+	Key AtomicValue
+	// Value is the sequence associated with Key.
 	Value Sequence
 }
 
+// EntryView exposes an immutable map entry while retaining its private key
+// representation. Value is borrowed and must not be mutated.
 type EntryView struct {
-	key   AtomicValue
+	// key retains the immutable atomic key used for comparison and lookup.
+	key AtomicValue
+	// Value is the borrowed sequence associated with this entry's key.
 	Value Sequence
 }
 
 // MapKey is the normalized key used for O(1) lookup in the index map.
 // time.Time is normalized to UTC RFC3339Nano string, []byte to hex string.
 type MapKey struct {
+	// typeName selects the normalized equality domain for value.
 	typeName string
 	value    any // only types with Go map equality: string, int64, float64, bool
 }
 
+// NormalizeMapKey converts an atomic value to the internal comparable map-key form,
+// including numeric and string-family equivalence.
 func NormalizeMapKey(key AtomicValue) MapKey {
 	// Per XPath 3.1 spec, map keys use value-based equality (eq operator semantics).
 	// Numerics that compare equal are the same key: xs:integer(1), xs:double(1.0e0),
@@ -968,14 +966,17 @@ const (
 	MergeCombine
 )
 
-// MapBuilder accumulates map entries without defensive cloning,
-// producing a MapItem when Build is called. This is significantly
-// faster than MergeMaps for large merges because it avoids
-// per-entry cloneSequence calls and builds the index incrementally.
+// MapBuilder accumulates entries and applies a duplicate-key policy before
+// transferring storage to Build. Added values are borrowed without cloning and must
+// remain immutable. The builder must not be used concurrently or reused after Build.
 type MapBuilder struct {
-	entries  []EntryView
-	index    map[MapKey]int
-	policy   MergePolicy
+	// entries accumulates entries in insertion order before ownership transfers to Build.
+	entries []EntryView
+	// index maps normalized keys to entry positions for duplicate detection.
+	index map[MapKey]int
+	// policy selects how Add handles duplicate keys.
+	policy MergePolicy
+	// combined retains mutable sequence buffers while combining duplicate values.
 	combined map[int]ItemSlice
 }
 
@@ -989,12 +990,9 @@ func NewMapBuilder(policy MergePolicy, sizeHint int) *MapBuilder {
 	}
 }
 
-// Add inserts a key-value pair into the builder, applying the merge policy
-// for duplicate keys. The value is NOT cloned — the caller must ensure the
-// value is not mutated after this call (which is the case for values produced
-// by the evaluator, since XPath values are immutable). The key IS cloned
-// (an O(1) single-atomic copy) so a pointer-backed key cannot be mutated
-// after insertion and silently change the stored map key.
+// Add inserts a cloned atomic key and a borrowed value sequence, applying the
+// duplicate-key policy. The caller must not mutate the sequence or its shared payloads
+// after insertion.
 func (b *MapBuilder) Add(key AtomicValue, value Sequence) error {
 	nk := NormalizeMapKey(key)
 	if idx, ok := b.index[nk]; ok {
@@ -1056,6 +1054,7 @@ func (b *MapBuilder) Build() MapItem {
 
 // ArrayItem is an immutable indexed sequence of members. Uses 1-based indexing.
 type ArrayItem struct {
+	// members retains immutable member sequences in one-based array order.
 	members []Sequence
 }
 
@@ -1263,6 +1262,8 @@ func CloneSequenceType(st SequenceType) SequenceType {
 	return st
 }
 
+// CloneSequences copies the outer slice and clones each member sequence while
+// preserving shared immutable item identities.
 func CloneSequences(seqs []Sequence) []Sequence {
 	if seqs == nil {
 		return nil
@@ -1295,7 +1296,7 @@ func computeIsSubtypeOf(actualType, targetType string) bool {
 	// Walk up the type hierarchy
 	cur := actualType
 	for {
-		parent, ok := lookupxsdTypeParent(cur)
+		parent, ok := lookupXSDTypeParent(cur)
 		if !ok {
 			return false
 		}
@@ -1370,9 +1371,9 @@ func NoTimezone() *time.Location { return time.FixedZone(noTimezoneName, 0) }
 func HasTimezone(t time.Time) bool { return t.Location().String() != noTimezoneName }
 
 // IsKnownXSDType returns true if name is a recognized XSD type in the
-// xpath type hierarchy (the xsdTypeParent map or a base type).
+// XPath type hierarchy (the xsdTypeParent lookup or a base type).
 func IsKnownXSDType(name string) bool {
-	if _, ok := lookupxsdTypeParent(name); ok {
+	if _, ok := lookupXSDTypeParent(name); ok {
 		return true
 	}
 
@@ -1387,6 +1388,8 @@ func IsKnownXSDType(name string) bool {
 	return false
 }
 
+// SchemaAnnotationParts splits a custom annotation into local name and namespace.
+// Built-in xs: and xsd: names return ok=false; URI-qualified names retain their URI.
 func SchemaAnnotationParts(name string) (local, ns string, ok bool) {
 	if strings.HasPrefix(name, "Q{") {
 		end := strings.IndexByte(name, '}')
@@ -1439,8 +1442,8 @@ func deepCloneAtomicValue(a AtomicValue) (AtomicValue, bool) {
 	return a, true
 }
 
-// xsdTypeParent maps each derived XSD type to its parent (base) type.
-func lookupxsdTypeParent(key string) (string, bool) {
+// lookupXSDTypeParent maps each derived XSD type to its parent (base) type.
+func lookupXSDTypeParent(key string) (string, bool) {
 	switch key {
 	case TypeByte:
 		return TypeShort, true
@@ -1489,4 +1492,4 @@ func lookupxsdTypeParent(key string) (string, bool) {
 	return zero, false
 }
 
-func xsdTypeParent(key string) string { value, _ := lookupxsdTypeParent(key); return value }
+func xsdTypeParent(key string) string { value, _ := lookupXSDTypeParent(key); return value }

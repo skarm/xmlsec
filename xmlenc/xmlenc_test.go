@@ -115,7 +115,11 @@ func TestRejectsTamperingAndDowngrade(t *testing.T) {
 	raw, _ := d.XML(t.Context())
 	text := string(raw)
 
-	for _, tc := range []struct{ name, from, to string }{{"gcm", xmlenc.AES256GCM, xmlenc.Namespace + "aes256-cbc"}, {"oaep", xmlenc.RSAOAEP, xmlenc.Namespace + "rsa-1_5"}, {"hash", xmlenc.SHA256, "urn:sha1"}, {"mgf", xmlenc.MGF1SHA256, xmlenc.Namespace11 + "mgf1sha1"}, {"extra-key", `</ds:KeyInfo>`, `<xenc:EncryptedKey/></ds:KeyInfo>`}} {
+	for _, tc := range []struct {
+		name string
+		from string
+		to   string
+	}{{"gcm", xmlenc.AES256GCM, xmlenc.Namespace + "aes256-cbc"}, {"oaep", xmlenc.RSAOAEP, xmlenc.Namespace + "rsa-1_5"}, {"hash", xmlenc.SHA256, "urn:sha1"}, {"mgf", xmlenc.MGF1SHA256, xmlenc.Namespace11 + "mgf1sha1"}, {"extra-key", `</ds:KeyInfo>`, `<xenc:EncryptedKey/></ds:KeyInfo>`}} {
 		t.Run(tc.name, func(t *testing.T) {
 			bad := parse(t, []byte(strings.Replace(text, tc.from, tc.to, 1)))
 			if p, e := xmlenc.DecryptBytes(context.Background(), bad, k, xmlenc.Options{}); p != nil || !errors.Is(e, xmlenc.ErrFormat) {
@@ -434,7 +438,11 @@ func TestECDHRejectsMetadataBeforeProvider(t *testing.T) {
 	params := agreementChild(t, agreementChild(t, method, xmlenc.Namespace11, "KeyDerivationMethod"), xmlenc.Namespace11, "ConcatKDFParams")
 	partyV, _ := params.Attribute(document.Name{Local: "PartyVInfo"})
 	invalidPoint := append([]byte{4}, make([]byte, 64)...)
-	for _, test := range []struct{ name, from, to string }{
+	for _, test := range []struct {
+		name string
+		from string
+		to   string
+	}{
 		{"agreement algorithm", xmlenc.ECDHES, "urn:wrong"},
 		{"key algorithm", xmlenc.AES256KeyWrap, xmlenc.AES128KeyWrap},
 		{"data algorithm", xmlenc.AES256GCM, xmlenc.AES128GCM},
@@ -674,8 +682,9 @@ func TestECDHOriginatorHints(t *testing.T) {
 	}
 	raw := xmlBytes(t, doc)
 	for _, test := range []struct {
-		name, hint string
-		valid      bool
+		name  string
+		hint  string
+		valid bool
 	}{
 		{"ignored name", `<ds:KeyName>untrusted sender name</ds:KeyName>`, true},
 		{"empty name", `<ds:KeyName/>`, true},

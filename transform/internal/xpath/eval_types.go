@@ -747,23 +747,48 @@ func coerceToSequenceTypeE(ctx context.Context, seq xdm.Sequence, st xdm.Sequenc
 
 	targetType := resolveAtomicTypeName(AtomicTypeName(target), ec)
 
-	atoms, err := atomizeForSequenceCoercion(ctx, seq, st.Occurrence, ec)
+	result, err := coerceAtomicFunctionSequence(ctx, seq, st.Occurrence, targetType, ec)
 	if err != nil {
 		return seq, err
 	}
 
-	result := make(xdm.ItemSlice, len(atoms))
-	for i, atom := range atoms {
-		converted, err := coerceAtomicFunctionArgument(ctx, atom, targetType, ec)
-		if err != nil {
-			return seq, err
-		}
-
-		result[i] = converted
-	}
-
 	if !coercionOccurrenceMatches(len(result), st.Occurrence) {
 		return seq, errCoerceMismatch
+	}
+
+	return result, nil
+}
+
+func coerceAtomicFunctionSequence(ctx context.Context, seq xdm.Sequence, occurrence xdm.Occurrence, targetType string, ec *evalContext) (xdm.ItemSlice, error) {
+	// Abstract atomic arguments need only the boxed sequence. Concrete targets
+	// retain unboxed atoms until all typed-value errors have been checked, then
+	// apply conversions in order. Neither path mutates the caller's sequence.
+	var (
+		atoms  []xdm.AtomicValue
+		result xdm.ItemSlice
+	)
+
+	err := visitCoercionAtoms(ctx, seq, occurrence, ec, func(atom xdm.AtomicValue) {
+		if targetType == xdm.TypeAnyAtomicType {
+			result = append(result, atom)
+		} else {
+			atoms = append(atoms, atom)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if targetType != xdm.TypeAnyAtomicType {
+		result = make(xdm.ItemSlice, len(atoms))
+		for i, atom := range atoms {
+			converted, err := coerceAtomicFunctionArgument(ctx, atom, targetType, ec)
+			if err != nil {
+				return nil, err
+			}
+
+			result[i] = converted
+		}
 	}
 
 	return result, nil
@@ -815,26 +840,28 @@ func coercionOccurrenceMatches(length int, occurrence xdm.Occurrence) bool {
 	}
 }
 
-// atomizeForSequenceCoercion flattens arrays and list-typed nodes. Singleton
-// targets stop after the second atom; typed-value errors encountered before
-// that limit still propagate, before the cardinality mismatch is reported.
-func atomizeForSequenceCoercion(ctx context.Context, seq xdm.Sequence, occurrence xdm.Occurrence, ec *evalContext) ([]xdm.AtomicValue, error) {
+// visitCoercionAtoms flattens arrays and list-typed nodes. Singleton targets
+// stop after the second atom; typed-value errors encountered before that limit
+// still propagate, before the cardinality mismatch is reported.
+func visitCoercionAtoms(ctx context.Context, seq xdm.Sequence, occurrence xdm.Occurrence, ec *evalContext, yield func(xdm.AtomicValue)) error {
 	maxAtoms := 0
 	if occurrence == xdm.OccurrenceExactlyOne || occurrence == xdm.OccurrenceZeroOrOne {
 		maxAtoms = 1
 	}
 
-	var atoms []xdm.AtomicValue
-
+	count := 0
 	tooMany := false
 
 	err := atomizeBounded(ctx, ec, seq, func(atom xdm.AtomicValue) (bool, error) {
-		if len(atoms) >= fnMaxNodes(ec) {
+		if count >= fnMaxNodes(ec) {
 			return false, ErrNodeSetLimit
 		}
 
-		atoms = append(atoms, atom)
-		if maxAtoms > 0 && len(atoms) > maxAtoms {
+		count++
+
+		yield(atom)
+
+		if maxAtoms > 0 && count > maxAtoms {
 			tooMany = true
 			return false, nil
 		}
@@ -842,14 +869,14 @@ func atomizeForSequenceCoercion(ctx context.Context, seq xdm.Sequence, occurrenc
 		return true, nil
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	if tooMany {
-		return nil, errCoerceMismatch
+		return errCoerceMismatch
 	}
 
-	return atoms, nil
+	return nil
 }
 
 // coerceAtomicFunctionArgument applies numeric/URI promotion, then untyped

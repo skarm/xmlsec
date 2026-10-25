@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"iter"
 	"strings"
 	"unicode/utf8"
 
@@ -94,12 +95,27 @@ func (f Form) Bytes(s []byte) []byte {
 		return s
 	}
 
-	result := f.String(string(s))
-	if result == string(s) {
+	out := make([]byte, 0, len(s))
+	ctx := context.Background()
+
+	for source, err := range f.byteSegments(ctx, s) {
+		if err != nil {
+			return nil
+		}
+
+		result, err := f.segmentBytes(ctx, source)
+		if err != nil {
+			return nil
+		}
+
+		out = append(out, result...)
+	}
+
+	if bytes.Equal(out, s) {
 		return s
 	}
 
-	return []byte(result)
+	return out
 }
 
 func (f Form) each(ctx context.Context, s string, emit func(string, string) error) error {
@@ -160,36 +176,15 @@ func (f Form) segment(ctx context.Context, s string) (string, error) {
 }
 
 func (f Form) longSegment(ctx context.Context, s string) (string, error) {
-	decomposition := norm.NFD
-	if f == NFKC || f == NFKD {
-		decomposition = norm.NFKD
-	}
-
-	chars := make([]character, 0, len(s)/2)
-	for at, r := range s {
-		if at%4096 < utf8.UTFMax {
-			if err := ctx.Err(); err != nil {
-				return "", err
+	chars, err := f.normalizedCharacters(ctx, len(s), func(yield func(int, rune) bool) {
+		for at, r := range s {
+			if !yield(at, r) {
+				return
 			}
 		}
-		// A single scalar's complete decomposition fits x/text's reorder buffer.
-		// Hangul's algorithmic decomposition is handled by the same table API.
-		for _, d := range decomposition.String(string(r)) {
-			chars = append(chars, character{d, norm.NFD.PropertiesString(string(d)).CCC()})
-		}
-	}
-
-	if err := reorder(ctx, chars); err != nil {
+	})
+	if err != nil {
 		return "", err
-	}
-
-	if f == NFC || f == NFKC {
-		var err error
-
-		chars, err = compose(ctx, chars)
-		if err != nil {
-			return "", err
-		}
 	}
 
 	var out strings.Builder
@@ -206,6 +201,73 @@ func (f Form) longSegment(ctx context.Context, s string) (string, error) {
 	}
 
 	return out.String(), nil
+}
+
+func (f Form) longSegmentBytes(ctx context.Context, s []byte) ([]byte, error) {
+	chars, err := f.normalizedCharacters(ctx, len(s), func(yield func(int, rune) bool) {
+		for at := 0; at < len(s); {
+			r, size := utf8.DecodeRune(s[at:])
+			if !yield(at, r) {
+				return
+			}
+
+			at += size
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]byte, 0, len(s))
+
+	for at, c := range chars {
+		if at%4096 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+
+		out = utf8.AppendRune(out, c.value)
+	}
+
+	return out, nil
+}
+
+func (f Form) normalizedCharacters(ctx context.Context, size int, input iter.Seq2[int, rune]) ([]character, error) {
+	decomposition := norm.NFD
+	if f == NFKC || f == NFKD {
+		decomposition = norm.NFKD
+	}
+
+	chars := make([]character, 0, size/2)
+
+	for at, r := range input {
+		if at%4096 < utf8.UTFMax {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		// A single scalar's complete decomposition fits x/text's reorder buffer.
+		// Hangul's algorithmic decomposition is handled by the same table API.
+		for _, d := range decomposition.String(string(r)) {
+			chars = append(chars, character{d, norm.NFD.PropertiesString(string(d)).CCC()})
+		}
+	}
+
+	if err := reorder(ctx, chars); err != nil {
+		return nil, err
+	}
+
+	if f == NFC || f == NFKC {
+		var err error
+
+		chars, err = compose(ctx, chars)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return chars, nil
 }
 
 // reorder uses stable counting sort on each non-starter run: long adversarial
@@ -305,9 +367,9 @@ func compose(ctx context.Context, chars []character) ([]character, error) {
 
 			n := utf8.EncodeRune(pair[:], out[starter].value)
 			n += utf8.EncodeRune(pair[n:], c.value)
-			combined := norm.NFC.String(string(pair[:n]))
+			combined := norm.NFC.Bytes(pair[:n])
 
-			r, size := utf8.DecodeRuneInString(combined)
+			r, size := utf8.DecodeRune(combined)
 			if size == len(combined) {
 				out[starter].value = r
 				continue
@@ -349,14 +411,32 @@ func (w *Writer) Write(p []byte) (int, error) {
 		return 0, w.err
 	}
 
-	for i, b := range p {
-		if i%4096 == 0 {
+	for i, nextCheck := 0, 0; i < len(p); {
+		if i >= nextCheck {
 			if w.err = w.ctx.Err(); w.err != nil {
 				return i, w.err
 			}
+
+			nextCheck = i + 4096
 		}
 
-		w.tail[w.tailSize] = b
+		// Every ASCII scalar has BoundaryBefore in all four forms. Batch it
+		// without flushing the final scalar: the next Write may begin with a
+		// combining mark which must still compose with that pending starter.
+		if w.tailSize == 0 && p[i] < utf8.RuneSelf {
+			n, err := w.writeASCII(p[i:min(len(p), nextCheck)])
+			i += n
+
+			if err != nil {
+				w.err = err
+				return i, err
+			}
+
+			continue
+		}
+
+		w.tail[w.tailSize] = p[i]
+		i++
 
 		w.tailSize++
 		if !utf8.FullRune(w.tail[:w.tailSize]) {
@@ -366,12 +446,12 @@ func (w *Writer) Write(p []byte) (int, error) {
 		r, size := utf8.DecodeRune(w.tail[:w.tailSize])
 		if r == utf8.RuneError && size == 1 {
 			w.err = io.ErrUnexpectedEOF
-			return i + 1, w.err
+			return i, w.err
 		}
 
-		if w.form.PropertiesString(string(w.tail[:w.tailSize])).BoundaryBefore() && len(w.pending) >= 4096 {
+		if norm.Form(w.form).Properties(w.tail[:w.tailSize]).BoundaryBefore() && len(w.pending) >= 4096 {
 			if w.err = w.flush(); w.err != nil {
-				return i + 1, w.err
+				return i, w.err
 			}
 		}
 
@@ -380,6 +460,25 @@ func (w *Writer) Write(p []byte) (int, error) {
 	}
 
 	return len(p), nil
+}
+
+func (w *Writer) writeASCII(p []byte) (int, error) {
+	if len(w.pending) >= 4096 {
+		if err := w.flush(); err != nil {
+			return 1, err
+		}
+	}
+
+	end := 1
+	limit := min(len(p), 4096-len(w.pending))
+
+	for end < limit && p[end] < utf8.RuneSelf {
+		end++
+	}
+
+	w.pending = append(w.pending, p[:end]...)
+
+	return end, nil
 }
 
 // WriteString feeds bounded chunks without copying the complete source string.
@@ -442,12 +541,12 @@ func (w *Writer) flush() error {
 	}
 
 	if result == nil {
-		part, err := w.form.longSegment(w.ctx, string(w.pending))
+		part, err := w.form.longSegmentBytes(w.ctx, w.pending)
 		if err != nil {
 			return err
 		}
 
-		result = []byte(part)
+		result = part
 	}
 
 	if err := w.ctx.Err(); err != nil {
@@ -505,42 +604,70 @@ func String(ctx context.Context, f Form, s string) (string, error) {
 // IsNormal checks normalization while observing cancellation. Already normal
 // short segments do not allocate copies of the complete input.
 func IsNormal(ctx context.Context, f Form, s []byte) (bool, error) {
-	for len(s) > 0 {
-		if err := ctx.Err(); err != nil {
+	for part, err := range f.byteSegments(ctx, s) {
+		if err != nil {
 			return false, err
 		}
 
-		end := len(s)
-		for at := 0; at < len(s); {
-			if at >= 4096 && norm.Form(f).Properties(s[at:]).BoundaryBefore() {
-				end = at
-				break
-			}
-
-			_, size := utf8.DecodeRune(s[at:])
-
-			at += size
-			if at%4096 < utf8.UTFMax {
-				if err := ctx.Err(); err != nil {
-					return false, err
-				}
-			}
-		}
-
-		part := s[:end]
 		if len(part) > 4096 || !norm.Form(f).IsNormal(part) {
-			result, err := f.segment(ctx, string(part))
+			result, err := f.segmentBytes(ctx, part)
 			if err != nil {
 				return false, err
 			}
 
-			if !bytes.Equal([]byte(result), part) {
+			if !bytes.Equal(result, part) {
 				return false, nil
 			}
 		}
-
-		s = s[end:]
 	}
 
 	return true, ctx.Err()
+}
+
+func (f Form) segmentBytes(ctx context.Context, s []byte) ([]byte, error) {
+	if len(s) > 4096+utf8.UTFMax {
+		return f.longSegmentBytes(ctx, s)
+	}
+
+	result := norm.Form(f).Bytes(s)
+	if bytes.Count(result, []byte("\u034f")) == bytes.Count(s, []byte("\u034f")) {
+		return result, ctx.Err()
+	}
+
+	return f.longSegmentBytes(ctx, s)
+}
+
+func (f Form) byteSegments(ctx context.Context, s []byte) iter.Seq2[[]byte, error] {
+	return func(yield func([]byte, error) bool) {
+		for len(s) > 0 {
+			if err := ctx.Err(); err != nil {
+				yield(nil, err)
+				return
+			}
+
+			end := len(s)
+			for at := 0; at < len(s); {
+				if at >= 4096 && norm.Form(f).Properties(s[at:]).BoundaryBefore() {
+					end = at
+					break
+				}
+
+				_, size := utf8.DecodeRune(s[at:])
+
+				at += size
+				if at%4096 < utf8.UTFMax {
+					if err := ctx.Err(); err != nil {
+						yield(nil, err)
+						return
+					}
+				}
+			}
+
+			if !yield(s[:end], nil) {
+				return
+			}
+
+			s = s[end:]
+		}
+	}
 }

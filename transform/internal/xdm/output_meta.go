@@ -3,7 +3,13 @@ package xdm
 // Doctype is an explicit output declaration. It is not an XDM node and cannot
 // introduce input DTDs, entity declarations, or children into a document.
 type Doctype struct {
-	Name, PublicID, SystemID string
+	// Name is the document type name to emit.
+	Name string
+	// PublicID is the optional public external identifier.
+	PublicID string
+	// SystemID is the optional system external identifier. Serialization does not
+	// retrieve it.
+	SystemID string
 }
 
 // CopyDoctype preserves output metadata without sharing mutable declarations.

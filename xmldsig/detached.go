@@ -11,10 +11,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -22,20 +21,20 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
-// Resolver provides the ORIGINAL octets identified by an explicitly permitted
-// URI. No automatic HTTP/file fetching or XML fragment selection occurs in this
-// library. ExternalReferences.BaseURI can explicitly resolve relative URI spelling
-// in the general Signature API. The returned stream is closed on every path.
-// Resolve and the returned reader must honor ctx themselves if blocking: the
-// library cannot interrupt an arbitrary blocking Read without leaking a worker.
+// Resolver supplies original octets for an explicitly authorized URI. The library
+// does not automatically fetch HTTP or file resources or select XML fragments.
+// ExternalReferences.BaseURI enables relative URI resolution only when configured
+// for the general Signature API. Returned streams are closed on every path.
+// Resolving and reading must honor ctx; the library cannot interrupt an arbitrary
+// blocked Read without leaving a worker behind.
 type Resolver interface {
 	// Resolve opens original bytes for an explicitly authorized URI. The caller closes the
 	// stream; resolving and reading must honor cancellation.
 	Resolve(ctx context.Context, uri string) (io.ReadCloser, error)
 }
 
-// ResolverFunc adapts a function to Resolver. It must provide owned readers for explicitly
-// authorized URIs.
+// ResolverFunc adapts a function that returns owned readers for explicitly authorized
+// resources.
 type ResolverFunc func(context.Context, string) (io.ReadCloser, error)
 
 // Resolve calls the underlying application resolver function.
@@ -43,7 +42,7 @@ func (f ResolverFunc) Resolve(ctx context.Context, uri string) (io.ReadCloser, e
 	return f(ctx, uri)
 }
 
-// ResourceLimits bounds each external resource and the total resource bytes read by an
+// ResourceLimits bounds each external resource and aggregate resource reads within one
 // operation.
 type ResourceLimits struct {
 	// MaxResourceBytes bounds each resource; zero uses 8 MiB.
@@ -52,50 +51,63 @@ type ResourceLimits struct {
 	MaxTotalResourceBytes int
 }
 
-// DetachedReference is a recipe for signing externally supplied octets. A nil
-// Transforms slice means the exact original bytes, not implicit XML parsing.
-// Each URI must be nonempty, have no fragment, and occur once in the signature.
-// Type is advisory only: Manifest recursion is NOT performed.
+// DetachedReference supplies a recipe for signing external octets. A nil Transforms
+// slice signs the exact original bytes without XML parsing. Each URI must be
+// nonempty, fragment-free and unique within the signature. Type is advisory and
+// does not enable recursive Manifest validation.
 type DetachedReference struct {
-	URI          string
-	Type         string
+	// URI is the nonempty, fragment-free resource identifier supplied to the resolver.
+	URI string
+	// Type is an optional advisory type URI. It does not enable Manifest recursion.
+	Type string
+	// DigestMethod selects the reference digest algorithm. Empty selects SHA256.
 	DigestMethod string
-	Transforms   []reference.Transform
+	// Transforms lists transforms in execution order. Empty signs the original octets.
+	Transforms []reference.Transform
 }
 
-// DetachedSignOptions sets explicit detached signature policy, canonicalization and
+// DetachedSignOptions selects detached signature algorithms, canonicalization and
 // processing budgets.
 type DetachedSignOptions struct {
+	// SignatureMethod selects the signature algorithm, subject to Policy.
 	SignatureMethod string
 	// Canonicalization defaults to Exclusive C14N without comments. All six implemented
 	// C14N URIs are available explicitly, independently of each reference's transforms.
 	Canonicalization reference.Transform
-	Policy           Policy
-	Processing       reference.Options
-	Limits           ResourceLimits
-	XMLLimits        document.Limits
+	// Policy sets permitted signature and digest algorithms and key and processing limits.
+	Policy Policy
+	// Processing sets reference transform permissions, extensions and execution budgets.
+	Processing reference.Options
+	// Limits bounds individual and aggregate external resource reads.
+	Limits ResourceLimits
+	// XMLLimits bounds the generated signature document. Zero selects document defaults.
+	XMLLimits document.Limits
 }
 
-// DetachedVerifyOptions sets the exact expected resource URI set and detached verification
-// policy.
+// DetachedVerifyOptions supplies the exact expected resource URI set and detached
+// verification policy.
 type DetachedVerifyOptions struct {
 	// ExpectedURIs is required and specifies the exact expected URI set, independent of
 	// order. A subset, superset or different resource set is rejected before I/O.
 	ExpectedURIs []string
 	// AllowedCanonicalizationMethods defaults to Exclusive C14N only.
 	AllowedCanonicalizationMethods []string
-	Policy                         Policy
-	Processing                     reference.Options
-	Limits                         ResourceLimits
+	// Policy sets permitted signature and digest algorithms and key and processing limits.
+	Policy Policy
+	// Processing sets reference transform permissions, extensions and execution budgets.
+	Processing reference.Options
+	// Limits bounds individual and aggregate external resource reads.
+	Limits ResourceLimits
 }
 
-// DetachedResult proves verification of the exact reference set with an
-// externally pinned key. It deliberately has NO Root/CoversElement methods:
-// neither the signature container nor arbitrary original XML is authenticated
-// by a signature over external/transformed octets.
+// DetachedResult authenticates the exact reference set with an externally trusted
+// key. A signature over external or transformed octets does not authenticate the
+// signature container or arbitrary original XML. The result therefore exposes no
+// Root or CoversElement method.
 type DetachedResult struct {
-	algorithm, fingerprint string
-	references             []ReferenceResult
+	algorithm   string
+	fingerprint string
+	references  []ReferenceResult
 }
 
 // VerifyDetached authenticates SignedInfo BEFORE calling resolver. It checks the
@@ -194,7 +206,7 @@ func prepareDetachedVerification(ctx context.Context, doc *document.Document, ke
 		}
 	}
 
-	expected := make(map[string]bool, len(opt.ExpectedURIs))
+	expected := make(map[string]struct{}, len(opt.ExpectedURIs))
 	if len(opt.ExpectedURIs) == 0 || len(opt.ExpectedURIs) > p.MaxReferences {
 		return nil, fmt.Errorf("%w: exact ExpectedURIs are required", ErrPolicy)
 	}
@@ -238,17 +250,17 @@ func verifyDetachedResources(ctx context.Context, resolver Resolver, p *detached
 	return nil
 }
 
-func validateExpectedDetachedURIs(uris []string, expected map[string]bool) error {
+func validateExpectedDetachedURIs(uris []string, expected map[string]struct{}) error {
 	for _, uri := range uris {
 		if err := validExternalURI(uri); err != nil {
 			return err
 		}
 
-		if expected[uri] {
+		if _, exists := expected[uri]; exists {
 			return fmt.Errorf("%w: duplicate ExpectedURI", ErrPolicy)
 		}
 
-		expected[uri] = true
+		expected[uri] = struct{}{}
 	}
 
 	return nil
@@ -295,7 +307,8 @@ type detachedSigningPlan struct {
 
 type detachedSignatureDraft struct {
 	doc         *document.Document
-	sig, si     *tree.Node
+	sig         *tree.Node
+	si          *tree.Node
 	digestNodes []*tree.Node
 }
 
@@ -442,18 +455,18 @@ func prepareDetachedSigning(refs []DetachedReference, signer crypto.Signer, opt 
 func normalizeDetachedReferences(refs []DetachedReference, p Policy, processing reference.Options) ([]DetachedReference, error) {
 	refs = append([]DetachedReference(nil), refs...)
 
-	seen := make(map[string]bool, len(refs))
+	seen := make(map[string]struct{}, len(refs))
 	for i := range refs {
 		ref := &refs[i]
 		if err := validExternalURI(ref.URI); err != nil {
 			return nil, &ReferenceError{i, ref.URI, nameResolve, err}
 		}
 
-		if seen[ref.URI] {
+		if _, exists := seen[ref.URI]; exists {
 			return nil, fmt.Errorf("%w: duplicate URI", ErrReference)
 		}
 
-		seen[ref.URI] = true
+		seen[ref.URI] = struct{}{}
 
 		ref.Transforms = reference.CloneTransforms(ref.Transforms)
 		if err := validateDetachedTransforms(ref.Transforms, processing); err != nil {
@@ -643,7 +656,7 @@ type detachedVerificationPlan struct {
 	limits     ResourceLimits
 	processing reference.Options
 	methods    []string
-	expected   map[string]bool
+	expected   map[string]struct{}
 	si         *tree.Node
 	cm         reference.Transform
 	method     string
@@ -793,9 +806,9 @@ func parseDetachedReference(ctx context.Context, doc *document.Document, n *tree
 	return ref, nil
 }
 
-func parseDetachedReferenceSet(ctx context.Context, doc *document.Document, nodes []*tree.Node, policy Policy, processing reference.Options, expected map[string]bool) ([]parsedDetachedReference, error) {
+func parseDetachedReferenceSet(ctx context.Context, doc *document.Document, nodes []*tree.Node, policy Policy, processing reference.Options, expected map[string]struct{}) ([]parsedDetachedReference, error) {
 	refs := make([]parsedDetachedReference, 0, len(expected))
-	seen := make(map[string]bool, len(expected))
+	seen := make(map[string]struct{}, len(expected))
 
 	for i, n := range nodes {
 		ref, err := parseDetachedReference(ctx, doc, n, policy, processing)
@@ -803,12 +816,12 @@ func parseDetachedReferenceSet(ctx context.Context, doc *document.Document, node
 			return nil, &ReferenceError{i, ref.URI, nameTransform, err}
 		}
 
-		if seen[ref.URI] {
+		if _, exists := seen[ref.URI]; exists {
 			return nil, fmt.Errorf("%w: duplicate URI", ErrReference)
 		}
 
-		seen[ref.URI] = true
-		if !expected[ref.URI] {
+		seen[ref.URI] = struct{}{}
+		if _, exists := expected[ref.URI]; !exists {
 			return nil, fmt.Errorf("%w: unexpected reference URI", ErrPolicy)
 		}
 

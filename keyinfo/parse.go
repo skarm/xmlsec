@@ -56,7 +56,7 @@ func Parse(ctx context.Context, doc *document.Document, selected document.Elemen
 		return nil, err
 	}
 
-	p := &parser{ctx: ctx, limits: l, options: opt, active: make(map[visitKey]bool), scopes: make(map[*document.Document]*scope), resources: make(map[string]resourceBlob), parsedResources: make(map[string]*scope), allow: make(map[string]bool)}
+	p := &parser{ctx: ctx, limits: l, options: opt, active: make(map[visitKey]struct{}), scopes: make(map[*document.Document]*scope), resources: make(map[string]resourceBlob), parsedResources: make(map[string]*scope), allow: make(map[string]struct{})}
 	if err := p.configureKeyData(); err != nil {
 		return nil, err
 	}
@@ -111,22 +111,26 @@ type visitKey struct {
 }
 
 type parser struct {
-	ctx                                           context.Context
-	limits                                        Limits
-	options                                       Options
-	result                                        Result
-	elements, total, externalBytes                int
-	active                                        map[visitKey]bool
-	scopes                                        map[*document.Document]*scope
-	resources                                     map[string]resourceBlob
-	parsedResources                               map[string]*scope
-	allow                                         map[string]bool
-	keyData                                       map[document.Name]bool
-	externalReads, transformBytes, transformNodes int
-	retrievalPlans                                map[visitKey]retrievalPlan
-	rawResources                                  map[string][]byte
-	transformedScopes                             map[retrievalOutput]*scope
-	baseURI                                       *url.URL
+	ctx               context.Context
+	limits            Limits
+	options           Options
+	result            Result
+	elements          int
+	total             int
+	externalBytes     int
+	active            map[visitKey]struct{}
+	scopes            map[*document.Document]*scope
+	resources         map[string]resourceBlob
+	parsedResources   map[string]*scope
+	allow             map[string]struct{}
+	keyData           map[document.Name]struct{}
+	externalReads     int
+	transformBytes    int
+	transformNodes    int
+	retrievalPlans    map[visitKey]retrievalPlan
+	rawResources      map[string][]byte
+	transformedScopes map[retrievalOutput]*scope
+	baseURI           *url.URL
 }
 
 func (p *parser) newScope(d *document.Document, resource string) (*scope, error) {
@@ -141,7 +145,7 @@ func (p *parser) newScope(d *document.Document, resource string) (*scope, error)
 		return nil, fmt.Errorf("%w: ID index: %w", ErrInput, err)
 	}
 
-	s := &scope{d, r, resource}
+	s := &scope{doc: d, resolver: r, resource: resource}
 	p.scopes[d] = s
 
 	return s, nil
@@ -162,11 +166,11 @@ func (p *parser) enter(s *scope, n *tree.Node, depth int) (func(), error) {
 	}
 
 	k := visitKey{s.doc, n}
-	if p.active[k] {
+	if _, exists := p.active[k]; exists {
 		return nil, ErrCycle
 	}
 
-	p.active[k] = true
+	p.active[k] = struct{}{}
 
 	return func() { delete(p.active, k) }, nil
 }

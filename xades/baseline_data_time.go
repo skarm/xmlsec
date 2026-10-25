@@ -8,10 +8,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/transformxml"
@@ -22,18 +21,35 @@ import (
 )
 
 // DataTimestampProperty supplies a pre-existing RFC3161 content timestamp.
-// Individual selects ordered Reference identifiers; All uses direct SignedInfo
-// data References in their signed order. Token authority is checked separately.
+// When Individual is true, ObjectReferences selects ordered Reference URIs.
+// Otherwise, the timestamp covers direct SignedInfo data References in their
+// signed order. Token authority is checked separately.
 type DataTimestampProperty struct {
-	Individual       bool
+	// Individual selects IndividualDataObjectsTimeStamp. False selects
+	// AllDataObjectsTimeStamp.
+	Individual bool
+	// ObjectReferences lists ordered Reference fragment URIs for an individual timestamp.
 	ObjectReferences []string
+	// Canonicalization selects the timestamp input transform. An empty algorithm selects
+	// Canonical XML 1.0.
 	Canonicalization reference.Transform
-	TokenDER         []byte
+	// TokenDER contains the complete RFC 3161 CMS timestamp token in DER.
+	TokenDER []byte
 }
 
 // DataTimestampLimits bounds parsed content timestamp containers and replay.
-// Zero selects 16 tokens, 4MiB/token and 16MiB/input. Maxima are 64/16MiB/64MiB.
-type DataTimestampLimits struct{ MaxTimestamps, MaxTokenBytes, MaxInputBytes int }
+// Zero fields select the defaults documented below.
+type DataTimestampLimits struct {
+	// MaxTimestamps bounds parsed content timestamp tokens. Zero selects 16. The maximum is
+	// 64.
+	MaxTimestamps int
+	// MaxTokenBytes bounds each token's DER size. Zero selects 4 MiB. The maximum is 16
+	// MiB.
+	MaxTokenBytes int
+	// MaxInputBytes bounds replayed timestamp input. Zero selects 16 MiB. The maximum is 64
+	// MiB.
+	MaxInputBytes int
+}
 
 // DataTimestamp is a signed content-timestamp claim bound to exact authenticated
 // References. Token parses RFC3161 syntax; it has not acquired TSA trust or PoE.
@@ -46,7 +62,11 @@ type DataTimestamp struct {
 	maximum     int
 }
 
+// Element returns the immutable content timestamp property element.
 func (value DataTimestamp) Element() document.Element { return value.element }
+
+// TokenDER returns an owned copy of the unverified timestamp token DER, or nil when
+// absent.
 func (value DataTimestamp) TokenDER() []byte {
 	if value.token == nil {
 		return nil
@@ -54,11 +74,23 @@ func (value DataTimestamp) TokenDER() []byte {
 
 	return value.token.DER()
 }
-func (value DataTimestamp) Token() *timestamp.Token        { return value.token }
+
+// Token returns the immutable parsed timestamp token. Its TSA trust has not been
+// established.
+func (value DataTimestamp) Token() *timestamp.Token { return value.token }
+
+// CanonicalizationMethod returns the algorithm URI used for timestamp input
+// canonicalization.
 func (value DataTimestamp) CanonicalizationMethod() string { return value.method.Algorithm }
+
+// Canonicalization returns an independent copy of the timestamp input transform and its
+// parameters.
 func (value DataTimestamp) Canonicalization() reference.Transform {
 	return reference.CloneTransforms([]reference.Transform{value.method})[0]
 }
+
+// ObjectReferences returns an independent slice of ordered individual Reference URIs.
+// All-data timestamps have no individual URI list.
 func (value DataTimestamp) ObjectReferences() []string { return slices.Clone(value.identifiers) }
 
 // WriteImprintInput constructs EN319132-1 5.2.8 input in exact Reference/Include

@@ -42,12 +42,17 @@ func writeJSONItem(ctx context.Context, w io.Writer, item xdm.Item, out *OutputD
 			method = out.JSONNodeOutputMethod
 		}
 
-		value, err := xpath.SerializeNodeForJSON(ctx, v, method)
-		if err != nil {
-			return err
+		var (
+			charMap   map[rune]string
+			form      string
+			canEncode func(rune) bool
+		)
+
+		if out != nil {
+			charMap, form, canEncode = out.ResolvedCharMap, out.NormalizationForm, out.canEncode
 		}
 
-		return writeJSONString(ctx, w, value, out)
+		return xpath.WriteJSONNode(ctx, w, v, method, charMap, form, canEncode)
 	case xdm.AtomicValue:
 		if !v.IsNumeric() && v.TypeName != xdm.TypeBoolean {
 			value, err := xpath.AtomicToString(v)

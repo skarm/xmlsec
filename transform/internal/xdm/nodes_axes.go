@@ -48,15 +48,17 @@ func AxisFromName(name string) (AxisType, bool) {
 	return AxisChild, false
 }
 
+// String returns the XPath axis name, or a diagnostic label for an unknown axis
+// value.
 func (a AxisType) String() string {
-	if s, ok := lookupaxisNames(a); ok {
+	if s, ok := lookupAxisName(a); ok {
 		return s
 	}
 
 	return "unknown-axis"
 }
 
-func lookupaxisNames(key AxisType) (string, bool) {
+func lookupAxisName(key AxisType) (string, bool) {
 	switch key {
 	case AxisChild:
 		return "child", true
@@ -681,12 +683,13 @@ func PushXDMChildren(ctx context.Context, stack []Node, n Node) ([]Node, error) 
 	return stack, nil
 }
 
-// NamespacePrefixesInScope returns a map of prefix → active (non-empty URI)
+// NamespacePrefixesInScope returns the set of active prefixes (non-empty URI)
 // by walking ancestors from outermost to innermost so inner declarations win.
+// An empty URI removes an inherited binding from the set.
 // It checks ctx for cancellation in both its outer and inner loops so a long
 // namespace::* traversal can be aborted promptly.
-func NamespacePrefixesInScope(ctx context.Context, ancestors []Node) (map[string]bool, error) {
-	inScope := map[string]bool{}
+func NamespacePrefixesInScope(ctx context.Context, ancestors []Node) (map[string]struct{}, error) {
+	inScope := map[string]struct{}{}
 
 	for _, v := range slices.Backward(ancestors) {
 		if err := ctx.Err(); err != nil {
@@ -703,7 +706,11 @@ func NamespacePrefixesInScope(ctx context.Context, ancestors []Node) (map[string
 				return nil, err
 			}
 
-			inScope[n.Prefix()] = n.URI() != ""
+			if n.URI() != "" {
+				inScope[n.Prefix()] = struct{}{}
+			} else {
+				delete(inScope, n.Prefix())
+			}
 		}
 	}
 
@@ -716,7 +723,7 @@ func NamespacePrefixesInScope(ctx context.Context, ancestors []Node) (map[string
 // URI, but the output order follows document order (outermost first).
 // It checks ctx for cancellation in both passes (outer and inner loops) so a
 // long namespace::* traversal can be aborted promptly.
-func CollectNamespaceNodes(ctx context.Context, ancestors []Node, inScope map[string]bool, elem *Element) ([]Node, error) {
+func CollectNamespaceNodes(ctx context.Context, ancestors []Node, inScope map[string]struct{}, elem *Element) ([]Node, error) {
 	// First pass: find the correct namespace for each prefix (innermost wins).
 	// ancestors[0] is the element itself (innermost), ancestors[len-1] outermost.
 	winner := map[string]*Namespace{}
@@ -768,7 +775,7 @@ func CollectNamespaceNodes(ctx context.Context, ancestors []Node, inScope map[st
 	return result, nil
 }
 
-func collectNamespaceNodesAncestors(ctx context.Context, ancestors []Node, winner map[string]*Namespace, inScope map[string]bool) error {
+func collectNamespaceNodesAncestors(ctx context.Context, ancestors []Node, winner map[string]*Namespace, inScope map[string]struct{}) error {
 	for _, anc := range ancestors {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -789,7 +796,7 @@ func collectNamespaceNodesAncestors(ctx context.Context, ancestors []Node, winne
 				continue // innermost already recorded
 			}
 
-			if !inScope[prefix] || n.URI() == "" {
+			if _, active := inScope[prefix]; !active || n.URI() == "" {
 				continue
 			}
 

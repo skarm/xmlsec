@@ -69,17 +69,17 @@ func historicalResultPath(result *Result, path *HistoricalPath) bool {
 
 type currentPolicyEvaluation struct {
 	session *HistoricalSession
-	active  map[[32]byte]bool
+	active  map[[32]byte]struct{}
 }
 
 func (s *HistoricalSession) checkCurrentPathPolicy(ctx context.Context, path *HistoricalPath) (string, error) {
-	evaluator := currentPolicyEvaluation{session: s, active: make(map[[32]byte]bool)}
+	evaluator := currentPolicyEvaluation{session: s, active: make(map[[32]byte]struct{})}
 	return evaluator.check(ctx, path, false, false)
 }
 
 func (e *currentPolicyEvaluation) check(ctx context.Context, path *HistoricalPath, source, skipLeaf bool) (string, error) {
 	s := e.session
-	if e.active[path.fingerprint] {
+	if _, exists := e.active[path.fingerprint]; exists {
 		return historicalRevocationBounds, ErrUnavailable
 	}
 
@@ -87,7 +87,7 @@ func (e *currentPolicyEvaluation) check(ctx context.Context, path *HistoricalPat
 		return historicalRevocationBounds, fmt.Errorf("%w: %w: historical authorization depth", ErrPolicy, ErrLimit)
 	}
 
-	e.active[path.fingerprint] = true
+	e.active[path.fingerprint] = struct{}{}
 	defer delete(e.active, path.fingerprint)
 
 	usages := s.verifier.usages

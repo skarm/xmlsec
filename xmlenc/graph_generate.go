@@ -10,31 +10,45 @@ import (
 	"io"
 	"unicode/utf8"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"crypto/des" // #nosec G502 -- Explicit legacy XMLENC key-wrap policy.
+
+	"github.com/skarm/xmlsec/internal/lexicon"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
-// KeyGraphReference identifies the exact data or encrypted/derived key using a
-// generated key. Key selects KeyReference; otherwise DataReference is emitted.
-// URI grants no permission to resolve the referenced resource.
+// KeyGraphReference identifies data or an encrypted or derived key that uses a
+// generated key. Key selects KeyReference; false selects DataReference. The URI
+// grants no resource retrieval permission.
 type KeyGraphReference struct {
+	// URI identifies the data or key that uses this generated key.
 	URI string
+	// Key selects KeyReference when true and DataReference when false.
 	Key bool
 }
 
-// EncryptedKeyOptions controls generation of standalone EncryptedKey. Algorithm
-// must equal the supplied recipient's explicit Algorithm. Empty names/IDs omit
-// their metadata; no container protocol, key store or external I/O is created.
+// EncryptedKeyOptions selects metadata for a standalone EncryptedKey. Algorithm
+// must match the supplied recipient's explicit Algorithm. Empty names and IDs omit
+// their metadata. Generation creates no container protocol or key store and performs
+// no external I/O.
 type EncryptedKeyOptions struct {
-	Algorithm                     string
-	OAEP                          *OAEPParameters
-	AllowLegacy                   bool
-	ID, Recipient, CarriedKeyName string
-	References                    []KeyGraphReference
+	// Algorithm is the wrapping algorithm URI and must match the supplied recipient's
+	// Algorithm.
+	Algorithm string
+	// OAEP selects exact RSA-OAEP parameters when the wrapping algorithm uses RSA.
+	OAEP *OAEPParameters
+	// AllowLegacy explicitly permits supported legacy key wrapping without changing
+	// Algorithm.
+	AllowLegacy bool
+	// ID supplies an optional XML Id for the EncryptedKey element.
+	ID string
+	// Recipient supplies an optional recipient label without establishing identity.
+	Recipient string
+	// CarriedKeyName supplies an optional exact label for the wrapped key.
+	CarriedKeyName string
+	// References lists the data and key objects that use the wrapped key.
+	References []KeyGraphReference
 	// Properties is an optional EncryptionProperties document, copied into output.
 	Properties *document.Document
 }
@@ -200,13 +214,22 @@ func graphWrapMaterial(recipient KeyGraphKey, rawKey []byte, options EncryptedKe
 	return wrapped, err
 }
 
-// DerivedKeyOptions emits an explicit ConcatKDF context and key relationships.
-// The master is identified by an exact application label. This function emits
-// metadata only and never resolves, derives, stores or publishes secret material.
+// DerivedKeyOptions supplies ConcatKDF metadata and key relationships. MasterKeyName
+// identifies the master by an exact application label. Building this metadata does
+// not resolve, derive, store or publish secret material.
 type DerivedKeyOptions struct {
-	Parameters                                   ConcatKDFParameters
-	ID, Recipient, DerivedKeyName, MasterKeyName string
-	References                                   []KeyGraphReference
+	// Parameters supplies the explicit ConcatKDF context to encode.
+	Parameters ConcatKDFParameters
+	// ID supplies an optional XML Id for the DerivedKey element.
+	ID string
+	// Recipient supplies an optional recipient label without establishing identity.
+	Recipient string
+	// DerivedKeyName is the label assigned to the derived key.
+	DerivedKeyName string
+	// MasterKeyName identifies the application-selected master key by its exact label.
+	MasterKeyName string
+	// References lists the data and key objects that use the derived key.
+	References []KeyGraphReference
 }
 
 // BuildDerivedKey produces a standalone XMLENC1.1 DerivedKey with ConcatKDF.
@@ -235,7 +258,10 @@ func BuildDerivedKey(ctx context.Context, options DerivedKeyOptions) (*document.
 		return nil, err
 	}
 
-	for _, item := range []struct{ name, value string }{{"DerivedKeyName", options.DerivedKeyName}, {"MasterKeyName", options.MasterKeyName}} {
+	for _, item := range []struct {
+		name  string
+		value string
+	}{{"DerivedKeyName", options.DerivedKeyName}, {"MasterKeyName", options.MasterKeyName}} {
 		if len(item.value) > 1024 || !utf8.ValidString(item.value) {
 			return nil, ErrPolicy
 		}

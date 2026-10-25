@@ -347,14 +347,19 @@ func TestSAMLServiceAndIdentityProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err := service.ConsumePOST(ctx, response.POSTBody(), sp.ConsumeOptions{At: at.Add(3 * time.Second), BrowserBinding: browser})
+	var form bytes.Buffer
+	if _, err := response.WritePOST(ctx, &form); err != nil {
+		t.Fatal(err)
+	}
+
+	grant, err := service.ConsumePOST(ctx, form.Bytes(), sp.ConsumeOptions{At: at.Add(3 * time.Second), BrowserBinding: browser})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if grant.NameID() != "alice" || grant.InResponseTo() != outbound.RequestID() {
 		t.Fatal("incorrect grant")
 	}
-	if _, err := service.ConsumePOST(ctx, response.POSTBody(), sp.ConsumeOptions{At: at.Add(3 * time.Second), BrowserBinding: browser}); !errors.Is(err, replay.ErrReplay) {
+	if _, err := service.ConsumePOST(ctx, form.Bytes(), sp.ConsumeOptions{At: at.Add(3 * time.Second), BrowserBinding: browser}); !errors.Is(err, replay.ErrReplay) {
 		t.Fatal(err)
 	}
 }

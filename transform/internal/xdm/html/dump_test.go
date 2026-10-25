@@ -1,7 +1,10 @@
 package html_test
 
 import (
+	"bytes"
 	"errors"
+	"io"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -123,5 +126,109 @@ func TestXMLIslandCharacterErrors(t *testing.T) {
 				t.Fatal(cdata, kind, output.String(), err, code)
 			}
 		}
+	}
+}
+
+func BenchmarkHTMLSequenceWriter(b *testing.B) {
+	for _, size := range []int{16, 1024} {
+		doc, err := (xdm.ParseOptions{}).Parse(b.Context(), []byte(`<html><body>`+strings.Repeat(`<input disabled="disabled"/><a href="/café">e&#x301; &amp; 中</a>`, size)+`</body></html>`))
+		if err != nil {
+			b.Fatal(err)
+		}
+		writer := html.NewWriter().DefaultDTD(false).Format(false)
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := writer.WriteTo(io.Discard, doc); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestURIAttributeNormalizationAndLateErrors(t *testing.T) {
+	for _, tc := range []struct{ name, input, escaped string }{
+		{"empty", "", ""},
+		{"NFC and markup", "/cafe\u0301?x=1&y=\"v\"", "/caf%C3%A9?x=1&amp;y=&quot;v&quot;"},
+		{"long exact normalization", "/a" + strings.Repeat("\u0315", 80) + "\u0300", "/%C3%A0" + strings.Repeat("%CC%95", 80)},
+		{"ampersand across output blocks", strings.Repeat("a", 63) + "&{x}&y", strings.Repeat("a", 63) + "&{x}&amp;y"},
+		{"large URI", strings.Repeat("/café", 2048), strings.Repeat("/caf%C3%A9", 2048)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := xdm.NewDefaultDocument()
+			root, err := doc.CreateElement("a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := root.SetAttribute("href", tc.input); err != nil {
+				t.Fatal(err)
+			}
+			if err := doc.AddChild(root); err != nil {
+				t.Fatal(err)
+			}
+			if err := root.AddChild(doc.CreateText("link")); err != nil {
+				t.Fatal(err)
+			}
+			writer := html.NewWriter().DefaultDTD(false).Format(false)
+			want := `<a href="` + tc.escaped + `">link</a>`
+			for range 2 {
+				var out strings.Builder
+				if err := writer.WriteTo(&out, doc); err != nil || out.String() != want {
+					t.Fatalf("URI output %q, %v; want %q", out.String(), err, want)
+				}
+			}
+			for _, limit := range []int{1, len(want) / 2} {
+				out := &uriCutWriter{remaining: limit}
+				if err := writer.WriteTo(out, doc); !errors.Is(err, io.ErrClosedPipe) || out.String() != want[:limit] {
+					t.Fatalf("late output prefix/error: %q, %v; want %q", out.String(), err, want[:limit])
+				}
+			}
+			if original, present := root.GetAttribute("href"); !present || original != tc.input {
+				t.Fatalf("serialization mutated URI: %q", original)
+			}
+		})
+	}
+}
+
+type uriCutWriter struct {
+	bytes.Buffer
+	remaining int
+}
+
+func (w *uriCutWriter) WriteString(p string) (int, error) { return w.Write([]byte(p)) }
+
+func (w *uriCutWriter) Write(p []byte) (int, error) {
+	n := min(w.remaining, len(p))
+	w.remaining -= n
+	_, _ = w.Buffer.Write(p[:n])
+	if n != len(p) {
+		return n, io.ErrClosedPipe
+	}
+	return n, nil
+}
+
+func BenchmarkHTMLURIAttributeSize(b *testing.B) {
+	for _, size := range []int{0, 8, 64, 8192} {
+		doc := xdm.NewDefaultDocument()
+		root, err := doc.CreateElement("a")
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := root.SetAttribute("href", strings.Repeat("/café", size/6)); err != nil {
+			b.Fatal(err)
+		}
+		if err := doc.AddChild(root); err != nil {
+			b.Fatal(err)
+		}
+		writer := html.NewWriter().DefaultDTD(false).Format(false)
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := writer.WriteTo(io.Discard, doc); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

@@ -9,6 +9,9 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -85,7 +88,7 @@ func TestEvidenceObservationOwnership(t *testing.T) {
 	}
 }
 
-func evidenceCollector(t *testing.T, transport http.RoundTripper, limits collect.Limits, hook func(*http.Request, []*http.Request) error) *collect.HTTP {
+func evidenceCollector(t testing.TB, transport http.RoundTripper, limits collect.Limits, hook func(*http.Request, []*http.Request) error) *collect.HTTP {
 	t.Helper()
 	c, err := collect.NewHTTP(collect.Config{Client: &http.Client{Transport: transport, CheckRedirect: hook}, AllowedURIs: []string{"https://evidence.test/first", "https://evidence.test/final"}, Limits: limits, Now: func() time.Time { return time.Unix(42, 0) }})
 	if err != nil {
@@ -151,10 +154,14 @@ func TestEvidenceCollectorPrevalidatesAllRequests(t *testing.T) {
 
 func TestEvidenceCollectorRedirectPolicy(t *testing.T) {
 	for _, tc := range []struct {
-		name, target, method         string
-		status, resources, redirects int
-		hook                         func(*http.Request, []*http.Request) error
-		want                         error
+		name      string
+		target    string
+		method    string
+		status    int
+		resources int
+		redirects int
+		hook      func(*http.Request, []*http.Request) error
+		want      error
 	}{
 		{name: "default-deny", target: "https://evidence.test/final", status: 302, resources: 2, want: evidence.ErrLimit},
 		{name: "exact-allowlist", target: "https://attacker.test/final", status: 302, resources: 2, redirects: 1, want: evidence.ErrPolicy},
@@ -202,10 +209,15 @@ func TestEvidenceCollectorRedirectPolicy(t *testing.T) {
 func TestEvidenceCollectorFailureLifecycle(t *testing.T) {
 	readErr, closeErr := errors.New("reader failed"), errors.New("close failed")
 	for _, tc := range []struct {
-		name, data              string
-		status, perBody, total  int
-		readErr, closeErr, want error
-		cancel                  bool
+		name     string
+		data     string
+		status   int
+		perBody  int
+		total    int
+		readErr  error
+		closeErr error
+		want     error
+		cancel   bool
 	}{
 		{name: "body-limit", data: "12345", status: 200, perBody: 4, want: evidence.ErrLimit},
 		{name: "aggregate-limit", data: "123", status: 200, total: 5, want: evidence.ErrLimit},
@@ -500,5 +512,482 @@ func TestHTTPAdaptersRejectTypedNilTransport(t *testing.T) {
 	}
 	if collector, err := collect.NewHTTP(collect.Config{Client: client, AllowedURIs: []string{"https://evidence.test/first"}}); collector == nil || err != nil {
 		t.Fatal("ordinary nil transport lost standard-client semantics", err)
+	}
+}
+
+func BenchmarkEvidenceCollect(b *testing.B) {
+	for _, size := range []int{256, 16 << 10, 1 << 20} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			raw := bytes.Repeat([]byte("a"), size)
+			digest := sha256.Sum256(raw)
+			c := evidenceCollector(b, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return evidenceResponse(req, http.StatusOK, io.NopCloser(bytes.NewReader(raw))), nil
+			}), collect.Limits{}, nil)
+			requests := []collect.Request{{Kind: evidence.CRL, URI: "https://evidence.test/first"}}
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+			for b.Loop() {
+				items, err := c.Collect(b.Context(), requests)
+				if err != nil || len(items) != 1 || items[0].Size() != size || items[0].DigestSHA256() != digest {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestReadObservation(t *testing.T) {
+	input := []byte("unverified")
+	want := bytes.Clone(input)
+	redirects := []string{"https://evidence.test/final"}
+	source := bytes.NewReader(input)
+	closed := false
+	reader := &callbackBody{read: func(p []byte) (int, error) {
+		redirects[0] = "https://attacker.test/"
+		return source.Read(p)
+	}, close: func() error { closed = true; return nil }}
+	item, err := evidence.ReadObservation(t.Context(), evidence.CRL, reader, evidence.Provenance{Redirects: redirects}, len(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clear(input)
+	clear(item.Bytes())
+	if closed || !bytes.Equal(item.Bytes(), want) || item.DigestSHA256() != sha256.Sum256(want) || item.Provenance().Redirects[0] != "https://evidence.test/final" {
+		t.Fatal("reader observation lost ownership")
+	}
+	failure := errors.New("source failed")
+	for _, tc := range []struct {
+		name  string
+		src   io.Reader
+		limit int
+		want  error
+	}{
+		{"empty", strings.NewReader(""), 1, evidence.ErrInput},
+		{"overflow", strings.NewReader("ab"), 1, evidence.ErrLimit},
+		{"zero limit", strings.NewReader("a"), 0, evidence.ErrLimit},
+		{"large limit", strings.NewReader("a"), 64<<20 + 1, evidence.ErrLimit},
+		{"nil", nil, 1, evidence.ErrInput},
+		{"typed nil", (*bytes.Reader)(nil), 1, evidence.ErrInput},
+		{"terminal failure", &callbackBody{read: func(p []byte) (int, error) { p[0] = 'a'; return 1, failure }}, 1, failure},
+		{"joined EOF", &callbackBody{read: func(p []byte) (int, error) { p[0] = 'a'; return 1, errors.Join(io.EOF, failure) }}, 1, failure},
+		{"invalid count", &callbackBody{read: func(p []byte) (int, error) { return len(p) + 1, nil }}, 1, io.ErrShortBuffer},
+		{"stalled", &callbackBody{read: func([]byte) (int, error) { return 0, nil }}, 1, io.ErrNoProgress},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := evidence.ReadObservation(t.Context(), evidence.CRL, tc.src, evidence.Provenance{}, tc.limit); got != nil || !errors.Is(err, tc.want) {
+				t.Fatal(got, err)
+			}
+		})
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	reader.read = func(p []byte) (int, error) { cancel(); p[0] = 'a'; return 1, io.EOF }
+	if got, err := evidence.ReadObservation(ctx, evidence.CRL, reader, evidence.Provenance{}, 1); got != nil || !errors.Is(err, context.Canceled) || closed {
+		t.Fatal(got, err, closed)
+	}
+	reader.read = func([]byte) (int, error) { t.Fatal("invalid metadata consumed source"); return 0, nil }
+	for _, p := range []evidence.Provenance{{URI: "relative"}, {Redirects: []string{"relative"}}, {Redirects: make([]string, 11)}} {
+		if got, err := evidence.ReadObservation(t.Context(), evidence.CRL, reader, p, 1); got != nil || err == nil {
+			t.Fatal(got, err)
+		}
+	}
+	if got, err := evidence.ReadObservation(nil, evidence.CRL, reader, evidence.Provenance{}, 1); got != nil || !errors.Is(err, evidence.ErrInput) {
+		t.Fatal(got, err)
+	}
+	if got, err := evidence.ReadObservation(t.Context(), evidence.Kind("invalid"), reader, evidence.Provenance{}, 1); got != nil || !errors.Is(err, evidence.ErrInput) {
+		t.Fatal(got, err)
+	}
+}
+
+func TestEvidenceStore(t *testing.T) {
+	parent := t.TempDir()
+	store, err := evidence.NewStore(parent, 2<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	raw := bytes.Repeat([]byte("exact signed bytes"), 1024)
+	provenance := evidence.Provenance{URI: "https://evidence.test/crl", Redirects: []string{"https://evidence.test/final"}}
+	item, err := store.PutReader(t.Context(), evidence.CRL, bytes.NewReader(raw), provenance, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provenance.Redirects[0] = "changed"
+	if item.Size() != len(raw) || item.Kind() != evidence.CRL || item.DigestSHA256() != sha256.Sum256(raw) || item.Provenance().Redirects[0] != "https://evidence.test/final" {
+		t.Fatal("metadata ownership")
+	}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			reader, err := item.Open(t.Context())
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			got, err := io.ReadAll(reader)
+			err = errors.Join(err, reader.Close())
+			if err != nil || !bytes.Equal(got, raw) {
+				t.Errorf("repeatable read: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	canceled, cancel := context.WithCancel(t.Context())
+	reader, err := item.Open(canceled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if _, err := reader.Read(make([]byte, 1)); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := item.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := item.Open(t.Context()); !errors.Is(err, os.ErrClosed) {
+		t.Fatal(err)
+	}
+	if err := item.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader("x"), evidence.Provenance{}, 1); !errors.Is(err, os.ErrClosed) {
+		t.Fatal(err)
+	}
+	files, err := os.ReadDir(parent)
+	if err != nil || len(files) != 0 {
+		t.Fatal("store retained files", err)
+	}
+}
+
+func TestEvidenceStoreFailures(t *testing.T) {
+	store, err := evidence.NewStore(t.TempDir(), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	late := errors.New("late source error")
+	for _, tc := range []struct {
+		name    string
+		reader  io.Reader
+		maximum int
+		want    error
+	}{
+		{"empty", strings.NewReader(""), 4, evidence.ErrInput},
+		{"overflow", strings.NewReader("12345"), 4, evidence.ErrLimit},
+		{"late", &callbackBody{read: func(p []byte) (int, error) { return copy(p, "1234"), late }}, 4, late},
+		{"no progress", &callbackBody{read: func([]byte) (int, error) { return 0, nil }}, 4, io.ErrNoProgress},
+		{"invalid count", &callbackBody{read: func(p []byte) (int, error) { return len(p) + 1, nil }}, 4, io.ErrShortBuffer},
+		{"budget", strings.NewReader("a"), 5, evidence.ErrLimit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := store.PutReader(t.Context(), evidence.CRL, tc.reader, evidence.Provenance{}, tc.maximum)
+			if got != nil || !errors.Is(err, tc.want) {
+				t.Fatal(got, err)
+			}
+			// Every failed write must release its reservation and file.
+			good, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader("1234"), evidence.Provenance{}, 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := good.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	first, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader("1234"), evidence.Provenance{}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader("a"), evidence.Provenance{}, 1); got != nil || !errors.Is(err, evidence.ErrLimit) {
+		t.Fatal(got, err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEvidenceCollectTo(t *testing.T) {
+	for _, failClose := range []bool{false, true} {
+		t.Run(strconv.FormatBool(failClose), func(t *testing.T) {
+			parent := t.TempDir()
+			store, err := evidence.NewStore(parent, 32)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			calls, closed := 0, 0
+			late := errors.New("body close")
+			collector := evidenceCollector(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				return evidenceResponse(req, http.StatusOK, &callbackBody{read: strings.NewReader("opaque").Read, close: func() error {
+					closed++
+					if failClose && closed == 2 {
+						return late
+					}
+					return nil
+				}}), nil
+			}), collect.Limits{MaxBytes: 8, MaxTotalBytes: 16}, nil)
+			items, err := collector.CollectTo(t.Context(), store, []collect.Request{{Kind: evidence.CRL, URI: "https://evidence.test/first"}, {Kind: evidence.CRL, URI: "https://evidence.test/first"}})
+			if calls != 2 || closed != 2 {
+				t.Fatal(calls, closed)
+			}
+			if failClose {
+				if items != nil || !errors.Is(err, late) {
+					t.Fatal(items, err)
+				}
+				// Rollback must release both stored resources and the failed final one.
+				item, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader(strings.Repeat("x", 32)), evidence.Provenance{}, 32)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := item.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err != nil || len(items) != 2 {
+					t.Fatal(items, err)
+				}
+				for _, item := range items {
+					reader, err := item.Open(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					got, err := io.ReadAll(reader)
+					err = errors.Join(err, reader.Close(), item.Close())
+					if err != nil || string(got) != "opaque" {
+						t.Fatal(string(got), err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkEvidenceStorage(b *testing.B) {
+	for _, size := range []int{256, 16 << 10, 8 << 20} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			raw := bytes.Repeat([]byte("x"), size)
+			store, err := evidence.NewStore(b.TempDir(), 64<<20)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer store.Close()
+			for _, mode := range []string{"memory", "file", "memory_then_file"} {
+				b.Run(mode, func(b *testing.B) {
+					b.ReportAllocs()
+					b.SetBytes(int64(size))
+					for b.Loop() {
+						var source io.Reader = struct{ io.Reader }{bytes.NewReader(raw)}
+						if mode == "memory" {
+							item, err := evidence.ReadObservation(b.Context(), evidence.CRL, source, evidence.Provenance{}, size)
+							if err != nil || item.Size() != size {
+								b.Fatal(err)
+							}
+							continue
+						}
+						if mode == "memory_then_file" {
+							item, err := evidence.ReadObservation(b.Context(), evidence.CRL, source, evidence.Provenance{}, size)
+							if err != nil {
+								b.Fatal(err)
+							}
+							source = bytes.NewReader(item.Bytes())
+						}
+						record, err := store.PutReader(b.Context(), evidence.CRL, source, evidence.Provenance{}, size)
+						if err != nil || record.Size() != size {
+							b.Fatal(err)
+						}
+						if err := record.Close(); err != nil {
+							b.Fatal(err)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestEvidenceStoreShutdownDuringWrite(t *testing.T) {
+	parent := t.TempDir()
+	store, err := evidence.NewStore(parent, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := true
+	var shutdownError error
+	input := &callbackBody{read: func(p []byte) (int, error) {
+		if first {
+			first = false
+			shutdownError = store.Close()
+			return copy(p, "bytes"), nil
+		}
+		return 0, io.EOF
+	}}
+	if got, err := store.PutReader(t.Context(), evidence.CRL, input, evidence.Provenance{}, 8); got != nil || !errors.Is(err, os.ErrClosed) {
+		t.Fatal(got, err)
+	}
+	if shutdownError != nil && !errors.Is(shutdownError, evidence.ErrResource) {
+		t.Fatal(shutdownError)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err := os.ReadDir(parent)
+	if err != nil || len(files) != 0 {
+		t.Fatal(files, err)
+	}
+}
+
+func TestEvidenceStoreConcurrentLifecycle(t *testing.T) {
+	store, err := evidence.NewStore(t.TempDir(), 64<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var wg sync.WaitGroup
+	for worker := range 16 {
+		wg.Go(func() {
+			raw := strings.Repeat(strconv.Itoa(worker)+"bytes", 256)
+			for range 8 {
+				item, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader(raw), evidence.Provenance{}, 8<<10)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				reader, err := item.Open(t.Context())
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				data, err := io.ReadAll(reader)
+				err = errors.Join(err, reader.Close(), item.Close())
+				if err != nil || string(data) != raw {
+					t.Errorf("concurrent replay %v", err)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	// A full-budget reservation is possible after all workers release records.
+	item, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader("x"), evidence.Provenance{}, 64<<20)
+	if err != nil {
+		t.Fatal("reservation leak", err)
+	}
+	if err := item.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEvidenceStoreRecordLimitAndCancellation(t *testing.T) {
+	store, err := evidence.NewStore(t.TempDir(), 64<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	items := make([]*evidence.Record, 0, 64)
+	for range 64 {
+		item, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader("x"), evidence.Provenance{}, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, item)
+	}
+	if item, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader("x"), evidence.Provenance{}, 1); item != nil || !errors.Is(err, evidence.ErrLimit) {
+		t.Fatal(item, err)
+	}
+	for _, item := range items {
+		if err := item.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, terminal := range []error{nil, io.EOF} {
+		ctx, cancel := context.WithCancel(t.Context())
+		input := &callbackBody{read: func(p []byte) (int, error) { cancel(); return copy(p, "x"), terminal }}
+		if item, err := store.PutReader(ctx, evidence.CRL, input, evidence.Provenance{}, 1); item != nil || !errors.Is(err, context.Canceled) {
+			t.Fatal(item, err)
+		}
+	}
+}
+
+func TestEvidenceStoreFailedCleanupStopsAcquisition(t *testing.T) {
+	parent := t.TempDir()
+	store, err := evidence.NewStore(parent, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directories, err := os.ReadDir(parent)
+	if err != nil || len(directories) != 1 {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(parent, directories[0].Name())
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	late := errors.New("read failed")
+	var blocker *os.File
+	t.Cleanup(func() {
+		if blocker != nil {
+			if err := blocker.Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	input := &callbackBody{read: func(p []byte) (int, error) {
+		files, err := os.ReadDir(directory)
+		if err != nil || len(files) != 1 {
+			t.Fatal(err)
+		}
+		path := filepath.Join(directory, files[0].Name())
+		// Force a real cleanup failure under each platform's file semantics.
+		if runtime.GOOS == "windows" {
+			blocker, err = os.Open(path) // An additional Windows handle denies deletion.
+			if err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			// A nonempty directory cannot be unlinked even by privileged test users.
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(path, "occupied"), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return copy(p, "x"), late
+	}}
+	item, err := store.PutReader(t.Context(), evidence.CRL, input, evidence.Provenance{}, 4)
+	var cleanup *os.PathError
+	if item != nil || !errors.Is(err, late) || !errors.As(err, &cleanup) || cleanup.Op != "remove" {
+		t.Fatal(item, err)
+	}
+	if item, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader("x"), evidence.Provenance{}, 1); item != nil || !errors.Is(err, os.ErrClosed) {
+		t.Fatal("failed cleanup permitted another acquisition", item, err)
+	}
+	if blocker != nil {
+		if err := blocker.Close(); err != nil {
+			t.Fatal(err)
+		}
+		blocker = nil
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	directories, err = os.ReadDir(parent)
+	if err != nil || len(directories) != 0 {
+		t.Fatal("close did not retry cleanup", directories, err)
 	}
 }

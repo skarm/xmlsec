@@ -33,9 +33,10 @@ func TestCanonicalVectorsAgainstJDK(t *testing.T) {
 			OracleSHA256 string `json:"oracle_sha256"`
 		} `json:"producer"`
 		Cases []struct {
-			Name, Expected string
-			JDKDiagnostic  string `json:"jdk_diagnostic"`
-			JDKError       string `json:"jdk_error"`
+			Name          string
+			Expected      string
+			JDKDiagnostic string `json:"jdk_diagnostic"`
+			JDKError      string `json:"jdk_error"`
 			canonicalRequest
 		} `json:"cases"`
 	}
@@ -88,7 +89,8 @@ func TestCanonicalVectorsAgainstLibXML(t *testing.T) {
 			OracleSHA256 string `json:"libxml2_oracle_sha256"`
 		} `json:"producer"`
 		Cases []struct {
-			Name, Expected   string
+			Name             string
+			Expected         string
 			LibXMLDiagnostic string `json:"libxml2_diagnostic"`
 			canonicalRequest
 		} `json:"cases"`
@@ -225,13 +227,20 @@ type canonicalResponse struct {
 	Error     string     `json:"error"`
 }
 
-type canonicalNewlineCase struct{ kind, xml, expected string }
+type canonicalNewlineCase struct {
+	kind     string
+	xml      string
+	expected string
+}
 
 type canonicalSession struct {
-	fixture                           *interopFixture
-	goRPC, jdk                        *lineProcess
-	nativeProgram                     string
-	matches, javaMatches, diagnostics int
+	fixture       *interopFixture
+	goRPC         *lineProcess
+	jdk           *lineProcess
+	nativeProgram string
+	matches       int
+	javaMatches   int
+	diagnostics   int
 }
 
 func newCanonicalSession(t *testing.T, fixture *interopFixture) *canonicalSession {

@@ -20,9 +20,10 @@ import (
 	"github.com/skarm/xmlsec/pki"
 )
 
-// Config is copied into a dedicated TSA validator. Unknown embedded certs may
-// build paths, but can never expand PKI.Roots. PKI must require revocation checks
-// unless AllowUncheckedRevocation explicitly opts out.
+// Config supplies TSA trust and token validation policy. Construction copies its
+// configuration. Embedded certificates are untrusted path candidates and cannot
+// expand PKI.Roots. PKI must require revocation checking unless
+// AllowUncheckedRevocation explicitly permits leaving it unchecked.
 type Config struct {
 	// PKI sets explicit TSA trust anchors and offline revocation policy.
 	// Verification requires the timeStamping EKU and a non-CA signing leaf.
@@ -50,16 +51,19 @@ type Config struct {
 	RequireAccuracy bool
 }
 
-// Verifier verifies RFC 3161 tokens with explicit TSA policy, PKIX trust and offline
-// evidence.
+// Verifier checks RFC 3161 tokens against explicit TSA policy, certificate trust and
+// offline revocation evidence.
 type Verifier struct {
-	trust                     *pki.Verifier
-	policies                  map[string]bool
-	certificates              [][]byte
-	skew, maxAge, maxAccuracy time.Duration
-	maxBytes                  int
-	allowUnchecked, legacy    bool
-	requireAccuracy           bool
+	trust           *pki.Verifier
+	policies        map[string]struct{}
+	certificates    [][]byte
+	skew            time.Duration
+	maxAge          time.Duration
+	maxAccuracy     time.Duration
+	maxBytes        int
+	allowUnchecked  bool
+	legacy          bool
+	requireAccuracy bool
 }
 
 // NewVerifier validates and snapshots explicit TSA policies, trust anchors and evidence
@@ -90,13 +94,17 @@ func NewVerifier(c Config) (*Verifier, error) {
 		return nil, e
 	}
 
-	v := &Verifier{trust: trust, policies: map[string]bool{}, allowUnchecked: c.AllowUncheckedRevocation, legacy: c.AllowLegacyESSCertID, skew: c.ClockSkew, maxAge: c.MaxAge, maxAccuracy: c.MaxAccuracy, requireAccuracy: c.RequireAccuracy, maxBytes: c.MaxBytes}
+	v := &Verifier{trust: trust, policies: map[string]struct{}{}, allowUnchecked: c.AllowUncheckedRevocation, legacy: c.AllowLegacyESSCertID, skew: c.ClockSkew, maxAge: c.MaxAge, maxAccuracy: c.MaxAccuracy, requireAccuracy: c.RequireAccuracy, maxBytes: c.MaxBytes}
 	for _, o := range c.AllowedPolicies {
-		if len(der.OID(o)) == 0 || v.policies[o.String()] {
+		if len(der.OID(o)) == 0 {
 			return nil, ErrPolicy
 		}
 
-		v.policies[o.String()] = true
+		if _, exists := v.policies[o.String()]; exists {
+			return nil, ErrPolicy
+		}
+
+		v.policies[o.String()] = struct{}{}
 	}
 
 	total := 0
@@ -290,7 +298,7 @@ func (v *Verifier) validateTokenInfo(ctx context.Context, info Info, want Expect
 		return err
 	}
 
-	if !v.policies[info.policy.String()] {
+	if _, exists := v.policies[info.policy.String()]; !exists {
 		return fmt.Errorf("%w: policy OID", ErrPolicy)
 	}
 
@@ -456,16 +464,19 @@ func (v *Verifier) validateTimestampTime(info Info, at time.Time) error {
 	return nil
 }
 
-// Expectation supplies the expected timestamp imprint and optional nonce and policy
-// bindings.
+// Expectation supplies the required data imprint and optional exact nonce and TSA
+// policy bindings.
 type Expectation struct {
+	// Imprint is the required expected hash algorithm and digest of the timestamped data.
 	Imprint Imprint
-	Nonce   *big.Int
-	Policy  asn1.ObjectIdentifier
+	// Nonce requires an exact token nonce match when non-nil.
+	Nonce *big.Int
+	// Policy requires an exact TSA policy OID match when nonempty.
+	Policy asn1.ObjectIdentifier
 }
 
-// Token is an immutable parsed RFC 3161 CMS token. Parsing does not authenticate
-// its information or certificates; use Verifier.Verify before accepting it.
+// Token retains an immutable parsed RFC 3161 CMS token. Use Verifier.Verify to
+// authenticate its information and certificates before accepting its claims.
 type Token struct {
 	signed *cms.SignedData
 	info   Info
@@ -529,7 +540,8 @@ func (t *Token) WriterTo(ctx context.Context) io.WriterTo {
 	return signed.WriterTo(ctx)
 }
 
-// Result is an immutable timestamp token with authenticated TSTInfo and TSA trust result.
+// Result retains an immutable timestamp token with authenticated TSTInfo and the
+// accepted TSA trust result.
 type Result struct {
 	token     *Token
 	info      Info

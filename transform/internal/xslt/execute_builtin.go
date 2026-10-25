@@ -161,16 +161,16 @@ func onNoMatchShallowCopyDocumentNode(ctx context.Context, ec *execContext, node
 	if out.sequenceMode || out.captureItems {
 		tmpDoc := newCopyDocument(node)
 
-		err := func() error {
-			frame := &outputFrame{doc: tmpDoc, current: tmpDoc}
-			ec.outputStack = append(ec.outputStack, frame)
-			savedResult := ec.resultDoc
+		frame := &outputFrame{doc: tmpDoc, current: tmpDoc}
+		ec.outputStack = append(ec.outputStack, frame)
+		savedResult := ec.resultDoc
 
-			ec.resultDoc = tmpDoc
-			defer func() { ec.resultDoc = savedResult; ec.outputStack = ec.outputStack[:len(ec.outputStack)-1] }()
+		ec.resultDoc = tmpDoc
 
-			return ec.applyTemplatesToChildren(ctx, node, mode, paramValues...)
-		}()
+		err := ec.applyTemplatesToChildren(ctx, node, mode, paramValues...)
+		ec.resultDoc = savedResult
+		ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
+
 		if err != nil {
 			return err
 		}

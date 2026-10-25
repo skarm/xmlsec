@@ -8,34 +8,38 @@ import (
 	"io"
 	"slices"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
-// SignatureRequirement specifies a separately trusted signature which must
-// remain valid across a template-signing operation. Handles (also the ones in
-// Options.RequiredElements) refer to the ORIGINAL input snapshot.
+// SignatureRequirement supplies explicit trust for an existing signature that must
+// remain valid during template signing. Signature and Options.RequiredElements
+// handles must belong to the original input snapshot.
 type SignatureRequirement struct {
+	// Signature selects the existing signature in the original input snapshot.
 	Signature document.Element
+	// PublicKey is the explicitly trusted verification key. It is mutually exclusive with
+	// SharedSecret.
 	PublicKey crypto.PublicKey
-	Options   SignatureOptions
+	// Options sets verification policy and required coverage for this existing signature.
+	Options SignatureOptions
 	// SharedSecret is mutually exclusive with PublicKey. Non-nil selects HMAC.
 	// It is copied and wiped for each operation, and is never emitted in XML.
 	SharedSecret []byte
 }
 
-// TemplateSignOptions sets template validation and explicit trust requirements for
-// preserving existing signatures.
+// TemplateSignOptions sets self-verification policy and explicit trust requirements
+// for preserving existing signatures.
 type TemplateSignOptions struct {
-	// Validation is used both for preflight and for full post-serialization
-	// self-verification. The template supplies algorithms, references and XML.
+	// Validation applies during preflight and complete post-serialization
+	// self-verification. The template supplies algorithms, References and XML.
 	Validation SignatureOptions
-	// Preserve is required for every nonempty, nonselected Signature in the input. Each is
-	// checked before and after signing with its supplied trusted key. The library does not
-	// assume trust in the new signer's key. Empty other templates need no entry.
+	// Preserve supplies trusted verification requirements for every nonempty signature
+	// except the selected one. Each is checked before and after signing with its supplied
+	// key. Empty templates need no entry. The new signing key grants no trust to existing
+	// signatures.
 	Preserve []SignatureRequirement
 }
 

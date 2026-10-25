@@ -60,7 +60,9 @@ func WriteNodeSet(ctx context.Context, w io.Writer, set document.NodeSet, opt Op
 
 func options(opt Options) tree.CanonicalOptions {
 	return tree.CanonicalOptions{
-		Algorithm: opt.Algorithm, Comments: opt.WithComments,
-		InclusivePrefixes: opt.InclusivePrefixes, MaxBytes: opt.MaxOutputBytes,
+		Algorithm:         opt.Algorithm,
+		Comments:          opt.WithComments,
+		InclusivePrefixes: opt.InclusivePrefixes,
+		MaxBytes:          opt.MaxOutputBytes,
 	}
 }

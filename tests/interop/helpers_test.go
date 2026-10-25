@@ -228,9 +228,13 @@ func cOracle(t *testing.T, fixture *interopFixture) string {
 }
 
 type testKey struct {
-	name, method, private, public, certificate string
-	signer                                     crypto.Signer
-	cert                                       *x509.Certificate
+	name        string
+	method      string
+	private     string
+	public      string
+	certificate string
+	signer      crypto.Signer
+	cert        *x509.Certificate
 }
 
 func generateKey(t *testing.T, dir, name string) testKey {
@@ -285,9 +289,11 @@ func generateKey(t *testing.T, dir, name string) testKey {
 
 // interopFixture owns the external tools and scratch files of one top-level test.
 type interopFixture struct {
-	root, work        string
-	binaries          map[string]string
-	javaReady, cReady bool
+	root      string
+	work      string
+	binaries  map[string]string
+	javaReady bool
+	cReady    bool
 }
 
 func newInteropFixture(t *testing.T) *interopFixture {

@@ -166,7 +166,11 @@ func decryptContent(ctx context.Context, doc *document.Document, node *tree.Node
 // serializes borrowed children into an independently parsed snapshot.
 func withContent(parent *tree.Node, children []*tree.Node) *tree.Node {
 	return &tree.Node{
-		Kind: tree.ElementNode, Name: parent.Name, Prefix: parent.Prefix,
-		Attrs: parent.Attrs, NS: parent.NS, Children: children,
+		Kind:     tree.ElementNode,
+		Name:     parent.Name,
+		Prefix:   parent.Prefix,
+		Attrs:    parent.Attrs,
+		NS:       parent.NS,
+		Children: children,
 	}
 }

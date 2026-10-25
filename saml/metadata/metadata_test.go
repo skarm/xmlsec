@@ -6,6 +6,8 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -290,5 +292,58 @@ func TestCertificateEncodingConsistency(t *testing.T) {
 				t.Fatal("metadata changed original certificate bytes", err)
 			}
 		})
+	}
+}
+
+func BenchmarkSelectACS(b *testing.B) {
+	for _, size := range []int{1, 128, 1024} {
+		endpoints := make([]metadata.Endpoint, size)
+		for i := range endpoints {
+			endpoints[i] = metadata.Endpoint{Binding: metadata.HTTPPost, Location: fmt.Sprintf("https://sp.test/acs/%d", i), Index: uint16(i), Indexed: true, DefaultSet: true}
+		}
+		endpoints[size-1].Default = true
+		for _, explicit := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%d/explicit=%t", size, explicit), func(b *testing.B) {
+				var index *uint16
+				if explicit {
+					value := uint16(size - 1)
+					index = &value
+				}
+				b.ReportAllocs()
+				for b.Loop() {
+					selected, err := metadata.SelectACS(endpoints, metadata.HTTPPost, index)
+					if err != nil || selected.Index != uint16(size-1) {
+						b.Fatalf("selection: %+v %v", selected, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSelectACSPriorityAndBinding(t *testing.T) {
+	endpoints := []metadata.Endpoint{
+		{Binding: metadata.HTTPRedirect, Location: "redirect", Index: 3, Default: true, DefaultSet: true},
+		{Binding: metadata.HTTPPost, Location: "explicit-first", Index: 3, DefaultSet: true},
+		{Binding: metadata.HTTPPost, Location: "unspecified", Index: 9},
+		{Binding: metadata.HTTPPost, Location: "post-default", Index: 3, Default: true, DefaultSet: true},
+	}
+	selected, err := metadata.SelectACS(endpoints, metadata.HTTPPost, nil)
+	if err != nil || selected.Location != "post-default" {
+		t.Fatalf("default priority: %+v %v", selected, err)
+	}
+	index := uint16(3)
+	selected, err = metadata.SelectACS(endpoints, metadata.HTTPPost, &index)
+	if err != nil || selected.Location != "explicit-first" {
+		t.Fatalf("explicit index priority: %+v %v", selected, err)
+	}
+	for _, binding := range []string{"missing", ""} {
+		if _, err := metadata.SelectACS(endpoints, binding, nil); !errors.Is(err, metadata.ErrMetadata) {
+			t.Fatalf("missing binding %q: %v", binding, err)
+		}
+	}
+	index = 65535
+	if _, err := metadata.SelectACS(endpoints, metadata.HTTPPost, &index); !errors.Is(err, metadata.ErrMetadata) {
+		t.Fatal("missing index accepted", err)
 	}
 }

@@ -17,7 +17,7 @@ import (
 // even an unused added prefix can invalidate an inclusive XML signature.
 func namespaceContext(ctx context.Context, node *tree.Node) ([]tree.Namespace, error) {
 	bindings := map[string]string{"": ""}
-	seen := make(map[string]bool)
+	seen := make(map[string]struct{})
 
 	for ; node != nil; node = node.Parent {
 		if err := ctx.Err(); err != nil {
@@ -25,8 +25,9 @@ func namespaceContext(ctx context.Context, node *tree.Node) ([]tree.Namespace, e
 		}
 
 		for _, ns := range node.NS {
-			if ns.Prefix != "xml" && !seen[ns.Prefix] {
-				bindings[ns.Prefix], seen[ns.Prefix] = ns.URI, true
+			if _, exists := seen[ns.Prefix]; ns.Prefix != "xml" && !exists {
+				bindings[ns.Prefix] = ns.URI
+				seen[ns.Prefix] = struct{}{}
 			}
 		}
 	}

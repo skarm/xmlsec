@@ -17,36 +17,42 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	ctx := context.Background()
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	original, err := document.Parse(ctx, []byte(`<Invoice xmlns="urn:example:invoice" ID="invoice-1"><Amount currency="EUR">125.00</Amount></Invoice>`), document.DefaultLimits())
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	signed, err := xmldsig.SignEnveloped(ctx, original, key, xmldsig.SignOptions{})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	wire, err := signed.XML(ctx)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	received, err := document.Parse(ctx, wire, document.DefaultLimits())
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	checked, err := xmldsig.Verify(ctx, received, key.Public(), xmldsig.VerifyOptions{ExpectedRoot: document.Name{Space: "urn:example:invoice", Local: "Invoice"}})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	fmt.Printf("Verified %d reference(s), method %s\n", len(checked.References()), checked.SignatureMethod())
@@ -54,4 +60,6 @@ func main() {
 	for _, ref := range checked.References() {
 		fmt.Printf("%s: digest=%x, bytes=%d\n", ref.URI(), ref.Digest(), ref.Size())
 	}
+
+	return nil
 }

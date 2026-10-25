@@ -301,7 +301,13 @@ func runXAdESCurrent(ctx context.Context, o xadesOperation, cmd string, cfg xade
 
 	var detail any
 	if verifyErr == nil {
-		detail = map[string]any{"profile": result.Profile(), "level": result.Level(), "signature": basicXAdESReport(result.Basic()), "timestamps": len(result.Timestamps()), "archive_timestamps": len(result.ArchiveTimestamps())}
+		detail = map[string]any{
+			"profile":            result.Profile(),
+			"level":              result.Level(),
+			"signature":          basicXAdESReport(result.Basic()),
+			"timestamps":         len(result.Timestamps()),
+			"archive_timestamps": len(result.ArchiveTimestamps()),
+		}
 	}
 
 	return errors.Join(verifyErr, jsonOutput(ctx, o.output, stdout, resultReport("xades validate", "explicit-pkix-and-tsa-policy", detail, verifyErr)))

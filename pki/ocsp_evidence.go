@@ -13,10 +13,11 @@ import (
 // A source snapshot is shared by all certificate-bound assertions derived from
 // that response. Standalone verification already owns its response buffer.
 type ocspSource struct {
-	sources      []*evidence.Observation
-	input, owned []byte
-	fingerprint  [sha256.Size]byte
-	captured     bool
+	sources     []*evidence.Observation
+	input       []byte
+	owned       []byte
+	fingerprint [sha256.Size]byte
+	captured    bool
 }
 
 func (s *ocspSource) capture() ([]byte, [sha256.Size]byte) {
@@ -72,7 +73,8 @@ func appendOCSPEvidence(dst []*VerifiedEvidence, values ...*VerifiedEvidence) []
 		duplicate := false
 
 		for _, old := range dst {
-			if old.fingerprint == value.fingerprint && old.target == value.target && old.scope == value.scope && old.signer == value.signer && old.issuer == value.issuer && old.validation.Equal(value.validation) {
+			if old.fingerprint == value.fingerprint && old.target == value.target && old.scope == value.scope &&
+				old.signer == value.signer && old.issuer == value.issuer && old.validation.Equal(value.validation) {
 				duplicate = true
 				break
 			}

@@ -27,6 +27,7 @@ const (
 	OnMultipleMatchFail
 )
 
+// String returns the stylesheet option spelling, or empty for the default mode.
 func (m OnMultipleMatchMode) String() string {
 	switch m {
 	case OnMultipleMatchUseLast:
@@ -43,45 +44,72 @@ func (m OnMultipleMatchMode) String() string {
 // and the original is never mutated. Terminal methods (Do, Serialize,
 // WriteTo) create an internal execCtx immediately.
 type Invocation struct {
+	// cfg retains fluent configuration and synchronized output-definition state.
 	cfg *invocationConfig
 }
 
 type invocationConfig struct {
-	matchSelection      xdm.Sequence
-	msgHandler          MessageHandler
-	resultDocHandler    ResultDocumentHandler
-	rawResultHandler    RawResultHandler
+	// matchSelection supplies the explicit initial apply-templates selection.
+	matchSelection xdm.Sequence
+	// msgHandler receives xsl:message content on the executing goroutine.
+	msgHandler MessageHandler
+	// resultDocHandler receives secondary result trees and serialization settings.
+	resultDocHandler ResultDocumentHandler
+	// rawResultHandler receives principal XDM items before tree serialization.
+	rawResultHandler RawResultHandler
+	// primaryItemsHandler receives principal items retained for JSON or adaptive output.
 	primaryItemsHandler PrimaryItemsHandler
-	annotationHandler   AnnotationHandler
-	collectionResolver  xpath.CollectionResolver
-	uriResolver         xpath.URIResolver
-	traceWriter         io.Writer
-	globalContextItem   xdm.Item
-	ss                  *Stylesheet
-	source              *xdm.Document
-	parameters          *Parameters
-	tunnelParameters    *Parameters
+	// annotationHandler receives optional internal type metadata when supplied.
+	annotationHandler AnnotationHandler
+	// collectionResolver supplies host-defined collections during execution.
+	collectionResolver xpath.CollectionResolver
+	// uriResolver authorizes and opens external resources used by dynamic functions.
+	uriResolver xpath.URIResolver
+	// traceWriter receives fn:trace output; nil discards it.
+	traceWriter io.Writer
+	// globalContextItem supplies the configured global focus independently of match
+	// selection.
+	globalContextItem xdm.Item
+	// ss retains the immutable compiled stylesheet used by this invocation.
+	ss *Stylesheet
+	// source borrows the principal source document read-only.
+	source *xdm.Document
+	// parameters supplies external global parameter values.
+	parameters *Parameters
+	// tunnelParameters supplies tunnel parameters at invocation entry.
+	tunnelParameters *Parameters
 	// initialTemplateParams and initialModeParams hold non-tunnel
 	// xsl:with-param values for the initial template/mode invocation.
 	initialTemplateParams *Parameters
-	initialModeParams     *Parameters
+	// initialModeParams supplies non-tunnel parameters for the initial mode.
+	initialModeParams *Parameters
 
+	// parseOptions overrides inherited parsing limits, encodings and DTD policy.
 	parseOptions *xdm.ParseOptions
 	// resolved holds the effective output definition for the primary result
 	// after a terminal method (Do/Serialize/WriteTo) completes. It is stored
 	// behind a pointer with its own mutex so that concurrent terminal-method
 	// calls on the same Invocation value (which share this *invocationConfig)
 	// do not race when recording/reading the resolved output def.
-	resolved            *resolvedOutputState
-	initialTemplate     string
-	initialFunction     string
-	mode                string
+	resolved *resolvedOutputState
+	// initialTemplate identifies the expanded name used by named-template entry.
+	initialTemplate string
+	// initialFunction identifies the expanded name used by function entry.
+	initialFunction string
+	// mode identifies the initial apply-templates mode.
+	mode string
+	// baseOutputURI supplies the base for result URIs and current-output-uri().
 	baseOutputURI       string
 	globalContextSelect string // XPath for global context item (evaluated post-strip-space)
-	initialArgs         []xdm.Sequence
-	maxResourceBytes    int64 // per-resource read cap; 0 = inherit compiler/default, <0 = unbounded
+	// initialArgs supplies positional arguments for initial function entry.
+	initialArgs      []xdm.Sequence
+	maxResourceBytes int64 // per-resource read cap; 0 = inherit compiler/default, <0 = unbounded
+	// globalContextAbsent distinguishes an explicitly absent global focus from an
+	// unspecified one.
 	globalContextAbsent bool
-	kind                invocationKind
+	// kind selects apply-templates, named-template or function entry.
+	kind invocationKind
+	// onMultipleMatch overrides ambiguity handling for matching templates.
 	onMultipleMatch     OnMultipleMatchMode
 	maxResourceBytesSet bool // true once MaxResourceBytes is explicitly configured
 }
@@ -272,8 +300,9 @@ func (inv Invocation) URIResolver(r xpath.URIResolver) Invocation {
 	return inv
 }
 
-// ParseOptions overrides the stylesheet's XML limits and base URI for this
-// invocation, including nested transforms. Parsing always rejects DTDs.
+// ParseOptions overrides XML parsing policy for this invocation and nested transforms,
+// including limits, base URI, permitted encodings and DTD handling. External DTD
+// access requires an explicit resolver in the options.
 func (inv Invocation) ParseOptions(p xdm.ParseOptions) Invocation {
 	inv = inv.clone()
 	inv.cfg.parseOptions = &p
@@ -297,8 +326,9 @@ func (inv Invocation) OnMultipleMatch(mode OnMultipleMatchMode) Invocation {
 	return inv
 }
 
-// TraceWriter sets the destination for fn:trace output during the
-// transformation. When nil, fn:trace writes to os.Stderr.
+// TraceWriter sets the destination for fn:trace output during transformation. Nil
+// discards trace output. A writer shared between invocations must be safe for
+// concurrent use.
 func (inv Invocation) TraceWriter(w io.Writer) Invocation {
 	inv = inv.clone()
 	inv.cfg.traceWriter = w
@@ -625,14 +655,21 @@ func (inv Invocation) toTransformConfig() *transformConfig {
 
 // ValueResult retains XDM values and serialization metadata for one output.
 type ValueResult struct {
+	// Document retains the tree representation when execution constructed one.
 	Document *xdm.Document
-	Items    xdm.Sequence
-	Output   *OutputDef
+	// Items retains the ordered XDM result sequence, including raw atomic or container
+	// values.
+	Items xdm.Sequence
+	// Output supplies the effective serialization definition for this value.
+	Output *OutputDef
 }
 
 // Execution is an invocation-local result, before serialization.
 type Execution struct {
-	Primary   ValueResult
+	// Primary contains the principal result before serialization.
+	Primary ValueResult
+	// Secondary maps resolved secondary result URIs to their values and serialization
+	// definitions.
 	Secondary map[string]ValueResult
 }
 

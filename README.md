@@ -1,5 +1,13 @@
 # xmlsec
 
+## Contents
+
+- [What you can do](#what-you-can-do)
+- [Quick start](#quick-start)
+- [API principles](#api-principles)
+- [Status and compatibility](#status-and-compatibility)
+- [Documentation and examples](#documentation-and-examples)
+
 A Go library for signing, verifying and encrypting XML. It also provides XML
 canonicalization, XPath/XSLT, offline certificate and signature evidence
 verification, and supported SAML WebSSO flows. Builds without CGO.
@@ -22,8 +30,7 @@ The optional [CLI](docs/cli.md) exposes operations through the same public APIs.
 
 ## Quick start
 
-Requires **Go 1.27.3 or later**, including the `crypto/x509` security fixes in
-[Go 1.27.3](https://go.dev/doc/devel/release#go1.27.3).
+Requires **Go 1.27.3 or later**.
 To try the library in a new project:
 
 ```sh
@@ -131,11 +138,14 @@ The API is **experimental**. The library implements specific profiles of the
 listed standards; full standards conformance and an independent security audit
 have not been established.
 
-For example, DTDs, external entities and XSD validation are unsupported. The
-XPath/XSLT engine implements selected XPath 1.0/2.0/3.0/3.1 and XSLT
-1.0/2.0/3.0 features. Complete Basic XSLT conformance remains open;
-[suite results](docs/language-baseline.md) record the current failures. Schema
-awareness and W3C streamable execution are unsupported. SAML support covers
+The document security parser rejects DTDs and external entities. XPath/XSLT
+language input has a separate bounded, nonvalidating DTD mode with explicit
+external resource policy; see
+[XML input profiles](docs/transforms.md#xml-input-profiles). XSD validation is
+unsupported. The XPath/XSLT engine implements selected XPath 1.0/2.0/3.0/3.1
+and XSLT 1.0/2.0/3.0 features. Complete Basic XSLT conformance remains open;
+[validation profiles](docs/language-baseline.md) define the required suite checks.
+Schema awareness and W3C streamable execution are unsupported. SAML support covers
 solicited WebSSO; it does not include SLO, Artifact/ECP or encrypted assertions.
 
 Check [supported profiles and compatibility](docs/compatibility.md) for the full

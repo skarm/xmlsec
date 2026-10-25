@@ -343,8 +343,11 @@ func TestSAMLProfiles(t *testing.T) {
 	base := filepath.Join(fixture.root, "testdata/saml-interop")
 
 	var cases []struct {
-		Name, Kind, Certificate, At string
-		Valid                       bool
+		Name        string
+		Kind        string
+		Certificate string
+		At          string
+		Valid       bool
 	}
 	decode(t, read(t, filepath.Join(base, "manifest.json")), &cases)
 
@@ -389,7 +392,11 @@ func TestKeyInfoFixtures(t *testing.T) {
 	base := filepath.Join(fixture.root, "testdata/keyinfo")
 
 	var manifest struct {
-		Cases []struct{ Name, Signature, SPKI string }
+		Cases []struct {
+			Name      string
+			Signature string
+			SPKI      string
+		}
 	}
 	decode(t, read(t, filepath.Join(base, "manifest.json")), &manifest)
 
@@ -411,7 +418,10 @@ func TestKeyInfoFixtures(t *testing.T) {
 	}
 }
 
-type redirectProfileCase struct{ name, hash string }
+type redirectProfileCase struct {
+	name string
+	hash string
+}
 
 type redirectSignedQuery struct {
 	parts     []string
@@ -992,13 +1002,13 @@ func TestDSSHistoricalValidation(t *testing.T) {
 		policy = &dssRemoteDocument{Bytes: dssReadFile(t, directory, manifest.Policy, 1<<20), Name: filepath.Base(manifest.Policy)}
 	}
 
-	seen := map[string]bool{}
+	seen := map[string]struct{}{}
 	for _, pair := range manifest.Pairs {
-		if pair.Name == "" || seen[pair.Name] {
+		if _, exists := seen[pair.Name]; pair.Name == "" || exists {
 			t.Fatal("empty or duplicate historical pair name")
 		}
 
-		seen[pair.Name] = true
+		seen[pair.Name] = struct{}{}
 		t.Run(pair.Name, func(t *testing.T) {
 			sufficient := dssReadFile(t, directory, pair.Sufficient, 16<<20)
 			insufficient := dssReadFile(t, directory, pair.Insufficient, 16<<20)
@@ -1297,18 +1307,18 @@ func (r *dssReports) checkArchiveRecovery(success bool) error {
 		return errors.New("required historical timestamps are absent")
 	}
 	if success {
-		accepted := make(map[string]bool, len(detail.Timestamps))
+		accepted := make(map[string]struct{}, len(detail.Timestamps))
 		for _, stamp := range detail.Timestamps {
-			if stamp.ID == "" || accepted[stamp.ID] || stamp.Conclusion.Indication != "PASSED" {
+			if _, exists := accepted[stamp.ID]; stamp.ID == "" || exists || stamp.Conclusion.Indication != "PASSED" {
 				return errors.New("an old timestamp was ignored instead of historically validated")
 			}
-			accepted[stamp.ID] = true
+			accepted[stamp.ID] = struct{}{}
 		}
 		if len(accepted) != len(r.DiagnosticData.Timestamps) {
 			return errors.New("missing detailed timestamp trust results")
 		}
 		for _, stamp := range r.DiagnosticData.Timestamps {
-			if !accepted[stamp.ID] {
+			if _, exists := accepted[stamp.ID]; !exists {
 				return errors.New("detailed timestamp result has a different token identity")
 			}
 		}
@@ -1322,7 +1332,9 @@ func TestDSSHistoricalReportContracts(t *testing.T) {
 	const raw = `{"DiagnosticData":{"ValidationDate":"2026-10-25T00:00:00Z","Signature":[{"Id":"s","StructuralValidation":{"valid":true},"BasicSignature":{"SignatureIntact":true,"SignatureValid":true},"DigestMatcher":[{"DataFound":true,"DataIntact":true},{"DataFound":true,"DataIntact":true}]}]},"SimpleReport":{"ValidationTime":"2026-10-25T00:00:00Z","SignaturesCount":1,"ValidSignaturesCount":1,"signatureOrTimestampOrEvidenceRecord":[{"Signature":{"Id":"s","Indication":"TOTAL_PASSED","SubIndication":null,"BestSignatureTime":"2025-10-25T00:00:00Z","CertificateChain":{"Certificate":[{"Id":"C-ROOT","trusted":true}]}}}]},"DetailedReport":{"ValidationTime":"2026-10-25T00:00:00Z","signatureOrTimestampOrEvidenceRecord":[{"Signature":{"Id":"s"}}]}}`
 	want := dssExpectation{Indication: "TOTAL_PASSED", BestSignatureTime: proof}
 	for _, test := range []struct {
-		name, from, to string
+		name string
+		from string
+		to   string
 	}{
 		{"complete report", "", ""},
 		{"missing diagnostic", `"DiagnosticData"`, `"OtherData"`},
@@ -1403,7 +1415,11 @@ func TestDSSHistoricalReportContracts(t *testing.T) {
 
 func TestDSSArchiveRecoveryReportContracts(t *testing.T) {
 	const raw = `{"DetailedReport":{"signatureOrTimestampOrEvidenceRecord":[{"Signature":{"ValidationProcessBasicSignature":{"Conclusion":{"Indication":"INDETERMINATE"}},"ValidationProcessLongTermData":{"Conclusion":{"Indication":"INDETERMINATE"}},"ValidationProcessArchivalData":{"Conclusion":{"Indication":"PASSED"}},"Timestamp":[{"Id":"st","Conclusion":{"Indication":"PASSED"}},{"Id":"at","Conclusion":{"Indication":"PASSED"}}]}}]},"DiagnosticData":{"Timestamp":[{"Id":"st","Type":"SIGNATURE_TIMESTAMP","BasicSignature":{"SignatureIntact":true,"SignatureValid":true},"DigestMatcher":[{"DataFound":true,"DataIntact":true}]},{"Id":"at","Type":"ARCHIVE_TIMESTAMP","BasicSignature":{"SignatureIntact":true,"SignatureValid":true},"DigestMatcher":[{"DataFound":true,"DataIntact":true}]}]}}`
-	for _, test := range []struct{ name, from, to string }{
+	for _, test := range []struct {
+		name string
+		from string
+		to   string
+	}{
 		{"archive required and verified", "", ""},
 		{"current signature passed instead", `"ValidationProcessBasicSignature":{"Conclusion":{"Indication":"INDETERMINATE"}}`, `"ValidationProcessBasicSignature":{"Conclusion":{"Indication":"PASSED"}}`},
 		{"LT passed instead", `"ValidationProcessLongTermData":{"Conclusion":{"Indication":"INDETERMINATE"}}`, `"ValidationProcessLongTermData":{"Conclusion":{"Indication":"PASSED"}}`},

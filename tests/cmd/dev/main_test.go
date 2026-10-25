@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +22,65 @@ const (
 	conformanceUnknownState       = "unknown state"
 	conformanceMissingDescription = "missing required description"
 )
+
+func TestIncrementalProofReport(t *testing.T) {
+	stream := languageProofStream{SchemaVersion: 1, Arguments: []string{"test", "<&é"}, Events: []languageProofEvent{{Package: "p", Action: "pass", Output: "\n<&漢字"}}}
+	for _, value := range []any{(*languageProofStream)(nil), languageProofStream{}, stream, languageProofArtifact{SchemaVersion: 1, Streams: []languageProofStream{stream, {}}}} {
+		path := filepath.Join(t.TempDir(), "proof.json")
+		if err := writeLanguageProofFile(path, value); err != nil {
+			t.Fatal(err)
+		}
+		output, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := json.Marshal(value)
+		var actualValue, expectedValue any
+		if err := json.Unmarshal(output, &actualValue); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(want, &expectedValue); err != nil {
+			t.Fatal(err)
+		}
+		actual, _ := json.Marshal(actualValue)
+		expected, _ := json.Marshal(expectedValue)
+		if !bytes.Equal(actual, expected) {
+			t.Fatal("proof JSON values changed", string(actual), string(expected))
+		}
+	}
+	if err := writeLanguageProofJSON(&reportFailWriter{remaining: 200}, stream); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatal("proof ignored short write", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "proof.json")
+	if err := writeLanguageProofFile(path, stream); err != nil {
+		t.Fatal(err)
+	}
+	if err := invalidateLanguageProofFile(path); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("late publication failure")
+	if err := writeJSONFile(path, false, func(dst io.Writer) error {
+		_, _ = io.WriteString(dst, "partial replacement")
+		return failure
+	}); !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != "null\n" {
+		t.Fatal("failed publication left a previous proof", string(raw), err)
+	}
+	empty := filepath.Join(t.TempDir(), "directory")
+	if err := os.Mkdir(empty, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := invalidateLanguageProofFile(empty); err == nil {
+		t.Fatal("directory accepted as a proof file")
+	}
+	if info, err := os.Stat(empty); err != nil || !info.IsDir() {
+		t.Fatal("invalidation removed a directory", err)
+	}
+}
 
 func TestDocumentationChecks(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
@@ -97,8 +157,9 @@ func TestNormativeConformanceChecks(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name, want string
-		mutate     func(*conformanceRegister)
+		name   string
+		want   string
+		mutate func(*conformanceRegister)
 	}{
 		{"duplicate capability", "duplicate capability", func(r *conformanceRegister) { r.Requirements[1].ID = r.Requirements[0].ID }},
 		{"duplicate norm", "duplicate normative", func(r *conformanceRegister) { r.Normative = append(r.Normative, r.Normative[0]) }},
@@ -337,8 +398,9 @@ func TestConformanceCaseEvidence(t *testing.T) {
 		register.Profiles[0].Matrix[0].Requirements = []string{parent.ID, first.ID, second.ID}
 	}
 	for _, tc := range []struct {
-		name, problem string
-		mutate        func(*conformanceRegister)
+		name    string
+		problem string
+		mutate  func(*conformanceRegister)
 	}{
 		{"published cell", "", func(*conformanceRegister) {}},
 		{"complete canonical inheritance", "", func(r *conformanceRegister) { structural(r, false) }},
@@ -436,9 +498,9 @@ type languageProofRun struct {
 type languageProofStatus struct {
 	passed      bool
 	invalid     string
-	oracles     map[string]bool
-	diagnostics map[string]bool
-	vectors     map[string]bool
+	oracles     map[string]struct{}
+	diagnostics map[string]struct{}
+	vectors     map[string]struct{}
 }
 
 func (r *languageProofRun) passed(check conformanceTest) error {
@@ -501,9 +563,9 @@ func (s *languageProofStatus) recordOutput(output string) {
 			var expected string
 			if err := json.Unmarshal([]byte(strings.TrimSpace(tail)), &expected); err == nil {
 				if s.vectors == nil {
-					s.vectors = make(map[string]bool)
+					s.vectors = make(map[string]struct{})
 				}
-				s.vectors[expected] = true
+				s.vectors[expected] = struct{}{}
 			}
 			continue
 		}
@@ -513,14 +575,14 @@ func (s *languageProofStatus) recordOutput(output string) {
 		}
 		if marker == "P3_ORACLE " {
 			if s.oracles == nil {
-				s.oracles = make(map[string]bool)
+				s.oracles = make(map[string]struct{})
 			}
-			s.oracles[fields[0]] = true
+			s.oracles[fields[0]] = struct{}{}
 		} else {
 			if s.diagnostics == nil {
-				s.diagnostics = make(map[string]bool)
+				s.diagnostics = make(map[string]struct{})
 			}
-			s.diagnostics[fields[0]] = true
+			s.diagnostics[fields[0]] = struct{}{}
 		}
 	}
 }
@@ -535,12 +597,15 @@ func (r *languageProofRun) independent(proof normativeProof) error {
 		if proof.Expected == nil {
 			return fmt.Errorf("%s/%s has no published fixture value", proof.Check.Name, proof.Check.Case)
 		}
-		if !state.vectors[*proof.Expected] {
+		if _, exists := state.vectors[*proof.Expected]; !exists {
 			return fmt.Errorf("%s/%s does not verify published fixture value %q", proof.Check.Name, proof.Check.Case, *proof.Expected)
 		}
 		return nil
 	}
-	if !state.oracles[proof.Oracle] || state.diagnostics[proof.Oracle] {
+	if _, exists := state.oracles[proof.Oracle]; !exists {
+		return fmt.Errorf("%s/%s has no exact %s agreement; diagnostics cannot close independent evidence", proof.Check.Name, proof.Check.Case, proof.Oracle)
+	}
+	if _, exists := state.diagnostics[proof.Oracle]; exists {
 		return fmt.Errorf("%s/%s has no exact %s agreement; diagnostics cannot close independent evidence", proof.Check.Name, proof.Check.Case, proof.Oracle)
 	}
 	return nil
@@ -574,8 +639,11 @@ func TestLanguageProofEvents(t *testing.T) {
 		})
 	}
 	for _, tc := range []struct {
-		name, oracle, output, expected string
-		valid                          bool
+		name     string
+		oracle   string
+		output   string
+		expected string
+		valid    bool
 	}{
 		{"processor requires actual marker", "saxon-12.10", "", "", false},
 		{"exact processor agreement", "saxon-12.10", "P3_ORACLE saxon-12.10", "", true},
@@ -723,6 +791,81 @@ func TestLanguageProofCaptureAndMerge(t *testing.T) {
 	if err := readLanguageProofFile(merged, &artifact); err != nil || len(artifact.Streams) != 1 {
 		t.Fatal(artifact, err)
 	}
+	original, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"symlink", "hardlink", "directory-alias"} {
+		t.Run(kind, func(t *testing.T) {
+			alias := filepath.Join(directory, kind)
+			var err error
+			switch kind {
+			case "symlink":
+				err = os.Symlink(capture, alias)
+			case "hardlink":
+				err = os.Link(capture, alias)
+			case "directory-alias":
+				err = os.Symlink(directory, alias)
+				alias = filepath.Join(alias, filepath.Base(capture))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := runLanguageProof(t.Context(), root, []string{"merge", "-out", alias, capture}, &out, &out); err == nil || !strings.Contains(err.Error(), "must differ") {
+				t.Fatal("aliased capture input accepted as destination", err)
+			}
+			actual, err := os.ReadFile(capture)
+			if err != nil || !bytes.Equal(actual, original) {
+				t.Fatal("aliased destination destroyed capture input", err)
+			}
+		})
+	}
+	parent := filepath.Join(directory, "physical")
+	child := filepath.Join(parent, "child")
+	if err := os.MkdirAll(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	physicalInput := filepath.Join(parent, "capture.json")
+	if err := os.WriteFile(physicalInput, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(directory, "parent-link")
+	if err := os.Symlink(child, link); err != nil {
+		t.Fatal(err)
+	}
+	// Keep the raw .. component: filepath.Join would erase the alias being tested.
+	rawAlias := link + string(filepath.Separator) + ".." + string(filepath.Separator) + "capture.json"
+	identityInput := physicalInput
+	rawInfo, err := os.Stat(rawAlias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	physicalInfo, err := os.Stat(physicalInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(rawInfo, physicalInfo) {
+		// Some platforms normalize .. before traversing the link. Validate the
+		// actual identity used by their file operations, without skipping it.
+		baseInfo, err := os.Stat(capture)
+		if err != nil || !os.SameFile(rawInfo, baseInfo) {
+			t.Fatal("unexpected symlink/.. resolution", err)
+		}
+		identityInput = capture
+	}
+	for _, pair := range [][2]string{{rawAlias, identityInput}, {identityInput, rawAlias}} {
+		if err := runLanguageProof(t.Context(), root, []string{"merge", "-out", pair[0], pair[1]}, &out, &out); err == nil || !strings.Contains(err.Error(), "must differ") {
+			t.Fatal("symlink/.. alias accepted", err)
+		}
+		actual, err := os.ReadFile(physicalInput)
+		if err != nil || !bytes.Equal(actual, original) {
+			t.Fatal("symlink/.. alias destroyed capture input", err)
+		}
+		actual, err = os.ReadFile(capture)
+		if err != nil || !bytes.Equal(actual, original) {
+			t.Fatal("symlink/.. alias destroyed base capture", err)
+		}
+	}
 	if err := runLanguageProof(t.Context(), root, []string{"capture", "-out", capture, "--", "-run=^TestRejected$", "./..."}, &out, &out); err == nil {
 		t.Fatal("failing Go process accepted as a proof capture")
 	}
@@ -753,8 +896,12 @@ func TestResidualFailureConditions(t *testing.T) {
 	const selected = "xslt30/2.0/1.0/default/true/false"
 	evidence := residualEvidence{Disposition: "fixture", Failures: []residualFailureCondition{{Profile: selected, Kind: "assertion", ErrorCodes: []string{"XTSE0080"}, Cause: "execution-error", Signature: "reserved namespace in template name"}}}
 	for _, test := range []struct {
-		name, profile, kind, code, cause string
-		want                             bool
+		name    string
+		profile string
+		kind    string
+		code    string
+		cause   string
+		want    bool
 	}{
 		{"same proven profile and typed cause", selected, "assertion", "XTSE0080", "execution-error", true},
 		{"new failure in passing edition", "xslt30/3.0/1.0/default/true/false", "assertion", "XTSE0080", "execution-error", false},
@@ -925,7 +1072,7 @@ func TestLanguageResidualCoverage(t *testing.T) {
 	if err := json.Unmarshal(pinsData, &pins); err != nil {
 		t.Fatal(err)
 	}
-	inventories := make(map[string]map[string]bool)
+	inventories := make(map[string]map[string]struct{})
 	for kind, env := range map[string]string{suiteQT3: "XMLSEC_QT3_DIR", suiteXSLT: "XMLSEC_XSLT_DIR"} {
 		directory := languageProofDirectory(t, env)
 		if err := verifySuiteCheckout(t.Context(), directory, pins[kind]); err != nil {
@@ -944,11 +1091,11 @@ func TestLanguageResidualCoverage(t *testing.T) {
 			}
 		}
 	}
-	profiles := map[string]bool{}
+	profiles := map[string]struct{}{}
 	for _, key := range languageProofProfileKeys() {
-		profiles[key] = false
+		profiles[key] = struct{}{}
 	}
-	failures := make(map[string]bool)
+	failures := make(map[string]struct{})
 	for _, file := range reports {
 		raw, err := os.ReadFile(file) // #nosec G304 -- Explicit developer-selected suite report, not a publisher resource URI.
 		if err != nil {
@@ -960,11 +1107,10 @@ func TestLanguageResidualCoverage(t *testing.T) {
 		}
 		settings := report.Settings
 		profile := fmt.Sprintf("%s/%s/%s/%s/%v/%v", report.Suite, report.Language, settings["xsd_version"], settings["limits_profile"], settings["xslt_assertions"], settings["xpath_1_0_compatibility"])
-		seen, known := profiles[profile]
-		if !known || seen {
+		if _, known := profiles[profile]; !known {
 			t.Fatal("unexpected or duplicate profile report", profile)
 		}
-		profiles[profile] = true
+		delete(profiles, profile)
 		if report.SourceSHA256 != run.SourceSHA256 {
 			t.Fatal("suite report has stale source evidence", file)
 		}
@@ -987,14 +1133,17 @@ func TestLanguageResidualCoverage(t *testing.T) {
 		if !languageProofSetting(settings["limits"], suiteLimits(suiteOptions{limitsProfile: fmt.Sprint(settings["limits_profile"])})) {
 			t.Fatal("suite report has different resource bounds", file)
 		}
-		seenCases := make(map[string]bool)
+		seenCases := make(map[string]struct{})
 		totals := map[string]int{suitePassed: 0, suiteFailed: 0, suiteSkipped: 0, suiteNotApplicable: 0}
 		for _, item := range report.Cases {
 			identity := item.File + "/" + item.Name
-			if !inventory[identity] || seenCases[identity] {
+			if _, exists := inventory[identity]; !exists {
 				t.Fatal("missing, foreign or duplicate publisher case", file, identity)
 			}
-			seenCases[identity] = true
+			if _, exists := seenCases[identity]; exists {
+				t.Fatal("missing, foreign or duplicate publisher case", file, identity)
+			}
+			seenCases[identity] = struct{}{}
 			if _, known := totals[item.Status]; !known {
 				t.Fatal("unknown case outcome", file, item.Status)
 			}
@@ -1003,7 +1152,7 @@ func TestLanguageResidualCoverage(t *testing.T) {
 				continue
 			}
 			key := report.Suite + "/" + item.File + "/" + item.Name
-			failures[key] = true
+			failures[key] = struct{}{}
 			evidence, ok := entries[key]
 			if !ok || !residualFailureMatches(evidence, profile, item) {
 				t.Error("unproved residual failure", profile, key, item.Kind, item.Reason)
@@ -1018,13 +1167,11 @@ func TestLanguageResidualCoverage(t *testing.T) {
 			t.Fatal("unknown suite total status", file)
 		}
 	}
-	for key, seen := range profiles {
-		if !seen {
-			t.Error("required complete suite profile is missing", key)
-		}
+	for key := range profiles {
+		t.Error("required complete suite profile is missing", key)
 	}
 	for key, evidence := range entries {
-		if !failures[key] && evidence.Disposition != "fixed" {
+		if _, exists := failures[key]; !exists && evidence.Disposition != "fixed" {
 			t.Error("obsolete retained-failure disposition; verify and record its regression", key)
 		}
 	}
@@ -1050,13 +1197,13 @@ func languageProofSetting[T comparable](value any, want T) bool {
 	return decoder.Decode(&actual) == nil && actual == want
 }
 
-func languageCatalogInventory(t *testing.T, directory string, pin suitePin) map[string]bool {
+func languageCatalogInventory(t *testing.T, directory string, pin suitePin) map[string]struct{} {
 	t.Helper()
 	catalog, _, err := readSuiteNode(directory, directory, pin.Catalog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inventory := make(map[string]bool)
+	inventory := make(map[string]struct{})
 	for _, entry := range catalog.children("test-set") {
 		set, _, err := readSuiteReferencedNode(directory, directory, entry)
 		if err != nil {
@@ -1064,10 +1211,10 @@ func languageCatalogInventory(t *testing.T, directory string, pin suitePin) map[
 		}
 		for _, node := range set.children("test-case") {
 			key := entry.attr("file") + "/" + node.attr("name")
-			if inventory[key] {
+			if _, exists := inventory[key]; exists {
 				t.Fatal("duplicate original catalog identity", key)
 			}
-			inventory[key] = true
+			inventory[key] = struct{}{}
 		}
 	}
 	return inventory

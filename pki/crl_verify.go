@@ -42,7 +42,10 @@ func normalizeCRLOptions(o CRLOptions) (CRLOptions, error) {
 
 type (
 	crlWorkBudget        struct{ checks int }
-	crlAuthenticationKey struct{ anchor, leaf [32]byte }
+	crlAuthenticationKey struct {
+		anchor [32]byte
+		leaf   [32]byte
+	}
 )
 
 type authenticatedCRL struct {
@@ -50,8 +53,9 @@ type authenticatedCRL struct {
 	signer *x509.Certificate
 }
 type completeCRLView struct {
-	base, delta *authenticatedCRL
-	this        time.Time
+	base  *authenticatedCRL
+	delta *authenticatedCRL
+	this  time.Time
 }
 
 func parseCRLs(ctx context.Context, ders [][]byte) ([]*parsedCRL, error) {
@@ -127,26 +131,27 @@ func authenticateCRLs(ctx context.Context, chain []*x509.Certificate, lists []*p
 }
 
 type crlAuthentication struct {
-	candidates           []*x509.Certificate
-	roots, intermediates *x509.CertPool
-	anchor               *x509.Certificate
-	key                  crlAuthenticationKey
-	at                   time.Time
-	maximumDepth         int
+	candidates    []*x509.Certificate
+	roots         *x509.CertPool
+	intermediates *x509.CertPool
+	anchor        *x509.Certificate
+	key           crlAuthenticationKey
+	at            time.Time
+	maximumDepth  int
 }
 
 func crlCandidates(chain []*x509.Certificate, lists []*parsedCRL) ([]*x509.Certificate, error) {
 	candidates := append([]*x509.Certificate(nil), chain...)
 
-	seen := make(map[[32]byte]bool)
+	seen := make(map[[32]byte]struct{})
 	for _, cert := range candidates {
-		seen[sha256.Sum256(cert.Raw)] = true
+		seen[sha256.Sum256(cert.Raw)] = struct{}{}
 	}
 
 	for _, list := range lists {
 		for _, raw := range list.candidates {
 			digest := sha256.Sum256(raw)
-			if seen[digest] {
+			if _, exists := seen[digest]; exists {
 				continue
 			}
 
@@ -155,7 +160,7 @@ func crlCandidates(chain []*x509.Certificate, lists []*parsedCRL) ([]*x509.Certi
 				return nil, err
 			}
 
-			seen[digest] = true
+			seen[digest] = struct{}{}
 
 			candidates = append(candidates, cert)
 		}
@@ -179,7 +184,15 @@ func newCRLAuthentication(ctx context.Context, chain []*x509.Certificate, lists 
 		return nil, err
 	}
 
-	auth := &crlAuthentication{candidates: candidates, roots: x509.NewCertPool(), intermediates: x509.NewCertPool(), anchor: anchor, at: at, maximumDepth: maximumDepth, key: crlAuthenticationKey{anchor: sha256.Sum256(anchor.Raw), leaf: sha256.Sum256(chain[0].Raw)}}
+	auth := &crlAuthentication{
+		candidates:    candidates,
+		roots:         x509.NewCertPool(),
+		intermediates: x509.NewCertPool(),
+		anchor:        anchor,
+		at:            at,
+		maximumDepth:  maximumDepth,
+		key:           crlAuthenticationKey{anchor: sha256.Sum256(anchor.Raw), leaf: sha256.Sum256(chain[0].Raw)},
+	}
 	auth.roots.AddCert(anchorView)
 
 	for _, candidate := range candidates {
@@ -250,7 +263,13 @@ func (a *crlAuthentication) authorizedSigner(ctx context.Context, list *parsedCR
 		return false, err
 	}
 
-	paths, err := view.Verify(x509.VerifyOptions{Roots: a.roots, Intermediates: a.intermediates, CurrentTime: a.at, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}, MaxConstraintComparisions: 100000})
+	paths, err := view.Verify(x509.VerifyOptions{
+		Roots:                     a.roots,
+		Intermediates:             a.intermediates,
+		CurrentTime:               a.at,
+		KeyUsages:                 []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		MaxConstraintComparisions: 100000,
+	})
 
 	return err == nil && validCRLSignerPaths(paths, a.anchor, a.maximumDepth), ctx.Err()
 }
@@ -704,9 +723,10 @@ func compareCRLOrder(a, b *parsedCRL) int {
 
 func checkSimultaneousCRLNumbers(group []*authenticatedCRL) error {
 	type interval struct {
-		number          string
-		complete, delta bool
-		different       bool
+		number    string
+		complete  bool
+		delta     bool
+		different bool
 	}
 
 	byTime := make(map[time.Time]interval)

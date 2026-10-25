@@ -16,10 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -44,10 +43,16 @@ var (
 	ErrCertificate = errors.New("XAdES signing certificate binding mismatch")
 )
 
-// SignOptions configures the closed basic enveloped XAdES profile and its claimed signing
-// time.
+// SignOptions sets identifiers, algorithms and claimed signing time for the closed
+// basic enveloped XAdES profile.
 type SignOptions struct {
-	SignatureID, SignedPropertiesID, DataReferenceID string
+	// SignatureID is the generated Signature Id. Empty selects "signature".
+	SignatureID string
+	// SignedPropertiesID is the generated SignedProperties Id. Empty selects
+	// "signed-properties".
+	SignedPropertiesID string
+	// DataReferenceID is the data Reference Id. Empty selects "data-reference".
+	DataReferenceID string
 	// SignatureMethod is required, for example xmldsig.ECDSASHA256.
 	SignatureMethod string
 	// ClaimedSigningTime is required and serialized in UTC. This signer claim is not a
@@ -57,20 +62,22 @@ type SignOptions struct {
 	MIMEType string
 	// IDAttribute selects the application root attribute; zero uses unqualified ID.
 	IDAttribute document.Name
-	Policy      xmldsig.Policy
+	// Policy sets permitted signature and digest algorithms and key limits.
+	Policy xmldsig.Policy
 }
 
-// VerifyOptions selects the application ID attribute and XML signature policy for basic
-// XAdES.
+// VerifyOptions sets the application ID attribute and signature algorithms for closed
+// basic XAdES verification.
 type VerifyOptions struct {
 	// IDAttribute selects the application ID attribute; it is never inferred from a schema.
 	IDAttribute document.Name
-	Policy      xmldsig.Policy
+	// Policy sets permitted signature and digest algorithms and key limits.
+	Policy xmldsig.Policy
 }
 
-// BasicResult authenticates this profile's properties with the EXPLICITLY
-// supplied certificate's key. It does not validate certificate dates, PKIX,
-// revocation, claimed time, legal status or any other AdES evidence.
+// BasicResult authenticates the profile's signed properties with the explicitly
+// supplied certificate's key. It does not check certificate dates, PKIX trust,
+// revocation, claimed time, legal status or other AdES evidence.
 type BasicResult struct {
 	signature   *xmldsig.SignatureResult
 	properties  document.Element
@@ -80,9 +87,10 @@ type BasicResult struct {
 }
 
 type basicPropertySet struct {
-	signed          document.Element
-	id              string
-	signature, data document.Element
+	signed    document.Element
+	id        string
+	signature document.Element
+	data      document.Element
 }
 
 // VerifyBasicEnveloped validates the small profile described by this package.

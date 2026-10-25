@@ -849,8 +849,9 @@ func TestProtectedKeyWriters(t *testing.T) {
 	password := []byte("public writer password")
 	options := keys.EncryptionOptions{Iterations: 1000}
 	for _, tc := range []struct {
-		name               string
-		container, classic bool
+		name      string
+		container bool
+		classic   bool
 	}{
 		{"pkcs8", false, false},
 		{"pkcs12-pbmac1", true, false},
@@ -1026,9 +1027,9 @@ func TestExternalCiphertextWorkingStorageAndAuthentication(t *testing.T) {
 			doc := external
 			encoded := base64.StdEncoding.EncodeToString(ciphertext)
 			if useBase64 {
-				text := strings.Replace(string(wire), `URI="`+uri+`"></xenc:CipherReference>`, `URI="`+uri+`"><xenc:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#base64"></ds:Transform></xenc:Transforms></xenc:CipherReference>`, 1)
-				doc, err = document.ParseReader(t.Context(), strings.NewReader(text), document.DefaultLimits())
-				if err != nil || text == string(wire) {
+				data := bytes.Replace(wire, []byte(`URI="`+uri+`"></xenc:CipherReference>`), []byte(`URI="`+uri+`"><xenc:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#base64"></ds:Transform></xenc:Transforms></xenc:CipherReference>`), 1)
+				doc, err = document.Parse(t.Context(), data, document.DefaultLimits())
+				if err != nil || bytes.Equal(data, wire) {
 					t.Fatal("Base64 reference fixture", err)
 				}
 			}

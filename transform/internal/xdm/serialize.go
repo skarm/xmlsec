@@ -14,11 +14,24 @@ import (
 // XML character and name validation is always enforced by internal/tree.
 type XMLSerialization struct {
 	tree.XMLWriteOptions
-	OmitDeclaration, OmitDoctype, CompactDeclaration bool
-	Encoding, Standalone                             string
-	Doctype                                          *Doctype
+	// OmitDeclaration suppresses the XML declaration for document output.
+	OmitDeclaration bool
+	// OmitDoctype suppresses document type output.
+	OmitDoctype bool
+	// CompactDeclaration omits the newline that otherwise follows the XML declaration.
+	CompactDeclaration bool
+	// Encoding overrides the document's encoding label for serialization.
+	Encoding string
+	// Standalone emits an explicit standalone attribute when nonempty.
+	Standalone string
+	// Doctype overrides document type metadata. Nil uses the document's declaration when
+	// available.
+	Doctype *Doctype
 }
 
+// WriteTo serializes a borrowed node with declaration metadata using a background
+// context. It leaves dst open and can leave partial output on error; use
+// WriteSequence when cancellation is required.
 func (w XMLSerialization) WriteTo(dst io.Writer, n Node) error {
 	if n == nil || dst == nil {
 		return errors.New("nil XML serialization input")

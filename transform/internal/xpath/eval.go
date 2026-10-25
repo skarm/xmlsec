@@ -37,7 +37,7 @@ type evalContext struct {
 	variableResolver     VariableResolver   // lazy resolver for variables not in static scope
 	functionResolver     FunctionResolver   // lazy resolver for functions (not visible to function-lookup)
 	schemaDeclarations   SchemaDeclarations // schema element/attribute declarations for schema-element()/schema-attribute() tests
-	traceWriter          io.Writer          // destination for fn:trace output (nil = os.Stderr)
+	traceWriter          io.Writer          // destination for fn:trace output (nil discards output)
 	runtime              *evaluationRuntime
 	invocation           *invocationState
 	vars                 *variableScope

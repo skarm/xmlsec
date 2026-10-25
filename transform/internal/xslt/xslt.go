@@ -13,26 +13,15 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
-// CompileStylesheet compiles a parsed XSLT stylesheet document.
-// This is a convenience wrapper over NewCompiler().Compile(ctx, doc).
-//
-// The returned [*Stylesheet] is immutable and safe for concurrent use by
-// multiple goroutines; it may be reused across many transformations. The
-// caller's source is treated as read-only (including by schema-aware transforms),
-// so a single source may be shared, read-only, across concurrent transforms. See
-// the package documentation's Concurrency section.
+// CompileStylesheet compiles a parsed stylesheet through NewCompiler().Compile. The
+// result can be reused concurrently under the Stylesheet ownership contract.
 func CompileStylesheet(ctx context.Context, doc *xdm.Document) (*Stylesheet, error) {
 	return NewCompiler().Compile(ctx, doc)
 }
 
-// Transform applies the compiled stylesheet to the source document.
-// This is a convenience wrapper over ss.Transform(source).Do(ctx).
-//
-// ss is not mutated and may be transformed concurrently from multiple
-// goroutines. The caller's source is treated as read-only (including by a
-// schema-aware transform, which validates a private copy), so a single source
-// may be shared, read-only, across concurrent transforms (see the package
-// documentation's Concurrency section).
+// Transform applies ss to a borrowed read-only source through
+// ss.Transform(source).Do(ctx). The compiled stylesheet can be reused concurrently;
+// shared host callbacks must support concurrent calls.
 func Transform(ctx context.Context, source *xdm.Document, ss *Stylesheet) (*xdm.Document, error) {
 	if ss == nil {
 		return nil, errNilStylesheet
@@ -41,14 +30,9 @@ func Transform(ctx context.Context, source *xdm.Document, ss *Stylesheet) (*xdm.
 	return ss.Transform(source).Do(ctx)
 }
 
-// TransformString applies the compiled stylesheet and returns the serialized result.
-// This is a convenience wrapper over ss.Transform(source).Serialize(ctx).
-//
-// ss is not mutated and may be transformed concurrently from multiple
-// goroutines. The caller's source is treated as read-only (including by a
-// schema-aware transform, which validates a private copy), so a single source
-// may be shared, read-only, across concurrent transforms (see the package
-// documentation's Concurrency section).
+// TransformString applies ss to a borrowed read-only source and serializes the
+// principal result through ss.Transform(source).Serialize(ctx). It shares the
+// Stylesheet concurrency contract.
 func TransformString(ctx context.Context, source *xdm.Document, ss *Stylesheet) (string, error) {
 	if ss == nil {
 		return "", errNilStylesheet

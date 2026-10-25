@@ -526,3 +526,55 @@ func TestEncryptionLegacyCBCPolicy(t *testing.T) {
 		t.Fatal(string(plain))
 	}
 }
+
+func TestStreamingOutputPublication(t *testing.T) {
+	failure := errors.New("late producer failure")
+	for _, mode := range []string{"file", "stdout"} {
+		for _, reason := range []string{"producer", "limit", "cancel"} {
+			t.Run(mode+"/"+reason, func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "out")
+				if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if mode == "stdout" {
+					path = "-"
+				}
+				ctx, cancel := context.WithCancel(context.WithValue(t.Context(), executionKey{}, &executionFlags{output: 4}))
+				defer cancel()
+				var stdout bytes.Buffer
+				err := produceOutput(ctx, path, &stdout, func(w io.Writer) error {
+					if _, err := io.WriteString(w, "part"); err != nil {
+						return err
+					}
+					switch reason {
+					case "producer":
+						return failure
+					case "limit":
+						_, err := io.WriteString(w, "x")
+						return err
+					default:
+						cancel()
+						return nil
+					}
+				})
+				if err == nil || reason == "producer" && !errors.Is(err, failure) || reason == "cancel" && !errors.Is(err, context.Canceled) {
+					t.Fatal(err)
+				}
+				if stdout.Len() != 0 {
+					t.Fatal("failed serialization published stdout")
+				}
+				if mode == "file" {
+					raw, err := os.ReadFile(path)
+					if err != nil || string(raw) != "original" {
+						t.Fatal("failed serialization replaced file", err)
+					}
+				}
+				temps, err := filepath.Glob(filepath.Join(dir, ".xmlsec-*"))
+				if err != nil || len(temps) != 0 {
+					t.Fatal("temporary output leaked", temps, err)
+				}
+			})
+		}
+	}
+}

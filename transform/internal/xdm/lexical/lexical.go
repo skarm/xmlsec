@@ -1,6 +1,9 @@
 // Copyright (c) 2026 xmlsec contributors. MIT License.
 
-package value
+// Package lexical checks lexical forms and facets for built-in XML Schema types.
+// Callers select the XML Schema edition. These helpers do not perform complete
+// schema validation or enable schema-aware XPath and XSLT processing.
+package lexical
 
 import (
 	"strings"

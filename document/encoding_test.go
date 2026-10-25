@@ -23,8 +23,9 @@ func TestUTF16(t *testing.T) {
 		}
 
 		cases := []struct {
-			name, declaration string
-			bom               bool
+			name        string
+			declaration string
+			bom         bool
 		}{
 			{"BOM only", "", true},
 			{"BOM generic", `<?xml version="1.0" encoding="UTF-16"?>`, true},

@@ -98,7 +98,7 @@ func TestParameterizedProviderAndPreflight(t *testing.T) {
 	provider.bad = false
 
 	provider.mutateDigest = true
-	if value, err := xmldsig.SignMessageWithParametersReader(ctx, bytes.NewReader([]byte("original")), provider, xmldsig.RSAPSS, param, xmldsig.ParameterizedPolicy()); value != nil || !errors.Is(err, xmldsig.ErrSignature) {
+	if value, err := xmldsig.SignMessageWithParametersReader(ctx, strings.NewReader("original"), provider, xmldsig.RSAPSS, param, xmldsig.ParameterizedPolicy()); value != nil || !errors.Is(err, xmldsig.ErrSignature) {
 		t.Fatalf("mutating provider accepted: %v", err)
 	}
 

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"math/big"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -254,8 +255,10 @@ func BenchmarkVerifyCRL(b *testing.B) {
 func verificationTime() time.Time { return time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC) }
 
 type chainData struct {
-	root, leaf       *x509.Certificate
-	rootKey, leafKey *ecdsa.PrivateKey
+	root    *x509.Certificate
+	leaf    *x509.Certificate
+	rootKey *ecdsa.PrivateKey
+	leafKey *ecdsa.PrivateKey
 }
 
 func makeChain(t *testing.T) chainData {
@@ -315,4 +318,65 @@ func makeCRL(t *testing.T, c chainData, revoked bool, template *x509.RevocationL
 	}
 
 	return der
+}
+
+// BenchmarkVerifyLargeCRL includes strict DER parsing, duplicate detection and
+// all authenticated lookup passes; setup and CRL signing are outside the timer.
+func BenchmarkVerifyLargeCRL(b *testing.B) {
+	for _, count := range []int{1, 1024, 65536} {
+		b.Run(strconv.Itoa(count), func(b *testing.B) {
+			c := testcert.New(b)
+			revoked := make([]*x509.Certificate, count)
+			for i := range revoked {
+				revoked[i] = &x509.Certificate{SerialNumber: big.NewInt(int64(i + 1000))}
+			}
+			raw := testcert.CRL(b, c, revoked...)
+			v, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.Root.Raw}, Revocation: pki.RequireCRL})
+			if err != nil {
+				b.Fatal(err)
+			}
+			e := pki.Evidence{CRLs: [][]byte{raw}}
+			b.ReportAllocs()
+			b.SetBytes(int64(len(raw)))
+			for b.Loop() {
+				if _, _, err := v.Verify(b.Context(), c.Leaf.Raw, testcert.Now(), e); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkVerifyMalformedLargeCRL(b *testing.B) {
+	for _, count := range []int{1024, 65536} {
+		b.Run(strconv.Itoa(count), func(b *testing.B) {
+			c := testcert.New(b)
+			for _, early := range []bool{true, false} {
+				b.Run(strconv.FormatBool(early), func(b *testing.B) {
+					revoked := make([]*x509.Certificate, count)
+					for i := range revoked {
+						revoked[i] = &x509.Certificate{SerialNumber: big.NewInt(int64(i + 1000))}
+					}
+					if early {
+						revoked[1] = revoked[0]
+					} else {
+						revoked[count-1] = revoked[0]
+					}
+					raw := testcert.CRL(b, c, revoked...)
+					verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.Root.Raw}, Revocation: pki.RequireCRL})
+					if err != nil {
+						b.Fatal(err)
+					}
+					input := pki.Evidence{CRLs: [][]byte{raw}}
+					b.ReportAllocs()
+					b.SetBytes(int64(len(raw)))
+					for b.Loop() {
+						if result, _, err := verifier.Verify(b.Context(), c.Leaf.Raw, testcert.Now(), input); result != nil || !errors.Is(err, pki.ErrEvidence) {
+							b.Fatal(result, err)
+						}
+					}
+				})
+			}
+		})
+	}
 }

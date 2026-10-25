@@ -14,10 +14,15 @@ import (
 // XML parameters apply to each delegated node; the separator applies only to
 // the outer sequence, while container members use parenthesized comma lists.
 type AdaptiveSerialization struct {
-	XML           xdm.XMLSerialization
+	// XML supplies serialization parameters for node items.
+	XML xdm.XMLSerialization
+	// ItemSeparator separates outer sequence items. Nil selects a newline; a pointer to
+	// an empty string selects no separator.
 	ItemSeparator *string
 }
 
+// WriteTo serializes seq under ctx and the shared evaluation budgets. It leaves dst
+// open and may leave partial output on error.
 func (options AdaptiveSerialization) WriteTo(ctx context.Context, dst io.Writer, seq xdm.Sequence) error {
 	state := adaptiveSerialization{ctx: ctx, dst: dst, options: options}
 
@@ -171,18 +176,39 @@ func adaptivePrimitiveType(name string) string {
 func (s *adaptiveSerialization) quoted(value string) error {
 	// Quotes are doubled before the resulting text undergoes character mapping.
 	// A quote introduced by a map is emitted verbatim, never doubled again.
-	if err := ChargeString(s.ctx, len(value), strings.Count(value, `"`), 2); err != nil {
+	quotes := strings.Count(value, `"`)
+
+	if err := ChargeString(s.ctx, len(value), quotes, 2); err != nil {
 		return err
 	}
 
-	quoted := `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+	// Quotes, maps and normalization retain their character-expansion order.
+	// Unquoted large values need only framing; retaining the short path avoids
+	// additional writer calls on tiny values.
+	if len(value) < 4096 || quotes != 0 || len(s.options.XML.CharacterMap) != 0 || serializeNormalizationActive(s.options.XML.Normalization) {
+		quoted := `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 
-	text, err := SerializeTextValue(s.ctx, quoted, s.options.XML.CharacterMap, s.options.XML.Normalization)
-	if err != nil {
+		text, err := SerializeTextValue(s.ctx, quoted, s.options.XML.CharacterMap, s.options.XML.Normalization)
+		if err != nil {
+			return err
+		}
+
+		return s.write(text)
+	}
+
+	if err := Charge(s.ctx, 1+(len(value)+2)/64); err != nil {
 		return err
 	}
 
-	return s.write(text)
+	if err := writeSerializationString(s.dst, `"`); err != nil {
+		return err
+	}
+
+	if err := writeSerializationString(s.dst, value); err != nil {
+		return err
+	}
+
+	return writeSerializationString(s.dst, `"`)
 }
 
 func (s *adaptiveSerialization) node(node xdm.Node) error {

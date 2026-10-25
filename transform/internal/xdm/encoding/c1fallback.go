@@ -55,6 +55,9 @@ func withC1Fallback(e enc.Encoding) enc.Encoding {
 // UTF-8 encoding of the original byte value (treating it as a C1 code point).
 type c1DecoderTransformer struct {
 	base transform.Transformer
+	// A decoder owns this scratch across calls. A local array escapes through
+	// base.Transform's interface and otherwise allocates per non-ASCII byte.
+	decoded [utf8.UTFMax]byte
 }
 
 func (t *c1DecoderTransformer) Reset() {
@@ -115,9 +118,8 @@ func (t *c1DecoderTransformer) Transform(dst, src []byte, atEOF bool) (nDst, nSr
 }
 
 func (t *c1DecoderTransformer) decodeByte(dst, src []byte, atEOF bool) (int, int, error) {
-	var decoded [4]byte
-
-	written, consumed, err := t.base.Transform(decoded[:], src, atEOF)
+	decoded := t.decoded[:]
+	written, consumed, err := t.base.Transform(decoded, src, atEOF)
 
 	fallback := consumed == 0
 	if src[0] <= 0x9f {

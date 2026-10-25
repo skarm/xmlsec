@@ -205,11 +205,11 @@ func parseDecryptedPrivate(state *passwordState, plain []byte) (crypto.Signer, e
 	}
 
 	key, err := parsePrivateDER("PRIVATE KEY", plain, state.limits)
-	if err != nil && !errors.Is(err, ErrLimit) {
-		return nil, ErrDecrypt
-	}
-
 	if err != nil {
+		if !errors.Is(err, ErrLimit) {
+			return nil, ErrDecrypt
+		}
+
 		return nil, err
 	}
 

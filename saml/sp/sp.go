@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/url"
 	"slices"
 	"time"
@@ -37,8 +38,8 @@ var (
 	ErrCorrelation = errors.New("SAML browser/request correlation failed")
 )
 
-// Config configures trusted metadata, signing, request state, replay protection and
-// response policy.
+// Config supplies trusted metadata, signing keys, request and replay stores, and
+// response validation policy.
 type Config struct {
 	// EntityID is the local entity identifier used for issuer and audience checks.
 	EntityID string
@@ -54,9 +55,13 @@ type Config struct {
 	Requests state.Store
 	// Replay atomically consumes scoped identifiers; use shared storage across service
 	// instances.
-	Replay         replay.Store
-	Limits         protocol.Limits
-	POSTLimits     binding.POSTLimits
+	Replay replay.Store
+	// Limits bounds protocol message age, assertion lifetime and attribute values.
+	Limits protocol.Limits
+	// POSTLimits bounds POST binding messages and generated forms.
+	POSTLimits binding.POSTLimits
+	// RedirectLimits sets Redirect binding signature policy and query, inflation and XML
+	// limits.
 	RedirectLimits binding.Options
 	// RequestLifetime bounds pending requests; zero selects five minutes.
 	// Values must be between one second and ten minutes.
@@ -66,8 +71,8 @@ type Config struct {
 	AllowUnsignedResponse bool
 }
 
-// ServiceProvider implements solicited SAML login initiation and authenticated response
-// consumption.
+// ServiceProvider initiates solicited SAML login and validates and consumes correlated
+// responses.
 type ServiceProvider struct{ c Config }
 
 // NewServiceProvider validates and snapshots ServiceProvider policy and required trusted adapters.
@@ -209,13 +214,13 @@ func (s *ServiceProvider) Begin(ctx context.Context, o BeginOptions) (*Outbound,
 		return nil, e
 	}
 
-	out := &Outbound{destination: destination, binding: o.Binding, requestID: requestID, relay: relay, expires: expires, doc: signed}
+	out := &Outbound{destination: destination, binding: o.Binding, requestID: requestID, relay: relay, expires: expires, doc: signed, limits: s.c.POSTLimits}
 	if o.Binding == metadata.HTTPRedirect {
 		opt := s.c.RedirectLimits
 		opt.SignatureMethod = s.c.Signing.SignatureMethod
 		out.query, e = binding.SignRedirect(ctx, signed, binding.Request, &relay, s.c.Signing.Key, opt)
 	} else {
-		out.form, e = binding.EncodePOST(ctx, signed, binding.Request, &relay, s.c.POSTLimits)
+		_, e = binding.WritePOST(ctx, io.Discard, signed, binding.Request, &relay, s.c.POSTLimits)
 	}
 
 	if e != nil {
@@ -401,9 +406,10 @@ func (s *ServiceProvider) roles(ctx context.Context, idp string, at time.Time) (
 	return own, other, nil
 }
 
-// BeginOptions supplies the IdP, binding, browser correlation secret and requested
-// authentication conditions.
+// BeginOptions selects an IdP, binding and authentication conditions and supplies the
+// browser correlation secret.
 type BeginOptions struct {
+	// IDP selects the trusted identity provider by its metadata entity identifier.
 	IDP string
 	// Binding selects HTTP-Redirect (the default) or HTTP-POST.
 	Binding string
@@ -413,21 +419,31 @@ type BeginOptions struct {
 	// BrowserBinding is a server-generated, unpredictable browser or session secret.
 	BrowserBinding []byte
 	// At is the explicit trusted time used by this operation.
-	At                time.Time
-	NameIDFormat      string
+	At time.Time
+	// NameIDFormat optionally requests an exact subject identifier format URI.
+	NameIDFormat string
+	// RequestedContexts lists requested authentication context class URIs for exact
+	// comparison.
 	RequestedContexts []string
-	// ForceAuthn requests fresh authentication; IsPassive forbids interaction;
-	// AllowCreateNameID permits the IdP to create a NameID.
-	ForceAuthn, IsPassive, AllowCreateNameID bool
+	// ForceAuthn requests fresh authentication.
+	ForceAuthn bool
+	// IsPassive forbids interaction with the subject when true.
+	IsPassive bool
+	// AllowCreateNameID permits the IdP to create a new subject identifier when true.
+	AllowCreateNameID bool
 }
 
-// Outbound is an immutable signed authentication request and its binding-specific
-// transport data.
+// Outbound retains an immutable signed request and its binding-specific transport
+// data.
 type Outbound struct {
-	destination, binding, requestID, relay, query string
-	form                                          []byte
-	doc                                           *document.Document
-	expires                                       time.Time
+	destination string
+	binding     string
+	requestID   string
+	relay       string
+	query       string
+	limits      binding.POSTLimits
+	doc         *document.Document
+	expires     time.Time
 }
 
 // Destination returns the validated destination endpoint.
@@ -475,13 +491,25 @@ func (o *Outbound) RawQuery() string {
 	return o.query
 }
 
-// POSTBody returns an owned copy of the encoded POST form body.
-func (o *Outbound) POSTBody() []byte {
-	if o == nil {
-		return nil
+// WritePOST writes the signed POST request directly to dst, which remains open.
+// The immutable XML snapshot is retained; a complete form is not. Errors may
+// leave partial output which the caller must discard. Redirect requests are rejected.
+func (o *Outbound) WritePOST(ctx context.Context, dst io.Writer) (int64, error) {
+	if o == nil || o.binding != metadata.HTTPPost {
+		return 0, ErrPolicy
 	}
 
-	return bytes.Clone(o.form)
+	return binding.WritePOST(ctx, dst, o.doc, binding.Request, &o.relay, o.limits)
+}
+
+// WritePOSTForm writes a complete HTML POST form to the metadata-selected
+// endpoint. It leaves dst open and may leave partial output on failure.
+func (o *Outbound) WritePOSTForm(ctx context.Context, dst io.Writer) (int64, error) {
+	if o == nil || o.binding != metadata.HTTPPost {
+		return 0, ErrPolicy
+	}
+
+	return binding.WritePOSTForm(ctx, dst, o.destination, o.doc, binding.Request, &o.relay, o.limits)
 }
 
 // ExpiresAt returns the exclusive expiration boundary.
@@ -514,8 +542,8 @@ func (o *Outbound) RedirectURL() (string, error) {
 	return u.String(), nil
 }
 
-// ConsumeOptions supplies the verification time, browser correlation secret and optional
-// client address.
+// ConsumeOptions supplies trusted verification time, browser correlation secret and an
+// optional expected client address.
 type ConsumeOptions struct {
 	// At is the explicit trusted time used by this operation.
 	At time.Time

@@ -11,7 +11,7 @@ import (
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	icu "github.com/skarm/xmlsec/transform/internal/xpath/number"
+	number "github.com/skarm/xmlsec/transform/internal/xpath/number"
 )
 
 // roundMaxComputeScale bounds the positive (fine) compute scale handed to Exp for
@@ -852,7 +852,7 @@ func ratRoundPrecision(r *big.Rat, precision int) *big.Rat {
 }
 
 // ratRoundPrecisionHalfToEven rounds a *big.Rat to the given precision (number
-// of decimal places) using half-to-even rounding. Unlike the icu helper it
+// of decimal places) using half-to-even rounding. Unlike the number helper it
 // applies no coarse magnitude clamp: callers pass a precision whose scale has
 // already been bounded by the operand's own digit count (via resolveRoundScale),
 // so 10^|precision| is bounded by the operand and never astronomically large.
@@ -861,7 +861,7 @@ func ratRoundPrecisionHalfToEven(r *big.Rat, precision int) *big.Rat {
 		scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(precision)), nil)
 		scaleRat := new(big.Rat).SetInt(scale)
 		shifted := new(big.Rat).Mul(r, scaleRat)
-		rounded := icu.RatRoundHalfToEvenInt(shifted)
+		rounded := number.RatRoundHalfToEvenInt(shifted)
 
 		return new(big.Rat).SetFrac(rounded, new(big.Int).Set(scale))
 	}
@@ -873,7 +873,7 @@ func ratRoundPrecisionHalfToEven(r *big.Rat, precision int) *big.Rat {
 	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-precision)), nil)
 	scaleRat := new(big.Rat).SetInt(scale)
 	divided := new(big.Rat).Quo(r, scaleRat)
-	rounded := icu.RatRoundHalfToEvenInt(divided)
+	rounded := number.RatRoundHalfToEvenInt(divided)
 
 	return new(big.Rat).Mul(new(big.Rat).SetInt(rounded), scaleRat)
 }

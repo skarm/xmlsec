@@ -17,7 +17,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	value "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
+	lexical "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 )
 
 // AtomicToString returns the canonical string representation of an atomic value.
@@ -405,7 +405,7 @@ func parseXPathDouble(s string) (float64, error) {
 }
 
 func parseXPathFloating(s string, bits int) (float64, error) {
-	if err := value.ValidateBuiltin(s, lexicon.TypeDouble, value.Version11); err != nil {
+	if err := lexical.ValidateBuiltin(s, lexicon.TypeDouble, lexical.Version11); err != nil {
 		return 0, err
 	}
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto"
@@ -14,19 +15,32 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/transform"
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
 type executionFlags struct {
-	xml                                                   document.Limits
-	output, references, canonical, nodeVisits, transforms int
-	timeout                                               time.Duration
-	policy, methods, digests, programs                    string
-	minRSABits, maxRSABits, minPSSSalt, maxPSSSalt        int
-	minHMACKey, maxHMACKey, minHMACBits                   int
-	allowHMACTruncation                                   bool
+	xml                 document.Limits
+	output              int
+	references          int
+	canonical           int
+	nodeVisits          int
+	transforms          int
+	timeout             time.Duration
+	policy              string
+	methods             string
+	digests             string
+	programs            string
+	minRSABits          int
+	maxRSABits          int
+	minPSSSalt          int
+	maxPSSSalt          int
+	minHMACKey          int
+	maxHMACKey          int
+	minHMACBits         int
+	allowHMACTruncation bool
 }
 
 func (e *executionFlags) start(ctx context.Context) (context.Context, context.CancelFunc, error) {
@@ -131,13 +145,30 @@ func (e *executionFlags) processing(ctx context.Context, maxResource int, allowe
 	return opt, reference.ValidateTransforms(nil, opt)
 }
 
-func readInputContext(ctx context.Context, path string, stdin io.Reader, maximum int) (data []byte, resultErr error) {
-	if err := ctx.Err(); err != nil {
+func readInputContext(ctx context.Context, path string, stdin io.Reader, maximum int) (data []byte, err error) {
+	err = consumeInput(ctx, path, stdin, maximum, func(r io.Reader) error {
+		var readErr error
+
+		data, readErr = io.ReadAll(r)
+
+		return readErr
+	})
+	if err != nil {
 		return nil, err
 	}
 
+	return data, nil
+}
+
+// consumeInput owns local descriptors through parsing and completion. Consumers
+// must read to EOF on success so terminal errors and byte-limit probes are seen.
+func consumeInput(ctx context.Context, path string, stdin io.Reader, maximum int, consume func(io.Reader) error) (resultErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if maximum < 1 || maximum > 64<<20 {
-		return nil, usageError("input byte limit must be 1..67108864")
+		return usageError("input byte limit must be 1..67108864")
 	}
 
 	r := stdin
@@ -145,7 +176,7 @@ func readInputContext(ctx context.Context, path string, stdin io.Reader, maximum
 	if path != "-" {
 		f, err := openRegular(path)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer func() { resultErr = errors.Join(resultErr, f.Close()) }()
 
@@ -153,13 +184,13 @@ func readInputContext(ctx context.Context, path string, stdin io.Reader, maximum
 	}
 
 	if r == nil {
-		return nil, usageError("stdin is unavailable")
+		return usageError("stdin is unavailable")
 	}
 	// Enroll inherited streams in the runtime poller before installing cancellation.
 	if file, ok := r.(*os.File); ok {
 		stream, cleanup, err := prepareFileIO(file)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer cleanup()
 
@@ -169,21 +200,14 @@ func readInputContext(ctx context.Context, path string, stdin io.Reader, maximum
 	stop := interruptIO(ctx, r)
 	defer stop()
 
-	b, err := io.ReadAll(io.LimitReader(r, int64(maximum)+1))
+	reader := &streamio.Reader{Context: ctx, Source: r, Limit: int64(maximum), LimitError: fmt.Errorf("input exceeds %d bytes", maximum)}
+	err := consume(reader)
 
 	if ce := ctx.Err(); ce != nil {
-		return nil, ce
+		return ce
 	}
 
-	if err != nil {
-		return nil, err
-	}
-
-	if len(b) > maximum {
-		return nil, fmt.Errorf("input exceeds %d bytes", maximum)
-	}
-
-	return b, nil
+	return err
 }
 
 func openRegular(path string) (*os.File, error) {
@@ -278,7 +302,7 @@ func uniqueJSON(d *json.Decoder, depth int) error {
 
 	switch delim {
 	case '{':
-		seen := map[string]bool{}
+		seen := map[string]struct{}{}
 
 		for d.More() {
 			t, err := d.Token()
@@ -291,11 +315,11 @@ func uniqueJSON(d *json.Decoder, depth int) error {
 				return errors.New("invalid JSON key")
 			}
 
-			if seen[key] {
+			if _, exists := seen[key]; exists {
 				return fmt.Errorf("duplicate JSON key %q", key)
 			}
 
-			seen[key] = true
+			seen[key] = struct{}{}
 
 			if err := uniqueJSON(d, depth+1); err != nil {
 				return err
@@ -447,28 +471,74 @@ func parseHash(s string) (crypto.Hash, error) {
 }
 
 func jsonOutput(ctx context.Context, path string, w io.Writer, v any) error {
-	var b bytes.Buffer
-	if err := writeJSON(&b, v); err != nil {
-		return err
+	if path == "-" {
+		return produceOutput(ctx, path, w, func(dst io.Writer) error { return writeJSON(dst, v) })
 	}
 
-	return writeOutputContext(ctx, path, w, b.Bytes())
+	// encoding/json already stages one complete value. Another disk buffer
+	// adds fixed storage without combining any of its writes.
+	limit := execution(ctx).output
+
+	err := writeAtomicOutputFunc(ctx, path, w, func(dst io.Writer) error {
+		return writeJSON(&streamio.Writer{Context: ctx, Target: dst, Limit: int64(limit), LimitError: fmt.Errorf("output exceeds %d bytes", limit)}, v)
+	})
+	if ce := ctx.Err(); ce != nil {
+		return ce
+	}
+
+	return err
 }
 
-func readDocument(ctx context.Context, path string, stdin io.Reader) (*document.Document, error) {
-	b, err := readInputContext(ctx, path, stdin, execution(ctx).xml.MaxBytes)
+func readDocument(ctx context.Context, path string, stdin io.Reader) (doc *document.Document, err error) {
+	err = consumeInput(ctx, path, stdin, execution(ctx).xml.MaxBytes, func(r io.Reader) error {
+		var parseErr error
+
+		doc, parseErr = document.ParseReader(ctx, r, execution(ctx).xml)
+
+		return parseErr
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	return document.Parse(ctx, b, execution(ctx).xml)
+	return doc, nil
+}
+
+// produceOutput streams local output to the same-directory temporary file.
+// Stdout is collected first so serialization errors cannot publish a prefix.
+func produceOutput(ctx context.Context, path string, w io.Writer, produce func(io.Writer) error) error {
+	limit := execution(ctx).output
+	limitErr := fmt.Errorf("output exceeds %d bytes", limit)
+
+	if path == "-" {
+		var output bytes.Buffer
+		if err := produce(&streamio.Writer{Context: ctx, Target: &output, Limit: int64(limit), LimitError: limitErr}); err != nil {
+			return err
+		}
+
+		return writeOutputContext(ctx, path, w, output.Bytes())
+	}
+
+	err := writeAtomicOutputFunc(ctx, path, w, func(target io.Writer) error {
+		// Serializers emit short markup and 4 KiB escaped text fragments. Batch
+		// disk writes without collecting the complete serialized document.
+		buffered := bufio.NewWriterSize(target, 32<<10)
+		if err := produce(&streamio.Writer{Context: ctx, Target: buffered, Limit: int64(limit), LimitError: limitErr}); err != nil {
+			return err
+		}
+
+		return buffered.Flush()
+	})
+	if ce := ctx.Err(); ce != nil {
+		return ce
+	}
+
+	return err
 }
 
 func documentOutput(ctx context.Context, path string, w io.Writer, doc *document.Document) error {
-	var b bytes.Buffer
-	if _, err := doc.WriteXML(ctx, &b, execution(ctx).output); err != nil {
+	return produceOutput(ctx, path, w, func(target io.Writer) error {
+		_, err := doc.WriteXML(ctx, target, execution(ctx).output)
 		return err
-	}
-
-	return writeOutputContext(ctx, path, w, b.Bytes())
+	})
 }

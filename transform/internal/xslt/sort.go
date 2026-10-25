@@ -1025,7 +1025,7 @@ func validateSortKeyAttrs(ctx context.Context, ec *execContext, sk *sortKey) err
 		if err != nil {
 			return err
 		}
-		// helium always performs a stable sort; the evaluated value is
+		// The processor always performs a stable sort; the evaluated value is
 		// validated for conformance but does not change sort behavior
 		// (honoring stable="no" via an unstable sort is out of scope).
 		if _, ok := parseXSLTBoolean(stable, ec.stylesheet.processorLanguage()); !ok {
@@ -1143,7 +1143,7 @@ func validateSortKeyTypesN[T any](entries keyedSlice[T], dtModes []dataTypeMode,
 // isValidSortDataType reports whether s is a permitted xsl:sort data-type
 // value: "text", "number", or a QName denoting a non-absent namespace
 // (a prefixed lexical QName or an EQName Q{uri}local). The effect of a QName
-// data-type is implementation-defined; helium treats it as "text".
+// data-type is implementation-defined; the processor treats it as "text".
 func isValidSortDataType(s string) bool {
 	switch s {
 	case lexicon.MethodText, lexicon.TypeNumber:

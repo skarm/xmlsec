@@ -230,7 +230,10 @@ func TestXPath10IDWhitespaceAndIntermediateLimit(t *testing.T) {
 
 	q := query(t, e, `count(id($ids))`, transform.XPath10)
 
-	for _, tc := range []struct{ ids, want string }{{"a\u00a0b", "0"}, {" \ta\r\n b ", "2"}} {
+	for _, tc := range []struct {
+		ids  string
+		want string
+	}{{"a\u00a0b", "0"}, {" \ta\r\n b ", "2"}} {
 		ids, want := tc.ids, tc.want
 
 		out, err := q.Evaluate(ctx, d, transform.XPathContext{Variables: transform.Bindings{{Local: "ids"}: transform.Values(transform.String(ids))}})

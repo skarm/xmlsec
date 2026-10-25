@@ -187,7 +187,11 @@ func (c *compiler) validatePackageOverrideConflicts(oset *overrideSet) error {
 	return nil
 }
 
-type acceptedComponent struct{ kind, name, visibility string }
+type acceptedComponent struct {
+	kind       string
+	name       string
+	visibility string
+}
 
 func packageComponents(pkg *Stylesheet) []acceptedComponent {
 	var components []acceptedComponent

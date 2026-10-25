@@ -26,8 +26,9 @@ func TestJDKV1Transforms(t *testing.T) {
 	var m struct {
 		PublicKey string `json:"public_key"`
 		Cases     []struct {
-			File, Kind string
-			Valid      bool
+			File  string
+			Kind  string
+			Valid bool
 		}
 	}
 	if e = json.Unmarshal(raw, &m); e != nil {

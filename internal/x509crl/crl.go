@@ -21,7 +21,12 @@ import (
 var ErrLimit = errors.New("CRL decoder resource limit exceeded")
 
 // Limits bounds decoding before the standard-library v2 allocation.
-type Limits struct{ Bytes, Depth, Nodes, Entries int }
+type Limits struct {
+	Bytes   int
+	Depth   int
+	Nodes   int
+	Entries int
+}
 
 // View preserves the exact signed header while providing the standard X.509 view.
 // Returned byte slices borrow the input; callers that retain them must own input.
@@ -78,10 +83,11 @@ func Parse(raw []byte, limits Limits) (*View, error) {
 }
 
 type listDecoder struct {
-	body           []asn1.RawValue
-	index, version int
-	list           *x509.RevocationList
-	algorithm      pkix.AlgorithmIdentifier
+	body      []asn1.RawValue
+	index     int
+	version   int
+	list      *x509.RevocationList
+	algorithm pkix.AlgorithmIdentifier
 }
 
 func parseHeader(raw []byte, outer []asn1.RawValue) (*listDecoder, error) {
@@ -243,7 +249,7 @@ func validateExtensions(value asn1.RawValue) error {
 		return err
 	}
 
-	seen := make(map[string]bool, len(fields))
+	seen := make(map[string]struct{}, len(fields))
 	for _, field := range fields {
 		parts, err := der.Sequence(field, 2, 3)
 		if err != nil {
@@ -251,11 +257,15 @@ func validateExtensions(value asn1.RawValue) error {
 		}
 
 		var oid asn1.ObjectIdentifier
-		if der.Decode(parts[0], &oid) != nil || seen[oid.String()] {
+		if der.Decode(parts[0], &oid) != nil {
 			return der.ErrInvalidDER
 		}
 
-		seen[oid.String()] = true
+		if _, exists := seen[oid.String()]; exists {
+			return der.ErrInvalidDER
+		}
+
+		seen[oid.String()] = struct{}{}
 
 		if len(parts) == 3 {
 			var critical bool

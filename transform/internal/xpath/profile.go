@@ -240,7 +240,7 @@ func validateVersionExpr(ast Expr, version int, namespaces map[string]string, ho
 	})
 }
 
-func lookupfunctions30(key string) (bool, bool) {
+func lookupXPath30Function(key string) (bool, bool) {
 	switch key {
 	case fnNameHead, nameTail, nameHasChildren, "innermost", "outermost", namePath, "analyze-string", lexicon.FnGenerateID, "format-integer", "function-name", "function-arity", "function-lookup", nameForEach, nameFilter, nameFoldLeft, nameFoldRight, nameForEachPair, "environment-variable", "available-environment-variables", "uri-collection", "serialize", "parse-xml", "parse-xml-fragment", nameUnparsedTextLines:
 		return true, true
@@ -251,9 +251,9 @@ func lookupfunctions30(key string) (bool, bool) {
 	return zero, false
 }
 
-func functions30(key string) bool { value, _ := lookupfunctions30(key); return value }
+func functions30(key string) bool { value, _ := lookupXPath30Function(key); return value }
 
-func lookupfunctions31(key string) (bool, bool) {
+func lookupXPath31Function(key string) (bool, bool) {
 	switch key {
 	case "parse-json", "json-doc", "json-to-xml", "xml-to-json", "transform", "default-language", nameLoadXQueryModule, "apply", "collation-key", "contains-token", "parse-ietf-date", "random-number-generator", nameSort:
 		return true, true
@@ -264,7 +264,7 @@ func lookupfunctions31(key string) (bool, bool) {
 	return zero, false
 }
 
-func functions31(key string) bool { value, _ := lookupfunctions31(key); return value }
+func functions31(key string) bool { value, _ := lookupXPath31Function(key); return value }
 
 func functionVisible(version int, uri, name string, arity int) bool {
 	if version == 0 {
@@ -469,14 +469,14 @@ func validateFunctionSyntax(node any, version int, namespaces map[string]string)
 }
 
 func checkInlineParameterNames(params []FunctionParam, namespaces map[string]string) error {
-	seen := make(map[string]bool, len(params))
+	seen := make(map[string]struct{}, len(params))
 	for _, param := range params {
 		key := VariableKey(param.Name, namespaces)
-		if seen[key] {
+		if _, duplicate := seen[key]; duplicate {
 			return &xdm.Error{Code: "XQST0039", Message: "duplicate inline function parameter: " + param.Name}
 		}
 
-		seen[key] = true
+		seen[key] = struct{}{}
 	}
 
 	return nil

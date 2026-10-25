@@ -13,13 +13,16 @@ import (
 	"unicode"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	icu "github.com/skarm/xmlsec/transform/internal/xpath/number"
+	number "github.com/skarm/xmlsec/transform/internal/xpath/number"
 )
 
-type DecimalFormat = icu.DecimalFormat
+// DecimalFormat aliases the shared decimal-picture symbol and formatting
+// configuration.
+type DecimalFormat = number.DecimalFormat
 
+// DefaultDecimalFormat returns the shared default decimal formatting symbols.
 func DefaultDecimalFormat() DecimalFormat {
-	return icu.DefaultDecimalFormat()
+	return number.DefaultDecimalFormat()
 }
 
 // DecimalZeroDigit identifies the first digit of each Unicode Nd group of ten.
@@ -44,15 +47,15 @@ func DecimalZeroDigit(character rune) bool {
 	return false
 }
 
-func defaultDecimalFormat(ctx context.Context) icu.DecimalFormat {
+func defaultDecimalFormat(ctx context.Context) number.DecimalFormat {
 	if ec := getFnContext(ctx); ec != nil && ec.defaultDecimalFormat != nil {
 		return *ec.defaultDecimalFormat
 	}
 
-	return icu.DefaultDecimalFormat()
+	return number.DefaultDecimalFormat()
 }
 
-func resolveDecimalFormat(ctx context.Context, name string) (icu.DecimalFormat, error) {
+func resolveDecimalFormat(ctx context.Context, name string) (number.DecimalFormat, error) {
 	name = strings.Trim(name, " \t\r\n")
 	if name == "" {
 		return defaultDecimalFormat(ctx), nil
@@ -60,7 +63,7 @@ func resolveDecimalFormat(ctx context.Context, name string) (icu.DecimalFormat, 
 
 	qname, err := resolveDecimalFormatName(ctx, name)
 	if err != nil {
-		return icu.DecimalFormat{}, err
+		return number.DecimalFormat{}, err
 	}
 
 	if ec := getFnContext(ctx); ec != nil && ec.decimalFormats != nil {
@@ -69,7 +72,7 @@ func resolveDecimalFormat(ctx context.Context, name string) (icu.DecimalFormat, 
 		}
 	}
 
-	return icu.DecimalFormat{}, &xdm.Error{Code: errCodeFODF1280, Message: fmt.Sprintf("unknown decimal format: %s", name)}
+	return number.DecimalFormat{}, &xdm.Error{Code: errCodeFODF1280, Message: fmt.Sprintf("unknown decimal format: %s", name)}
 }
 
 func resolveDecimalFormatName(ctx context.Context, name string) (QualifiedName, error) {
@@ -104,7 +107,7 @@ func resolveDecimalFormatName(ctx context.Context, name string) (QualifiedName, 
 	return QualifiedName{Name: name}, nil
 }
 
-func boundedFormatNumber(ctx context.Context, value xdm.AtomicValue, picture string, df icu.DecimalFormat) (string, error) {
+func boundedFormatNumber(ctx context.Context, value xdm.AtomicValue, picture string, df number.DecimalFormat) (string, error) {
 	if ec := getFnContext(ctx); ec != nil && ec.version != 0 && ec.version < 31 {
 		df.ExponentDisabled = true
 	}
@@ -128,7 +131,7 @@ func boundedFormatNumber(ctx context.Context, value xdm.AtomicValue, picture str
 	return result, err
 }
 
-func formatNumber(a xdm.AtomicValue, picture string, df icu.DecimalFormat) (string, error) {
+func formatNumber(a xdm.AtomicValue, picture string, df number.DecimalFormat) (string, error) {
 	f := a.ToFloat64()
 
 	isNaN := math.IsNaN(f)
@@ -163,7 +166,7 @@ func formatNumber(a xdm.AtomicValue, picture string, df icu.DecimalFormat) (stri
 		precise = scaledFloatPrecise(a.TypeName, f, picture, negative, df, precise)
 	}
 
-	result, err := icu.FormatNumber(f, isNaN, isPosInf, isNegInf, negative, precise, picture, df)
+	result, err := number.FormatNumber(f, isNaN, isPosInf, isNegInf, negative, precise, picture, df)
 	if err != nil {
 		return "", &xdm.Error{Code: errCodeFODF1310, Message: fmt.Sprintf("invalid picture: %q", picture)}
 	}
@@ -171,8 +174,8 @@ func formatNumber(a xdm.AtomicValue, picture string, df icu.DecimalFormat) (stri
 	return result, nil
 }
 
-func scaledFloatPrecise(typeName string, f float64, picture string, negative bool, df icu.DecimalFormat, precise *big.Rat) *big.Rat {
-	pp, err := icu.ParsePicture(selectedNumberPicture(picture, negative, df), df)
+func scaledFloatPrecise(typeName string, f float64, picture string, negative bool, df number.DecimalFormat, precise *big.Rat) *big.Rat {
+	pp, err := number.ParsePicture(selectedNumberPicture(picture, negative, df), df)
 	if err != nil || (!pp.IsPercent && !pp.IsPerMille) {
 		return precise
 	}
@@ -204,7 +207,7 @@ func scaledFloatPrecise(typeName string, f float64, picture string, negative boo
 	return new(big.Rat).Quo(scaledRat, new(big.Rat).SetInt64(divisor))
 }
 
-func selectedNumberPicture(picture string, negative bool, df icu.DecimalFormat) string {
+func selectedNumberPicture(picture string, negative bool, df number.DecimalFormat) string {
 	parts := strings.SplitN(picture, string(df.PatternSeparator), 3)
 	if negative && len(parts) > 1 {
 		return parts[1]

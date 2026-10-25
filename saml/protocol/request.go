@@ -6,9 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/saml/binding"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
@@ -17,27 +16,40 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
-// RequestOptions sets expected request identity, destination, time and protocol
-// conditions.
+// RequestOptions supplies trusted issuer, destination, endpoint and time expectations
+// for request validation.
 type RequestOptions struct {
-	Issuer, Destination string
-	ACS                 []metadata.Endpoint
+	// Issuer is the expected requesting service provider's entity identifier.
+	Issuer string
+	// Destination is the trusted identity provider endpoint expected in the request.
+	Destination string
+	// ACS lists assertion consumer endpoints from trusted SP metadata.
+	ACS []metadata.Endpoint
 	// At is the explicit trusted time used by this operation.
-	At     time.Time
+	At time.Time
+	// Limits bounds request age and supported protocol values.
 	Limits Limits
+	// Policy sets request signature algorithms and key limits.
 	Policy xmldsig.Policy
 }
 
-// VerifiedRequest is an immutable authenticated AuthnRequest accepted under
+// VerifiedRequest retains an immutable AuthnRequest authenticated and accepted under
 // RequestOptions.
 type VerifiedRequest struct {
-	instant                                         time.Time
-	doc                                             *document.Document
-	id, issuer, destination, acs, format, qualifier string
-	relay                                           string
-	contexts                                        []string
-	force, passive, allowCreate                     bool
-	hasRelay                                        bool
+	instant     time.Time
+	doc         *document.Document
+	id          string
+	issuer      string
+	destination string
+	acs         string
+	format      string
+	qualifier   string
+	relay       string
+	contexts    []string
+	force       bool
+	passive     bool
+	allowCreate bool
+	hasRelay    bool
 }
 
 // VerifyAuthnRequest requires an XML signature. There is deliberately no public
@@ -401,14 +413,29 @@ func appendRequestContexts(contexts []document.Element, request *VerifiedRequest
 	return nil
 }
 
-// AuthnRequest supplies the fields of a solicited SAML authentication request.
+// AuthnRequest supplies identifiers, endpoints and authentication conditions for a
+// solicited request.
 type AuthnRequest struct {
-	ID, Issuer, Destination, ACS, NameIDFormat string
-	IssueInstant                               time.Time
-	// ForceAuthn requests fresh authentication; IsPassive forbids interaction;
-	// AllowCreateNameID permits the IdP to create a NameID.
-	ForceAuthn, IsPassive, AllowCreateNameID bool
-	RequestedContexts                        []string
+	// ID is the required request XML ID.
+	ID string
+	// Issuer is the requesting service provider's entity identifier URI.
+	Issuer string
+	// Destination is the trusted identity provider endpoint URL.
+	Destination string
+	// ACS is the requested assertion consumer endpoint URL.
+	ACS string
+	// NameIDFormat optionally requests an exact subject identifier format URI.
+	NameIDFormat string
+	// IssueInstant is the required request issuance time.
+	IssueInstant time.Time
+	// ForceAuthn requests fresh authentication.
+	ForceAuthn bool
+	// IsPassive forbids interaction with the subject when true.
+	IsPassive bool
+	// AllowCreateNameID permits creation of a new subject identifier when true.
+	AllowCreateNameID bool
+	// RequestedContexts lists authentication context class URIs for exact comparison.
+	RequestedContexts []string
 }
 
 // BuildAuthnRequest builds an unsigned AuthnRequest in the supported solicited profile.

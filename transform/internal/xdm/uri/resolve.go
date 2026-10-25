@@ -168,8 +168,14 @@ func ResolveIRIReference(ref, base string) (string, error) {
 }
 
 type iriReference struct {
-	scheme, authority, path, query, fragment string
-	hasAuthority, hasQuery, hasFragment      bool
+	scheme       string
+	authority    string
+	path         string
+	query        string
+	fragment     string
+	hasAuthority bool
+	hasQuery     bool
+	hasFragment  bool
 }
 
 func (r iriReference) String() string {

@@ -187,7 +187,10 @@ func FuzzValidatePreservation(f *testing.F) {
 		f.Fatal(e)
 	}
 
-	var cases []struct{ Name, At string }
+	var cases []struct {
+		Name string
+		At   string
+	}
 	if e = json.Unmarshal(b, &cases); e != nil {
 		f.Fatal(e)
 	}
@@ -302,10 +305,11 @@ func archivePolicy(t *testing.T, c testcert.Chain) (*timestamp.Verifier, pki.Evi
 }
 
 type archiveTransport struct {
-	key        crypto.Signer
-	cert, root []byte
-	now        time.Time
-	calls      int
+	key   crypto.Signer
+	cert  []byte
+	root  []byte
+	now   time.Time
+	calls int
 }
 
 func (t *archiveTransport) RoundTrip(ctx context.Context, q []byte) (io.ReadCloser, error) {

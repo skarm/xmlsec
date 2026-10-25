@@ -93,7 +93,8 @@ func normalize(l Limits) (Limits, error) {
 		l.MaxAttributes = d.MaxAttributes
 	}
 
-	if l.MaxBytes < 1 || l.MaxBytes > 64<<20 || l.MaxContentBytes < 1 || l.MaxCertificates < 1 || l.MaxCertificates > 128 || l.MaxSigners < 1 || l.MaxSigners > 32 || l.MaxAttributes < 2 || l.MaxAttributes > 128 {
+	if l.MaxBytes < 1 || l.MaxBytes > 64<<20 || l.MaxContentBytes < 1 || l.MaxCertificates < 1 || l.MaxCertificates > 128 ||
+		l.MaxSigners < 1 || l.MaxSigners > 32 || l.MaxAttributes < 2 || l.MaxAttributes > 128 {
 		return l, ErrPolicy
 	}
 

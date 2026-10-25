@@ -12,7 +12,11 @@ import (
 )
 
 // Limits bounds the private relative-distribution-point parsing view.
-type Limits struct{ Bytes, Depth, Nodes int }
+type Limits struct {
+	Bytes int
+	Depth int
+	Nodes int
+}
 
 // ParseDefault uses the package's bounded 1MiB, 33-level and 100000-value profile.
 // It borrows raw and performs no authentication or trust decision.
@@ -176,12 +180,16 @@ func relativeExtensions(wrapper asn1.RawValue) ([]pkix.Extension, []byte, bool, 
 	parts := make([][]byte, len(fields))
 	changed := false
 
-	seen := make(map[string]bool, len(fields))
+	seen := make(map[string]struct{}, len(fields))
 	for index, field := range fields {
 		var extension pkix.Extension
 
 		components, err := der.Sequence(field, 2, 3)
-		if err != nil || der.Decode(field, &extension) != nil || seen[extension.Id.String()] {
+		if err != nil || der.Decode(field, &extension) != nil {
+			return nil, nil, false, der.ErrInvalidDER
+		}
+
+		if _, exists := seen[extension.Id.String()]; exists {
 			return nil, nil, false, der.ErrInvalidDER
 		}
 
@@ -189,7 +197,7 @@ func relativeExtensions(wrapper asn1.RawValue) ([]pkix.Extension, []byte, bool, 
 			return nil, nil, false, der.ErrInvalidDER
 		}
 
-		seen[extension.Id.String()] = true
+		seen[extension.Id.String()] = struct{}{}
 		originals = append(originals, extension)
 		parts[index] = field.FullBytes
 

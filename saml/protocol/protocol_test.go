@@ -350,8 +350,11 @@ func TestAuthnRequestACSSelection(t *testing.T) {
 		second = "https://sp.example.test/acs-one"
 	)
 	for _, tc := range []struct {
-		name, attributes, want string
-		first, second          metadata.Endpoint
+		name       string
+		attributes string
+		want       string
+		first      metadata.Endpoint
+		second     metadata.Endpoint
 	}{
 		{name: "unspecified uses document order", want: first},
 		{name: "false is skipped before unspecified", first: metadata.Endpoint{DefaultSet: true}, want: second},

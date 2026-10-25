@@ -15,11 +15,16 @@ import (
 	"github.com/skarm/xmlsec/internal/streamio"
 )
 
-// OCSPResponseTemplate contains caller-asserted status and whole-second UTC instants.
-// The encoder does not determine revocation status.
+// OCSPResponseTemplate supplies caller-asserted certificate status and UTC times
+// at whole-second precision. Encoding does not determine whether a certificate is
+// revoked.
 type OCSPResponseTemplate struct {
-	Status                 OCSPStatus
-	ProducedAt, ThisUpdate time.Time
+	// Status is the certificate status asserted by the issuer of this response.
+	Status OCSPStatus
+	// ProducedAt is the required response production time.
+	ProducedAt time.Time
+	// ThisUpdate is the required time at which the asserted certificate status was known.
+	ThisUpdate time.Time
 	// NextUpdate is omitted when zero, subject to the verifier's freshness policy.
 	NextUpdate time.Time
 	// RevokedAt is required when Status is OCSPRevoked.

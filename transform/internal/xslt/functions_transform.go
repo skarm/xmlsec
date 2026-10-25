@@ -34,6 +34,7 @@ func WithTransformProgramLimit(ctx context.Context, maxBytes int) context.Contex
 // TransformOption configures the fn:transform implementation returned by
 // [TransformFunction].
 type TransformOption interface {
+	// applyTransform applies one internal fn:transform configuration option.
 	applyTransform(*transformFnConfig)
 }
 
@@ -159,8 +160,8 @@ func (ec *execContext) xsltFunctionsNS() map[xpath.QualifiedName]xpath.Function 
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: funcAvailableSystemProperties}] = &xsltFunc{min: 0, max: 0, fn: fnAvailableSystemProperties}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameCurrentOutputURI}] = &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentOutputURI}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameStreamAvailable}] = &xsltFunc{min: 1, max: 1, fn: ec.fnStreamAvailable}
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameUnparsedEntityUri}] = &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityURI}
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameUnparsedEntityPublicId}] = &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityPublicID}
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameUnparsedEntityURI}] = &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityURI}
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameUnparsedEntityPublicID}] = &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityPublicID}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameKey2}] = &keyFunction{ec: ec, scope: ec.effectiveStylesheet()}
 
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: lexicon.FnGenerateID}] = xpath.HostBuiltin(ec.stylesheet.xpathVersion(), lexicon.FnGenerateID)
@@ -434,10 +435,8 @@ func (ec *execContext) fnTransform(ctx context.Context, args []xdm.Sequence) (xd
 	return cfg.run(ctx, args)
 }
 
-// newNestedCompiler creates a Compiler pre-configured with the same
-// resolver, package resolver, and import schemas that were used to
-// compile this stylesheet, so that fn:transform nested compiles
-// behave consistently with top-level compilation.
+// newNestedCompiler inherits stylesheet and package resolvers, resource limits and XML
+// parsing policy for fn:transform compilation.
 func (ss *Stylesheet) newNestedCompiler() Compiler {
 	c := NewCompiler()
 	if ss.uriResolver != nil {
@@ -631,10 +630,10 @@ func applyTransformPostProcess(ctx context.Context, fi xdm.FunctionItem, result 
 	return out, nil
 }
 
-// transformCapabilities is helium's advertised value for each XSLT-namespace
-// requested-property that fn:transform can reason about. supports-streaming is
-// false: helium materializes source documents into a DOM, and streams nothing.
-func lookuptransformCapabilities(ctx context.Context, key string) (bool, bool) {
+// lookupTransformCapability reports recognized XSLT processor capabilities for
+// fn:transform requested-properties. Schema awareness and streaming are unavailable;
+// source and result trees are materialized.
+func lookupTransformCapability(ctx context.Context, key string) (bool, bool) {
 	switch key {
 	case nameSupportsDynamicEvaluation:
 		return !dynamicEvaluationDisabled(ctx), true
@@ -815,10 +814,9 @@ func validateTransformParamMap(name string, seq xdm.Sequence) error {
 	return nil
 }
 
-// checkTransformCapabilities inspects the requested-properties option and raises
-// FOXT0001 when a recognized XSLT-namespace property is requested with a value
-// helium cannot satisfy. Non-map values are XPTY0004; properties outside the
-// XSLT namespace, or ones helium does not model, are ignored.
+// checkTransformCapabilities rejects unsatisfied recognized requested-properties with
+// FOXT0001. Non-map input raises XPTY0004; unknown properties and properties outside
+// the XSLT namespace are ignored.
 func checkTransformCapabilities(ctx context.Context, seq xdm.Sequence) error {
 	if !transformOptionPresent(seq) {
 		return nil
@@ -858,7 +856,7 @@ func checkTransformCapabilities(ctx context.Context, seq xdm.Sequence) error {
 			continue
 		}
 
-		want, known := lookuptransformCapabilities(ctx, qv.Local)
+		want, known := lookupTransformCapability(ctx, qv.Local)
 
 		if !known {
 			continue
@@ -1231,11 +1229,19 @@ type transformOptionFunc func(*transformFnConfig)
 func (f transformOptionFunc) applyTransform(c *transformFnConfig) { f(c) }
 
 type transformRequest struct {
-	options                                                       xdm.MapItem
-	stylesheetLoc, packageName, packageVersion, stylesheetBaseURI string
-	initialTemplate, initialMode, initialFunction                 string
-	deliveryFormat, baseOutputURI                                 string
-	initialMatchSelection, sourceNode, globalContextItem          xdm.Sequence
+	options               xdm.MapItem
+	stylesheetLoc         string
+	packageName           string
+	packageVersion        string
+	stylesheetBaseURI     string
+	initialTemplate       string
+	initialMode           string
+	initialFunction       string
+	deliveryFormat        string
+	baseOutputURI         string
+	initialMatchSelection xdm.Sequence
+	sourceNode            xdm.Sequence
+	globalContextItem     xdm.Sequence
 }
 
 func newTransformRequest(options xdm.MapItem, baseURI string) transformRequest {
@@ -1800,10 +1806,9 @@ func transformMapSeq(m xdm.MapItem, key string) xdm.Sequence {
 	return seq
 }
 
-// transformSeqBool extracts a boolean value from a single-item sequence,
-// accepting the full xs:boolean space that helium recognizes: an xs:boolean
-// atomic item, or the string / xs:untypedAtomic lexical forms true/false/1/0/
-// yes/no (parsed via parseXSDBool). Any other value reports ok=false.
+// transformSeqBool extracts a single boolean item or an accepted string/untypedAtomic
+// spelling: true, false, 1, 0, yes or no. Unsupported values return ok=false. The
+// yes/no forms are host option aliases rather than xs:boolean lexical forms.
 func transformSeqBool(seq xdm.Sequence) (bool, bool) {
 	if !transformOptionPresent(seq) {
 		return false, false

@@ -49,18 +49,15 @@ const (
 	funcSnapshot                  = "snapshot"
 )
 
-// Stylesheet is a compiled XSLT stylesheet ready for transformation.
+// Stylesheet retains compiled templates, expressions and static context. Compilation
+// finishes its indexes before publication, so the stylesheet can be reused by
+// concurrent invocations.
 //
-// A *Stylesheet is immutable after compilation and safe for concurrent use by
-// multiple goroutines: the same compiled stylesheet may be transformed from
-// many goroutines at once without external synchronization. Every mutable
-// per-transform state lives in a separate execution context created per call, so
-// transforms never share state and never write back to the stylesheet. The
-// caller's source document is treated as read-only in all cases (whitespace
-// stripping and source-schema validation both run against a private copy), so a
-// single source may be shared, read-only, across concurrent transforms —
-// schema-aware or not. See the package documentation's Concurrency section for
-// the full contract.
+// Each invocation owns mutable execution state. Source documents are borrowed
+// read-only; whitespace stripping uses a private copy. Host-supplied resolvers,
+// handlers and writers can still be shared, so their concurrency safety remains the
+// caller's responsibility. The public transform profiles do not support schema-aware
+// processing.
 type Stylesheet struct {
 	packageResolver PackageResolver // resolver used at compile time (for fn:transform package-name)
 	uriResolver     URIResolver     // resolver used at compile time (for fn:transform nested compiles)
@@ -68,7 +65,8 @@ type Stylesheet struct {
 	// XPath 1.0 compatibility mode (XSLT backwards-compatible processing, effective
 	// version < 2.0), keyed by pointer identity. nil when the stylesheet has no
 	// backwards-compatible subtree, so the common case costs a nil-map lookup.
-	compatExprs    map[*xpath.Expression]struct{}
+	compatExprs map[*xpath.Expression]struct{}
+	// namedTemplates indexes named template components by expanded QName.
 	namedTemplates map[string]*template
 	modeTemplates  map[string][]*template // mode -> templates sorted by import-precedence then priority
 	// modeIndex holds, per mode, a templateIndex built from modeTemplates[mode]
@@ -79,7 +77,8 @@ type Stylesheet struct {
 	// has no entries at all — dispatch falls back to a plain linear scan.
 	// Built once, eagerly, at the end of Compile; never mutated afterward, so
 	// it is safe to read from concurrent Transform calls without locking.
-	modeIndex           map[string]*templateIndex
+	modeIndex map[string]*templateIndex
+	// keys retains all key definitions contributing to each expanded key name.
 	keys                map[string][]*keyDef
 	outputs             map[string]*OutputDef                       // "" = default output
 	functions           map[funcKey]*xslFunction                    // xsl:function defs (keyed by name+arity)
@@ -96,33 +95,47 @@ type Stylesheet struct {
 	// Visibility maps track per-component visibility for package system.
 	// Keys are component names (expanded QNames for templates/variables,
 	// QualifiedName.String() for functions with arity suffix).
-	templateVisibility        map[string]string     // template name -> visibility
-	functionVisibility        map[string]string     // "ns:local#arity" -> visibility
-	variableVisibility        map[string]string     // variable name -> visibility
-	attrSetVisibility         map[string]string     // attribute-set name -> visibility
-	globalParamVisibility     map[string]string     // global param name -> visibility
-	globalContextItem         *globalContextItemDef // xsl:global-context-item declaration
-	globalContextModules      map[string]*globalContextItemDef
-	characterMaps             map[string]*characterMapDef // name -> character map definition
-	parseOptions              *xdm.ParseOptions           // caller-injected base parseOptions from the compiler (forwarded to runtime + fn:transform nested compiles); nil = hardened default
-	version                   string
-	defaultMode               string
-	baseURI                   string // base URI for resolving relative document references
-	defaultValidation         string // "strict", "lax", "preserve", "strip" (default-validation attr)
-	inputTypeAnnotations      string // "preserve", "strip", "unspecified" (input-type-annotations attr)
-	defaultCollation          string // default-collation URI from stylesheet root
-	packageName               string // xsl:package/@name
-	packageVersion            string // xsl:package/@package-version
-	templates                 []*template
-	globalVars                []*variable // topologically sorted
-	globalParams              []*param
-	stripSpace                []nameTest
-	preserveSpace             []nameTest
-	accumulatorOrder          []string
-	namespaceAliases          []namespaceAlias // xsl:namespace-alias declarations
-	usedPackages              []*Stylesheet    // packages loaded via xsl:use-package
-	processorVersion          int
-	maxResourceBytes          int64 // per-resource read cap from compiler; 0 = MaxResourceBytes default, <0 = unbounded
+	templateVisibility    map[string]string     // template name -> visibility
+	functionVisibility    map[string]string     // "ns:local#arity" -> visibility
+	variableVisibility    map[string]string     // variable name -> visibility
+	attrSetVisibility     map[string]string     // attribute-set name -> visibility
+	globalParamVisibility map[string]string     // global param name -> visibility
+	globalContextItem     *globalContextItemDef // xsl:global-context-item declaration
+	// globalContextModules retains module-specific global context declarations.
+	globalContextModules map[string]*globalContextItemDef
+	characterMaps        map[string]*characterMapDef // name -> character map definition
+	parseOptions         *xdm.ParseOptions           // caller-injected base parseOptions from the compiler (forwarded to runtime + fn:transform nested compiles); nil = hardened default
+	// version retains the principal module's declared stylesheet version.
+	version string
+	// defaultMode selects the mode used when invocation entry does not supply one.
+	defaultMode          string
+	baseURI              string // base URI for resolving relative document references
+	defaultValidation    string // "strict", "lax", "preserve", "strip" (default-validation attr)
+	inputTypeAnnotations string // "preserve", "strip", "unspecified" (input-type-annotations attr)
+	defaultCollation     string // default-collation URI from stylesheet root
+	packageName          string // xsl:package/@name
+	packageVersion       string // xsl:package/@package-version
+	// templates retains compiled template rules in declaration order before dispatch
+	// indexing.
+	templates  []*template
+	globalVars []*variable // topologically sorted
+	// globalParams retains top-level parameter declarations for invocation binding.
+	globalParams []*param
+	// stripSpace retains element-name tests requesting whitespace stripping on private
+	// source copies.
+	stripSpace []nameTest
+	// preserveSpace retains element-name tests preserving whitespace against stripping
+	// rules.
+	preserveSpace []nameTest
+	// accumulatorOrder retains the dependency order for accumulator initialization.
+	accumulatorOrder []string
+	namespaceAliases []namespaceAlias // xsl:namespace-alias declarations
+	usedPackages     []*Stylesheet    // packages loaded via xsl:use-package
+	// processorVersion selects the processor's supported language profile independently
+	// of declared versions.
+	processorVersion int
+	maxResourceBytes int64 // per-resource read cap from compiler; 0 = MaxResourceBytes default, <0 = unbounded
+	// dynamicEvaluationDisabled records whether the host disallows xsl:evaluate.
 	dynamicEvaluationDisabled bool
 	schemaAware               bool // true when xsl:import-schema was encountered
 	isPackage                 bool // true when compiled from xsl:package root
@@ -459,16 +472,15 @@ func (ss *Stylesheet) defaultItemSeparator() *string {
 	return nil
 }
 
-// OutputDef is a compiled xsl:output. It carries the serialization parameters
-// for one output definition; the fields mirror the xsl:output attributes (and
-// the XSLT/XQuery serialization parameters). A nil *OutputDef means no
-// definition is in effect; the Get* accessors are nil-safe. Fields suffixed
-// Explicit record whether a value was set in the source versus defaulted, and
-// fields suffixed Raw hold the unparsed attribute string for XTSE1560 conflict
-// detection. Pointer fields (e.g. IncludeContentType) are nil when unset,
-// distinguishing "not specified" from a false value. ResolvedCharMap is
-// populated at runtime by a terminal method; treat snapshots returned from
-// Invocation.ResolvedOutputDef as read-only.
+// OutputDef retains serialization settings for a compiled xsl:output definition. Nil
+// means no explicit definition; Get methods accept a nil receiver.
+//
+// Fields ending in Explicit distinguish source settings from defaults. Fields ending
+// in Raw retain source spelling for conflict checks. Optional pointers distinguish an
+// omitted parameter from an explicit false or empty value.
+//
+// Execution resolves character maps into an invocation-local output definition. Treat
+// values returned by Invocation.ResolvedOutputDef as read-only.
 type OutputDef struct {
 	// serializationVersion is the selected processor contract, independent of
 	// source backwards-compatibility and the serialized HTML version.
@@ -494,7 +506,8 @@ type OutputDef struct {
 	DoctypeSystem string
 	// MediaType is the MIME media type of the output.
 	MediaType string
-	// Version is the version emitted in the XML or HTML declaration.
+	// Version selects the requested XML or HTML output version. HTMLVersion takes
+	// precedence for HTML serialization when supplied.
 	Version              string
 	HTMLVersion          string // html-version: "5", "4.0", etc.
 	NormalizationForm    string // "NFC", "NFD", "NFKC", "NFKD", "fully-normalized", "none"
@@ -502,10 +515,18 @@ type OutputDef struct {
 	ParameterDocument    string // parameter-document URI
 	// MethodRaw and the other Raw fields retain literal attribute values for
 	// XTSE1560 conflict detection.
-	MethodRaw     string
-	IndentRaw     string
-	EncodingRaw   string
-	VersionRaw    string
+	MethodRaw string
+	// IndentRaw retains the literal indent attribute for output-declaration conflict
+	// checks.
+	IndentRaw string
+	// EncodingRaw retains the literal encoding attribute for output-declaration conflict
+	// checks.
+	EncodingRaw string
+	// VersionRaw retains the literal version attribute for output-declaration conflict
+	// checks.
+	VersionRaw string
+	// StandaloneRaw retains the literal standalone attribute for output-declaration
+	// conflict checks.
 	StandaloneRaw string
 	// CDATASections lists element names whose text content is emitted as CDATA.
 	CDATASections       []string

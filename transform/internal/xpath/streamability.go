@@ -15,11 +15,16 @@ import (
 // StreamInfo exposes precomputed expression properties to internal consumers,
 // including XSLT pattern analysis. It grants no W3C streamability claim.
 type StreamInfo struct {
-	UsedFunctions   map[string]struct{}
-	AxisUsed        uint16
+	// UsedFunctions records lexical function names found in the compiled syntax.
+	UsedFunctions map[string]struct{}
+	// AxisUsed is a bit set of navigation axes used by the expression.
+	AxisUsed uint16
+	// HasDownwardStep reports child or descendant navigation in the syntax.
 	HasDownwardStep bool
-	HasDescOrSelf   bool
-	IsContextItem   bool
+	// HasDescOrSelf reports use of the descendant-or-self axis.
+	HasDescOrSelf bool
+	// IsContextItem reports an expression representing the context item directly.
+	IsContextItem bool
 }
 
 // AST returns the root AST node of the compiled expression.
@@ -28,8 +33,8 @@ func (e *Expression) AST() Expr {
 	return e.astExpr()
 }
 
-// StreamInfo returns a snapshot of the precomputed streamability
-// properties for this expression.
+// StreamInfo returns an independent snapshot of precomputed syntax properties. These
+// properties support internal analysis and do not establish W3C streamability.
 func (e *Expression) StreamInfo() StreamInfo {
 	if e == nil || e.program == nil {
 		return StreamInfo{}
@@ -46,8 +51,8 @@ func (e *Expression) StreamInfo() StreamInfo {
 	}
 }
 
-// computeStreamInfo performs a single AST walk to precompute all
-// streamability properties stored on vmProgram.stream.
+// computeStreamInfo collects navigation and function-use properties in one syntax-tree
+// walk.
 func computeStreamInfo(ast Expr) streamInfo {
 	si := streamInfo{
 		usedFunctions: make(map[string]struct{}),
@@ -66,8 +71,8 @@ func computeStreamInfo(ast Expr) streamInfo {
 	return si
 }
 
-// WalkExpr walks an XPath 3.1 AST, calling fn for each Expr node.
-// If fn returns false, children of that node are not visited.
+// WalkExpr visits the shared XPath syntax tree, calling fn for each expression.
+// Returning false skips that node's children.
 func WalkExpr(expr Expr, fn func(Expr) bool) {
 	if expr == nil {
 		return
@@ -425,7 +430,7 @@ func inspectPredicateMotion(e, pred Expr, step *Step) (bool, bool) {
 
 		if isFn {
 			switch local {
-			case lexicon.FnName, nameLocalName, nameNamespaceUri, nameNodeName,
+			case lexicon.FnName, nameLocalName, nameNamespaceURI, nameNodeName,
 				"self", lexicon.FnGenerateID, "base-uri", fnNameDocumentURI,
 				fnNameNilled, nameHasChildren, nameStringLength, "current":
 				return false, false

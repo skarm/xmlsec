@@ -22,6 +22,15 @@
 // read-only nodes, maps, arrays and function items. The zero Sequence is empty;
 // a zero [Value] is absent. Array Member and Sequence.At use zero-based Go indices.
 //
+// # XML input profiles
+//
+// [Engine.Parse], [Engine.ParseReader], record input and approved XMLDSig
+// programs reject DTDs and external entities. Stylesheets and language XML
+// resources, including doc() and parse-xml(), use separate bounded nonvalidating
+// DTD processing. External DTDs and entities require the configured resolver
+// and invocation resource policy. This mode supports entity expansion, default
+// attributes and declared attribute normalization without DTD or XSD validation.
+//
 // # Results, resources and limits
 //
 // XPath returns a sequence; [Sequence.Text] requires one atomic or node item.

@@ -175,7 +175,7 @@ func historicalEmbeddedCRL(t testing.TB, doc *document.Document) []byte {
 	return nil
 }
 
-func historicalArchivePair(t *testing.T, digest ...string) (testcert.Chain, *document.Document, *document.Document, *timestamp.Verifier) {
+func historicalArchivePair(t testing.TB, digest ...string) (testcert.Chain, *document.Document, *document.Document, *timestamp.Verifier) {
 	t.Helper()
 	chain := testcert.New(t)
 	newTSA := *chain.TSA
@@ -779,5 +779,38 @@ func TestWithTimeDirectCRLFreshestAdvertisementPolicy(t *testing.T) {
 		} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
 			t.Fatal("wrapper ignored PKI use-deltas policy", result, err)
 		}
+	}
+}
+
+// BenchmarkHistoricalValidation measures an offline LTA verification with an
+// expired original TSA, exact archive coverage, embedded CRL and a second TSA.
+// Certificate issuance, timestamp creation and policy setup are not timed.
+func BenchmarkHistoricalValidation(b *testing.B) {
+	chain, archived, insufficient, tsa := historicalArchivePair(b)
+	zero := time.Duration(0)
+	validator, err := xades.NewHistoricalValidator(xades.HistoricalConfig{
+		SignerPKI: pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}},
+		TSA:       tsa, MissingTSAAccuracy: &zero, RequireAllTimestamps: true,
+		Baseline: xades.BaselineVerifyOptions{Signature: xmldsig.SignatureOptions{IDAttribute: document.Name{Local: "ID"}}},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	at := testcert.Now().Add(48 * time.Hour)
+	for name, doc := range map[string]*document.Document{"Archive": archived, "MissingArchive": insufficient} {
+		b.Run(name, func(b *testing.B) {
+			sig := xmldsig.Signatures(doc)[0]
+			b.ReportAllocs()
+			for b.Loop() {
+				result, report, err := validator.Validate(b.Context(), doc, sig, chain.Leaf.Raw, at, xades.ValidationEvidence{})
+				if name == "Archive" {
+					if err != nil || result == nil || report.Indication() != xades.Passed {
+						b.Fatal("historical archive rejected", err)
+					}
+				} else if err == nil || result != nil || report.SubIndication() != "OUT_OF_BOUNDS_NO_POE" {
+					b.Fatal("missing proof accepted", err)
+				}
+			}
+		})
 	}
 }

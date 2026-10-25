@@ -114,7 +114,10 @@ func TestContextStringFunctions(t *testing.T) {
 
 func TestArraySubarrayIntegerBoundaries(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, test := range []struct{ arguments, want string }{
+	for _, test := range []struct {
+		arguments string
+		want      string
+	}{
 		{`[1,2,3],2,2`, "2,3"},
 		{`[1,2,3],4,0`, ""},
 		{`[],1,0`, ""},
@@ -149,7 +152,10 @@ func TestArraySubarrayIntegerBoundaries(t *testing.T) {
 func TestBinaryAggregateVersions(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
-		for _, test := range []struct{ expression, want string }{
+		for _, test := range []struct {
+			expression string
+			want       string
+		}{
 			{`min(xs:hexBinary('01'))`, "01"},
 			{`max(xs:base64Binary('AAAA'))`, "AAAA"},
 			{`min((xs:base64Binary('////'),xs:base64Binary('AAAA')))`, "AAAA"},
@@ -381,7 +387,10 @@ func TestDefaultLanguageValues(t *testing.T) {
 	q := query(t, e, `default-language()`, transform.XPath31)
 	typed := query(t, e, `default-language() instance of xs:language`, transform.XPath31)
 	s := stylesheet(t, e, sheet(version30, `<xsl:template name="start"><xsl:value-of select="default-language()"/></xsl:template>`))
-	for _, test := range []struct{ supplied, want string }{
+	for _, test := range []struct {
+		supplied string
+		want     string
+	}{
 		{"", "en"}, {"fr", "fr"}, {"\t en-US \r\n", "en-US"}, {"x-unknown", "x-unknown"},
 	} {
 		options := transform.DynamicContext{DefaultLanguage: test.supplied}
@@ -577,15 +586,17 @@ func TestJSONNumberConversions(t *testing.T) {
 }
 
 func jsonResourceDecodingCases() []struct {
-	name          string
-	data          []byte
-	options, want string
+	name    string
+	data    []byte
+	options string
+	want    string
 } {
 	const value = `"é🙂"`
 	type resourceCase = struct {
-		name          string
-		data          []byte
-		options, want string
+		name    string
+		data    []byte
+		options string
+		want    string
 	}
 	cases := make([]resourceCase, 0, 19)
 	cases = append(cases, []resourceCase{
@@ -653,8 +664,10 @@ func TestJSONResourceDecoding(t *testing.T) {
 		})
 	}
 	for _, test := range []struct {
-		data, expression, want string
-		limits                 transform.Limits
+		data       string
+		expression string
+		want       string
+		limits     transform.Limits
 	}{
 		{strings.Repeat(" ", 1<<20) + "1", `json-doc('urn:large-source') + json-doc('urn:large-source')`, "2", transform.Limits{MaxOutputBytes: 64}},
 		{"\"\x00\"", `deep-equal(json-doc('urn:small-source',map{'escape':true()}),json-doc('urn:small-source',map{'escape':true()}))`, "true", transform.Limits{MaxInputBytes: 5}},
@@ -766,7 +779,11 @@ func TestTextResourceSnapshots(t *testing.T) {
 
 func TestXSLT20TextFunctionContracts(t *testing.T) {
 	for _, version := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
-		for _, test := range []struct{ expression, want20, want30 string }{
+		for _, test := range []struct {
+			expression string
+			want20     string
+			want30     string
+		}{
 			{`unparsed-text-available((),())`, "false", "XPTY0004"},
 			{`unparsed-text-available('urn:valid',())`, "true", "XPTY0004"},
 			{`unparsed-text-available('urn:invalid','UTF-8')`, "false", "false"},
@@ -834,8 +851,18 @@ func TestXSLT20TextFunctionContracts(t *testing.T) {
 	}
 }
 
-func xmlToJSONSchemaCases() []struct{ name, xml, selectNode, want string } {
-	return []struct{ name, xml, selectNode, want string }{
+func xmlToJSONSchemaCases() []struct {
+	name       string
+	xml        string
+	selectNode string
+	want       string
+} {
+	return []struct {
+		name       string
+		xml        string
+		selectNode string
+		want       string
+	}{
 		{"document", `<number xmlns="http://www.w3.org/2005/xpath-functions">1</number>`, ".", "1"},
 		{"document text", ` <number xmlns="http://www.w3.org/2005/xpath-functions">1</number>`, ".", "FOJS0006"},
 		{"document comments", `<!--before--><number xmlns="http://www.w3.org/2005/xpath-functions">1</number><?after ok?>`, ".", "1"},
@@ -890,8 +917,16 @@ func TestXMLToJSONSchemaContracts(t *testing.T) {
 	}
 }
 
-func xsltHostNameCases() []struct{ expression, code20, want30 string } {
-	return []struct{ expression, code20, want30 string }{
+func xsltHostNameCases() []struct {
+	expression string
+	code20     string
+	want30     string
+} {
+	return []struct {
+		expression string
+		code20     string
+		want30     string
+	}{
 		{`count(key('Q{}k','a',$d))`, "XTDE1260", "1"},
 		{`count(key(' k ','a',$d))`, "XTDE1260", "1"},
 		{`function-available('Q{http://www.w3.org/2005/xpath-functions}count')`, "XTDE1400", "true"},

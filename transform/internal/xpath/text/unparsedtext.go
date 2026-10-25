@@ -67,10 +67,14 @@ type URIResolver = xdm.URIResolver
 
 // Config holds the external dependencies needed by the loading pipeline.
 type Config struct {
+	// BaseURI resolves relative resource references before invoking URIResolver.
 	BaseURI string
 
+	// URIResolver opens explicitly authorized resources. Nil disables retrieval.
 	URIResolver URIResolver
-	ReadPolicy  xdm.ResourceReadPolicy
+	// ReadPolicy applies host invocation checks before access and records successful
+	// resource opens.
+	ReadPolicy xdm.ResourceReadPolicy
 	// MaxBytes bounds the number of bytes read from a single resolver-backed resource. Reads larger than MaxBytes fail with an
 	// ErrCodeRetrieval error before an unbounded body is buffered. A value
 	// of 0 selects DefaultMaxBytes; a negative value disables the bound.
@@ -91,14 +95,17 @@ type Config struct {
 
 // Error represents a typed error from the unparsed-text pipeline.
 type Error struct {
-	Cause   error // xmlsec: retain resource/limit/cancellation errors.
-	Code    string
+	Cause error // xmlsec: retain resource/limit/cancellation errors.
+	// Code is the XPath text retrieval or encoding error code.
+	Code string
+	// Message describes the failed retrieval or decoding operation.
 	Message string
 }
 
 // Unwrap preserves the original resource failure.
 func (e *Error) Unwrap() error { return e.Cause }
 
+// Error formats the pipeline code and message.
 func (e *Error) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
@@ -318,11 +325,11 @@ func ReadURI(ctx context.Context, cfg *Config, uri string) (text string, err err
 			out.Write(buffer[:n])
 		}
 
-		if readErr == io.EOF {
-			return out.String(), nil
-		}
-
 		if readErr != nil {
+			if readErr == io.EOF {
+				return out.String(), nil
+			}
+
 			return "", retrievalError(readErr)
 		}
 	}
@@ -1004,11 +1011,11 @@ func readDecodedText(ctx context.Context, reader io.Reader, maximum int64, xmlOn
 			}
 		}
 
-		if err == io.EOF {
-			return ctx.Err()
-		}
-
 		if err != nil {
+			if err == io.EOF {
+				return ctx.Err()
+			}
+
 			if _, ok := errors.AsType[*Error](err); ok {
 				return err
 			}

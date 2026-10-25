@@ -799,6 +799,41 @@ func TestCRLIndirectIssuerAndEntryBinding(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("large issuer and serial matching", func(t *testing.T) {
+		filler := make([]x509.RevocationListEntry, 300)
+		for i := range filler {
+			filler[i] = x509.RevocationListEntry{SerialNumber: big.NewInt(int64(1000 + i)), RevocationTime: at.Add(-time.Minute)}
+		}
+		for _, tc := range []struct {
+			name string
+			tail []x509.RevocationListEntry
+			want error
+		}{
+			{"different issuer", []x509.RevocationListEntry{differentIssuer}, nil},
+			{"explicit issuer", []x509.RevocationListEntry{entry}, pki.ErrRevoked},
+			{"inherited issuer", []x509.RevocationListEntry{inherited, next}, pki.ErrRevoked},
+			{"different issuer same serial", []x509.RevocationListEntry{differentIssuer, entry}, pki.ErrRevoked},
+			{"duplicate issuer serial", []x509.RevocationListEntry{entry, entry}, pki.ErrEvidence},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				entries := append(append([]x509.RevocationListEntry(nil), filler...), tc.tail...)
+				raw := p6CRL(t, delegated, 1, at.Add(-time.Minute), at.Add(time.Hour), -1, scope, entries)
+				verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, _, err := verifier.Verify(t.Context(), leaf.Raw, at, pki.Evidence{CRLs: [][]byte{raw}, Intermediates: [][]byte{signer.Raw}})
+				if tc.want != nil {
+					if result != nil || !errors.Is(err, tc.want) {
+						t.Fatal(result, err)
+					}
+				} else if result == nil || err != nil {
+					t.Fatal(result, err)
+				}
+			})
+		}
+	})
 	t.Run("indirect delta release preserves issuer aliases", func(t *testing.T) {
 		held := entry
 		held.ReasonCode = 6
@@ -1025,9 +1060,10 @@ func TestPKIXSemanticNamesPreserveOriginalDER(t *testing.T) {
 	c := makeChain(t)
 	at := verificationTime()
 	for _, test := range []struct {
-		name, text string
-		tag        int
-		valid      bool
+		name  string
+		text  string
+		tag   int
+		valid bool
 	}{
 		{"case and encoding", "TEST ROOT", asn1.TagUTF8String, true},
 		{"insignificant spaces", "  test    root  ", asn1.TagPrintableString, true},
@@ -1166,8 +1202,9 @@ func TestCRLRelativeDistributionPoints(t *testing.T) {
 	}
 	leaf := p6LeafExtensions(t, c, []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 31}, Value: der.Seq(der.Seq(relative("partition")))}})
 	for _, test := range []struct {
-		name, value string
-		want        error
+		name  string
+		value string
+		want  error
 	}{{"matching relative name", "PARTITION", nil}, {"different relative name", "other", pki.ErrUnavailable}} {
 		t.Run(test.name, func(t *testing.T) {
 			source := p6CRL(t, c, 1, at.Add(-time.Minute), at.Add(time.Hour), -1, der.Seq(relative(test.value)), nil)
@@ -1227,9 +1264,11 @@ func TestCRLDistributionPointNamePreparation(t *testing.T) {
 	c := makeChain(t)
 	at := verificationTime()
 	for _, test := range []struct {
-		name, a, b string
-		tag        int
-		match      bool
+		name  string
+		a     string
+		b     string
+		tag   int
+		match bool
 	}{
 		{"URI scheme and host", "HTTPS://EXAMPLE.test/status", "https://example.test/status", 6, true},
 		{"URI default port", "https://example.test:443/status", "https://example.test/status", 6, true},
@@ -1781,10 +1820,11 @@ func TestHistoricalCryptoAndSunsetProofs(t *testing.T) {
 	hash := sha256.Sum256(c.root.Raw)
 	root := hex.EncodeToString(hash[:])
 	for _, tc := range []struct {
-		name          string
-		options       pki.HistoricalOptions
-		proofAt, want time.Time
-		pass          bool
+		name    string
+		options pki.HistoricalOptions
+		proofAt time.Time
+		want    time.Time
+		pass    bool
 	}{
 		{"algorithm protected before cutoff", pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{Hash: crypto.SHA256, ReliableUntil: cutoff}}}, now.Add(-45 * time.Second), cutoff, true},
 		{"proof exactly at cutoff", pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{Hash: crypto.SHA256, ReliableUntil: cutoff}}}, cutoff, time.Time{}, false},
@@ -1832,11 +1872,12 @@ func TestHistoricalOCSPAndConflictingSources(t *testing.T) {
 	unknown := p7Response(t, c, pki.OCSPResponseTemplate{Status: pki.OCSPUnknown, ProducedAt: now, ThisUpdate: now.Add(-30 * time.Second), NextUpdate: now.Add(time.Minute)})
 	goodCRL := makeCRL(t, c, false, nil)
 	for _, tc := range []struct {
-		name            string
-		mode            pki.RevocationMode
-		responses, crls [][]byte
-		want            time.Time
-		pass            bool
+		name      string
+		mode      pki.RevocationMode
+		responses [][]byte
+		crls      [][]byte
+		want      time.Time
+		pass      bool
 	}{
 		{"thisUpdate controls freshness", pki.RequireOCSP, [][]byte{old}, nil, now.Add(-10 * time.Minute), true},
 		{"latest status replaces stale good", pki.RequireOCSP, [][]byte{old, latest}, nil, now, true},
@@ -1904,9 +1945,11 @@ func TestHistoricalExpiredRetention(t *testing.T) {
 	response := p7Response(t, c, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: now, ThisUpdate: issued, NextUpdate: now.Add(time.Hour)})
 	for _, kind := range []string{"crl", "ocsp"} {
 		for _, tc := range []struct {
-			name                    string
-			from                    time.Time
-			present, critical, pass bool
+			name     string
+			from     time.Time
+			present  bool
+			critical bool
+			pass     bool
 		}{
 			{"no retention", time.Time{}, false, false, false},
 			{"inclusive expiry cutoff", c.leaf.NotAfter, true, false, true},
@@ -2052,8 +2095,11 @@ func TestHistoricalDelegatedSourcePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name                                 string
-		noCheck, crl, certificateProof, pass bool
+		name             string
+		noCheck          bool
+		crl              bool
+		certificateProof bool
+		pass             bool
 	}{
 		{"delegated nocheck", true, false, true, true},
 		{"delegated CRL dependency", false, true, true, true},
@@ -2126,10 +2172,11 @@ func TestHistoricalDeltaAndReasonCoverage(t *testing.T) {
 	// Reason masks cover bits1..8. The pair partitions the whole RFC5280 set.
 	right := p6CRL(t, c, 1, now.Add(-time.Minute), now.Add(time.Hour), -1, der.Seq(der.Wrap(2, 3, false, []byte{7, 0x07, 0x80})), nil)
 	for _, tc := range []struct {
-		name                string
-		raws                [][]byte
-		omitBaseProof, pass bool
-		want                time.Time
+		name          string
+		raws          [][]byte
+		omitBaseProof bool
+		pass          bool
+		want          time.Time
 	}{
 		{"held base", [][]byte{base}, false, true, now.Add(-20 * time.Minute)},
 		{"fresh delta supersedes expired base", [][]byte{base, release}, false, true, now},
@@ -2334,7 +2381,12 @@ func TestHistoricalGenerationEncodings(t *testing.T) {
 			local := *c.leaf
 			local.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 36, 8, 3, 1}, Value: tc.value, Critical: tc.critical}}
 			leaf := testcert.Issue(t, &local, ca, c.leafKey.Public(), caKey)
-			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}}, HistoricalOptions: pki.HistoricalOptions{Model: pki.ChainModel}}, now, pki.Evidence{Intermediates: [][]byte{ca.Raw}})
+			session, err := pki.NewHistoricalSession(
+				t.Context(),
+				pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}}, Model: pki.ChainModel},
+				now,
+				pki.Evidence{Intermediates: [][]byte{ca.Raw}},
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2611,7 +2663,7 @@ func TestHistoricalMixedCryptoCutoffs(t *testing.T) {
 		{"source proof exactly at earliest cutoff", sourceCutoff, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL}, HistoricalOptions: pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{Hash: crypto.SHA256, ReliableUntil: certificateCutoff}, {Hash: crypto.SHA384, ReliableUntil: sourceCutoff}}}}, now, pki.Evidence{CRLs: [][]byte{raw}})
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL}, CryptoConstraints: []pki.CryptoConstraint{{Hash: crypto.SHA256, ReliableUntil: certificateCutoff}, {Hash: crypto.SHA384, ReliableUntil: sourceCutoff}}}, now, pki.Evidence{CRLs: [][]byte{raw}})
 			if err != nil {
 				t.Fatal(err)
 			}

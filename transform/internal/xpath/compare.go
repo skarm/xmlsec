@@ -196,6 +196,8 @@ func ValueCompare(op TokenType, a, b xdm.AtomicValue) (bool, error) {
 	return ValueCompareWithImplicitTimezone(op, a, b, nil)
 }
 
+// ValueCompareWithImplicitTimezone compares two atomic values after XPath
+// value-comparison promotion, using implicitTZ for values without a timezone.
 func ValueCompareWithImplicitTimezone(op TokenType, a, b xdm.AtomicValue, implicitTZ *time.Location) (bool, error) {
 	pa, pb := promoteForValueComparison(a, b)
 	return compareAtomicWithImplicitTimezone(op, pa, pb, implicitTZ)

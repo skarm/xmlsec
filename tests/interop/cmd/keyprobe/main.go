@@ -18,11 +18,16 @@ import (
 )
 
 type task struct {
-	Mode, Input, Key, Certificate string
-	Extras                        []string
-	Password                      []byte
-	Hash, KeyBits, Iterations     int
-	ClassicMAC                    bool
+	Mode        string
+	Input       string
+	Key         string
+	Certificate string
+	Extras      []string
+	Password    []byte
+	Hash        int
+	KeyBits     int
+	Iterations  int
+	ClassicMAC  bool
 }
 
 type output struct {

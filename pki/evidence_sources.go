@@ -18,14 +18,14 @@ func (v *Verifier) validatedSources(ctx context.Context, leaf []byte, input Evid
 		return nil, ErrPolicy
 	}
 
-	allowed := make(map[evidenceBinding]bool)
+	allowed := make(map[evidenceBinding]struct{})
 	add := func(kind evidence.Kind, values [][]byte) error {
 		for _, raw := range values {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 
-			allowed[evidenceBinding{kind: kind, hash: sha256.Sum256(raw)}] = true
+			allowed[evidenceBinding{kind: kind, hash: sha256.Sum256(raw)}] = struct{}{}
 		}
 
 		return nil
@@ -69,7 +69,7 @@ func (v *Verifier) validatedSources(ctx context.Context, leaf []byte, input Evid
 		total += source.Size()
 
 		key := evidenceBinding{kind: source.Kind(), hash: source.DigestSHA256()}
-		if !allowed[key] {
+		if _, exists := allowed[key]; !exists {
 			return nil, fmt.Errorf("%w: unmatched evidence source kind/digest", ErrEvidence)
 		}
 

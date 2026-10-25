@@ -36,7 +36,7 @@ func ParseProgram(ctx context.Context, n *tree.Node, doc *document.Document) (re
 		return t, err
 	}
 
-	if err = reference.ValidateTransformParameters(t); err != nil {
+	if err := reference.ValidateTransformParameters(t); err != nil {
 		return t, err
 	}
 
@@ -365,7 +365,13 @@ func AppendParameters(ctx context.Context, n *tree.Node, t reference.Transform) 
 			return reference.ErrInput
 		}
 
-		child := &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: c14n.Exclusive, Local: "InclusiveNamespaces"}, Prefix: "ec", NS: []tree.Namespace{{Prefix: "ec", URI: c14n.Exclusive}}}
+		child := &tree.Node{
+			Kind:   tree.ElementNode,
+			Name:   document.Name{Space: c14n.Exclusive, Local: "InclusiveNamespaces"},
+			Prefix: "ec",
+			NS:     []tree.Namespace{{Prefix: "ec", URI: c14n.Exclusive}},
+		}
+
 		setAttr(child, "PrefixList", strings.Join(t.InclusivePrefixes, " "))
 		add(n, child)
 

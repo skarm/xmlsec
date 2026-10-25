@@ -12,6 +12,8 @@ import (
 // up, then pass it to a Compiler or Invocation. The receiver clones it at
 // terminal method time.
 type Parameters struct {
+	// values retains parameter sequences by expanded QName, copied by immutable update
+	// methods.
 	values map[string]xdm.Sequence
 }
 

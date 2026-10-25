@@ -241,8 +241,9 @@ func TestEmbeddedBase64WorkingStorage(t *testing.T) {
 
 func TestEmbeddedBase64ChunkBoundaries(t *testing.T) {
 	for _, tc := range []struct {
-		xml, want string
-		valid     bool
+		xml   string
+		want  string
+		valid bool
 	}{
 		{`<v>Y<!--split-->Q<![CDATA[=]]>=</v>`, "a", true},
 		{"<v>\tY Q= =\r\n</v>", "a", true},

@@ -56,9 +56,10 @@ func TestXPathAndFilter2(t *testing.T) {
 	ctx := context.Background()
 
 	for _, tt := range []struct {
-		name, input string
-		tr          reference.Transform
-		want        string
+		name  string
+		input string
+		tr    reference.Transform
+		want  string
 	}{
 		{"boolean", "<root><keep a=\"x\">yes</keep><hidden>no</hidden></root>", xp(`not(ancestor-or-self::hidden)`), `<root><keep a="x">yes</keep></root>`},
 		{"context-size-is-one", "<r><a/><b/></r>", xp(`position() = 1 and last() = 1`), `<r><a></a><b></b></r>`},
@@ -143,7 +144,10 @@ func TestHereAndID(t *testing.T) {
 		t.Fatal("foreign here accepted")
 	}
 
-	for _, tt := range []struct{ id, want string }{{"A", `<a ID="A"></a>`}, {"B", ``}} {
+	for _, tt := range []struct {
+		id   string
+		want string
+	}{{"A", `<a ID="A"></a>`}, {"B", ``}} {
 		tr := f2(reference.XPathExpression{Expression: `id('` + tt.id + `')`, Filter: "intersect"})
 		p := proc(t, tr)
 
@@ -201,7 +205,10 @@ func TestXSLTAndLimits(t *testing.T) {
 		t.Fatalf("%q", b)
 	}
 
-	for _, tt := range []struct{ name, body string }{
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
 		{"file", `<xsl:template match="/"><xsl:copy-of select="document('file:///etc/passwd')"/></xsl:template>`},
 		{"network", `<xsl:template match="/"><xsl:copy-of select="document('https://example.invalid/resource')"/></xsl:template>`},
 		{nameInclude, `<xsl:include href="file:///etc/passwd"/>`},

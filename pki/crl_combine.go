@@ -103,7 +103,7 @@ func checkEquivalentCRLViews(ctx context.Context, views []completeCRLView) error
 }
 
 type crlState struct {
-	entries  map[*crlEntry]bool
+	entries  map[*crlEntry]struct{}
 	byIssuer map[string]*crlEntry
 }
 
@@ -141,14 +141,14 @@ func (state crlState) apply(entry *crlEntry) {
 		return
 	}
 
-	state.entries[entry] = true
+	state.entries[entry] = struct{}{}
 	for _, key := range crlEntryNames(entry) {
 		state.byIssuer[key] = entry
 	}
 }
 
 func crlViewState(ctx context.Context, view completeCRLView) (crlState, error) {
-	state := crlState{entries: make(map[*crlEntry]bool, len(view.base.list.entries)), byIssuer: make(map[string]*crlEntry, len(view.base.list.entries))}
+	state := crlState{entries: make(map[*crlEntry]struct{}, len(view.base.list.entries)), byIssuer: make(map[string]*crlEntry, len(view.base.list.entries))}
 
 	apply := func(entries []crlEntry) error {
 		for index := range entries {

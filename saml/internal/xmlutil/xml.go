@@ -54,7 +54,7 @@ func Attr(e document.Element, n string) string {
 
 // Attrs requires the listed attributes and rejects undeclared attributes.
 func Attrs(e document.Element, required, optional []string) error {
-	seen := make(map[string]bool)
+	seen := make(map[string]struct{})
 
 	for _, a := range e.Attributes() {
 		if a.Name.Space != "" {
@@ -66,11 +66,11 @@ func Attrs(e document.Element, required, optional []string) error {
 			return ErrSchema
 		}
 
-		seen[a.Name.Local] = true
+		seen[a.Name.Local] = struct{}{}
 	}
 
 	for _, n := range required {
-		if !seen[n] {
+		if _, exists := seen[n]; !exists {
 			return ErrSchema
 		}
 	}

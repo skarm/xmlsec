@@ -98,7 +98,10 @@ func TestParsedElementSourceLines(t *testing.T) {
 }
 
 func TestLexicalNormalizationOwnsOneCopyAndPreservesReferences(t *testing.T) {
-	for _, tc := range []struct{ in, want string }{
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
 		{"<r a=\"a\r\nb\rc\nd\te&#xA;&#xD;&#x9;\">x\r\ny\rz</r>", "<r a=\"a b c d e&#xA;&#xD;&#x9;\">x\ny\nz</r>"},
 		{"<!--a\r\nb--><?p a\rb?><r><![CDATA[a\r\nb\rc]]></r>", "<!--a\nb--><?p a\nb?><r><![CDATA[a\nb\nc]]></r>"},
 		{"<r>\r\r\n\n\r</r>", "<r>\n\n\n\n</r>"},
@@ -325,3 +328,69 @@ func assertByteNormalization(t *testing.T, form normalization.Form, input, want 
 type normalizationFailWriter struct{}
 
 func (normalizationFailWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func BenchmarkExactNormalizationWriter(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		unit string
+	}{{"ASCII", "hello world "}, {"Unicode", "café e\u0301 日本語 "}, {"Combining", "a" + strings.Repeat("\u0315", 64) + "\u0300"}} {
+		for _, size := range []int{64, 1 << 20} {
+			input := []byte(strings.Repeat(tc.unit, max(1, size/len(tc.unit))))
+			b.Run(tc.name+"/"+strconv.Itoa(size), func(b *testing.B) {
+				b.ReportAllocs()
+				b.SetBytes(int64(len(input)))
+				for b.Loop() {
+					w := normalization.NewWriter(b.Context(), io.Discard, normalization.NFC)
+					if _, err := w.Write(input); err != nil {
+						b.Fatal(err)
+					}
+					if err := w.Close(); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestNormalizationASCIIBatchBoundary(t *testing.T) {
+	for _, form := range []normalization.Form{normalization.NFC, normalization.NFD, normalization.NFKC, normalization.NFKD} {
+		for _, size := range []int{4095, 4096, 4097, 8191, 8192, 8193} {
+			input := strings.Repeat("a", size-1) + "e\u0301\u0323" + strings.Repeat("x", 4100) + "\u0301"
+			want := form.String(input)
+			for _, split := range []int{size - 1, size, size + 1, size + 2} {
+				var got bytes.Buffer
+				w := normalization.NewWriter(t.Context(), &got, form)
+				for _, part := range []string{input[:split], input[split:]} {
+					if _, err := w.Write([]byte(part)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := w.Close(); err != nil || got.String() != want {
+					t.Fatalf("form %d size %d split %d: changed normalization, %v", form, size, split, err)
+				}
+			}
+		}
+	}
+}
+
+func TestNormalizationASCIICancellationInterval(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	w := normalization.NewWriter(ctx, normalizationCancelWriter{cancel}, normalization.NFC)
+	if _, err := w.Write(bytes.Repeat([]byte{'a'}, 100)); err != nil {
+		t.Fatal(err)
+	}
+	// The first new batch fills an existing buffer after 3996 bytes. Cancellation
+	// during its flush must be observed at the original 4096-byte polling boundary.
+	n, err := w.Write(bytes.Repeat([]byte{'b'}, 8192))
+	if n != 4096 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation after %d bytes: %v", n, err)
+	}
+	if err := w.Close(); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+}
+
+type normalizationCancelWriter struct{ cancel context.CancelFunc }
+
+func (w normalizationCancelWriter) Write(p []byte) (int, error) { w.cancel(); return len(p), nil }

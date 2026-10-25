@@ -31,11 +31,19 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
-type filterSelection struct {
+type
+// filterSelection retains one XPath Filter 2.0 operation and its selected subtree
+// roots.
+filterSelection struct {
+	// operation selects intersect, subtract or union in the validated filter chain.
 	operation string
-	roots     map[document.Node]bool
+	// roots retains selected node identities whose descendant-or-self expansion defines
+	// filter membership.
+	roots map[document.Node]struct{}
 }
 
+// expanded reports whether n belongs to a selected root subtree, charging each
+// ancestor step to the invocation budget.
 func (f filterSelection) expanded(ctx context.Context, n document.Node) (bool, error) {
 	// Namespace handles retain owner + prefix identity, so exact membership and
 	// expansion through the owner use the same map as every other node kind.
@@ -44,7 +52,7 @@ func (f filterSelection) expanded(ctx context.Context, n document.Node) (bool, e
 			return false, err
 		}
 
-		if f.roots[n] {
+		if _, selected := f.roots[n]; selected {
 			return true, nil
 		}
 	}
@@ -52,6 +60,8 @@ func (f filterSelection) expanded(ctx context.Context, n document.Node) (bool, e
 	return false, nil
 }
 
+// filterNodes applies ordered Filter 2.0 operations and returns their intersection
+// with input, preserving input order.
 func filterNodes(ctx context.Context, input []document.Node, filters []filterSelection) ([]document.Node, error) {
 	var out []document.Node
 

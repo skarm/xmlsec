@@ -46,7 +46,7 @@ func lookupFunctionsNode(name string) (*builtinFunc, bool) {
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnLocalName}, true
 	case lexicon.FnName:
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnName}, true
-	case nameNamespaceUri:
+	case nameNamespaceURI:
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnNamespaceURI}, true
 	case lexicon.TypeNumber:
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnNumber}, true

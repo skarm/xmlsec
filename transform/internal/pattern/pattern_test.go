@@ -15,9 +15,10 @@ const nameAB = "a.b"
 
 func TestMatchSemantics(t *testing.T) {
 	for _, c := range []struct {
-		pattern, input string
-		options        patternpkg.Options
-		want           bool
+		pattern string
+		input   string
+		options patternpkg.Options
+		want    bool
 	}{
 		{`^(ab|a)b$`, "ab", patternpkg.Options{}, true},
 		{`^(a|aa)*b$`, strings.Repeat("a", 300), patternpkg.Options{}, false},
@@ -66,9 +67,10 @@ func TestMatchSemantics(t *testing.T) {
 
 func TestMatchCapturesAndStreaming(t *testing.T) {
 	for _, c := range []struct {
-		pattern, input string
-		options        patternpkg.Options
-		want           [][]int
+		pattern string
+		input   string
+		options patternpkg.Options
+		want    [][]int
 	}{
 		{`a.*a`, "abracadabra", patternpkg.Options{}, [][]int{{0, 11}}},
 		{`a.*?a`, "abracadabra", patternpkg.Options{}, [][]int{{0, 4}, {5, 8}}},
@@ -205,4 +207,53 @@ func compileTest(t testing.TB, source string, options patternpkg.Options) *patte
 	}
 
 	return p
+}
+
+// BenchmarkPrograms separates immutable program reuse from parsing costs and
+// includes a bounded ambiguous failure rather than unbounded backtracking.
+func BenchmarkPrograms(b *testing.B) {
+	for _, tc := range []struct {
+		name   string
+		source string
+		input  string
+	}{
+		{"Short", `^[a-z]+[0-9]+$`, "hello123"},
+		{"Large", `^[a-z]+[0-9]+$`, strings.Repeat("a", 8192) + "123"},
+		{"AmbiguousFailure", `^(a|aa)*b$`, strings.Repeat("a", 128)},
+		{"Backref", `^([a-z]+)\1$`, strings.Repeat("abc", 32)},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			p, err := patternpkg.Compile(tc.source, patternpkg.Options{})
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.Run("Compile", func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					if _, err := patternpkg.Compile(tc.source, patternpkg.Options{}); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+			b.Run("Reuse", func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					if _, err := p.Match(b.Context(), tc.input, patternpkg.Work{}); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+			b.Run("Parallel", func(b *testing.B) {
+				b.ReportAllocs()
+				b.RunParallel(func(pb *testing.PB) {
+					for pb.Next() {
+						if _, err := p.Match(b.Context(), tc.input, patternpkg.Work{}); err != nil {
+							b.Error(err)
+							return
+						}
+					}
+				})
+			})
+		})
+	}
 }

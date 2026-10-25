@@ -179,8 +179,9 @@ func TestRetrievalTypesAndPreflight(t *testing.T) {
 	// Pull a DEREncodedKeyValue out with a root namespace declaration, not a KeyInfo wrapper.
 	remote := `<k:DEREncodedKeyValue xmlns:k="` + ns11 + `">` + enc(mustSPKI(t, &k.PublicKey)) + `</k:DEREncodedKeyValue>`
 	for _, test := range []struct {
-		name, typ string
-		err       error
+		name string
+		typ  string
+		err  error
 	}{{"typed", ns11 + "DEREncodedKeyValue", nil}, {"inferred", "", nil}, {"mismatch", ns + "X509Data", keyinfo.ErrInput}} {
 		t.Run(test.name, func(t *testing.T) {
 			d := parseXML(t, wrap(`<ds:RetrievalMethod URI="urn:key" Type="`+test.typ+`"/>`))
@@ -308,9 +309,12 @@ func TestRetrievalTransformChains(t *testing.T) {
 
 	certificate := cert(t, key)
 	for _, test := range []struct {
-		name, uri, typ, local string
-		input                 []byte
-		chain                 []reference.Transform
+		name  string
+		uri   string
+		typ   string
+		local string
+		input []byte
+		chain []reference.Transform
 	}{
 		{"base64-XML", uriUrnKey, ns11 + "DEREncodedKeyValue", "", []byte(enc([]byte(keyXML))), []reference.Transform{{Algorithm: reference.Base64}}},
 		{"two-base64-certificate", uriUrnKey, keyinfo.RawX509Certificate, "", []byte(enc([]byte(enc(certificate)))), []reference.Transform{{Algorithm: reference.Base64}, {Algorithm: reference.Base64}}},
@@ -435,8 +439,9 @@ func TestRetrievalTransformPreflight(t *testing.T) {
 	)
 
 	for _, test := range []struct {
-		name, body string
-		want       error
+		name string
+		body string
+		want error
 	}{
 		{"unknown", `<ds:Transform Algorithm="urn:unknown"/>`, keyinfo.ErrUnsupported},
 		{"no-extension", `<ds:Transform Algorithm="` + reference.XPath + `"><ds:XPath>true()</ds:XPath></ds:Transform>`, keyinfo.ErrPolicy},
@@ -472,9 +477,11 @@ func TestRetrievalTransformGraphAndBudgets(t *testing.T) {
 
 	link := `<ds:RetrievalMethod URI="urn:key"><ds:Transforms><ds:Transform Algorithm="` + c14n.Exclusive + `"/></ds:Transforms></ds:RetrievalMethod>`
 	for _, test := range []struct {
-		name, xml, input string
-		limits           keyinfo.Limits
-		want             error
+		name   string
+		xml    string
+		input  string
+		limits keyinfo.Limits
+		want   error
 	}{
 		{"cycle", wrap(link), wrap(link), keyinfo.Limits{}, keyinfo.ErrCycle},
 		{"total-output", wrap(link + link), target, keyinfo.Limits{MaxTransformBytes: len(target) + 16}, keyinfo.ErrLimit},
@@ -664,8 +671,10 @@ func distinguishedCN(tag int, text string) []byte {
 
 func TestDistinguishedNameStringPreparation(t *testing.T) {
 	for _, tc := range []struct {
-		name, a, b string
-		equal      bool
+		name  string
+		a     string
+		b     string
+		equal bool
 	}{
 		{"case and insignificant spaces", " Alice  SMITH ", "alice smith", true},
 		{"sharp s fold", "Straße", "STRASSE", true},

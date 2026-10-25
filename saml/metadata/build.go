@@ -9,41 +9,59 @@ import (
 	"strings"
 	"time"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
-// KeyDescriptor supplies a DER certificate and its metadata use: signing, encryption or
-// both when empty.
+// KeyDescriptor advertises a DER certificate for signing, encryption or both uses.
 type KeyDescriptor struct {
-	Use            string
+	// Use is signing, encryption or empty for both uses.
+	Use string
+	// CertificateDER is the DER certificate advertised for this key. It does not establish
+	// trust.
 	CertificateDER []byte
 }
 
-// RoleDescriptor supplies supported metadata keys, endpoints and SAML role requirements.
+// RoleDescriptor supplies keys, endpoints and signature requirements for a supported
+// SAML role.
 type RoleDescriptor struct {
+	// Keys lists certificates advertised for this role and their intended uses.
 	Keys []KeyDescriptor
 	// Endpoints maps metadata element local names, such as [AssertionConsumerService],
 	// to their endpoint declarations.
-	Endpoints     map[string][]Endpoint
+	Endpoints map[string][]Endpoint
+	// NameIDFormats lists supported subject identifier format URIs.
 	NameIDFormats []string
 	// ValidUntil, when nonzero, narrows the entity's validity period.
-	ValidUntil                                                         time.Time
-	AuthnRequestsSigned, WantAuthnRequestsSigned, WantAssertionsSigned bool
+	ValidUntil time.Time
+	// AuthnRequestsSigned declares that this SP signs its authentication requests.
+	AuthnRequestsSigned bool
+	// WantAuthnRequestsSigned declares that this IdP requires signed authentication
+	// requests.
+	WantAuthnRequestsSigned bool
+	// WantAssertionsSigned declares that this SP requires signed assertions.
+	WantAssertionsSigned bool
 }
 
-// EntityDescriptor supplies an entity identifier, expiration and supported SP or IdP
+// EntityDescriptor supplies an entity identifier, expiration and optional SP and IdP
 // roles.
 type EntityDescriptor struct {
-	ID, EntityID  string
-	ValidUntil    time.Time
+	// ID is the entity descriptor XML ID. Empty generates an unpredictable ID.
+	ID string
+	// EntityID is the required SAML entity identifier URI.
+	EntityID string
+	// ValidUntil is the required entity metadata expiration time.
+	ValidUntil time.Time
+	// CacheDuration optionally limits metadata caching. Zero omits the attribute.
 	CacheDuration time.Duration
-	SP, IDP       *RoleDescriptor
+	// SP supplies the service provider role. Nil omits that role.
+	SP *RoleDescriptor
+	// IDP supplies the identity provider role. Nil omits that role.
+	IDP *RoleDescriptor
 }
 
 // Build builds a supported metadata document with explicit validity. The returned document
@@ -113,7 +131,7 @@ func md(local string) *tree.Node { return xmlutil.Node("md", Namespace, local) }
 func buildOrder(order []string, r *struct {
 	kind RoleType
 	spec *RoleDescriptor
-}, n *tree.Node, used map[string]bool,
+}, n *tree.Node, used map[string]struct{},
 ) {
 	for _, kind := range order {
 		if kind == nameNameIDFormat {
@@ -126,7 +144,7 @@ func buildOrder(order []string, r *struct {
 			continue
 		}
 
-		used[kind] = true
+		used[kind] = struct{}{}
 		for _, ep := range r.spec.Endpoints[kind] {
 			n2 := md(kind)
 			xmlutil.Set(n2, "Binding", ep.Binding)
@@ -236,12 +254,12 @@ func buildEntries(ctx context.Context, s *EntityDescriptor, root *tree.Node, max
 			order = append(order, AssertionConsumerService)
 		}
 
-		used := map[string]bool{}
+		used := map[string]struct{}{}
 
 		buildOrder(order, &r, n, used)
 
 		for kind := range r.spec.Endpoints {
-			if !used[kind] {
+			if _, exists := used[kind]; !exists {
 				return ErrMetadata, true
 			}
 		}

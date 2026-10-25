@@ -781,11 +781,13 @@ type groupByEntry struct {
 // Typed buckets retain first-appearance order. Numeric/date/QName equality is
 // refined by value comparison; a collation key is only a string lookup key.
 type groupByAccumulator struct {
-	order                        []*groupByEntry
-	byKey                        map[string][]*groupByEntry
-	collationKey                 func(string) string
-	equal                        func(xdm.Sequence, xdm.Sequence) (bool, error)
-	limit, members, retainedKeys int
+	order        []*groupByEntry
+	byKey        map[string][]*groupByEntry
+	collationKey func(string) string
+	equal        func(xdm.Sequence, xdm.Sequence) (bool, error)
+	limit        int
+	members      int
+	retainedKeys int
 }
 
 func (groups *groupByAccumulator) addComposite(ctx context.Context, item xdm.Item, keys xdm.Sequence) error {

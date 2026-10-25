@@ -59,9 +59,7 @@ func (v *Verifier) Fetch(ctx context.Context, t Transport, q *Request, at time.T
 	}
 
 	result, re := v.VerifyResponseReader(ctx, body, q, at, e)
-
-	ce := body.Close()
-	if err := errors.Join(re, ce, ctx.Err()); err != nil {
+	if err := errors.Join(re, body.Close(), ctx.Err()); err != nil {
 		return nil, err
 	}
 

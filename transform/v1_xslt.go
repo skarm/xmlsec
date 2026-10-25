@@ -30,7 +30,7 @@ func compileV1Stylesheet(e *Engine, source []byte) (*xslt.Stylesheet, error) {
 		return nil, v1Error(err)
 	}
 
-	if err = checkStylesheet(ctx, d.Node()); err != nil {
+	if err := checkStylesheet(ctx, d.Node()); err != nil {
 		return nil, err
 	}
 	// Keep the previous 1.0 syntax/resource preflight, and use the same embedded

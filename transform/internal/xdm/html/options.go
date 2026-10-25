@@ -1,6 +1,9 @@
 // Derived from lestrrat-go/helium at 7362c0a70122a757780f4d0b545a9b370dead6ab.
 // Copyright (c) 2015 lestrrat. MIT License; see licenses/MIT-helium.txt at the repository root.
 
+// Package html serializes XDM nodes as HTML and prepares mutable XHTML trees
+// for output. Callers select serialization settings and supply the destination;
+// serialization does not retrieve external resources.
 package html
 
 import (

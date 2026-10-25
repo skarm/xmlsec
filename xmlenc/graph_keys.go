@@ -12,9 +12,9 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"crypto/des" // #nosec G502 -- Explicit legacy XMLENC key-wrap policy only.
+
+	"github.com/skarm/xmlsec/internal/lexicon"
 
 	"github.com/skarm/xmlsec/document"
 
@@ -45,7 +45,12 @@ type graphKeyPlan struct {
 }
 
 type graphEncryptedFields struct {
-	method, keyInfo, cipherData, properties, references, carried document.Element
+	method     document.Element
+	keyInfo    document.Element
+	cipherData document.Element
+	properties document.Element
+	references document.Element
+	carried    document.Element
 }
 
 func graphEncrypted(node graphNode) (graphEncryptedFields, error) {
@@ -200,11 +205,12 @@ func (g *keyGraph) keyName(node graphNode) (string, bool, error) {
 }
 
 type graphSources struct {
-	graph       *keyGraph
-	target      graphNode
-	algorithm   string
-	size, depth int
-	plans       []*graphKeyPlan
+	graph     *keyGraph
+	target    graphNode
+	algorithm string
+	size      int
+	depth     int
+	plans     []*graphKeyPlan
 }
 
 func (b *graphSources) add(plan *graphKeyPlan, err error) error {
@@ -357,7 +363,7 @@ func (b *graphSources) references() error {
 
 func (g *keyGraph) keyPlan(node graphNode, consumer string, size, depth int) (*graphKeyPlan, error) {
 	identity := graphPlanID{node.document, node.node, consumer, size}
-	if g.active[identity] {
+	if _, exists := g.active[identity]; exists {
 		return nil, ErrFormat
 	}
 
@@ -373,7 +379,7 @@ func (g *keyGraph) keyPlan(node graphNode, consumer string, size, depth int) (*g
 		return nil, err
 	}
 
-	g.active[identity] = true
+	g.active[identity] = struct{}{}
 	defer delete(g.active, identity)
 
 	var (
@@ -486,7 +492,7 @@ func (g *keyGraph) wrappedEncryptedPlan(node graphNode, fields graphEncryptedFie
 func (g *keyGraph) encryptionAlgorithm(fields graphEncryptedFields) (string, error) {
 	if fields.method.Valid() {
 		algorithm := attributeValue(fields.method, "Algorithm")
-		if !g.methods[algorithm] || algorithm == ConcatKDF {
+		if _, exists := g.methods[algorithm]; !exists || algorithm == ConcatKDF {
 			return "", ErrPolicy
 		}
 
@@ -611,7 +617,7 @@ func (g *keyGraph) rsaMaterial(info document.Element, algorithm string) (KeyGrap
 }
 
 func (g *keyGraph) derivedPlan(node graphNode, size, depth int) (*graphKeyPlan, error) {
-	if g.options.ConcatKDF == nil || !g.methods[ConcatKDF] || !sessionKeySize(size) || !graphAttributes(node.element(), "Id", "Type", "Recipient") {
+	if _, exists := g.methods[ConcatKDF]; g.options.ConcatKDF == nil || !exists || !sessionKeySize(size) || !graphAttributes(node.element(), "Id", "Type", "Recipient") {
 		return nil, ErrPolicy
 	}
 
@@ -675,12 +681,12 @@ func (g *keyGraph) derivedPlan(node graphNode, size, depth int) (*graphKeyPlan, 
 	return &graphKeyPlan{algorithm: ConcatKDF, sources: []*graphKeyPlan{key}, keyBytes: size, kdf: &expected}, nil
 }
 
-func (g *keyGraph) prepareKey(plan *graphKeyPlan, visited map[*graphKeyPlan]bool) error {
-	if visited[plan] {
+func (g *keyGraph) prepareKey(plan *graphKeyPlan, visited map[*graphKeyPlan]struct{}) error {
+	if _, exists := visited[plan]; exists {
 		return nil
 	}
 
-	visited[plan] = true
+	visited[plan] = struct{}{}
 	for _, source := range plan.sources {
 		if err := g.prepareKey(source, visited); err != nil {
 			return err

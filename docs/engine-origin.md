@@ -10,8 +10,9 @@ The private `transform/internal/{xdm,xpath,xslt,pattern}` packages adapt those
 sources to the project's XML storage, immutable public values, language profiles,
 context cancellation, resource policy and execution budgets. They are maintained
 as part of this module. [transform](transforms.md) describes the public API.
-The shared `internal/packageversion` parser retains the same origin and license;
-the XSLT compiler and development suite adapter use it for package-version ranges.
+The shared `internal/packageversion` parser and `internal/xmlchar` character
+predicates retain the same origin and license. The XSLT compiler and development
+suite adapter use the parser for package-version ranges.
 
 Unicode normalization tables come from `golang.org/x/text`. The conformance fixture
 retains its Unicode notice; see [Unicode-3.0.txt](../licenses/Unicode-3.0.txt).

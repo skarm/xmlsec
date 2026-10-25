@@ -9,14 +9,18 @@ import (
 	"github.com/skarm/xmlsec/internal/x509cert"
 )
 
-// OCSPAuthority explicitly pins a locally trusted OCSP signing certificate for
-// one exact issuer certificate. Received names/certificates never create this
-// grant. The application establishes the pin's trust out of band; certificate
-// validity and signing usage are still checked, but no issuer/delegation path
-// or automatic revocation exemption is inferred from received metadata.
+// OCSPAuthority pins one OCSP signing certificate for one exact issuer certificate.
+// The application establishes this trust out of band. Verification still checks
+// certificate validity and signing usage. Received names or certificates cannot
+// create a grant, imply an issuer or delegation path, or exempt the signer from
+// revocation checks.
 type OCSPAuthority struct {
+	// ResponderCertificateDER is the exact DER certificate explicitly trusted to sign OCSP
+	// responses.
 	ResponderCertificateDER []byte
-	IssuerCertificateDER    []byte
+	// IssuerCertificateDER is the exact DER issuer certificate to which this signing grant
+	// is restricted.
+	IssuerCertificateDER []byte
 }
 
 func normalizeOCSPAuthorities(input []OCSPAuthority) ([]OCSPAuthority, error) {
@@ -25,7 +29,7 @@ func normalizeOCSPAuthorities(input []OCSPAuthority) ([]OCSPAuthority, error) {
 	}
 
 	remaining := 8 << 20
-	seen := make(map[[2][sha256.Size]byte]bool)
+	seen := make(map[[2][sha256.Size]byte]struct{})
 
 	output := make([]OCSPAuthority, 0, len(input))
 	for _, authority := range input {
@@ -38,11 +42,11 @@ func normalizeOCSPAuthorities(input []OCSPAuthority) ([]OCSPAuthority, error) {
 		}
 
 		identity := [2][sha256.Size]byte{sha256.Sum256(authority.ResponderCertificateDER), sha256.Sum256(authority.IssuerCertificateDER)}
-		if seen[identity] {
+		if _, exists := seen[identity]; exists {
 			return nil, ErrPolicy
 		}
 
-		seen[identity] = true
+		seen[identity] = struct{}{}
 
 		responder, err := x509cert.ParseDefault(authority.ResponderCertificateDER)
 		if err != nil || allowedPublicKey(responder.PublicKey) != nil || len(responder.UnhandledCriticalExtensions) != 0 || responder.KeyUsage != 0 && responder.KeyUsage&x509.KeyUsageDigitalSignature == 0 {

@@ -95,7 +95,10 @@ func runExamples(ctx context.Context, root string, args []string, out, stderr io
 	return err
 }
 
-type fuzzTarget struct{ Package, Name string }
+type fuzzTarget struct {
+	Package string
+	Name    string
+}
 
 func discoverFuzz(ctx context.Context, root, pattern string, stderr io.Writer) ([]fuzzTarget, error) {
 	cmd := exec.CommandContext(ctx, "go", "test", "-json", "-list="+pattern, "./...") // #nosec G204 -- The Go tool validates the test-name pattern; no shell is involved.
@@ -115,7 +118,11 @@ func discoverFuzz(ctx context.Context, root, pattern string, stderr io.Writer) (
 	d := json.NewDecoder(bytes.NewReader(data))
 
 	for {
-		var event struct{ Action, Package, Output string }
+		var event struct {
+			Action  string
+			Package string
+			Output  string
+		}
 		if err := d.Decode(&event); err != nil {
 			if errors.Is(err, io.EOF) {
 				break

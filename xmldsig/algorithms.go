@@ -243,7 +243,10 @@ func signPreparedValue(ctx context.Context, uri string, signer crypto.Signer, pu
 	}
 
 	if k, ok := pub.(*ecdsa.PublicKey); ok {
-		var pair struct{ R, S *big.Int }
+		var pair struct {
+			R *big.Int
+			S *big.Int
+		}
 
 		rest, err := asn1.Unmarshal(raw, &pair)
 		if err != nil || len(rest) != 0 || pair.R == nil || pair.S == nil || pair.R.Sign() <= 0 || pair.S.Sign() <= 0 || pair.R.Cmp(k.Params().N) >= 0 || pair.S.Cmp(k.Params().N) >= 0 {

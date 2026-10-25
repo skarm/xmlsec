@@ -42,8 +42,9 @@ func TestBoundNamespaceContextAcrossEvaluationPaths(t *testing.T) {
 	evaluator := NewEvaluator(DefaultEvaluatorOptions).Namespaces(map[string]string{"p": "urn:base"}).DefaultXMLNamespace("urn:xml:base").Functions(map[string]Function{"probe": namespaceProbe{}}, nil)
 	state := evaluator.NewEvalState(nil)
 	for _, test := range []struct {
-		ns, xml string
-		bound   bool
+		ns    string
+		xml   string
+		bound bool
 	}{{"urn:first", "urn:xml:first", true}, {"urn:base", "urn:xml:base", false}, {"urn:last", "urn:xml:last", true}} {
 		expression, err := NewCompiler().Compile(`probe() eq '` + test.ns + `|` + test.xml + `'`)
 		if err != nil {

@@ -267,7 +267,10 @@ func TestTypedResultDocumentAndEmptySelection(t *testing.T) {
 
 func TestMergePropagatesKeyAtomizationErrors(t *testing.T) {
 	e := newEngine(t, transform.Config{})
-	for _, tc := range []struct{ key, code string }{
+	for _, tc := range []struct {
+		key  string
+		code string
+	}{
 		{`map{}`, "FOTY0013"},
 		{`[1,2]`, "XTTE1020"},
 	} {
@@ -302,7 +305,11 @@ func TestMergeAtomizesArrayKeys(t *testing.T) {
 
 func TestXSLTSortPreservesTypedPrecision(t *testing.T) {
 	e := newEngine(t, transform.Config{})
-	for _, tc := range []struct{ name, values, want string }{
+	for _, tc := range []struct {
+		name   string
+		values string
+		want   string
+	}{
 		{"integer", `(9007199254740993,9007199254740992)`, "9007199254740992;9007199254740993;"},
 		{"decimal", `(1.00000000000000000002,1.00000000000000000001)`, "1.00000000000000000001;1.00000000000000000002;"},
 		{"dateTime", `(xs:dateTime('2026-01-01T00:00:00.000000002Z'),xs:dateTime('2026-01-01T00:00:00.000000001Z'))`, "2026-01-01T00:00:00.000000001Z;2026-01-01T00:00:00.000000002Z;"},
@@ -310,7 +317,10 @@ func TestXSLTSortPreservesTypedPrecision(t *testing.T) {
 		{"floatMidpoint", `(1.00000005960464477539062500000001,1.0,xs:float(0))`, "0;1;1.00000005960464477539062500000001;"},
 		{"promoteDouble", `(9007199254740993,9007199254740992,xs:double(0))`, "0;9007199254740993;9007199254740992;"},
 	} {
-		for _, minor := range []struct{ name, instruction string }{{"single", ""}, {"multiple", `<xsl:sort select="0"/>`}} {
+		for _, minor := range []struct {
+			name        string
+			instruction string
+		}{{"single", ""}, {"multiple", `<xsl:sort select="0"/>`}} {
 			for _, group := range []bool{false, true} {
 				t.Run(tc.name+"/"+minor.name+"/group="+map[bool]string{false: "no", true: "yes"}[group], func(t *testing.T) {
 					start, end, key := `<xsl:for-each select="`+tc.values+`">`, `</xsl:for-each>`, "."
@@ -335,7 +345,11 @@ func TestXSLTSortPreservesTypedPrecision(t *testing.T) {
 
 func TestXSLTSortNodeKeysAndExplicitTypes(t *testing.T) {
 	e := newEngine(t, transform.Config{})
-	for _, tc := range []struct{ name, keys, want string }{
+	for _, tc := range []struct {
+		name string
+		keys string
+		want string
+	}{
 		{"exact", `<xsl:sort select="xs:integer(@v)"/>`, "9007199254740992;9007199254740993;"},
 		{"multiple", `<xsl:sort select="0"/><xsl:sort select="xs:integer(@v)"/>`, "9007199254740992;9007199254740993;"},
 		{"descending", `<xsl:sort select="xs:integer(@v)" order="descending"/>`, "9007199254740993;9007199254740992;"},
@@ -416,7 +430,11 @@ func TestPackageCyclesAndResourceLimits(t *testing.T) {
 }
 
 func TestEvaluationCachesReleaseSourceBuffers(t *testing.T) {
-	for _, test := range []struct{ name, expression, format string }{
+	for _, test := range []struct {
+		name       string
+		expression string
+		format     string
+	}{
 		{"Collation", `compare('a', 'b', $input)`, "http://www.w3.org/2013/collation/UCA?strength=primary;unused=%d"},
 		{"Regex", `matches('a', $input)`, "a|%d"},
 	} {
@@ -531,7 +549,10 @@ func TestXSLTReusesImmutableTextStorage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, tc := range []struct{ name, body string }{
+		for _, tc := range []struct {
+			name string
+			body string
+		}{
 			{"value-of", `<xsl:param name="text"/><xsl:template match="/"><r><xsl:value-of select="$text"/></r></xsl:template>`},
 			{"copy-of", `<xsl:template match="/"><xsl:copy-of select="/r"/></xsl:template>`},
 			{"builtin", `<xsl:template match="/"><r><xsl:apply-templates/></r></xsl:template>`},

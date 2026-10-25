@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -99,7 +100,8 @@ func runGo(ctx context.Context, root string, out, stderr io.Writer, env []string
 }
 
 type goPackage struct {
-	ImportPath, Name string
+	ImportPath string
+	Name       string
 }
 
 type languageProofStamp struct {
@@ -173,7 +175,7 @@ func (s languageProofStream) validate(stamp languageProofStamp) error {
 }
 
 func validateLanguageProofPackages(events []languageProofEvent) error {
-	started, completed := make(map[string]bool), make(map[string]bool)
+	started, completed := make(map[string]struct{}), make(map[string]struct{})
 
 	for _, event := range events {
 		if event.Action == "fail" || event.Action == "build-fail" {
@@ -181,7 +183,11 @@ func validateLanguageProofPackages(events []languageProofEvent) error {
 		}
 
 		if event.Test != "" {
-			if !started[event.Package] || completed[event.Package] {
+			if _, exists := started[event.Package]; !exists {
+				return errors.New("test event lies outside its completed package run")
+			}
+
+			if _, exists := completed[event.Package]; exists {
 				return errors.New("test event lies outside its completed package run")
 			}
 
@@ -190,19 +196,27 @@ func validateLanguageProofPackages(events []languageProofEvent) error {
 
 		switch event.Action {
 		case "start":
-			if event.Package == "" || started[event.Package] {
+			if event.Package == "" {
 				return errors.New("test stream has an empty or repeated package start")
 			}
 
-			started[event.Package] = true
+			if _, exists := started[event.Package]; exists {
+				return errors.New("test stream has an empty or repeated package start")
+			}
+
+			started[event.Package] = struct{}{}
 		case "pass", goTestSkipEvent:
 			// Go also completes packages containing no test files with skip.
 			// Referenced skipped tests remain invalid at the witness gate.
-			if !started[event.Package] || completed[event.Package] {
+			if _, exists := started[event.Package]; !exists {
 				return errors.New("test stream has an unmatched package completion")
 			}
 
-			completed[event.Package] = true
+			if _, exists := completed[event.Package]; exists {
+				return errors.New("test stream has an unmatched package completion")
+			}
+
+			completed[event.Package] = struct{}{}
 		}
 	}
 
@@ -253,12 +267,221 @@ func readLanguageProofFile(path string, target any) (readErr error) {
 }
 
 func writeLanguageProofFile(path string, value any) error {
-	data, err := json.Marshal(value)
+	large := false
+
+	switch value := value.(type) {
+	case languageProofStream:
+		large = len(value.Events) > 128
+	case languageProofArtifact:
+		for _, stream := range value.Streams {
+			large = large || len(stream.Events) > 128
+		}
+	}
+
+	return writeJSONFile(path, large, func(dst io.Writer) error { return writeLanguageProofJSON(dst, value) })
+}
+
+// Invalidate before starting work, including when later atomic publication
+// fails. A previous successful artifact must not survive a failed new capture.
+func invalidateLanguageProofFile(path string) error {
+	info, err := os.Lstat(path) // #nosec G703 -- Explicit developer-selected local proof destination.
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	if info != nil && !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+		return &os.PathError{Op: "invalidate proof", Path: path, Err: os.ErrInvalid}
+	}
+
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) { // #nosec G703 -- Explicit proof destination, already checked against merge inputs.
+		return err
+	}
+
+	return writeJSONFile(path, false, func(dst io.Writer) error { return writeJSONFragment(dst, []byte("null\n")) })
+}
+
+func validateProofDestination(path string, inputs []string) error {
+	destination, err := filepath.Abs(path)
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(path, append(data, '\n'), 0o600) // #nosec G703 -- Developer-selected temporary evidence artifact, not an application resource URI.
+	info, err := os.Stat(path) // #nosec G703 -- Explicit developer-selected proof destination; compare actual file identity.
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	for _, input := range inputs {
+		absolute, err := filepath.Abs(input)
+		if err != nil {
+			return err
+		}
+
+		other, err := os.Stat(input) // #nosec G703 -- Explicit developer-selected capture input; no publisher-derived paths.
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+
+		if absolute == destination || info != nil && other != nil && os.SameFile(info, other) {
+			return errors.New("proof destination must differ from every capture input")
+		}
+	}
+
+	return nil
+}
+
+// writeJSONFile publishes a complete private report only after serialization,
+// buffered writes and Close succeed. The temporary file shares the destination
+// directory so Rename cannot cross filesystems.
+func writeJSONFile(path string, large bool, write func(io.Writer) error) (resultErr error) {
+	// Split retains symlink/.. path traversal semantics, unlike Dir's Clean.
+	parent, _ := filepath.Split(path)
+	if parent == "" {
+		parent = "."
+	}
+
+	file, err := os.CreateTemp(parent, ".xmlsec-report-*")
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if err := os.Remove(file.Name()); err != nil && !errors.Is(err, os.ErrNotExist) { // #nosec G703 -- Only the private file created above is removed.
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+
+	bufferSize := 4 << 10
+	if large {
+		bufferSize = 32 << 10
+	}
+
+	buffered := bufio.NewWriterSize(file, bufferSize)
+
+	err = write(buffered)
+	if err == nil {
+		err = buffered.Flush()
+	}
+
+	if err = errors.Join(err, file.Close()); err != nil {
+		return err
+	}
+
+	return os.Rename(file.Name(), path) // #nosec G703 -- Explicit developer-selected report destination.
+}
+
+// writeJSONListObject encodes metadata and one record at a time, without a
+// complete report buffer. encoding/json may retain pooled capacity from other
+// uses; this helper does not bound total process memory.
+// metadata is an internal object without the named list field. Its closing
+// brace is replaced with that field; each list item remains independently
+// escaped by encoding/json. The caller still owns the complete result model.
+func writeJSONListObject[T any](dst io.Writer, metadata any, field string, items []T, writeItem func(io.Writer, *T) error) error {
+	header, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+
+	if len(header) < 2 || header[0] != '{' || header[len(header)-1] != '}' {
+		return errors.New("report metadata must be a JSON object")
+	}
+
+	key, err := json.Marshal(field)
+	if err != nil {
+		return err
+	}
+
+	comma := []byte(",")
+
+	if err := writeJSONFragment(dst, header[:len(header)-1]); err != nil {
+		return err
+	}
+
+	if len(header) > 2 {
+		if err := writeJSONFragment(dst, comma); err != nil {
+			return err
+		}
+	}
+
+	for _, fragment := range [][]byte{key, []byte(":")} {
+		if err := writeJSONFragment(dst, fragment); err != nil {
+			return err
+		}
+	}
+
+	if items == nil {
+		return writeJSONFragment(dst, []byte("null}\n"))
+	}
+
+	if err := writeJSONFragment(dst, []byte("[\n")); err != nil {
+		return err
+	}
+
+	for i := range items {
+		if i > 0 {
+			if err := writeJSONFragment(dst, comma); err != nil {
+				return err
+			}
+		}
+
+		if err := writeItem(dst, &items[i]); err != nil {
+			return err
+		}
+	}
+
+	return writeJSONFragment(dst, []byte("]}\n"))
+}
+
+func writeJSONFragment(dst io.Writer, data []byte) error {
+	n, err := dst.Write(data)
+	if n < 0 || n > len(data) || err == nil && n != len(data) {
+		return io.ErrShortWrite
+	}
+
+	return err
+}
+
+type checkedJSONWriter struct{ io.Writer }
+
+func (w checkedJSONWriter) Write(data []byte) (int, error) {
+	n, err := w.Writer.Write(data)
+	if n < 0 || n > len(data) || err == nil && n != len(data) {
+		return 0, io.ErrShortWrite
+	}
+
+	return n, err
+}
+
+func writeLanguageProofJSON(dst io.Writer, value any) error {
+	switch value := value.(type) {
+	case languageProofStream:
+		return writeLanguageProofJSON(dst, &value)
+	case *languageProofStream:
+		if value == nil {
+			return json.NewEncoder(checkedJSONWriter{dst}).Encode(nil)
+		}
+
+		metadata := struct {
+			SchemaVersion int                `json:"schema_version"`
+			Before        languageProofStamp `json:"before"`
+			After         languageProofStamp `json:"after"`
+			Arguments     []string           `json:"arguments"`
+			ExitCode      int                `json:"exit_code"`
+			DecodeError   string             `json:"decode_error,omitempty"`
+		}{value.SchemaVersion, value.Before, value.After, value.Arguments, value.ExitCode, value.DecodeError}
+		encoder := json.NewEncoder(checkedJSONWriter{dst})
+
+		return writeJSONListObject(dst, metadata, "events", value.Events, func(_ io.Writer, item *languageProofEvent) error { return encoder.Encode(item) })
+	case languageProofArtifact:
+		metadata := struct {
+			SchemaVersion int                `json:"schema_version"`
+			Stamp         languageProofStamp `json:"stamp"`
+		}{value.SchemaVersion, value.Stamp}
+
+		return writeJSONListObject(dst, metadata, "streams", value.Streams, func(dst io.Writer, item *languageProofStream) error { return writeLanguageProofJSON(dst, item) })
+	default:
+		return json.NewEncoder(checkedJSONWriter{dst}).Encode(value)
+	}
 }
 
 const goTestSkipEvent = "skip"
@@ -291,20 +514,12 @@ func runLanguageProof(ctx context.Context, root string, args []string, out, stde
 
 	artifact := languageProofArtifact{SchemaVersion: 1, Stamp: stamp}
 
-	for _, file := range flags.Args() {
-		absolute, err := filepath.Abs(file)
-		if err != nil {
-			return err
-		}
-
-		destination, err := filepath.Abs(*path)
-		if err != nil || absolute == destination {
-			return errors.Join(err, errors.New("proof destination must differ from every capture input"))
-		}
+	if err := validateProofDestination(*path, flags.Args()); err != nil {
+		return err
 	}
 	// A failed or interrupted merge must not leave a previously valid envelope
 	// at the selected destination.
-	if err := writeLanguageProofFile(*path, artifact); err != nil {
+	if err := invalidateLanguageProofFile(*path); err != nil {
 		return err
 	}
 
@@ -342,7 +557,8 @@ func captureLanguageProof(ctx context.Context, root, path string, args []string,
 	}
 
 	stream := languageProofStream{SchemaVersion: 1, Before: before, Arguments: append([]string{"test", "-json", "-count=1"}, args...), ExitCode: -1}
-	if err := writeLanguageProofFile(path, stream); err != nil {
+
+	if err := invalidateLanguageProofFile(path); err != nil {
 		return err
 	}
 

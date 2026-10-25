@@ -1,27 +1,16 @@
 // Derived from lestrrat-go/helium at 7362c0a70122a757780f4d0b545a9b370dead6ab.
 // Copyright (c) 2015 lestrrat. MIT License; see licenses/MIT-helium.txt at the repository root.
 
-// Package stream implements a streaming XML writer that produces well-formed
-// XML incrementally via method calls, writing directly to an [io.Writer]
-// without building an in-memory DOM tree.
+// Package stream writes XML incrementally to an io.Writer without building
+// a result tree. NewWriter constructs a writer; configure indentation, quote
+// style and XML version before the first write.
 //
-// Use [NewWriter] to create a writer, optionally configure indentation and
-// quote style, then call Start/End/Write methods to emit XML:
+// StartDocument, StartElement and the Write methods emit content. EndElement
+// and EndDocument finish open structures. Errors are sticky: check Writer.Error
+// after a sequence of calls. A failed operation can leave partial output, and
+// the writer never closes the destination.
 //
-//	w := stream.NewWriter(os.Stdout).Indent("  ")
-//	w.StartDocument()
-//	w.StartElement("root")
-//	w.WriteAttribute("id", "1")
-//	w.WriteString("content")
-//	w.EndElement()
-//	w.EndDocument()
-//
-// The writer tracks open elements and namespace scopes, and uses sticky
-// error handling — check [Writer.Error] after a sequence of calls.
-//
-// # Examples
-//
-// Example code for this package lives in the examples/ directory at the
-// repository root (files prefixed with stream_). Because examples are in
-// a separate test module they do not appear in the generated documentation.
+// Writer retains open-element and namespace state, so memory use depends on
+// nesting and declarations. A Writer is not safe for concurrent use, and copies
+// made after writing begins can share stack storage and the output destination.
 package stream

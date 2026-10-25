@@ -34,6 +34,9 @@ import (
 
 const keyWrapIV uint64 = 0xa6a6a6a6a6a6a6a6
 
+// keyWrapProfile selects an authorized key-wrapping algorithm, validates the
+// key-encryption key size and binds wrapping functions to the normalized
+// data-encryption profile.
 func keyWrapProfile(ctx context.Context, kek []byte, options KeyWrapOptions) (profile, error) {
 	if options.Data.OAEP != nil {
 		return profile{}, ErrPolicy
@@ -89,6 +92,8 @@ func keyWrapProfile(ctx context.Context, kek []byte, options KeyWrapOptions) (pr
 
 func sessionKeySize(size int) bool { return size == 16 || size == 24 || size == 32 }
 
+// wrapKey applies RFC 3394 wrapping to a supported session-key size using the
+// supplied AES block. It returns newly allocated wrapped bytes.
 func wrapKey(block cipher.Block, key []byte) ([]byte, error) {
 	if !sessionKeySize(len(key)) {
 		return nil, ErrPolicy
@@ -121,6 +126,9 @@ func wrapKey(block cipher.Block, key []byte) ([]byte, error) {
 	return out, nil
 }
 
+// unwrapKey validates the expected wrapped session-key size before RFC 3394
+// unwrapping. A failed integrity check clears recovered key bytes and returns
+// ErrDecrypt.
 func unwrapKey(block cipher.Block, wrapped []byte, keyBytes int) ([]byte, error) {
 	// Check the expected session-key size before allocation or AES operations.
 	// General RFC 3394 inputs can be much larger than the bounded data-key profile.

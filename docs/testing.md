@@ -1,5 +1,13 @@
 # Testing
 
+## Contents
+
+- [Test layout](#test-layout)
+- [Performance](#performance)
+- [Independent engines](#independent-engines)
+- [xmlsec1 comparisons](#xmlsec1-comparisons)
+- [XAdES baseline and historical checks](#xades-baseline-and-historical-checks)
+
 Run commands from the module root with the Go version in [go.mod](../go.mod).
 Make recipes are in [build/Makefile](../build/Makefile) and require a POSIX shell:
 
@@ -12,14 +20,14 @@ make examples
 make fuzz FUZZ_ARGS='-time=5s'
 ```
 
-`TestCompareSaxonLanguageSemantics` extends the existing optional transform
-comparison tests. Set `SAXON_CLASSPATH` to a ready Saxon HE classpath, including
-its resolver dependencies. It compares fixed XPath queries and error codes;
-no Java adapter is compiled. This run used the publisher's
+`TestCompareSaxonLanguageSemantics` compares XPath queries and error codes
+against an explicitly configured Saxon processor. Set `SAXON_CLASSPATH` to a
+ready Saxon HE classpath, including its resolver dependencies. No Java adapter
+is compiled. The pinned input is the publisher's
 [Saxon HE 12.10 archive](https://github.com/Saxonica/Saxon-HE/releases/tag/SaxonHE12-10),
-SHA-256 `1c7db9f726df835349c64edd631de0310eca31291100230064eba153f607b0be`,
-inside Docker with networking disabled. The archive and jars stay outside the
-repository. Known XSD 1.0/1.1 regex range differences are excluded from successful
+SHA-256 `1c7db9f726df835349c64edd631de0310eca31291100230064eba153f607b0be`.
+Run Docker comparisons with networking disabled. Keep the archive and jars
+outside the repository. Known XSD 1.0/1.1 regex range differences are excluded from successful
 comparison evidence; local tests exercise the explicit `XMLSchemaVersion` selection.
 
 ```sh
@@ -117,10 +125,9 @@ that xmlsec1's URI mapping implements XML Base or recursive external Manifests.
 The existing Manifest and KeyInfo fuzz targets include these valid cases.
 Transform-result tests separately cover different outputs from one URI,
 independent derived IDs, authenticated discovery order, graph/node/byte limits,
-private-signer ordering, concurrent replay and nested-content failures. All new
-tests extend existing files. Optional PGP/SPKI/MgmtData, explicit arbitrary EC
+private-signer ordering, concurrent replay and nested-content failures. Optional PGP/SPKI/MgmtData, explicit arbitrary EC
 parameters, DSA-SHA256, DTD/entity processing and complete LEIRI handling are not
-part of stage 4's selected profile.
+part of the selected XMLDSig/KeyInfo profile.
 
 ## Test layout
 
@@ -195,8 +202,8 @@ it records its oracle source hash and contains no private key.
 `TestXMLSecExternalManifestURIContext` uses the ready xmlsec1 executable for a
 bidirectional external fragment exchange. The native engine selects an ID from
 its XML source; the Go adapter supplies the identified standalone Manifest
-octets. A local DTD types the ID only in the native test input; production Go
-parsing remains DTD-free. Native verification rejects a changed selected
+octets. A local DTD types the ID only in the native test input; the Go
+`document` security parser remains DTD-free. Native verification rejects a changed selected
 Manifest. Changing only its nested payload is rejected by Go recursive checking
 while xmlsec1 core validation still succeeds; this boundary is asserted.
 `TestXMLSecRelativeURIContext` also records that this CLI profile opens the
@@ -204,12 +211,12 @@ literal relative URI instead of applying inherited `xml:base`. It then exchanges
 identical bytes through an explicit native literal mapping and Go's resolved
 allowlist. This is not independent confirmation of XML Base processing.
 
-Component tests in the existing Manifest test file cover retrieval bases,
+Manifest component tests cover retrieval bases,
 inherited/empty `xml:base`, query/fragment escaping, exact authorization before
 I/O, caller-option snapshots, retained replay identity, shared resolved edges,
 separate fragment scopes, alias cycles and graph limits. RFC 3986 section 5 and
 XML Base sections 4.2-4.4 supply the selected resolution rules. Fixed independent
-fixtures now cover the selected additional URI contexts in the stage-4 corpus above;
+fixtures cover the URI contexts in the XMLDSig corpus described above;
 broader LEIRI and retrieval-metadata handling remain outside the bounded profile.
 `TestExternalExtensionContextIsNotReused` verifies that repeated or aliased
 resource URIs cannot bypass a trusted processor's runtime denial at a different
@@ -218,68 +225,61 @@ built-in chains keep their resource-result cache and replay behavior.
 
 ## Performance
 
-Run packages sequentially and compare repeated samples with `benchstat`:
+The [performance and storage guide](performance.md) describes execution paths,
+retained state and benchmark families. Measure isolated operations and complete
+workflows separately.
+Keep raw reports, profiles, traces and baseline source exports outside Git.
+
+Run packages sequentially. Use identical benchmark sources and inputs for the
+baseline and changed production sources, alternate their order, collect at least
+six samples and compare with `benchstat`:
 
 ```sh
-make bench BENCH_ARGS='-benchtime=1s -count=6'
-go test ./transform -run '^$' -bench '^BenchmarkEngineXSLT/1024/3.0$' \
-  -benchtime=5s -cpuprofile=/tmp/xmlsec-cpu.out -memprofile=/tmp/xmlsec-heap.out \
-  -o /tmp/xmlsec-transform.test
-pprof -top /tmp/xmlsec-cpu.out
-pprof -top -alloc_space /tmp/xmlsec-heap.out
-pprof -top -inuse_space /tmp/xmlsec-heap.out
+GOMAXPROCS=2 make bench BENCH_ARGS='-benchtime=300ms -count=6'
+benchstat /tmp/before.bench /tmp/after.bench
 ```
 
-These commands use an installed standalone `pprof`; `go tool pprof` is also
-usable when the Go installation supplies it.
+Collect CPU profiles separately from allocation-per-object or trace runs:
 
-Exclude fixture setup from timed loops. Record Go version, OS/CPU, runtime
-settings and input sizes. Run race tests separately from measurements. Use mutex,
-block and execution-trace profiles for concurrency questions. Distinguish
-[allocation, retained storage and sampled peaks](streaming.md#measuring-memory);
-short or single-iteration timings do not establish performance.
+```sh
+GOMAXPROCS=2 go test ./transform -run '^$' -bench '^BenchmarkEngineXSLT/1024/3.0$' \
+  -benchtime=5s -cpuprofile=/tmp/xmlsec-cpu.out -o /tmp/xmlsec-transform.test
+GOMAXPROCS=2 go test ./transform -run '^$' -bench '^BenchmarkEngineXSLT/1024/3.0$' \
+  -benchtime=1s -memprofile=/tmp/xmlsec-heap.out -memprofilerate=1 \
+  -o /tmp/xmlsec-transform.test
+go tool pprof -top /tmp/xmlsec-cpu.out
+go tool pprof -top -alloc_space /tmp/xmlsec-heap.out
+go tool pprof -top -inuse_space /tmp/xmlsec-heap.out
+```
 
-The stage-4 checkpoint compares the existing `BenchmarkVerifySignature` and
-`BenchmarkParseKeyInfo` against `738c2df` on Go 1.27.3, darwin/arm64, with
-`GOMAXPROCS=1`, eight alternating before/after pairs and 150 ms timed samples.
-Signature verification keeps 467 allocations/op and adds 240 B/op (about
-224,739 → 224,979 B/op) for the expanded result/graph metadata. Inline KeyInfo
-parsing stays at 60 allocations and 5,736 B/op. Median times were 132.100 →
-132.174 µs and 2.5835 → 2.5415 µs respectively; these short samples do not establish
-a timing improvement or general peak/retained-memory behavior. Raw measurements
-and build exports stay outside the repository.
+Use separate mutex/block profiles and traces for contention/scheduling questions.
+Exclude setup from timed loops; record Go/platform, GOMAXPROCS, GC defaults and
+fixture sizes. Race and heavily instrumented timings are diagnostic, not paired
+performance results. Check small inputs as well as large ones.
 
-The 2026-10-22 KeyInfo checkpoint compares the existing `BenchmarkParseKeyInfo`
-against `7fbc54d` on Go 1.27.3, darwin/arm64, Apple M4 Pro. Eight alternating
-before/after pairs (`-count=1 -benchtime=300ms -benchmem`) measured 60 allocations
-in both versions and 5,640 → 5,736 B/op (+96 bytes). Lazy retrieval caches avoid
-three extra allocations for ordinary inline keys. With the default 12 Go
-processors, median time was 2.341 → 2.391 µs (+2.14%, p=0.047); a separate
-eight-sample `GOMAXPROCS=1` comparison was 2.568 → 2.639 µs (p=0.169).
-These are narrow fixture measurements, not a general performance guarantee.
+The opt-in sustained harness uses only loopback HTTP and in-process fixtures:
 
-Separate Linux/arm64 Docker profiling on Go 1.27.2 used a three-second benchmark
-without race. CPU samples showed substantial allocator/GC work; about 36% of
-sampled allocated bytes came from `base64.NewDecoder`. The post-GC `inuse_space`
-sample was empty after discarding results; this does not measure retained caller
-results or peak RSS. The macOS CPU sample was dominated by `runtime.kevent` and
-was not used to identify application hotspots. Raw profiles and benchmark logs
-remain temporary artifacts rather than tracked reports.
+```sh
+XMLSEC_SOAK_DURATION=10m XMLSEC_SOAK_SCENARIO=transform \
+  XMLSEC_SOAK_OUT=/tmp/transform-soak.json \
+  go test -count=1 -timeout=12m -v ./tests/integration/saml -run '^TestSustainedLoad$'
+```
 
-The 2026-10-22 external-URI checkpoint compares the existing
-`BenchmarkVerifySignature` against `0fbd504`, using Go 1.27.3, darwin/arm64,
-Apple M4 Pro and `GOMAXPROCS=1`. Eight alternating before/after pairs
-(`-benchtime=150ms -benchmem`) used isolated source exports containing only this
-block's changes. Median time was 134.9 → 133.8 µs (p=1.000), with 467 allocations
-in both versions and about 112 additional B/op (+0.05%). This measures the
-existing inline fixture; external-pipeline scaling and peak RSS were not measured.
+Repeat with `XMLSEC_SOAK_SCENARIO=http` and `saml`. Each process runs the same
+shared objects continuously through four equal phases: GOMAXPROCS/workers
+1/1, 2/4, 4/12 and 2/4. Slow I/O, larger operations and HTTP dependency failures
+are part of the workload; expected failures remain counted separately.
+The SAML fixture advances real time and uses explicit short freshness/lifetime
+policies with the ordinary bounded stores. Cancellation drains in-flight work.
+Never point this harness at production.
 
-The X509Data construction checkpoint compares `BenchmarkBuildCertificateKeyInfo`
-with `afcdbd8`, adding the same benchmark to that isolated source export. Go 1.27.3,
-darwin/arm64, Apple M4 Pro and `GOMAXPROCS=1` used eight alternating pairs with
-`-benchtime=150ms -benchmem`. Both versions measured 20,496 B/op and 133 allocations;
-median time was 20.51 → 21.06 µs (p=0.083). This is a one-certificate legacy-builder
-fixture; no claim is made about new-group scaling, retained heap or peak RSS.
+Histograms bound latency storage and round up within 2.2%; instrumentation and
+background load affect absolute timings. Ten-second heap samples can miss peaks.
+Record process CPU and peak RSS separately (on macOS, `/usr/bin/time -l`), and
+inspect post-GC heap and goroutines with the shared objects still alive.
+`TotalAlloc`/B/op are accumulated allocation, not live heap, peak heap or RSS.
+Keep sources fixed during final suite runs and source-bound proof captures;
+see [the complete language workflow](language-suites.md).
 
 ## Independent engines
 
@@ -426,9 +426,9 @@ the test verifies their SHA-256 pins before use. `XMLSEC_REQUIRE_P7_PROOFS=1`
 turns missing independent dependencies into failures. Schemas and binaries are
 not committed; the DSS input pairs below are generated outside the checkout.
 
-The existing RSA/ECDSA inclusive-archive vectors were corrected independently
-with lxml/libxml2 and OpenSSL. `TestIndependentEvidence` checks their literal
-archive imprints and rejects the earlier mixed-canonicalization computation.
+`TestIndependentEvidence` checks the literal RSA/ECDSA inclusive-archive
+imprints against lxml/libxml2 and OpenSSL. It rejects input that canonicalizes
+SignedInfo with a method different from the archive method.
 
 Historical unit tests distinguish raw signature/object proofs, token accuracy,
 covering-archive order, optional untrusted attributes, current versus past PKI,

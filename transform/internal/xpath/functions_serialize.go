@@ -6,6 +6,7 @@ package xpath
 import (
 	"context"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strconv"
@@ -203,10 +204,8 @@ type serializeOptions struct {
 	// adaptive (§9.1.9); "fully-normalized" is the SESU0011 unsupported-
 	// normalization serialization error.
 	normalizationForm string
-	// jsonNodeOutputMethod is the requested json-node-output-method value ("" =
-	// the default xml). helium serializes a node embedded in JSON only with the
-	// xml method, so any other value that would change node serialization is an
-	// unsupported-feature error when a node is actually serialized under json.
+	// jsonNodeOutputMethod selects xml, html, xhtml or text output for nodes embedded in
+	// JSON. Empty selects xml; unsupported extension methods are rejected when dispatched.
 	jsonNodeOutputMethod string
 	itemSeparatorSet     bool
 	indent               bool
@@ -265,7 +264,7 @@ func (opts serializeOptions) validate() error {
 		return &xdm.Error{Code: lexicon.ErrSEPM0016, Message: fmt.Sprintf("output method %q is not defined by Serialization 3.0", opts.method)}
 	}
 	// An extension method (a prefixed QName) is a valid method-type value but
-	// helium implements no extension output methods, so it is an unsupported
+	// the serializer implements no extension output methods, so it is an unsupported
 	// value (SEPM0016), with no silent fall-through to the xml method. The
 	// built-in methods and the unspecified default ("") are supported.
 	if opts.method != "" && !isBuiltinSerializeMethod(opts.method) {
@@ -355,10 +354,8 @@ func serializeNormalizationActive(form string) bool {
 	return form != "" && form != nameNone
 }
 
-// isSupportedXMLOutputVersion reports whether v is an XML output version the
-// serializer supports. helium serializes XML 1.0 and 1.1; any other value
-// (including a malformed one or an unsupported version such as "1.2") is the
-// SESU0013 unsupported-version error.
+// isSupportedXMLOutputVersion reports whether v selects XML 1.0 or XML 1.1 output.
+// Parameter validation reports other values as unsupported versions.
 func isSupportedXMLOutputVersion(v string) bool {
 	return v == lexicon.XMLVersion10 || v == lexicon.XMLVersion11
 }
@@ -817,16 +814,9 @@ func readSerializeAtomicStringOption(ctx context.Context, m xdm.MapItem, name, t
 	return text, true, err
 }
 
-// resolveSerializeMethodMap resolves the map-form "method" option, whose value is
-// an xs:string OR xs:QName (F&O 3.1 §14.7.3). It inspects the ATOM so a
-// namespaced QName keeps its namespace instead of being stringified to its local
-// part: a no-namespace string must be a supported method token; invalid values
-// raise SEPM0016 after the declared union-type conversion,
-// and a value with a non-null namespace (a namespaced QName, or a prefixed-QName
-// string) names an EXTENSION method — a valid value helium does not implement,
-// which the SEPM0016 dispatch check reports as unsupported (the extension name is
-// carried as an EQName so it is never mistaken for a built-in token). found is
-// false only when the "method" key is absent.
+// resolveSerializeMethodMap resolves a map-form method option while preserving a
+// QName's namespace. Namespaced methods remain EQNames for unsupported-extension
+// checks. Invalid values raise SEPM0016; found=false means the option is absent.
 func resolveSerializeMethodMap(ctx context.Context, m xdm.MapItem) (string, bool, error) {
 	return resolveSerializeMethodOption(ctx, m, lexicon.SerializationMethod, serializeMethodValid)
 }
@@ -940,10 +930,16 @@ func parseSerializeOptionsNode(opts serializeOptions, n xdm.Node) (serializeOpti
 // parameter document. It contains no fn:serialize defaults or Unicode-output
 // overrides, so a byte serializer can apply its own host defaults afterwards.
 type SerializationParameters struct {
-	Strings       map[string]string
-	Booleans      map[string]bool
-	Names         map[string][]string
-	Characters    map[rune]string
+	// Strings contains supplied string-valued serialization parameters by local name.
+	Strings map[string]string
+	// Booleans contains supplied boolean parameters, preserving explicit false values.
+	Booleans map[string]bool
+	// Names contains resolved expanded-name lists for name-valued parameters.
+	Names map[string][]string
+	// Characters maps input characters to verbatim character-map replacements.
+	Characters map[rune]string
+	// CharactersSet distinguishes an explicitly supplied character map from an absent
+	// parameter.
 	CharactersSet bool
 }
 
@@ -2352,17 +2348,14 @@ func serializeJSONMap(v xdm.MapItem, opts serializeOptions) (string, error) {
 }
 
 func serializeJSONNode(v xdm.NodeItem, opts serializeOptions) (string, error) {
-	text, err := SerializeNodeForJSON(opts.serializationContext(), v, opts.jsonNodeOutputMethod)
-	if err != nil {
+	var buf serializationBuffer
+
+	buf.ctx = opts.serializationContext()
+	if err := WriteJSONNode(buf.ctx, &buf, v, opts.jsonNodeOutputMethod, opts.charMap, opts.normalizationForm, serializeRepertoire(opts.encoding)); err != nil {
 		return "", err
 	}
 
-	encoded, err := encodeJSONStringForSerialization(text, opts)
-	if err != nil {
-		return "", err
-	}
-
-	return opts.join(`"`, []string{encoded}, "", `"`)
+	return buf.String(), nil
 }
 
 // SerializeNodeForJSON returns the inner node serialization before JSON string
@@ -2484,22 +2477,38 @@ func applyCharMapToString(s string, opts serializeOptions) (string, error) {
 }
 
 func serializeXMLSequence(seq xdm.Sequence, opts serializeOptions) (string, error) {
+	var buf serializationBuffer
+
+	buf.ctx = opts.serializationContext()
+	if err := writeXMLSequence(seq, opts, &buf); err != nil {
+		return "", err
+	}
+
+	return buf.String(), nil
+}
+
+func writeXMLSequence(seq xdm.Sequence, opts serializeOptions, dst io.Writer) error {
 	ctx := opts.serializationContext()
 
 	separator := opts.serializationSeparator()
 	if opts.doctypeSystem != "" || opts.standalone != lexicon.ValueOmit && opts.standalone != "" {
 		if err := ValidateSerializationDocument(ctx, seq, separator); err != nil {
-			return "", err
+			return err
 		}
 	}
 
 	if opts.method == lexicon.MethodXHTML {
 		doc, err := NormalizeSerialization(ctx, seq, separator, "")
 		if err != nil {
-			return "", err
+			return err
 		}
 
-		return serializeXHTMLDocument(doc, opts)
+		text, err := serializeXHTMLDocument(doc, opts)
+		if err != nil {
+			return err
+		}
+
+		return writeSerializationString(dst, text)
 	}
 
 	writer := newSerializeXMLWriter(opts)
@@ -2507,19 +2516,16 @@ func serializeXMLSequence(seq xdm.Sequence, opts serializeOptions) (string, erro
 		writer.Doctype = &xdm.Doctype{PublicID: opts.doctypePublic, SystemID: opts.doctypeSystem}
 	}
 
-	var buf serializationBuffer
-
-	buf.ctx = ctx
-	if err := writer.WriteTo(&buf, xdm.NewDefaultDocument()); err != nil {
-		return "", err
+	if err := writer.WriteTo(dst, xdm.NewDefaultDocument()); err != nil {
+		return err
 	}
 
 	_, coalesce := serializeNormForm(opts.normalizationForm)
-	if err := writer.WriteSequence(ctx, &buf, SerializationItems(ctx, seq, separator, coalesce)); err != nil {
-		return "", err
+	if err := writer.WriteSequence(ctx, dst, SerializationItems(ctx, seq, separator, coalesce)); err != nil {
+		return err
 	}
 
-	return buf.String(), nil
+	return nil
 }
 
 // newSerializeXMLWriter builds a xdm.XMLSerialization configured from the serialization
@@ -2662,9 +2668,11 @@ func serializeHTMLSequence(seq xdm.Sequence, opts serializeOptions) (string, err
 }
 
 type htmlSerializationProlog struct {
-	opts                            serializeOptions
-	buf                             *serializationBuffer
-	seenElement, emitted, automatic bool
+	opts        serializeOptions
+	buf         *serializationBuffer
+	seenElement bool
+	emitted     bool
+	automatic   bool
 }
 
 func (p *htmlSerializationProlog) explicit() bool {
@@ -2766,14 +2774,9 @@ func htmlDoctype(opts serializeOptions) string {
 	return `<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.Doctype">` + "\n"
 }
 
-// writeDoctypeSystemLiteral writes a doctype-system value as a well-formed XML
-// SystemLiteral, choosing the enclosing quote character by content: apostrophes
-// when the value contains a double quote, else double quotes. Serialization 3.1
-// §7.4.6 requires the system identifier be enclosed in quotation marks (#x22) OR
-// apostrophes (#x27) — it does not mandate double quotes — and SEPM0016 rejects
-// only a value containing BOTH, so a value with just a `"` (e.g. `a"b`) must be
-// single-quoted (`'a"b'`), and never emitted as malformed `"a"b"`. This mirrors
-// helium's dtdQuoteChar used by the xml output method's DOCTYPE path (writer_dtd.go).
+// writeDoctypeSystemLiteral encloses a validated system identifier in double quotes,
+// or apostrophes when the value contains a double quote. Parameter validation must
+// reject values containing both quote characters.
 func writeDoctypeSystemLiteral(b *strings.Builder, sys string) {
 	quote := xmloutput.Quote(sys, '"')
 	b.WriteByte(quote)

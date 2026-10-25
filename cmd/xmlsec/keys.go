@@ -13,10 +13,11 @@ import (
 )
 
 type privateKeyFlags struct {
-	format                       string
-	passwordFile                 string
-	maxKDFWork                   int
-	minIterations, maxIterations int
+	format        string
+	passwordFile  string
+	maxKDFWork    int
+	minIterations int
+	maxIterations int
 }
 
 func (f *privateKeyFlags) limits() keys.Limits {

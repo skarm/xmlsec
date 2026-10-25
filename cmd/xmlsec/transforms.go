@@ -157,7 +157,15 @@ func runTransform(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		return err
 	}
 
-	config := transform.Config{Limits: transform.Limits{MaxInputBytes: exec.xml.MaxBytes, MaxProgramBytes: *programBytes, MaxOutputBytes: exec.output, MaxNodes: exec.xml.MaxNodes, MaxDepth: exec.xml.MaxDepth, MaxOperations: *operations, Timeout: *engineTimeout}}
+	config := transform.Config{Limits: transform.Limits{
+		MaxInputBytes:   exec.xml.MaxBytes,
+		MaxProgramBytes: *programBytes,
+		MaxOutputBytes:  exec.output,
+		MaxNodes:        exec.xml.MaxNodes,
+		MaxDepth:        exec.xml.MaxDepth,
+		MaxOperations:   *operations,
+		Timeout:         *engineTimeout,
+	}}
 
 	config.Resolver, err = transformResolver(ctx, *resources)
 	if err != nil {
@@ -180,28 +188,32 @@ func runTransform(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	var doc *transform.Document
 
 	if *input != "" {
-		raw, err := readInputContext(ctx, *input, stdin, exec.xml.MaxBytes)
-		if err != nil {
-			return err
-		}
+		err = consumeInput(ctx, *input, stdin, exec.xml.MaxBytes, func(r io.Reader) error {
+			var parseErr error
 
-		doc, err = engine.Parse(ctx, raw)
+			doc, parseErr = engine.ParseReader(ctx, r)
+
+			return parseErr
+		})
 		if err != nil {
 			return err
 		}
 	}
 
 	if cmd == nameXPath {
-		return (xpathCommand{expression: *expression, version: *version, baseURI: *baseURI, format: *format, output: *output, namespaces: ns, bindings: bindings}).run(ctx, engine, doc, stdout)
+		return (xpathCommand{
+			expression: *expression,
+			version:    *version,
+			baseURI:    *baseURI,
+			format:     *format,
+			output:     *output,
+			namespaces: ns,
+			bindings:   bindings,
+		}).run(ctx, engine, doc, stdout)
 	}
 
 	if *sheetFile == "" {
 		return usageError("-stylesheet is required")
-	}
-
-	raw, err := readInputContext(ctx, *sheetFile, nil, *programBytes)
-	if err != nil {
-		return err
 	}
 
 	versions := map[string]transform.XSLTVersion{"": 0, version10: transform.XSLT10, version20: transform.XSLT20, version30: transform.XSLT30}
@@ -216,29 +228,37 @@ func runTransform(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		return err
 	}
 
-	sheet, err := engine.CompileXSLT(ctx, raw, transform.XSLTOptions{Version: v, BaseURI: *baseURI, StaticParameters: staticBindings})
+	var sheet *transform.Stylesheet
+
+	err = consumeInput(ctx, *sheetFile, nil, *programBytes, func(r io.Reader) error {
+		var compileErr error
+
+		sheet, compileErr = engine.CompileXSLTReader(ctx, r, transform.XSLTOptions{Version: v, BaseURI: *baseURI, StaticParameters: staticBindings})
+
+		return compileErr
+	})
 	if err != nil {
 		return err
 	}
 
-	result, err := sheet.Transform(ctx, doc, transform.XSLTContext{Parameters: bindings, Template: parseQName(*template), Mode: parseQName(*mode), BaseOutputURI: *baseURI})
-	if err != nil {
-		return err
-	}
+	options := transform.XSLTContext{Parameters: bindings, Template: parseQName(*template), Mode: parseQName(*mode), BaseOutputURI: *baseURI}
 
-	if *format == "json" {
+	switch *format {
+	case "json":
+		result, err := sheet.Transform(ctx, doc, options)
+		if err != nil {
+			return err
+		}
+
 		return jsonOutput(ctx, *output, stdout, result)
-	}
-
-	if *format != "text" {
+	case "text":
+		return produceOutput(ctx, *output, stdout, func(w io.Writer) error {
+			_, err := sheet.Write(ctx, w, doc, options)
+			return err
+		})
+	default:
 		return usageError("-format must be text or json")
 	}
-
-	if len(result.Secondary) > 0 {
-		return usageError("stylesheet produced secondary documents; use -format json to retain all results")
-	}
-
-	return writeOutputContext(ctx, *output, stdout, result.Primary)
 }
 
 func parseQName(s string) transform.Name {
@@ -252,37 +272,52 @@ func parseQName(s string) transform.Name {
 	return document.Name{Local: s}
 }
 
-func canonicalizeXPath(ctx context.Context, doc *document.Document, expression string, ns map[string]string, opt c14n.Options) ([]byte, error) {
+func canonicalizeXPath(ctx context.Context, w io.Writer, doc *document.Document, expression string, ns map[string]string, opt c14n.Options) error {
 	tr := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: expression, Namespaces: ns}}}
 	e := execution(ctx)
 
 	engine, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{tr}, Limits: transform.Limits{MaxInputBytes: e.xml.MaxBytes, MaxOutputBytes: e.output, MaxNodes: e.xml.MaxNodes, MaxDepth: e.xml.MaxDepth, MaxOperations: e.nodeVisits}})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	set, err := doc.AllNodes(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	data, err := reference.Nodes(set)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	output, err := reference.Process(ctx, data, []reference.Transform{tr, {Algorithm: opt.Algorithm, InclusivePrefixes: opt.InclusivePrefixes}}, reference.Options{Extension: engine, AllowedTransforms: []string{reference.XPath, opt.Algorithm}, MaxInputBytes: e.xml.MaxBytes, MaxOutputBytes: e.output, MaxProducedBytes: e.output, MaxNodeVisits: e.nodeVisits, XMLLimits: e.xml})
-	if err != nil {
-		return nil, err
-	}
+	_, err = reference.Write(ctx, w, data, []reference.Transform{
+		tr,
+		{
+			Algorithm:         opt.Algorithm,
+			InclusivePrefixes: opt.InclusivePrefixes,
+		},
+	}, reference.Options{
+		Extension:         engine,
+		AllowedTransforms: []string{reference.XPath, opt.Algorithm},
+		MaxInputBytes:     e.xml.MaxBytes,
+		MaxOutputBytes:    e.output,
+		MaxProducedBytes:  e.output,
+		MaxNodeVisits:     e.nodeVisits,
+		XMLLimits:         e.xml,
+	})
 
-	return output.Bytes(), nil
+	return err
 }
 
 type xpathCommand struct {
-	expression, version, baseURI, format, output string
-	namespaces                                   map[string]string
-	bindings                                     transform.Bindings
+	expression string
+	version    string
+	baseURI    string
+	format     string
+	output     string
+	namespaces map[string]string
+	bindings   transform.Bindings
 }
 
 func (c xpathCommand) run(ctx context.Context, engine *transform.Engine, doc *transform.Document, stdout io.Writer) error {
@@ -290,7 +325,13 @@ func (c xpathCommand) run(ctx context.Context, engine *transform.Engine, doc *tr
 		return usageError("-expression is required")
 	}
 
-	versions := map[string]transform.XPathVersion{"": transform.XPath31, version10: transform.XPath10, version20: transform.XPath20, version30: transform.XPath30, version31: transform.XPath31}
+	versions := map[string]transform.XPathVersion{
+		"":        transform.XPath31,
+		version10: transform.XPath10,
+		version20: transform.XPath20,
+		version30: transform.XPath30,
+		version31: transform.XPath31,
+	}
 
 	v, ok := versions[c.version]
 	if !ok {

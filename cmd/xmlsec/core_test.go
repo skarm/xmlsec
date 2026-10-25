@@ -31,9 +31,11 @@ const (
 )
 
 type stage4CLICase struct {
-	Name, Kind, XML string
-	Resources       map[string][]byte
-	Programs        []reference.Transform
+	Name      string
+	Kind      string
+	XML       string
+	Resources map[string][]byte
+	Programs  []reference.Transform
 }
 
 func TestStage4CLI(t *testing.T) {

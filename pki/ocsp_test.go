@@ -49,10 +49,11 @@ func TestOCSPRoundTripAndFailures(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name            string
-		at              time.Time
-		nonce, response []byte
-		want            error
+		name     string
+		at       time.Time
+		nonce    []byte
+		response []byte
+		want     error
 	}{{"good", testcert.Now(), n, good, nil}, {"no nonce expectation", testcert.Now(), nil, good, nil}, {"wrong nonce", testcert.Now(), []byte("other"), good, pki.ErrEvidence}, {"future", testcert.Now().Add(-time.Minute), n, good, pki.ErrUnavailable}, {"stale", testcert.Now().Add(2 * time.Minute), n, good, pki.ErrUnavailable}, {"truncated", testcert.Now(), n, good[:len(good)-1], pki.ErrEvidence}, {"trailing", testcert.Now(), n, append(bytes.Clone(good), 0), pki.ErrEvidence}} {
 		t.Run(tc.name, func(t *testing.T) { testOCSPRoundTripAndFailuresCase(t, &tc, &c) })
 	}
@@ -126,9 +127,11 @@ func TestOCSPDelegation(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name              string
-		eku, nocheck, crl bool
-		want              error
+		name    string
+		eku     bool
+		nocheck bool
+		crl     bool
+		want    error
 	}{{"authorized", true, true, false, nil}, {"missing EKU", false, true, false, pki.ErrEvidence}, {"no responder revocation", true, false, false, pki.ErrUnavailable}, {"responder CRL", true, false, true, nil}} {
 		t.Run(tc.name, func(t *testing.T) {
 			key := testcert.Key(t)

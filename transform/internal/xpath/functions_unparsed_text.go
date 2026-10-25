@@ -52,20 +52,24 @@ func unparsedTextConfig(ctx context.Context) *unparsedtext.Config {
 type textSnapshotKey struct{}
 
 type textResourceName struct {
-	uri, encoding          string
-	explicitEncoding, json bool
+	uri              string
+	encoding         string
+	explicitEncoding bool
+	json             bool
 }
 
 type textResourceSnapshot struct {
-	text                   string
-	rawBytes, decodedBytes int64
-	oversized              bool
-	err                    error
+	text         string
+	rawBytes     int64
+	decodedBytes int64
+	oversized    bool
+	err          error
 }
 
 type textSnapshotStore struct {
-	values          map[textResourceName]*textResourceSnapshot
-	retained, limit int64
+	values   map[textResourceName]*textResourceSnapshot
+	retained int64
+	limit    int64
 }
 
 type textResourceMode uint8
@@ -315,8 +319,10 @@ func configureTextResourceRead(ctx context.Context, cfg *unparsedtext.Config, en
 // textLineCounter detects line overflow while decoding, before the rest of the
 // resource or an entire result string can be materialized.
 type textLineCounter struct {
-	limit, lines int
-	skipLF, tail bool
+	limit  int
+	lines  int
+	skipLF bool
+	tail   bool
 }
 
 func (c *textLineCounter) write(chunk []byte) bool {

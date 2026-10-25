@@ -7,8 +7,8 @@ import (
 	"slices"
 )
 
-func (g *graph) covered(ctx context.Context, candidate Candidate) (map[[32]byte]bool, error) {
-	seen := make(map[[32]byte]bool)
+func (g *graph) covered(ctx context.Context, candidate Candidate) (map[[32]byte]struct{}, error) {
+	seen := make(map[[32]byte]struct{})
 
 	stack := slices.Clone(candidate.Covered)
 	for len(stack) > 0 {
@@ -19,7 +19,7 @@ func (g *graph) covered(ctx context.Context, candidate Candidate) (map[[32]byte]
 		key := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 
-		if seen[key] {
+		if _, exists := seen[key]; exists {
 			continue
 		}
 
@@ -28,7 +28,7 @@ func (g *graph) covered(ctx context.Context, candidate Candidate) (map[[32]byte]
 			return nil, ErrInput
 		}
 
-		seen[key] = true
+		seen[key] = struct{}{}
 		if len(seen) > g.maximum {
 			return nil, ErrLimit
 		}
@@ -53,7 +53,7 @@ func orderStamps(ctx context.Context, g *graph, stamps []preparedStamp) ([]prepa
 		}
 
 		for target, other := range stamps {
-			if !covered[other.assertion.TokenSHA256()] {
+			if _, exists := covered[other.assertion.TokenSHA256()]; !exists {
 				continue
 			}
 
@@ -116,7 +116,7 @@ func checkProtectedChronology(ctx context.Context, g *graph, stamp preparedStamp
 			return err
 		}
 
-		if !covered[stamp.assertion.TokenSHA256()] {
+		if _, exists := covered[stamp.assertion.TokenSHA256()]; !exists {
 			continue
 		}
 

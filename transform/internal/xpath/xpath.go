@@ -14,17 +14,28 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
-// Expression is a compiled XPath 3.1 expression, reusable across evaluations.
+// Expression retains a compiled XPath program and its static context. Public adapters
+// select an explicit language profile. Expressions can be reused concurrently when
+// supplied values and callbacks obey the evaluation ownership contract.
 type Expression struct {
-	staticNamespaces    map[string]string
+	// staticNamespaces captures immutable prefix bindings; nil uses evaluator bindings.
+	staticNamespaces map[string]string
+	// defaultXMLNamespace retains the host XML default independently of XPath's default
+	// element/type namespace.
 	defaultXMLNamespace string
-	staticCollation     string
-	deferred            error
-	source              string
-	ast                 Expr
-	program             *vmProgram
-	prefixPlan          prefixValidationPlan
-	version             int // xmlsec: explicit 10, 20, 30 or 31; zero preserves upstream behavior.
+	// staticCollation overrides the evaluator's default collation when bound.
+	staticCollation string
+	// deferred retains an error reported only if a deferred expression is evaluated.
+	deferred error
+	// source retains the original expression text for diagnostics and syntax analysis.
+	source string
+	// ast optionally retains the parsed syntax tree for internal analysis.
+	ast Expr
+	// program holds the immutable compiled evaluation instructions.
+	program *vmProgram
+	// prefixPlan caches namespace-prefix checks for static validation.
+	prefixPlan prefixValidationPlan
+	version    int // 10, 20, 30 or 31 selects a profile; zero leaves internal visibility unrestricted.
 }
 
 // BindNamespaces returns a copy bound to an immutable static namespace context.
@@ -137,16 +148,17 @@ func (e *Expression) astExpr() Expr {
 	return ast
 }
 
-// Result holds the outcome of an XPath 3.1 evaluation.
+// Result holds an XPath evaluation sequence. Results from EvaluateReuse can borrow
+// mutable state storage and must be consumed or copied before that state is reused.
 type Result struct {
 	// seq is the result sequence, or a *resultNodes for a result that is a
 	// list of nodes without type annotations.
 	seq xdm.Sequence
 }
 
-// Copy returns a deep copy of the Result whose backing storage is
-// independent of any EvalState. Use this to retain a Result beyond
-// the next EvaluateReuse call.
+// Copy returns a result whose sequence storage and mutable value payloads are
+// independent of EvalState reuse. Node identities and function closures remain shared.
+// Use Copy to retain a result beyond the next EvaluateReuse call.
 func (r Result) Copy() Result {
 	if rn, ok := r.seq.(*resultNodes); ok {
 		if len(rn.nodes) == 0 {
@@ -322,20 +334,23 @@ func (r Result) items() xdm.Sequence {
 	return r.seq
 }
 
-// Compiler configures XPath 3.1 expression compilation.
-// It is a value-style wrapper: fluent methods return updated copies
-// and the original is never mutated.
-//
-// Compiler exists for symmetry with xslt.Compiler and future growth.
-// Currently the config is empty, but compile-time knobs may be added later.
+// Compiler configures shared XPath compilation, including language profile, namespace
+// bindings, host-function visibility and compilation context. Fluent methods return
+// updated configuration copies.
 type Compiler struct {
+	// cfg retains compiler options copied by fluent configuration methods.
 	cfg *compilerCfg
 }
 
 type compilerCfg struct {
-	context      context.Context
-	version      int
-	namespaces   map[string]string
+	// context supplies the host compilation budget for numeric literals.
+	context context.Context
+	// version selects explicit XPath syntax and function visibility; zero skips profile
+	// restrictions.
+	version int
+	// namespaces supplies static bindings for language-profile validation.
+	namespaces map[string]string
+	// hostFunction reports host-defined functions visible to static validation.
 	hostFunction func(uri, name string, arity int) bool
 }
 
@@ -357,7 +372,8 @@ func (c Compiler) Context(ctx context.Context) Compiler {
 	return c
 }
 
-// Compile parses an XPath 3.1 expression string into a reusable Expression.
+// Compile parses an expression and builds a reusable evaluation program. An explicitly
+// selected profile checks syntax and function availability before compilation.
 func (c Compiler) Compile(expr string) (*Expression, error) {
 	version := 0
 	if c.cfg != nil {

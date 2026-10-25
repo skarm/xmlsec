@@ -28,25 +28,37 @@ const (
 	ChainModel ValidityModel = "chain"
 )
 
-// CryptoConstraint bounds when one selected algorithm or key-size family was
-// reliable. Exactly one selector is set: SignatureAlgorithm, Hash, or
-// PublicKeyAlgorithm with MinimumKeyBits. Key-size rules concern sizes below
-// that minimum. A rule never enables unsupported cryptography or bypasses FIPS.
+// CryptoConstraint sets a reliability cutoff for one algorithm or key-size family.
+// Set exactly one selector: SignatureAlgorithm, Hash, or PublicKeyAlgorithm with
+// MinimumKeyBits. A key-size rule applies below that minimum. These rules do not
+// enable unsupported cryptography or bypass FIPS restrictions.
 type CryptoConstraint struct {
+	// SignatureAlgorithm selects one certificate or evidence signature algorithm.
 	SignatureAlgorithm x509.SignatureAlgorithm
-	Hash               crypto.Hash
+	// Hash selects one digest algorithm, independently of a signature algorithm.
+	Hash crypto.Hash
+	// PublicKeyAlgorithm selects the key family governed by MinimumKeyBits.
 	PublicKeyAlgorithm x509.PublicKeyAlgorithm
-	MinimumKeyBits     int
-	ReliableUntil      time.Time
+	// MinimumKeyBits applies the cutoff to keys smaller than this size in the selected
+	// family.
+	MinimumKeyBits int
+	// ReliableUntil is the required, nonzero algorithm or key-size reliability cutoff.
+	ReliableUntil time.Time
 }
 
-// HistoricalOptions selects bounded historical policy, separate from current
-// Verify semantics. All maps, slices and pointed values are snapshotted.
+// HistoricalOptions selects certificate calendar and temporal validation policy.
+// It applies to historical sessions separately from current Verify operations.
+// Construction copies maps, slices and pointed-to values.
 type HistoricalOptions struct {
-	Model              ValidityModel
-	MaxPaths           int
+	// Model selects the certificate validity model. Empty selects ShellModel.
+	Model ValidityModel
+	// MaxPaths bounds candidate paths per target. Zero selects 16. The maximum is 256.
+	MaxPaths int
+	// TrustAnchorSunsets maps configured trust anchors' lowercase hexadecimal SHA-256 DER
+	// fingerprints to nonzero trust cutoffs.
 	TrustAnchorSunsets map[string]time.Time
-	CryptoConstraints  []CryptoConstraint
+	// CryptoConstraints supplies at most 128 algorithm or key-size reliability rules.
+	CryptoConstraints []CryptoConstraint
 	// RevocationFreshness nil derives nextUpdate-thisUpdate. Missing nextUpdate
 	// then fails freshness; explicit zero remains a distinct configured value.
 	RevocationFreshness *time.Duration
@@ -54,65 +66,79 @@ type HistoricalOptions struct {
 
 // HistoricalConfig supplies explicit trust and historical policy.
 type HistoricalConfig struct {
+	// PKI supplies explicit trust anchors, certificate usages and offline revocation
+	// policy.
 	PKI Config
+	// HistoricalOptions selects the certificate calendar and temporal constraints.
 	HistoricalOptions
 }
 
-// HistoricalSession owns one bounded offline operation and its present time.
-// It separates source authentication from freshness, PoE and past acceptance.
-// Its methods serialize operation-local caches; returned objects are immutable.
+// HistoricalSession holds the evidence, explicit present time and bounded caches
+// for one offline historical operation. Its methods serialize cache access and
+// return immutable objects. Source authentication, freshness, proof of existence
+// and past acceptance are separate checks.
 type HistoricalSession struct {
-	mu                    sync.Mutex
-	verifier              *Verifier
-	options               HistoricalOptions
-	now                   time.Time
-	evidence              Evidence
-	paths                 map[[32]byte][]*HistoricalPath
-	certificates          map[[32]byte]*x509.Certificate
-	targetBytes, pathWork int
-	signatureWork         int
-	sourcesReady          bool
-	lists                 []*parsedCRL
-	responses             []parsedOCSP
-	claims                map[[32]byte][]historicalClaim
+	mu            sync.Mutex
+	verifier      *Verifier
+	options       HistoricalOptions
+	now           time.Time
+	evidence      Evidence
+	paths         map[[32]byte][]*HistoricalPath
+	certificates  map[[32]byte]*x509.Certificate
+	targetBytes   int
+	pathWork      int
+	signatureWork int
+	sourcesReady  bool
+	lists         []*parsedCRL
+	responses     []parsedOCSP
+	claims        map[[32]byte][]historicalClaim
 }
 
-// HistoricalPath is a prospective exact certificate path, not a trust Result.
-// Only its producing session can assess or use it.
+// HistoricalPath is a candidate certificate path bound to its producing session.
+// Only that session can assess or use it. Constructing a path grants no trust.
 type HistoricalPath struct {
 	session     *HistoricalSession
 	chain       []*x509.Certificate
 	fingerprint [32]byte
 }
 
-// HistoricalPathAssessment records model-specific structural/path checks. It
-// neither grants historical PoE nor asserts a document signature is valid.
+// HistoricalPathAssessment records structural and calendar checks for a candidate
+// path. It establishes neither historical proof of existence nor document signature
+// validity.
 type HistoricalPathAssessment struct {
 	path      *HistoricalPath
 	reference time.Time
 	model     ValidityModel
 }
 
-// TimeTransition records one authenticated source/policy reason for changing
-// the internal historical control time. Accessor slices are independent.
+// TimeTransition records the authenticated evidence or policy reason for a change
+// to historical control time. Accessors return independent slices of transitions.
 type TimeTransition struct {
+	// CertificateSHA256 identifies the affected certificate by its hexadecimal SHA-256 DER
+	// digest.
 	CertificateSHA256 string
-	EvidenceSHA256    string
-	Clause            string
-	Reason            string
-	Before            time.Time
-	After             time.Time
+	// EvidenceSHA256 identifies the revocation evidence associated with the transition.
+	EvidenceSHA256 string
+	// Clause identifies the validation clause applied by this transition.
+	Clause string
+	// Reason describes why the control time changed.
+	Reason string
+	// Before is the control time before applying the transition.
+	Before time.Time
+	// After is the control time after applying the transition.
+	After time.Time
 }
 
-// PastCertificateResult means the selected past certificate process passed.
-// It does not decide a document signature or replace past-signature validation.
+// PastCertificateResult records successful past certificate validation under the
+// selected policy. Document signature and past-signature validation remain separate.
 type PastCertificateResult struct {
 	path     *HistoricalPath
 	at       time.Time
 	evidence []*VerifiedEvidence
 }
 
-// PastCertificateReport is diagnostic. Only a nonnil result denotes success.
+// PastCertificateReport contains past certificate diagnostics. Acceptance requires
+// a non-nil result in addition to the report.
 type PastCertificateReport struct {
 	subIndication string
 	transitions   []TimeTransition
@@ -189,15 +215,15 @@ func (v *Verifier) historicalOptions(options HistoricalOptions) (HistoricalOptio
 		options.RevocationFreshness = &value
 	}
 
-	roots := make(map[string]bool, len(v.anchorCertificates))
+	roots := make(map[string]struct{}, len(v.anchorCertificates))
 	for _, raw := range v.anchorCertificates {
 		digest := sha256.Sum256(raw)
-		roots[hex.EncodeToString(digest[:])] = true
+		roots[hex.EncodeToString(digest[:])] = struct{}{}
 	}
 
 	options.TrustAnchorSunsets = maps.Clone(options.TrustAnchorSunsets)
 	for root, at := range options.TrustAnchorSunsets {
-		if !roots[root] || at.IsZero() {
+		if _, allowed := roots[root]; !allowed || at.IsZero() {
 			return options, ErrPolicy
 		}
 

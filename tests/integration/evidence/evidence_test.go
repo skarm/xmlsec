@@ -22,8 +22,13 @@ import (
 )
 
 type evidenceFixture struct {
-	Group, Name, At, Nonce, Status string
-	Valid, Detached                bool
+	Group    string
+	Name     string
+	At       string
+	Nonce    string
+	Status   string
+	Valid    bool
+	Detached bool
 }
 
 func TestIndependentEvidence(t *testing.T) {

@@ -10,9 +10,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -215,7 +214,17 @@ func readCipherResource(ctx context.Context, p *ExternalCipherReference, limit, 
 		decoded = base64.NewDecoder(base64.StdEncoding.Strict(), &streamio.XMLWhitespaceReader{Source: source})
 	}
 
-	out, err = readCiphertext(ctx, decoded, maximum)
+	size := int64(-1)
+	if sized, ok := r.(resource.SizedReader); ok && !decode {
+		size = sized.Size()
+	}
+
+	if size >= 0 {
+		out, err = readSizedCiphertext(ctx, decoded, min(maximum, limit), size)
+	} else {
+		out, err = readCiphertext(ctx, decoded, maximum)
+	}
+
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -273,4 +282,31 @@ func readCiphertext(ctx context.Context, source io.Reader, maximum int) ([]byte,
 	}
 
 	return output, ctx.Err()
+}
+
+// readSizedCiphertext allocates one authenticated-cipher input buffer, while
+// verifying the untrusted transport size against actual bytes and terminal EOF.
+func readSizedCiphertext(ctx context.Context, source io.Reader, maximum int, size int64) ([]byte, error) {
+	if size < 0 || size > int64(maximum) {
+		return nil, ErrPolicy
+	}
+
+	reader := &streamio.Reader{Context: ctx, Source: source, Limit: size, LimitError: ErrPolicy}
+
+	out := make([]byte, int(size))
+	if _, err := io.ReadFull(reader, out); err != nil {
+		return nil, err
+	}
+
+	var probe [1]byte
+	for {
+		_, err := reader.Read(probe[:])
+		if err != nil {
+			if err == io.EOF { //nolint:errorlint // Joined EOF can carry a late read failure and must remain an error.
+				return out, ctx.Err()
+			}
+
+			return nil, err
+		}
+	}
 }

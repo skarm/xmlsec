@@ -89,7 +89,11 @@ func TestTimestampFailureNoPartialDocument(t *testing.T) {
 	mut := bytes.Clone(r.Timestamps()[0].TokenDER())
 
 	mut[len(mut)-1] ^= 1
-	for _, tc := range []struct{ name, from, to string }{{"bad token", token, base64.StdEncoding.EncodeToString(mut)}, {"unsupported encoding", "<xades:EncapsulatedTimeStamp>", "<xades:EncapsulatedTimeStamp Encoding=\"urn:other\">"}, {"unsupported property", "SignatureTimeStamp", "OtherProperty"}, {"wrong canonicalization", `Algorithm="` + c14n.Exclusive + `"></ds:CanonicalizationMethod><xades:EncapsulatedTimeStamp>`, `Algorithm="` + c14n.Canonical10 + `"></ds:CanonicalizationMethod><xades:EncapsulatedTimeStamp>`}} {
+	for _, tc := range []struct {
+		name string
+		from string
+		to   string
+	}{{"bad token", token, base64.StdEncoding.EncodeToString(mut)}, {"unsupported encoding", "<xades:EncapsulatedTimeStamp>", "<xades:EncapsulatedTimeStamp Encoding=\"urn:other\">"}, {"unsupported property", "SignatureTimeStamp", "OtherProperty"}, {"wrong canonicalization", `Algorithm="` + c14n.Exclusive + `"></ds:CanonicalizationMethod><xades:EncapsulatedTimeStamp>`, `Algorithm="` + c14n.Canonical10 + `"></ds:CanonicalizationMethod><xades:EncapsulatedTimeStamp>`}} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := bytes.ReplaceAll(b, []byte(tc.from), []byte(tc.to))
 			if bytes.Equal(s, b) {

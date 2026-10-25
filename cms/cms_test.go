@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -414,11 +415,12 @@ func TestCMSRoundTrip(t *testing.T) {
 
 	rc := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(15), Subject: pkix.Name{CommonName: "RSA"}, NotBefore: testcert.Now().Add(-time.Hour), NotAfter: testcert.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}, c.Root, &rk.PublicKey, c.RootKey)
 	for _, tc := range []struct {
-		name     string
-		key      crypto.Signer
-		cert     []byte
-		h        crypto.Hash
-		pss, ski bool
+		name string
+		key  crypto.Signer
+		cert []byte
+		h    crypto.Hash
+		pss  bool
+		ski  bool
 	}{{"ECDSA256", c.LeafKey, c.Leaf.Raw, crypto.SHA256, false, false}, {"ECDSA384 SKI", c.LeafKey, c.Leaf.Raw, crypto.SHA384, false, true}, {"ECDSA512", c.LeafKey, c.Leaf.Raw, crypto.SHA512, false, false}, {"RSA", rk, rc.Raw, crypto.SHA256, false, false}, {"PSS256", rk, rc.Raw, crypto.SHA256, true, false}, {"PSS384", rk, rc.Raw, crypto.SHA384, true, false}, {"PSS512", rk, rc.Raw, crypto.SHA512, true, false}} {
 		for _, detached := range []bool{false, true} {
 			suffix := " attached"
@@ -959,13 +961,13 @@ func TestCMSTrustEvidenceBindings(t *testing.T) {
 		t.Fatal("shared CRL lost distinct signer certificate bindings", len(assertions))
 	}
 	fingerprint := sha256.Sum256(crl)
-	targets := map[string]bool{}
+	targets := map[string]struct{}{}
 	for _, certificate := range expected {
 		sum := sha256.Sum256(certificate)
-		targets[hex.EncodeToString(sum[:])] = true
+		targets[hex.EncodeToString(sum[:])] = struct{}{}
 	}
 	for _, assertion := range assertions {
-		if assertion.AuthenticationStatus() != pki.Valid || assertion.FingerprintSHA256() != hex.EncodeToString(fingerprint[:]) || !targets[assertion.TargetCertificateSHA256()] || assertion.IssuerScopeBinding() == "" || assertion.ValidationTime() != testcert.Now() {
+		if _, exists := targets[assertion.TargetCertificateSHA256()]; assertion.AuthenticationStatus() != pki.Valid || assertion.FingerprintSHA256() != hex.EncodeToString(fingerprint[:]) || !exists || assertion.IssuerScopeBinding() == "" || assertion.ValidationTime() != testcert.Now() {
 			t.Fatal("wrong authenticated CMS evidence binding")
 		}
 		delete(targets, assertion.TargetCertificateSHA256())
@@ -1222,4 +1224,37 @@ func cmsCertificateDefaultVariant(t *testing.T, raw []byte, key crypto.Signer, v
 	}
 	bits, _ := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
 	return der.Seq(tbs, outer[1].FullBytes, bits)
+}
+
+// BenchmarkCMSBER measures normalization separately from signature verification.
+func BenchmarkCMSBER(b *testing.B) { benchmarkCMSBER(b, false) }
+
+func BenchmarkCMSBERReader(b *testing.B) { benchmarkCMSBER(b, true) }
+
+func benchmarkCMSBER(b *testing.B, reader bool) {
+	c := testcert.New(b)
+	for _, size := range []int{16 << 10, 1 << 20} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			content := bytes.Repeat([]byte("a"), size)
+			raw, err := cms.Sign(b.Context(), content, []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}}, cms.SignOptions{})
+			if err != nil {
+				b.Fatal(err)
+			}
+			encoded := cmsBEREnvelope(b, raw, indefiniteBER(0x24, der.Octets(content[:size/2]), der.Octets(content[size/2:])))
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			for b.Loop() {
+				var parsed *cms.SignedData
+				var err error
+				if reader {
+					parsed, err = cms.ParseBERReader(b.Context(), bytes.NewReader(encoded), cms.Limits{})
+				} else {
+					parsed, err = cms.ParseBER(b.Context(), encoded, cms.Limits{})
+				}
+				if err != nil || parsed.Size() != len(raw) {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

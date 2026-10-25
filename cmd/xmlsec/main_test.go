@@ -9,15 +9,18 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
+	"github.com/skarm/xmlsec/saml/binding"
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
@@ -74,8 +77,9 @@ func TestCLI(t *testing.T) {
 	}
 
 	var report struct {
-		Status, Trust string
-		References    []string
+		Status     string
+		Trust      string
+		References []string
 	}
 	if err := json.Unmarshal(verificationDetails(t, verified.Bytes()), &report); err != nil {
 		t.Fatal(err)
@@ -178,5 +182,145 @@ func BenchmarkVerify(b *testing.B) {
 		if err := run(context.Background(), args, bytes.NewReader(raw), io.Discard, io.Discard); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkDocumentIO(b *testing.B) {
+	for _, size := range []int{16 << 10, 1 << 20} {
+		raw := []byte("<root>" + strings.Repeat("a", size) + "</root>")
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			b.Run("Read", func(b *testing.B) {
+				b.ReportAllocs()
+				b.SetBytes(int64(len(raw)))
+				for b.Loop() {
+					if _, err := readDocument(b.Context(), "-", bytes.NewReader(raw)); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+			doc, err := document.Parse(b.Context(), raw, document.DefaultLimits())
+			if err != nil {
+				b.Fatal(err)
+			}
+			path := filepath.Join(b.TempDir(), "out.xml")
+			b.Run("FileWrite", func(b *testing.B) {
+				b.ReportAllocs()
+				b.SetBytes(int64(len(raw)))
+				for b.Loop() {
+					if err := documentOutput(b.Context(), path, io.Discard, doc); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		})
+	}
+}
+
+func BenchmarkDetachedCMSCLI(b *testing.B) {
+	c := testcert.New(b)
+	key, err := x509.MarshalPKCS8PrivateKey(c.LeafKey)
+	if err != nil {
+		b.Fatal(err)
+	}
+	dir := b.TempDir()
+	keyPath, certPath := filepath.Join(dir, "key.pem"), filepath.Join(dir, "cert.der")
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: privateKeyPEMType, Bytes: key}), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	if err := os.WriteFile(certPath, c.Leaf.Raw, 0o600); err != nil {
+		b.Fatal(err)
+	}
+	args := []string{"cms", "sign", "-detached", "-key", keyPath, "-certificate", certPath}
+	for _, size := range []int{16 << 10, 1 << 20} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			raw := make([]byte, size)
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := run(b.Context(), args, bytes.NewReader(raw), io.Discard, io.Discard); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkTimestampRequestCLI(b *testing.B) {
+	for _, size := range []int{256, 16 << 10, 8 << 20} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			raw := make([]byte, size)
+			args := []string{"timestamp", "request", "-omit-nonce"}
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := run(b.Context(), args, bytes.NewReader(raw), io.Discard, io.Discard); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkCLIOutputStrategies(b *testing.B) {
+	for _, size := range []int{256, 16 << 10, 1 << 20} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			doc, err := document.Parse(b.Context(), []byte("<r>"+strings.Repeat("x", size)+"</r>"), document.DefaultLimits())
+			if err != nil {
+				b.Fatal(err)
+			}
+			value := map[string]any{"data": strings.Repeat("<&é", size/4)}
+			for _, kind := range []string{"JSON", "POST", "XMLPreflight"} {
+				for _, streamed := range []bool{false, true} {
+					b.Run(fmt.Sprintf("%s/Stream=%v", kind, streamed), func(b *testing.B) {
+						path := filepath.Join(b.TempDir(), "out")
+						b.ReportAllocs()
+						for b.Loop() {
+							var err error
+							switch kind {
+							case "JSON":
+								if streamed {
+									err = jsonOutput(b.Context(), path, io.Discard, value)
+								} else {
+									var output bytes.Buffer
+									err = writeJSON(&output, value)
+									if err == nil {
+										err = writeOutputContext(b.Context(), path, io.Discard, output.Bytes())
+									}
+								}
+							case "POST":
+								if streamed {
+									err = produceOutput(b.Context(), path, io.Discard, func(dst io.Writer) error {
+										_, err := binding.WritePOST(b.Context(), dst, doc, binding.Request, nil, binding.POSTLimits{MaxXMLBytes: 2 << 20, MaxFormBytes: 4 << 20})
+										return err
+									})
+								} else {
+									var raw []byte
+									raw, err = binding.EncodePOST(b.Context(), doc, binding.Request, nil, binding.POSTLimits{MaxXMLBytes: 2 << 20, MaxFormBytes: 4 << 20})
+									if err == nil {
+										err = writeOutputContext(b.Context(), path, io.Discard, raw)
+									}
+								}
+							case "XMLPreflight":
+								if streamed {
+									_, err = doc.WriteXML(b.Context(), io.Discard, execution(b.Context()).output)
+									if err == nil {
+										err = documentOutput(b.Context(), path, io.Discard, doc)
+									}
+								} else {
+									var raw []byte
+									raw, err = doc.XML(b.Context())
+									if err == nil {
+										err = writeOutputContext(b.Context(), path, io.Discard, raw)
+									}
+								}
+							}
+							if err != nil {
+								b.Fatal(err)
+							}
+						}
+					})
+				}
+			}
+		})
 	}
 }

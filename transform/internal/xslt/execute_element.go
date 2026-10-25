@@ -802,10 +802,15 @@ func (ec *execContext) withV2TempOutput(fn func() error) error {
 	isV2TempOutput := ec.stylesheet.processorLanguage() < 30
 	if isV2TempOutput {
 		ec.temporaryOutputDepth++
-		defer func() { ec.temporaryOutputDepth-- }()
 	}
 
-	return fn()
+	err := fn()
+
+	if isV2TempOutput {
+		ec.temporaryOutputDepth--
+	}
+
+	return err
 }
 
 func (ec *execContext) execComment(ctx context.Context, inst *commentInst) error {

@@ -22,8 +22,9 @@ type pendingLiteralResult struct {
 type staticImportScope struct{ parent *staticImportScope }
 
 type pendingPackageUse struct {
-	element, root *xdm.Element
-	baseURI       string
+	element *xdm.Element
+	root    *xdm.Element
+	baseURI string
 }
 
 func (c *compiler) compilePendingPackageUse(ctx context.Context, use pendingPackageUse) error {
@@ -151,12 +152,12 @@ func (c *compiler) preprocessConditionalElement(ctx context.Context, elem *xdm.E
 	}
 
 	if c.deferredLanguageChecks == nil {
-		c.deferredLanguageChecks = make(map[*xdm.Element]bool)
+		c.deferredLanguageChecks = make(map[*xdm.Element]struct{})
 	}
 
 	for ancestor := xdm.Node(elem); ancestor != nil; ancestor = ancestor.Parent() {
 		if element, ok := ancestor.(*xdm.Element); ok {
-			c.deferredLanguageChecks[element] = true
+			c.deferredLanguageChecks[element] = struct{}{}
 		}
 	}
 
@@ -207,7 +208,7 @@ func (c *compiler) preprocessConditionalElement(ctx context.Context, elem *xdm.E
 }
 
 func (c *compiler) validatePreparedLanguage(root *xdm.Element) error {
-	if c.stylesheet.processorLanguage() >= 20 && c.deferredLanguageChecks[root] {
+	if _, deferred := c.deferredLanguageChecks[root]; c.stylesheet.processorLanguage() >= 20 && deferred {
 		if err := checkModernLanguage(root, elementXSLTVersion(root), c.stylesheet.processorLanguage()); err != nil {
 			return err
 		}

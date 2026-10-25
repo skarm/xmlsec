@@ -4,13 +4,15 @@ import "context"
 
 // FunctionReference identifies a statically named function and its arity.
 type FunctionReference struct {
-	Name  Name
+	// Name is the function's expanded name.
+	Name Name
+	// Arity is the number of arguments in the call or function reference.
 	Arity int
 }
 
-// Analysis describes syntax and navigation in a compiled XPath expression.
-// Dynamic calls can invoke additional functions. This report is diagnostic;
-// it is not an authorization policy or a guarantee of streaming execution.
+// Analysis reports syntax and navigation properties of a compiled XPath
+// expression. Dynamic calls may invoke functions absent from the static report.
+// These diagnostics neither authorize execution nor establish streaming behavior.
 type Analysis struct {
 	// Functions lists unique statically named calls/references, sorted by name and arity.
 	Functions []FunctionReference
@@ -43,7 +45,13 @@ func (q *XPath) Analyze(ctx context.Context) (Analysis, error) {
 		return Analysis{}, wrap("analyze XPath", err)
 	}
 
-	result := Analysis{DynamicCalls: native.DynamicCalls, ContextItem: native.ContextItem, DownwardSelections: native.DownwardSelections, NonMotionlessPredicates: native.NonMotionlessPredicates}
+	result := Analysis{
+		DynamicCalls:            native.DynamicCalls,
+		ContextItem:             native.ContextItem,
+		DownwardSelections:      native.DownwardSelections,
+		NonMotionlessPredicates: native.NonMotionlessPredicates,
+	}
+
 	for _, fn := range native.Functions {
 		result.Functions = append(result.Functions, FunctionReference{Name: Name{Space: fn.Name.URI, Local: fn.Name.Name}, Arity: fn.Arity})
 	}

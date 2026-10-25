@@ -1,6 +1,7 @@
 package sp_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -10,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"strings"
 	"time"
 
 	"github.com/skarm/xmlsec/saml/idp"
@@ -66,7 +66,7 @@ func ExampleServiceProvider_ConsumePOST() {
 		}},
 	}
 
-	var aggregate strings.Builder
+	var aggregate bytes.Buffer
 	aggregate.WriteString(`<md:EntitiesDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" validUntil="2026-10-19T13:00:00Z">`)
 
 	for _, spec := range specs {
@@ -86,7 +86,7 @@ func ExampleServiceProvider_ConsumePOST() {
 	aggregate.WriteString(`</md:EntitiesDescriptor>`)
 	// These bytes were provisioned locally. Use metadata.Verifier.Verify for
 	// signed metadata received from a partner; ParseTrusted does not authenticate it.
-	partners, err := metadata.ParseTrusted(ctx, []byte(aggregate.String()), at, metadata.Options{})
+	partners, err := metadata.ParseTrusted(ctx, aggregate.Bytes(), at, metadata.Options{})
 	if err != nil {
 		panic(err)
 	}
@@ -146,17 +146,22 @@ func ExampleServiceProvider_ConsumePOST() {
 		panic(err)
 	}
 
+	var form bytes.Buffer
+	if _, err := response.WritePOST(ctx, &form); err != nil {
+		panic(err)
+	}
+
 	// A response from another browser must not consume the legitimate request.
 	wrongBrowser := append([]byte(nil), browserSecret...)
 	wrongBrowser[0] ^= 1
 
-	_, err = service.ConsumePOST(ctx, response.POSTBody(), sp.ConsumeOptions{
+	_, err = service.ConsumePOST(ctx, form.Bytes(), sp.ConsumeOptions{
 		At: at.Add(3 * time.Second), BrowserBinding: wrongBrowser,
 	})
 	clear(wrongBrowser)
 	fmt.Println("browser mismatch:", errors.Is(err, sp.ErrCorrelation))
 
-	grant, err := service.ConsumePOST(ctx, response.POSTBody(), sp.ConsumeOptions{
+	grant, err := service.ConsumePOST(ctx, form.Bytes(), sp.ConsumeOptions{
 		At: at.Add(3 * time.Second), BrowserBinding: browserSecret,
 	})
 	if err != nil {
@@ -167,7 +172,7 @@ func ExampleServiceProvider_ConsumePOST() {
 	// this one process; multiple instances require shared state and replay storage.
 	fmt.Println(grant.NameID(), grant.InResponseTo() == outbound.RequestID())
 
-	_, err = service.ConsumePOST(ctx, response.POSTBody(), sp.ConsumeOptions{
+	_, err = service.ConsumePOST(ctx, form.Bytes(), sp.ConsumeOptions{
 		At: at.Add(3 * time.Second), BrowserBinding: browserSecret,
 	})
 	fmt.Println(errors.Is(err, replay.ErrReplay))

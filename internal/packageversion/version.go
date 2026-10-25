@@ -12,9 +12,15 @@ import (
 
 // Version retains arbitrary precision integer portions as decimal strings.
 type Version struct {
-	Numbers   []string
-	Name, Raw string
-	valid     bool
+	// Numbers contains normalized decimal components without leading zeros. Compare
+	// treats missing trailing components as zero.
+	Numbers []string
+	// Name is the optional NCName suffix following the numeric version.
+	Name string
+	// Raw retains the trimmed original version spelling for diagnostics.
+	Raw string
+	// valid distinguishes a parsed version from invalid or zero-value state.
+	valid bool
 }
 
 // Parse reads a package version, preserving arbitrarily large numeric components.
@@ -96,12 +102,22 @@ func (v Version) Compare(other Version) int {
 
 // Constraint is a parsed union of package-version ranges.
 type Constraint struct {
+	// alternatives retains the union of ranges accepted by the constraint.
 	alternatives []versionRange
-	valid        bool
+	// valid distinguishes a parsed constraint from invalid or zero-value state.
+	valid bool
 }
 type versionRange struct {
-	lower, upper                 *Version
-	prefix, wildcard, prefixOnly bool
+	// lower is the optional inclusive lower bound.
+	lower *Version
+	// upper is the optional upper bound interpreted by the range form.
+	upper *Version
+	// prefix extends the upper bound to versions sharing its numeric prefix.
+	prefix bool
+	// wildcard accepts any valid package version.
+	wildcard bool
+	// prefixOnly distinguishes an explicit prefix range from an ordinary bounded range.
+	prefixOnly bool
 }
 
 // Valid reports whether the version-range lexical form is valid.

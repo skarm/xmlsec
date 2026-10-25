@@ -315,8 +315,11 @@ func TestEvidenceFixtures(t *testing.T) {
 	dir := t.TempDir()
 
 	var cases []struct {
-		Group, Name, At, Status string
-		Detached                bool
+		Group    string
+		Name     string
+		At       string
+		Status   string
+		Detached bool
 	}
 	decode(t, read(t, filepath.Join(base, "manifest.json")), &cases)
 

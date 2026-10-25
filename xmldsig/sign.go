@@ -8,17 +8,16 @@ import (
 	"io"
 	"strings"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/reference"
 )
 
-// SignOptions configures the restricted root-enveloped signing profile and optional
-// covered descendants.
+// SignOptions selects identifiers, algorithms and covered descendants for the
+// restricted root-enveloped signing profile.
 type SignOptions struct {
 	// IDAttribute defaults to the unqualified attribute ID. It is not guessed.
 	IDAttribute document.Name
@@ -32,7 +31,8 @@ type SignOptions struct {
 	DigestMethod string
 	// InclusivePrefixes applies to SignedInfo and each reference C14N step.
 	InclusivePrefixes []string
-	Policy            Policy
+	// Policy sets permitted signature and digest algorithms and key and processing limits.
+	Policy Policy
 }
 
 // SignEnveloped returns a new snapshot, leaving d unchanged. It accepts standard
@@ -246,17 +246,17 @@ func selectEnvelopedReferences(requested []string, rootID string, ids map[string
 		return nil, fmt.Errorf("%w: reference count", ErrPolicy)
 	}
 
-	seen := map[string]bool{}
+	seen := map[string]struct{}{}
 
 	for _, id := range refs {
-		if !tree.NCName(id) || ids[id] == nil || seen[id] {
+		if _, exists := seen[id]; !tree.NCName(id) || ids[id] == nil || exists {
 			return nil, fmt.Errorf("%w: missing or repeated ID %q", ErrReference, id)
 		}
 
-		seen[id] = true
+		seen[id] = struct{}{}
 	}
 
-	if !seen[rootID] {
+	if _, exists := seen[rootID]; !exists {
 		return nil, fmt.Errorf("%w: root reference is mandatory", ErrPolicy)
 	}
 

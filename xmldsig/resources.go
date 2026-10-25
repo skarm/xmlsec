@@ -18,14 +18,14 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
-// ExternalReferences enables explicitly allowlisted external octet streams in
-// the general Signature API. It does not enable network access. URI spelling is
-// exact unless BaseURI explicitly enables relative URI resolution. KeyInfo
-// discovery never invokes this Resolver. Explicit external Manifest traversal
-// shares this allowlist and its limits.
-// AllowedURIs is an allowlist, not an exact set requirement (use ExpectedURIs for
-// the direct SignedInfo references). All reader and resolver methods must honor
-// context themselves if they can block.
+// ExternalReferences authorizes external octets for the general Signature API.
+// It supplies an adapter rather than enabling implicit network access. URI spelling
+// is exact unless BaseURI enables relative resolution. KeyInfo discovery uses
+// separate permissions and never invokes this Resolver.
+//
+// External Manifest traversal shares AllowedURIs and resource limits. AllowedURIs
+// permits retrieval; use ExpectedURIs to require an exact set of direct SignedInfo
+// references. Blocking resolver and reader methods must honor context themselves.
 type ExternalReferences struct {
 	// Resolver is the required trusted application adapter for authorized resources.
 	// It receives the complete authorized URI, including any fragment, and must
@@ -44,13 +44,15 @@ type ExternalReferences struct {
 	// existing literal-URI contract. Empty and #fragment references always select
 	// the containing document, independently of BaseURI and xml:base.
 	BaseURI string
-	Limits  ResourceLimits
-	replay  *resourceSession
+	// Limits bounds individual and aggregate external resource reads, including Manifest
+	// traversal.
+	Limits ResourceLimits
+	replay *resourceSession
 }
 
 type resourceSession struct {
 	source             Resolver
-	allowed            map[string]bool
+	allowed            map[string]struct{}
 	cache              map[[32]byte]ReferenceResult
 	fingerprints       map[string][]byte
 	limits             ResourceLimits
@@ -74,7 +76,7 @@ func newResourceSession(opt *ExternalReferences) (*resourceSession, error) {
 		return nil, err
 	}
 
-	s := &resourceSession{source: opt.Resolver, allowed: make(map[string]bool), cache: make(map[[32]byte]ReferenceResult), fingerprints: make(map[string][]byte), limits: limits, remaining: limits.MaxTotalResourceBytes}
+	s := &resourceSession{source: opt.Resolver, allowed: make(map[string]struct{}), cache: make(map[[32]byte]ReferenceResult), fingerprints: make(map[string][]byte), limits: limits, remaining: limits.MaxTotalResourceBytes}
 
 	s.baseURI, err = resourceBaseURI(opt.BaseURI)
 	if err != nil {
@@ -93,11 +95,11 @@ func newResourceSession(opt *ExternalReferences) (*resourceSession, error) {
 			}
 		}
 
-		if s.allowed[uri] {
+		if _, exists := s.allowed[uri]; exists {
 			return nil, fmt.Errorf("%w: duplicate external URI allowlist entry", ErrPolicy)
 		}
 
-		s.allowed[uri] = true
+		s.allowed[uri] = struct{}{}
 	}
 
 	if opt.replay != nil {
@@ -136,11 +138,13 @@ func cacheableExternalTransforms(transforms []reference.Transform) bool {
 }
 
 func (s *resourceSession) permits(uri string) error {
-	if s == nil || !s.allowed[uri] {
-		return fmt.Errorf("%w: external URI not allowed: %q", ErrPolicy, uri)
+	if s != nil {
+		if _, allowed := s.allowed[uri]; allowed {
+			return validExternalReferenceURI(uri)
+		}
 	}
 
-	return validExternalReferenceURI(uri)
+	return fmt.Errorf("%w: external URI not allowed: %q", ErrPolicy, uri)
 }
 
 // replayOptions reuses authenticated processing evidence for the signing
@@ -251,8 +255,10 @@ func referenceCacheKey(ctx context.Context, ref coreReference) ([32]byte, error)
 	}
 
 	encoded, err := json.Marshal(struct {
-		URI, Method, Type string
-		Transforms        []reference.Transform
+		URI        string
+		Method     string
+		Type       string
+		Transforms []reference.Transform
 	}{ref.uri, ref.method, ref.typeURI, metadata})
 	if err != nil {
 		return [32]byte{}, err

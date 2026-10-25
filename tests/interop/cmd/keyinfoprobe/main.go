@@ -23,8 +23,13 @@ import (
 )
 
 type task struct {
-	Mode, Format, Method              string
-	Input, SPKI, Private, Certificate []byte
+	Mode        string
+	Format      string
+	Method      string
+	Input       []byte
+	SPKI        []byte
+	Private     []byte
+	Certificate []byte
 }
 
 type answer struct {

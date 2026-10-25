@@ -294,8 +294,10 @@ func (c *compiler) processExpose(ctx context.Context, root *xdm.Element) error {
 }
 
 type exposedComponent struct {
-	kind, name, declared string
-	set                  func(string, bool)
+	kind     string
+	name     string
+	declared string
+	set      func(string, bool)
 }
 
 func (c *compiler) initializeImplicitExposedModes() {

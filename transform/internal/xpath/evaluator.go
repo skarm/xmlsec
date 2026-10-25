@@ -26,55 +26,90 @@ const (
 // DefaultEvaluatorOptions is the zero value — all setters clone by default.
 const DefaultEvaluatorOptions EvaluatorOption = 0
 
-// Evaluator configures XPath 3.1 expression evaluation.
-// It is a value-style wrapper: fluent methods return updated copies
-// and the original is never mutated. The terminal method Evaluate
-// creates an internal evalCtx immediately; downstream evaluation
-// uses that context, never the Evaluator itself.
+// Evaluator configures evaluation of compiled XPath expressions. Fluent methods return
+// updated copies. Each Evaluate call creates its own mutable evaluation context.
+// Supplied nodes and values must remain unchanged during evaluation; callbacks and
+// writers shared across evaluations must be safe for concurrent use.
 type Evaluator struct {
+	// cfg retains configuration copied by fluent setters; evaluation creates separate
+	// mutable state.
 	cfg *evaluatorCfg
 }
 
 type evaluatorCfg struct {
-	uriResolver         URIResolver
-	resourceReads       xdm.ResourceReadPolicy
-	collectionResolver  CollectionResolver
-	contextItem         xdm.Item
-	variableResolver    VariableResolver
-	functionResolver    FunctionResolver
-	schemaDeclarations  SchemaDeclarations
-	traceWriter         io.Writer
-	runtime             *evaluationRuntime
-	namespaces          map[string]string
+	// uriResolver authorizes and opens external document and text resources.
+	uriResolver URIResolver
+	// resourceReads shares invocation-local resource access accounting with the host.
+	resourceReads xdm.ResourceReadPolicy
+	// collectionResolver supplies host-defined collections without implicit retrieval.
+	collectionResolver CollectionResolver
+	// contextItem supplies an explicit non-node focus when configured.
+	contextItem xdm.Item
+	// variableResolver resolves variables absent from explicit bindings.
+	variableResolver VariableResolver
+	// functionResolver resolves host functions absent from explicit registrations.
+	functionResolver FunctionResolver
+	// schemaDeclarations supplies optional internal type metadata; it does not enable
+	// public schema awareness.
+	schemaDeclarations SchemaDeclarations
+	// traceWriter receives fn:trace output; nil discards it.
+	traceWriter io.Writer
+	// runtime owns synchronized caches and reusable resources shared by configuration
+	// copies.
+	runtime *evaluationRuntime
+	// namespaces supplies prefix bindings when the expression has no bound context.
+	namespaces map[string]string
+	// defaultXMLNamespace retains the host XML default for unbound expressions.
 	defaultXMLNamespace string
-	variables           map[string]xdm.Sequence
-	varScope            *variableScope             // root scope built once from variables by Variables(); shared read-only by every evaluation
-	functions           map[string]Function        // unqualified calls
-	functionsNS         map[QualifiedName]Function // namespaced calls
-	currentTime         *time.Time
-	implicitTimezone    *time.Location
-	defaultDecimal      *DecimalFormat
-	decimalFormats      map[QualifiedName]DecimalFormat
+	// variables retains immutable variable sequences keyed by expanded name.
+	variables   map[string]xdm.Sequence
+	varScope    *variableScope             // root scope built once from variables by Variables(); shared read-only by every evaluation
+	functions   map[string]Function        // unqualified calls
+	functionsNS map[QualifiedName]Function // namespaced calls
+	// currentTime fixes the dynamic clock when non-nil; otherwise evaluation selects its
+	// own current time.
+	currentTime *time.Time
+	// implicitTimezone supplies the dynamic timezone for values without one.
+	implicitTimezone *time.Location
+	// defaultDecimal overrides the unnamed decimal format when supplied.
+	defaultDecimal *DecimalFormat
+	// decimalFormats retains named decimal formats by expanded QName.
+	decimalFormats map[QualifiedName]DecimalFormat
 
+	// typeAnnotations supplies optional node type metadata from an internal host.
 	typeAnnotations        map[xdm.Node]string
 	nilledElements         map[xdm.Node]struct{} // elements whose xsi:nil="true" was confirmed by XSD validation
 	preservedIDAnnotations map[xdm.Node]string   // ID/IDREF annotations preserved after input-type-annotations="strip"
 	idNodes                map[xdm.Node]struct{} // PSVI is-id nodes (from xsd validation); supplements the type-annotation is-id check for list/union types
-	docOrder               *DocOrderCache
-	parseOptions           *xdm.ParseOptions
-	defaultLanguage        string
-	defaultCollation       string
-	baseURI                string
-	opLimit                int
-	position               int
-	size                   int
-	maxNodes               int   // 0 means use the package default (maxNodeSetLength)
-	maxResourceBytes       int64 // per-resource read cap for fn:unparsed-text / fn:doc / fn:json-doc; 0 = unparsedtext default
-	options                EvaluatorOption
-	strictPrefixes         bool
-	qnameValueNoDefaultNS  bool
-	allowXML11Chars        bool
-	xpath10Compat          bool // XPath 1.0 compatibility mode (XSLT backwards-compatible processing)
+	// docOrder optionally shares synchronized document-order indexes across evaluations.
+	docOrder *DocOrderCache
+	// parseOptions selects XML limits, byte encodings and DTD policy for parsed
+	// resources.
+	parseOptions *xdm.ParseOptions
+	// defaultLanguage supplies the default language for formatting functions.
+	defaultLanguage string
+	// defaultCollation selects comparison behavior when no static collation is bound.
+	defaultCollation string
+	// baseURI supplies the static retrieval base for unbound expressions.
+	baseURI string
+	// opLimit selects the evaluation operation budget.
+	opLimit int
+	// position supplies the initial focus position.
+	position int
+	// size supplies the initial focus size.
+	size             int
+	maxNodes         int   // 0 means use the package default (maxNodeSetLength)
+	maxResourceBytes int64 // per-resource read cap for fn:unparsed-text / fn:doc / fn:json-doc; 0 = unparsedtext default
+	// options selects configuration borrowing and cloning behavior.
+	options EvaluatorOption
+	// strictPrefixes requests rejection of unresolved namespace prefixes.
+	strictPrefixes bool
+	// qnameValueNoDefaultNS suppresses the default namespace when resolving host QName
+	// values.
+	qnameValueNoDefaultNS bool
+	// allowXML11Chars permits XML 1.1 character handling where the host authorizes it.
+	allowXML11Chars bool
+	xpath10Compat   bool // XPath 1.0 compatibility mode (XSLT backwards-compatible processing)
 }
 
 // resultBox holds the Result Evaluate returns and the node list it may
@@ -250,8 +285,9 @@ func (e Evaluator) BaseURI(uri string) Evaluator {
 	return e
 }
 
-// ParseOptions sets XML limits and base URI for parse-xml, parse-xml-fragment
-// and doc. All parsing uses internal/tree and always rejects DTDs.
+// ParseOptions selects XML limits, base URI, permitted encodings and DTD policy for
+// parse-xml, parse-xml-fragment and doc. External DTD retrieval requires an explicit
+// opener in the options.
 func (e Evaluator) ParseOptions(p xdm.ParseOptions) Evaluator {
 	e = e.clone()
 	e.cfg.parseOptions = &p
@@ -465,8 +501,8 @@ func (e Evaluator) DocOrderCache(cache *DocOrderCache) Evaluator {
 	return e
 }
 
-// TraceWriter sets the destination for fn:trace output.
-// When nil, fn:trace writes to os.Stderr.
+// TraceWriter sets the destination for fn:trace output. Nil discards trace output. A
+// writer shared by concurrent evaluations must be safe for concurrent use.
 func (e Evaluator) TraceWriter(w io.Writer) Evaluator {
 	e = e.clone()
 	e.cfg.traceWriter = w

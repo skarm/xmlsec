@@ -10,9 +10,12 @@ import (
 // Error is a structured error with an XPath error code.
 // Codes are stored without namespace prefix (e.g. "XPTY0004", not "err:XPTY0004").
 type Error struct {
-	Cause         error  // xmlsec: preserve cancellation, parser and resolver causes.
-	Code          string // e.g. "XPTY0004", "FOER0000" (without err: prefix)
-	Message       string
+	Cause error  // xmlsec: preserve cancellation, parser and resolver causes.
+	Code  string // e.g. "XPTY0004", "FOER0000" (without err: prefix)
+	// Message describes the dynamic failure without changing its error code.
+	Message string
+	// QualifiedCode retains an expanded application error name. A nonempty Local takes
+	// precedence over Code.
 	QualifiedCode QNameValue
 	Value         Sequence // fn:error's arbitrary error object; node identity is preserved.
 }
@@ -20,6 +23,8 @@ type Error struct {
 // Unwrap preserves the original dynamic failure.
 func (e *Error) Unwrap() error { return e.Cause }
 
+// Error returns the formatted code and message, or a nil-error label for a nil
+// receiver.
 func (e *Error) Error() string {
 	if e == nil {
 		return "<nil XPathError>"

@@ -2,7 +2,10 @@ package x509name
 
 import "sync"
 
-type cacheEntry struct{ raw, key string }
+type cacheEntry struct {
+	raw string
+	key string
+}
 
 // This process cache is deliberately bounded by both entry count and retained
 // bytes. It stores only successful public DN comparisons, never control errors.
@@ -10,16 +13,17 @@ type cacheEntry struct{ raw, key string }
 //nolint:gochecknoglobals // Bounded shared, synchronized comparison cache.
 var nameCache struct {
 	sync.Mutex
-	entries     [64]cacheEntry
-	next, bytes int
+	entries [64]cacheEntry
+	next    int
+	bytes   int
 }
 
-func nameCacheGet(raw string) (string, bool) {
+func nameCacheGet(raw []byte) (string, bool) {
 	nameCache.Lock()
 	defer nameCache.Unlock()
 
 	for _, entry := range nameCache.entries {
-		if entry.raw != "" && entry.raw == raw {
+		if entry.raw != "" && entry.raw == string(raw) {
 			return entry.key, true
 		}
 	}

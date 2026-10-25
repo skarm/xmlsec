@@ -164,7 +164,7 @@ func TestDirectKeyPolicyAndNonce(t *testing.T) {
 		}
 	}
 
-	seen := map[string]bool{}
+	seen := map[string]struct{}{}
 
 	for range 32 {
 		d, err := xmlenc.EncryptBytesWithKey(ctx, nil, secret, xmlenc.SymmetricOptions{})
@@ -175,11 +175,11 @@ func TestDirectKeyPolicyAndNonce(t *testing.T) {
 		data, _ := base64.StdEncoding.DecodeString(d.Root().Children()[1].Children()[0].Text())
 
 		nonce := string(data[:12])
-		if seen[nonce] {
+		if _, exists := seen[nonce]; exists {
 			t.Fatal("nonce reused")
 		}
 
-		seen[nonce] = true
+		seen[nonce] = struct{}{}
 	}
 
 	limited := xmlenc.SymmetricOptions{Data: xmlenc.Options{MaxPlaintextBytes: 1}, KeyName: nameOne}

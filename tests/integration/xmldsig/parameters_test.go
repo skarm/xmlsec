@@ -27,8 +27,11 @@ func TestParameterizedIndependentFixtures(t *testing.T) {
 
 	var m struct {
 		Cases []struct {
-			Name, XML, Kind, Stage string
-			Valid                  bool
+			Name  string
+			XML   string
+			Kind  string
+			Stage string
+			Valid bool
 		}
 		SPKI    string
 		HMACKey string `json:"hmac_key"`

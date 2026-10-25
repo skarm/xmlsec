@@ -271,10 +271,15 @@ var (
 
 // XSLTError is a structured error with an XSLT error code.
 type XSLTError struct {
+	// QualifiedCode retains an expanded application error name when supplied.
 	QualifiedCode xdm.QNameValue
-	Code          string
-	Message       string
-	Cause         error
+	// Code is the local spelling used by Error and the fallback name used by CodeQName.
+	Code string
+	// Message describes the compilation or execution failure.
+	Message string
+	// Cause preserves an underlying parser, resolver, cancellation or resource-control
+	// error.
+	Cause error
 	// Value holds the sequence associated with the error. For xsl:message
 	// terminate="yes", this carries the message body content (nodes/atomics)
 	// so that $err:value in xsl:catch can expose it.
@@ -300,6 +305,7 @@ func (e *XSLTError) CodeQName() xdm.QNameValue {
 	return (&xdm.Error{Code: e.Code}).CodeQName()
 }
 
+// Error formats the stored code and message.
 func (e *XSLTError) Error() string {
 	if e.Code != "" {
 		return e.Code + ": " + e.Message
@@ -308,6 +314,7 @@ func (e *XSLTError) Error() string {
 	return e.Message
 }
 
+// Unwrap returns the underlying cause for errors.Is and errors.As.
 func (e *XSLTError) Unwrap() error {
 	return e.Cause
 }

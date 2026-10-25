@@ -421,7 +421,7 @@ func (ec *execContext) unparsedEntity(ctx context.Context, args []xdm.Sequence, 
 
 	if found {
 		value = entity.PublicID
-		if functionName == nameUnparsedEntityUri {
+		if functionName == nameUnparsedEntityURI {
 			value, err = uripath.ResolveIRIReference(entity.SystemID, entity.BaseURI)
 			if err != nil {
 				return nil, err
@@ -429,7 +429,7 @@ func (ec *execContext) unparsedEntity(ctx context.Context, args []xdm.Sequence, 
 		}
 	}
 
-	if functionName == nameUnparsedEntityUri {
+	if functionName == nameUnparsedEntityURI {
 		return xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: value}}, nil
 	}
 

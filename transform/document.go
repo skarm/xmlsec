@@ -164,8 +164,8 @@ func (e *Engine) Import(ctx context.Context, d *document.Document) (*Document, e
 	limits := document.DefaultLimits()
 	limits.MaxBytes = e.limits.MaxInputBytes
 	limits.MaxDepth = e.limits.MaxDepth
-
 	limits.MaxNodes = e.limits.MaxNodes
+
 	if err = tree.CheckSnapshotLimits(ctx, d, limits); err != nil {
 		return nil, wrap("import", err)
 	}

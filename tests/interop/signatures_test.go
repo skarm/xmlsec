@@ -305,17 +305,22 @@ func checkXMLSec(t *testing.T, fixture *interopFixture) {
 }
 
 type retrievalRecipe struct {
-	name, uri, typ string
-	resource       []byte
-	chain          []reference.Transform
+	name     string
+	uri      string
+	typ      string
+	resource []byte
+	chain    []reference.Transform
 }
 
 type stage4InteropCase struct {
-	Name, Kind, XML, Template string
-	Resources                 map[string][]byte
-	NativeResources           map[string][]byte `json:"native_resources"`
-	Programs                  []reference.Transform
-	DigestInputs              [][]byte `json:"digest_inputs"`
+	Name            string
+	Kind            string
+	XML             string
+	Template        string
+	Resources       map[string][]byte
+	NativeResources map[string][]byte `json:"native_resources"`
+	Programs        []reference.Transform
+	DigestInputs    [][]byte `json:"digest_inputs"`
 }
 
 func TestXMLSecStage4Vectors(t *testing.T) {
@@ -327,8 +332,11 @@ func TestXMLSecStage4Vectors(t *testing.T) {
 		Certificate []byte `json:"certificate_der"`
 		Cases       []stage4InteropCase
 		Contexts    []struct {
-			Name, XML, Relative, Resolved string
-			ExpectedBase                  string `json:"expected_base"`
+			Name         string
+			XML          string
+			Relative     string
+			Resolved     string
+			ExpectedBase string `json:"expected_base"`
 		} `json:"uri_contexts"`
 	}
 	decode(t, read(t, filepath.Join(fixture.root, "testdata", "next", "dsig-stage4-vectors.json")), &corpus)
@@ -764,7 +772,10 @@ func coreSignatures(t *testing.T, fixture *interopFixture, externalXMLSec bool) 
 	t.Logf("%d generated signature exchanges in each direction", suite.count)
 }
 
-type coreSignatureRecipe struct{ form, cm string }
+type coreSignatureRecipe struct {
+	form string
+	cm   string
+}
 
 type coreSignatureSuite struct {
 	fixture        *interopFixture
@@ -824,9 +835,11 @@ type verification struct {
 }
 
 type coreSignatureExchange struct {
-	recipe               coreSignatureRecipe
-	source, ours, theirs string
-	total                int
+	recipe coreSignatureRecipe
+	source string
+	ours   string
+	theirs string
+	total  int
 }
 
 type coreSignatureCase struct {

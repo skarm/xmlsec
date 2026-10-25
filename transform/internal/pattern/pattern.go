@@ -17,7 +17,14 @@ var ErrLimit = errors.New("pattern: resource limit exceeded")
 
 // Options selects matching semantics; it is copied during compilation.
 type Options struct {
-	IgnoreCase, Multiline, DotAll, Literal bool
+	// IgnoreCase enables Unicode case-insensitive matching.
+	IgnoreCase bool
+	// Multiline lets anchors match line boundaries within the input.
+	Multiline bool
+	// DotAll lets the dot operator match newline characters.
+	DotAll bool
+	// Literal treats the complete pattern as literal text instead of pattern syntax.
+	Literal bool
 	// XPathAnchors excludes the position after a final newline from multiline ^.
 	XPathAnchors bool
 	// Property resolves additional Unicode properties during compilation only.
@@ -27,16 +34,29 @@ type Options struct {
 // Work supplies invocation policy. Zero limits use bounded defaults.
 // Charge may account for work in the caller's shared budget.
 type Work struct {
-	MaxSteps, MaxCells int
-	Charge             func(int) error
+	// MaxSteps bounds matching work. Zero selects the internal bounded default.
+	MaxSteps int
+	// MaxCells bounds matching state storage. Zero selects the internal bounded default.
+	MaxCells int
+	// Charge optionally charges matching work to the caller's shared budget. Its errors
+	// stop matching.
+	Charge func(int) error
 }
 
 // Program is immutable and safe to use concurrently.
 type Program struct {
-	code                    []instruction
-	start, groups, counters int
-	backrefs                bool
-	xpathAnchors            bool
+	// code holds the immutable instructions shared by matching invocations.
+	code []instruction
+	// start identifies the entry instruction in code.
+	start int
+	// groups counts capture groups for per-match capture storage.
+	groups int
+	// counters sizes per-match state for counted repetitions.
+	counters int
+	// backrefs selects matching paths that retain captured text for backreferences.
+	backrefs bool
+	// xpathAnchors applies XPath line-boundary rules during matching.
+	xpathAnchors bool
 }
 
 // Compile parses a pattern without expanding counted repetitions.
@@ -388,17 +408,31 @@ const (
 )
 
 type instruction struct {
-	set                                  *characterSet
-	text                                 []rune
-	x, y, index, least, most, cost       int
-	op                                   operation
-	lazy, fold, absolute, end, multiline bool
+	set       *characterSet
+	text      []rune
+	x         int
+	y         int
+	index     int
+	least     int
+	most      int
+	cost      int
+	op        operation
+	lazy      bool
+	fold      bool
+	absolute  bool
+	end       bool
+	multiline bool
 }
 
 type (
-	counter struct{ count, prior, start int }
-	state   struct {
-		pc, pos  int
+	counter struct {
+		count int
+		prior int
+		start int
+	}
+	state struct {
+		pc       int
+		pos      int
 		caps     []int
 		counters []counter
 	}
@@ -412,12 +446,13 @@ func (s state) clone() state {
 }
 
 type machine struct {
-	ctx          context.Context
-	work         Work
-	steps, cells int
-	source       string
-	program      *Program
-	seen         map[string]struct{}
+	ctx     context.Context
+	work    Work
+	steps   int
+	cells   int
+	source  string
+	program *Program
+	seen    map[string]struct{}
 }
 
 func newMachine(ctx context.Context, p *Program, s string, work Work) (*machine, error) {
@@ -773,8 +808,9 @@ func (m *machine) find(from int) ([]int, error) {
 }
 
 type stateStack struct {
-	states        []state
-	cells, weight int
+	states []state
+	cells  int
+	weight int
 }
 
 func (stack *stateStack) push(m *machine, branch state) error {

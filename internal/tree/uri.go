@@ -10,8 +10,12 @@ import (
 // escape casing). url.URL.ResolveReference/path.Clean are NOT suitable for the
 // C14N 1.1 modifications: leading ../ must survive and paths remain relative.
 type uriReference struct {
-	scheme, authority, path, query string
-	hasAuthority, hasQuery         bool
+	scheme       string
+	authority    string
+	path         string
+	query        string
+	hasAuthority bool
+	hasQuery     bool
 }
 
 func (r uriReference) String() string {

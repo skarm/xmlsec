@@ -10,10 +10,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/skarm/xmlsec/internal/nilcheck"
+	"github.com/skarm/xmlsec/internal/streamio"
 )
 
 var (
@@ -77,23 +81,13 @@ func NewObservation(ctx context.Context, kind Kind, data []byte, provenance Prov
 		return nil, err
 	}
 
-	if len(data) > 64<<20 || len(provenance.Redirects) > 10 {
+	if len(data) > 64<<20 {
 		return nil, ErrLimit
 	}
 
-	if provenance.URI != "" && !validProvenanceURI(provenance.URI) {
-		return nil, ErrInput
-	}
-
-	for _, uri := range provenance.Redirects {
-		if !validProvenanceURI(uri) {
-			return nil, ErrInput
-		}
-	}
-
-	provenance.Redirects = append([]string(nil), provenance.Redirects...)
-	if !provenance.RetrievedAt.IsZero() {
-		provenance.RetrievedAt = provenance.RetrievedAt.UTC()
+	provenance, err := snapshotProvenance(provenance)
+	if err != nil {
+		return nil, err
 	}
 
 	owned := bytes.Clone(data)
@@ -105,6 +99,71 @@ func NewObservation(ctx context.Context, kind Kind, data []byte, provenance Prov
 	}
 
 	return &Observation{kind: kind, data: owned, digest: digest, provenance: provenance}, nil
+}
+
+// ReadObservation reads and owns a bounded, untrusted observation without a
+// second full snapshot copy. maximum must be 1..64 MiB. The complete bytes remain
+// resident for later offline verification; this is not a constant-memory parser.
+// It leaves src open. The caller must arrange cancellation of blocking reads.
+// No observation is returned on a read error, cancellation, empty input or limit.
+func ReadObservation(ctx context.Context, kind Kind, src io.Reader, provenance Provenance, maximum int) (*Observation, error) {
+	if ctx == nil || !ValidKind(kind) || nilcheck.IsNil(src) {
+		return nil, ErrInput
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if maximum < 1 || maximum > 64<<20 {
+		return nil, ErrLimit
+	}
+
+	provenance, err := snapshotProvenance(provenance)
+	if err != nil {
+		return nil, err
+	}
+
+	owned, err := io.ReadAll(&streamio.Reader{Context: ctx, Source: src, Limit: int64(maximum), LimitError: ErrLimit})
+	if err != nil {
+		clear(owned)
+		return nil, err
+	}
+
+	if len(owned) == 0 {
+		return nil, ErrInput
+	}
+
+	digest := sha256.Sum256(owned)
+	if err := ctx.Err(); err != nil {
+		clear(owned)
+		return nil, err
+	}
+
+	return &Observation{kind: kind, data: owned, digest: digest, provenance: provenance}, nil
+}
+
+func snapshotProvenance(provenance Provenance) (Provenance, error) {
+	if len(provenance.Redirects) > 10 {
+		return Provenance{}, ErrLimit
+	}
+
+	if provenance.URI != "" && !validProvenanceURI(provenance.URI) {
+		return Provenance{}, ErrInput
+	}
+
+	for _, uri := range provenance.Redirects {
+		if !validProvenanceURI(uri) {
+			return Provenance{}, ErrInput
+		}
+	}
+
+	provenance.Redirects = append([]string(nil), provenance.Redirects...)
+	if !provenance.RetrievedAt.IsZero() {
+		provenance.RetrievedAt = provenance.RetrievedAt.UTC()
+	}
+
+	return provenance, nil
 }
 
 // ValidKind reports whether kind names a supported observation category.

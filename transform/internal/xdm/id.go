@@ -45,7 +45,7 @@ func FindElementsByID(root Node, id string) []*Element {
 				continue
 			}
 			// xs:ID derives from xs:NCName, which collapses whitespace;
-			// match libxml2/helium normalization for xml:id.
+			// apply XML whitespace collapsing for xml:id.
 			if strings.TrimSpace(attr.Value()) == id {
 				matches = append(matches, elem)
 				break
@@ -98,7 +98,7 @@ func BuildIDIndex(ctx context.Context, root Node) (map[string][]*Element, error)
 				continue
 			}
 			// xs:ID derives from xs:NCName, which collapses whitespace;
-			// match libxml2/helium normalization for xml:id.
+			// apply XML whitespace collapsing for xml:id.
 			id := strings.TrimSpace(attr.Value())
 			// Every id on the element is recorded, so an element carrying
 			// two ID attributes cannot hide the second one from a caller

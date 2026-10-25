@@ -20,17 +20,18 @@ import (
 // TSA expiration/revocation or authenticate an arbitrary caller-supplied time.
 // Trust retains whether revocation was required or explicitly left unchecked.
 type VerifiedAssertion struct {
-	generation, validation time.Time
-	trust                  *pki.Result
-	tokenFingerprint       string
-	tsaFingerprint         string
-	imprint                Imprint
-	sources                []*evidence.Observation
-	policy                 asn1.ObjectIdentifier
-	accuracy               time.Duration
-	authenticated          bool
-	hasAccuracy            bool
-	ordering               bool
+	generation       time.Time
+	validation       time.Time
+	trust            *pki.Result
+	tokenFingerprint string
+	tsaFingerprint   string
+	imprint          Imprint
+	sources          []*evidence.Observation
+	policy           asn1.ObjectIdentifier
+	accuracy         time.Duration
+	authenticated    bool
+	hasAccuracy      bool
+	ordering         bool
 }
 
 func verifiedAssertion(ctx context.Context, token *Token, info Info, tsa []byte, trust *pki.Result) (*VerifiedAssertion, error) {
@@ -166,15 +167,14 @@ func (v *Verifier) timestampSources(ctx context.Context, token *Token, response 
 		return pki.Evidence{}, nil, ErrPolicy
 	}
 
+	var (
+		selected  []*evidence.Observation
+		tokenHash [sha256.Size]byte
+	)
+
 	remaining := v.maxBytes
-
-	var selected []*evidence.Observation
-
 	filtered := input
 	filtered.Sources = make([]*evidence.Observation, 0, len(input.Sources))
-
-	var tokenHash [sha256.Size]byte
-
 	computed := false
 	responseHash := sha256.Sum256(response)
 

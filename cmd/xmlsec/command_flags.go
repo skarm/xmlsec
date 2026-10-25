@@ -10,21 +10,21 @@ const privateKeyFlagNames = " key-format password-file key-max-kdf-work key-min-
 // commandFlags exposes only flags used by the selected operation. A typo or a
 // signing option supplied to verification must fail instead of being ignored.
 func commandFlags(fs *flag.FlagSet, specific string, signatures bool) *flag.FlagSet {
-	allowed := map[string]bool{}
+	allowed := map[string]struct{}{}
 	for name := range strings.FieldsSeq(specific + " max-input-bytes max-output-bytes max-depth max-nodes max-attributes max-nodeset-nodes max-namespaces timeout") {
-		allowed[name] = true
+		allowed[name] = struct{}{}
 	}
 
 	if signatures {
 		for name := range strings.FieldsSeq("max-references max-canonical-bytes max-node-visits max-transforms policy allowed-methods allowed-digests allowed-programs min-rsa-bits max-rsa-bits min-pss-salt-bytes max-pss-salt-bytes min-hmac-key-bytes max-hmac-key-bytes min-hmac-output-bits allow-hmac-truncation") {
-			allowed[name] = true
+			allowed[name] = struct{}{}
 		}
 	}
 
 	result := flag.NewFlagSet(fs.Name(), flag.ContinueOnError)
 	result.SetOutput(fs.Output())
 	fs.VisitAll(func(f *flag.Flag) {
-		if allowed[f.Name] {
+		if _, exists := allowed[f.Name]; exists {
 			result.Var(f.Value, f.Name, f.Usage)
 			result.Lookup(f.Name).DefValue = f.DefValue
 		}
@@ -34,15 +34,15 @@ func commandFlags(fs *flag.FlagSet, specific string, signatures bool) *flag.Flag
 }
 
 func withoutFlags(fs *flag.FlagSet, names string) *flag.FlagSet {
-	denied := map[string]bool{}
+	denied := map[string]struct{}{}
 	for name := range strings.FieldsSeq(names) {
-		denied[name] = true
+		denied[name] = struct{}{}
 	}
 
 	result := flag.NewFlagSet(fs.Name(), flag.ContinueOnError)
 	result.SetOutput(fs.Output())
 	fs.VisitAll(func(f *flag.Flag) {
-		if !denied[f.Name] {
+		if _, exists := denied[f.Name]; !exists {
 			result.Var(f.Value, f.Name, f.Usage)
 			result.Lookup(f.Name).DefValue = f.DefValue
 		}

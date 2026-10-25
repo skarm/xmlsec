@@ -9,10 +9,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -52,11 +51,15 @@ func (p *parser) configureExternal() error {
 	}
 
 	for _, u := range copied.AllowedURIs {
-		if !validExternalURI(u) || p.allow[u] {
+		if !validExternalURI(u) {
 			return fmt.Errorf("%w: external URI allowlist", ErrPolicy)
 		}
 
-		p.allow[u] = true
+		if _, exists := p.allow[u]; exists {
+			return fmt.Errorf("%w: external URI allowlist", ErrPolicy)
+		}
+
+		p.allow[u] = struct{}{}
 	}
 
 	return nil
@@ -96,7 +99,11 @@ func (p *parser) resourceURI(s *scope, n *tree.Node, uri string) (string, error)
 		return "", fmt.Errorf("%w: %w", ErrInput, err)
 	}
 
-	if !validExternalURI(resolved) || !p.allow[resolved] {
+	if !validExternalURI(resolved) {
+		return "", fmt.Errorf("%w: resolved external URI not allowed", ErrPolicy)
+	}
+
+	if _, allowed := p.allow[resolved]; !allowed {
 		return "", fmt.Errorf("%w: resolved external URI not allowed", ErrPolicy)
 	}
 
@@ -122,7 +129,7 @@ func (p *parser) consumeResource(uri string, consume func(io.Reader) error) erro
 		return err
 	}
 
-	if !p.allow[uri] {
+	if _, exists := p.allow[uri]; !exists {
 		return fmt.Errorf("%w: external URI not allowed", ErrPolicy)
 	}
 

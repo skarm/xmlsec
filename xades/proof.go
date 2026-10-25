@@ -41,10 +41,13 @@ func (i Indication) String() string {
 // signatureProof records only the earliest upper bound from a verified token.
 // It can move earlier when another trusted proof is added, never later.
 type signatureProof struct {
-	at      time.Time
+	// at is the earliest trusted upper bound retained for the signature proof.
+	at time.Time
+	// present distinguishes a recorded proof from the zero-value timestamp.
 	present bool
 }
 
+// add retains t only when no proof exists or t establishes an earlier upper bound.
 func (p *signatureProof) add(t time.Time) {
 	if !p.present || t.Before(p.at) {
 		p.at, p.present = t, true

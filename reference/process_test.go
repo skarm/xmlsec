@@ -131,7 +131,11 @@ func TestCanonicalizationConversions(t *testing.T) {
 }
 
 func TestBase64(t *testing.T) {
-	cases := []struct{ name, input, want string }{
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
 		{"plain", "SGVsbG8=", nameHello},
 		{"whitespace", "S G\tVs\nbG8=\r", nameHello},
 		{"RFC2045 nonalphabet", "S!G#V$s%bG8=\xff", nameHello},
@@ -199,8 +203,10 @@ func TestEnvelopedIdentity(t *testing.T) {
 	ts := []reference.Transform{{Algorithm: reference.EnvelopedSignature}, {Algorithm: c14n.Exclusive}}
 
 	out := process(t, all(t, d), ts, reference.Options{Signature: signature})
-	if strings.Contains(string(out.Bytes()), `ID="one"`) || !strings.Contains(string(out.Bytes()), `ID="two"`) {
-		t.Fatal(string(out.Bytes()))
+
+	raw := out.Bytes()
+	if bytes.Contains(raw, []byte(`ID="one"`)) || !bytes.Contains(raw, []byte(`ID="two"`)) {
+		t.Fatalf("%s", raw)
 	}
 
 	original, _ := d.XML(t.Context())

@@ -91,7 +91,7 @@ func lookupFunctionItem(ctx context.Context, qv xdm.QNameValue, arity int) (xdm.
 		}
 
 		if ok && isExtensionBuiltin(fn) {
-			// helium EXTENSION functions (e.g. fn:flatten, array:flat-map) are
+			// Internal extension functions (e.g. fn:flatten, array:flat-map) are
 			// STATIC-CALL-ONLY: not dynamically reachable via fn:function-lookup. This
 			// keeps a conformance-restricted static context (XSD 1.1 CTA, which rejects a
 			// static extension call via StandardFunctionAcceptsArity) from invoking an

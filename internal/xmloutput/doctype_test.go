@@ -13,8 +13,11 @@ const rootElement = "root"
 
 func TestWriteDoctype(t *testing.T) {
 	for _, tc := range []struct {
-		name, public, system, want string
-		html                       bool
+		name   string
+		public string
+		system string
+		want   string
+		html   bool
 	}{
 		{name: rootElement, want: "<!DOCTYPE root>"},
 		{name: rootElement, system: "urn:test", want: `<!DOCTYPE root SYSTEM "urn:test">`},
@@ -42,7 +45,11 @@ func TestWriteDoctype(t *testing.T) {
 }
 
 func TestWriteDoctypeRejectsInvalidMetadata(t *testing.T) {
-	for _, tc := range []struct{ name, public, system string }{
+	for _, tc := range []struct {
+		name   string
+		public string
+		system string
+	}{
 		{name: "bad name"},
 		{name: rootElement, public: "PUBLIC without SYSTEM"},
 		{name: rootElement, public: "tab\t", system: "urn:test"},

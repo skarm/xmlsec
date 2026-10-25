@@ -1,10 +1,9 @@
 // Derived from lestrrat-go/helium at 7362c0a70122a757780f4d0b545a9b370dead6ab.
 // Copyright (c) 2015 lestrrat. MIT License; see licenses/MIT-helium.txt at the repository root.
 
-// Package encoding wraps around the various encoding stuff in
-// golang.org/x/text/encoding. Part of the reason this exists is that
-// the package names such as "unicode" clash with the stdlib, and
-// it's rather easier if we just hide it from helium
+// Package encoding resolves encoding labels to internal codecs and provides
+// strict XML byte-decoding helpers. Codec availability is separate from the
+// encodings permitted by an input profile; callers must enforce that policy.
 package encoding
 
 import (
@@ -21,6 +20,9 @@ import (
 	"golang.org/x/text/encoding/unicode/utf32"
 )
 
+// Load returns a codec for a recognized normalized encoding name, or nil when
+// unsupported. Codec availability does not authorize an encoding in an XML input
+// profile.
 func Load(name string) enc.Encoding {
 	norm := normalizeEncodingName(name)
 	if ok := asciiEncodingNames(norm); ok {

@@ -12,12 +12,14 @@ import (
 	xpathregex "github.com/skarm/xmlsec/transform/internal/xpath/regex"
 )
 
-// The XPath pattern translator lives in internal/xpathregex. These wrappers
+// The XPath pattern translator lives in transform/internal/xpath/regex. These wrappers
 // preserve XPath error code FORX0002; matching uses the shared Go pattern VM.
 
-// Regex is a compiled XPath regular expression that can be used by external
-// packages (e.g., xslt) for regex matching with XPath/XML Schema semantics.
+// Regex retains a compiled XPath regular expression for internal language consumers.
+// Matching uses the shared bounded pattern engine and the invocation's cancellation
+// and resource policy.
 type Regex struct {
+	// inner retains the immutable bounded pattern program used by matching calls.
 	inner *compiledXPathRegex
 }
 

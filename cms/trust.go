@@ -12,13 +12,18 @@ import (
 	"github.com/skarm/xmlsec/pki"
 )
 
-// TrustOptions applies an immutable caller-selected PKIX/revocation verifier at
-// an explicit time. Embedded CMS certificates supply untrusted path candidates;
-// they never become trust anchors. SigningTime is not a trusted validation time.
+// TrustOptions selects an immutable PKIX and offline revocation verifier and an
+// explicit validation time. Embedded certificates are untrusted path candidates.
+// The caller supplies trust anchors through Verifier; CMS SigningTime cannot
+// supply a trusted validation time.
 type TrustOptions struct {
-	Verifier         *pki.Verifier
+	// Verifier supplies the required signer trust and offline revocation policy.
+	Verifier *pki.Verifier
+	// VerificationTime is the explicit time for certificate validation. It must be nonzero.
 	VerificationTime time.Time
-	Evidence         pki.Evidence
+	// Evidence supplies untrusted intermediates and offline revocation data for signer
+	// validation.
+	Evidence pki.Evidence
 }
 
 // VerifyWithTrust authenticates all content/signers and then applies the supplied
@@ -99,7 +104,7 @@ func (s *SignedData) signerTrustEvidence(ctx context.Context, evidence pki.Evide
 
 	merged := evidence
 	merged.Intermediates = make([][]byte, 0, min(64, len(evidence.Intermediates)+len(s.certificates)))
-	seen := make(map[[sha256.Size]byte]bool)
+	seen := make(map[[sha256.Size]byte]struct{})
 
 	for _, group := range [][][]byte{evidence.Intermediates, s.certificates} {
 		for _, candidate := range group {
@@ -112,11 +117,11 @@ func (s *SignedData) signerTrustEvidence(ctx context.Context, evidence pki.Evide
 			}
 
 			digest := sha256.Sum256(candidate)
-			if seen[digest] {
+			if _, exists := seen[digest]; exists {
 				continue
 			}
 
-			seen[digest] = true
+			seen[digest] = struct{}{}
 
 			if len(merged.Intermediates) == 64 {
 				return pki.Evidence{}, ErrPolicy
@@ -159,11 +164,15 @@ func (r *Result) Evidence() []*pki.VerifiedEvidence {
 	}
 
 	type identity struct {
-		fingerprint, target, scope, signer, issuer string
-		validation                                 time.Time
+		fingerprint string
+		target      string
+		scope       string
+		signer      string
+		issuer      string
+		validation  time.Time
 	}
 
-	seen := make(map[identity]bool)
+	seen := make(map[identity]struct{})
 
 	var out []*pki.VerifiedEvidence
 
@@ -174,11 +183,11 @@ func (r *Result) Evidence() []*pki.VerifiedEvidence {
 
 		for _, assertion := range signer.trust.Evidence() {
 			key := identity{assertion.FingerprintSHA256(), assertion.TargetCertificateSHA256(), assertion.IssuerScopeBinding(), assertion.SignerCertificateSHA256(), assertion.IssuerSPKISHA256(), assertion.ValidationTime()}
-			if seen[key] {
+			if _, exists := seen[key]; exists {
 				continue
 			}
 
-			seen[key] = true
+			seen[key] = struct{}{}
 
 			out = append(out, assertion)
 		}

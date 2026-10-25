@@ -32,9 +32,11 @@ var (
 	ErrTrust = errors.New("timestamp TSA trust/usage check failed")
 )
 
-// Imprint pairs a hash algorithm with the digest of timestamped data.
+// Imprint identifies timestamped data by its hash algorithm and raw digest.
 type Imprint struct {
-	Hash   crypto.Hash
+	// Hash identifies the algorithm that produced Digest.
+	Hash crypto.Hash
+	// Digest contains the raw message digest bytes, with the length required by Hash.
 	Digest []byte
 }
 
@@ -74,8 +76,8 @@ func ImprintReader(ctx context.Context, src io.Reader, h crypto.Hash) (Imprint, 
 	return Imprint{h, digest.Sum(nil)}, ctx.Err()
 }
 
-// RequestOptions selects the imprint hash, policy, nonce and certificate request for an
-// RFC 3161 request.
+// RequestOptions selects the imprint hash, TSA policy, nonce and certificate request
+// for an RFC 3161 request.
 type RequestOptions struct {
 	// Hash selects the imprint hash for CreateRequest; zero selects SHA-256.
 	// CreateImprintRequest uses its supplied imprint instead.
@@ -91,8 +93,8 @@ type RequestOptions struct {
 	OmitCertificates bool
 }
 
-// Request is an immutable parsed RFC 3161 request; parsing does not authenticate its
-// origin.
+// Request retains an immutable parsed RFC 3161 request. Parsing establishes no sender
+// authenticity.
 type Request struct {
 	raw     []byte
 	imprint Imprint
@@ -286,16 +288,18 @@ func parseOwnedRequest(b []byte) (*Request, error) {
 	return r, nil
 }
 
-// Info is an immutable parsed TSTInfo. Trusted time requires successful token
+// Info retains parsed TSTInfo. Accept its time claims only after successful token
 // verification.
 type Info struct {
-	policy                asn1.ObjectIdentifier
-	imprint               Imprint
-	serial, nonce         *big.Int
-	at                    time.Time
-	accuracy              time.Duration
-	hasAccuracy, ordering bool
-	tsa                   asn1.RawValue
+	policy      asn1.ObjectIdentifier
+	imprint     Imprint
+	serial      *big.Int
+	nonce       *big.Int
+	at          time.Time
+	accuracy    time.Duration
+	hasAccuracy bool
+	ordering    bool
+	tsa         asn1.RawValue
 }
 
 // Policy returns an owned copy of the timestamp policy OID.
@@ -505,7 +509,7 @@ func validateInfoExtensions(v asn1.RawValue) error {
 		return ErrFormat
 	}
 
-	seen := make(map[string]bool, len(xs))
+	seen := make(map[string]struct{}, len(xs))
 
 	for _, x := range xs {
 		fields, e := der.Sequence(x, 2, 3)
@@ -514,11 +518,15 @@ func validateInfoExtensions(v asn1.RawValue) error {
 		}
 
 		var oid asn1.ObjectIdentifier
-		if der.Decode(fields[0], &oid) != nil || seen[oid.String()] {
+		if der.Decode(fields[0], &oid) != nil {
 			return ErrFormat
 		}
 
-		seen[oid.String()] = true
+		if _, exists := seen[oid.String()]; exists {
+			return ErrFormat
+		}
+
+		seen[oid.String()] = struct{}{}
 
 		if len(fields) == 3 {
 			var critical bool
@@ -537,13 +545,14 @@ func validateInfoExtensions(v asn1.RawValue) error {
 	return nil
 }
 
-// Response is an immutable parsed RFC 3161 response. Parsing alone does not authenticate
-// the token.
+// Response retains an immutable parsed RFC 3161 response. Parsing does not
+// authenticate its token.
 type Response struct {
-	raw, token []byte
-	status     int
-	text       []string
-	fail       asn1.BitString
+	raw    []byte
+	token  []byte
+	status int
+	text   []string
+	fail   asn1.BitString
 }
 
 // ParseResponse parses one complete bounded RFC 3161 response and rejects unsuccessful
@@ -687,10 +696,14 @@ func (r *Response) bindToken(ctx context.Context, f []asn1.RawValue, validateTok
 	return r, nil
 }
 
-// ResponseError describes an unsuccessful RFC 3161 response status and failure bits.
+// ResponseError reports a TSA failure status, untrusted status text and failure bit
+// positions.
 type ResponseError struct {
-	Status      int
-	Text        []string
+	// Status is the RFC 3161 PKIStatus value returned by the TSA.
+	Status int
+	// Text contains the TSA's untrusted status strings.
+	Text []string
+	// FailureBits lists the set bit positions in the response's PKIFailureInfo.
 	FailureBits []int
 }
 

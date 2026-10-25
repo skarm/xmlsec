@@ -91,41 +91,56 @@ type Config struct {
 	TSAHistory    pki.HistoricalOptions
 	// MissingAccuracy is an explicit TSA policy assumption when RFC3161 accuracy
 	// is absent. Nil refuses to invent a precision for historical proof extraction.
-	MissingAccuracy                               *time.Duration
-	TimestampDelay                                *time.Duration
-	RequireAllTimestamps                          bool
-	MaxObjects, MaxEdges, MaxBytes, MaxTimestamps int
+	MissingAccuracy      *time.Duration
+	TimestampDelay       *time.Duration
+	RequireAllTimestamps bool
+	MaxObjects           int
+	MaxEdges             int
+	MaxBytes             int
+	MaxTimestamps        int
 }
 
 // Step records a normative decision without exposing mutable internal state.
 type Step struct {
-	Clause, Action, SubIndication string
-	Object, Source                [32]byte
-	Before, After                 time.Time
+	Clause        string
+	Action        string
+	SubIndication string
+	Object        [32]byte
+	Source        [32]byte
+	Before        time.Time
+	After         time.Time
 }
 
 // Stamp records a timestamp's outcome and its exact token/binding identity.
 type Stamp struct {
-	Generation, Upper, Best, Validation time.Time
-	Path                                *pki.HistoricalPath
-	SubIndication                       string
-	Token, Certificate                  [32]byte
-	Indication                          Indication
-	Archive, Content, Ordering          bool
+	Generation    time.Time
+	Upper         time.Time
+	Best          time.Time
+	Validation    time.Time
+	Path          *pki.HistoricalPath
+	SubIndication string
+	Token         [32]byte
+	Certificate   [32]byte
+	Indication    Indication
+	Archive       bool
+	Content       bool
+	Ordering      bool
 }
 
 // Report is an operation-local immutable result after Validate returns.
 type Report struct {
-	Indication           Indication
-	SubIndication        string
-	At, Best, Validation time.Time
-	Path                 *pki.HistoricalPath
-	Current              *pki.Result
-	Past                 *pki.PastCertificateResult
-	Proofs               *historicalproof.Set
-	Steps                []Step
-	Stamps               []Stamp
-	Cause                error
+	Indication    Indication
+	SubIndication string
+	At            time.Time
+	Best          time.Time
+	Validation    time.Time
+	Path          *pki.HistoricalPath
+	Current       *pki.Result
+	Past          *pki.PastCertificateResult
+	Proofs        *historicalproof.Set
+	Steps         []Step
+	Stamps        []Stamp
+	Cause         error
 }
 
 // Validate performs the separate historical workflow. A successful report is

@@ -17,25 +17,43 @@ import (
 // an indeterminate outcome; only demonstrated invalidity is a failed outcome.
 var ErrHistorical = historical.ErrValidation
 
-// HistoricalConfig selects a separate EN319102-1 V1.4.1 workflow. It does not
-// change Validator or WithTimeValidator contracts or establish legal qualification.
+// HistoricalConfig selects the separate EN 319 102-1 V1.4.1 workflow.
+// It does not alter Validator or WithTimeValidator policy or establish legal
+// qualification.
 type HistoricalConfig struct {
-	SignerPKI  pki.HistoricalConfig
-	TSA        *timestamp.Verifier
+	// SignerPKI supplies explicit signer trust, revocation checks and historical
+	// constraints.
+	SignerPKI pki.HistoricalConfig
+	// TSA is the required immutable timestamp verifier with revocation checks enabled.
+	TSA *timestamp.Verifier
+	// TSAHistory selects separate historical certificate and algorithm constraints for
+	// timestamp authorities.
 	TSAHistory pki.HistoricalOptions
-	Baseline   BaselineVerifyOptions
+	// Baseline sets signature coverage, external resources and baseline property checks.
+	Baseline BaselineVerifyOptions
 	// MissingTSAAccuracy is an explicit TSA-policy assumption only when the
 	// token omits accuracy. Nil refuses to manufacture a precision for its PoE.
 	MissingTSAAccuracy *time.Duration
 	// TimestampDelay optionally constrains the interval after claimed SigningTime.
 	// It does not turn that signer claim into a proof of existence.
-	TimestampDelay                                *time.Duration
-	RequireAllTimestamps                          bool
-	MaxObjects, MaxEdges, MaxBytes, MaxTimestamps int
+	TimestampDelay *time.Duration
+	// RequireAllTimestamps rejects the operation if any present timestamp fails validation.
+	RequireAllTimestamps bool
+	// MaxObjects bounds exact objects in the evidence graph. Zero selects 512. The maximum
+	// is 2048.
+	MaxObjects int
+	// MaxEdges bounds evidence graph relationships. Zero selects 4096. It must be at least
+	// MaxObjects and at most 8192.
+	MaxEdges int
+	// MaxBytes bounds aggregate exact object bytes. Zero selects 16 MiB. The maximum is 64
+	// MiB.
+	MaxBytes int
+	// MaxTimestamps bounds timestamp candidates. Zero selects 16. The maximum is 64.
+	MaxTimestamps int
 }
 
-// HistoricalValidator holds immutable offline trust, coverage and time policy.
-// It supports concurrent operations, each with its own bounded evidence graph.
+// HistoricalValidator retains immutable offline trust, coverage and time policy.
+// Concurrent operations use separate bounded evidence graphs.
 type HistoricalValidator struct {
 	workflow historical.Config
 	baseline BaselineVerifyOptions
@@ -115,8 +133,8 @@ func (v *HistoricalValidator) Validate(ctx context.Context, doc *document.Docume
 	return &HistoricalResult{baseline: baseline, report: report}, report, nil
 }
 
-// HistoricalReport explains the exact workflow; it grants no success on its own.
-// Accessor values are copied and safe for concurrent use after Validate returns.
+// HistoricalReport records workflow diagnostics without granting acceptance.
+// After Validate returns, accessors copy their values and support concurrent use.
 type HistoricalReport struct{ state *historical.Report }
 
 // Indication is Passed, Failed or Indeterminate. A nil/zero report is indeterminate.
@@ -176,11 +194,20 @@ func (r *HistoricalReport) Cause() error {
 // Standard names the published process edition used by this workflow.
 func (r *HistoricalReport) Standard() string { return "ETSI EN 319 102-1 V1.4.1 (2024-06)" }
 
-// HistoricalProof is an exact-object existence fact. Source is empty only for
-// present-time observation; acquisition provenance cannot create these facts.
+// HistoricalProof records existence of an exact object by a specified time.
+// SourceSHA256 is empty only for present-time observation. Acquisition provenance
+// cannot establish this proof.
 type HistoricalProof struct {
-	ObjectSHA256, SourceSHA256, Kind string
-	At                               time.Time
+	// ObjectSHA256 is the hexadecimal SHA-256 digest of the exact object whose existence
+	// was established.
+	ObjectSHA256 string
+	// SourceSHA256 identifies the protecting source. Empty denotes present-time
+	// observation.
+	SourceSHA256 string
+	// Kind identifies the proof's role in the validation workflow.
+	Kind string
+	// At is the time by which the exact object is known to have existed.
+	At time.Time
 }
 
 // Proofs returns owned diagnostic records from the completed graph.
@@ -204,10 +231,23 @@ func (r *HistoricalReport) Proofs() []HistoricalProof {
 	return out
 }
 
-// HistoricalStep describes one applied normative step and its exact sources.
+// HistoricalStep identifies one applied validation rule and its exact object and
+// evidence sources.
 type HistoricalStep struct {
-	Clause, Action, SubIndication, ObjectSHA256, SourceSHA256 string
-	Before, After                                             time.Time
+	// Clause identifies the validation clause applied by this step.
+	Clause string
+	// Action describes the operation performed by this step.
+	Action string
+	// SubIndication records the detailed validation outcome associated with this step.
+	SubIndication string
+	// ObjectSHA256 identifies the exact object affected by this step.
+	ObjectSHA256 string
+	// SourceSHA256 identifies the evidence source used by this step, when present.
+	SourceSHA256 string
+	// Before is the relevant control time before this step, when applicable.
+	Before time.Time
+	// After is the relevant control time after this step, when applicable.
+	After time.Time
 }
 
 // Steps returns an owned, reproducible explanation of proof extraction/sliding.
@@ -224,12 +264,32 @@ func (r *HistoricalReport) Steps() []HistoricalStep {
 	return out
 }
 
-// HistoricalTimestamp records a checked timestamp's exact identity and outcome.
+// HistoricalTimestamp records a timestamp token's exact identity, time bounds and
+// validation outcome.
 type HistoricalTimestamp struct {
-	TokenSHA256, CertificateSHA256, SubIndication        string
-	Generation, Upper, BestSignatureTime, ValidationTime time.Time
-	Indication                                           Indication
-	Archive, Content, Ordering                           bool
+	// TokenSHA256 identifies the exact timestamp token by its hexadecimal SHA-256 digest.
+	TokenSHA256 string
+	// CertificateSHA256 identifies the timestamp signing certificate, when available.
+	CertificateSHA256 string
+	// SubIndication records the timestamp's detailed validation outcome.
+	SubIndication string
+	// Generation is the token's asserted generation time.
+	Generation time.Time
+	// Upper is the upper time bound used for proof extraction after accounting for
+	// accuracy.
+	Upper time.Time
+	// BestSignatureTime is the workflow's best signature time for this timestamp token.
+	BestSignatureTime time.Time
+	// ValidationTime is the time used for the timestamp's certificate validation.
+	ValidationTime time.Time
+	// Indication records the timestamp validation outcome.
+	Indication Indication
+	// Archive reports whether this is an archive timestamp.
+	Archive bool
+	// Content reports whether this is a content timestamp.
+	Content bool
+	// Ordering records the token's signed ordering assertion.
+	Ordering bool
 }
 
 // Timestamps returns owned outcomes, including unusable optional attributes.
@@ -246,7 +306,8 @@ func (r *HistoricalReport) Timestamps() []HistoricalTimestamp {
 	return out
 }
 
-// HistoricalResult is returned only after complete configured historical acceptance.
+// HistoricalResult records acceptance after every configured historical validation
+// requirement passes.
 type HistoricalResult struct {
 	baseline *BaselineResult
 	report   *HistoricalReport

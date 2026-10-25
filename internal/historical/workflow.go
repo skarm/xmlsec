@@ -726,10 +726,10 @@ func currentSubIndication(err error, report pki.Report, certificate *x509.Certif
 }
 
 func removeTimestampSources(input Input, groups ...pki.Evidence) (pki.Evidence, pki.Evidence, error) {
-	allowed := make(map[[32]byte]bool, len(input.Timestamps))
+	allowed := make(map[[32]byte]struct{}, len(input.Timestamps))
 	for _, candidate := range input.Timestamps {
 		if candidate.Token != nil {
-			allowed[sha256.Sum256(candidate.Token.DER())] = true
+			allowed[sha256.Sum256(candidate.Token.DER())] = struct{}{}
 		}
 	}
 
@@ -742,7 +742,7 @@ func removeTimestampSources(input Input, groups ...pki.Evidence) (pki.Evidence, 
 			}
 
 			if source.Kind() == evidence.Timestamp {
-				if !allowed[source.DigestSHA256()] {
+				if _, exists := allowed[source.DigestSHA256()]; !exists {
 					return pki.Evidence{}, pki.Evidence{}, ErrInput
 				}
 			} else {

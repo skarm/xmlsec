@@ -172,7 +172,7 @@ func decryptGraph(ctx context.Context, doc *document.Document, selected document
 
 	// Validate every reachable node and obtain bounded resources before the first
 	// private-key operation. No candidate is selected by trial decryption.
-	if err := g.prepareKey(key, make(map[*graphKeyPlan]bool)); err != nil {
+	if err := g.prepareKey(key, make(map[*graphKeyPlan]struct{})); err != nil {
 		return nil, profile{}, err
 	}
 

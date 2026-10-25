@@ -7,9 +7,8 @@ import (
 	"crypto/fips140"
 	"encoding/base64"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 )
 

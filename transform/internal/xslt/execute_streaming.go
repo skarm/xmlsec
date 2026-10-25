@@ -369,9 +369,8 @@ func (ec *execContext) completeIterate(ctx context.Context, body []instruction, 
 	return ec.executeIterateBody(ctx, body, params)
 }
 
-// execFork executes xsl:fork by running each branch sequentially.
-// In a true streaming implementation branches would run concurrently,
-// but for the DOM-materialization strategy sequential execution is correct.
+// execFork evaluates xsl:fork branches sequentially over materialized data and emits
+// their results in branch order.
 func (ec *execContext) execFork(ctx context.Context, inst *forkInst) error {
 	for _, branch := range inst.Branches {
 		for _, child := range branch {

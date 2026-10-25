@@ -79,7 +79,10 @@ func TestXSLT10CoreAndTemporaryTrees(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tests := []struct{ body, want string }{
+	tests := []struct {
+		body string
+		want string
+	}{
 		{`<xsl:key name="inf" match="n" use="1 div 0"/><xsl:key name="small" match="n" use="0.0000001"/><xsl:template match="/"><xsl:value-of select="concat(count(key('inf',1 div 0)),':',count(key('small',0.0000001)))"/></xsl:template>`, "3:3"},
 		{`<xsl:template match="/"><xsl:for-each select="/r/n"><xsl:sort select="concat(.,'e2')" data-type="number"/><xsl:value-of select="@k"/></xsl:for-each></xsl:template>`, "aab"},
 		{`<xsl:template match="/"><wrap xsl:version="2.0"><xsl:sequence select="1"><xsl:fallback>fallback</xsl:fallback></xsl:sequence></wrap></xsl:template>`, nameFallbackResult},
@@ -250,7 +253,11 @@ func TestXSLT10SerializationDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, tc := range []struct{ body, want, absent string }{
+	for _, tc := range []struct {
+		body   string
+		want   string
+		absent string
+	}{
 		{`<html><head/><body><br/></body></html>`, `<br>`, `<!DOCTYPE html>`},
 		{`<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><br/></body></html>`, `<br/>`, `<meta`},
 	} {

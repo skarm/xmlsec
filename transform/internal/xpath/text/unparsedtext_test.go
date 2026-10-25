@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -60,8 +61,10 @@ const textUTF8 = "utf-8"
 
 func TestDecodeText(t *testing.T) {
 	for _, tc := range []struct {
-		input                []byte
-		encoding, hint, want string
+		input    []byte
+		encoding string
+		hint     string
+		want     string
 	}{
 		{[]byte{0xef, 0xbb, 0xbf, 'x'}, "", textUTF8, "x"},
 		{[]byte{0xff, 0xfe, 'x', 0}, "utf-16", "", "x"},
@@ -212,3 +215,48 @@ type closeFailure struct {
 }
 
 func (r closeFailure) Close() error { return r.err }
+
+func BenchmarkTextResources(b *testing.B) {
+	for _, size := range []int{64, 1 << 20} {
+		for _, tc := range []struct {
+			name     string
+			unit     string
+			encoding string
+			valid    bool
+		}{
+			{"ASCII", "abcdef\n", "utf-8", true},
+			{"Unicode", "é日本\r\n", "utf-8", true},
+			{"InvalidUTF8", "abc\xff", "utf-8", false},
+			{"Latin1", "caf\xe9\n", "iso-8859-1", true},
+		} {
+			b.Run(tc.name+"/"+strconv.Itoa(size), func(b *testing.B) {
+				input := strings.Repeat(tc.unit, max(1, size/len(tc.unit)))
+				cfg := &unparsedtext.Config{MaxBytes: 4 << 20, URIResolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+					return io.NopCloser(strings.NewReader(input)), nil
+				})}
+				for _, mode := range []string{"Collect", "Discard", "Lines"} {
+					b.Run(mode, func(b *testing.B) {
+						b.ReportAllocs()
+						if tc.valid {
+							b.SetBytes(int64(len(input)))
+						}
+						for b.Loop() {
+							var err error
+							switch mode {
+							case "Collect":
+								_, err = unparsedtext.LoadText(b.Context(), cfg, "urn:bench", tc.encoding)
+							case "Discard":
+								err = unparsedtext.ReadText(b.Context(), cfg, "urn:bench", tc.encoding, func([]byte) error { return nil })
+							default:
+								_, err = unparsedtext.LoadTextLines(b.Context(), cfg, "urn:bench", tc.encoding)
+							}
+							if (err == nil) != tc.valid {
+								b.Fatal(err)
+							}
+						}
+					})
+				}
+			})
+		}
+	}
+}

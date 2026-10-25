@@ -12,11 +12,13 @@ import (
 )
 
 type singleResponse struct {
-	id                  certID
-	status              OCSPStatus
-	this, next, revoked time.Time
-	archiveCutoff       time.Time
-	reason              int
+	id            certID
+	status        OCSPStatus
+	this          time.Time
+	next          time.Time
+	revoked       time.Time
+	archiveCutoff time.Time
+	reason        int
 }
 
 func (s *singleResponse) parseStatus(v asn1.RawValue) error {

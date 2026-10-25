@@ -30,6 +30,127 @@ const (
 	suiteQTNamespace = "http://www.w3.org/2010/09/qt-fots-catalog"
 )
 
+func BenchmarkSuiteReport(b *testing.B) {
+	for _, size := range []int{32, 31821} {
+		report := &suiteReport{Suite: suiteQT3, Language: suiteVersion31, Totals: map[string]int{suitePassed: size}}
+		for range size {
+			report.Cases = append(report.Cases, suiteOutcome{Set: "fn-string", Name: "case", File: "fn/string.xml", Status: suitePassed, Reason: strings.Repeat("escaped <data> & Unicode é ", 4)})
+		}
+		for _, file := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%d/File=%v", size, file), func(b *testing.B) {
+				path := ""
+				if file {
+					path = filepath.Join(b.TempDir(), "report.json")
+				}
+				b.ReportAllocs()
+				for b.Loop() {
+					if err := writeSuiteReport(path, io.Discard, report); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func BenchmarkSuiteReportEncoders(b *testing.B) {
+	report := &suiteReport{Cases: make([]suiteOutcome, 31821)}
+	for i := range report.Cases {
+		report.Cases[i] = suiteOutcome{Name: "case", Reason: strings.Repeat("<&é", 128)}
+	}
+	for _, method := range []string{"Indent", "Encoder", "Records"} {
+		b.Run(method, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var err error
+				switch method {
+				case "Indent":
+					_, err = json.MarshalIndent(report, "", "  ")
+				case "Encoder":
+					err = json.NewEncoder(io.Discard).Encode(report)
+				case "Records":
+					err = writeSuiteReport("", io.Discard, report)
+				}
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestIncrementalSuiteReport(t *testing.T) {
+	var minimal bytes.Buffer
+	err := writeJSONListObject(&minimal, struct{}{}, "items", []int{42}, func(dst io.Writer, value *int) error { return json.NewEncoder(dst).Encode(value) })
+	if err != nil || !json.Valid(minimal.Bytes()) {
+		t.Fatal("empty metadata object", minimal.String(), err)
+	}
+
+	for _, cases := range [][]suiteOutcome{nil, {}, {{Name: "é <&\"\n", Reason: strings.Repeat("漢字", 4096), Status: suiteFailed}}} {
+		report := &suiteReport{Suite: suiteQT3, Cases: cases, Settings: map[string]any{"escaping": "<&\""}}
+		var output bytes.Buffer
+		if err := writeSuiteReport("", &output, report); err != nil {
+			t.Fatal(err)
+		}
+		var decoded suiteReport
+		if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		want, _ := json.Marshal(report)
+		got, _ := json.Marshal(&decoded)
+		if !bytes.Equal(want, got) {
+			t.Fatal("report changed JSON values")
+		}
+	}
+
+	report := &suiteReport{Cases: []suiteOutcome{{Name: "one"}, {Name: "two"}}}
+	var complete bytes.Buffer
+	if err := writeSuiteReport("", &complete, report); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("report sink failed")
+	for _, after := range []int{0, 1, complete.Len() / 2, complete.Len() - 1} {
+		writer := &reportFailWriter{remaining: after, err: failure}
+		if err := writeSuiteReport("", writer, report); !errors.Is(err, failure) {
+			t.Fatal("lost sink error", after, err)
+		}
+	}
+	if err := writeSuiteReport("", &reportFailWriter{remaining: 1}, report); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatal("accepted short write", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "report.json")
+	if err := os.WriteFile(path, []byte("preserved"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report.Settings = map[string]any{"unsupported": make(chan int)}
+	if err := writeSuiteReport(path, io.Discard, report); err == nil {
+		t.Fatal("accepted unencodable metadata")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "preserved" {
+		t.Fatal("failed report replaced destination", string(got), err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil || len(entries) != 1 {
+		t.Fatal("temporary report leaked", entries, err)
+	}
+}
+
+type reportFailWriter struct {
+	remaining int
+	err       error
+}
+
+func (w *reportFailWriter) Write(p []byte) (int, error) {
+	n := min(len(p), w.remaining)
+	w.remaining -= n
+	if n < len(p) {
+		return n, w.err
+	}
+	return n, nil
+}
+
 func TestExternalSuiteOutcomes(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -88,7 +209,15 @@ func TestSuiteTypedFailureIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, test := range []struct{ name, expression, assertion, status, kind, code, cause string }{
+	for _, test := range []struct {
+		name       string
+		expression string
+		assertion  string
+		status     string
+		kind       string
+		code       string
+		cause      string
+	}{
 		{"execution", "1 idiv 0", "<assert-true/>", suiteFailed, "assertion", "FOAR0001", "execution-error"},
 		{"assertion evaluation", "1", "<assert>1 idiv 0</assert>", suiteFailed, suiteHarnessFailure, "FOAR0001", "assertion-error"},
 		{"literal mismatch", "2", "<assert-eq>3</assert-eq>", suiteFailed, "assertion", "", "assertion-mismatch"},
@@ -206,7 +335,8 @@ func TestSuiteStylesheetVersionDeclarations(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name, stylesheet string
+		name       string
+		stylesheet string
 	}{
 		{"ordinary20", `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="2.0"/>`},
 		{"ordinary30", `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"/>`},
@@ -396,8 +526,11 @@ func TestSuiteXMLAndStringAssertions(t *testing.T) {
 	environment := &preparedSuiteEnvironment{engine: engine, namespaces: map[string]string{}, variables: transform.Bindings{}}
 
 	for _, test := range []struct {
-		name, expression, assertion, kind string
-		pass                              bool
+		name       string
+		expression string
+		assertion  string
+		kind       string
+		pass       bool
 	}{
 		{"assertion result context", `parse-xml('<out>7</out>')`, `<assert>/out = '7'</assert>`, suiteXSLT, true},
 		{"exact QT3 whitespace", spacedString, `<assert-string-value>a b</assert-string-value>`, suiteQT3, false},
@@ -451,8 +584,10 @@ func TestSuiteXMLAndStringAssertions(t *testing.T) {
 
 func TestSuiteSerializedText(t *testing.T) {
 	for _, test := range []struct {
-		data, encoding, want string
-		fail                 bool
+		data     string
+		encoding string
+		want     string
+		fail     bool
 	}{
 		{"text😀", "UTF-8", "text😀", false},
 		{"\xef\xbb\xbftext", "UTF-8", "\uFEFFtext", false},
@@ -499,8 +634,11 @@ func TestSuiteXMLNamespaceComparison(t *testing.T) {
 	}
 	environment := &preparedSuiteEnvironment{engine: engine, namespaces: map[string]string{}, variables: transform.Bindings{}}
 	for _, test := range []struct {
-		name, namespace, body, expected string
-		pass                            bool
+		name      string
+		namespace string
+		body      string
+		expected  string
+		pass      bool
 	}{
 		{"space namespace", "urn:two words", ``, `<p:r xmlns:p="urn:two words"/>`, true},
 		{"different namespace", "urn:two words", ``, `<p:r xmlns:p="urn:other words"/>`, false},
@@ -554,8 +692,9 @@ func TestSuiteSerializationAssertions(t *testing.T) {
 	}
 	environment := &preparedSuiteEnvironment{engine: engine, namespaces: map[string]string{}, variables: transform.Bindings{}}
 	for _, test := range []struct {
-		actual, assertion string
-		pass              bool
+		actual    string
+		assertion string
+		pass      bool
 	}{
 		{"line\nnext\rdata", `<assert-serialization file="expected.txt"/>`, true},
 		{"line\nnextdata", `<assert-serialization file="expected.txt"/>`, false},
@@ -592,7 +731,11 @@ func TestSuiteSerializationEncodings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, test := range []struct{ encoding, value, method string }{
+	for _, test := range []struct {
+		encoding string
+		value    string
+		method   string
+	}{
 		{"UTF-8", "café😀", "text"},
 		{"UTF-16", "café😀", "text"},
 		{"UTF-16BE", "café😀", "text"},
@@ -1088,7 +1231,11 @@ func TestCanceledFuzzDiscovery(t *testing.T) {
 }
 
 func TestSuiteDynamicClock(t *testing.T) {
-	for _, clock := range []struct{ flag, year, report string }{
+	for _, clock := range []struct {
+		flag   string
+		year   string
+		report string
+	}{
 		{"", "2026", suiteDefaultCurrentTime},
 		{"-current-time=2041-12-31T19:00:00-05:00", "2042", "2042-01-01T00:00:00Z"},
 	} {
@@ -1246,7 +1393,11 @@ func TestSuiteSourceOptions(t *testing.T) {
 	}
 	writeFixture(t, root, "source.xml", `<r/>`)
 	writeFixture(t, root, suiteCatalog, `<catalog xmlns="`+suiteQTNamespace+`"><test-set name="source-options" file="options.xml"/></catalog>`)
-	cases := []struct{ name, attributes, status string }{
+	cases := []struct {
+		name       string
+		attributes string
+		status     string
+	}{
 		{"disabled", `role="." file="source.xml" xinclude="false" streaming="0" defines-stylesheet="false" xml-version="1.00"`, suitePassed},
 		{"xinclude", `file="missing.xml" xinclude="true"`, suiteNotApplicable},
 		{"streaming", `role="." file="missing.xml" streaming="1"`, suiteNotApplicable},
@@ -1291,9 +1442,10 @@ func TestSuiteSourceOptions(t *testing.T) {
 // residualCaseResult retains typed errors; a report's explanatory string alone
 // cannot establish that a failure was caused by a configured resource limit.
 type residualCaseResult struct {
-	Evaluation                   *suiteEvaluation
-	Environment                  *preparedSuiteEnvironment
-	PrepareError, AssertionError error
+	Evaluation     *suiteEvaluation
+	Environment    *preparedSuiteEnvironment
+	PrepareError   error
+	AssertionError error
 }
 
 func (r residualCaseResult) executionError() error {
@@ -1439,16 +1591,19 @@ type qtResidualProofControl struct {
 }
 
 type qtResidualProof struct {
-	Name, File, Version, Category string
-	XSDVersion                    string                   `json:"xsd_version"`
-	CaseTimeout                   string                   `json:"case_timeout"`
-	LimitsProfile                 string                   `json:"limits_profile"`
-	SourceSHA256                  string                   `json:"source_sha256"`
-	OriginalLimit                 bool                     `json:"original_typed_limit"`
-	OriginalDeadline              bool                     `json:"original_typed_deadline"`
-	OriginalError                 string                   `json:"original_error,omitempty"`
-	OriginalAssertion             string                   `json:"original_assertion_error,omitempty"`
-	Controls                      []qtResidualProofControl `json:"controls"`
+	Name              string
+	File              string
+	Version           string
+	Category          string
+	XSDVersion        string                   `json:"xsd_version"`
+	CaseTimeout       string                   `json:"case_timeout"`
+	LimitsProfile     string                   `json:"limits_profile"`
+	SourceSHA256      string                   `json:"source_sha256"`
+	OriginalLimit     bool                     `json:"original_typed_limit"`
+	OriginalDeadline  bool                     `json:"original_typed_deadline"`
+	OriginalError     string                   `json:"original_error,omitempty"`
+	OriginalAssertion string                   `json:"original_assertion_error,omitempty"`
+	Controls          []qtResidualProofControl `json:"controls"`
 }
 
 // This table identifies original publisher cases, not replacement expectations.
@@ -1456,7 +1611,11 @@ type qtResidualProof struct {
 // The original publisher serialization regex remains untouched. These controls
 // distinguish required character/namespace semantics from a particular spelling.
 func runXSLTResidualSerialization(t *testing.T, directory string) {
-	for _, test := range []struct{ name, file, kind string }{
+	for _, test := range []struct {
+		name string
+		file string
+		kind string
+	}{
 		{"attribute-0301", "tests/insn/attribute/_attribute-test-set.xml", "uri"},
 		{"output-0102c", "tests/decl/output/_output-test-set.xml", "xml-attribute"},
 		{"output-0103c", "tests/decl/output/_output-test-set.xml", "xml-attribute"},
@@ -1656,10 +1815,11 @@ func residualHTMLInputValues(t *testing.T, data []byte) []string {
 	var values []string
 	for {
 		token, err := decoder.Token()
-		if errors.Is(err, io.EOF) {
-			break
-		}
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
 			t.Fatal(err)
 		}
 		if start, ok := token.(xml.StartElement); ok && start.Name.Local == "input" {
@@ -1682,10 +1842,11 @@ func residualHTMLNamespaceState(t *testing.T, data []byte) (bool, bool) {
 	bodyBinding, attribute := false, false
 	for {
 		token, err := decoder.Token()
-		if errors.Is(err, io.EOF) {
-			break
-		}
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
 			t.Fatal(err)
 		}
 		if start, ok := token.(xml.StartElement); ok {
@@ -1702,8 +1863,18 @@ func residualHTMLNamespaceState(t *testing.T, data []byte) (bool, bool) {
 	return bodyBinding, attribute
 }
 
-func qtResidualCases() []struct{ name, file, version, category string } {
-	return []struct{ name, file, version, category string }{
+func qtResidualCases() []struct {
+	name     string
+	file     string
+	version  string
+	category string
+} {
+	return []struct {
+		name     string
+		file     string
+		version  string
+		category string
+	}{
 		{"ForExpr013", "prod/ForClause.xml", "2.0", "limit"},
 		{"cbcl-codepoints-to-string-005", "fn/codepoints-to-string.xml", "2.0", "limit"},
 		{"cbcl-count-001", "fn/count.xml", "2.0", "limit"},
@@ -2097,7 +2268,10 @@ func qtResidualSerializationControls(t *testing.T, options suiteOptions, item su
 	if parameterFile == "" {
 		t.Fatal("publisher parameter resource missing")
 	}
-	for _, edition := range []struct{ version, checksum string }{
+	for _, edition := range []struct {
+		version  string
+		checksum string
+	}{
 		{"30", "1cbcc49ac5ed8942ba58276699254469ca2144e229f68faeeb48f784c1037953"},
 		{"31", "256736a2f4e7923e888047dee757c17bc3ee707e285f00639fd8fb1d962d11b0"},
 	} {
@@ -2175,7 +2349,12 @@ func qtResidualSerializationControls(t *testing.T, options suiteOptions, item su
 
 // The original publisher case is always executed before changing its selected
 // processor. The second run retains the same fixture, parameters and assertion.
-type xsltResidualEditionCase struct{ name, file, version, code string }
+type xsltResidualEditionCase struct {
+	name    string
+	file    string
+	version string
+	code    string
+}
 
 func xsltResidualEditionCases() []xsltResidualEditionCase {
 	return []xsltResidualEditionCase{
@@ -2375,7 +2554,7 @@ func runXSLTResidualNamedOutput(t *testing.T, directory string) {
 				if original.executionError() != nil || original.AssertionError != nil {
 					t.Fatal("selected named output must retain its import-merged character maps for the complete original assertion", original.executionError(), original.AssertionError)
 				}
-				ref, err := resolveSuiteEnvironment(item, suiteEnvironmentRef{node: item.node.child("environment"), base: item.base}, make(map[*suiteNode]bool))
+				ref, err := resolveSuiteEnvironment(item, suiteEnvironmentRef{node: item.node.child("environment"), base: item.base}, make(map[*suiteNode]struct{}))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -2531,7 +2710,13 @@ func evaluateXSLTResidualSourceEdit(t *testing.T, options suiteOptions, item sui
 
 func runXSLTResidualCompetingErrors(t *testing.T, directory string) {
 	t.Helper()
-	for _, test := range []struct{ name, file, code, before, after string }{
+	for _, test := range []struct {
+		name   string
+		file   string
+		code   string
+		before string
+		after  string
+	}{
 		{"accumulator-038", "tests/decl/accumulator/_accumulator-test-set.xml", "XTDE0040", `name="main"`, `name="main" visibility="public"`},
 		{"expose-925", "tests/decl/expose/_expose-test-set.xml", "XTSE0020", `names="t1#0"`, `names="missing"`},
 		{"package-200", "tests/decl/package/_package-test-set.xml", "XTSE0020", `package-version="'1.0.0'"`, `package-version="1.0.0"`},
@@ -2580,8 +2765,9 @@ func runXSLTResidualCompetingErrors(t *testing.T, directory string) {
 func runXSLTResidualLimits(t *testing.T, directory string) {
 	t.Helper()
 	for _, test := range []struct {
-		name, file string
-		depth      bool
+		name  string
+		file  string
+		depth bool
 	}{
 		{"call-template-1001", "tests/insn/call-template/_call-template-test-set.xml", true},
 		{"call-template-1002", "tests/insn/call-template/_call-template-test-set.xml", true},
@@ -2775,7 +2961,10 @@ func xsltResidualBoundedRecursion(t *testing.T, options suiteOptions, item suite
 	quote := func(value string) string {
 		return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 	}
-	for _, run := range []struct{ source, want string }{
+	for _, run := range []struct {
+		source string
+		want   string
+	}{
 		{string(raw), originalExpected},
 		{strings.Replace(string(raw), before, after, 1), expected.String()},
 	} {
@@ -2802,7 +2991,12 @@ func setXSLTResidualAttribute(node *suiteNode, name, value string) {
 
 func runXSLTResidualMetadataControls(t *testing.T, directory string) {
 	t.Helper()
-	for _, test := range []struct{ name, file, version, code string }{
+	for _, test := range []struct {
+		name    string
+		file    string
+		version string
+		code    string
+	}{
 		{"analyze-string-097a", "tests/insn/analyze-string/_analyze-string-test-set.xml", suiteVersion30, ""},
 		{"static-013c", "tests/attr/static/_static-test-set.xml", suiteVersion30, ""},
 		{"format-number-070", "tests/fn/format-number/_format-number-test-set.xml", suiteVersion20, "XTDE0040"},
@@ -2859,7 +3053,14 @@ func runXSLTResidualMetadataControls(t *testing.T, directory string) {
 
 func runXSLTResidualSingleCorrections(t *testing.T, directory string) {
 	t.Helper()
-	for _, test := range []struct{ name, file, code, before, after, assertion string }{
+	for _, test := range []struct {
+		name      string
+		file      string
+		code      string
+		before    string
+		after     string
+		assertion string
+	}{
 		{"context-item-903", "tests/decl/context-item/_context-item-test-set.xml", "XTSE1660", `as="element(*, my:percentage)"`, `as="item()"`, `/out = '1 2 3 4 5'`},
 		{"static-012", "tests/attr/static/_static-test-set.xml", "XTDE0050", `as="xs:integer" />`, `as="xs:integer" select="0" />`, `normalize-space(.) = '0'`},
 		{"static-013", "tests/attr/static/_static-test-set.xml", "XTTE0590", `select="xs:date('2014-03-03')"`, `select="0"`, `normalize-space(.) = '0'`},
@@ -2919,7 +3120,10 @@ func runXSLTResidualSingleCorrections(t *testing.T, directory string) {
 
 func runXSLTResidualRegexEditions(t *testing.T, directory string) {
 	t.Helper()
-	for _, test := range []struct{ name, obsolete string }{
+	for _, test := range []struct {
+		name     string
+		obsolete string
+	}{
 		{"regex-syntax-xslt20-0056", ""},
 		{"regex-syntax-xslt20-0086", ""},
 		{"regex-syntax-xslt20-0102", ""},
@@ -2986,7 +3190,11 @@ func runXSLTResidualRegexEditions(t *testing.T, directory string) {
 
 func runXSLTResidualExplicitResources(t *testing.T, directory string) {
 	t.Helper()
-	for _, test := range []struct{ name, file, code string }{
+	for _, test := range []struct {
+		name string
+		file string
+		code string
+	}{
 		{"merge-008", "tests/insn/merge/_merge-test-set.xml", "FODC0002"},
 		{"merge-097", "tests/insn/merge/_merge-test-set.xml", "FODC0002"},
 		{"unparsed-text-2003", "tests/fn/unparsed-text/_unparsed-text-test-set.xml", ""},
@@ -3048,7 +3256,7 @@ func xsltResidualInputBytes(t *testing.T, options suiteOptions, item suiteCase) 
 	if selected == nil {
 		t.Fatal("causal whitespace proof requires the declared source")
 	}
-	ref, err := resolveSuiteEnvironment(item, suiteEnvironmentRef{node: selected, base: item.base}, make(map[*suiteNode]bool))
+	ref, err := resolveSuiteEnvironment(item, suiteEnvironmentRef{node: selected, base: item.base}, make(map[*suiteNode]struct{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3092,7 +3300,10 @@ func xsltResidualSaxonOriginal(t *testing.T, options suiteOptions, item suiteCas
 		}
 	}
 	arguments := []string{"-cp", classpath, "net.sf.saxon.Transform", "-xsl:" + main, "-s:" + inputPath, "-strip:none", "!indent=no", "!omit-xml-declaration=yes", "!encoding=UTF-8"}
-	for _, entry := range []struct{ element, option string }{{"initial-template", "-it:"}, {"initial-mode", "-im:"}} {
+	for _, entry := range []struct {
+		element string
+		option  string
+	}{{"initial-template", "-it:"}, {"initial-mode", "-im:"}} {
 		if initial := item.node.child("test").child(entry.element); initial != nil {
 			name, err := suiteQName(initial.attr("name"), suiteScopedNamespaces(environment, initial))
 			if err != nil {
@@ -3152,10 +3363,11 @@ func xsltResidualXMLTokens(t *testing.T, raw []byte, dropWhitespace, expanded bo
 	var tokens []string
 	for {
 		token, err := read()
-		if errors.Is(err, io.EOF) {
-			break
-		}
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
 			t.Fatal("independent XML tokenization", err)
 		}
 		switch value := token.(type) {
@@ -3196,7 +3408,8 @@ func xsltResidualXMLTokens(t *testing.T, raw []byte, dropWhitespace, expanded bo
 func runXSLTResidualWhitespace(t *testing.T, directory string) {
 	t.Helper()
 	for _, test := range []struct {
-		name, file  string
+		name        string
+		file        string
 		inputLayout bool
 	}{
 		{"as-1303", "tests/attr/as/_as-test-set.xml", false},
@@ -3448,7 +3661,10 @@ func runXSLTResidualOptionalLibraries(t *testing.T, directory string) {
 	}
 }
 
-type xsltResidualModuleEdit struct{ before, after string }
+type xsltResidualModuleEdit struct {
+	before string
+	after  string
+}
 
 type xsltResidualModuleResolver struct {
 	base  *suiteResourceResolver
@@ -3533,7 +3749,13 @@ func runXSLTResidualPackageCorrections(t *testing.T, directory string) {
 
 func runXSLTResidualTypeProfiles(t *testing.T, directory string) {
 	t.Helper()
-	for _, test := range []struct{ name, version, before, after, assertion string }{
+	for _, test := range []struct {
+		name      string
+		version   string
+		before    string
+		after     string
+		assertion string
+	}{
 		{"type-available-0148", suiteVersion20, `xmlns:xs="http://www.w3.org/2001/XMLSchema"`, `xmlns:xs="urn:unavailable-schema"`, `count(/out/*)=7 and (every $v in /out/* satisfies $v='true')`},
 		{"type-available-0151", suiteVersion30, `'Q{http://www.w3.org/2001/XMLSchema}'`, `'Q{urn:unavailable-schema}'`, `/out/a='true'`},
 	} {

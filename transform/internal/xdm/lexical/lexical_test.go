@@ -1,6 +1,8 @@
-package value_test
+package lexical_test
 
 import (
+	"strconv"
+	"strings"
 	"testing"
 
 	lexicalpkg "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
@@ -28,8 +30,9 @@ const (
 
 func TestLexicalScanners(t *testing.T) {
 	for _, c := range []struct {
-		kind           string
-		valid, invalid []string
+		kind    string
+		valid   []string
+		invalid []string
 	}{
 		{nameDecimal, []string{"0", "-.1", "+2.", "000.010"}, []string{"", ".", "1e2", "++1", "٢"}},
 		{nameInteger, []string{"+0", "-99999999999999999999999"}, []string{"1.0", "--1", "1e1"}},
@@ -68,7 +71,10 @@ func TestLexicalScanners(t *testing.T) {
 		})
 	}
 
-	for _, c := range []struct{ kind, value string }{{"double", "+INF"}, {nameDate, "0000-01-01"}, {nameGYear, "0000"}} {
+	for _, c := range []struct {
+		kind  string
+		value string
+	}{{"double", "+INF"}, {nameDate, "0000-01-01"}, {nameGYear, "0000"}} {
 		if lexicalpkg.ValidateBuiltin(c.value, c.kind, lexicalpkg.Version10) == nil {
 			t.Error("XSD 1.0 boundary lost", c)
 		}
@@ -91,5 +97,56 @@ func TestAnyURIEditionSyntax(t *testing.T) {
 				t.Errorf("XSD 1.1 %q: %v", s, err)
 			}
 		}
+	}
+}
+
+func TestDecimalFacetsAndStrictComparison(t *testing.T) {
+	for _, tc := range []struct {
+		value           string
+		total, fraction int
+	}{{"+00012.34000", 4, 2}, {"-0012300", 5, 0}, {"0.0000", 1, 0}, {"000123.000", 3, 0}} {
+		if total, fraction := lexicalpkg.CountTotalDigits(tc.value), lexicalpkg.CountFractionDigits(tc.value); total != tc.total || fraction != tc.fraction {
+			t.Fatalf("facets for %q: %d/%d; want %d/%d", tc.value, total, fraction, tc.total, tc.fraction)
+		}
+	}
+	for _, tc := range []struct {
+		left, right, kind string
+		want              int
+		valid             bool
+	}{
+		{"+00012.3400", "12.34", "decimal", 0, true},
+		{"100000000000000000000000000000000001", "100000000000000000000000000000000002", "integer", -1, true},
+		{"2026-10-25T14:00:00+02:00", "2026-10-25T12:00:00Z", "dateTime", 0, true},
+		{"1.0", "1", "integer", 0, false},
+		{"2147483648", "1", "int", 0, false},
+		{"NaN", "1", "double", 0, false},
+		{"5.0", "5", "string", 0, false},
+	} {
+		got, valid := lexicalpkg.Compare(tc.left, tc.right, tc.kind)
+		if valid != tc.valid || valid && got != tc.want {
+			t.Fatalf("compare %q/%q as %s: %d/%v; want %d/%v", tc.left, tc.right, tc.kind, got, valid, tc.want, tc.valid)
+		}
+	}
+}
+
+func BenchmarkDecimalLexicalWork(b *testing.B) {
+	for _, size := range []int{16, 4096} {
+		input := strings.Repeat("1234567890", max(1, size/10)) + ".23400"
+		b.Run(strconv.Itoa(size)+"/Facets", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = lexicalpkg.CountTotalDigits(input)
+				_ = lexicalpkg.CountFractionDigits(input)
+			}
+		})
+		right := strings.TrimSuffix(input, ".23400") + ".235"
+		b.Run(strconv.Itoa(size)+"/Compare", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if comparison, valid := lexicalpkg.Compare(input, right, "decimal"); !valid || comparison != -1 {
+					b.Fatal(comparison, valid)
+				}
+			}
+		})
 	}
 }

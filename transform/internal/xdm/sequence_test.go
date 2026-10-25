@@ -2,6 +2,7 @@ package xdm_test
 
 import (
 	"math"
+	"strconv"
 	"testing"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -92,5 +93,39 @@ func assertRangeInteger(t *testing.T, item xdm.Item, want int64) {
 
 	if got, ok := atomic.Int64Val(); !ok || got != want {
 		t.Fatalf("range item: %v, want %d", item, want)
+	}
+}
+
+func BenchmarkRangeSequenceConsumption(b *testing.B) {
+	for _, size := range []int{16, 8192} {
+		seq := xdm.NewRangeSequence(1, int64(size))
+		b.Run(strconv.Itoa(size)+"/Iterate", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var total int64
+				for item := range xdm.SequenceItems(seq) {
+					value, ok := item.(xdm.AtomicValue)
+					if !ok {
+						b.Fatal(item)
+					}
+					n, ok := value.Int64Val()
+					if !ok {
+						b.Fatal(value)
+					}
+					total += n
+				}
+				if total != int64(size)*(int64(size)+1)/2 {
+					b.Fatal(total)
+				}
+			}
+		})
+		b.Run(strconv.Itoa(size)+"/Materialize", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if items := xdm.Materialize(seq); len(items) != size {
+					b.Fatal(len(items))
+				}
+			}
+		})
 	}
 }

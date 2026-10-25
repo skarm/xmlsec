@@ -332,7 +332,11 @@ func TestXSLTProjectDOMSequenceSplices(t *testing.T) {
 	}
 }
 
-type conditionalContentCase struct{ name, body, want string }
+type conditionalContentCase struct {
+	name string
+	body string
+	want string
+}
 
 func conditionalContentCases() []conditionalContentCase {
 	check := func(name, body, expression string) conditionalContentCase {
@@ -599,7 +603,11 @@ func TestXMLBaseURIReferences(t *testing.T) {
 	}
 }
 
-type languageDTDCase struct{ name, expression, want string }
+type languageDTDCase struct {
+	name       string
+	expression string
+	want       string
+}
 
 func languageDTDCases() []languageDTDCase {
 	return []languageDTDCase{

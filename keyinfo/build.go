@@ -9,12 +9,11 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	// #nosec G406 -- Explicit bounded legacy compatibility only.
 	"crypto/dsa" //nolint:staticcheck // XMLDSig 1.1 requires legacy DSA verification; generation is disabled.
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/transformxml"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -31,42 +30,58 @@ const (
 	DERKeyValue KeyFormat = "der"
 )
 
-// PublicKeyValue supplies a public key and its requested KeyInfo representation.
+// PublicKeyValue selects a public key and the XML representation to emit.
 type PublicKeyValue struct {
+	// Key is the public key to encode in the selected format.
 	Key crypto.PublicKey
 	// Format defaults to XMLKeyValue. Ed25519 requires DERKeyValue explicitly.
 	Format KeyFormat
 }
 
-// RetrievalMethod describes a key resource and its ordered transform chain.
-// Type describes the result after all transforms, not the original resource.
-// Build validates syntax only; Parse requires an explicit retrieval policy for
-// chains beyond the default raw-certificate/Base64 form.
+// RetrievalMethod describes a key resource and transforms in execution order.
+// Type identifies the final representation. Build checks syntax without retrieving
+// the resource. Parse requires explicit processing policy for chains beyond the
+// default raw-certificate retrieval with an optional Base64 transform.
 type RetrievalMethod struct {
-	URI, Type  string
+	// URI identifies the key resource. Building a reference does not authorize retrieval.
+	URI string
+	// Type optionally identifies the representation produced by the transform chain.
+	Type string
+	// Transforms lists transforms in execution order. Empty leaves the resource unchanged.
 	Transforms []reference.Transform
 }
 
-// X509Data describes one group of untrusted certificates, CRLs and certificate
-// selectors. Build preserves the supplied grouping and original DER bytes. The
-// caller must group selectors for the same certificate together and supply the
-// intended validation certificate/chain; Build does not match selectors, check
-// chain relationships, authenticate CRLs or establish trust. Distinguished names
-// are supplied in their XMLDSig/RFC 4514 spelling, not inferred from strings.
+// X509Data groups untrusted certificates, CRLs and certificate selectors.
+// Build preserves group boundaries and original DER. The caller groups selectors
+// for the same certificate and supplies the intended certificate or chain.
+// Distinguished names use XMLDSig/RFC 4514 spelling. Build does not match selectors,
+// validate chain relationships, authenticate CRLs or establish trust.
 type X509Data struct {
-	Certificates, CRLs    [][]byte
-	IssuerSerials         []IssuerSerial
-	SubjectNames          []string
+	// Certificates contains untrusted DER certificates in this group.
+	Certificates [][]byte
+	// CRLs contains untrusted DER certificate revocation lists in this group.
+	CRLs [][]byte
+	// IssuerSerials selects certificates by issuer distinguished name and decimal serial
+	// number.
+	IssuerSerials []IssuerSerial
+	// SubjectNames contains subject distinguished names in XMLDSig/RFC 4514 spelling.
+	SubjectNames []string
+	// SubjectKeyIdentifiers contains the raw subject key identifier bytes, without DER
+	// wrappers.
 	SubjectKeyIdentifiers [][]byte
-	CertificateDigests    []CertificateDigest
+	// CertificateDigests contains algorithm-qualified certificate digest selectors.
+	CertificateDigests []CertificateDigest
 }
 
-// Template supplies key descriptions without establishing identity or trust.
-// Supplied blobs and keys must not be mutated concurrently with Build.
+// Template supplies the key descriptions to encode. Keep its keys and byte slices
+// unchanged until Build returns. Building KeyInfo establishes no identity or trust.
 type Template struct {
-	ID    string
+	// ID supplies an optional Id attribute for the KeyInfo element.
+	ID string
+	// Names supplies untrusted KeyName labels. Names do not select trusted keys.
 	Names []string
-	Keys  []PublicKeyValue
+	// Keys supplies public keys and their XML representations.
+	Keys []PublicKeyValue
 	// Certificates supplies one X509Data group of DER certificates.
 	// Ordering establishes neither a chain nor trust.
 	Certificates [][]byte
@@ -307,6 +322,7 @@ func retrievalTemplateBudget(ctx context.Context, method RetrievalMethod, total 
 
 		return nil
 	}
+
 	if err := charge(method.URI); err != nil {
 		return err
 	}

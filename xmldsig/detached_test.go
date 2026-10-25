@@ -51,8 +51,9 @@ func TestDetachedAlgorithmsAndTransforms(t *testing.T) {
 	}
 
 	keys := []struct {
-		name, method string
-		key          crypto.Signer
+		name   string
+		method string
+		key    crypto.Signer
 	}{
 		{"RSA256", xmldsig.RSASHA256, keyRSA},
 		{"RSA384", xmldsig.RSASHA384, keyRSA},
@@ -234,7 +235,10 @@ func wrongSecondDigest(t testing.TB, doc *document.Document, key *ecdsa.PrivateK
 		t.Fatal(err)
 	}
 
-	var rs struct{ R, S *big.Int }
+	var rs struct {
+		R *big.Int
+		S *big.Int
+	}
 	if rest, err := asn1.Unmarshal(der, &rs); err != nil || len(rest) != 0 {
 		t.Fatal(err)
 	}
@@ -258,11 +262,12 @@ func TestDetachedResourceLimitsAndCleanup(t *testing.T) {
 	resolveErr := errors.New("resolver failed")
 
 	cases := []struct {
-		name                 string
-		reader               io.Reader
-		closeErr, resolveErr error
-		limits               xmldsig.ResourceLimits
-		want                 error
+		name       string
+		reader     io.Reader
+		closeErr   error
+		resolveErr error
+		limits     xmldsig.ResourceLimits
+		want       error
 	}{
 		{name: "exact limit", reader: strings.NewReader("abc"), limits: xmldsig.ResourceLimits{MaxResourceBytes: 3}},
 		{name: "one past limit", reader: strings.NewReader("abcd"), limits: xmldsig.ResourceLimits{MaxResourceBytes: 3}, want: xmldsig.ErrPolicy},
@@ -831,8 +836,9 @@ func signDetached(t testing.TB, key crypto.Signer, refs []xmldsig.DetachedRefere
 
 type observedReader struct {
 	io.Reader
-	closes, reads int
-	closeErr      error
+	closes   int
+	reads    int
+	closeErr error
 }
 
 func (r *observedReader) Read(p []byte) (int, error) { r.reads++; return r.Reader.Read(p) }

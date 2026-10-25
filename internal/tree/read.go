@@ -102,23 +102,24 @@ func readerParser(input *xmlInput, limits Limits) documentParser {
 // xmlInput validates and normalizes one bounded lexical unit at a time.
 // The document parser copies borrowed token values before the unit buffer is reused.
 type xmlInput struct {
-	charmap          *charmap.Charmap
-	order            binary.ByteOrder
-	source           *streamio.Reader
-	reader           *bufio.Reader
-	encoding         sourceEncoding
-	unit             []byte
-	decoded, maximum int64
-	tokenLimit       int
-	lineBreaks       uint64
-	tokenLine        uint64
-	textTailLen      int
-	pending          rune
-	textTail         [2]byte
-	hasPending       bool
-	outside          bool
-	ascii            bool
-	dtdProbe         bool
+	charmap     *charmap.Charmap
+	order       binary.ByteOrder
+	source      *streamio.Reader
+	reader      *bufio.Reader
+	encoding    sourceEncoding
+	unit        []byte
+	decoded     int64
+	maximum     int64
+	tokenLimit  int
+	lineBreaks  uint64
+	tokenLine   uint64
+	textTailLen int
+	pending     rune
+	textTail    [2]byte
+	hasPending  bool
+	outside     bool
+	ascii       bool
+	dtdProbe    bool
 }
 
 func newXMLInput(ctx context.Context, src io.Reader, maximum int64, tokenLimit int) (*xmlInput, error) {
@@ -325,11 +326,11 @@ func (r *xmlInput) nextUnit() ([]byte, error) {
 		}
 
 		value, e := r.unitRune(markup)
-		if errors.Is(e, io.EOF) {
-			break
-		}
-
 		if e != nil {
+			if errors.Is(e, io.EOF) {
+				break
+			}
+
 			return nil, e
 		}
 

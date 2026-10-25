@@ -22,8 +22,10 @@ const transformSerializedQuery = `transform(map{'stylesheet-text': $stylesheet, 
 func TestXSLTResultDelivery(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, test := range []struct {
-		name, body, assertion string
-		mode                  transform.ResultMode
+		name      string
+		body      string
+		assertion string
+		mode      transform.ResultMode
 	}{
 		{"raw order", mixedResultTemplate, `count($result) eq 5 and $result[1] instance of xs:integer and $result[2] eq 2 and $result[3] instance of text() and string($result[3]) eq '' and $result[4] instance of element(r) and $result[5] instance of xs:boolean`, transform.ResultRaw},
 		{"normalized order", mixedResultTemplate, `$result instance of document-node() and count($result/node()) eq 3 and string($result) eq '1 2true' and $result/node()[2] instance of element(r)`, transform.ResultDefault},
@@ -173,7 +175,10 @@ func TestXPathTransformAssertionOption(t *testing.T) {
 	for _, configured := range []bool{false, true} {
 		e := engine(t, transform.Config{EnableXSLTAssertions: configured})
 
-		for _, test := range []struct{ option, code string }{
+		for _, test := range []struct {
+			option string
+			code   string
+		}{
 			{"", ""},
 			{falseExpression, ""},
 			{trueExpression, errCodeXTMM9001},
@@ -438,7 +443,12 @@ func TestXSLTModuleCyclesAndPrecedence(t *testing.T) {
 	}
 }
 
-type globalPrecedenceCase struct{ name, imported, local, want string }
+type globalPrecedenceCase struct {
+	name     string
+	imported string
+	local    string
+	want     string
+}
 
 func globalPrecedenceCases() []globalPrecedenceCase {
 	return []globalPrecedenceCase{
@@ -572,16 +582,32 @@ func TestXSLTSimpleContentErrors(t *testing.T) {
 	}
 }
 
-func namespaceSimpleContentCases() []struct{ name, source, want string } {
-	cases := make([]struct{ name, source, want string }, 0, 4)
-	for _, test := range []struct{ name, variable, want string }{
+func namespaceSimpleContentCases() []struct {
+	name   string
+	source string
+	want   string
+} {
+	cases := make([]struct {
+		name   string
+		source string
+		want   string
+	}, 0, 4)
+	for _, test := range []struct {
+		name     string
+		variable string
+		want     string
+	}{
 		{"empty text", `<xsl:variable name="v" as="text()"><xsl:text/></xsl:variable>`, "||"},
 		{"space text", `<xsl:variable name="v" as="text()"><xsl:text> </xsl:text></xsl:variable>`, " | | "},
 		{"empty atomic", `<xsl:variable name="v" as="xs:string" select="''"/>`, " |  | "},
 		{"document text", `<xsl:variable name="v"><xsl:sequence select="''"/><xsl:sequence select="''"/></xsl:variable>`, "  |   |  "},
 	} {
 		body := test.variable + `<xsl:variable name="n" as="node()"><xsl:namespace name="p"><xsl:sequence select="$v"/><xsl:value-of select="'|'"/><xsl:sequence select="$v"/><xsl:value-of select="'|'"/><xsl:sequence select="$v"/></xsl:namespace></xsl:variable><xsl:value-of select="$n"/>`
-		cases = append(cases, struct{ name, source, want string }{test.name, sheet(version30, `<xsl:template name="start">`+body+`</xsl:template>`), test.want})
+		cases = append(cases, struct {
+			name   string
+			source string
+			want   string
+		}{test.name, sheet(version30, `<xsl:template name="start">`+body+`</xsl:template>`), test.want})
 	}
 	return cases
 }
@@ -674,7 +700,11 @@ func TestDecimalFormatEmptyStringProperties(t *testing.T) {
 }
 
 type staticParameterCase struct {
-	name, declaration, argument, check, want string
+	name        string
+	declaration string
+	argument    string
+	check       string
+	want        string
 }
 
 func staticParameterCases() []staticParameterCase {
@@ -796,7 +826,13 @@ func TestXSLTStaticParameterContracts(t *testing.T) {
 	}
 }
 
-type staticVariableCase struct{ name, declaration, content, check, want string }
+type staticVariableCase struct {
+	name        string
+	declaration string
+	content     string
+	check       string
+	want        string
+}
 
 func staticVariableCases() []staticVariableCase {
 	return []staticVariableCase{
@@ -848,7 +884,12 @@ func TestXSLTDependentStaticParameters(t *testing.T) {
 		},
 	}}})
 
-	for _, test := range []struct{ name, ref, uri, fallback string }{
+	for _, test := range []struct {
+		name     string
+		ref      string
+		uri      string
+		fallback string
+	}{
 		{"a", "$a", "", "'old'"},
 		{"p:a", "$q:a", "urn:static-parameters", "'old'"},
 		{"a", "$a", "", "f:default()"},
@@ -880,7 +921,10 @@ func TestXSLTDependentStaticParameters(t *testing.T) {
 		t.Fatal("provided static parameter evaluated its unused default", calls)
 	}
 
-	for _, test := range []struct{ source, want string }{
+	for _, test := range []struct {
+		source string
+		want   string
+	}{
 		{sheet(version30, `<xsl:param name="a" static="yes" select="'old'"/><xsl:param name="b" static="yes" select="upper-case($a)"/><xsl:template name="start"><xsl:value-of select="concat($a,'|',$b)"/></xsl:template>`), "old|OLD"},
 	} {
 		compiled := stylesheet(t, e, test.source)
@@ -891,7 +935,10 @@ func TestXSLTDependentStaticParameters(t *testing.T) {
 		}
 	}
 
-	for _, test := range []struct{ body, code string }{
+	for _, test := range []struct {
+		body string
+		code string
+	}{
 		{`<xsl:param name="a" static="yes" select="1 +"/>`, errCodeXPST0003},
 		{`<xsl:template name="start" use-when="$a"/>`, "XPST0008"},
 	} {
@@ -938,7 +985,11 @@ func TestXPathTransformFunction(t *testing.T) {
 		}
 	}
 
-	for _, test := range []struct{ source, expression, want string }{
+	for _, test := range []struct {
+		source     string
+		expression string
+		want       string
+	}{
 		{
 			sheet(version30, `<xsl:param name="who"/><xsl:template name="start"><xsl:value-of select="concat('hello ', $who)"/></xsl:template>`),
 			`transform(map{'stylesheet-node':parse-xml($stylesheet), 'initial-template':QName('', 'start'), 'stylesheet-params':map{QName('', 'who'):'Bob'}, 'delivery-format':'serialized'})?output`, "hello Bob",
@@ -995,7 +1046,10 @@ func TestXPathTransformFunction(t *testing.T) {
 
 func TestXPathTransformErrorCodes(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, test := range []struct{ expression, code string }{
+	for _, test := range []struct {
+		expression string
+		code       string
+	}{
 		{`transform(1)`, errCodeXPTY0004},
 		{`transform(())`, errCodeXPTY0004},
 		{`transform(map{})`, "FOXT0002"},
@@ -1031,7 +1085,11 @@ func TestXPathTransformErrorCodes(t *testing.T) {
 
 func TestXSLTValueTemplateErrorCodes(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, test := range []struct{ name, body, code string }{
+	for _, test := range []struct {
+		name string
+		body string
+		code string
+	}{
 		{"attribute left brace", `<r a="{1"/>`, "XTSE0350"},
 		{"attribute right brace", `<r a="1}"/>`, "XTSE0370"},
 		{"text left brace", `<r xsl:expand-text="yes">{1</r>`, "XTSE0350"},
@@ -1341,8 +1399,11 @@ func TestXSLTTransformProcessorVersion(t *testing.T) {
 func TestXSLTProcessorVersion(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, tc := range []struct {
-		name, declaration, body, want string
-		processor                     transform.XSLTVersion
+		name        string
+		declaration string
+		body        string
+		want        string
+		processor   transform.XSLTVersion
 	}{
 		{"modern syntax in 2.0 declaration", version20, `<xsl:iterate select="1 to 2"><xsl:value-of select="map{'value':.}?value"/></xsl:iterate>`, "12", transform.XSLT30},
 		{"modern grammar with 1.0 compatibility", version10, `<xsl:value-of select="(10, 20)"/><xsl:value-of version="3.0" select="(30, 40)"/>`, compatSequenceText, transform.XSLT30},
@@ -1400,7 +1461,13 @@ func TestXSLTProcessorVersion(t *testing.T) {
 	}
 }
 
-type hostFunctionCase struct{ name, global, body, want20, want30 string }
+type hostFunctionCase struct {
+	name   string
+	global string
+	body   string
+	want20 string
+	want30 string
+}
 
 func hostFunctionCases() []hostFunctionCase {
 	nodes := `<xsl:variable name="d"><r><n/><n/></r></xsl:variable>`
@@ -1499,9 +1566,10 @@ func numericPrecisionCases() []hostFunctionCase {
 
 func TestXPathDateFormattingWidthBudgets(t *testing.T) {
 	for _, test := range []struct {
-		name, picture string
-		limit         int
-		want          string
+		name    string
+		picture string
+		limit   int
+		want    string
 	}{
 		{"ordinary", "[Y,8]", 4096, "8"},
 		{"large valid width", "[Y,1001]", 16384, "1001"},
@@ -1542,7 +1610,11 @@ func TestXPathAggregateDateTimeStamp(t *testing.T) {
 	for _, edition := range []transform.XMLSchemaVersion{transform.XMLSchema10, transform.XMLSchema11} {
 		e := engine(t, transform.Config{XMLSchemaVersion: edition})
 		for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
-			for _, test := range []struct{ function, arguments, want string }{
+			for _, test := range []struct {
+				function  string
+				arguments string
+				want      string
+			}{
 				{"min", `xs:dateTimeStamp('2000-01-01T00:00:00Z')`, "2000-01-01T00:00:00Z"},
 				{"max", `(xs:dateTimeStamp('2000-01-01T00:00:00Z'),xs:dateTime('2001-01-01T00:00:00Z'))`, "2001-01-01T00:00:00Z"},
 				{"min", `(xs:dateTime('2001-01-01T00:00:00Z'),xs:dateTimeStamp('2000-01-01T00:00:00Z'))`, "2000-01-01T00:00:00Z"},
@@ -1589,7 +1661,11 @@ func TestXPathAggregateDateTimeStamp(t *testing.T) {
 
 func TestXPathDerivedStringCasts(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, test := range []struct{ target, source, want string }{
+	for _, test := range []struct {
+		target string
+		source string
+		want   string
+	}{
 		{"date", `xs:token('2000-01-01')`, "2000-01-01"},
 		{"dateTime", `xs:normalizedString('2000-01-01T00:00:00Z')`, "2000-01-01T00:00:00Z"},
 		{"dateTimeStamp", `xs:token('2000-01-01T00:00:00Z')`, "2000-01-01T00:00:00Z"},
@@ -1655,7 +1731,10 @@ func TestXPathDerivedStringCasts(t *testing.T) {
 
 func TestXPathDateTimeArithmeticBounds(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, test := range []struct{ expression, want string }{
+	for _, test := range []struct {
+		expression string
+		want       string
+	}{
 		{`xs:time('12:00:00') + xs:dayTimeDuration('P100000000000000000000DT1H')`, "13:00:00"},
 		{`xs:time('12:00:00') - xs:dayTimeDuration('P100000000000000000000DT13H')`, "23:00:00"},
 		{`xs:date('2000-01-01') + xs:yearMonthDuration('P9223372036854775807M')`, "FODT0001"},
@@ -1696,7 +1775,13 @@ func TestXPathDateTimeArithmeticBounds(t *testing.T) {
 
 func TestXPathNumericPrecisionContracts(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, test := range []struct{ name, function, namespace, arguments, want string }{
+	for _, test := range []struct {
+		name      string
+		function  string
+		namespace string
+		arguments string
+		want      string
+	}{
 		{"power integer parity", "pow", "http://www.w3.org/2005/xpath-functions/math", "-1,9007199254740993", "-1"},
 		{"power negative integer parity", "pow", "http://www.w3.org/2005/xpath-functions/math", "-1,-9007199254740993", "-1"},
 		{"power even integer parity", "pow", "http://www.w3.org/2005/xpath-functions/math", "-1,9007199254740994", "1"},
@@ -2081,7 +2166,10 @@ func TestXSLTStaticFunctionResolution(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, processor := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
 		for _, version := range []string{version10, "17.0"} {
-			for _, tc := range []struct{ expression, code string }{{"1 +", "XPST0003"}, {"missing()", "XPST0017"}, {"count()", "XPST0017"}, {"p:value", "XPST0081"}} {
+			for _, tc := range []struct {
+				expression string
+				code       string
+			}{{"1 +", "XPST0003"}, {"missing()", "XPST0017"}, {"count()", "XPST0017"}, {"p:value", "XPST0081"}} {
 				for _, body := range []string{
 					`<xsl:template name="start"><xsl:value-of select="` + tc.expression + `"/></xsl:template>`,
 					`<xsl:template name="start">ok</xsl:template><xsl:template name="unused"><xsl:value-of select="` + tc.expression + `"/></xsl:template>`,
@@ -2097,7 +2185,11 @@ func TestXSLTStaticFunctionResolution(t *testing.T) {
 		}
 	}
 
-	for _, tc := range []struct{ version, body, code string }{
+	for _, tc := range []struct {
+		version string
+		body    string
+		code    string
+	}{
 		{version30, `<xsl:template name="start"><xsl:if test="false()"><xsl:sequence select="missing()"/></xsl:if></xsl:template>`, errCodeXPST0017},
 		{version20, `<xsl:template name="start"><xsl:value-of select="current-output-uri()"/></xsl:template>`, errCodeXPST0017},
 		{version30, `<xsl:function name="f:value" xmlns:f="urn:function"><xsl:param name="a"/><xsl:sequence select="$a"/></xsl:function><xsl:template name="start" xmlns:f="urn:function"><xsl:sequence select="f:value()"/></xsl:template>`, errCodeXPST0017},
@@ -2133,7 +2225,10 @@ func TestXSLTStaticFunctionResolution(t *testing.T) {
 
 func TestXSLTStaticSyntaxErrorCategories(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, tc := range []struct{ source, code string }{
+	for _, tc := range []struct {
+		source string
+		code   string
+	}{
 		{`<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform"/>`, errCodeXTSE0010},
 		{`<out/>`, "XTSE0150"},
 		{sheet(version30, `<xsl:template name="start"><xsl:unknown/></xsl:template>`), errCodeXTSE0010},
@@ -2406,23 +2501,48 @@ func TestMergeFocusContracts(t *testing.T) {
 	}
 }
 
-func mergeSnapshotCases() []struct{ name, source, module, want string } {
+func mergeSnapshotCases() []struct {
+	name   string
+	source string
+	module string
+	want   string
+} {
 	module := `<r xmlns:p="urn:p"><header/><a><n k="1">A</n><n k="2">B</n></a><tail/></r>`
 	global := `<xsl:accumulator name="a" as="xs:integer" initial-value="0"><xsl:accumulator-rule match="n" select="$value+1"/></xsl:accumulator><xsl:variable name="original" select="doc('module.xsl')"/>`
 	action := `<xsl:value-of select="string-join((not(. is $original/r/a/n[@k=current()/@k]),count(root(.)/r/header),count(../n),accumulator-before('a'),accumulator-after('a'),namespace-uri-for-prefix('p',.)),':')"/><xsl:text>;</xsl:text>`
-	tests := make([]struct{ name, source, module, want string }, 0, 4)
+	tests := make([]struct {
+		name   string
+		source string
+		module string
+		want   string
+	}, 0, 4)
 	for _, stream := range []bool{false, true} {
 		want := "false:1:2:1:1:urn:p;false:1:2:2:2:urn:p;"
 		if stream {
 			want = "true:0:1:1:1:urn:p;true:0:1:2:2:urn:p;"
 		}
 		body := `<xsl:merge><xsl:merge-source for-each-source="'module.xsl'" select="r/a/n" streamable="` + strconv.FormatBool(stream) + `" use-accumulators="a"><xsl:merge-key select="@k"/></xsl:merge-source><xsl:merge-action>` + action + `</xsl:merge-action></xsl:merge>`
-		tests = append(tests, struct{ name, source, module, want string }{"node snapshots " + strconv.FormatBool(stream), sheet(version30, global+`<xsl:template name="start">`+body+`</xsl:template>`), module, want})
+		tests = append(tests, struct {
+			name   string
+			source string
+			module string
+			want   string
+		}{"node snapshots " + strconv.FormatBool(stream), sheet(version30, global+`<xsl:template name="start">`+body+`</xsl:template>`), module, want})
 	}
 	implicit := tests[1]
-	tests = append(tests, struct{ name, source, module, want string }{"node explicit snapshots", strings.Replace(strings.Replace(implicit.source, `select="r/a/n"`, `select="snapshot(r/a/n)"`, 1), `streamable="true"`, `streamable="false"`, 1), module, implicit.want})
+	tests = append(tests, struct {
+		name   string
+		source string
+		module string
+		want   string
+	}{"node explicit snapshots", strings.Replace(strings.Replace(implicit.source, `select="r/a/n"`, `select="snapshot(r/a/n)"`, 1), `streamable="true"`, `streamable="false"`, 1), module, implicit.want})
 	body := `<xsl:merge><xsl:merge-source for-each-source="'module.xsl'" select="(10,20)" streamable="yes"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select=". instance of xs:integer, current-merge-key(), current-merge-group()"/><xsl:text>;</xsl:text></xsl:merge-action></xsl:merge>`
-	return append(tests, struct{ name, source, module, want string }{"atomic snapshots", sheet(version30, `<xsl:template name="start">`+body+`</xsl:template>`), module, "true 10 10;true 20 20;"})
+	return append(tests, struct {
+		name   string
+		source string
+		module string
+		want   string
+	}{"atomic snapshots", sheet(version30, `<xsl:template name="start">`+body+`</xsl:template>`), module, "true 10 10;true 20 20;"})
 }
 
 func TestMergeSnapshotSemantics(t *testing.T) {
@@ -2499,7 +2619,13 @@ func TestStreamingNestedMergeRestoresFunctions(t *testing.T) {
 func TestStreamingResultDocumentTransactions(t *testing.T) {
 	e := engine(t, transform.Config{})
 
-	cases := []struct{ name, body, primary, secondaryURI, secondaryText string }{
+	cases := []struct {
+		name          string
+		body          string
+		primary       string
+		secondaryURI  string
+		secondaryText string
+	}{
 		{"secondary preflight", `<xsl:try><xsl:result-document href="outer.txt" method="text" standalone="{1 idiv 0}"><xsl:result-document href="nested.txt" method="text">bad</xsl:result-document></xsl:result-document><xsl:catch><xsl:result-document href="outer.txt" method="text">ok</xsl:result-document></xsl:catch></xsl:try>`, "", "outer.txt", "ok"},
 		{"primary rollback", `<xsl:try><xsl:result-document><xsl:text>partial</xsl:text><xsl:sequence select="error()"/></xsl:result-document><xsl:catch><xsl:result-document>ok</xsl:result-document></xsl:catch></xsl:try>`, "ok", "", ""},
 		{"JSON validation rollback", `<xsl:try><xsl:result-document href="data.json" method="json" build-tree="no"><xsl:sequence select="map{1:'a','1':'b'}"/></xsl:result-document><xsl:catch><xsl:result-document href="data.json" method="text">recovered</xsl:result-document></xsl:catch></xsl:try>`, "", "data.json", "recovered"},
@@ -2533,11 +2659,21 @@ func TestStreamingResultDocumentTransactions(t *testing.T) {
 	}
 }
 
-func resultDocumentURICases() []struct{ name, body, check, want string } {
+func resultDocumentURICases() []struct {
+	name  string
+	body  string
+	check string
+	want  string
+} {
 	const principal = `https://output.invalid/base/main`
 	const collision = "XTDE1490"
 
-	return []struct{ name, body, check, want string }{
+	return []struct {
+		name  string
+		body  string
+		check string
+		want  string
+	}{
 		{"escaped Unicode output URI", `<xsl:result-document href="путь a.xml">ok</xsl:result-document>`, `string($r('https://output.invalid/base/%D0%BF%D1%83%D1%82%D1%8C%20a.xml')) eq 'ok'`, nameTrue},
 		{"escaped output URI idempotent", `<xsl:result-document href="a%20b.xml">ok</xsl:result-document>`, `string($r('https://output.invalid/base/a%20b.xml')) eq 'ok'`, nameTrue},
 		{"escaped output aliases collide", `<xsl:result-document href="a b.xml">one</xsl:result-document><xsl:result-document href="a%20b.xml">two</xsl:result-document>`, "exists(map:keys($r))", collision},
@@ -2669,7 +2805,12 @@ func TestXSLTProfileResults(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cases := []struct{ name, version, body, want string }{
+	cases := []struct {
+		name    string
+		version string
+		body    string
+		want    string
+	}{
 		{"grouping", version20, `<xsl:template match="/"><xsl:for-each-group select="r/n" group-by="@category"><xsl:sort select="current-grouping-key()"/><xsl:value-of select="current-grouping-key()"/><xsl:text>:</xsl:text><xsl:value-of select="sum(current-group())"/><xsl:text>;</xsl:text></xsl:for-each-group></xsl:template>`, "a:2;b:7;"},
 		{"functions", version20, `<xsl:function name="local:square" xmlns:local="urn:local" as="xs:integer"><xsl:param name="n" as="xs:integer"/><xsl:sequence select="$n*$n"/></xsl:function><xsl:template match="/" xmlns:local="urn:local"><xsl:value-of select="sum(for $n in 1 to 4 return local:square($n))"/></xsl:template>`, "30"},
 		{"iteration", version30, `<xsl:template match="/"><xsl:iterate select="1 to 5"><xsl:param name="sum" select="0"/><xsl:on-completion><xsl:value-of select="$sum"/></xsl:on-completion><xsl:next-iteration><xsl:with-param name="sum" select="$sum+."/></xsl:next-iteration></xsl:iterate></xsl:template>`, "15"},
@@ -2734,7 +2875,11 @@ func TestXSLTDatatypeEditionPaths(t *testing.T) {
 		e := engine(t, transform.Config{XMLSchemaVersion: edition})
 
 		for _, version := range []string{version20, version30} {
-			for _, tc := range []struct{ body, modern, legacyCode string }{
+			for _, tc := range []struct {
+				body       string
+				modern     string
+				legacyCode string
+			}{
 				{`<xsl:value-of select="xs:double('+INF')"/>`, namePositiveInfinity, errCodeFORG0001},
 				{`<xsl:variable name="n"><xsl:element name="out" namespace="####"/></xsl:variable><xsl:value-of select="namespace-uri($n/*)"/>`, "####", "XTDE0835"},
 				{`<xsl:variable name="n"><out><xsl:attribute name="p:a" namespace="####"/></out></xsl:variable><xsl:value-of select="namespace-uri($n/*/@*)"/>`, "####", "XTDE0865"},
@@ -2871,7 +3016,12 @@ func TestXSLT10ForwardsAttributesAreIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, tc := range []struct{ name, attrs, body, want string }{
+	for _, tc := range []struct {
+		name  string
+		attrs string
+		body  string
+		want  string
+	}{
 		{"use-when", ``, `<xsl:text use-when="false()">kept</xsl:text>`, nameKept},
 		{"expand-text", `expand-text="yes"`, `<xsl:text>{1+1}</xsl:text>`, "{1+1}"},
 	} {
@@ -2979,7 +3129,10 @@ func TestXSLT10ForwardsUnknownOptionalValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, tc := range []struct{ body, want string }{
+	for _, tc := range []struct {
+		body string
+		want string
+	}{
 		{`<xsl:text disable-output-escaping="future">kept</xsl:text>`, nameKept},
 		{`<xsl:text disable-output-escaping="future" version="1.0">kept</xsl:text>`, nameKept},
 		{`<xsl:text version="1.0" disable-output-escaping="future">kept</xsl:text>`, nameKept},
@@ -3069,7 +3222,11 @@ func TestXSLTLiteralNamespaceSerializationStable(t *testing.T) {
 	}
 }
 
-type messageContractCase struct{ name, body, want string }
+type messageContractCase struct {
+	name string
+	body string
+	want string
+}
 
 func messageContractCases() []messageContractCase {
 	const catch = `<xsl:catch xmlns:err="http://www.w3.org/2005/xqt-errors"><xsl:value-of select="namespace-uri-from-QName($err:code)||':'||local-name-from-QName($err:code)"/></xsl:catch>`
@@ -3080,7 +3237,12 @@ func messageContractCases() []messageContractCase {
 	for _, term := range []string{"no", "false", "0", " 0 ", "{'false'}"} {
 		tests = append(tests, messageContractCase{"continue " + term, `<xsl:message terminate="` + term + `">keep</xsl:message><xsl:text>after</xsl:text>`, "after"})
 	}
-	for _, test := range []struct{ name, attributes, body, assertion string }{
+	for _, test := range []struct {
+		name       string
+		attributes string
+		body       string
+		assertion  string
+	}{
 		{"empty document", ``, ``, `$err:value instance of document-node() and empty($err:value/node())`},
 		{"combined sequence", ` select="(1,2)"`, `<xsl:sequence select="3"/><a/>tail`, `$err:value instance of document-node() and string($err:value) eq '1 2 3tail' and count($err:value/node()) eq 3 and exists($err:value/a)`},
 		{"interleaved body", ``, `<xsl:sequence select="1"/><a/><xsl:sequence select="2"/>`, `$err:value instance of document-node() and string($err:value) eq '12' and count($err:value/node()) eq 3 and exists($err:value/a)`},
@@ -3207,8 +3369,14 @@ func TestXSLTKeyCycleRecovery(t *testing.T) {
 	}
 }
 
-func currentOutputURICases() []struct{ expression, want string } {
-	return []struct{ expression, want string }{
+func currentOutputURICases() []struct {
+	expression string
+	want       string
+} {
+	return []struct {
+		expression string
+		want       string
+	}{
 		{`exists(current-output-uri())`, nameTrue},
 		{`empty($global-select) and string($global-body) eq '' and empty($parameter)`, nameTrue},
 		{`empty(current-output-uri#0())`, nameTrue},
@@ -3242,8 +3410,18 @@ func TestXSLTDynamicCurrentOutputURI(t *testing.T) {
 	}
 }
 
-func dynamicHostContextCases() []struct{ name, declarations, body, want string } {
-	return []struct{ name, declarations, body, want string }{
+func dynamicHostContextCases() []struct {
+	name         string
+	declarations string
+	body         string
+	want         string
+} {
+	return []struct {
+		name         string
+		declarations string
+		body         string
+		want         string
+	}{
 		{"key establishes group", `<xsl:key name="k" match="n"><xsl:for-each-group select="(1,1)" group-by="."><xsl:sequence select="count(current-group())"/></xsl:for-each-group></xsl:key>`, `<xsl:value-of select="(function(){count(key('k',2,parse-xml('&lt;r>&lt;n/>&lt;/r>')))})()"/>`, "1"},
 		{"function establishes group", `<xsl:function name="Q{urn:context}group"><xsl:for-each-group select="(1,1)" group-by="."><xsl:sequence select="count(current-group())"/></xsl:for-each-group></xsl:function>`, `<xsl:value-of select="Q{urn:context}group#0()"/>`, "2"},
 		{"function establishes regex", `<xsl:function name="Q{urn:context}regex"><xsl:analyze-string select="'A'" regex="(A)"><xsl:matching-substring><xsl:sequence select="regex-group(1)"/></xsl:matching-substring></xsl:analyze-string></xsl:function>`, `<xsl:value-of select="Q{urn:context}regex#0()"/>`, "A"},
@@ -3296,7 +3474,15 @@ func TestMessageHTMLContent(t *testing.T) {
 	}
 }
 
-type parameterContractCase struct{ name, global, param, call, check, code20, code30 string }
+type parameterContractCase struct {
+	name   string
+	global string
+	param  string
+	call   string
+	check  string
+	code20 string
+	code30 string
+}
 
 func parameterContractCases() []parameterContractCase {
 	return []parameterContractCase{
@@ -3349,8 +3535,18 @@ func parameterContractSheet(version string, test parameterContractCase) string {
 	return source
 }
 
-func fractionalSecondsCases() []struct{ value, picture, old, modern string } {
-	return []struct{ value, picture, old, modern string }{
+func fractionalSecondsCases() []struct {
+	value   string
+	picture string
+	old     string
+	modern  string
+} {
+	return []struct {
+		value   string
+		picture string
+		old     string
+		modern  string
+	}{
 		{"06.456", "[s].[f,2-2]", "06.46", "06.45"},
 		{"06.445", "[s].[f,2-2]", "06.44", "06.44"},
 		{"06.455", "[s].[f,2-2]", "06.46", "06.45"},
@@ -3432,7 +3628,13 @@ func TestXPathFractionalSecondsEditions(t *testing.T) {
 
 func TestXPathFormattingLanguageFallback(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, test := range []struct{ name, function, arity, arguments, want string }{
+	for _, test := range []struct {
+		name      string
+		function  string
+		arity     string
+		arguments string
+		want      string
+	}{
 		{"integer unsupported", "format-integer", "3", `1,'w','zz'`, "eins"},
 		{"integer invalid", "format-integer", "3", `1,'w','not a language'`, "eins"},
 		{"integer empty", "format-integer", "3", `1,'w',''`, "eins"},
@@ -3497,7 +3699,10 @@ func TestXPathFormattingLanguageFallback(t *testing.T) {
 func TestExtensionNamespaceContracts(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, version := range []string{version20, version30} {
-		for _, test := range []struct{ body, code string }{
+		for _, test := range []struct {
+			body string
+			code string
+		}{
 			{`<xsl:template name="start" extension-element-prefixes="missing"/>`, "XTSE1430"},
 			{`<xsl:template name="start"><r xsl:extension-element-prefixes="missing"/></xsl:template>`, "XTSE1430"},
 			{`<xsl:template name="start" extension-element-prefixes="#default"/>`, "XTSE1430"},
@@ -3542,7 +3747,10 @@ func TestExtensionNamespaceContracts(t *testing.T) {
 func TestVersionedWhitespaceAndSequenceContracts(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, version := range []string{version20, version30} {
-		for _, test := range []struct{ declarations, want20 string }{
+		for _, test := range []struct {
+			declarations string
+			want20       string
+		}{
 			{`<xsl:strip-space elements="r"/><xsl:preserve-space elements="r"/>`, "1"},
 			{`<xsl:preserve-space elements="r"/><xsl:strip-space elements="r"/>`, "0"},
 			{`<xsl:strip-space elements="*:r"/><xsl:preserve-space elements="p:*" xmlns:p="urn:r"/>`, "1"},
@@ -3720,7 +3928,13 @@ func TestInitialTemplateRequiredParameters(t *testing.T) {
 	}
 }
 
-type functionArgumentCase struct{ name, declaration, argument, check, want string }
+type functionArgumentCase struct {
+	name        string
+	declaration string
+	argument    string
+	check       string
+	want        string
+}
 
 func functionArgumentCases() []functionArgumentCase {
 	return []functionArgumentCase{
@@ -3791,7 +4005,13 @@ func TestXSLTFunctionArguments(t *testing.T) {
 	}
 }
 
-type functionReturnCase struct{ name, declaration, body, check, want string }
+type functionReturnCase struct {
+	name        string
+	declaration string
+	body        string
+	check       string
+	want        string
+}
 
 func functionReturnCases() []functionReturnCase {
 	return []functionReturnCase{
@@ -3834,13 +4054,22 @@ func TestXSLTFunctionReturns(t *testing.T) {
 	}
 }
 
-type dynamicXPathCase struct{ name, global, body, want string }
+type dynamicXPathCase struct {
+	name   string
+	global string
+	body   string
+	want   string
+}
 
 func builtinTemplateCases() []dynamicXPathCase {
 	cases := make([]dynamicXPathCase, 0, 43)
 	for _, mode := range []string{"text-only-copy", "shallow-copy", "deep-copy", "shallow-skip", "deep-skip", "fail"} {
 		declaration := `<xsl:mode name="m" on-no-match="` + mode + `"/>`
-		for _, value := range []struct{ name, expression, check string }{
+		for _, value := range []struct {
+			name       string
+			expression string
+			check      string
+		}{
 			{"atomic", `42`, `$v instance of xs:integer and $v eq 42`},
 			{"map", `map{'a':1}`, `$v instance of map(*) and $v?a eq 1`},
 			{"array", `[1,[2]]`, `$v instance of array(*) and $v?1 eq 1 and $v?2 instance of array(*)`},
@@ -3929,8 +4158,18 @@ func TestXSLTBuiltinTemplates(t *testing.T) {
 	}
 }
 
-func builtinInitialCases() []struct{ mode, expression, check, code string } {
-	return []struct{ mode, expression, check, code string }{
+func builtinInitialCases() []struct {
+	mode       string
+	expression string
+	check      string
+	code       string
+} {
+	return []struct {
+		mode       string
+		expression string
+		check      string
+		code       string
+	}{
 		{"deep-copy", `map{'a':42}`, `$result instance of map(*) and $result?a eq 42`, ""},
 		{"shallow-copy", `function(){42}`, `$result instance of function(*) and $result() eq 42`, ""},
 		{"deep-copy", `[1,[2]]`, `$result instance of array(*) and $result?2 instance of array(*)`, ""},
@@ -3946,7 +4185,13 @@ func builtinInitialSheet(mode string) string {
 	return sheet(version30, `<xsl:mode name="m" on-no-match="`+mode+`"/>`)
 }
 
-func builtinInitialExpression(test struct{ mode, expression, check, code string }) string {
+func builtinInitialExpression(test struct {
+	mode       string
+	expression string
+	check      string
+	code       string
+},
+) string {
 	source := strings.ReplaceAll(builtinInitialSheet(test.mode), "'", "''")
 	expression := `transform(map{'stylesheet-text':'` + source + `','initial-match-selection':` + test.expression + `,'initial-mode':QName('','m'),'delivery-format':'raw'})?output`
 	if test.code != "" {
@@ -4083,7 +4328,13 @@ func TestDynamicXPathContexts(t *testing.T) {
 	}
 }
 
-func dynamicEvaluationPolicyCases() []struct{ name, global, body, enabled, disabled string } {
+func dynamicEvaluationPolicyCases() []struct {
+	name     string
+	global   string
+	body     string
+	enabled  string
+	disabled string
+} {
 	inner := sheet(version30, `<xsl:template name="start"><xsl:evaluate xpath="'42'"><xsl:fallback>inner disabled</xsl:fallback></xsl:evaluate></xsl:template>`)
 	invoke := func(source, options string) string {
 		expression := `transform(map{'stylesheet-text':'` + strings.ReplaceAll(source, "'", "''") + `','initial-template':QName('', 'start'),'delivery-format':'serialized'` + options + `})?output`
@@ -4091,7 +4342,13 @@ func dynamicEvaluationPolicyCases() []struct{ name, global, body, enabled, disab
 	}
 	plain := sheet(version30, `<xsl:template name="start">selected</xsl:template>`)
 
-	return []struct{ name, global, body, enabled, disabled string }{
+	return []struct {
+		name     string
+		global   string
+		body     string
+		enabled  string
+		disabled string
+	}{
 		{"runtime availability", "", `<xsl:value-of select="element-available('xsl:evaluate')"/><xsl:text>|</xsl:text><xsl:value-of select="system-property('xsl:supports-dynamic-evaluation')"/>`, "true|yes", "false|no"},
 		{"static element availability", `<xsl:variable name="v" use-when="element-available('xsl:evaluate')" select="'enabled'"/><xsl:variable name="v" use-when="not(element-available('xsl:evaluate'))" select="'disabled'"/>`, `<xsl:value-of select="$v"/>`, "enabled", "disabled"},
 		{"static property", `<xsl:variable name="v" use-when="system-property('xsl:supports-dynamic-evaluation') eq 'yes'" select="'enabled'"/><xsl:variable name="v" use-when="system-property('xsl:supports-dynamic-evaluation') eq 'no'" select="'disabled'"/>`, `<xsl:value-of select="$v"/>`, "enabled", "disabled"},
@@ -4144,8 +4401,18 @@ func TestDynamicEvaluationPolicy(t *testing.T) {
 	}
 }
 
-func introspectionCases() []struct{ name, scope, expression, want string } {
-	base := []struct{ name, scope, expression, want string }{
+func introspectionCases() []struct {
+	name       string
+	scope      string
+	expression string
+	want       string
+} {
+	base := []struct {
+		name       string
+		scope      string
+		expression string
+		want       string
+	}{
 		{"element without default", "", `element-available('evaluate')`, "false"},
 		{"element XML default", `xmlns="http://www.w3.org/1999/XSL/Transform"`, `element-available('evaluate')`, "true"},
 		{"element XPath default", `xpath-default-namespace="http://www.w3.org/1999/XSL/Transform"`, `element-available('evaluate')`, "false"},
@@ -4194,17 +4461,40 @@ func introspectionCases() []struct{ name, scope, expression, want string } {
 		{"element named reference", `xmlns:p="http://www.w3.org/1999/XSL/Transform"`, `(element-available#1)('p:evaluate')`, "true"},
 		{"element lookup reference", `xmlns:p="http://www.w3.org/1999/XSL/Transform"`, `function-lookup(QName('http://www.w3.org/2005/xpath-functions','element-available'),1)('p:evaluate')`, "true"},
 	}
-	tests := make([]struct{ name, scope, expression, want string }, 0, len(base)+44)
+	tests := make([]struct {
+		name       string
+		scope      string
+		expression string
+		want       string
+	}, 0, len(base)+44)
 	tests = append(tests, base...)
 	for _, local := range []string{"anyType", "anySimpleType", "anyAtomicType", "untyped", "untypedAtomic", "numeric", "error", "dateTimeStamp", "NMTOKENS", "ENTITIES", "IDREFS", "NOTATION"} {
-		tests = append(tests, struct{ name, scope, expression, want string }{"builtin type " + local, "", "type-available('xs:" + local + "')", "true"})
+		tests = append(tests, struct {
+			name       string
+			scope      string
+			expression string
+			want       string
+		}{"builtin type " + local, "", "type-available('xs:" + local + "')", "true"})
 	}
-	for _, fn := range []struct{ name, code string }{{"element-available", "XTDE1440"}, {"function-available", "XTDE1400"}, {"type-available", "XTDE1428"}, {"system-property", "XTDE1390"}} {
+	for _, fn := range []struct {
+		name string
+		code string
+	}{{"element-available", "XTDE1440"}, {"function-available", "XTDE1400"}, {"type-available", "XTDE1428"}, {"system-property", "XTDE1390"}} {
 		for _, arg := range []string{"'Q{broken'", "'Q{urn:x}bad:name'", "'missing:name'", "'bad name'", "'Q{urn:{x}}name'"} {
-			tests = append(tests, struct{ name, scope, expression, want string }{fn.name + " " + arg, "", fn.name + "(" + arg + ")", fn.code})
+			tests = append(tests, struct {
+				name       string
+				scope      string
+				expression string
+				want       string
+			}{fn.name + " " + arg, "", fn.name + "(" + arg + ")", fn.code})
 		}
 		for _, arg := range []string{"()", "42", "('a','b')"} {
-			tests = append(tests, struct{ name, scope, expression, want string }{fn.name + " argument " + arg, "", fn.name + "(" + arg + ")", "XPTY0004"})
+			tests = append(tests, struct {
+				name       string
+				scope      string
+				expression string
+				want       string
+			}{fn.name + " argument " + arg, "", fn.name + "(" + arg + ")", "XPTY0004"})
 		}
 	}
 	return tests
@@ -4244,8 +4534,18 @@ func TestXSLTIntrospection(t *testing.T) {
 	}
 }
 
-func introspectionContextCases() []struct{ name, global, body, want string } {
-	return []struct{ name, global, body, want string }{
+func introspectionContextCases() []struct {
+	name   string
+	global string
+	body   string
+	want   string
+} {
+	return []struct {
+		name   string
+		global string
+		body   string
+		want   string
+	}{
 		{"static variable local aliases", `<xsl:variable static="yes" xmlns:p="http://www.w3.org/1999/XSL/Transform" name="v" select="system-property('p:version')"/>`, `<xsl:value-of xmlns:p="urn:other" select="$v"/>`, "3.0"},
 		{"static function keeps XML default", `<xsl:variable static="yes" xmlns="http://www.w3.org/1999/XSL/Transform" name="f" select="function(){element-available('evaluate')}"/>`, `<xsl:sequence xmlns="urn:other" select="$f()"/>`, "true"},
 		{"static reference keeps prefix", `<xsl:variable static="yes" xmlns:p="http://www.w3.org/1999/XSL/Transform" name="f" select="system-property#1"/>`, `<xsl:sequence xmlns:p="urn:other" select="$f('p:version')"/>`, "3.0"},
@@ -4279,8 +4579,18 @@ func TestXSLTIntrospectionContexts(t *testing.T) {
 	}
 }
 
-func mapInstructionCases() []struct{ name, body, check, want string } {
-	return []struct{ name, body, check, want string }{
+func mapInstructionCases() []struct {
+	name  string
+	body  string
+	check string
+	want  string
+} {
+	return []struct {
+		name  string
+		body  string
+		check string
+		want  string
+	}{
 		{"map type host boundary", `<xsl:map-entry key="'a'" select="1"/>`, `$m instance of map(xs:string,xs:integer) and not($m instance of map(xs:integer,xs:integer))`, "true"},
 		{"map constructor host boundary", `<xsl:map/>`, `map:size(map{})=0 and deep-equal(map{'a':(1,2)}?a,(1,2)) and map:size(map{'a':()})=1`, "true"},
 		{"map constructor empty key", `<xsl:map/>`, `map:size(map{():1})`, "XPTY0004"},
@@ -4362,8 +4672,10 @@ type patternSyntaxCase struct {
 func patternSyntaxCases() []patternSyntaxCase {
 	cases := make([]patternSyntaxCase, 0, 89)
 	for _, owner := range []struct {
-		name, before, after string
-		only30              bool
+		name   string
+		before string
+		after  string
+		only30 bool
 	}{
 		{"template", `<xsl:template match="`, `"/>`, false},
 		{"named template", `<xsl:template name="unused" match="`, `"/>`, false},
@@ -4440,7 +4752,9 @@ func TestXSLTPatternSyntaxContracts(t *testing.T) {
 }
 
 type versionedPatternCase struct {
-	pattern, want20, want30 string
+	pattern string
+	want20  string
+	want30  string
 }
 
 func versionedPatternCases() []versionedPatternCase {
@@ -4561,7 +4875,13 @@ func defaultPriorityCases() []dynamicXPathCase {
 	const doc = `parse-xml('&lt;n/>')`
 	const pi = `parse-xml('&lt;r>&lt;?p v?>&lt;/r>')/r/processing-instruction()`
 	cases := make([]dynamicXPathCase, 0, 74)
-	for _, test := range []struct{ pattern, baseline, selectExpr, lower, higher string }{
+	for _, test := range []struct {
+		pattern    string
+		baseline   string
+		selectExpr string
+		lower      string
+		higher     string
+	}{
 		{".", ".", element, "-1.1", "-0.9"},
 		{".", ".", "7", "-1.1", "-0.9"},
 		{".[true()]", ".", element, "0.9", "1.1"},
@@ -4627,7 +4947,12 @@ func TestXSLTDefaultPatternPriorities(t *testing.T) {
 }
 
 type inputPreprocessingCase struct {
-	name, globals, template, context, selection, want string
+	name      string
+	globals   string
+	template  string
+	context   string
+	selection string
+	want      string
 }
 
 func inputPreprocessingCases() []inputPreprocessingCase {
@@ -4720,7 +5045,11 @@ func TestXSLTInputPreprocessing(t *testing.T) {
 	}
 }
 
-type transformExpressionCase struct{ name, expression, want string }
+type transformExpressionCase struct {
+	name       string
+	expression string
+	want       string
+}
 
 func transformNodeContextCases() []transformExpressionCase {
 	cases := make([]transformExpressionCase, 0, 14)
@@ -4728,7 +5057,12 @@ func transformNodeContextCases() []transformExpressionCase {
 		program := sheet(version30, `<xsl:variable name="global" select="."/><xsl:template match="."><xsl:value-of select="$global"/></xsl:template>`)
 		cases = append(cases, transformExpressionCase{"selection " + selection, preprocessingInputs + `return transform(map{'stylesheet-text':'` + strings.ReplaceAll(program, "'", "''") + `','initial-match-selection':` + selection + `,'delivery-format':'serialized'})?output`, "XPDY0002"})
 	}
-	for _, test := range []struct{ name, global, options, want string }{
+	for _, test := range []struct {
+		name    string
+		global  string
+		options string
+		want    string
+	}{
 		{"required selection context", `<xsl:global-context-item use="required"/><xsl:variable name="global" select="42"/>`, `'initial-match-selection':$a`, "XTDE3086"},
 		{"explicit selection context", `<xsl:variable name="global" select="."/>`, `'initial-match-selection':$a,'global-context-item':42`, "42"},
 		{"source document root", `<xsl:variable name="global" select=". instance of document-node()"/>`, `'source-node':$a/r/a`, nameTrue},
@@ -4747,7 +5081,12 @@ func transformStylesheetNodeCases() []transformExpressionCase {
 	const stylesheetHeader = `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"`
 	const stylesheetBody = `><xsl:output method="text"/><xsl:template name="start"><xsl:value-of select="static-base-uri()"/></xsl:template></xsl:stylesheet>`
 	cases := make([]transformExpressionCase, 0, 5)
-	for _, test := range []struct{ name, input, selection, want string }{
+	for _, test := range []struct {
+		name      string
+		input     string
+		selection string
+		want      string
+	}{
 		{"document node", stylesheetHeader + ` xml:base="` + uri + `main.xsl"` + stylesheetBody, `$module`, uri + "main.xsl"},
 		{"root element", stylesheetHeader + ` xml:base="` + uri + `main.xsl"` + stylesheetBody, `$module/*`, uri + "main.xsl"},
 		{"root relative base", `<wrapper xml:base="` + uri + `">` + stylesheetHeader + ` xml:base="inner/"` + stylesheetBody + `</wrapper>`, `$module/*/*`, uri + "inner/"},
@@ -4762,8 +5101,10 @@ func transformStylesheetNodeCases() []transformExpressionCase {
 			kind = "standard"
 		}
 		for _, policy := range []struct {
-			name, outer, own string
-			length           int
+			name   string
+			outer  string
+			own    string
+			length int
 		}{
 			{"inherited preserve", "preserve", "", 1},
 			{"own default", "preserve", `xml:space="default"`, 0},
@@ -4819,6 +5160,53 @@ func TestTransformStylesheetNodeKinds(t *testing.T) {
 		var detail *transform.Error
 		if !errors.As(err, &detail) || detail.Code != "FOXT0002" {
 			t.Fatal(selection, err)
+		}
+	}
+}
+
+func TestXSLTNumberDecimalWidth(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, tc := range []struct{ name, value, format, group, want string }{
+		{"ASCII grouping", "42", "000001", ` grouping-separator="·" grouping-size="3"`, "000·042"},
+		{"wide ASCII", "42", strings.Repeat("0", 4095) + "1", "", strings.Repeat("0", 4094) + "42"},
+		{"Arabic grouping", "42", "٠٠٠٠٠١", ` grouping-separator="·" grouping-size="3"`, "٠٠٠·٠٤٢"},
+		{"Arabic zero", "0", "٠٠٠٠٠١", "", "٠٠٠٠٠٠"},
+		{"Arabic minimum width does not truncate", "12345", "١", "", "١٢٣٤٥"},
+		{"big Arabic minimum width does not truncate", "1208925819614629174706176", "١", "", "١٢٠٨٩٢٥٨١٩٦١٤٦٢٩١٧٤٧٠٦١٧٦"},
+		{"wide Arabic", "42", strings.Repeat("٠", 1023) + "١", "", strings.Repeat("٠", 1022) + "٤٢"},
+		{"big Arabic", "1208925819614629174706176", strings.Repeat("٠", 29) + "١", "", "٠٠٠٠٠١٢٠٨٩٢٥٨١٩٦١٤٦٢٩١٧٤٧٠٦١٧٦"},
+		{"big ASCII", "1208925819614629174706176", strings.Repeat("0", 29) + "1", "", "000001208925819614629174706176"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			style := stylesheet(t, e, sheet(version30, `<xsl:output method="text"/><xsl:template name="start"><xsl:number value="`+tc.value+`" format="`+tc.format+`"`+tc.group+`/></xsl:template>`))
+			for range 2 {
+				out, err := style.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(out.Primary) != tc.want {
+					t.Fatalf("output %q; want %q", out.Primary, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkXSLTNumberWidth(b *testing.B) {
+	for _, width := range []int{3, 64, 4096} {
+		for _, tc := range []struct{ name, zero, one, value string }{{"ASCII", "0", "1", "42"}, {"Arabic", "٠", "١", "42"}, {"BigArabic", "٠", "١", "1208925819614629174706176"}} {
+			b.Run(tc.name+"/"+strconv.Itoa(width), func(b *testing.B) {
+				e := engine(b, transform.Config{})
+				picture := strings.Repeat(tc.zero, width-1) + tc.one
+				style := stylesheet(b, e, sheet(version30, `<xsl:output method="text"/><xsl:template name="start"><xsl:number value="`+tc.value+`" format="`+picture+`"/></xsl:template>`))
+				options := transform.XSLTContext{Template: transform.Name{Local: nameStart}}
+				b.ReportAllocs()
+				for b.Loop() {
+					if _, err := style.Transform(b.Context(), nil, options); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
 		}
 	}
 }

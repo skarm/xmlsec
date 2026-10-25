@@ -1,5 +1,14 @@
 # API guide
 
+## Contents
+
+- [Common contracts](#common-contracts)
+- [XML and canonicalization](#xml-and-canonicalization)
+- [Signatures and coverage](#signatures-and-coverage)
+- [Keys, trust and evidence](#keys-trust-and-evidence)
+- [XML Encryption](#xml-encryption)
+- [SAML and transformations](#saml-and-transformations)
+
 Import packages under `github.com/skarm/xmlsec`; the module root has no Go package.
 Use `go doc ./<package>` for signatures, defaults and complete option contracts.
 The runnable [examples](../examples) show compositions with disposable keys.
@@ -8,7 +17,7 @@ The optional [CLI](cli.md) calls the same public APIs.
 ## Common contracts
 
 - Cancellation-aware operations take a non-nil `context.Context` first.
-  Constructors use `Config`; individual calls use their domain options.
+  Configuration and operation options carry explicit policy and resource limits.
 - Document and CMS parsers take explicit limits. Key parsers and exports accept
   `keys.Limits`; zero fields select defaults. Engines retain configured limits.
 - Published XML snapshots and compiled programs support concurrent reuse.
@@ -51,6 +60,11 @@ nodes, attributes and namespaces; use `Subtree` or `AllNodes` for full selection
 `InclusivePrefixes` applies only to Exclusive C14N. Discard partial output and any
 hash state fed by it on error. `XML` collects a complete byte slice; use `WriteXML`
 with an explicit output budget when collecting it is unnecessary.
+
+The `document` parser and `Engine.Parse` reject DTDs and external entities.
+XSLT stylesheets and language XML resources use a separate bounded,
+nonvalidating DTD mode with explicit external resource policy. See
+[XML input profiles](transforms.md#xml-input-profiles).
 See [streaming](streaming.md) for tree storage and independent-record processing.
 
 ## Signatures and coverage
@@ -186,7 +200,7 @@ or one Base64 transform by default. Build additional descriptions with
 the shared reference transform allowlist and budgets. XPath/Filter2/XSLT also
 require an exact approved program and a trusted extension processor. The complete
 chain is preflighted before resource access. Type describes its final result:
-one XML element/document, or DER octets for rawX509Certificate. Aggregate
+one XML element or document, or DER octets for rawX509Certificate. Aggregate
 `MaxTransformBytes`/`MaxTransformNodes` bound intermediate work across links.
 Omitted DSAKeyValue P/Q/G can come from `Options.DSAParameters`; that context
 is copied before callbacks, requires the bounded 1024/160 profile, and supplies

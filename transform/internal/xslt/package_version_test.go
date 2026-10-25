@@ -9,7 +9,8 @@ const version10 = "1.0"
 
 func TestPackageVersionComparison(t *testing.T) {
 	for _, tc := range []struct {
-		a, b string
+		a    string
+		b    string
 		want int
 	}{
 		{"001.2", "1.2.0", 0},
@@ -27,8 +28,9 @@ func TestPackageVersionComparison(t *testing.T) {
 
 func TestVersionConstraintMatches(t *testing.T) {
 	for _, tc := range []struct {
-		constraint, version string
-		want                bool
+		constraint string
+		version    string
+		want       bool
 	}{
 		{"*", version10, true},
 		{version10, "1.0.0", true},
@@ -54,8 +56,10 @@ func TestVersionConstraintMatches(t *testing.T) {
 
 func TestElementContexts(t *testing.T) {
 	for _, tc := range []struct {
-		name, version         string
-		topLevel, instruction bool
+		name        string
+		version     string
+		topLevel    bool
+		instruction bool
 	}{
 		{"template", "1.0", true, false},
 		{"value-of", "1.0", false, true},

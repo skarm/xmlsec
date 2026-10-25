@@ -1,5 +1,14 @@
 # Command-line application
 
+## Contents
+
+- [I/O and policy](#io-and-policy)
+- [XML signatures](#xml-signatures)
+- [Detached resources and transforms](#detached-resources-and-transforms)
+- [Canonicalization and XPath/XSLT](#canonicalization-and-xpathxslt)
+- [Encryption and keys](#encryption-and-keys)
+- [Trust, timestamps, XAdES and SAML](#trust-timestamps-xades-and-saml)
+
 Build with `make build` and run `bin/xmlsec --help`. Examples below assume `bin`
 is on PATH. Use `xmlsec help signature` or `xmlsec signature sign -h` for command
 and flag reference; `xmlsec algorithms` lists supported URIs and policies.

@@ -9,7 +9,10 @@ import (
 )
 
 func TestParseUTC(t *testing.T) {
-	for _, tc := range []struct{ input, want string }{
+	for _, tc := range []struct {
+		input string
+		want  string
+	}{
 		{"2000-02-29T12:34:56Z", "2000-02-29T12:34:56Z"},
 		{"2024-12-31T24:00:00Z", "2025-01-01T00:00:00Z"},
 		{"2024-02-29T24:00:00.000Z", "2024-03-01T00:00:00Z"},

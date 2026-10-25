@@ -27,9 +27,7 @@ func ExampleProcess() {
 		panic(err)
 	}
 
-	output, err := reference.Process(ctx, selected.Data(), []reference.Transform{
-		{Algorithm: c14n.Exclusive},
-	}, reference.Options{})
+	output, err := reference.Process(ctx, selected.Data(), []reference.Transform{{Algorithm: c14n.Exclusive}}, reference.Options{})
 	if err != nil {
 		panic(err)
 	}

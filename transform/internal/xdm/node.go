@@ -13,6 +13,8 @@ import (
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
 
+// ElementType identifies a node kind in the XDM view, including internal CDATA
+// identity.
 type ElementType int
 
 const (
@@ -28,6 +30,8 @@ const (
 	NamespaceNode
 )
 
+// String returns a diagnostic node-kind name, falling back to the numeric value for
+// unknown kinds.
 func (t ElementType) String() string {
 	switch t {
 	case ElementNode:
@@ -53,19 +57,34 @@ func (t ElementType) String() string {
 // Original XML content and child/attribute storage live in internal/tree.
 // Node views can cache derived values; parsed documents are shared without serialization.
 type Node interface {
+	// view returns the package-private navigation state and restricts Node
+	// implementations to this package.
 	view() *nodeView
+	// FirstChild returns the first child, or nil when the node has no children.
 	FirstChild() Node
+	// LastChild returns the last child, or nil when the node has no children.
 	LastChild() Node
+	// Line returns retained source line information, or zero when unavailable.
 	Line() int
+	// Name returns the node's lexical name as defined by its kind.
 	Name() string
+	// NextSibling returns the following sibling, or nil when absent.
 	NextSibling() Node
+	// PrevSibling returns the preceding sibling, or nil when absent.
 	PrevSibling() Node
+	// OwnerDocument returns the document retaining this node's storage and identity.
 	OwnerDocument() *Document
+	// Parent returns the logical parent, or nil for a document root or detached node.
 	Parent() Node
+	// Type identifies the node kind used by navigation and serialization.
 	Type() ElementType
+	// Reference returns the underlying project-tree handle when the view can represent
+	// one.
 	Reference() tree.NodeRef
 }
 
+// CopyNode copies src into d without attaching it to a parent. It preserves ID
+// classification and source namespace context for copied element subtrees.
 func CopyNode(src Node, d *Document) (Node, error) {
 	if a, ok := src.(*Attribute); ok {
 		copied, err := d.CreateAttribute(a.LocalName(), a.Value(), a.Namespace())
@@ -98,21 +117,34 @@ func CopyNode(src Node, d *Document) (Node, error) {
 	return d.nodes[r], nil
 }
 
+// MutableNode provides internal draft construction and editing. Callers must not
+// mutate a frozen source view or concurrently edit a draft.
 type MutableNode interface {
 	Node
+	// AddChild appends a child to the mutable draft and updates ownership and sibling
+	// positions.
 	AddChild(Node) error
+	// AddSibling inserts a sibling next to this draft node.
 	AddSibling(Node) error
+	// AppendText adds character data to the mutable draft.
 	AppendText(string) error
+	// Replace substitutes the supplied nodes at this draft node's position.
 	Replace(...Node) error
+	// SetLine sets retained source line metadata for internal construction.
 	SetLine(int)
+	// SetOwnerDocument updates the view's owner during internal draft adoption.
 	SetOwnerDocument(*Document)
+	// SetTreeDoc updates the document association used by internal tree construction.
 	SetTreeDoc(*Document)
 }
 
+// NodeWalkerFunc adapts a function to the visitor contract used by Walk.
 type NodeWalkerFunc func(Node) error
 
+// Visit calls the underlying function for n.
 func (f NodeWalkerFunc) Visit(n Node) error { return f(n) }
 
+// DocumentStandaloneType records XML declaration presence and standalone metadata.
 type DocumentStandaloneType int
 
 const (
@@ -122,27 +154,45 @@ const (
 	StandaloneNoXMLDecl
 )
 
+// DocProperties is a bit set of internal document construction flags.
 type DocProperties int
 
 const (
 	DocInternal DocProperties = 1 << iota
 )
 
+// Document stores an XDM view and construction metadata over a project XML tree. New
+// drafts are mutable. Freeze marks a view for shared read-only use; callers must not
+// alter its metadata after publication.
 type Document struct {
 	nodeView
-	native                 *tree.Document
-	nodes                  map[*tree.Node]Node
-	attrs                  map[attrKey]*Attribute
-	readOnly               atomic.Bool
-	url, encoding, version string
-	standalone             DocumentStandaloneType
-	properties             DocProperties
-	ids                    map[string]*Element
-	Doctype                *Doctype
+	// native retains the project tree backing this document view.
+	native *tree.Document
+	// nodes preserves one view per underlying tree node within this document.
+	nodes map[*tree.Node]Node
+	// attrs caches attribute views by owning tree node and expanded attribute name.
+	attrs map[attrKey]*Attribute
+	// readOnly marks a published view whose tree must no longer be edited.
+	readOnly atomic.Bool
+	// url is the document retrieval URI used as the base for relative references.
+	url string
+	// encoding retains the XML encoding label for declaration output.
+	encoding string
+	// version retains the XML version used by construction and serialization.
+	version string
+	// standalone retains XML declaration and standalone metadata.
+	standalone DocumentStandaloneType
+	// properties records internal construction flags separately from the tree.
+	properties DocProperties
+	// ids indexes declared ID values to their owning elements.
+	ids map[string]*Element
+	// Doctype retains optional output declaration metadata separately from the node tree.
+	Doctype *Doctype
 }
 
 type sharedViewKey struct{}
 
+// NewDocument creates an empty mutable draft with explicit XML declaration metadata.
 func NewDocument(version, encoding string, standalone DocumentStandaloneType) *Document {
 	d := &Document{nodes: map[*tree.Node]Node{}, attrs: map[attrKey]*Attribute{}, ids: map[string]*Element{}, version: version, encoding: encoding, standalone: standalone}
 	d.nodeView = nodeView{raw: &tree.Node{Kind: tree.DocumentNode}, doc: d, slot: -1, kind: DocumentNode, self: d}
@@ -151,6 +201,9 @@ func NewDocument(version, encoding string, standalone DocumentStandaloneType) *D
 	return d
 }
 
+// WrapDocument builds an unfrozen view over borrowed tree storage. Callers must not
+// mutate a borrowed published snapshot; FromDocument supplies the shared frozen view
+// for read-only use.
 func WrapDocument(ctx context.Context, d *tree.Document) (*Document, error) {
 	if d == nil {
 		return nil, tree.ErrMalformed
@@ -169,8 +222,12 @@ func WrapDocument(ctx context.Context, d *tree.Document) (*Document, error) {
 	return out, nil
 }
 
+// NewDefaultDocument creates an empty mutable XML 1.0 UTF-8 draft with implicit
+// standalone=no metadata.
 func NewDefaultDocument() *Document { return NewDocument("1.0", "UTF-8", StandaloneImplicitNo) }
 
+// CopyDoc clones tree storage and document metadata into a mutable independent
+// document.
 func CopyDoc(src *Document) (*Document, error) {
 	cp, err := tree.Clone(context.Background(), src.native)
 	if err != nil {
@@ -283,10 +340,15 @@ func checkedDocumentView(v any) *Document {
 	return d
 }
 
+// Snapshot returns the underlying tree document without copying it. A mutable draft's
+// storage must not be published before construction finishes.
 func (d *Document) Snapshot() *tree.Document { return d.native }
 
+// Freeze marks the view as read-only for checked tree mutations. Internal callers
+// must also leave document metadata unchanged after publication.
 func (d *Document) Freeze() { d.readOnly.Store(true) }
 
+// DocumentElement returns the first document child element, or nil when absent.
 func (d *Document) DocumentElement() *Element {
 	for _, r := range d.raw.Children {
 		if r.Kind == tree.ElementNode {
@@ -298,6 +360,8 @@ func (d *Document) DocumentElement() *Element {
 	return nil
 }
 
+// SetDocumentElement replaces the existing root element with e in an internal mutable
+// draft.
 func (d *Document) SetDocumentElement(e MutableNode) error {
 	if old := d.DocumentElement(); old != nil {
 		UnlinkNode(old)
@@ -306,6 +370,8 @@ func (d *Document) SetDocumentElement(e MutableNode) error {
 	return d.AddChild(e)
 }
 
+// CreateElement creates a detached element view after validating its lexical QName
+// components.
 func (d *Document) CreateElement(name string) (*Element, error) {
 	prefix, local := splitName(name)
 	if !tree.NCName(local) || prefix != "" && !tree.NCName(prefix) {
@@ -318,6 +384,8 @@ func (d *Document) CreateElement(name string) (*Element, error) {
 	return mustNode[*Element](d.nodes[r]), nil
 }
 
+// CreateElementNS creates a detached element and applies the supplied namespace
+// binding when non-nil.
 func (d *Document) CreateElementNS(local string, ns *Namespace) (*Element, error) {
 	e, err := d.CreateElement(local)
 	if err == nil && ns != nil {
@@ -327,6 +395,8 @@ func (d *Document) CreateElementNS(local string, ns *Namespace) (*Element, error
 	return e, err
 }
 
+// CreateAttribute creates a detached attribute view with the supplied value and
+// namespace binding.
 func (d *Document) CreateAttribute(name, value string, ns *Namespace) (*Attribute, error) {
 	e, _ := d.CreateElement("attribute-owner")
 
@@ -346,6 +416,7 @@ func (d *Document) CreateAttribute(name, value string, ns *Namespace) (*Attribut
 	return a, nil
 }
 
+// CreateNamespace validates the optional prefix and creates a namespace binding.
 func (d *Document) CreateNamespace(prefix, uri string) (*Namespace, error) {
 	if prefix != "" && !tree.NCName(prefix) {
 		return nil, tree.ErrMalformed
@@ -370,6 +441,8 @@ func (d *Document) CreateComment(value string) *Comment {
 	return mustNode[*Comment](d.nodes[r])
 }
 
+// CreatePI creates a detached processing instruction. Serialization validates its
+// target and data syntax.
 func (d *Document) CreatePI(name, data string) *ProcessingInstruction {
 	r := &tree.Node{Kind: tree.PINode, Name: tree.Name{Local: name}, Data: data}
 	_ = d.wrap(context.Background(), r, -1)
@@ -387,10 +460,14 @@ func (d *Document) CreateCDATASection(value string) *CDATASection {
 	return n
 }
 
+// URL returns the document retrieval URI or construction base.
 func (d *Document) URL() string { return d.url }
 
+// SetURL sets retrieval metadata on an internal draft. Callers must not change
+// published views.
 func (d *Document) SetURL(s string) { d.url = s }
 
+// Encoding returns the encoding metadata, defaulting to UTF-8 when empty.
 func (d *Document) Encoding() string {
 	if d.encoding == "" {
 		return "UTF-8"
@@ -399,28 +476,41 @@ func (d *Document) Encoding() string {
 	return d.encoding
 }
 
+// RawEncoding returns the stored encoding metadata without applying a default.
 func (d *Document) RawEncoding() string { return d.encoding }
 
+// SetEncoding updates encoding metadata on an internal draft.
 func (d *Document) SetEncoding(s string) { d.encoding = s }
 
+// Version returns the stored XML version metadata.
 func (d *Document) Version() string { return d.version }
 
+// SetVersion updates XML version metadata on an internal draft.
 func (d *Document) SetVersion(s string) { d.version = s }
 
+// Standalone returns XML declaration and standalone metadata.
 func (d *Document) Standalone() DocumentStandaloneType { return d.standalone }
 
+// Properties returns the internal document flags.
 func (d *Document) Properties() DocProperties { return d.properties }
 
+// SetProperties replaces the internal flags on a draft document.
 func (d *Document) SetProperties(p DocProperties) { d.properties = p }
 
+// HasProperty reports whether any bit in p is set.
 func (d *Document) HasProperty(p DocProperties) bool { return d.properties&p != 0 }
 
+// RegisterID records the element for an ID value in the draft's lookup index. It does
+// not authenticate or validate the element.
 func (d *Document) RegisterID(id string, e *Element) { d.ids[id] = e }
 
+// UnparsedEntity returns retained unparsed entity identifiers without retrieving the
+// resource.
 func (d *Document) UnparsedEntity(name string) (tree.UnparsedEntity, bool) {
 	return d.native.UnparsedEntity(name)
 }
 
+// GetElementByID returns the indexed element, or nil when no ID mapping exists.
 func (d *Document) GetElementByID(id string) *Element { return d.ids[id] }
 
 func (d *Document) wrap(ctx context.Context, r *tree.Node, slot int) error {
@@ -527,17 +617,26 @@ func (d *Document) attribute(e *Element, name tree.Name) {
 }
 
 type (
-	Element               struct{ nodeView }
-	Text                  struct{ nodeView }
-	Comment               struct{ nodeView }
+	// Element is an XDM element view over project-tree storage.
+	Element struct{ nodeView }
+	// Text is an XDM text view over project-tree character data.
+	Text struct{ nodeView }
+	// Comment is an XDM comment view over project-tree character data.
+	Comment struct{ nodeView }
+	// ProcessingInstruction is an XDM view of a processing instruction target and data.
 	ProcessingInstruction struct{ nodeView }
-	CDATASection          struct{ nodeView }
+	// CDATASection retains internal CDATA construction identity over text-node storage.
+	CDATASection struct{ nodeView }
 )
 
+// Prefix returns the element's lexical namespace prefix.
 func (e *Element) Prefix() string { return e.raw.Prefix }
 
+// URI returns the element's expanded namespace URI.
 func (e *Element) URI() string { return e.raw.Name.Space }
 
+// Namespace returns a copy of the element's active namespace binding, or nil for an
+// unprefixed name without a namespace.
 func (e *Element) Namespace() *Namespace {
 	if e.Prefix() == "" && e.URI() == "" {
 		return nil
@@ -546,6 +645,8 @@ func (e *Element) Namespace() *Namespace {
 	return NewNamespace(e.Prefix(), e.URI())
 }
 
+// Namespaces returns copies of declarations written on this element, excluding
+// inherited bindings.
 func (e *Element) Namespaces() []*Namespace {
 	out := make([]*Namespace, len(e.raw.NS))
 	for i, ns := range e.raw.NS {
@@ -555,6 +656,8 @@ func (e *Element) Namespaces() []*Namespace {
 	return out
 }
 
+// SetNamespace changes the draft element's active name binding. Nil clears it. It
+// panics when the view is frozen.
 func (e *Element) SetNamespace(ns *Namespace) {
 	if err := e.mutable(); err != nil {
 		panic(err)
@@ -569,11 +672,14 @@ func (e *Element) SetNamespace(ns *Namespace) {
 	}
 }
 
+// SetActiveNamespace changes the draft element's active prefix and URI without adding
+// a declaration.
 func (e *Element) SetActiveNamespace(prefix, uri string) error {
 	e.SetNamespace(NewNamespace(prefix, uri))
 	return nil
 }
 
+// DeclareNamespace adds or replaces a lexical declaration on a mutable element.
 func (e *Element) DeclareNamespace(prefix, uri string) error {
 	if err := e.mutable(); err != nil {
 		return err
@@ -591,10 +697,13 @@ func (e *Element) DeclareNamespace(prefix, uri string) error {
 	return nil
 }
 
+// AddNamespaceDecl copies the supplied binding into the element's declarations.
 func (e *Element) AddNamespaceDecl(ns *Namespace) error {
 	return e.DeclareNamespace(ns.Prefix(), ns.URI())
 }
 
+// RemoveNamespaceByPrefix removes a lexical declaration and reports whether it
+// existed. It panics when the view is frozen.
 func (e *Element) RemoveNamespaceByPrefix(prefix string) bool {
 	if err := e.mutable(); err != nil {
 		panic(err)
@@ -610,6 +719,8 @@ func (e *Element) RemoveNamespaceByPrefix(prefix string) bool {
 	return false
 }
 
+// SetAttribute sets a draft attribute by lexical QName, using the element's in-scope
+// prefix binding when available.
 func (e *Element) SetAttribute(name, value string) error {
 	prefix, local := splitName(name)
 	uri := ""
@@ -624,6 +735,8 @@ func (e *Element) SetAttribute(name, value string) error {
 	return e.SetAttributeNS(local, value, NewNamespace(prefix, uri))
 }
 
+// SetAttributeNS sets a draft attribute by expanded name and normalizes xml:id values
+// for XDM lookup.
 func (e *Element) SetAttributeNS(local, value string, ns *Namespace) error {
 	if err := e.mutable(); err != nil {
 		return err
@@ -672,14 +785,19 @@ func (e *Element) SetAttributeNS(local, value string, ns *Namespace) error {
 	return nil
 }
 
+// SetParsedAttribute stores an already parsed attribute through SetAttribute.
 func (e *Element) SetParsedAttribute(n, v string) error { return e.SetAttribute(n, v) }
 
+// SetParsedAttributeNS stores an already parsed attribute through SetAttributeNS.
 func (e *Element) SetParsedAttributeNS(n, v string, ns *Namespace) error {
 	return e.SetAttributeNS(n, v, ns)
 }
 
+// SetBooleanAttribute creates or replaces an attribute with an empty value.
 func (e *Element) SetBooleanAttribute(n string) error { return e.SetAttribute(n, "") }
 
+// GetAttribute returns an attribute value by lexical prefix and local name, with a
+// presence flag.
 func (e *Element) GetAttribute(n string) (string, bool) {
 	prefix, local := splitName(n)
 	for _, a := range e.raw.Attrs {
@@ -691,8 +809,10 @@ func (e *Element) GetAttribute(n string) (string, bool) {
 	return "", false
 }
 
+// HasAttribute reports whether an attribute with the lexical name exists.
 func (e *Element) HasAttribute(n string) bool { _, ok := e.GetAttribute(n); return ok }
 
+// GetAttributeNS returns an attribute value by expanded name, with a presence flag.
 func (e *Element) GetAttributeNS(local, uri string) (string, bool) {
 	for _, a := range e.raw.Attrs {
 		if a.Name == (tree.Name{Space: uri, Local: local}) {
@@ -703,6 +823,8 @@ func (e *Element) GetAttributeNS(local, uri string) (string, bool) {
 	return "", false
 }
 
+// GetAttributeNodeNS returns the attribute view for an expanded name, or nil when
+// absent.
 func (e *Element) GetAttributeNodeNS(local, uri string) *Attribute {
 	if _, ok := e.GetAttributeNS(local, uri); !ok {
 		return nil
@@ -711,6 +833,7 @@ func (e *Element) GetAttributeNodeNS(local, uri string) *Attribute {
 	return e.doc.attrs[attrKey{e.raw, tree.Name{Space: uri, Local: local}}]
 }
 
+// Attributes returns an independent slice of shared attribute views in stored order.
 func (e *Element) Attributes() []*Attribute {
 	out := make([]*Attribute, len(e.raw.Attrs))
 	for i, a := range e.raw.Attrs {
@@ -720,6 +843,7 @@ func (e *Element) Attributes() []*Attribute {
 	return out
 }
 
+// ForEachAttribute visits attributes in stored order until fn returns false.
 func (e *Element) ForEachAttribute(fn func(*Attribute) bool) {
 	for _, a := range e.Attributes() {
 		if !fn(a) {
@@ -728,6 +852,8 @@ func (e *Element) ForEachAttribute(fn func(*Attribute) bool) {
 	}
 }
 
+// RemoveAttribute removes a draft attribute by lexical QName and reports whether it
+// existed.
 func (e *Element) RemoveAttribute(name string) bool {
 	for _, a := range e.raw.Attrs {
 		if tree.QName(a.Prefix, a.Name.Local) == name {
@@ -738,6 +864,8 @@ func (e *Element) RemoveAttribute(name string) bool {
 	return false
 }
 
+// RemoveAttributeNS removes a draft attribute and its ID metadata by expanded name.
+// It panics when the view is frozen.
 func (e *Element) RemoveAttributeNS(local, uri string) bool {
 	if err := e.mutable(); err != nil {
 		panic(err)
@@ -768,6 +896,8 @@ func (e *Element) RemoveAttributeNS(local, uri string) bool {
 	return false
 }
 
+// FindAttribute returns the first attribute accepted by p and reports whether one was
+// found.
 func (e *Element) FindAttribute(p AttributePredicate) (*Attribute, bool) {
 	for _, a := range e.Attributes() {
 		if p.Match(a) {
@@ -778,23 +908,33 @@ func (e *Element) FindAttribute(p AttributePredicate) (*Attribute, bool) {
 	return nil, false
 }
 
+// Attribute views a non-namespace attribute and its XDM ID metadata. It retains its
+// owning element even when logically detached.
 type Attribute struct {
 	nodeView
-	key   tree.Name
+	// key identifies the attribute by expanded namespace URI and local name.
+	key tree.Name
+	// owner retains the element supplying attribute storage, including while detached.
 	owner *Element
 	// Cache the derived value so repeated reads do not rescan or allocate for
 	// an immutable input attribute. Private mutations refresh it before publishing.
 	xmlIDValue string
-	atype      AttributeIDType
-	detached   bool
+	// atype retains the attribute's ID or IDREF classification.
+	atype AttributeIDType
+	// detached hides the logical parent while retaining storage ownership.
+	detached bool
 }
 
+// Name returns the attribute's lexical QName.
 func (a *Attribute) Name() string { return tree.QName(a.Prefix(), a.LocalName()) }
 
+// LocalName returns the attribute's expanded local name.
 func (a *Attribute) LocalName() string { return a.key.Local }
 
+// Prefix returns the stored lexical namespace prefix.
 func (a *Attribute) Prefix() string { return a.entry().Prefix }
 
+// URI returns the attribute's namespace URI.
 func (a *Attribute) URI() string { return a.key.Space }
 
 // Value exposes the XDM-normalized xml:id while retaining the original snapshot
@@ -821,6 +961,8 @@ func (e *Element) attributeValue(a tree.Attribute) string {
 	return a.Value
 }
 
+// Namespace returns a copy of the attribute's active binding, or nil when no prefix
+// or URI is present.
 func (a *Attribute) Namespace() *Namespace {
 	if a.URI() == "" && a.Prefix() == "" {
 		return nil
@@ -829,6 +971,7 @@ func (a *Attribute) Namespace() *Namespace {
 	return NewNamespace(a.Prefix(), a.URI())
 }
 
+// Parent returns the owning element, or nil when the attribute is detached.
 func (a *Attribute) Parent() Node {
 	if a.detached {
 		return nil
@@ -837,6 +980,8 @@ func (a *Attribute) Parent() Node {
 	return a.owner
 }
 
+// NextAttribute returns the next attribute in its owner's stored order, or nil when
+// absent.
 func (a *Attribute) NextAttribute() *Attribute {
 	attrs := a.owner.Attributes()
 	for i, v := range attrs {
@@ -848,10 +993,14 @@ func (a *Attribute) NextAttribute() *Attribute {
 	return nil
 }
 
+// FirstChild returns nil because XDM attributes have no child nodes.
 func (a *Attribute) FirstChild() Node { return nil }
 
+// LastChild returns nil because XDM attributes have no child nodes.
 func (a *Attribute) LastChild() Node { return nil }
 
+// IDType returns the retained ID or IDREF classification, recognizing xml:id
+// independently of DTD metadata.
 func (a *Attribute) IDType() AttributeIDType {
 	if a.key == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
 		return IDAttribute
@@ -873,6 +1022,8 @@ func (a *Attribute) IDType() AttributeIDType {
 	return a.atype
 }
 
+// SetIDType changes draft ID classification and updates the document's ID lookup
+// metadata.
 func (a *Attribute) SetIDType(t AttributeIDType) {
 	if a.IDType() == IDAttribute && a.doc.ids[a.Value()] == a.owner {
 		delete(a.doc.ids, a.Value())
@@ -908,28 +1059,51 @@ func (a *Attribute) entry() tree.Attribute {
 }
 
 type (
-	AttributePredicate interface{ Match(*Attribute) bool }
-	QNamePredicate     string
+	// AttributePredicate selects attributes for FindAttribute.
+	AttributePredicate interface {
+		// Match reports whether the attribute satisfies the predicate.
+		Match(*Attribute) bool
+	}
+	// QNamePredicate matches an attribute's lexical QName, including its prefix.
+	QNamePredicate string
 )
 
+// Match compares the attribute's lexical QName with p.
 func (p QNamePredicate) Match(a *Attribute) bool { return a.Name() == string(p) }
 
+// LocalNamePredicate matches attribute local names without restricting their
+// namespaces.
 type LocalNamePredicate string
 
+// Match compares the attribute's local name with p.
 func (p LocalNamePredicate) Match(a *Attribute) bool { return a.LocalName() == string(p) }
 
-type NSPredicate struct{ LocalName, URI string }
+// NSPredicate matches an attribute's expanded namespace URI and local name.
+type NSPredicate struct {
+	// LocalName is the exact attribute local name to match.
+	LocalName string
+	// URI is the exact attribute namespace URI to match.
+	URI string
+}
 
+// Match reports whether both expanded-name components match.
 func (p NSPredicate) Match(a *Attribute) bool {
 	return a.LocalName() == p.LocalName && a.URI() == p.URI
 }
 
-type Namespace struct{ binding tree.Namespace }
+// Namespace holds a lexical prefix and namespace URI binding.
+type Namespace struct {
+	// binding retains the lexical prefix and namespace URI.
+	binding tree.Namespace
+}
 
+// NewNamespace creates a binding without validating its prefix or URI.
 func NewNamespace(prefix, uri string) *Namespace {
 	return &Namespace{tree.Namespace{Prefix: prefix, URI: uri}}
 }
 
+// LookupNSByPrefix searches the node and its ancestors for a prefix binding. The xml
+// prefix always has its predefined binding.
 func LookupNSByPrefix(n Node, prefix string) *Namespace {
 	if prefix == "xml" {
 		return NewNamespace("xml", tree.XMLNamespace)
@@ -952,6 +1126,8 @@ func LookupNSByPrefix(n Node, prefix string) *Namespace {
 	return nil
 }
 
+// LookupNSByHref searches the node and its ancestors for a lexical declaration with
+// the given namespace URI.
 func LookupNSByHref(n Node, uri string) *Namespace {
 	for ; n != nil; n = n.Parent() {
 		if e, ok := n.(*Element); ok {
@@ -977,26 +1153,43 @@ func NamespaceDeclarationAt(e *Element, index int) (*Namespace, bool) {
 	return NewNamespace(v.Prefix, v.URI), true
 }
 
+// Prefix returns the lexical namespace prefix.
 func (n *Namespace) Prefix() string { return n.binding.Prefix }
 
+// URI returns the namespace URI.
 func (n *Namespace) URI() string { return n.binding.URI }
 
 type (
-	NamespaceContainer interface{ Namespaces() []*Namespace }
-	Namespacer         interface {
-		Namespace() *Namespace
+	// NamespaceContainer exposes an element's lexical namespace declarations.
+	NamespaceContainer interface {
+		// Namespaces returns the lexical namespace declarations carried by the node.
 		Namespaces() []*Namespace
+	}
+	// Namespacer exposes expanded-name components and lexical namespace bindings.
+	Namespacer interface {
+		// Namespace returns the active name binding when present.
+		Namespace() *Namespace
+		// Namespaces returns lexical declarations carried by the node.
+		Namespaces() []*Namespace
+		// Prefix returns the lexical name prefix.
 		Prefix() string
+		// URI returns the expanded namespace URI.
 		URI() string
+		// LocalName returns the name without its prefix.
 		LocalName() string
 	}
 )
 
+// NamespaceNodeWrapper gives an in-scope binding a logical owner and XDM
+// namespace-node identity.
 type NamespaceNodeWrapper struct {
 	nodeView
+	// ns supplies the binding represented by this virtual namespace node.
 	ns *Namespace
 }
 
+// NewNamespaceNodeWrapper creates a namespace node for ns and owner. A nil owner
+// produces a detached wrapper.
 func NewNamespaceNodeWrapper(ns *Namespace, owner Node) *NamespaceNodeWrapper {
 	var doc *Document
 	if !IsNilNode(owner) {
@@ -1009,8 +1202,12 @@ func NewNamespaceNodeWrapper(ns *Namespace, owner Node) *NamespaceNodeWrapper {
 	return n
 }
 
+// Name returns the namespace node's prefix, including empty for the default
+// namespace.
 func (n *NamespaceNodeWrapper) Name() string { return n.ns.Prefix() }
 
+// UnlinkNode detaches a child from its mutable parent and updates sibling positions.
+// It panics when the parent view is frozen.
 func UnlinkNode(n MutableNode) {
 	v := n.view()
 
@@ -1031,6 +1228,7 @@ func UnlinkNode(n MutableNode) {
 	reindex(p)
 }
 
+// AsNode reports whether n has concrete node type T and excludes typed nil values.
 func AsNode[T Node](n Node) (T, bool) {
 	v, ok := n.(T)
 	if ok && IsNilNode(v) {
@@ -1041,6 +1239,8 @@ func AsNode[T Node](n Node) (T, bool) {
 	return v, ok
 }
 
+// Children iterates direct children in order. It saves the next sibling before
+// yielding, permitting draft edits by the caller.
 func Children(n Node) iter.Seq[Node] {
 	return func(yield func(Node) bool) {
 		if n == nil {
@@ -1058,6 +1258,7 @@ func Children(n Node) iter.Seq[Node] {
 	}
 }
 
+// ChildElements iterates direct element children in order.
 func ChildElements(n Node) iter.Seq[*Element] {
 	return func(yield func(*Element) bool) {
 		for c := range Children(n) {
@@ -1068,6 +1269,7 @@ func ChildElements(n Node) iter.Seq[*Element] {
 	}
 }
 
+// Walk visits n and its descendants in preorder, stopping at the first visitor error.
 func Walk(n Node, w interface{ Visit(Node) error }) error {
 	if n == nil {
 		return nil
@@ -1086,6 +1288,8 @@ func Walk(n Node, w interface{ Visit(Node) error }) error {
 	return nil
 }
 
+// CharacterData returns the XDM string value for elements and documents, attribute
+// values, namespace URIs or other nodes' stored character data.
 func CharacterData(n Node) string {
 	if n == nil {
 		return ""
@@ -1111,8 +1315,11 @@ func CharacterData(n Node) string {
 	return tree.StringValue(v.raw)
 }
 
+// ClarkName joins uri and local in the expanded-name form {uri}local.
 func ClarkName(uri, local string) string { return "{" + uri + "}" + local }
 
+// NodeGetBase resolves inherited xml:base and retained construction bases against the
+// document URL.
 func NodeGetBase(doc *Document, n Node) string {
 	var chain []Node
 	for p := n; p != nil; p = p.Parent() {
@@ -1155,6 +1362,8 @@ func NodeGetBaseBeforeXMLBase(doc *Document, node Node) string {
 	return base
 }
 
+// SetNodeBaseURI records a construction base on an internal node view without
+// changing xml:base attributes.
 func SetNodeBaseURI(n Node, uri string) { n.view().baseURI = uri }
 
 // NodeBaseOverride returns the parser/construction base before xml:base.
@@ -1187,15 +1396,25 @@ func FilterChildren(n Node, keep func(Node) bool) {
 
 // Views are initialized in place; an assigned identity stays with its node.
 type nodeView struct {
+	// identity lazily assigns a process-unique node number without retaining other nodes.
 	identity atomic.Uint64
-	raw      *tree.Node
-	doc      *Document
-	self     Node
-	kind     ElementType
-	slot     int
-	line     int
-	baseURI  string
-	parent   Node
+	// raw borrows the underlying project-tree node when this node kind has one.
+	raw *tree.Node
+	// doc retains the document that owns this view's storage.
+	doc *Document
+	// self retains the concrete wrapper used when returning navigation results.
+	self Node
+	// kind selects XDM navigation behavior for the concrete node.
+	kind ElementType
+	// slot caches the node's sibling or attribute position; detached nodes can use a
+	// negative value.
+	slot int
+	// line retains source line information when available.
+	line int
+	// baseURI retains an explicit base override for this view.
+	baseURI string
+	// parent retains the logical parent independently of underlying storage ownership.
+	parent Node
 }
 
 var nextNodeIdentity atomic.Uint64 //nolint:gochecknoglobals // Process-unique, non-retaining identities must survive node collection.
@@ -1450,13 +1669,17 @@ func (nv *nodeView) Replace(nodes ...Node) error {
 
 	prepared := make([]Node, len(nodes))
 
-	seen := make(map[Node]bool, len(nodes))
+	seen := make(map[Node]struct{}, len(nodes))
 	for i, c := range nodes {
-		if c == nil || c.view().raw == nil || c.Type() == AttributeNode || c.Type() == DocumentNode || seen[c] {
+		if c == nil || c.view().raw == nil || c.Type() == AttributeNode || c.Type() == DocumentNode {
 			return errors.New("invalid replacement node")
 		}
 
-		seen[c] = true
+		if _, duplicate := seen[c]; duplicate {
+			return errors.New("invalid replacement node")
+		}
+
+		seen[c] = struct{}{}
 		for a := p; a != nil; a = a.Parent() {
 			if a == c {
 				return errors.New("XML tree cycle")

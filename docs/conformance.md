@@ -1,5 +1,12 @@
 # Normative traceability
 
+## Contents
+
+- [Register structure](#register-structure)
+- [Implementation, policy and applicability](#implementation-policy-and-applicability)
+- [Evidence and validation](#evidence-and-validation)
+- [Current boundaries](#current-boundaries)
+
 [conformance.json](conformance.json) separates capabilities from normative
 contracts for all 20 selected profiles. Inventories identify clauses, grammar
 productions, datatypes, algorithms, properties, role/binding/message triples and
@@ -121,9 +128,11 @@ processor disagreement recorded as an agreement fails this gate.
 
 The profile records are the maintained backlog. In particular:
 
-- The DTD-free parser is not a complete XML 1.0 processor. A future general
-  mode must implement applicable DTD/entity/default/normalization rules through
-  explicit bounded resource resolution; the default security mode stays separate.
+- The document security parser remains DTD-free. Language XML input separately
+  implements bounded nonvalidating DTD processing, including entity expansion,
+  default attributes and declared attribute normalization. External resources
+  require explicit resolution policy. These features do not establish complete
+  XML 1.0 processor conformance.
   Its inventory distinguishes 79 current XML productions, 19 namespace
   productions, named well-formedness/validity constraints and processor prose.
   Validity reporting belongs to the separately identified validating role.
@@ -132,22 +141,25 @@ The profile records are the maintained backlog. In particular:
   rendering, inheritance, base joining and exclusive namespace rules are
   inventoried separately. Non-UCS NFC preprocessing and complete octet-input
   behavior remain implementation/evidence gaps.
-- The selected XMLDSig/KeyInfo stage-4 profile is complete against the acceptance
-  list below. Its complete clause inventory retains gaps for full XML/LEIRI and
-  additional optional formats. Mandatory algorithms have a separate inventory; implementation availability does not grant application use.
+- XMLDSig and KeyInfo have complete clause inventories for the selected roles.
+  Full XML/LEIRI behavior and additional optional formats retain implementation
+  and evidence gaps. Mandatory algorithms have a separate inventory; algorithm
+  availability does not grant application use.
 - External Manifest/KeyInfo fragments use complete allowlisted resolver URIs.
   The adapter supplies identified octets; external XML selection, redirect/media
   metadata and complete LEIRI processing are not inferred. Explicit base options
   resolve the selected URI-valued `xml:base` contexts. Typed transformed Manifests
   use authenticated derived scopes, without original-node coverage claims.
-- XML Encryption 1.1 section 5.1.1 requires more than AES-GCM: missing CBC,
-  TripleDES, ConcatKDF, ECDH-ES and TripleDES wrap obligations remain applicable.
-  Legacy OAEP/SHA-1 now has an explicit compatibility option for AES-GCM keys;
-  this does not implement transport of unsupported mandatory TripleDES keys.
-  RSA-v1.5 is optional in that edition.
+- XML Encryption implements AES-GCM, explicit legacy CBC/TripleDES, ConcatKDF,
+  ECDH-ES and TripleDES key wrap within the
+  [documented profiles](compatibility.md#supported-scope). Legacy data ciphers
+  and OAEP/SHA-1 require separate explicit permissions. Algorithm availability
+  alone does not close the register's normative or independent-evidence gaps.
+  RSA PKCS#1 v1.5 remains unsupported and is optional in XML Encryption 1.1.
 - Each XPath version and Basic XSLT have clause/function and pinned suite
-  inventories. The P3 audit distinguishes repaired language defects from visible
-  resource, input-model, optional-feature and permitted/invalid-fixture outcomes.
+  inventories. Source-bound reports distinguish implementation defects, resource
+  limits, input-model constraints, optional features and permitted or invalid
+  fixture outcomes.
   Independent case evidence and causal controls are executed separately from the
   catalog pass-rate report. Schema awareness and W3C streamability are separate roles.
 - SAML role duties include encrypted counterparts of plaintext elements handled
@@ -157,237 +169,13 @@ The profile records are the maintained backlog. In particular:
   producer identifier lifecycle rules remain implementation gaps. Metadata IOP
   key acceptance is distinct from Conformance's optional well-known-location
   publication/resolution feature; neither is inferred from a callback.
-- Closed XAdES and with-time B-T do not implement the historical AdES workflow.
-  The future process baseline is published EN 319 102-1 V1.4.1 (2024-06),
-  separately from EN 319 132-1 V1.3.1 properties.
+- Closed XAdES and with-time B-T retain their separate validation contracts.
+  `NewHistoricalValidator` implements a bounded subset of the published
+  EN 319 102-1 V1.4.1 (2024-06) workflow, separately from EN 319 132-1 V1.3.1
+  properties. General evidence records, historical countersignature and
+  attribute-authority workflows, and remaining indication branches are outside
+  this subset; see [trust and evidence](usage.md#keys-trust-and-evidence).
 
 An extension is ready after its normative basis, implementation, positive and
 negative tests, independent compatibility where applicable, resource behavior
 and documentation agree. Recording an unsupported gap does not implement it.
-
-## Stage 0 acceptance record
-
-The register covers all declared profiles with document, role and operation
-matrices. Every assessed requirement retains its normative basis, implementation
-API/code, positive/negative evidence, independent-evidence state, default and
-compatibility permissions, and remaining gap/closure. Missing mandatory behavior
-stays applicable. Unimplemented algorithms and validation workflows are unavailable
-rather than described as policy-enabled or outside their required standard role.
-
-Publisher editions and correction inventories were reviewed on 2026-10-22.
-W3C draft proposals, RFC verified/held/rejected items, Approved SAML Errata 05 and
-published ETSI editions have distinct dispositions. SAML corrections are assigned
-to their affected base documents. Selected corrections are linked to assessed
-requirements; each selected correction has a normative trace, including explicit other-role
-dispositions. Corrected ASN.1 definitions and bibliographic/editorial changes
-remain distinct from newly implemented wire behavior.
-This register work does not implement the open requirements of later stages.
-
-The 2026-10-23 XML/Namespaces and C14N review separates processor, validating,
-document-author and application duties. The historical XML appendix-B name
-classes and namespace orphan productions do not replace the current grammar.
-Complete inventories retain gaps for DTD processing, legal 1.x declarations,
-relative namespace acceptance, transport encoding and C14N preprocessing.
-
-`TestNormativeConformanceChecks`, `TestConformanceEvidenceNamesRealTests` and
-`TestConformanceOptionalImplementationAndCorrections` validate missing document,
-mode and obligation links, false completeness, invalid evidence, policy grants,
-source/edition mismatches, correction IDs and mandatory/optional distinctions.
-They extend the existing development-runner test file. `make docs` checks the
-actual register together with README, compatibility and package-document links.
-
-All selected profile matrices now have named clause/contract inventories. Their
-implementation, format/input, policy and evidence gaps remain visible at those
-contracts. This granularity groups related requirements, including a function's
-signature, rules and errors, or a property's syntax and byte binding. A complete
-inventory does not mean that each grouped rule has implementation or test
-coverage; those states must be assessed before a full claim. No profile is
-promoted to full conformance by this stage or a passing repository gate.
-
-The key/CMS/PKI/timestamp records distinguish parsing, generation and verification,
-including required legacy algorithms, absent BER/container alternatives,
-revocation forms and complete TSA service duties. XAdES property availability is
-separate from EN 319 102-1 creation and validation processes. The historical
-workflow remains unimplemented. SAML records retain full SP/IdP mandatory duties
-even though the public API implements a solicited WebSSO subset. Selected XSD
-lexical/value contracts do not establish schema validation or PSVI support.
-
-## Stage 2 acceptance record
-
-Subtree imports and XDM element-document extraction share the namespace-context
-copy routine behind `tree.ImportSubtree` and `tree.ExtractSubtree`. It preserves
-prefixes used only in QName-valued strings. Imports guard an absent/empty default
-binding against the destination parent; standalone extraction retains explicit
-resets without adding a redundant one. Extracted documents own
-their nodes. Source snapshots, sibling bindings and the caller's namespace maps
-remain unchanged. `TestImportSubtreeKeepsNamespaceContextAndSnapshots`,
-`TestXMLWriterRestoresNamespaceScopes`, `TestCopyNodePreservesNamespaceContext`
-and `TestElementDocumentPreservesContextAndOwnership` check these boundaries.
-
-`TestNormativeCanonicalVectors` requires all 138 fixed exact-byte cases across
-document, subtree and sparse node-set inputs. Its selectors cover document,
-element, text, comment, PI, attribute and namespace nodes. The corpus includes
-default namespaces, rebinding and sibling restoration, omitted attributes and
-bindings, PrefixList, Unicode ordering, xml:id/lang/space/base and original-order
-comments/PIs. Normative processing rules control the result. The unchanged
-independent JDK/libxml2 adapters replay the corpus; documented disagreements
-remain diagnostics, not successful compatibility evidence. C14N 1.1's compound
-base join with fragment removal is transcribed directly from section 2.4 when
-both independent paths disagree with that rule.
-
-`TestNormativeCanonicalRejections` checks 24 rejection fixtures through both
-byte and one-byte-reader parsing. It separates malformed names/bindings/XML from
-unsupported input features and canonicalization options. Existing tests cover
-mixed snapshots, invalid handles, cancellation and expanded-node/output budgets.
-`TestCanonicalPartialWriterErrors` checks every accepted output prefix, including
-UTF-8 and escape boundaries, through all three public writer paths. Errors are
-propagated without buffering the entire canonical result.
-
-The input contract remains explicit: UTF-8/UTF-16 XML 1.0, DTD-free snapshots,
-absolute nonempty namespace names, normalized XML line ends/literal attribute
-whitespace, character references and predefined entities. Declared entities,
-DTD defaults/type annotations, external resources and a general XML processor
-mode are absent. The writer operates on that retained model; it does not perform
-missing XML preprocessing. C14N 1.1 base fix-up still rejects whitespace-bearing
-URI references. These input/model restrictions remain recorded separately from
-the tested canonical byte rules. No full XML processor profile is claimed.
-
-## Stage 3 acceptance record
-
-The P3 review covers the selected XPath 2.0/3.0/3.1 and Basic XSLT 2.0/3.0
-roles. Each numbered clause and function/operator contract has a source/code
-review, with implementation and evidence states recorded separately. Aggregate
-records depend on their child clauses. The review does not promote these profiles
-to a full conformance claim: broad clause evidence remains partial, and the
-input-model, resource and optional-role boundaries stay explicit.
-
-The six review queues have the following controls:
-
-1. Numeric types, casts and budgets: exact integer/decimal operations, direct
-   float rounding, numeric predicates, duration arithmetic, calendar overflow,
-   binary comparison editions and shared AST/VM intermediate accounting.
-2. Function contracts: versioned signatures, cardinality, atomization, promotion,
-   subtype tests and expanded error codes through direct, named, lookup, partial
-   and escaped calls. Map/array function types and immutable RNG state have
-   explicit controls.
-3. Sequences, focus and names: raw/document/serialized results, text coalescence,
-   grouping equality and grouping-key types, document/namespace copies, lexical
-   namespaces, global versus selection context and node identity.
-4. Versions and compatibility: selected processor editions remain distinct from
-   stylesheet declarations. Static scopes, preprocessing, reserved namespaces,
-   forward/backward compatibility, host function names and output attributes are
-   checked using selected 2.0 and 3.0 processors. QT3's compatibility default
-   applies only when its catalog explicitly declares that dependency.
-5. Dates, collation, regex, Unicode and serialization: implicit timezone,
-   locale/calendar domains, collation resources, edition-specific regex, widths,
-   six-method serialization and parameter extraction have positive/error controls.
-   Published SER30/31 parameter schemas are independently checked with ready
-   xmllint; the 3.0 whole-document and 3.1 selected-child validation rules differ.
-6. Resources, callbacks, packages and collections: bounded reads, invocation
-   snapshots, escaped functions, lexical resource URIs, file URI identity,
-   package visibility/version selection and stable collections have direct and
-   nested public controls. Policy, cancellation and budget checks remain live
-   when retained resource values are reused within an invocation.
-
-New regressions extend existing test files. Named cases are shared with pinned
-Saxon 9.4/12.10 comparisons; ready libxml2/libxslt binaries check the declared
-intersection. Native/oracle disagreements are explicit diagnostics and never
-count as exact agreements. Published schemas and literal REC rules provide
-additional controls where processor behavior differs. Local tests compare actual
-AST/VM paths, public bindings, direct XSLT and nested `fn:transform` execution.
-
-The [adapter contract](language-suites.md) pins licenses, revisions, dependencies,
-implementation choices, resolver policy and limits. Reports identify source and
-executable hashes and actual execution versions. Full catalogs remain unmodified,
-without filters or case limits; mandatory failures, unknown conditions and
-unsupported assertions remain visible. Schema declarations imply the catalog's
-optional schema-awareness dependency, without stripping annotations. XSD 1.0/1.1
-selection changes datatype and regex rules; it does not enable schema validation.
-
-The compact [baseline](language-baseline.md) records full-catalog outcomes and the
-case audit. Residual failures retain their resource, fixture/input,
-optional-feature or permitted-outcome classifications. For example, the empty
-serialized principal in `fn-transform-43` is a permitted XML parsed entity;
-`parse-xml` requires a document, and quantified evaluation may encounter its error
-before a successful witness. Strict 2.0 output/name failures and SER30/31
-parameter-schema differences remain visible instead of changing publisher files.
-Resource failures cannot satisfy wildcard or negated semantic-error assertions.
-
-Schema awareness and normative W3C streamability remain separate roles.
-Materialized streaming annotations do not establish streamability. Repository,
-lint, race, external-consumer and independent-engine checks validate the stated
-regressions; passing them does not establish complete independent clause evidence.
-
-## Stage 4 acceptance record
-
-The selected extension profile includes bounded external Manifests, existing
-KeyInfo forms, approved RetrievalMethod pipelines and URI-valued base contexts.
-Completion here concerns this roadmap stage; it is not a full XMLDSig/XML Base
-claim. Stage 0 XML processing and stages 2/3 language/canonicalization inventories
-retain their own recorded obligations.
-
-- Builder/parser/verifier agreement: existing enveloped/enveloping/detached and
-  selected-template APIs, parameterized PSS/HMAC/transform XML, Object content and
-  X509Data construction are covered by `TestCoreForms`,
-  `TestCoreAlgorithmsAndCanonicalization`, `TestDetachedProgramParameters`,
-  `TestParameterizedPSSXML`, `TestHMACTemplateChecksAllReferences` and
-  `TestBuildX509DataGroups`.
-- Coverage, multiple signatures and local Manifests: `TestCoreDiagnosticsAndWrapping`,
-  `TestCoreMultisignaturesAndPreservation`, `TestBuilderAppendAndDuplicateIDs`,
-  `TestManifestGraphAndMixedReferences` and `TestManifestDisabledAndBadNestedDigest`
-  distinguish required nodes/bytes, signature selection and Manifest contents.
-- External graph and retrieval extension: `TestExternalManifestGraph`,
-  `TestTransformedManifestSnapshots`, `TestTransformedManifestResultIdentity`,
-  `TestRetrievalTransformChains`, `TestKeyInfoURIContexts` and
-  `TestXMLDSigStage4IndependentURIContexts` cover independent scopes, exact resolved
-  authorization, cycle/depth/graph/byte/node bounds and frozen resource identity.
-- Authentication and trust: `TestTransformedManifestAuthenticationAndLimits`,
-  `TestExternalManifestAuthenticationOrder`, `TestKeyInfoResourceOrderAndInvalidPreflight`
-  and `TestVerifySignatureWithExplicitKeyInfoTrust` check discovery/private-signer
-  ordering, valid incoming references with invalid children, diagnostic status and
-  an explicit application trust selector. KeyInfo never establishes trust itself.
-- Independent evidence: existing JDK/Python/core/keyinfo/parameter corpora, the
-  fixed eleven-case stage-4 corpus, `TestXMLSecStage4Vectors`,
-  `TestXMLSecRetrievalMethods` and `TestXMLSecX509DataGroups` cover both signature
-  directions in the declared intersection and reject negative mutations. The
-  installed CLI's bare RSA/EC RetrievalMethod and recursive external Manifest
-  boundaries remain explicit diagnostic controls.
-- Operational evidence: existing fuzz targets exercise the new valid paths;
-  resource-limit, cancellation/reader-close, replay and race tests cover the selected
-  operations. `TestStage4CLI` checks every new fixed signature through the CLI.
-
-### Required algorithms and operation modes
-
-The `xmldsig11-algorithms` profile inventories every REQUIRED algorithm in XMLDSig
-1.1 section 6.1, with separate generate/verify records. Its complete inventory
-refers only to that algorithm set, not all clauses of XMLDSig or its dependencies.
-The generation and verification records cover SHA-1/SHA-256 digests,
-HMAC-SHA1/HMAC-SHA256, RSA-SHA256, ECDSA-SHA256 on P-256, C14N 1.0/1.1 and Exclusive
-C14N without comments, Base64 encoding/transform and Enveloped Signature. DSA-SHA1
-has the required verification record; its generation is OPTIONAL and disabled.
-KeyValue's RSA/DSA/named-P-256 descriptions are tracked separately in the broader
-KeyInfo profile. RSA-SHA1 verification, comment-preserving C14N and approved
-XPath/Filter2 are available beyond this required subset; XSLT is an explicitly
-selected optional transform profile.
-
-Default signing/acceptance remains RSA/ECDSA SHA-2. HMAC uses its separate secret
-model. SHA-1 digest/HMAC and DSA/RSA-SHA1 verification require explicit compatibility
-policies and are disabled in FIPS mode. Stronger key/tag/resource bounds restrict
-accepted use without reclassifying mandatory algorithm availability as optional.
-PGP/SPKI/MgmtData, arbitrary explicit EC parameters and DSA-SHA256 are optional
-extensions not selected for this stage. Missing mandatory processing obligations
-of the broader standard stay recorded; policy restrictions do not close them.
-
-The datatype/compatibility closure block uses explicit XSD 1.0/1.1 lexical and
-regex selection across constructors, numeric promotion, function values and XSLT.
-Recurring numeric/duration division and averages now produce finite decimals;
-tiny nonzero quotients retain significant digits. Higher/future XSLT declarations
-exercise fallback and deferred errors, static function name/arity checks run after
-all declarations, and serialization versions do not change language semantics.
-`fn:transform` uses the 3.0 processor for supported minimums and reports actual
-capabilities. Unicode 17.0 block data includes historical aliases with XSD name
-syntax. Collection/document identities and stable results are tested through
-direct XPath, XSLT and nested transforms, including whitespace stripping and
-conflicting-URI failures. Existing test files contain all new regressions.
-The refreshed full-catalog baseline separates new passes from corrected exact
-Unicode-edition dependencies and retains mandatory failures as failures.

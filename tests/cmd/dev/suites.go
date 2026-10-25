@@ -76,15 +76,19 @@ type suitePin struct {
 }
 
 type suiteOptions struct {
-	kind, directory, version, report string
-	limitsProfile                    string
-	xsdVersion                       string
-	xpath10Compatibility             bool
-	xsltAssertions                   bool
-	setMatch, caseMatch              *regexp.Regexp
-	limit                            int
-	timeout                          time.Duration
-	currentTime                      time.Time
+	kind                 string
+	directory            string
+	version              string
+	report               string
+	limitsProfile        string
+	xsdVersion           string
+	xpath10Compatibility bool
+	xsltAssertions       bool
+	setMatch             *regexp.Regexp
+	caseMatch            *regexp.Regexp
+	limit                int
+	timeout              time.Duration
+	currentTime          time.Time
 }
 
 type suiteOutcome struct {
@@ -576,22 +580,38 @@ func bindSuiteStaticContext(node *suiteNode, inherited map[string]string, baseUR
 }
 
 func writeSuiteReport(path string, out io.Writer, report *suiteReport) error {
-	if path == "" {
-		return json.NewEncoder(out).Encode(report)
+	write := func(dst io.Writer) error {
+		metadata := struct {
+			Suite            string         `json:"suite"`
+			Pin              suitePin       `json:"pin"`
+			Language         string         `json:"language"`
+			Go               string         `json:"go"`
+			Platform         string         `json:"platform"`
+			LibraryRevision  string         `json:"library_revision"`
+			LibraryModified  bool           `json:"library_modified"`
+			SourceSHA256     string         `json:"source_sha256"`
+			ExecutableSHA256 string         `json:"executable_sha256"`
+			Settings         map[string]any `json:"settings"`
+			Totals           map[string]int `json:"totals"`
+		}{report.Suite, report.Pin, report.Language, report.Go, report.Platform, report.LibraryRevision, report.LibraryModified, report.SourceSHA256, report.ExecutableSHA256, report.Settings, report.Totals}
+		encoder := json.NewEncoder(checkedJSONWriter{dst})
+
+		return writeJSONListObject(dst, metadata, "cases", report.Cases, func(_ io.Writer, item *suiteOutcome) error { return encoder.Encode(item) })
+	}
+	if path != "" {
+		return writeJSONFile(path, len(report.Cases) > 128, write)
 	}
 
-	data, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(path, append(data, '\n'), 0o600) // #nosec G306,G703 -- Explicit caller-chosen CLI output, never a catalog-derived path; private permissions.
+	return write(out)
 }
 
 type suiteCase struct {
-	set, file, base string
-	setNode, node   *suiteNode
-	environments    map[string]suiteEnvironmentRef
+	set          string
+	file         string
+	base         string
+	setNode      *suiteNode
+	node         *suiteNode
+	environments map[string]suiteEnvironmentRef
 }
 
 type suiteEnvironmentRef struct {

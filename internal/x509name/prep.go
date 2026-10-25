@@ -77,43 +77,12 @@ func prepare(ctx context.Context, input string) (string, error) {
 		return "", ErrUnsupported
 	}
 
-	mapped := make([]byte, 0, len(input))
-
-	steps := 0
-	for _, r := range input {
-		steps++
-		if steps&255 == 0 {
-			if err := ctx.Err(); err != nil {
-				return "", err
-			}
-		}
-		// With Unicode3.2 normalization these stay unassigned through all steps.
-		// Reject before using a later normalization table that could map them away.
-		if inRanges(unassigned32, r) {
-			return "", ErrInvalid
-		}
-
-		if mappedNothing(r) {
-			continue
-		}
-
-		if mappedSpace(r) {
-			mapped = append(mapped, ' ')
-			continue
-		}
-
-		if fold := caseFold32(r); fold != "" {
-			mapped = append(mapped, fold...)
-		} else {
-			mapped = utf8.AppendRune(mapped, r)
-		}
-
-		if len(mapped) > maxKeyBytes {
-			return "", ErrLimit
-		}
+	mapped, err := mapStoredValue(ctx, input)
+	if err != nil {
+		return "", err
 	}
 
-	normal, err := normalize32(ctx, string(mapped))
+	normal, err := normalize32(ctx, mapped)
 	if err != nil {
 		return "", err
 	}
@@ -142,6 +111,61 @@ func prepare(ctx context.Context, input string) (string, error) {
 	}
 
 	return result, ctx.Err()
+}
+
+// mapStoredValue applies RFC4518's Unicode3.2 mapping before normalization.
+func mapStoredValue(ctx context.Context, input string) (string, error) {
+	mapped := make([]byte, 0, len(input))
+
+	steps := 0
+	for _, r := range input {
+		steps++
+		if steps&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+		}
+		// Printable ASCII is assigned in Unicode 3.2 and has no mappings
+		// except case folding; space handling is applied to the final string.
+		if r >= ' ' && r <= '~' {
+			if r >= 'A' && r <= 'Z' {
+				r += 'a' - 'A'
+			}
+
+			mapped = utf8.AppendRune(mapped, r)
+			if len(mapped) > maxKeyBytes {
+				return "", ErrLimit
+			}
+
+			continue
+		}
+		// With Unicode3.2 normalization these stay unassigned through all steps.
+		// Reject before using a later normalization table that could map them away.
+		if inRanges(unassigned32, r) {
+			return "", ErrInvalid
+		}
+
+		if mappedNothing(r) {
+			continue
+		}
+
+		if mappedSpace(r) {
+			mapped = append(mapped, ' ')
+			continue
+		}
+
+		if fold := caseFold32(r); fold != "" {
+			mapped = append(mapped, fold...)
+		} else {
+			mapped = utf8.AppendRune(mapped, r)
+		}
+
+		if len(mapped) > maxKeyBytes {
+			return "", ErrLimit
+		}
+	}
+
+	return string(mapped), nil
 }
 
 func normalize32(ctx context.Context, mapped string) (string, error) {

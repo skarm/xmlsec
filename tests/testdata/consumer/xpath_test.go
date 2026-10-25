@@ -20,7 +20,10 @@ import (
 
 func TestXMLSchemaLexicalContracts(t *testing.T) {
 	engine := newEngine(t, transform.Config{})
-	for _, tc := range []struct{ expression, want string }{
+	for _, tc := range []struct {
+		expression string
+		want       string
+	}{
 		{`'0x1p0' castable as xs:double`, "false"},
 		{`'1_000' castable as xs:float`, "false"},
 		{`xs:double('1e400')`, "INF"},
@@ -49,7 +52,11 @@ func TestXMLSchemaLexicalContracts(t *testing.T) {
 func TestUnicodeCollationPoolsReleaseInputs(t *testing.T) {
 	const inputVariable = "input"
 
-	for _, tc := range []struct{ name, expression, options string }{
+	for _, tc := range []struct {
+		name       string
+		expression string
+		options    string
+	}{
 		{"Compare", `compare($input, 'c', $uri)`, "strength=primary"},
 		{"Key", `collation-key($input, $uri)`, "strength=primary"},
 		{"CaseFirstKey", `collation-key($input, $uri)`, "caseFirst=upper"},
@@ -156,7 +163,14 @@ func TestRegexCacheMemoryPlateausAcrossCalls(t *testing.T) {
 }
 
 func TestXPathSmallValuesReleaseLargeSources(t *testing.T) {
-	for _, tc := range []struct{ name, query, prefix, fill, suffix, want string }{
+	for _, tc := range []struct {
+		name   string
+		query  string
+		prefix string
+		fill   string
+		suffix string
+		want   string
+	}{
 		{"Before", `substring-before($input, '|')`, "small|", "x", "", "small"},
 		{"After", `substring-after($input, '|')`, "", "x", "|small", "small"},
 		{"Substring", `substring($input, 1, 5)`, "small", "x", "", "small"},
@@ -233,7 +247,12 @@ func TestXPathLiteralReleasesProgramSource(t *testing.T) {
 
 func TestXPathPeakWorkingHeap(t *testing.T) {
 	const size = 8 << 20
-	for _, tc := range []struct{ name, query, source, want string }{
+	for _, tc := range []struct {
+		name   string
+		query  string
+		source string
+		want   string
+	}{
 		{"Substring", `substring($input, 8388608, 1)`, strings.Repeat("x", size), "x"},
 		{"Token", `xs:token($input)`, "a" + strings.Repeat(" ", size) + "b", "a b"},
 	} {
@@ -349,7 +368,10 @@ func TestSortPropagatesAtomizationErrors(t *testing.T) {
 
 func TestRejectedIntegerArgumentsPreserveInputType(t *testing.T) {
 	e := newEngine(t, transform.Config{})
-	for _, tc := range []struct{ source, diagnostic string }{
+	for _, tc := range []struct {
+		source     string
+		diagnostic string
+	}{
 		{`format-integer('bad', '1')`, "got xs:string"},
 		{`[1]?(xs:untypedAtomic('bad'))`, "got xs:untypedAtomic"},
 	} {
@@ -383,7 +405,10 @@ func TestIntegerDivisionOverflowReturnsError(t *testing.T) {
 func TestSubsequenceRoundsNegativeTiesTowardPositiveInfinity(t *testing.T) {
 	e := newEngine(t, transform.Config{})
 	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
-		for _, tc := range []struct{ expr, want string }{
+		for _, tc := range []struct {
+			expr string
+			want string
+		}{
 			{`subsequence((1,2,3), -1.5, 3)`, "1"},
 			{`subsequence((1,2,3), -0.5, 2)`, "1"},
 			{`subsequence((1,2,3), -1.50001, 3)`, ""},

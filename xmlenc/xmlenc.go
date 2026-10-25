@@ -78,10 +78,10 @@ var (
 	ErrResource = errors.New("XML Encryption resource failure")
 )
 
-// Options selects the same data algorithm for encryption and decryption.
-// Decryption rejects a different Algorithm in the XML, including another
-// supported algorithm. Optional EncryptionMethod/KeySize must match the selected
-// data key, KEK or RSA modulus size. The zero value selects AES256GCM and default limits.
+// Options selects the expected data cipher and resource limits. The zero value
+// uses AES256GCM and default limits. Decryption requires the XML Algorithm to match
+// the selected cipher, even when another cipher is supported. An optional
+// EncryptionMethod/KeySize must match the data key, wrapping key or RSA modulus.
 type Options struct {
 	// AllowLegacy explicitly permits CBC data encryption and TripleDES key wrap.
 	// CBC plaintext is unauthenticated. Callers must establish any required
@@ -105,12 +105,12 @@ type Options struct {
 	XMLLimits document.Limits
 }
 
-// OAEPParameters selects the exact expected RSA-OAEP algorithm, hashes and label.
-// Parameters are emitted explicitly, except the fixed MGF of RSAOAEP10.
-// Omitted XML digest/MGF parameters mean SHA-1 under XMLENC; they are accepted
-// only when the caller has explicitly selected the corresponding SHA-1 hash.
-// No received parameter expands the caller's policy. SHA-1 and RSAOAEP10
-// require AllowLegacy and are rejected when crypto/fips140 is enabled.
+// OAEPParameters selects the exact RSA-OAEP algorithm, hashes and label to emit
+// and accept. Parameters are explicit except for RSAOAEP10's fixed MGF.
+// Omitted XML digest or MGF parameters mean SHA-1 and require the caller to select
+// the corresponding SHA-1 hash. Received parameters never broaden policy.
+// SHA-1 and RSAOAEP10 require AllowLegacy and are rejected when crypto/fips140
+// is enabled.
 type OAEPParameters struct {
 	// Algorithm selects RSAOAEP (default) or the legacy RSAOAEP10 URI.
 	Algorithm string
@@ -127,23 +127,27 @@ type OAEPParameters struct {
 	Label []byte
 }
 
-// SymmetricOptions selects a direct data key supplied by the application.
-// CBC requires Data.AllowLegacy and provides no authentication.
-// The key must have the exact size selected by Data.DataAlgorithm. No EncryptedKey
-// is generated or accepted, and no key is resolved from XML.
+// SymmetricOptions selects a direct application-supplied data key. Its size must
+// match Data.DataAlgorithm. The API generates and accepts no EncryptedKey and
+// resolves no key from XML. CBC requires Data.AllowLegacy and provides no
+// authentication.
 type SymmetricOptions struct {
+	// Data selects the exact data cipher, plaintext and XML limits, and ciphertext resource
+	// policy.
 	Data Options
 	// KeyName supplies an optional untrusted KeyInfo hint, bounded to 1024 bytes.
 	// When configured, decryption requires the same name. Empty requires no KeyInfo.
 	KeyName string
 }
 
-// KeyWrapOptions selects the data algorithm and the algorithm of the explicitly
-// supplied key-encryption key (KEK). An AES KEK must be exactly 16, 24 or 32 bytes,
-// as selected by KeyAlgorithm; it is never inferred from the XML or key length.
-// The zero value selects AES256GCM and AES256KeyWrap. TripleDESKeyWrap requires
-// a 24-byte KEK, TripleDESCBC data and Data.AllowLegacy.
+// KeyWrapOptions selects the data cipher and the algorithm of an explicit
+// key-encryption key. AES wrapping requires 16, 24 or 32 key bytes as selected by
+// KeyAlgorithm; neither XML nor key length selects the algorithm. Zero options
+// use AES256GCM and AES256KeyWrap. TripleDESKeyWrap requires a 24-byte wrapping
+// key, TripleDESCBC data and Data.AllowLegacy.
 type KeyWrapOptions struct {
+	// Data selects the exact data cipher, plaintext and XML limits, and ciphertext resource
+	// policy.
 	Data Options
 	// KeyAlgorithm defaults to AES256KeyWrap. The supplied key-encryption key
 	// must match this algorithm's size; its length does not select the algorithm.

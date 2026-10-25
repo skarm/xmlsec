@@ -20,18 +20,25 @@ var Err = errors.New("invalid URI context")
 
 // Validate checks URI-reference encoding without authorizing or rewriting it.
 func Validate(value string) error {
+	_, err := parse(value)
+	return err
+}
+
+// parse retains the validated components for callers that also need to resolve
+// them, avoiding a second net/url parse and its allocations.
+func parse(value string) (*url.URL, error) {
 	if strings.Contains(value, "\\") || !utf8.ValidString(value) {
-		return fmt.Errorf("%w: URI encoding", Err)
+		return nil, fmt.Errorf("%w: URI encoding", Err)
 	}
 
 	if _, fragment, ok := strings.Cut(value, "#"); ok && strings.Contains(fragment, "#") {
-		return fmt.Errorf("%w: multiple URI fragments", Err)
+		return nil, fmt.Errorf("%w: multiple URI fragments", Err)
 	}
 
 	for i := 0; i < len(value); i++ {
 		if value[i] == '%' {
 			if i+2 >= len(value) || !xmlchar.IsHexDigit(value[i+1]) || !xmlchar.IsHexDigit(value[i+2]) {
-				return fmt.Errorf("%w: malformed URI escape", Err)
+				return nil, fmt.Errorf("%w: malformed URI escape", Err)
 			}
 
 			i += 2
@@ -40,15 +47,16 @@ func Validate(value string) error {
 
 	for _, r := range value {
 		if unicode.IsSpace(r) || unicode.IsControl(r) {
-			return fmt.Errorf("%w: unescaped URI whitespace/control", Err)
+			return nil, fmt.Errorf("%w: unescaped URI whitespace/control", Err)
 		}
 	}
 
-	if _, err := url.Parse(value); err != nil {
-		return fmt.Errorf("%w: malformed URI: %w", Err, err)
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return nil, fmt.Errorf("%w: malformed URI: %w", Err, err)
 	}
 
-	return nil
+	return parsed, nil
 }
 
 // Base parses an optional absolute hierarchical, fragment-free document base.
@@ -57,12 +65,12 @@ func Base(value string) (*url.URL, error) {
 		return nil, nil
 	}
 
-	if err := Validate(value); err != nil {
+	base, err := parse(value)
+	if err != nil {
 		return nil, err
 	}
 
-	base, err := url.Parse(value)
-	if err != nil || !base.IsAbs() || base.Opaque != "" || strings.Contains(value, "#") {
+	if !base.IsAbs() || base.Opaque != "" || strings.Contains(value, "#") {
 		return nil, fmt.Errorf("%w: absolute hierarchical fragment-free base required", Err)
 	}
 
@@ -74,11 +82,11 @@ func Base(value string) (*url.URL, error) {
 // the caller. A nil base preserves literal URI spelling. Absolute references are
 // preserved exactly; relative references inherit the retrieval URI and xml:base.
 func Resolve(value string, base *url.URL, resource string, source *tree.Node) (string, error) {
-	if err := Validate(value); err != nil {
+	uri, err := parse(value)
+	if err != nil {
 		return "", err
 	}
 
-	uri, _ := url.Parse(value) // validated above
 	if base == nil || uri.IsAbs() {
 		return value, nil
 	}
@@ -103,11 +111,11 @@ func Resolve(value string, base *url.URL, resource string, source *tree.Node) (s
 				continue
 			}
 
-			if err := Validate(attr.Value); err != nil {
+			part, err := parse(attr.Value)
+			if err != nil {
 				return "", fmt.Errorf("%w: xml:base: %w", Err, err)
 			}
 
-			part, _ := url.Parse(attr.Value)
 			base = base.ResolveReference(part)
 		}
 	}

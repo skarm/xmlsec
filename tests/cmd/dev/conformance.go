@@ -237,9 +237,9 @@ type conformanceCheck struct {
 	problems        []error
 	documents       map[string]standardDocument
 	profiles        map[string]conformanceProfile
-	scopes          map[string]bool
-	symbols         map[string]map[string]bool
-	evidenceChecked map[string]bool
+	scopes          map[string]struct{}
+	symbols         map[string]map[string]struct{}
+	evidenceChecked map[string]struct{}
 }
 
 func checkConformanceRegister(root string, data []byte) (int, []error, error) {
@@ -260,7 +260,7 @@ func checkConformanceRegister(root string, data []byte) (int, []error, error) {
 		return 0, nil, errors.New("conformance register requires schema 4 and nonempty scope, normative, profile and document inventories")
 	}
 
-	c := &conformanceCheck{root: root, documents: make(map[string]standardDocument), profiles: make(map[string]conformanceProfile), scopes: make(map[string]bool), symbols: make(map[string]map[string]bool)}
+	c := &conformanceCheck{root: root, documents: make(map[string]standardDocument), profiles: make(map[string]conformanceProfile), scopes: make(map[string]struct{}), symbols: make(map[string]map[string]struct{})}
 	c.text("register", register.Completeness, register.Scope, register.Stage)
 
 	if _, err := time.Parse(time.DateOnly, register.ReviewedOn); err != nil {
@@ -268,11 +268,11 @@ func checkConformanceRegister(root string, data []byte) (int, []error, error) {
 	}
 
 	for _, entry := range register.Requirements {
-		if entry.ID == "" || c.scopes[entry.ID] {
+		if _, duplicate := c.scopes[entry.ID]; entry.ID == "" || duplicate {
 			c.problem(entry.ID, "empty/duplicate capability ID")
 		}
 
-		c.scopes[entry.ID] = true
+		c.scopes[entry.ID] = struct{}{}
 		c.text(entry.ID, entry.Title, entry.Status)
 
 		for _, name := range entry.Tests {
@@ -290,7 +290,14 @@ func checkConformanceRegister(root string, data []byte) (int, []error, error) {
 
 	ids := make(map[string]normativeRequirement)
 	for _, requirement := range register.Normative {
-		if _, exists := ids[requirement.ID]; requirement.ID == "" || exists || c.scopes[requirement.ID] {
+		_, exists := ids[requirement.ID]
+
+		duplicate := requirement.ID == "" || exists
+		if !duplicate {
+			_, duplicate = c.scopes[requirement.ID]
+		}
+
+		if duplicate {
 			c.problem(requirement.ID, "empty/duplicate normative ID")
 		}
 
@@ -307,18 +314,18 @@ func checkConformanceRegister(root string, data []byte) (int, []error, error) {
 	}
 
 	for _, requirement := range register.Normative {
-		c.normativeEvidence(requirement, ids, make(map[string]bool))
+		c.normativeEvidence(requirement, ids, make(map[string]struct{}))
 	}
 
-	residuals := make(map[string]bool)
+	residuals := make(map[string]struct{})
 
 	for _, residual := range register.Residual {
 		id := residual.Suite + "/" + residual.File + "/" + residual.Name
-		if residuals[id] {
+		if _, exists := residuals[id]; exists {
 			c.problem(id, "duplicate residual evidence")
 		}
 
-		residuals[id] = true
+		residuals[id] = struct{}{}
 		c.choice(id, residual.Suite, "qt3", "xslt30")
 		c.choice(id, residual.Disposition, "fixed", "resource-limit", "fixture", "optional-feature", "permitted-outcome")
 		c.text(id, residual.File, residual.Name, residual.Reason)
@@ -343,13 +350,13 @@ func (c *conformanceCheck) residualConditions(id string, residual residualEviden
 		c.problem(id, "retained failures require exact profile and typed cause conditions; fixed cases require none")
 	}
 
-	seen := make(map[string]bool)
+	seen := make(map[string]struct{})
 	for _, failure := range residual.Failures {
-		if seen[failure.Profile] || !slices.Contains(languageProofProfileKeys(), failure.Profile) {
+		if _, exists := seen[failure.Profile]; exists || !slices.Contains(languageProofProfileKeys(), failure.Profile) {
 			c.problem(id, "unknown or duplicate residual failure profile")
 		}
 
-		seen[failure.Profile] = true
+		seen[failure.Profile] = struct{}{}
 		c.choice(id, failure.Kind, "assertion", suiteResourceLimit, suiteHarnessFailure)
 		c.choice(id, failure.Cause, "assertion-mismatch", "execution-error", "assertion-error", "unsupported-warning", "harness-error", "resource-bound")
 
@@ -361,13 +368,13 @@ func (c *conformanceCheck) residualConditions(id string, residual residualEviden
 			c.problem(id, "non-resource failures require a stable diagnostic signature; timing-dependent resource text must be excluded")
 		}
 
-		codes := make(map[string]bool)
+		codes := make(map[string]struct{})
 		for _, code := range failure.ErrorCodes {
-			if codes[code] {
+			if _, exists := codes[code]; exists {
 				c.problem(id, "duplicate residual error-code alternative")
 			}
 
-			codes[code] = true
+			codes[code] = struct{}{}
 		}
 	}
 }
@@ -376,22 +383,25 @@ func languageVerificationDocument(id string) bool {
 	return slices.Contains([]string{normXPath20, normXPath30, normXPath31, "FO20", "FO30", "FO31", "XSLT20", "XSLT30", "SER20", "SER30", "SER31"}, id)
 }
 
-func (c *conformanceCheck) normativeEvidence(r normativeRequirement, ids map[string]normativeRequirement, visiting map[string]bool) {
-	if visiting[r.ID] {
+func (c *conformanceCheck) normativeEvidence(r normativeRequirement, ids map[string]normativeRequirement, visiting map[string]struct{}) {
+	if _, exists := visiting[r.ID]; exists {
 		c.problem(r.ID, "cyclic normative evidence inheritance")
 		return
 	}
 
-	if c.evidenceChecked[r.ID] {
+	if _, exists := c.evidenceChecked[r.ID]; exists {
 		return
 	}
 
 	if c.evidenceChecked == nil {
-		c.evidenceChecked = make(map[string]bool)
+		c.evidenceChecked = make(map[string]struct{})
 	}
 
-	visiting[r.ID] = true
-	defer func() { delete(visiting, r.ID); c.evidenceChecked[r.ID] = true }()
+	visiting[r.ID] = struct{}{}
+	defer func() {
+		delete(visiting, r.ID)
+		c.evidenceChecked[r.ID] = struct{}{}
+	}()
 
 	if languageVerificationDocument(r.Norm.Document) && r.Applies.Status != normNotApplicable && (r.Tests.Status != conformanceCovered || r.Interop.Status != conformanceCovered || len(r.Evidence)+len(r.EvidenceFrom) == 0) {
 		c.problem(r.ID, "language verification requires closed case-level local and independent evidence")
@@ -405,7 +415,7 @@ func (c *conformanceCheck) normativeEvidence(r normativeRequirement, ids map[str
 	c.caseEvidence(r)
 }
 
-func (c *conformanceCheck) evidenceInheritance(r normativeRequirement, ids map[string]normativeRequirement, visiting map[string]bool) {
+func (c *conformanceCheck) evidenceInheritance(r normativeRequirement, ids map[string]normativeRequirement, visiting map[string]struct{}) {
 	c.unique(r.ID, r.EvidenceFrom)
 
 	children := normativeEvidenceChildren(r, ids)
@@ -446,16 +456,16 @@ func (c *conformanceCheck) evidenceInheritance(r normativeRequirement, ids map[s
 }
 
 func (c *conformanceCheck) caseEvidence(r normativeRequirement) {
-	seen := make(map[string]bool)
+	seen := make(map[string]struct{})
 
 	for _, evidence := range r.Evidence {
 		c.text(r.ID, evidence.Obligation)
 
-		if seen[evidence.Obligation] || len(evidence.Positive) == 0 || len(evidence.Negative) == 0 {
+		if _, exists := seen[evidence.Obligation]; exists || len(evidence.Positive) == 0 || len(evidence.Negative) == 0 {
 			c.problem(r.ID, "evidence needs distinct obligations and positive/negative witnesses")
 		}
 
-		seen[evidence.Obligation] = true
+		seen[evidence.Obligation] = struct{}{}
 		for _, proofs := range [][]normativeProof{evidence.Positive, evidence.Negative} {
 			for _, proof := range proofs {
 				c.evidenceProof(r, proof)
@@ -591,13 +601,19 @@ func (c *conformanceCheck) document(document standardDocument) {
 		c.problem(document.ID, "errata reviewed_on must be an ISO date")
 	}
 
-	corrections := make(map[string]bool)
+	corrections := make(map[string]struct{})
+
 	for _, item := range document.Errata.Items {
-		if item.ID == "" || corrections[item.ID] {
+		duplicate := item.ID == ""
+		if !duplicate {
+			_, duplicate = corrections[item.ID]
+		}
+
+		if duplicate {
 			c.problem(document.ID, "empty/duplicate correction ID")
 		}
 
-		corrections[item.ID] = true
+		corrections[item.ID] = struct{}{}
 		c.text(document.ID, item.Clause, item.Reason)
 		c.choice(document.ID, item.Disposition, "selected", "incorporated", "proposed", "informative", "rejected", "held", "other-role")
 	}
@@ -642,7 +658,7 @@ func (c *conformanceCheck) profile(profile conformanceProfile) {
 	}
 
 	for _, id := range profile.ScopeIDs {
-		if !c.scopes[id] {
+		if _, exists := c.scopes[id]; !exists {
 			c.problem(profile.ID, "unknown capability "+id)
 		}
 	}
@@ -653,17 +669,17 @@ func (c *conformanceCheck) profile(profile conformanceProfile) {
 }
 
 func (c *conformanceCheck) matrix(profile conformanceProfile, requirements map[string]normativeRequirement) {
-	documents := make(map[string]bool)
-	linked := make(map[string]bool)
-	modes := make(map[string]bool)
+	documents := make(map[string]struct{})
+	linked := make(map[string]struct{})
+	modes := make(map[string]struct{})
 	unmapped := false
 
 	for _, row := range profile.Matrix {
-		if documents[row.Document] || !slices.Contains(profile.Documents, row.Document) {
+		if _, exists := documents[row.Document]; exists || !slices.Contains(profile.Documents, row.Document) {
 			c.problem(profile.ID, "duplicate/unknown matrix document "+row.Document)
 		}
 
-		documents[row.Document] = true
+		documents[row.Document] = struct{}{}
 		c.matrixRow(profile, row)
 
 		for _, id := range row.Requirements {
@@ -673,7 +689,7 @@ func (c *conformanceCheck) matrix(profile conformanceProfile, requirements map[s
 				continue
 			}
 
-			linked[id], modes[r.Applies.Mode] = true, true
+			linked[id], modes[r.Applies.Mode] = struct{}{}, struct{}{}
 		}
 
 		if len(row.Unmapped) > 0 {
@@ -688,20 +704,22 @@ func (c *conformanceCheck) matrix(profile conformanceProfile, requirements map[s
 	}
 
 	for _, document := range profile.Documents {
-		if !documents[document] {
+		if _, exists := documents[document]; !exists {
 			c.problem(profile.ID, "document missing from role matrix: "+document)
 		}
 	}
 
 	for _, mode := range profile.Modes {
-		if !modes[mode] {
+		if _, exists := modes[mode]; !exists {
 			c.problem(profile.ID, "mode has no assessed normative obligation: "+mode)
 		}
 	}
 
 	for id, r := range requirements {
-		if r.Applies.Profile == profile.ID && !linked[id] {
-			c.problem(profile.ID, "normative obligation missing from matrix: "+id)
+		if r.Applies.Profile == profile.ID {
+			if _, exists := linked[id]; !exists {
+				c.problem(profile.ID, "normative obligation missing from matrix: "+id)
+			}
 		}
 	}
 
@@ -750,13 +768,19 @@ func (c *conformanceCheck) normativeSource(r normativeRequirement) {
 }
 
 func (c *conformanceCheck) unique(id string, values []string) {
-	seen := make(map[string]bool)
+	seen := make(map[string]struct{})
+
 	for _, value := range values {
-		if strings.TrimSpace(value) == "" || seen[value] {
+		duplicate := strings.TrimSpace(value) == ""
+		if !duplicate {
+			_, duplicate = seen[value]
+		}
+
+		if duplicate {
 			c.problem(id, "empty/duplicate matrix, mode, document or correction entry")
 		}
 
-		seen[value] = true
+		seen[value] = struct{}{}
 	}
 }
 
@@ -933,7 +957,7 @@ func (c *conformanceCheck) test(id string, test conformanceTest) {
 
 	symbols, parsed := c.symbols[path]
 	if !parsed {
-		symbols = make(map[string]bool)
+		symbols = make(map[string]struct{})
 		c.symbols[path] = symbols
 
 		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
@@ -944,12 +968,12 @@ func (c *conformanceCheck) test(id string, test conformanceTest) {
 
 		for _, decl := range file.Decls {
 			if fn, ok := decl.(*ast.FuncDecl); ok && conformanceTestFunction(file, fn) {
-				symbols[fn.Name.Name] = true
+				symbols[fn.Name.Name] = struct{}{}
 			}
 		}
 	}
 
-	if !symbols[test.Name] {
+	if _, exists := symbols[test.Name]; !exists {
 		c.problem(id, "missing test "+test.File+":"+test.Name)
 	}
 }
@@ -1012,7 +1036,7 @@ func (c *conformanceCheck) api(id, reference string) {
 
 	symbols, parsed := c.symbols[dir]
 	if !parsed {
-		symbols = make(map[string]bool)
+		symbols = make(map[string]struct{})
 		c.symbols[dir] = symbols
 
 		paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
@@ -1036,17 +1060,17 @@ func (c *conformanceCheck) api(id, reference string) {
 		}
 	}
 
-	if !symbols[symbol] {
+	if _, exists := symbols[symbol]; !exists {
 		c.problem(id, "missing exported API "+reference)
 	}
 }
 
-func collectConformanceAPIs(file *ast.File, symbols map[string]bool) {
+func collectConformanceAPIs(file *ast.File, symbols map[string]struct{}) {
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch decl := node.(type) {
 		case *ast.FuncDecl:
 			if name := conformanceAPIName(decl); name != "" {
-				symbols[name] = true
+				symbols[name] = struct{}{}
 			}
 
 			return false
@@ -1081,12 +1105,12 @@ func conformanceAPIName(decl *ast.FuncDecl) string {
 	return ""
 }
 
-func collectConformanceType(decl *ast.TypeSpec, symbols map[string]bool) {
+func collectConformanceType(decl *ast.TypeSpec, symbols map[string]struct{}) {
 	if !ast.IsExported(decl.Name.Name) {
 		return
 	}
 
-	symbols[decl.Name.Name] = true
+	symbols[decl.Name.Name] = struct{}{}
 
 	structure, ok := decl.Type.(*ast.StructType)
 	if !ok {
@@ -1096,7 +1120,7 @@ func collectConformanceType(decl *ast.TypeSpec, symbols map[string]bool) {
 	for _, field := range structure.Fields.List {
 		for _, name := range field.Names {
 			if ast.IsExported(name.Name) {
-				symbols[decl.Name.Name+"."+name.Name] = true
+				symbols[decl.Name.Name+"."+name.Name] = struct{}{}
 			}
 		}
 	}

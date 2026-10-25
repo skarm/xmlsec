@@ -12,47 +12,79 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
-// ResponseOptions is a relying party policy for a SOLICITED POST response.
-// ExpectedRequestID and trusted ACS/audience/issuer are never read from the
-// untrusted response as a substitute for stored request state.
+// ResponseOptions supplies relying-party policy for a solicited POST response.
+// The application must obtain ExpectedRequestID, assertion consumer endpoint,
+// audience and issuer from trusted configuration and pending state. Values from
+// the received response cannot replace those expectations.
 type ResponseOptions struct {
-	Issuer, Audience, Destination, ExpectedRequestID string
+	// Issuer is the expected identity provider's entity identifier from trusted
+	// configuration.
+	Issuer string
+	// Audience is the expected service provider's entity identifier.
+	Audience string
+	// Destination is the trusted assertion consumer endpoint URL.
+	Destination string
+	// ExpectedRequestID is the soliciting request ID retained in trusted pending state.
+	ExpectedRequestID string
 	// At is the explicit trusted verification time.
 	At time.Time
 	// RequestIssueInstant is required with ForceAuthn and binds freshness to the original request.
 	RequestIssueInstant time.Time
-	Limits              Limits
-	Policy              xmldsig.Policy
-	// AllowUnsignedResponse permits an unsigned Response envelope. An Assertion
-	// signature remains required; unsigned envelope fields are not authenticated.
+	// Limits bounds message age, assertion lifetime and attribute values.
+	Limits Limits
+	// Policy sets response and assertion signature algorithms and key limits.
+	Policy xmldsig.Policy
+	// AllowUnsignedResponse permits a Response without an envelope signature. The
+	// Assertion signature remains required. Unsigned envelope fields are unauthenticated.
 	AllowUnsignedResponse bool
-	// AllowedNameIDFormats restricts exact format URIs; empty disables this membership check.
+	// AllowedNameIDFormats restricts subject identifier formats to exact URIs. Empty
+	// disables this membership check.
 	AllowedNameIDFormats []string
-	// ExpectedAuthnContexts restricts exact context URIs; empty disables this membership check.
+	// ExpectedAuthnContexts restricts authentication contexts to exact URIs. Empty
+	// disables this membership check.
 	ExpectedAuthnContexts []string
 	// ForceAuthn requires authentication no earlier than RequestIssueInstant,
 	// subject to the configured clock skew.
 	ForceAuthn bool
-	// ExpectedAddress is the trusted client address, checked when a confirmation carries Address.
+	// ExpectedAddress supplies the trusted client address to require when subject
+	// confirmation includes Address.
 	ExpectedAddress string
 }
 
 // Attribute is a SAML attribute and its string values.
 type Attribute struct {
-	Name, NameFormat, FriendlyName string
-	Values                         []string
+	// Name is the required attribute name.
+	Name string
+	// NameFormat optionally identifies the naming scheme by URI.
+	NameFormat string
+	// FriendlyName is an optional human-readable attribute label.
+	FriendlyName string
+	// Values contains the attribute's string values.
+	Values []string
 }
 
-// VerifiedAssertion contains only values extracted from the verified Assertion
-// snapshot. It does not itself consume replay state or create an application
-// session. saml/sp performs the atomic request/assertion/response consumption.
+// VerifiedAssertion exposes values from the verified Assertion snapshot.
+// It does not consume replay state or create an application session. Package
+// saml/sp atomically consumes request, assertion and response identifiers after
+// protocol and browser-correlation checks.
 type VerifiedAssertion struct {
-	assertion                                                       document.Element
-	responseID, assertionID, issuer, audience, recipient, requestID string
-	nameID, nameIDFormat, sessionIndex, contextClass                string
-	instant, authnInstant, expires, sessionExpires                  time.Time
-	attributes                                                      []Attribute
-	responseSigned                                                  bool
+	assertion      document.Element
+	responseID     string
+	assertionID    string
+	issuer         string
+	audience       string
+	recipient      string
+	requestID      string
+	nameID         string
+	nameIDFormat   string
+	sessionIndex   string
+	contextClass   string
+	instant        time.Time
+	authnInstant   time.Time
+	expires        time.Time
+	sessionExpires time.Time
+	attributes     []Attribute
+	responseSigned bool
 }
 
 // VerifyResponse authenticates and validates a solicited response and its signed assertion
@@ -471,7 +503,7 @@ func parseAttributes(a document.Element, l Limits) ([]Attribute, error) {
 		return nil, ErrProfile
 	}
 
-	seen := map[[2]string]bool{}
+	seen := map[[2]string]struct{}{}
 
 	out := make([]Attribute, 0, len(cs))
 	for _, c := range cs {
@@ -486,7 +518,7 @@ func parseAttributes(a document.Element, l Limits) ([]Attribute, error) {
 	return out, nil
 }
 
-func parseAttribute(c document.Element, l Limits, seen map[[2]string]bool) (Attribute, error) {
+func parseAttribute(c document.Element, l Limits, seen map[[2]string]struct{}) (Attribute, error) {
 	if c.Name() != xmlutil.Name(AssertionNamespace, "Attribute") || xmlutil.Attrs(c, []string{"Name"}, []string{"NameFormat", "FriendlyName"}) != nil {
 		return Attribute{}, ErrProfile
 	}
@@ -499,11 +531,11 @@ func parseAttribute(c document.Element, l Limits, seen map[[2]string]bool) (Attr
 	}
 
 	friendly := xmlutil.Attr(c, "FriendlyName")
-	if len(name) == 0 || len(name) > 1024 || !xmlutil.URI(format) || len(friendly) > 1024 || seen[[2]string{name, format}] {
+	if _, exists := seen[[2]string{name, format}]; len(name) == 0 || len(name) > 1024 || !xmlutil.URI(format) || len(friendly) > 1024 || exists {
 		return Attribute{}, ErrProfile
 	}
 
-	seen[[2]string{name, format}] = true
+	seen[[2]string{name, format}] = struct{}{}
 
 	values, e := xmlutil.Children(c)
 	if e != nil || len(values) < 1 || len(values) > l.MaxValuesPerAttribute {
@@ -692,9 +724,13 @@ func copyAttributes(a []Attribute) []Attribute {
 // ResponseAuthenticated returns whether the response envelope itself was authenticated.
 func (r *VerifiedAssertion) ResponseAuthenticated() bool { return r != nil && r.responseSigned }
 
-// StatusError denotes an authenticated non-success Response, never a login.
-// Detailed remote StatusMessage/StatusDetail are not surfaced as trusted text.
-type StatusError struct{ Code string }
+// StatusError reports an authenticated non-success response. It does not indicate
+// login success. Remote StatusMessage and StatusDetail are not exposed as trusted
+// text.
+type StatusError struct {
+	// Code is the authenticated non-success SAML status code URI.
+	Code string
+}
 
 // Error returns the diagnostic error message.
 func (e *StatusError) Error() string { return "SAML response status: " + e.Code }

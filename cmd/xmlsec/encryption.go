@@ -60,26 +60,64 @@ func runEncryption(ctx context.Context, args []string, stdin io.Reader, stdout, 
 	}
 	defer cancel()
 
-	options := encryptionCommand{command: cmd, input: *input, output: *output, key: *keyFile, transport: *transport, scope: *scope, algorithm: *algorithm, wrap: *wrap, keyName: *name, oaepHash: *oaepHash, labelFile: *labelFile, maximum: *maximum, id: *id, idName: document.Name{Space: *idNS, Local: *idAttr}, index: *index, resources: *resources, uri: *uri, cipherOut: *cipherOut, keyFlags: keyFlags, allowLegacy: *allowLegacy}
+	options := encryptionCommand{
+		command:     cmd,
+		input:       *input,
+		output:      *output,
+		key:         *keyFile,
+		transport:   *transport,
+		scope:       *scope,
+		algorithm:   *algorithm,
+		wrap:        *wrap,
+		keyName:     *name,
+		oaepHash:    *oaepHash,
+		labelFile:   *labelFile,
+		maximum:     *maximum,
+		id:          *id,
+		idName:      document.Name{Space: *idNS, Local: *idAttr},
+		index:       *index,
+		resources:   *resources,
+		uri:         *uri,
+		cipherOut:   *cipherOut,
+		keyFlags:    keyFlags,
+		allowLegacy: *allowLegacy,
+	}
 
 	return options.run(ctx, stdin, stdout)
 }
 
 type encryptionOperations struct {
-	encryptBytes                                                   func([]byte) (*document.Document, error)
-	decryptBytes                                                   func(*document.Document) ([]byte, error)
-	encryptDocument, decryptDocument                               func(*document.Document) (*document.Document, error)
-	encryptElement, decryptElement, encryptContent, decryptContent func(*document.Document, document.Element) (*document.Document, document.Element, error)
+	encryptBytes    func([]byte) (*document.Document, error)
+	decryptBytes    func(*document.Document) ([]byte, error)
+	encryptDocument func(*document.Document) (*document.Document, error)
+	decryptDocument func(*document.Document) (*document.Document, error)
+	encryptElement  func(*document.Document, document.Element) (*document.Document, document.Element, error)
+	decryptElement  func(*document.Document, document.Element) (*document.Document, document.Element, error)
+	encryptContent  func(*document.Document, document.Element) (*document.Document, document.Element, error)
+	decryptContent  func(*document.Document, document.Element) (*document.Document, document.Element, error)
 }
 
 type encryptionCommand struct {
-	command, input, output, key, transport    string
-	scope, algorithm, wrap, keyName, oaepHash string
-	labelFile, id, resources, uri, cipherOut  string
-	idName                                    document.Name
-	maximum, index                            int
-	keyFlags                                  *privateKeyFlags
-	allowLegacy                               bool
+	command     string
+	input       string
+	output      string
+	key         string
+	transport   string
+	scope       string
+	algorithm   string
+	wrap        string
+	keyName     string
+	oaepHash    string
+	labelFile   string
+	id          string
+	resources   string
+	uri         string
+	cipherOut   string
+	idName      document.Name
+	maximum     int
+	index       int
+	keyFlags    *privateKeyFlags
+	allowLegacy bool
 }
 
 func (c encryptionCommand) run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
@@ -197,7 +235,11 @@ func (c encryptionCommand) options(ctx context.Context) (xmlenc.Options, error) 
 			return opt, usageError("cipher manifest must contain exactly one URI/path entry")
 		}
 
-		opt.External = &xmlenc.ExternalCipherReference{URI: entries[0].URI, Resolver: resolver, MaxBytes: execution(ctx).xml.MaxBytes}
+		opt.External = &xmlenc.ExternalCipherReference{
+			URI:      entries[0].URI,
+			Resolver: resolver,
+			MaxBytes: execution(ctx).xml.MaxBytes,
+		}
 	}
 
 	return opt, nil

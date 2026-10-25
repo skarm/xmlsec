@@ -190,7 +190,7 @@ type execContext struct {
 	fnScratchRoot                *xdm.Element                       // fnScratchDoc's document element; always childless
 	paramDocOutputDefs           map[*resultDocumentInst]*OutputDef // scoped parameter-document output defs
 	paramDocCache                map[string]parameterDocumentResult
-	paramDocPresences            map[*resultDocumentInst]paramDocPresence // scoped parameter-document plain-boolean presence flags
+	paramDocPresences            map[*resultDocumentInst]paramDocPresence // scoped parameter-document presence sets
 	primaryCharacterMaps         []string                                 // character map names from xsl:result-document targeting primary output
 	primaryResolvedCharMap       map[rune]string                          // resolved character map from parameter-document for primary output
 	primaryOutputOverrides       *OutputDef                               // serialization param overrides from primary xsl:result-document
@@ -204,7 +204,7 @@ type execContext struct {
 	globalValueCache             map[globalBinding]xdm.Sequence           // cached values by global declaration identity
 	globalContextAbsent          bool                                     // true when global context item is absent (select evaluated to empty)
 	globalContextItem            xdm.Item                                 // explicit global context item (overrides sourceDoc for global var/param eval); nil = use sourceDoc
-	traceWriter                  io.Writer                                // destination for fn:trace output (nil = os.Stderr)
+	traceWriter                  io.Writer                                // destination for fn:trace output (nil discards output)
 	// xmlSpacePreserveMemo caches inheritedXMLSpace's ancestor-walk result
 	// (elem -> whether xml:space="preserve" is in scope) for the
 	// retained-whitespace case, where the same element's whitespace-only text

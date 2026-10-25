@@ -14,7 +14,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	valuepkg "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
+	lexical "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 )
 
 func lookupConstructor(requestedName string) (*builtinFunc, bool) {
@@ -248,9 +248,9 @@ func (f lexicalCheck) MatchString(s string) bool { return f(s) }
 func reNCName(s string) bool { return xmlchar.IsValidNCName(s) }
 func reName(s string) bool   { return xmlchar.IsValidName(s) }
 func reNMTOKEN(s string) bool {
-	return valuepkg.ValidateBuiltin(s, lexicon.TypeNMToken, valuepkg.Version11) == nil
+	return lexical.ValidateBuiltin(s, lexicon.TypeNMToken, lexical.Version11) == nil
 }
-func reLang(s string) bool { return valuepkg.ValidLanguage(s) }
+func reLang(s string) bool { return lexical.ValidLanguage(s) }
 
 // makeXSStringRestriction returns a constructor for a derived string type.
 func makeXSStringRestriction(typeName string, validate lexicalCheck) func(context.Context, []xdm.Sequence) (xdm.Sequence, error) {
@@ -354,23 +354,23 @@ func castToBuiltinList(ctx context.Context, ec *evalContext, value xdm.AtomicVal
 }
 
 func reGDay(s string) bool {
-	return valuepkg.ValidateBuiltin(s, lexicon.TypeGDay, valuepkg.Version11) == nil
+	return lexical.ValidateBuiltin(s, lexicon.TypeGDay, lexical.Version11) == nil
 }
 
 func reGMonth(s string) bool {
-	return valuepkg.ValidateBuiltin(s, lexicon.TypeGMonth, valuepkg.Version11) == nil
+	return lexical.ValidateBuiltin(s, lexicon.TypeGMonth, lexical.Version11) == nil
 }
 
 func reGMonthDay(s string) bool {
-	return valuepkg.ValidateBuiltin(s, lexicon.TypeGMonthDay, valuepkg.Version11) == nil
+	return lexical.ValidateBuiltin(s, lexicon.TypeGMonthDay, lexical.Version11) == nil
 }
 
 func reGYear(s string) bool {
-	return valuepkg.ValidateBuiltin(s, lexicon.TypeGYear, valuepkg.Version11) == nil
+	return lexical.ValidateBuiltin(s, lexicon.TypeGYear, lexical.Version11) == nil
 }
 
 func reGYearMonth(s string) bool {
-	return valuepkg.ValidateBuiltin(s, lexicon.TypeGYearMonth, valuepkg.Version11) == nil
+	return lexical.ValidateBuiltin(s, lexicon.TypeGYearMonth, lexical.Version11) == nil
 }
 
 // validateGregorianValue performs additional validation beyond regex matching.

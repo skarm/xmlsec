@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/document"
+
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -50,12 +51,15 @@ const (
 	Response Kind = "SAMLResponse"
 )
 
-// Options sets Redirect signature policy and query, inflation and XML limits.
+// Options selects Redirect signature policy and limits for the query, decompression
+// and XML parsing.
 type Options struct {
 	// SignatureMethod defaults to RSA-SHA256 for creation. Verification reads SigAlg from
 	// the query.
 	SignatureMethod string
-	Policy          xmldsig.Policy
+	// Policy sets accepted signature algorithms and key limits. Zero selects
+	// xmldsig.DefaultPolicy.
+	Policy xmldsig.Policy
 	// MaxQueryBytes bounds the encoded query; zero uses 128 KiB.
 	MaxQueryBytes int
 	// MaxCompressedBytes bounds the compressed message; zero uses 64 KiB.
@@ -67,18 +71,21 @@ type Options struct {
 	XMLLimits document.Limits
 }
 
-// RedirectResult proves integrity of the exact received binding bytes with an
-// explicitly trusted key. It does not represent SSO success or a VerifiedAssertion.
+// RedirectResult authenticates the exact received binding bytes with an explicitly
+// trusted key. SSO acceptance still requires protocol validation and replay checks;
+// this result is not a VerifiedAssertion.
 type RedirectResult struct {
-	doc           *document.Document
-	kind          Kind
-	relay, method string
-	hasRelay      bool
+	doc      *document.Document
+	kind     Kind
+	relay    string
+	method   string
+	hasRelay bool
 }
 
 type queryPart struct {
-	raw, value string
-	size       int
+	raw   string
+	value string
+	size  int
 }
 
 // VerifyRedirect authenticates the original URL-encoded values before DEFLATE
@@ -357,6 +364,32 @@ func (r *RedirectResult) SignatureMethod() string {
 	return r.method
 }
 
+// Keep at most four idle compressors; bursts never wait for an idle writer.
+// Reset detaches the previous output and starts an independent DEFLATE stream.
+// The retained compression workspace is bounded independently of caller input.
+//
+//nolint:gochecknoglobals // Bounded workspace reuse, not a shared protocol policy.
+var redirectCompressors = make(chan *flate.Writer, 4)
+
+func redirectCompressor(dst io.Writer) (*flate.Writer, error) {
+	select {
+	case writer := <-redirectCompressors:
+		writer.Reset(dst)
+		return writer, nil
+	default:
+		return flate.NewWriter(dst, flate.DefaultCompression)
+	}
+}
+
+func releaseRedirectCompressor(writer *flate.Writer) {
+	writer.Reset(io.Discard)
+
+	select {
+	case redirectCompressors <- writer:
+	default:
+	}
+}
+
 // SignRedirect returns the raw query component, NOT an endpoint URL. The endpoint
 // must come from trusted configuration/metadata, not an arbitrary RelayState.
 // Any direct ds:Signature on the protocol root is removed in a private snapshot;
@@ -420,10 +453,12 @@ func SignRedirect(ctx context.Context, d *document.Document, kind Kind, relay *s
 	base64Writer := base64.NewEncoder(base64.StdEncoding, &queryBase64Writer{dst: queryWriter})
 	compressed := &streamio.Writer{Context: ctx, Target: base64Writer, Limit: int64(opt.MaxCompressedBytes), LimitError: ErrPolicy}
 
-	compressor, err := flate.NewWriter(compressed, flate.DefaultCompression)
+	compressor, err := redirectCompressor(compressed)
 	if err != nil {
 		return "", err
 	}
+
+	defer releaseRedirectCompressor(compressor)
 
 	if _, err := snapshot.WriteXML(ctx, compressor, opt.MaxMessageBytes); err != nil {
 		_ = compressor.Close()
@@ -526,8 +561,9 @@ func kindOf(d *document.Document) (Kind, error) {
 // redirectBase64Reader decodes URL escapes without collecting a complete field.
 // It rejects all whitespace and data after Base64 padding, even across reads.
 type redirectBase64Reader struct {
-	source        string
-	size, padding int
+	source  string
+	size    int
+	padding int
 }
 
 func (r *redirectBase64Reader) Read(dst []byte) (int, error) {

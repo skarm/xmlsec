@@ -5,9 +5,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 // EncryptBytesWithKey encrypts bytes with an explicitly supplied symmetric data key.

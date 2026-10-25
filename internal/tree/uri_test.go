@@ -24,7 +24,10 @@ const (
 // Public integration, inheritance and sparse-set behavior are tested externally
 // in c14n_test. No additional exported URI API exists merely for these tests.
 func TestRemoveDotSegmentsAppendixA(t *testing.T) {
-	cases := []struct{ in, want string }{
+	cases := []struct {
+		in   string
+		want string
+	}{
 		{"no/.././/pseudo-netpath/seg/file.ext", "pseudo-netpath/seg/file.ext"},
 		{"no/..//.///pseudo-netpath/seg/file.ext", "pseudo-netpath/seg/file.ext"},
 		{"yes/no//..//.///pseudo-netpath/seg/file.ext", "yes/pseudo-netpath/seg/file.ext"},
@@ -96,7 +99,11 @@ func TestRemoveDotSegmentsAppendixA(t *testing.T) {
 }
 
 func TestJoinURIReferences(t *testing.T) {
-	cases := []struct{ base, ref, want string }{
+	cases := []struct {
+		base string
+		ref  string
+		want string
+	}{
 		{"abc/", name2, ""},
 		{name2, name2, name3},
 		{"..", "..", name3},

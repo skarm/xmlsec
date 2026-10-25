@@ -23,7 +23,12 @@ func TestRFC3394Vectors(t *testing.T) {
 		kek192 = kek128 + "1011121314151617"
 		kek256 = kek192 + "18191a1b1c1d1e1f"
 	)
-	for _, tc := range []struct{ section, kek, key, wrapped string }{
+	for _, tc := range []struct {
+		section string
+		kek     string
+		key     string
+		wrapped string
+	}{
 		{"4.1", kek128, key128, "1fa68b0a8112b447aef34bd8fb5a7b829d3e862371d2cfe5"},
 		{"4.2", kek192, key128, "96778b25ae6ca435f92b5b97c050aed2468ab8a17ad84e5d"},
 		{"4.3", kek256, key128, "64e8c3f9ce0f5ba263e9777905818a2a93c8191e7d6e8ae7"},
@@ -114,9 +119,10 @@ func (forbiddenCipher) Decrypt(_, _ []byte) { panic("unexpected AES operation") 
 // Cases exercise every partial octet and both sides of SHA's padding/block boundary.
 func TestConcatBitDigest(t *testing.T) {
 	for _, tc := range []struct {
-		algorithm       crypto.Hash
-		length          int
-		message, digest string
+		algorithm crypto.Hash
+		length    int
+		message   string
+		digest    string
 	}{
 		{crypto.SHA1, 0, "00", "da39a3ee5e6b4b0d3255bfef95601890afd80709"},
 		{crypto.SHA1, 1, "00", "bb6b3e18f0115b57925241676f5b1ae88747b08a"},

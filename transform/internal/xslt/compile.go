@@ -18,24 +18,32 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
-// Compiler configures XSLT 3.0 stylesheet compilation.
-// It is a value-style wrapper: fluent methods return updated copies
-// and the original is never mutated. The terminal method Compile
-// creates an internal compileCtx immediately; downstream compilation
-// uses that context, never the Compiler itself.
+// Compiler configures XSLT compilation with a processor profile, static parameters,
+// module resolvers and XML parsing policy. Fluent methods return updated configuration
+// copies; Compile creates separate mutable compilation state.
 type Compiler struct {
+	// cfg retains compiler options copied by fluent configuration methods.
 	cfg *xsltCompilerCfg
 }
 
 type xsltCompilerCfg struct {
+	// processorVersion selects the processor profile independently of module
+	// declarations.
 	processorVersion int
-	baseURI          string
-	uriResolver      URIResolver
-	packageResolver  PackageResolver
-	staticParams     *Parameters
+	// baseURI supplies the principal stylesheet's retrieval base.
+	baseURI string
+	// uriResolver authorizes and opens stylesheet modules.
+	uriResolver URIResolver
+	// packageResolver supplies packages requested by xsl:use-package.
+	packageResolver PackageResolver
+	// staticParams retains external static parameter bindings.
+	staticParams *Parameters
 
+	// maxResourceBytes bounds each retrieved resource; zero uses the default and negative
+	// disables this bound.
 	maxResourceBytes int64
 
+	// parseOptions selects XML parsing limits, byte encodings and DTD policy for modules.
 	parseOptions *xdm.ParseOptions
 }
 
@@ -372,7 +380,7 @@ type compiler struct {
 	moduleAliases              *[]*xdm.Element
 	modulePackageUses          *[]pendingPackageUse
 	includedDeclarationRoots   map[*xdm.Element]*xdm.Element
-	deferredLanguageChecks     map[*xdm.Element]bool
+	deferredLanguageChecks     map[*xdm.Element]struct{}
 	pendingLiteralResults      []pendingLiteralResult
 	staticImportScope          *staticImportScope
 	staticValueScopes          map[string]*staticImportScope
@@ -382,7 +390,7 @@ type compiler struct {
 	charMapModuleKeys          map[string]string               // character-map name -> moduleKey that first defined it (for XTSE1580)
 	moduleSources              map[*xdm.Document]*xdm.Document // original source of privately prepared modules
 	usedModes                  map[string]struct{}             // all mode names referenced (for XTSE3085)
-	outputAllowDupExplicit     map[string]bool                 // per-output-name: allow-duplicate-names explicitly set (compile-time merge bookkeeping, keyed like stylesheet.outputs)
+	outputAllowDupExplicit     map[string]struct{}             // per-output-name: allow-duplicate-names explicitly set (compile-time merge bookkeeping, keyed like stylesheet.outputs)
 	localTemplateNames         map[string]struct{}             // pre-scanned named templates in this module (for XTSE3055)
 	overrideDecls              map[string]struct{}             // "kind:name" of every xsl:override declaration so far (for XTSE3055)
 	localVarNames              map[string]struct{}             // pre-scanned variable names in this module (for XTSE3050)

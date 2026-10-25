@@ -13,7 +13,10 @@ import (
 
 // XMLItem borrows a node or supplies text to the sequence serializer.
 type XMLItem struct {
+	// Node supplies a borrowed XML node. When non-nil, the serializer uses it instead of
+	// Text.
 	Node Node
+	// Text supplies character data when Node is nil.
 	Text string
 }
 

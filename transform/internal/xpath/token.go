@@ -118,6 +118,8 @@ const (
 	TokenNodeFol // >> (node follows)
 )
 
+// String returns the token's lexical spelling or a numeric diagnostic label when
+// unknown.
 func (t TokenType) String() string {
 	names := [...]string{
 		TokenEOF:         "EOF",
@@ -209,11 +211,14 @@ func (t TokenType) String() string {
 
 // Token is a single lexical token from an XPath 3.1 expression.
 type Token struct {
-	Type        TokenType
+	// Type identifies the lexical token category.
+	Type TokenType
+	// Value retains token-specific text, such as a name or literal value.
 	Value       string
 	SpaceBefore bool // true when whitespace preceded this token
 }
 
+// String formats the token category and any retained value for diagnostics.
 func (t Token) String() string {
 	if t.Value != "" {
 		return fmt.Sprintf("%s(%q)", t.Type, t.Value)

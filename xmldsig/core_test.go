@@ -39,7 +39,10 @@ func TestLegacyXMLDSigFixtures(t *testing.T) {
 		t.Skip("legacy compatibility is disabled in FIPS mode")
 	}
 
-	for _, test := range []struct{ name, method string }{{"dsa", xmldsig.DSASHA1}, {"rsa", xmldsig.RSASHA1}} {
+	for _, test := range []struct {
+		name   string
+		method string
+	}{{"dsa", xmldsig.DSASHA1}, {"rsa", xmldsig.RSASHA1}} {
 		t.Run(test.name, func(t *testing.T) { testLegacyXMLDSigFixture(t, test.name, test.method) })
 	}
 }
@@ -176,7 +179,10 @@ func testLegacyMessageEncoding(t *testing.T, selected document.Element, key cryp
 	}
 
 	if method == xmldsig.DSASHA1 {
-		derSig, err := asn1.Marshal(struct{ R, S *big.Int }{new(big.Int).SetBytes(sig[:20]), new(big.Int).SetBytes(sig[20:])})
+		derSig, err := asn1.Marshal(struct {
+			R *big.Int
+			S *big.Int
+		}{new(big.Int).SetBytes(sig[:20]), new(big.Int).SetBytes(sig[20:])})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -261,10 +267,14 @@ func TestCoreForms(t *testing.T) {
 	obj := `<ds:Object Id="data" MimeType="text/xml"><p:item xmlns:p="urn:item">original</p:item><!--comment--></ds:Object>`
 
 	cases := []struct {
-		name, xml, targetLocal, targetID string
-		expectRoot, expectCovered        bool
-		bytes                            string
-		canonical                        bool
+		name          string
+		xml           string
+		targetLocal   string
+		targetID      string
+		expectRoot    bool
+		expectCovered bool
+		bytes         string
+		canonical     bool
 	}{
 		{"enveloping", coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData, c14n.Exclusive), obj), nameObject, nameData2, false, true, "", true},
 		{"sibling", `<root><item ID="data">original</item>` + coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData, c14n.Exclusive), "") + `<unsigned>mutable</unsigned></root>`, "item", nameData2, false, true, "", true},

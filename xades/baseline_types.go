@@ -11,8 +11,6 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
-// ObjectIdentifier carries a URI or a qualified OID identifier and its signed
-// descriptive claims. Qualifier is empty, OIDAsURN or OIDAsURI.
 const (
 	prefixXades141             = "xades141"
 	qualifierOIDAsURI          = "OIDAsURI"
@@ -21,160 +19,253 @@ const (
 	defaultBaselineSignatureID = "signature"
 )
 
+// ObjectIdentifier carries a URI or a qualified OID identifier and its signed
+// descriptive claims.
 type ObjectIdentifier struct {
-	Identifier, Qualifier, Description string
-	Documentation                      []string
+	// Identifier is the URI identifying the object or specification.
+	Identifier string
+	// Qualifier optionally selects the identifier interpretation, OIDAsURI or OIDAsURN.
+	Qualifier string
+	// Description is an optional human-readable description.
+	Description string
+	// Documentation lists optional documentation reference URIs.
+	Documentation []string
 }
 
-// DataObjectFormat qualifies one exact SignedInfo or authenticated Manifest
-// Reference through ObjectReference. It never selects an application payload.
+// DataObjectFormat attaches signed format claims to one exact SignedInfo or
+// authenticated Manifest Reference. ObjectReference binds the claim to that
+// Reference; it does not select the application's payload.
 type DataObjectFormat struct {
-	ObjectReference, Description, MIMEType, Encoding string
-	ObjectIdentifier                                 *ObjectIdentifier
+	// ObjectReference is the fragment URI of the authenticated Reference being described.
+	ObjectReference string
+	// Description is the optional signed description of the data object.
+	Description string
+	// MIMEType is the optional claimed media type of the data object.
+	MIMEType string
+	// Encoding is the optional claimed encoding URI of the data object.
+	Encoding string
+	// ObjectIdentifier optionally identifies the data object's format or specification.
+	ObjectIdentifier *ObjectIdentifier
 }
 
-// ProductionPlace carries signed address claims; it establishes no location.
+// ProductionPlace records signed address claims without establishing the signer's
+// physical location.
 type ProductionPlace struct {
-	City, StreetAddress, StateOrProvince, PostalCode, CountryName string
+	// City is the claimed city of signature production.
+	City string
+	// StreetAddress is the claimed street address of signature production.
+	StreetAddress string
+	// StateOrProvince is the claimed state or province of signature production.
+	StateOrProvince string
+	// PostalCode is the claimed postal code of signature production.
+	PostalCode string
+	// CountryName is the claimed country of signature production.
+	CountryName string
 }
 
-// PropertyValue supplies plain text or one complete qualifying-property element
-// of the required QName. XML preserves mixed content and namespaced attributes;
-// Text must be empty when XML is supplied. Both inputs are borrowed until return.
+// PropertyValue supplies plain text or a complete qualifying-property element of
+// the required name. XML preserves mixed content and namespaced attributes and
+// requires Text to be empty. Both inputs remain borrowed until the call returns.
 type PropertyValue struct {
+	// Text supplies plain property text when XML is absent.
 	Text string
-	XML  document.Element
+	// XML supplies the complete property element. When valid, Text must be empty.
+	XML document.Element
 }
 
-// CommitmentType qualifies an exact subset of authenticated data References,
-// or all signed data through All. Qualifiers are signer claims, not authority.
+// CommitmentType attaches a signed commitment to selected authenticated data
+// References, or to all signed data when All is true. Qualifiers remain signer
+// claims and establish no authority.
 type CommitmentType struct {
-	Identifier       ObjectIdentifier
+	// Identifier identifies the claimed commitment type.
+	Identifier ObjectIdentifier
+	// ObjectReferences lists the exact Reference fragment URIs covered by this commitment.
 	ObjectReferences []string
-	All              bool
-	Qualifiers       []PropertyValue
+	// All applies the commitment to all signed data and excludes ObjectReferences.
+	All bool
+	// Qualifiers supplies additional signed commitment claims without establishing their
+	// authority.
+	Qualifiers []PropertyValue
 }
 
-// PolicyNotice carries the signature policy's human-readable notice claim.
-// NoticeNumbers contain arbitrary-precision xs:integer lexical values.
+// PolicyNotice records a human-readable signature policy notice. NoticeNumbers uses
+// arbitrary-precision xs:integer strings.
 type PolicyNotice struct {
-	Organization  string
+	// Organization names the organization associated with NoticeNumbers.
+	Organization string
+	// NoticeNumbers contains notice identifiers as arbitrary-precision integer strings.
 	NoticeNumbers []string
-	ExplicitText  string
+	// ExplicitText contains the optional human-readable policy notice.
+	ExplicitText string
 }
 
-// PolicyQualifier selects exactly one of URI, Notice or Specification.
+// PolicyQualifier selects exactly one of XML, URI, Notice or Specification.
 type PolicyQualifier struct {
 	// XML is an alternative complete AnyType SigPolicyQualifier, preserving
 	// attributes, mixed content and domain-specific qualifier syntax.
-	XML           document.Element
-	URI           string
-	Notice        *PolicyNotice
+	XML document.Element
+	// URI supplies a policy document location without authorizing retrieval.
+	URI string
+	// Notice supplies a human-readable policy notice.
+	Notice *PolicyNotice
+	// Specification identifies the policy document's technical specification.
 	Specification *ObjectIdentifier
 }
 
-// SignaturePolicy selects an implied policy or an explicit policy document.
-// Explicit policy documents are supplied by the caller; no URI is fetched.
+// SignaturePolicy selects an implied policy or identifies an explicit policy document
+// supplied offline by the caller. No URI is fetched.
 type SignaturePolicy struct {
-	Implied      bool
-	Identifier   ObjectIdentifier
+	// Implied selects SignaturePolicyImplied and excludes explicit policy fields.
+	Implied bool
+	// Identifier identifies the explicit signature policy.
+	Identifier ObjectIdentifier
+	// DigestMethod selects the policy digest algorithm URI. Empty selects xmldsig.SHA256 when building.
 	DigestMethod string
-	Digest       []byte
-	Transforms   []reference.Transform
-	Qualifiers   []PolicyQualifier
+	// Digest contains the raw digest of the supplied policy document after its transforms.
+	// When building, nil computes it. A non-nil value must match the computed digest.
+	Digest []byte
+	// Transforms lists the explicit policy document transforms in execution order.
+	Transforms []reference.Transform
+	// Qualifiers contains additional policy references or notice claims.
+	Qualifiers []PolicyQualifier
 }
 
-// CertificateIdentifier supplies an additional SigningCertificateV2 digest
-// reference. Its DER is untrusted certificate material, not a path assertion.
-// Baseline generation never emits Cert.URI (EN319132-1 6.3(i)).
-// IssuerSerialV2 is omitted by default, as recommended by 6.3(j).
+// CertificateIdentifier supplies an additional SigningCertificateV2 digest binding
+// to untrusted certificate DER. It asserts no path relationship. Baseline generation
+// omits Cert.URI as required by EN 319 132-1 clause 6.3(i), and omits IssuerSerialV2
+// by default as recommended by clause 6.3(j).
 type CertificateIdentifier struct {
-	DER                 []byte
-	DigestMethod        string
+	// DER contains the exact untrusted certificate bytes to bind by digest.
+	DER []byte
+	// DigestMethod selects the certificate digest algorithm URI. Empty selects xmldsig.SHA256 when building.
+	DigestMethod string
+	// IncludeIssuerSerial emits an IssuerSerialV2 hint in addition to the certificate
+	// digest.
 	IncludeIssuerSerial bool
 }
 
-// BaselineProperties selects the signed claims generated by SignBaseline.
-// SigningTime is a required UTC signer claim, never proof of existence.
+// BaselineProperties supplies claims for SignBaseline. SigningTime is a required UTC
+// signer claim and provides no proof of existence.
 type BaselineProperties struct {
+	// SigningTime is the required signer-claimed time when SigningTimeLexical is empty.
 	SigningTime time.Time
 	// SigningTimeLexical is an alternative UTC xs:dateTime claim, preserving
 	// years/fractions outside the time.Time convenience profile. Set only one.
-	SigningTimeLexical       string
+	SigningTimeLexical string
+	// SigningCertificateDigest selects the signing certificate digest URI.
+	// Empty selects xmldsig.SHA256.
 	SigningCertificateDigest string
-	AdditionalCertificates   []CertificateIdentifier
-	DataObjects              []DataObjectFormat
-	ProductionPlace          *ProductionPlace
-	ClaimedRoles             []PropertyValue
+	// AdditionalCertificates adds digest bindings without asserting a certificate path.
+	AdditionalCertificates []CertificateIdentifier
+	// DataObjects contains signed format claims bound to exact authenticated References.
+	DataObjects []DataObjectFormat
+	// ProductionPlace optionally supplies signed address claims.
+	ProductionPlace *ProductionPlace
+	// ClaimedRoles contains signer-asserted role values without third-party authority.
+	ClaimedRoles []PropertyValue
 	// CertifiedRoles and SignedAssertions are authenticated encapsulations.
 	// No third-party validity or authority is established by this API.
-	CertifiedRoles   []PropertyValue
+	CertifiedRoles []PropertyValue
+	// SignedAssertions contains assertion encapsulations whose outer signature does not
+	// establish third-party trust.
 	SignedAssertions []PropertyValue
-	Commitments      []CommitmentType
-	DataTimestamps   []DataTimestampProperty
-	Policy           *SignaturePolicy
+	// Commitments contains signed commitment claims and their data Reference bindings.
+	Commitments []CommitmentType
+	// DataTimestamps supplies content timestamp tokens. TSA trust requires separate
+	// verification.
+	DataTimestamps []DataTimestampProperty
+	// Policy optionally supplies an implied or explicit signature policy claim.
+	Policy *SignaturePolicy
 }
 
-// PolicySpecificationDigest handles only the explicitly declared
-// SPDocDigestAsInSpecification policy transform. It is called after signature
-// authentication during verification. It must honor ctx and return the digest
-// of the caller-supplied policy bytes under the named specification.
+// PolicySpecificationDigest computes the explicitly selected
+// SPDocDigestAsInSpecification policy digest. During verification it is called
+// after signature authentication. It must honor ctx and hash the caller-supplied
+// policy document according to the named specification.
 type PolicySpecificationDigest func(ctx context.Context, specification ObjectIdentifier, document []byte, algorithm crypto.Hash) ([]byte, error)
 
-// BaselineVerifyOptions keeps XMLDSig coverage/resource decisions explicit.
-// CertificateValues are untrusted candidates for extra certificate references;
-// every reference must bind actual DER before a successful result is returned.
+// BaselineVerifyOptions supplies explicit XMLDSig coverage and resource policy.
+// CertificateValues provides untrusted candidates for additional certificate
+// references. Each reference must bind actual DER before verification succeeds.
 type BaselineVerifyOptions struct {
-	Signature                 xmldsig.SignatureOptions
-	DataTimestamps            DataTimestampLimits
-	CertificateValues         [][]byte
-	PolicyDocument            []byte
+	// Signature sets XMLDSig algorithms, required coverage and authorized external
+	// resources.
+	Signature xmldsig.SignatureOptions
+	// DataTimestamps bounds content timestamp parsing and input replay.
+	DataTimestamps DataTimestampLimits
+	// CertificateValues supplies untrusted DER candidates for additional certificate digest
+	// references.
+	CertificateValues [][]byte
+	// PolicyDocument contains the offline document used to check an explicit policy digest.
+	PolicyDocument []byte
+	// PolicySpecificationDigest implements the explicitly selected technical specification
+	// digest operation.
 	PolicySpecificationDigest PolicySpecificationDigest
 }
 
-// BaselineSignOptions composes the existing XMLDSig builder with baseline signed
-// properties. Template controls placement, data references and Objects. The
-// properties Object and its exact Reference are added by this API.
+// BaselineSignOptions combines an XMLDSig template with signed baseline properties.
+// Template selects placement, data References and Objects. SignBaseline adds the
+// properties Object and its exact Reference.
 type BaselineSignOptions struct {
-	Template           xmldsig.SignatureTemplate
+	// Template supplies signature placement, algorithms, data References and Objects.
+	Template xmldsig.SignatureTemplate
+	// SignedPropertiesID is the generated SignedProperties Id. Empty selects
+	// "signed-properties".
 	SignedPropertiesID string
-	Properties         BaselineProperties
-	Validation         BaselineVerifyOptions
+	// Properties supplies the signed baseline claims to generate.
+	Properties BaselineProperties
+	// Validation supplies coverage, resource and property checks for signature
+	// self-verification.
+	Validation BaselineVerifyOptions
 	// Preserve gives explicit trust requirements for existing nonempty signatures.
 	// Handles refer to the original doc snapshot.
 	Preserve []xmldsig.SignatureRequirement
 }
 
-// CertificateReference is an authenticated digest binding to exact DER. This
-// establishes neither a trusted path nor the certificate's validity or role.
+// CertificateReference binds an authenticated digest to exact certificate DER.
+// The binding establishes no certificate path, validity or role.
 type CertificateReference struct {
-	digestMethod                      string
-	digest, certificate, issuerSerial []byte
-	uri                               string
+	digestMethod string
+	digest       []byte
+	certificate  []byte
+	issuerSerial []byte
+	uri          string
 }
 
-func (r CertificateReference) DigestMethod() string   { return r.digestMethod }
-func (r CertificateReference) Digest() []byte         { return slices.Clone(r.digest) }
-func (r CertificateReference) CertificateDER() []byte { return slices.Clone(r.certificate) }
-func (r CertificateReference) IssuerSerialV2() []byte { return slices.Clone(r.issuerSerial) }
-func (r CertificateReference) URI() string            { return r.uri }
+// DigestMethod returns the certificate digest algorithm URI.
+func (r CertificateReference) DigestMethod() string { return r.digestMethod }
 
-// BaselineResult authenticates the selected XML signature, complete
-// SignedProperties and explicit certificate bindings. Additional signed claims
-// remain claims. It grants no PKIX, timestamp, role, policy or legal trust.
-// The existing closed enveloped APIs retain their own stricter contracts.
+// Digest returns an owned copy of the authenticated certificate digest.
+func (r CertificateReference) Digest() []byte { return slices.Clone(r.digest) }
+
+// CertificateDER returns an owned copy of the certificate bound by this reference. It
+// does not establish certificate trust.
+func (r CertificateReference) CertificateDER() []byte { return slices.Clone(r.certificate) }
+
+// IssuerSerialV2 returns an owned copy of the encoded issuer/serial hint, or nil when
+// absent.
+func (r CertificateReference) IssuerSerialV2() []byte { return slices.Clone(r.issuerSerial) }
+
+// URI returns the optional certificate reference URI without resolving it.
+func (r CertificateReference) URI() string { return r.uri }
+
+// BaselineResult authenticates the selected XML signature, complete SignedProperties
+// and explicit certificate bindings. Other signed values remain claims; the result
+// grants no PKIX, timestamp, role, policy or legal trust. Closed enveloped APIs
+// retain their separate, stricter contracts.
 type BaselineResult struct {
-	dataTimestamps             []DataTimestamp
-	basic                      *BasicResult
-	signingTime                string
-	certificates               []CertificateReference
-	data                       []DataObjectFormat
-	place                      *ProductionPlace
-	roles                      []document.Element
-	certifiedRoles, assertions []document.Element
-	commitments                []CommitmentType
-	policy                     *SignaturePolicy
-	unsigned                   document.Element
+	dataTimestamps []DataTimestamp
+	basic          *BasicResult
+	signingTime    string
+	certificates   []CertificateReference
+	data           []DataObjectFormat
+	place          *ProductionPlace
+	roles          []document.Element
+	certifiedRoles []document.Element
+	assertions     []document.Element
+	commitments    []CommitmentType
+	policy         *SignaturePolicy
+	unsigned       document.Element
 }
 
 // Basic returns the authenticated common signature/property/certificate core
@@ -190,6 +281,8 @@ func (r *BaselineResult) Basic() *BasicResult {
 	return r.basic
 }
 
+// CertificateReferences returns an independent slice of immutable certificate digest
+// bindings. The bindings do not establish PKIX trust.
 func (r *BaselineResult) CertificateReferences() []CertificateReference {
 	if r == nil {
 		return nil

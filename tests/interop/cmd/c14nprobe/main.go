@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/skarm/xmlsec/c14n"
@@ -110,8 +111,8 @@ func process(r request) (response, error) {
 	var b bytes.Buffer
 
 	opt := c14n.Options{Algorithm: r.Algorithm, WithComments: r.Comments, InclusivePrefixes: r.Prefixes}
-	if returned0, returned1, matched := processSelect(&r, d, &out, &b, &opt); matched {
-		return returned0, returned1
+	if err := writeSelection(&b, d, r, opt); err != nil {
+		return out, err
 	}
 
 	out.Canonical = b.Bytes()
@@ -160,44 +161,39 @@ func resolve(d *document.Document, s selector) (document.Node, error) {
 	return n, nil
 }
 
-func processSelect(r *request, d *document.Document, out *response, b *bytes.Buffer, opt *c14n.Options) (returned0 response, returned1 error, matched bool) {
+func writeSelection(dst io.Writer, doc *document.Document, r request, opt c14n.Options) error {
 	if r.Select != nil {
-		refs := make([]document.Node, 0, len(*r.Select))
-		for _, s := range *r.Select {
-			n, err := resolve(d, s)
+		nodes := make([]document.Node, 0, len(*r.Select))
+		for _, selection := range *r.Select {
+			node, err := resolve(doc, selection)
 			if err != nil {
-				return *out, err, true
+				return err
 			}
 
-			refs = append(refs, n)
+			nodes = append(nodes, node)
 		}
 
-		set, err := document.NewNodeSet(d, refs...)
+		set, err := document.NewNodeSet(doc, nodes...)
 		if err != nil {
-			return *out, err, true
+			return err
 		}
 
-		err = c14n.WriteNodeSet(context.Background(), b, set, *opt)
-		if err != nil {
-			return *out, err, true
-		}
-	} else if r.Subtree != nil {
-		n, err := resolve(d, selector{Path: r.Subtree})
-		if err != nil {
-			return *out, err, true
-		}
-
-		e, ok := n.Element()
-		if !ok {
-			return *out, errors.New("subtree target is not an element"), true
-		}
-
-		if err := c14n.WriteElement(context.Background(), b, e, *opt); err != nil {
-			return *out, err, true
-		}
-	} else if err := c14n.WriteDocument(context.Background(), b, d, *opt); err != nil {
-		return *out, err, true
+		return c14n.WriteNodeSet(context.Background(), dst, set, opt)
 	}
 
-	return returned0, returned1, matched
+	if r.Subtree != nil {
+		node, err := resolve(doc, selector{Path: r.Subtree})
+		if err != nil {
+			return err
+		}
+
+		element, ok := node.Element()
+		if !ok {
+			return errors.New("subtree target is not an element")
+		}
+
+		return c14n.WriteElement(context.Background(), dst, element, opt)
+	}
+
+	return c14n.WriteDocument(context.Background(), dst, doc, opt)
 }

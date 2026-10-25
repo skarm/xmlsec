@@ -57,7 +57,11 @@ func TestReadExplicitBudgets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, budget := range []struct{ bytes, depth, nodes int }{{len(raw) - 1, 3, 4}, {len(raw), 2, 4}, {len(raw), 3, 3}} {
+	for _, budget := range []struct {
+		bytes int
+		depth int
+		nodes int
+	}{{len(raw) - 1, 3, 4}, {len(raw), 2, 4}, {len(raw), 3, 3}} {
 		if _, err := der.ReadLimits(raw, budget.bytes, budget.depth, budget.nodes); !errors.Is(err, der.ErrLimit) || !errors.Is(err, der.ErrInvalidDER) {
 			t.Fatalf("budget %+v: %v", budget, err)
 		}
@@ -250,9 +254,10 @@ func TestCompositionMatchesStandardEncoder(t *testing.T) {
 
 		original := append([][]byte(nil), parts...)
 		for _, tc := range []struct {
-			class, tag int
-			got        []byte
-			content    []byte
+			class   int
+			tag     int
+			got     []byte
+			content []byte
 		}{
 			{0, 16, der.Seq(parts...), bytes.Join(parts, nil)},
 			{0, 17, der.Set(parts...), append(bytes.Clone(parts[1]), parts[0]...)},

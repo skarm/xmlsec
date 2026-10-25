@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strconv"
+	"strings"
 	"testing"
 	"testing/iotest"
 
@@ -85,5 +87,31 @@ func TestLoadRejectsMalformedInput(t *testing.T) {
 	got, err := codec.NewDecoder().Bytes([]byte{0xff, 0xfd})
 	if err != nil || string(got) != "\ufffd" {
 		t.Fatalf("literal U+FFFD rejected: %q, %v", got, err)
+	}
+}
+
+func BenchmarkCodecDecoding(b *testing.B) {
+	for _, size := range []int{64, 65536} {
+		text := strings.Repeat("café日本😀", max(1, size/len("café日本😀")))
+		for _, name := range []string{"utf-8", "utf-16le", "iso-8859-1"} {
+			codec := encoding.Load(name)
+			source := text
+			if name == "iso-8859-1" {
+				source = strings.Repeat("café", max(1, size/5))
+			}
+			encoded, err := codec.NewEncoder().Bytes([]byte(source))
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.Run(name+"/"+strconv.Itoa(size), func(b *testing.B) {
+				b.ReportAllocs()
+				b.SetBytes(int64(len(encoded)))
+				for b.Loop() {
+					if _, err := codec.NewDecoder().Bytes(encoded); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
 	}
 }

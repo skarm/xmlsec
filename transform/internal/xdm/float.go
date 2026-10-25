@@ -17,7 +17,10 @@ const (
 // FloatValue wraps *big.Float with support for NaN, ±Inf, and -0.
 // Precision is 24 for xs:float and 53 for xs:double.
 type FloatValue struct {
-	bf      *big.Float
+	// bf stores the finite magnitude and selected binary precision; special governs
+	// non-finite values and negative zero.
+	bf *big.Float
+	// special distinguishes ordinary values from NaN, infinities and negative zero.
 	special floatSpecial
 }
 

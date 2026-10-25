@@ -361,7 +361,11 @@ func TestExternalManifestURIContext(t *testing.T) {
 func TestExternalReferenceBaseURI(t *testing.T) {
 	const base = "https://example.test/a/b/c/d;p?q"
 	for _, tc := range []struct {
-		name, base, xml, uri, resolved string
+		name     string
+		base     string
+		xml      string
+		uri      string
+		resolved string
 	}{
 		{"literal default", "", `<message xml:base="ignored/"/>`, "g", "g"},
 		{"retrieval directory", base, xmlMessage, "g", "https://example.test/a/b/c/g"},
@@ -527,7 +531,11 @@ func TestExternalManifestFragmentScopes(t *testing.T) {
 
 func TestExternalReferenceURIRejections(t *testing.T) {
 	for _, tc := range []struct {
-		name, base, xml, uri, allowed string
+		name    string
+		base    string
+		xml     string
+		uri     string
+		allowed string
 	}{
 		{"relative base", "relative.xml", xmlMessage, "g", "g"},
 		{"opaque base", "urn:message", xmlMessage, "g", "urn:g"},
@@ -933,8 +941,9 @@ func TestExternalManifestPolicyAndFailures(t *testing.T) {
 func TestExternalManifestMalformedAndCyclic(t *testing.T) {
 	key := graphKey(t)
 	for _, test := range []struct {
-		name, source string
-		want         error
+		name   string
+		source string
+		want   error
 	}{
 		{"malformed XML", `<ds:Manifest`, xmldsig.ErrReference},
 		{"wrong root", `<root/>`, xmldsig.ErrStructure},

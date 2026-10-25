@@ -9,7 +9,7 @@ import (
 
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	value "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
+	lexicalpkg "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -46,8 +46,8 @@ func (e *Engine) xpathDecimalFormats(ctx context.Context, evaluator xpath.Evalua
 			used += length
 		}
 
-		for property, value := range properties {
-			for _, length := range []int{len(property), len(value)} {
+		for property, v := range properties {
+			for _, length := range []int{len(property), len(v)} {
 				if length > e.limits.MaxProgramBytes-used {
 					return evaluator, ErrLimit
 				}
@@ -74,29 +74,34 @@ func (e *Engine) xpathDecimalFormats(ctx context.Context, evaluator xpath.Evalua
 func xpathDecimalFormat(properties map[string]string) (xpath.DecimalFormat, error) {
 	format := xpath.DefaultDecimalFormat()
 	characters := map[string]*rune{
-		"decimal-separator": &format.DecimalSeparator, "grouping-separator": &format.GroupingSeparator,
-		"minus-sign": &format.MinusSign, "percent": &format.Percent, "per-mille": &format.PerMille,
-		"zero-digit": &format.ZeroDigit, "digit": &format.Digit, "pattern-separator": &format.PatternSeparator,
+		"decimal-separator":  &format.DecimalSeparator,
+		"grouping-separator": &format.GroupingSeparator,
+		"minus-sign":         &format.MinusSign,
+		"percent":            &format.Percent,
+		"per-mille":          &format.PerMille,
+		"zero-digit":         &format.ZeroDigit,
+		"digit":              &format.Digit,
+		"pattern-separator":  &format.PatternSeparator,
 		"exponent-separator": &format.ExponentSeparator,
 	}
 
-	for property, value := range properties {
-		if !utf8.ValidString(value) {
+	for property, v := range properties {
+		if !utf8.ValidString(v) {
 			return format, ErrInput
 		}
 
 		if character := characters[property]; character != nil {
-			if utf8.RuneCountInString(value) != 1 {
+			if utf8.RuneCountInString(v) != 1 {
 				return format, ErrInput
 			}
 
-			*character, _ = utf8.DecodeRuneInString(value)
+			*character, _ = utf8.DecodeRuneInString(v)
 		} else {
 			switch property {
 			case "infinity":
-				format.Infinity = value
+				format.Infinity = v
 			case "NaN":
-				format.NaN = value
+				format.NaN = v
 			default:
 				return format, ErrInput
 			}
@@ -107,17 +112,17 @@ func xpathDecimalFormat(properties map[string]string) (xpath.DecimalFormat, erro
 		return format, ErrInput
 	}
 
-	seen := make(map[rune]bool)
+	seen := make(map[rune]struct{})
 	for digit := format.ZeroDigit; digit < format.ZeroDigit+10; digit++ {
-		seen[digit] = true
+		seen[digit] = struct{}{}
 	}
 
 	for _, character := range []rune{format.DecimalSeparator, format.GroupingSeparator, format.Percent, format.PerMille, format.Digit, format.PatternSeparator, format.ExponentSeparator} {
-		if seen[character] {
+		if _, duplicate := seen[character]; duplicate {
 			return format, ErrInput
 		}
 
-		seen[character] = true
+		seen[character] = struct{}{}
 	}
 
 	return format, nil
@@ -156,7 +161,7 @@ func (e *Engine) dynamicContext(ctx context.Context, options DynamicContext) (co
 	language := options.DefaultLanguage
 	if language != "" {
 		language = xmlchar.CollapseSpace(language)
-		if !value.ValidLanguage(language) {
+		if !lexicalpkg.ValidLanguage(language) {
 			return nil, ErrInput
 		}
 	}
@@ -245,8 +250,8 @@ func (a collectionAdapter) ResolveURICollection(ctx context.Context, uri string)
 		return nil, ErrLimit
 	}
 
-	for _, value := range values {
-		if err := xpath.ChargeString(ctx, len(value)); err != nil {
+	for _, v := range values {
+		if err := xpath.ChargeString(ctx, len(v)); err != nil {
 			return nil, err
 		}
 	}

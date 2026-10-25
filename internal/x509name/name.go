@@ -50,8 +50,7 @@ func Key(ctx context.Context, rawDER []byte) (string, error) {
 		return "", ErrLimit
 	}
 
-	raw := string(rawDER)
-	if key, ok := nameCacheGet(raw); ok {
+	if key, ok := nameCacheGet(rawDER); ok {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
@@ -68,7 +67,7 @@ func Key(ctx context.Context, rawDER []byte) (string, error) {
 		return "", err
 	}
 
-	nameCachePut(raw, key)
+	nameCachePut(string(rawDER), key)
 
 	return key, nil
 }

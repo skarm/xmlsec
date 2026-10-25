@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/keyinfo"
 	"github.com/skarm/xmlsec/reference"
@@ -17,22 +16,26 @@ import (
 // ErrKeyInfoTrust reports KeyInfo did not select an explicitly trusted key.
 var ErrKeyInfoTrust = errors.New("KeyInfo did not select an explicitly trusted key")
 
-// TrustedKeySelector MUST implement an application trust decision (e.g. a pin
-// for the expected partner, or PKIX plus its required subject/role constraints).
-// It returns the index of the permitted candidate, or an error. Merely choosing
-// the first certificate/key, or trusting KeyName, makes an unsafe selector.
-// Certificates/CRLs/names in the result are untrusted; parsing has not checked
-// chain relationships, certificate selectors, validity, revocation or identity.
-// The callback is called once, BEFORE signed resources can be read. All mutable
-// key data obtained from Candidate are copies; the selected index is used to
-// load a fresh key afterwards, not a key object mutated by the callback.
+// TrustedKeySelector must apply the application's trust decision and return the
+// permitted candidate index or an error. Suitable policies include an expected
+// partner key pin or PKIX with required subject and role constraints. Selecting
+// the first candidate or trusting KeyName alone is unsafe.
+//
+// Parsed certificates, CRLs and names are untrusted. Parsing checks neither
+// certificate selectors and path relationships nor validity, revocation or identity.
+// The callback runs once before signed resources can be read. Candidate accessors
+// copy mutable key data. After selection, verification loads a fresh key from the
+// chosen candidate; callback mutations cannot replace that key.
 type TrustedKeySelector func(context.Context, *keyinfo.Result) (int, error)
 
-// KeyInfoVerifyOptions sets signature and KeyInfo parsing policy and requires an
-// application trust selector.
+// KeyInfoVerifyOptions supplies separate signature and KeyInfo parsing policies and a
+// mandatory application trust selector.
 type KeyInfoVerifyOptions struct {
+	// Signature supplies signature algorithms, coverage requirements and signed-data
+	// resource policy.
 	Signature SignatureOptions
-	KeyInfo   keyinfo.Options
+	// KeyInfo supplies untrusted key description parsing and separate retrieval policy.
+	KeyInfo keyinfo.Options
 	// SelectTrustedKey is mandatory; there is no permissive default.
 	SelectTrustedKey TrustedKeySelector
 }

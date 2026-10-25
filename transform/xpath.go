@@ -25,7 +25,7 @@ const (
 	XMLSchema11 XMLSchemaVersion = 11
 )
 
-// XPathVersion selects a grammar and function library, not a compatibility hint.
+// XPathVersion selects the expression grammar and function library for compilation.
 type XPathVersion uint8
 
 const (
@@ -39,8 +39,8 @@ const (
 	XPath31 XPathVersion = 31
 )
 
-// XPathOptions specifies the static context used to compile an expression.
-// XPath 1.0 does not support a default element namespace.
+// XPathOptions sets the static compilation context. XPath 1.0 rejects a default
+// element namespace.
 type XPathOptions struct {
 	// DefaultCollation selects a supported collation; empty uses Unicode codepoint order.
 	DefaultCollation string
@@ -62,21 +62,26 @@ type XPathOptions struct {
 	DecimalFormats map[Name]map[string]string
 }
 
-// XPathContext supplies invocation-local variables and focus. In XPath 2.0 and
-// later, every free variable must be present in Variables, even in an unselected
-// branch. Expressions that need no context item accept a nil document and an
-// absent ContextItem.
+// XPathContext supplies variables and initial focus for one invocation.
+// In XPath 2.0 and later, Variables must bind every free variable, including those
+// in unselected branches. An expression that needs no context item accepts a nil
+// document and an absent ContextItem.
 type XPathContext struct {
-	Context   DynamicContext
+	// Context supplies invocation time, timezone, language and trace output.
+	Context DynamicContext
+	// Variables binds free variables by expanded name for this invocation.
 	Variables Bindings
 	// ContextItem overrides the document argument. A zero Value leaves it unspecified.
 	ContextItem Value
-	// Position and Size set the initial focus. Each zero value selects one;
-	// negative values and an effective position greater than size are rejected.
-	Position, Size int
+	// Position sets the initial focus position. Zero selects one. Negative Position
+	// or Size and an effective position greater than size are rejected.
+	Position int
+	// Size sets the initial focus size. Zero selects one.
+	Size int
 }
 
-// XPath is an immutable compiled expression associated with its engine policy.
+// XPath retains an immutable compiled expression and the engine policy that governs
+// its execution.
 type XPath struct {
 	namespaces    map[string]string
 	freeVariables []string

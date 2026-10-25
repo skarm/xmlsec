@@ -11,23 +11,51 @@ import (
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 )
 
-// AssertionData MUST come from an authentication/authorization decision made
-// by the application. Supplying this structure is not itself user authentication.
+// AssertionData supplies identity claims for an assertion. The application must
+// establish these claims through its authentication and authorization decisions;
+// constructing this value does not authenticate a user.
 type AssertionData struct {
-	ID, NameID, NameIDFormat   string
-	NotBefore, NotOnOrAfter    time.Time
-	AuthnInstant               time.Time
-	AuthnContext, SessionIndex string
-	SessionNotOnOrAfter        time.Time
-	Attributes                 []Attribute
+	// ID is the required assertion XML ID. It must differ from the response ID.
+	ID string
+	// NameID is the nonempty subject identifier established by the application.
+	NameID string
+	// NameIDFormat is the identifier format URI. Empty selects NameIDUnspecified.
+	NameIDFormat string
+	// NotBefore is the required inclusive start of assertion validity.
+	NotBefore time.Time
+	// NotOnOrAfter is the required exclusive end of assertion validity.
+	NotOnOrAfter time.Time
+	// AuthnInstant is the required time at which the subject was authenticated.
+	AuthnInstant time.Time
+	// AuthnContext is the required authentication context class URI.
+	AuthnContext string
+	// SessionIndex is an optional identifier for the authenticated session.
+	SessionIndex string
+	// SessionNotOnOrAfter is the optional exclusive end of session validity. Zero omits it.
+	SessionNotOnOrAfter time.Time
+	// Attributes contains application-authorized string attributes for the subject.
+	Attributes []Attribute
 }
 
-// Response supplies a successful solicited SAML response and its assertion.
+// Response supplies the envelope and assertion for a successful solicited SAML
+// response.
 type Response struct {
-	ID, Issuer, Audience, Destination, InResponseTo string
-	IssueInstant                                    time.Time
-	Assertion                                       AssertionData
-	Limits                                          Limits
+	// ID is the required response XML ID.
+	ID string
+	// Issuer is the issuing identity provider's entity identifier URI.
+	Issuer string
+	// Audience is the intended service provider's entity identifier URI.
+	Audience string
+	// Destination is the trusted assertion consumer endpoint URL.
+	Destination string
+	// InResponseTo is the XML ID of the soliciting authentication request.
+	InResponseTo string
+	// IssueInstant is the required issuance time for the response and assertion.
+	IssueInstant time.Time
+	// Assertion supplies the authenticated identity claims to sign.
+	Assertion AssertionData
+	// Limits bounds assertion times and attributes during creation and self-verification.
+	Limits Limits
 }
 
 // SignResponse signs the Assertion, then the enclosing Response, and verifies
@@ -171,7 +199,7 @@ func assertionNode(s Response) (*tree.Node, error) {
 
 	if len(a.Attributes) > 0 {
 		statement := xmlutil.Node("saml", AssertionNamespace, "AttributeStatement")
-		seen := map[[2]string]bool{}
+		seen := map[[2]string]struct{}{}
 
 		for _, v := range a.Attributes {
 			format := v.NameFormat
@@ -179,11 +207,11 @@ func assertionNode(s Response) (*tree.Node, error) {
 				format = AttributeUnspecified
 			}
 
-			if v.Name == "" || len(v.Name) > 1024 || !xmlutil.URI(format) || len(v.FriendlyName) > 1024 || len(v.Values) < 1 || len(v.Values) > l.MaxValuesPerAttribute || seen[[2]string{v.Name, format}] {
+			if _, exists := seen[[2]string{v.Name, format}]; v.Name == "" || len(v.Name) > 1024 || !xmlutil.URI(format) || len(v.FriendlyName) > 1024 || len(v.Values) < 1 || len(v.Values) > l.MaxValuesPerAttribute || exists {
 				return nil, ErrProfile
 			}
 
-			seen[[2]string{v.Name, format}] = true
+			seen[[2]string{v.Name, format}] = struct{}{}
 			attr := xmlutil.Node("saml", AssertionNamespace, "Attribute")
 			xmlutil.Set(attr, "Name", v.Name)
 			xmlutil.Set(attr, "NameFormat", format)

@@ -10,10 +10,11 @@ import (
 )
 
 type dtdFrame struct {
-	text, base string
-	at         int
-	external   bool
-	release    func()
+	text     string
+	base     string
+	at       int
+	external bool
+	release  func()
 }
 
 type dtdScanner struct {

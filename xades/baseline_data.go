@@ -6,9 +6,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/xmldsig"
 )
@@ -434,7 +433,7 @@ func checkBaselineDataBindings(layout baselineLayout, verified *xmldsig.Signatur
 		return err
 	}
 
-	covered := map[string]bool{}
+	covered := map[string]struct{}{}
 
 	for _, format := range result.data {
 		key, err := baselineReferenceKey(format.ObjectReference, layout.data, options)
@@ -447,11 +446,11 @@ func checkBaselineDataBindings(layout baselineLayout, verified *xmldsig.Signatur
 			return ErrProfile
 		}
 
-		if covered[key] {
+		if _, exists := covered[key]; exists {
 			return ErrProfile
 		}
 
-		covered[key] = true
+		covered[key] = struct{}{}
 
 		if err := checkBaselineObjectFormat(ref.result.Target(), format); err != nil {
 			return err
@@ -475,7 +474,7 @@ func checkBaselineDataBindings(layout baselineLayout, verified *xmldsig.Signatur
 			continue
 		}
 
-		if !covered["#"+localAttribute(element, "Id")] {
+		if _, exists := covered["#"+localAttribute(element, "Id")]; !exists {
 			return ErrProfile
 		}
 	}
@@ -503,7 +502,7 @@ func checkBaselineTemplateBindings(template xmldsig.SignatureTemplate, propertie
 		return err
 	}
 
-	covered := map[string]bool{}
+	covered := map[string]struct{}{}
 
 	for _, format := range properties.DataObjects {
 		ref, found := refs[format.ObjectReference]
@@ -511,16 +510,22 @@ func checkBaselineTemplateBindings(template xmldsig.SignatureTemplate, propertie
 			continue
 		}
 
-		if !found || ref.Type == SignedPropertiesType || ref.Type == countersignedSignatureType || covered[format.ObjectReference] {
+		if !found || ref.Type == SignedPropertiesType || ref.Type == countersignedSignatureType {
 			return ErrProfile
 		}
 
-		covered[format.ObjectReference] = true
+		if _, exists := covered[format.ObjectReference]; exists {
+			return ErrProfile
+		}
+
+		covered[format.ObjectReference] = struct{}{}
 	}
 
 	for _, ref := range template.References {
-		if ref.Type != SignedPropertiesType && ref.Type != countersignedSignatureType && !covered["#"+ref.ID] {
-			return ErrProfile
+		if ref.Type != SignedPropertiesType && ref.Type != countersignedSignatureType {
+			if _, exists := covered["#"+ref.ID]; !exists {
+				return ErrProfile
+			}
 		}
 	}
 

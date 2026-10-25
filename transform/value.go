@@ -13,7 +13,8 @@ import (
 // Name is the library's shared expanded XML name. Space is the namespace URI.
 type Name = document.Name
 
-// Bindings supplies the same typed values to XPath variables and XSLT parameters.
+// Bindings maps expanded names to typed sequences for XPath variables and XSLT
+// parameters.
 type Bindings map[Name]Sequence
 
 // ValueKind describes an XDM item.
@@ -34,7 +35,7 @@ const (
 	FunctionValue
 )
 
-// Value is an immutable XDM item. The zero value represents an absent item.
+// Value retains one immutable XDM item. Its zero value denotes an absent item.
 type Value struct{ item xdm.Item }
 
 // String creates an xs:string item sharing the immutable value storage.
@@ -289,7 +290,7 @@ func (v Value) Keys() ([]Value, error) {
 	return values, nil
 }
 
-// Sequence is an immutable XDM sequence. Its zero value is the empty sequence.
+// Sequence retains an immutable XDM sequence. Its zero value is empty.
 type Sequence struct{ items xdm.Sequence }
 
 // Values constructs an owned sequence, omitting absent items.
@@ -349,9 +350,11 @@ func (s Sequence) EffectiveBoolean() (bool, error) {
 	return value, wrap("effective boolean", err)
 }
 
-// MapEntry pairs an atomic map key with an immutable sequence value.
+// MapEntry associates one atomic XDM key with an immutable sequence value.
 type MapEntry struct {
-	Key   Value
+	// Key is the atomic XDM key. Non-atomic values are rejected by Map.
+	Key Value
+	// Value is the sequence associated with Key, including an empty sequence.
 	Value Sequence
 }
 

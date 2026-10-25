@@ -617,7 +617,7 @@ func testOpenSSLProtectedKey(t *testing.T, fixture *interopFixture, key, chain t
 func checkCertificates(t *testing.T, data []byte, expected ...[]byte) {
 	t.Helper()
 
-	found := make(map[string]bool)
+	found := make(map[string]struct{})
 
 	for len(data) > 0 {
 		p, rest := pem.Decode(data)
@@ -628,7 +628,7 @@ func checkCertificates(t *testing.T, data []byte, expected ...[]byte) {
 		data = rest
 
 		if p.Type == nameCERTIFICATE {
-			found[string(p.Bytes)] = true
+			found[string(p.Bytes)] = struct{}{}
 		}
 	}
 
@@ -637,7 +637,7 @@ func checkCertificates(t *testing.T, data []byte, expected ...[]byte) {
 	}
 
 	for _, der := range expected {
-		if !found[string(der)] {
+		if _, exists := found[string(der)]; !exists {
 			t.Fatal("certificate missing")
 		}
 	}

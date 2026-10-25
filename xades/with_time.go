@@ -13,17 +13,19 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
-// WithTimeConfig enables a separate B-T profile: current-time TSA trust and
-// signer PKIX/revocation at the earliest proven existence of SignatureValue.
-// It does not recover expired TSA chains, archive evidence or obsolete crypto.
-// Signer evidence must be fresh at the proof time; TSA evidence at verification.
+// WithTimeConfig selects the separate B-T profile. It checks signer PKIX and
+// revocation at the earliest proven existence of SignatureValue, with evidence
+// fresh at that proof time. TSA trust and evidence freshness are checked at
+// verification time. The profile does not recover expired TSA chains, archive
+// evidence or obsolete cryptography.
 type WithTimeConfig struct {
 	// SignerPKI sets explicit document signer trust and offline revocation policy.
 	// Only direct complete signer CRLs are supported. Delta, scoped and indirect
 	// CRLs remain outside this B-T profile even when accepted by general PKI.
 	SignerPKI pki.Config
 	// TSA supplies a trusted timestamp verifier with revocation checks enabled.
-	TSA   *timestamp.Verifier
+	TSA *timestamp.Verifier
+	// Basic sets the closed basic signature profile's ID and algorithm policy.
 	Basic VerifyOptions
 	// MaxTimestamps bounds timestamp tokens; zero selects 8, with a maximum of 32.
 	MaxTimestamps int
@@ -31,13 +33,14 @@ type WithTimeConfig struct {
 	MaxTokenBytes int
 }
 
-// WithTimeValidator validates the closed XAdES B-T profile using authenticated time
-// evidence for the signer.
+// WithTimeValidator applies the closed XAdES B-T profile using authenticated time
+// evidence for signer validation.
 type WithTimeValidator struct {
-	signer                       *pki.Verifier
-	tsa                          *timestamp.Verifier
-	basic                        VerifyOptions
-	maxTimestamps, maxTokenBytes int
+	signer        *pki.Verifier
+	tsa           *timestamp.Verifier
+	basic         VerifyOptions
+	maxTimestamps int
+	maxTokenBytes int
 }
 
 // NewWithTimeValidator validates and snapshots the closed with-time XAdES policy and
@@ -165,12 +168,14 @@ func (v *WithTimeValidator) ValidateEnveloped(ctx context.Context, doc *document
 	return &WithTimeResult{basic, trust, tokens, at, proof.at}, report, nil
 }
 
-// WithTimeReport is diagnostic; a result is returned only when all checks pass.
-// Failed denotes proven cryptographic failure or revocation at the proof time.
-// Unsupported/missing/untrusted evidence is Indeterminate, never success.
+// WithTimeReport records diagnostics; acceptance requires every check to pass and
+// a result to be returned. Failed denotes proven cryptographic failure or
+// revocation at proof time. Unsupported, missing or untrusted evidence produces
+// Indeterminate.
 type WithTimeReport struct {
 	indication Indication
-	at, proof  time.Time
+	at         time.Time
+	proof      time.Time
 	cause      error
 }
 
@@ -220,12 +225,14 @@ func (r *WithTimeReport) Profile() string {
 	return "xmlsec-enveloped-with-time-v1"
 }
 
-// WithTimeResult is an immutable signature accepted under the closed with-time profile.
+// WithTimeResult retains an immutable signature accepted under the configured closed
+// with-time profile.
 type WithTimeResult struct {
 	basic      *BasicResult
 	trust      *pki.Result
 	timestamps []*timestamp.Result
-	at, proof  time.Time
+	at         time.Time
+	proof      time.Time
 }
 
 // Basic returns the immutable basic XAdES result.

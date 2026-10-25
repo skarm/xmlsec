@@ -22,7 +22,7 @@ const (
 	jsonHexUpper = "0123456789ABCDEF"
 )
 
-func lookupFunctionsJson(name string) (*builtinFunc, bool) {
+func lookupFunctionsJSON(name string) (*builtinFunc, bool) {
 	switch name {
 	case "parse-json":
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnParseJSON}, true

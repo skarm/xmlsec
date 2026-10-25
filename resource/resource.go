@@ -25,21 +25,32 @@ var (
 	ErrResource = errors.New("resource: unavailable resource")
 )
 
-// Resolver opens exact resources approved by application policy. Implementations
-// must support concurrent use and honor context, including during reads.
+// Resolver opens resources authorized by application policy. Resolving and reading
+// must honor context cancellation. Implementations must support concurrent calls.
 type Resolver interface {
 	// Resolve opens an authorized URI. The consumer owns the returned reader
 	// and closes every non-nil reader, including when resolution fails.
 	Resolve(context.Context, string) (io.ReadCloser, error)
 }
 
-// TypedReader optionally supplies the resource's MIME Content-Type, including
-// parameters such as charset. Empty means no transport metadata is available.
-// The value must remain stable for the lifetime of the stream. Consumers still
-// own byte limits and Close; metadata does not authorize additional retrievals.
+// TypedReader exposes a stable MIME Content-Type for the stream, including any
+// charset parameter. Empty means transport metadata is unavailable. Consumers
+// retain responsibility for byte limits and closure. Metadata grants no additional
+// resource access.
 type TypedReader interface {
 	io.ReadCloser
+	// MediaType returns the stable MIME Content-Type, or empty when unavailable.
 	MediaType() string
+}
+
+// SizedReader exposes an untrusted byte-length hint that remains stable for the
+// stream lifetime. A size of -1 means unknown. Consumers must enforce byte limits
+// and verify the actual length and EOF. The hint establishes neither immutability
+// nor authenticity.
+type SizedReader interface {
+	io.ReadCloser
+	// Size returns the complete stream length in bytes, or -1 when unknown.
+	Size() int64
 }
 
 // ResolverFunc adapts an application function to the shared resource contract.
@@ -54,18 +65,19 @@ func (f ResolverFunc) Resolve(ctx context.Context, uri string) (io.ReadCloser, e
 	return f(ctx, uri)
 }
 
-// FSConfig maps an absolute directory URI to an explicitly supplied filesystem.
-// Use embed.FS for embedded resources or os.Root.FS for confined disk access.
+// FSConfig maps an absolute directory URI to an explicit filesystem. Suitable
+// filesystems include embed.FS and os.Root.FS for confined disk access.
 type FSConfig struct {
-	// FS is required and remains application-owned. Its symlink and blocking-I/O
-	// behavior is the application's responsibility.
+	// FS is required and remains application-owned. The application controls symlink
+	// handling and cancellation of blocking I/O.
 	FS fs.FS
-	// BaseURI is an absolute directory URI ending in a slash. Resource paths
-	// below it are resolved relative to FS, not the process working directory.
+	// BaseURI is the absolute directory URI ending in a slash. Resource paths beneath it
+	// map to FS independently of the process working directory.
 	BaseURI string
 }
 
-// FSResolver is immutable after construction. Its FS must support concurrent reads.
+// FSResolver retains immutable URI mapping policy. Its application-owned filesystem
+// must support concurrent reads.
 type FSResolver struct {
 	fs   fs.FS
 	base *url.URL
@@ -123,23 +135,24 @@ func (r *FSResolver) Resolve(ctx context.Context, uri string) (io.ReadCloser, er
 		return nil, errors.Join(err, f.Close())
 	}
 
-	return &contextReader{ctx: ctx, ReadCloser: f}, nil
+	return &contextReader{ctx: ctx, ReadCloser: f, size: -1}, nil
 }
 
-// HTTPConfig configures an HTTP client and an explicit origin allowlist.
+// HTTPConfig selects an application-owned HTTP client and an exact origin allowlist.
 type HTTPConfig struct {
-	// Client is required. Its value is copied to enforce redirect checks;
+	// Client is required. Construction copies its value to enforce redirect policy;
 	// Transport and Jar remain shared with the caller.
 	Client *http.Client
-	// AllowedOrigins is a required allowlist of exact HTTP(S) scheme and host
-	// pairs, including any port. It is checked again on every redirect.
+	// AllowedOrigins is the required allowlist of exact HTTP(S) scheme and host pairs,
+	// including any port. Every redirect is checked against it.
 	AllowedOrigins []string
 }
 
-// HTTPResolver enforces the origin policy on the initial request and redirects.
+// HTTPResolver checks the configured origin allowlist on initial requests and
+// redirects.
 type HTTPResolver struct {
 	client  *http.Client
-	origins map[string]bool
+	origins map[string]struct{}
 }
 
 // NewHTTPResolver requires an explicit client and at least one allowed origin.
@@ -148,14 +161,14 @@ func NewHTTPResolver(config HTTPConfig) (*HTTPResolver, error) {
 		return nil, ErrInput
 	}
 
-	r := &HTTPResolver{origins: make(map[string]bool, len(config.AllowedOrigins))}
+	r := &HTTPResolver{origins: make(map[string]struct{}, len(config.AllowedOrigins))}
 	for _, origin := range config.AllowedOrigins {
 		u, err := parseURI(origin)
 		if err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "" || u.Path != "" && u.Path != "/" {
 			return nil, ErrInput
 		}
 
-		r.origins[u.Scheme+"://"+u.Host] = true
+		r.origins[u.Scheme+"://"+u.Host] = struct{}{}
 	}
 
 	client := *config.Client
@@ -221,11 +234,17 @@ func (r *HTTPResolver) Resolve(ctx context.Context, uri string) (io.ReadCloser, 
 		return nil, errors.Join(fmt.Errorf("%w: HTTP status %d", ErrResource, response.StatusCode), response.Body.Close())
 	}
 
-	return &contextReader{ctx: ctx, ReadCloser: response.Body, mediaType: response.Header.Get("Content-Type")}, nil
+	return &contextReader{ctx: ctx, ReadCloser: response.Body, mediaType: response.Header.Get("Content-Type"), size: response.ContentLength}, nil
 }
 
 func (r *HTTPResolver) allowed(u *url.URL) bool {
-	return u != nil && u.User == nil && (u.Scheme == "http" || u.Scheme == "https") && r.origins[u.Scheme+"://"+u.Host]
+	if u == nil || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+
+	_, allowed := r.origins[u.Scheme+"://"+u.Host]
+
+	return allowed
 }
 
 func parseURI(value string) (*url.URL, error) {
@@ -241,7 +260,10 @@ type contextReader struct {
 	ctx context.Context
 	io.ReadCloser
 	mediaType string
+	size      int64
 }
+
+func (r *contextReader) Size() int64 { return r.size }
 
 func (r *contextReader) MediaType() string { return r.mediaType }
 

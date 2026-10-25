@@ -111,6 +111,8 @@ func LookupNSPrefixURI(start Node, prefix string) (string, bool) {
 	return "", false
 }
 
+// LookupNSURI searches the node and its ancestors for a lexical binding with uri and
+// reports whether one was found.
 func LookupNSURI(start Node, uri string) (*Namespace, bool) {
 	for n := start; n != nil; n = n.Parent() {
 		if e, ok := n.(*Element); ok {

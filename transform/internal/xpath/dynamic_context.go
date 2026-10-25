@@ -8,21 +8,32 @@ import (
 
 // EvaluationContext is invocation-local configuration shared by both languages.
 type EvaluationContext struct {
+	// CurrentTime is the invocation time shared by date and time functions.
 	CurrentTime time.Time
-	Timezone    *time.Location
-	Language    string
-	Trace       io.Writer
+	// Timezone supplies the implicit timezone for values without an explicit offset.
+	Timezone *time.Location
+	// Language supplies the default language for formatting functions.
+	Language string
+	// Trace receives trace output. Nil discards it.
+	Trace io.Writer
+	// Collections supplies explicit collection resolution for this invocation.
 	Collections CollectionResolver
 }
 
 // DynamicProperties retains value semantics without retaining output handlers
 // or resource capabilities from the producing invocation.
 type DynamicProperties struct {
+	// CurrentTime retains the captured invocation time.
 	CurrentTime time.Time
-	Timezone    *time.Location
-	Language    string
+	// Timezone retains the implicit timezone without a resource adapter.
+	Timezone *time.Location
+	// Language retains the default formatting language.
+	Language string
 }
 
+// CaptureDynamicProperties snapshots time, timezone and language from ctx. Absent
+// values use fallback, its location and en; trace and resource capabilities are
+// excluded.
 func CaptureDynamicProperties(ctx context.Context, fallback time.Time) DynamicProperties {
 	properties := DynamicProperties{CurrentTime: fallback, Timezone: fallback.Location(), Language: "en"}
 	if value, ok := evaluationContextFrom(ctx); ok {

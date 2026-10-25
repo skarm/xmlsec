@@ -1,6 +1,9 @@
 // Derived from lestrrat-go/helium at 7362c0a70122a757780f4d0b545a9b370dead6ab.
 // Copyright (c) 2015 lestrrat. MIT License; see licenses/MIT-helium.txt at the repository root.
 
+// Package xpathregex translates XPath regular-expression syntax for the shared
+// pattern engine. Translation validates edition-specific syntax; matching and
+// resource accounting remain the caller's responsibility.
 package xpathregex
 
 import (
@@ -95,7 +98,12 @@ func ValidateXSD10(pattern string) error {
 	return nil
 }
 
-type xsd10Class struct{ first, negated, single, endpoint bool }
+type xsd10Class struct {
+	first    bool
+	negated  bool
+	single   bool
+	endpoint bool
+}
 
 func xsd10Escape(pattern string, at int) (int, bool) {
 	if at >= len(pattern) {

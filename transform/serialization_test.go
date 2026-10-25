@@ -37,7 +37,13 @@ const (
 	errCodeSEPM0019       = "SEPM0019"
 )
 
-type markupSerializationCase struct{ name, declarations, body, want, check string }
+type markupSerializationCase struct {
+	name         string
+	declarations string
+	body         string
+	want         string
+	check        string
+}
 
 func markupSerializationCases() []markupSerializationCase {
 	const before = `<xsl:comment>lead</xsl:comment><xsl:processing-instruction name="p">v</xsl:processing-instruction>`
@@ -309,8 +315,10 @@ func xmlSerializationExpressions() []string {
 func defaultMarkupMethodExpressions() []string {
 	expressions := make([]string, 0, 4)
 	for _, test := range []struct {
-		version, name   string
-		explicit, xhtml bool
+		version  string
+		name     string
+		explicit bool
+		xhtml    bool
 	}{
 		{"1.0", "html", false, false},
 		{"1.0", "html", true, true},
@@ -481,7 +489,10 @@ func TestMarkupSerializationDestinationErrors(t *testing.T) {
 func TestStreamingSequenceAdjacency(t *testing.T) {
 	e := engine(t, transform.Config{})
 
-	cases := []struct{ body, want string }{
+	cases := []struct {
+		body string
+		want string
+	}{
 		{`<xsl:sequence select="('a','','b')"/><xsl:sequence select="''"/><xsl:sequence select="'c'"/>`, "a  b  c"},
 		{`<xsl:sequence select="'a'"/><xsl:document/><xsl:sequence select="'b'"/>`, "ab"},
 		{`<xsl:sequence select="'a'"/><xsl:text/><xsl:sequence select="'b'"/>`, "ab"},
@@ -502,7 +513,10 @@ func TestStreamingSequenceAdjacency(t *testing.T) {
 }
 
 func BenchmarkSerializationStreaming(b *testing.B) {
-	cases := []struct{ method, encoding string }{
+	cases := []struct {
+		method   string
+		encoding string
+	}{
 		{serializationXML, serializationUTF8},
 		{serializationHTML, serializationUTF8},
 		{serializationJSON, serializationUTF8},
@@ -660,7 +674,13 @@ func TestSerializationExactNormalization(t *testing.T) {
 	}
 }
 
-type fullyNormalizedSerializationCase struct{ name, declarations, body, want, code string }
+type fullyNormalizedSerializationCase struct {
+	name         string
+	declarations string
+	body         string
+	want         string
+	code         string
+}
 
 func fullyNormalizedSerializationCases() []fullyNormalizedSerializationCase {
 	const markToA = `<xsl:character-map name="m"><xsl:output-character character="&#x301;" string="A"/></xsl:character-map>`
@@ -728,8 +748,12 @@ func fullyNormalizedSerializationCases() []fullyNormalizedSerializationCase {
 }
 
 type rawHTMLDescendantCase struct {
-	name, body, declarations, want string
-	minimum, maximum               int
+	name         string
+	body         string
+	declarations string
+	want         string
+	minimum      int
+	maximum      int
 }
 
 func rawHTMLDescendantCases() []rawHTMLDescendantCase {
@@ -889,7 +913,11 @@ func checkFullyNormalizedControl(t *testing.T, result *transform.Result, count i
 // XPath function and both buffered and streaming XSLT result delivery.
 func TestJSONSerializationRules(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, tc := range []struct{ expression, want, code string }{
+	for _, tc := range []struct {
+		expression string
+		want       string
+		code       string
+	}{
 		{`(1, 2)`, "", errCodeSERE0023},
 		{`[(1, 2)]`, "", errCodeSERE0023},
 		{`map{'x':(1, 2)}`, "", errCodeSERE0023},
@@ -967,7 +995,10 @@ func TestSerializationEscapeBytes(t *testing.T) {
 	input := "\x00\x01\x1f\"\\/\b\f\n\r\t\x7f\u009fé😀"
 	bindings := transform.Bindings{{Local: sourceName}: transform.Values(transform.String(input))}
 
-	for _, tc := range []struct{ encoding, want string }{
+	for _, tc := range []struct {
+		encoding string
+		want     string
+	}{
 		{serializationUTF8, `"\u0000\u0001\u001F\"\\\/\b\f\n\r\t\u007F\u009Fé😀"`},
 		{xmlASCIIEncoding, `"\u0000\u0001\u001F\"\\\/\b\f\n\r\t\u007F\u009F\u00E9\uD83D\uDE00"`},
 	} {
@@ -1027,7 +1058,10 @@ func TestSerializeParameterDocuments(t *testing.T) {
 	e := engine(t, transform.Config{})
 
 	for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
-		for _, tc := range []struct{ body, code string }{
+		for _, tc := range []struct {
+			body string
+			code string
+		}{
 			{`<indent value="perhaps"/>`, errCodeSEPM0017},
 			{`<encoding value="bad encoding"/>`, errCodeSEPM0017},
 			{`<encoding value="1bad"/>`, errCodeSEPM0017},
@@ -1071,12 +1105,22 @@ func TestSerializeParameterDocuments(t *testing.T) {
 
 // The function's originating language fixes the serialization edition, including
 // when a named reference escapes to a later XPath caller.
-func serializeEditionCases() []struct{ name, parameters, want30, want31 string } {
+func serializeEditionCases() []struct {
+	name       string
+	parameters string
+	want30     string
+	want31     string
+} {
 	const root = `<serialization-parameters xmlns="http://www.w3.org/2010/xslt-xquery-serialization"`
 	const method = `<method value="text"/>`
 	const end = `</serialization-parameters>`
 
-	return []struct{ name, parameters, want30, want31 string }{
+	return []struct {
+		name       string
+		parameters string
+		want30     string
+		want31     string
+	}{
 		{"text", `<method value="text"/>`, "x", "x"},
 		{"empty namespace method EQName", `<method value="Q{}text"/>`, "SEPM0017", "x"},
 		{"whitespace namespace method EQName", `<method value="Q{ }text"/>`, "SEPM0017", "x"},
@@ -1154,12 +1198,22 @@ func serializeParameterDocument(body string) string {
 	return `<serialization-parameters xmlns="http://www.w3.org/2010/xslt-xquery-serialization">` + body + `</serialization-parameters>`
 }
 
-func serializeEditionOutputCases() []struct{ name, expression, want30, want31 string } {
+func serializeEditionOutputCases() []struct {
+	name       string
+	expression string
+	want30     string
+	want31     string
+} {
 	const prefix = `<serialization-parameters xmlns="http://www.w3.org/2010/xslt-xquery-serialization">`
 	const suffix = `</serialization-parameters>`
 	public := prefix + `<method value="xml"/><omit-xml-declaration value="yes"/><doctype-public value=" a  b "/><doctype-system value="d.dtd"/>` + suffix
 	media := prefix + `<method value="html"/><html-version value="5"/><media-type value=" text/plain  "/><include-content-type value="yes"/>` + suffix
-	return []struct{ name, expression, want30, want31 string }{
+	return []struct {
+		name       string
+		expression string
+		want30     string
+		want31     string
+	}{
 		{"public identifier whitespace", `serialize(parse-xml('<r/>'),parse-xml('` + public + `')/*)`, `<!DOCTYPE r PUBLIC " a  b " "d.dtd"><r/>`, `<!DOCTYPE r PUBLIC "a b" "d.dtd"><r/>`},
 		{"media type whitespace", `contains(serialize(parse-xml('<html><head/></html>'),parse-xml('` + media + `')/*),'content="text/plain; charset=UTF-8"')`, "false", "true"},
 	}
@@ -1268,7 +1322,11 @@ func TestXSLTSerializationEditions(t *testing.T) {
 
 func TestJSONResultDocuments(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, tc := range []struct{ expression, want, code string }{
+	for _, tc := range []struct {
+		expression string
+		want       string
+		code       string
+	}{
 		{`()`, serializationNull, ""},
 		{`[(), map{'x':[1,2]}]`, `[null,{"x":[1,2]}]`, ""},
 		{`[(1,2)]`, "", errCodeSERE0023},
@@ -1310,10 +1368,16 @@ func TestJSONResultDocuments(t *testing.T) {
 	}
 }
 
-func dynamicParameterDocumentCases() []struct{ body, want string } {
+func dynamicParameterDocumentCases() []struct {
+	body string
+	want string
+} {
 	const loop = `<xsl:template name="start"><xsl:for-each select="('text','xml','text')"><xsl:result-document href="urn:result-{position()}" parameter-document="urn:params:{.}"><r xsl:exclude-result-prefixes="xs"><xsl:value-of select="."/></r></xsl:result-document></xsl:for-each></xsl:template>`
 	const recursive = `<xsl:template name="emit"><xsl:param name="values" as="xs:string*"/><xsl:result-document href="urn:result-{count($values)}" parameter-document="urn:params:{$values[1]}"><r xsl:exclude-result-prefixes="xs"><xsl:value-of select="$values[1]"/></r><xsl:if test="count($values) gt 1"><xsl:call-template name="emit"><xsl:with-param name="values" select="tail($values)"/></xsl:call-template></xsl:if></xsl:result-document></xsl:template><xsl:template name="start"><xsl:call-template name="emit"><xsl:with-param name="values" select="('xml','text','xml')"/></xsl:call-template></xsl:template>`
-	return []struct{ body, want string }{{loop, "text|<r>xml</r>|text"}, {recursive, "<r>xml</r>|text|<r>xml</r>"}}
+	return []struct {
+		body string
+		want string
+	}{{loop, "text|<r>xml</r>|text"}, {recursive, "<r>xml</r>|text|<r>xml</r>"}}
 }
 
 func TestDynamicResultParameterDocuments(t *testing.T) {
@@ -1369,7 +1433,11 @@ func TestSerializeMarkupAtomics(t *testing.T) {
 
 func TestSerializeJSONNodeMethods(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, tc := range []struct{ method, node, want string }{
+	for _, tc := range []struct {
+		method string
+		node   string
+		want   string
+	}{
 		{serializationXML, serializationNodeXML, serializationNodeXML},
 		{serializationText, serializationNodeXML, serializationText},
 		{serializationHTML, `<p>text<br/></p>`, `<p>text<br></p>`},
@@ -1384,7 +1452,10 @@ func TestSerializeJSONNodeMethods(t *testing.T) {
 func TestJSONHTMLHeadMetadata(t *testing.T) {
 	e := engine(t, transform.Config{})
 
-	for _, tc := range []struct{ xml, path string }{
+	for _, tc := range []struct {
+		xml  string
+		path string
+	}{
 		{`<head xmlns=""><title>One</title></head>`, `/*`},
 		{`<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Two</title></head></html>`, `/*`},
 		{`<html><head><title>Three</title></head></html>`, ""},
@@ -1421,7 +1492,13 @@ func TestJSONHTMLHeadMetadata(t *testing.T) {
 	}
 }
 
-type markupSerializationErrorCase struct{ name, attributes, expression, options, code string }
+type markupSerializationErrorCase struct {
+	name       string
+	attributes string
+	expression string
+	options    string
+	code       string
+}
 
 func markupSerializationErrorCases() []markupSerializationErrorCase {
 	cases := make([]markupSerializationErrorCase, 0, 42)
@@ -1613,7 +1690,11 @@ func htmlVersionCases() []markupSerializationCase {
 	const html4 = `<html><h:br xmlns:h="http://www.w3.org/1999/xhtml"></h:br></html>`
 	const html5 = `<!DOCTYPE html><html><br xmlns="http://www.w3.org/1999/xhtml"></html>`
 	cases := make([]markupSerializationCase, 0, 9)
-	for _, test := range []struct{ name, attributes, want string }{
+	for _, test := range []struct {
+		name       string
+		attributes string
+		want       string
+	}{
 		{"version 4", `method="html" version="4.01"`, html4},
 		{"version 5", `method="html" version="5"`, html5},
 		{"html-version 4 priority", `method="html" version="5" html-version="4.01"`, html4},
@@ -1854,7 +1935,13 @@ func TestXHTMLSerializationPreservesInput(t *testing.T) {
 	}
 }
 
-type serializationSequenceCase struct{ name, expression, attributes, options, want string }
+type serializationSequenceCase struct {
+	name       string
+	expression string
+	attributes string
+	options    string
+	want       string
+}
 
 func serializationSequenceCases() []serializationSequenceCase {
 	return []serializationSequenceCase{
@@ -1897,7 +1984,13 @@ func TestSerializeSequenceContracts(t *testing.T) {
 	}
 }
 
-type valueSerializationCase struct{ name, expression, declarations, options, want string }
+type valueSerializationCase struct {
+	name         string
+	expression   string
+	declarations string
+	options      string
+	want         string
+}
 
 func jsonCharacterExpansionMarkupCases() []markupSerializationCase {
 	cases := jsonCharacterExpansionCases()
@@ -1977,7 +2070,11 @@ func adaptiveSerializationCases() []valueSerializationCase {
 		{"quoted text map", `'a'`, `<xsl:output method="adaptive" use-character-maps="m"/><xsl:character-map name="m"><xsl:output-character character="&quot;" string="Q"/></xsl:character-map>`, `map{'method':'adaptive','use-character-maps':map{'"':'Q'}}`, `QaQ`},
 		{"per-node declarations", `(parse-xml('<a/>')/a,parse-xml('<b/>')/b)`, `<xsl:output method="adaptive" omit-xml-declaration="no" indent="no"/>`, `map{'method':'adaptive','omit-xml-declaration':false(),'indent':false()}`, "<?xml version=\"1.0\" encoding=\"UTF-8\"?><a/>\n<?xml version=\"1.0\" encoding=\"UTF-8\"?><b/>"},
 	}...)
-	for _, parameter := range []struct{ name, value, option string }{
+	for _, parameter := range []struct {
+		name   string
+		value  string
+		option string
+	}{
 		{"version", "1.1", "'1.1'"},
 		{"html-version", "5", "5"},
 		{"encoding", "US-ASCII", "'US-ASCII'"},
@@ -2035,8 +2132,16 @@ func TestAdaptiveSerializationRules(t *testing.T) {
 }
 
 // These literal option maps are shared with the independent processor checks.
-func serializationMapConversionCases() []struct{ name, options, want string } {
-	return []struct{ name, options, want string }{
+func serializationMapConversionCases() []struct {
+	name    string
+	options string
+	want    string
+} {
+	return []struct {
+		name    string
+		options string
+		want    string
+	}{
 		{"boolean array", `map{'method':'text','indent':[true()]}`, "x"},
 		{"boolean node", `map{'method':'text','indent':parse-xml('<r>true</r>')/*}`, "x"},
 		{"boolean untyped whitespace", `map{'method':'text','indent':xs:untypedAtomic(' true ')}`, "x"},
@@ -2111,8 +2216,10 @@ func TestSerializationMapOptionConversions(t *testing.T) {
 // changed input must still change that serialization. SER20/30 host choices
 // explicitly drop the listed non-applicable parameters after type validation.
 type ignoredSerializationParameterCase struct {
-	edition, method, name string
-	parameters            [][2]string
+	edition    string
+	method     string
+	name       string
+	parameters [][2]string
 }
 
 func ignoredSerializationParameterCases() []ignoredSerializationParameterCase {
@@ -2269,8 +2376,9 @@ func TestSerializationIgnoredParameters(t *testing.T) {
 	for _, test := range ignoredSerializationParameterCases() {
 		t.Run("SER"+test.edition+"/"+test.method+"/"+test.name, func(t *testing.T) {
 			for _, control := range []struct {
-				name             string
-				parameter, input bool
+				name      string
+				parameter bool
+				input     bool
 			}{
 				{"baseline", false, false}, {"ignored", true, false}, {"changed_input", true, true},
 			} {
@@ -2603,8 +2711,9 @@ func TestSerializationSelectedEditionErrors(t *testing.T) {
 // The finite cells below are copied from the published REC tables, not from
 // the serializer's implementation: SER20 Appendix C; SER30/31 Appendix D.
 type serializationURICell struct {
-	element, attribute string
-	legacy             bool
+	element   string
+	attribute string
+	legacy    bool
 }
 
 func publishedSerializationURICells() []serializationURICell {
@@ -2738,9 +2847,21 @@ func serializationURICellValid(actual, edition, attribute string, legacy, escape
 	return strings.Contains(actual, ` `+attribute+`="`+want+`"`) && strings.Contains(actual, ` p:`+attribute+`="café"`) && strings.Contains(actual, ` not-uri="café"`)
 }
 
-func serializationContainerParameterExpressions() []struct{ name, expression, want string } {
-	cases := make([]struct{ name, expression, want string }, 0, 9)
-	cases = append(cases, []struct{ name, expression, want string }{
+func serializationContainerParameterExpressions() []struct {
+	name       string
+	expression string
+	want       string
+} {
+	cases := make([]struct {
+		name       string
+		expression string
+		want       string
+	}, 0, 9)
+	cases = append(cases, []struct {
+		name       string
+		expression string
+		want       string
+	}{
 		{"JSON duplicate names allowed", `let $s:=serialize(map{1:'a','1':'b'},map{'method':'json','allow-duplicate-names':true(),'indent':false()}) return contains($s,'"1":"a"') and contains($s,'"1":"b"') and string-length($s) eq 17`, nameTrue},
 		{"JSON duplicate names rejected", `serialize(map{1:'a','1':'b'},map{'method':'json','allow-duplicate-names':false()})`, "SERE0022"},
 		{"JSON indent no", `serialize(map{'a':[1,2]},map{'method':'json','indent':false()}) eq '{"a":[1,2]}'`, nameTrue},
@@ -2752,7 +2873,11 @@ func serializationContainerParameterExpressions() []struct{ name, expression, wa
 	for _, method := range []string{"json", "adaptive"} {
 		source := serializationContainerBOMStylesheet(method, true)
 		expression := `let $s:=transform(map{'stylesheet-text':'` + source + `','initial-template':QName('','start'),'delivery-format':'serialized'})?output return starts-with($s,codepoints-to-string(65279)) and count(string-to-codepoints($s)[.=65279]) eq 1`
-		cases = append(cases, struct{ name, expression, want string }{strings.ToUpper(method) + " byte BOM once", expression, nameTrue})
+		cases = append(cases, struct {
+			name       string
+			expression string
+			want       string
+		}{strings.ToUpper(method) + " byte BOM once", expression, nameTrue})
 	}
 	return cases
 }
@@ -3108,10 +3233,20 @@ func TestSerializationXMLCharacterErrors(t *testing.T) {
 	}
 }
 
-func namedOutputCharacterMapCases() []struct{ name, declarations, attributes, want string } {
+func namedOutputCharacterMapCases() []struct {
+	name         string
+	declarations string
+	attributes   string
+	want         string
+} {
 	const maps = `<xsl:character-map name="d"><xsl:output-character character="x" string="D"/></xsl:character-map><xsl:character-map name="b"><xsl:output-character character="x" string="B"/></xsl:character-map><xsl:character-map name="c"><xsl:output-character character="x" string="C"/></xsl:character-map>`
 	const format = `<xsl:output name="n" method="xml" omit-xml-declaration="yes"`
-	return []struct{ name, declarations, attributes, want string }{
+	return []struct {
+		name         string
+		declarations string
+		attributes   string
+		want         string
+	}{
 		{"named map overrides unnamed output", `<xsl:output method="text"/>` + format + ` use-character-maps="b"/>` + maps, "", `<p>B</p>`},
 		{"empty named map excludes default map", `<xsl:output method="text" use-character-maps="d"/>` + format + `/>` + maps, "", `<p>x</p>`},
 		{"local map overrides named map", `<xsl:output method="text" use-character-maps="d"/>` + format + ` use-character-maps="b"/>` + maps, `use-character-maps="c"`, `<p>C</p>`},
@@ -3140,5 +3275,138 @@ func TestNamedOutputCharacterMaps(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// BenchmarkSpecialSerialization reuses complete results so temporary serializer
+// storage is measured separately from the required input/result XDM trees.
+func BenchmarkSpecialSerialization(b *testing.B) { benchmarkSpecialSerialization(b, false) }
+
+func BenchmarkSpecialSerializationCollect(b *testing.B) { benchmarkSpecialSerialization(b, true) }
+
+func benchmarkSpecialSerialization(b *testing.B, collect bool) {
+	for _, tc := range []struct {
+		name   string
+		method string
+		body   string
+		extra  string
+	}{
+		{"JSONNode", "json", `<xsl:sequence select="."/>`, ""},
+		{"XHTML", "xhtml", `<xsl:copy-of select="."/>`, ` include-content-type="no"`},
+		{"XHTMLManyNodes", "xhtml", `<xsl:copy-of select="."/>`, ` include-content-type="no"`},
+		{"JSONMapNorm", "json", `<xsl:sequence select="."/>`, ` normalization-form="NFC" use-character-maps="m"`},
+		{"Adaptive", "adaptive", `<xsl:sequence select="string(.)"/>`, ""},
+		{"AdaptiveASCII", "adaptive", `<xsl:sequence select="string(.)"/>`, ""},
+		{"TextASCIINorm", "text", `<xsl:sequence select="string(.)"/>`, ` normalization-form="NFC"`},
+		{"AdaptiveMapNorm", "adaptive", `<xsl:sequence select="string(.)"/>`, ` normalization-form="NFC" use-character-maps="m"`},
+	} {
+		for _, size := range []int{64, 1 << 20} {
+			b.Run(tc.name+"/"+strconv.Itoa(size), func(b *testing.B) {
+				e := engine(b, transform.Config{})
+				payload := strings.Repeat(`hello &quot;é e&#x301; | `, max(1, size/16))
+				if tc.name == "AdaptiveASCII" || tc.name == "TextASCIINorm" {
+					payload = strings.Repeat("hello world ", max(1, size/12))
+				}
+				if tc.name == "XHTMLManyNodes" {
+					payload = strings.Repeat(`<p>hello é</p>`, max(1, size/128))
+				}
+				input := `<html xmlns="http://www.w3.org/1999/xhtml"><body>` + payload + `</body></html>`
+				d, err := e.Parse(b.Context(), []byte(input))
+				if err != nil {
+					b.Fatal(err)
+				}
+				source := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:character-map name="m"><xsl:output-character character="|" string="&amp;marker;"/></xsl:character-map><xsl:output method="` + tc.method + `" omit-xml-declaration="yes" indent="no"` + tc.extra + `/><xsl:template match="/">` + tc.body + `</xsl:template></xsl:stylesheet>`
+				s, err := e.CompileXSLT(b.Context(), []byte(source), transform.XSLTOptions{})
+				if err != nil {
+					b.Fatal(err)
+				}
+				result, err := s.Execute(b.Context(), d, transform.XSLTContext{})
+				if err != nil {
+					b.Fatal(err)
+				}
+				b.ReportAllocs()
+				b.SetBytes(int64(len(input)))
+				for b.Loop() {
+					if collect {
+						if _, err := result.Serialize(b.Context()); err != nil {
+							b.Fatal(err)
+						}
+						continue
+					}
+					if _, err := result.WriterTo(b.Context()).WriteTo(io.Discard); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestAdaptiveLargeWriterOwnership(t *testing.T) {
+	e := engine(t, transform.Config{})
+	style := stylesheet(t, e, sheetStart+version30+`"><xsl:param name="data"/><xsl:output method="adaptive"/><xsl:template name="start"><xsl:sequence select="$data"/></xsl:template></xsl:stylesheet>`)
+	for _, size := range []int{4095, 4096, 4097, 8192} {
+		for _, pattern := range []string{"é\"/雪", "é/雪"} {
+			input := strings.Repeat(pattern, size/len(pattern)) + strings.Repeat("x", size%len(pattern))
+			if len(input) != size {
+				t.Fatalf("input has %d bytes, want %d", len(input), size)
+			}
+
+			want := `"` + strings.ReplaceAll(input, `"`, `""`) + `"`
+			result, err := style.CallTemplate(t.Context(), nil, transform.Name{Local: nameStart}, transform.XSLTContext{Parameters: transform.Bindings{{Local: "data"}: transform.Values(transform.String(input))}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				var got bytes.Buffer
+				if _, err := result.WriterTo(t.Context()).WriteTo(&got); err != nil || got.String() != want {
+					t.Fatal("streamed quoting", err)
+				}
+			}
+			prefix := min(4097, len(want)-1)
+			cut := &markupCutWriter{remaining: prefix}
+			if n, err := result.WriterTo(t.Context()).WriteTo(cut); !errors.Is(err, io.ErrClosedPipe) || n != int64(prefix) || cut.String() != want[:prefix] {
+				t.Fatal("late writer failure", n, err)
+			}
+		}
+	}
+}
+
+func TestXHTMLWriterPreservesResultNodes(t *testing.T) {
+	e := engine(t, transform.Config{})
+	style := stylesheet(t, e, sheetStart+version30+`"><xsl:output method="xhtml" html-version="5" omit-xml-declaration="yes"/><xsl:template match="/"><h:html xmlns:h="http://www.w3.org/1999/xhtml"><h:head/><h:body><h:p>text</h:p></h:body></h:html></xsl:template></xsl:stylesheet>`)
+	input, err := e.Parse(t.Context(), []byte(`<r/>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := style.Execute(t.Context(), input, transform.XSLTContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := query(t, e, `string-join((name(/*),count(//Q{http://www.w3.org/1999/xhtml}meta)) ! string(.), '|')`, transform.XPath31)
+	snapshot := func() string {
+		doc, err := result.Document(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, err := names.Evaluate(t.Context(), doc, transform.XPathContext{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return text(t, value)
+	}
+	before := snapshot()
+	t.Run("parallel serialization", func(t *testing.T) {
+		for range 8 {
+			t.Run("writer", func(t *testing.T) {
+				t.Parallel()
+				if _, err := result.WriterTo(t.Context()).WriteTo(io.Discard); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	})
+	if after := snapshot(); after != before {
+		t.Fatalf("XHTML serialization mutated reusable result: %q -> %q", before, after)
 	}
 }

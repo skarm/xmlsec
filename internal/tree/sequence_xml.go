@@ -58,7 +58,12 @@ func WriteXMLSequence(ctx context.Context, dst io.Writer, nodes iter.Seq2[*Node,
 		bindings = make(map[string]string)
 	}
 
-	w := xmlStream{ctx: ctx, output: streamio.Writer{Context: ctx, Target: dst, Limit: int64(maximum), LimitError: ErrLimit}, options: options, ns: namespaceContext{bindings: bindings}}
+	w := xmlStream{
+		ctx:     ctx,
+		output:  streamio.Writer{Context: ctx, Target: dst, Limit: int64(maximum), LimitError: ErrLimit},
+		options: options,
+		ns:      namespaceContext{bindings: bindings},
+	}
 
 	doe := false
 

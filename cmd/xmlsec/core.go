@@ -77,7 +77,16 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return err
 	}
 
-	invocation := coreInvocation{command: cmd, key: *keyFile, secret: *secretFile, index: *index, maxSignatures: *maxSignatures, resourceLimit: *resourceLimit, totalLimit: *totalLimit}
+	invocation := coreInvocation{
+		command:       cmd,
+		key:           *keyFile,
+		secret:        *secretFile,
+		index:         *index,
+		maxSignatures: *maxSignatures,
+		resourceLimit: *resourceLimit,
+		totalLimit:    *totalLimit,
+	}
+
 	if err := invocation.validate(); err != nil {
 		return err
 	}
@@ -103,9 +112,29 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return errors.New("signature index out of range")
 	}
 
-	opt := xmldsig.SignatureOptions{IDAttribute: document.Name{Space: *idNS, Local: *idAttr}, AllowedCanonicalizationMethods: strings.Split(*methods, ","), ExpectedURIs: expected}
+	opt := xmldsig.SignatureOptions{
+		IDAttribute:                    document.Name{Space: *idNS, Local: *idAttr},
+		AllowedCanonicalizationMethods: strings.Split(*methods, ","),
+		ExpectedURIs:                   expected,
+	}
 
-	cfg := coreValidationFlags{modern: *modern, resourceLimit: *resourceLimit, totalLimit: *totalLimit, allowedTransforms: *allowedTransforms, maxSignatures: *maxSignatures, idRules: *idRules, requiredIDs: requiredIDs, manifests: *manifests, depth: *depth, nodes: *nodes, references: *refs, resources: *resources, baseURI: *baseURI, rootRequired: *rootRequired, manifestTransforms: *manifestTransforms}
+	cfg := coreValidationFlags{
+		modern:             *modern,
+		resourceLimit:      *resourceLimit,
+		totalLimit:         *totalLimit,
+		allowedTransforms:  *allowedTransforms,
+		maxSignatures:      *maxSignatures,
+		idRules:            *idRules,
+		requiredIDs:        requiredIDs,
+		manifests:          *manifests,
+		depth:              *depth,
+		nodes:              *nodes,
+		references:         *refs,
+		resources:          *resources,
+		baseURI:            *baseURI,
+		rootRequired:       *rootRequired,
+		manifestTransforms: *manifestTransforms,
+	}
 
 	opt, err = cfg.options(ctx, doc, exec, opt)
 	if err != nil {
@@ -137,12 +166,7 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			return err
 		}
 
-		raw, err := signed.XML(ctx)
-		if err != nil {
-			return err
-		}
-
-		return writeOutputContext(ctx, *output, stdout, raw)
+		return documentOutput(ctx, *output, stdout, signed)
 	}
 
 	key, err := loadPublicContext(ctx, *keyFile)
@@ -156,7 +180,13 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 
 	result, report, verifyErr := xmldsig.VerifySignatureDetailed(ctx, doc, signatures[*index], key, opt)
 
-	details := map[string]any{"checks": report, "signature_index": *index, "root_coverage_required": *rootRequired, "required_ids": requiredIDs}
+	details := map[string]any{
+		"checks":                 report,
+		"signature_index":        *index,
+		"root_coverage_required": *rootRequired,
+		"required_ids":           requiredIDs,
+	}
+
 	if verifyErr == nil {
 		details["key_fingerprint_sha256"] = result.KeyFingerprintSHA256()
 		details["root_covered"] = result.CoversElement(doc.Root())
@@ -298,7 +328,11 @@ func coreExternalReferencesContext(ctx context.Context, path string, resourceLim
 		return nil, err
 	}
 
-	return &xmldsig.ExternalReferences{Resolver: resolver, AllowedURIs: allowed, Limits: xmldsig.ResourceLimits{MaxResourceBytes: resourceLimit, MaxTotalResourceBytes: totalLimit}}, nil
+	return &xmldsig.ExternalReferences{
+		Resolver:    resolver,
+		AllowedURIs: allowed,
+		Limits:      xmldsig.ResourceLimits{MaxResourceBytes: resourceLimit, MaxTotalResourceBytes: totalLimit},
+	}, nil
 }
 
 func requiredIDElements(ctx context.Context, doc *document.Document, opt xmldsig.SignatureOptions, ids []string) ([]document.Element, error) {
@@ -308,7 +342,33 @@ func requiredIDElements(ctx context.Context, doc *document.Document, opt xmldsig
 	}
 
 	rules := append([]reference.IDAttributeRule{{Attribute: attribute}}, opt.AdditionalIDRules...)
-	rules = append(rules, reference.IDAttributeRule{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: xmldsig.Namespace, Local: "Object"}, {Space: xmldsig.Namespace, Local: "Manifest"}, {Space: xmldsig.Namespace, Local: "Signature"}, {Space: xmldsig.Namespace, Local: "SignedInfo"}, {Space: xmldsig.Namespace, Local: "Reference"}, {Space: xmldsig.Namespace, Local: "KeyInfo"}, {Space: xmldsig.Namespace, Local: "SignatureValue"}}})
+	rules = append(rules, reference.IDAttributeRule{
+		Attribute: document.Name{Local: "Id"},
+		Elements: []document.Name{
+			{
+				Space: xmldsig.Namespace,
+				Local: "Object",
+			}, {
+				Space: xmldsig.Namespace,
+				Local: "Manifest",
+			}, {
+				Space: xmldsig.Namespace,
+				Local: "Signature",
+			}, {
+				Space: xmldsig.Namespace,
+				Local: "SignedInfo",
+			}, {
+				Space: xmldsig.Namespace,
+				Local: "Reference",
+			}, {
+				Space: xmldsig.Namespace,
+				Local: "KeyInfo",
+			}, {
+				Space: xmldsig.Namespace,
+				Local: "SignatureValue",
+			},
+		},
+	})
 
 	resolver, err := reference.NewSameDocumentResolverWithRules(ctx, doc, rules)
 	if err != nil {

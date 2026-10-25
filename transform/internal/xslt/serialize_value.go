@@ -47,6 +47,10 @@ func SerializeValue(ctx context.Context, w io.Writer, result ValueResult) error 
 		return err
 	}
 
+	if definition.Method == lexicon.MethodXHTML {
+		return serializeEncodedOwnedXHTML(ctx, w, doc, definition)
+	}
+
 	return serializeResult(ctx, w, doc, definition)
 }
 

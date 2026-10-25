@@ -11,14 +11,18 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
-// ReferenceError describes the first unsuccessful mandatory reference operation.
-// A successful/partially populated Result is never returned alongside this error.
-// Index is zero-based. Stage is resolve, transform, read, or digest.
+// ReferenceError identifies the first failed mandatory reference operation.
+// Index is zero-based. Stage is resolve, transform, read or digest. No successful
+// or partially accepted result accompanies this error.
 type ReferenceError struct {
+	// Index is the zero-based position of the failing reference.
 	Index int
-	URI   string
+	// URI is the failing reference's signed URI spelling.
+	URI string
+	// Stage is resolve, transform, read or digest.
 	Stage string
-	Err   error
+	// Err is the underlying failure exposed by Unwrap.
+	Err error
 }
 
 // Error returns the diagnostic error message.

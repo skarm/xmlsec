@@ -491,9 +491,11 @@ type maxMinAccumulator struct {
 	coll            *collationImpl
 	implicitTZ      *time.Location
 	family          string
-	best, bestOrig  xdm.AtomicValue
+	best            xdm.AtomicValue
+	bestOrig        xdm.AtomicValue
 	widest          string
-	first, hasNaN   bool
+	first           bool
+	hasNaN          bool
 	sawNonURIString bool
 }
 
@@ -708,11 +710,13 @@ func sumSingle(ctx context.Context, value xdm.AtomicValue) (xdm.Sequence, error)
 }
 
 type aggregateSum struct {
-	family, widest      string
-	allInt, allDecOrInt bool
-	sumInt              *big.Int
-	sumRat              *big.Rat
-	sumFloat            float64
+	family      string
+	widest      string
+	allInt      bool
+	allDecOrInt bool
+	sumInt      *big.Int
+	sumRat      *big.Rat
+	sumFloat    float64
 }
 
 func (s *aggregateSum) add(ctx context.Context, value xdm.AtomicValue) error {
@@ -977,12 +981,14 @@ const (
 )
 
 type distinctValueAccumulator struct {
-	coll                                       *collationImpl
-	implicitTZ                                 *time.Location
-	result                                     []xdm.AtomicValue
-	seenFast                                   map[string]struct{}
-	numericDecInt, numericFloat, numericDouble []xdm.AtomicValue
-	seenNaN                                    bool
+	coll          *collationImpl
+	implicitTZ    *time.Location
+	result        []xdm.AtomicValue
+	seenFast      map[string]struct{}
+	numericDecInt []xdm.AtomicValue
+	numericFloat  []xdm.AtomicValue
+	numericDouble []xdm.AtomicValue
+	seenNaN       bool
 }
 
 func (s *distinctValueAccumulator) add(value xdm.AtomicValue) error {

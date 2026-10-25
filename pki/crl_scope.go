@@ -31,8 +31,11 @@ type crlDistributionPoint struct {
 }
 type crlScope struct {
 	crlDistributionPoint
-	indirect, onlyUser, onlyCA, onlyAttribute bool
-	raw                                       []byte
+	indirect      bool
+	onlyUser      bool
+	onlyCA        bool
+	onlyAttribute bool
+	raw           []byte
 }
 
 func parseDistinguishedName(raw []byte) (pkix.RDNSequence, error) {

@@ -17,10 +17,13 @@ import (
 	"github.com/skarm/xmlsec/internal/x509cert"
 )
 
-// Signer supplies an explicit key/certificate pair and signed attributes.
+// Signer supplies a signing key, its matching certificate and additional signed
+// attributes.
 type Signer struct {
 	// Key must match CertificateDER. Standard and adapted context-aware signers are accepted.
-	Key            crypto.Signer
+	Key crypto.Signer
+	// CertificateDER is the signer's DER certificate. Embedding it does not establish
+	// trust.
 	CertificateDER []byte
 	// Attributes adds signed attributes without replacing generated content,
 	// digest, certificate or algorithm bindings.
@@ -36,13 +39,16 @@ type Signer struct {
 	OmitCertificateBinding bool
 }
 
-// SignOptions controls CMS container encoding and embedded certificates.
+// SignOptions selects CMS content placement, embedded certificates and processing
+// limits.
 type SignOptions struct {
 	// ContentType defaults to id-data.
 	ContentType asn1.ObjectIdentifier
 	// ExtraCertificates embeds untrusted path-building candidates.
 	ExtraCertificates [][]byte
-	Limits            Limits
+	// Limits bounds content, certificates and container processing. Zero fields select
+	// defaults.
+	Limits Limits
 	// Detached omits content from the container while still signing it.
 	Detached bool
 	// OmitCertificates omits all embedded certificates and cannot be combined
@@ -94,7 +100,7 @@ func SignReader(ctx context.Context, dst io.Writer, src io.Reader, signers []Sig
 		return 0, ErrPolicy
 	}
 
-	encoder := signedDataEncoder{contentType: ct, limits: l, certSeen: certificateSet{}, digestSeen: map[crypto.Hash]bool{}, version: 1}
+	encoder := signedDataEncoder{contentType: ct, limits: l, certSeen: certificateSet{}, digestSeen: map[crypto.Hash]struct{}{}, version: 1}
 	if !o.ContentType.Equal(oidData()) {
 		encoder.version = 3
 	}
@@ -177,13 +183,16 @@ func SignReader(ctx context.Context, dst io.Writer, src io.Reader, signers []Sig
 }
 
 type signedDataEncoder struct {
-	content, contentType  []byte
-	contentDigests        map[crypto.Hash][]byte
-	limits                Limits
-	infos, certs, digests [][]byte
-	certSeen              certificateSet
-	digestSeen            map[crypto.Hash]bool
-	version               int
+	content        []byte
+	contentType    []byte
+	contentDigests map[crypto.Hash][]byte
+	limits         Limits
+	infos          [][]byte
+	certs          [][]byte
+	digests        [][]byte
+	certSeen       certificateSet
+	digestSeen     map[crypto.Hash]struct{}
+	version        int
 }
 
 func (e *signedDataEncoder) addSigner(ctx context.Context, s Signer, c *x509.Certificate) error {
@@ -234,9 +243,9 @@ func (e *signedDataEncoder) addSigner(ctx context.Context, s Signer, c *x509.Cer
 	}
 
 	e.infos = append(e.infos, der.Seq(der.Int(sidVersion), sid, digestAI, signed, algAI, der.Octets(value)))
-	if !e.digestSeen[s.Hash] {
+	if _, exists := e.digestSeen[s.Hash]; !exists {
 		e.digests = append(e.digests, digestAI)
-		e.digestSeen[s.Hash] = true
+		e.digestSeen[s.Hash] = struct{}{}
 	}
 
 	return nil

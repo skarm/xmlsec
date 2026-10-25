@@ -80,8 +80,9 @@ type trackedInput struct {
 func (r *trackedInput) Close() error { return r.close() }
 
 type streamingSink struct {
-	bytes, largest int
-	afterWrite     func()
+	bytes      int
+	largest    int
+	afterWrite func()
 }
 
 func (w *streamingSink) Write(p []byte) (int, error) {

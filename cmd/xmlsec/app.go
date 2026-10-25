@@ -14,9 +14,11 @@ import (
 
 type (
 	commandHandler func(context.Context, []string, io.Reader, io.Writer, io.Writer) error
-	commandSpec    struct {
-		name, summary string
-		handler       commandHandler
+
+	commandSpec struct {
+		name    string
+		summary string
+		handler commandHandler
 	}
 )
 

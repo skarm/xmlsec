@@ -134,45 +134,62 @@ func (g *graph) checkHashReference(ref HashReference) error {
 }
 
 func (g *graph) checkAcyclic(ctx context.Context, maximum int) error {
-	state := make(map[[32]byte]uint8, len(g.objects))
-
-	var visit func([32]byte, int) error
-
-	visit = func(key [32]byte, depth int) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		if depth > 64 || depth > maximum {
-			return ErrLimit
-		}
-
-		if state[key] == 1 {
-			return fmt.Errorf("%w: containment cycle", ErrInput)
-		}
-
-		if state[key] == 2 {
-			return nil
-		}
-
-		state[key] = 1
-		for _, child := range g.objects[key].Contains {
-			if err := visit(child, depth+1); err != nil {
-				return err
-			}
-		}
-
-		state[key] = 2
-
-		return nil
-	}
+	walk := containmentWalk{ctx: ctx, objects: g.objects, states: make(map[[32]byte]uint8, len(g.objects)), maximum: maximum}
 	for key := range g.objects {
-		if err := visit(key, 0); err != nil {
+		if _, err := walk.visit(key, 0); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+type containmentWalk struct {
+	ctx     context.Context
+	objects map[[32]byte]Object
+	// 1 means active; completed entries store their subtree height plus 2.
+	states  map[[32]byte]uint8
+	maximum int
+}
+
+func (w *containmentWalk) visit(key [32]byte, depth int) (int, error) {
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	if depth > 64 || depth > w.maximum {
+		return 0, ErrLimit
+	}
+
+	state := w.states[key]
+	if state == 1 {
+		return 0, fmt.Errorf("%w: containment cycle", ErrInput)
+	}
+
+	if state >= 2 {
+		height := int(state) - 2
+		if height > 64-depth || height > w.maximum-depth {
+			return 0, ErrLimit
+		}
+
+		return height, nil
+	}
+
+	w.states[key] = 1
+	height := 0
+
+	for _, child := range w.objects[key].Contains {
+		childHeight, err := w.visit(child, depth+1)
+		if err != nil {
+			return 0, err
+		}
+
+		height = max(height, childHeight+1)
+	}
+	// #nosec G115 -- Each child passed the depth/height checks above; height is 0..64.
+	w.states[key] = uint8(height) + 2
+
+	return height, nil
 }
 
 func (g *graph) set(ctx context.Context) (*historicalproof.Set, error) {
@@ -188,8 +205,8 @@ func (g *graph) extract(ctx context.Context, candidate Candidate, source [32]byt
 	return g.extractReferences(ctx, seen, source)
 }
 
-func (g *graph) extractCovered(ctx context.Context, candidate Candidate, source [32]byte, upper time.Time) (map[[32]byte]bool, error) {
-	seen := make(map[[32]byte]bool)
+func (g *graph) extractCovered(ctx context.Context, candidate Candidate, source [32]byte, upper time.Time) (map[[32]byte]struct{}, error) {
+	seen := make(map[[32]byte]struct{})
 	stack := slices.Clone(candidate.Covered)
 
 	for len(stack) != 0 {
@@ -200,7 +217,7 @@ func (g *graph) extractCovered(ctx context.Context, candidate Candidate, source 
 		key := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 
-		if seen[key] {
+		if _, exists := seen[key]; exists {
 			continue
 		}
 
@@ -209,7 +226,7 @@ func (g *graph) extractCovered(ctx context.Context, candidate Candidate, source 
 			return nil, fmt.Errorf("%w: timestamp coverage", ErrInput)
 		}
 
-		seen[key] = true
+		seen[key] = struct{}{}
 		if len(seen) > g.maximum {
 			return nil, ErrLimit
 		}
@@ -226,7 +243,7 @@ func (g *graph) extractCovered(ctx context.Context, candidate Candidate, source 
 
 // Hash indirection follows §5.6.2.3(4), using separately established
 // existence of the actual object. It never treats a digest as object bytes.
-func (g *graph) extractReferences(ctx context.Context, seen map[[32]byte]bool, source [32]byte) error {
+func (g *graph) extractReferences(ctx context.Context, seen map[[32]byte]struct{}, source [32]byte) error {
 	for changed := true; changed; {
 		changed = false
 

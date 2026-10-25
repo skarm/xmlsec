@@ -10,10 +10,9 @@ import (
 	"slices"
 	"strconv"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/pki"
@@ -22,7 +21,11 @@ import (
 )
 
 type baselineLayout struct {
-	qualifying, signed, signature, data, unsigned document.Element
+	qualifying document.Element
+	signed     document.Element
+	signature  document.Element
+	data       document.Element
+	unsigned   document.Element
 }
 
 // VerifyBaseline authenticates one explicitly selected baseline signature and
@@ -359,7 +362,7 @@ func baselineLayoutFor(selected document.Element) (baselineLayout, error) {
 }
 
 func baselineAttrs(element document.Element, required []string, optional ...string) error {
-	seen := map[string]bool{}
+	seen := map[string]struct{}{}
 
 	for _, attr := range element.Attributes() {
 		if attr.Name.Space != "" || (!slices.Contains(required, attr.Name.Local) && !slices.Contains(optional, attr.Name.Local)) {
@@ -370,11 +373,11 @@ func baselineAttrs(element document.Element, required []string, optional ...stri
 			return ErrProfile
 		}
 
-		seen[attr.Name.Local] = true
+		seen[attr.Name.Local] = struct{}{}
 	}
 
 	for _, name := range required {
-		if !seen[name] {
+		if _, exists := seen[name]; !exists {
 			return ErrProfile
 		}
 	}

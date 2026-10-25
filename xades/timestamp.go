@@ -10,10 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/pki"
@@ -29,15 +28,18 @@ const (
 // ErrTimestamp reports XAdES signature timestamp validation failed.
 var ErrTimestamp = errors.New("XAdES signature timestamp validation failed")
 
-// TimedOptions builds on the narrow basic-enveloped profile, and requires at
-// least one valid SignatureTimeStamp. It does not establish trust in the primary
-// signer certificate; use Validator or an explicit pki.Verifier for that.
+// TimedOptions requires at least one valid SignatureTimeStamp on the closed basic
+// enveloped profile. It does not establish primary signer certificate trust.
+// Use Validator or an explicit pki.Verifier for that check.
 type TimedOptions struct {
+	// Basic sets the closed basic signature profile's ID and algorithm policy.
 	Basic VerifyOptions
 	// TSA supplies the immutable trusted timestamp verifier.
 	TSA *timestamp.Verifier
 	// At is the explicit trusted time used by this operation.
-	At       time.Time
+	At time.Time
+	// Evidence supplies untrusted intermediates and offline revocation data for TSA
+	// verification.
 	Evidence pki.Evidence
 	// MaxTimestamps bounds total timestamp tokens, including tokens sharing a container;
 	// default 8, maximum 32.
@@ -46,8 +48,8 @@ type TimedOptions struct {
 	MaxTokenBytes int
 }
 
-// TimedResult is an immutable basic XAdES signature with authenticated SignatureTimeStamp
-// tokens.
+// TimedResult retains an immutable basic XAdES signature and authenticated
+// SignatureTimeStamp tokens.
 type TimedResult struct {
 	basic      *BasicResult
 	timestamps []*timestamp.Result
@@ -92,10 +94,14 @@ func (r *TimedResult) Timestamps() []*timestamp.Result {
 	return append([]*timestamp.Result(nil), r.timestamps...)
 }
 
-// AddTimestampOptions selects timestamp validation, request and canonicalization options.
+// AddTimestampOptions selects request parameters, canonicalization and validation
+// policy for an added signature timestamp.
 type AddTimestampOptions struct {
+	// Validation supplies basic signature and TSA checks for the augmented document.
 	Validation TimedOptions
-	Request    timestamp.RequestOptions
+	// Request selects the timestamp request's imprint, policy, nonce and certificate
+	// options.
+	Request timestamp.RequestOptions
 	// Canonicalization defaults to Exclusive C14N and is serialized explicitly.
 	Canonicalization string
 }

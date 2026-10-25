@@ -23,8 +23,9 @@ func TestRun(t *testing.T) {
 func TestRunPartialOutput(t *testing.T) {
 	first := `<feed><item id="1">a</item>`
 	for _, tt := range []struct {
-		name, source string
-		want         error
+		name   string
+		source string
+		want   error
 	}{
 		{name: "invalid enclosing XML", source: first + `</broken>`, want: document.ErrMalformed},
 		{name: "record byte limit", source: first + `<item>` + strings.Repeat("x", 1<<20) + `</item></feed>`, want: document.ErrLimit},

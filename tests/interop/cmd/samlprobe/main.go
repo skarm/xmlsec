@@ -35,11 +35,6 @@ func main() {
 	cert, e := x509.ParseCertificate(read(*certPath))
 	must(e)
 
-	method := xmldsig.ECDSASHA256
-	if _, ok := cert.PublicKey.(*rsa.PublicKey); ok {
-		method = xmldsig.RSASHA256
-	}
-
 	var key crypto.Signer
 
 	if *keyPath != "" {
@@ -61,7 +56,38 @@ func main() {
 
 	ctx := context.Background()
 
-	var d *document.Document
+	var input []byte
+
+	switch *mode {
+	case modeVerifyResponse, "verify-request", "verify-metadata":
+		input = read(*in)
+	}
+
+	doc, err := process(ctx, *mode, input, cert, key, at)
+	must(err)
+
+	if *out != "" {
+		encoded := input
+		if doc != nil {
+			encoded, err = doc.XML(ctx)
+			must(err)
+		}
+
+		must(os.WriteFile(*out, encoded, 0o600))
+	}
+
+	fmt.Println("OK", *mode)
+}
+
+func process(ctx context.Context, mode string, input []byte, cert *x509.Certificate, key crypto.Signer, at time.Time) (*document.Document, error) {
+	if cert == nil {
+		return nil, errors.New("certificate is required")
+	}
+
+	method := xmldsig.ECDSASHA256
+	if _, ok := cert.PublicKey.(*rsa.PublicKey); ok {
+		method = xmldsig.RSASHA256
+	}
 
 	const (
 		sp   = "https://sp.example/metadata"
@@ -71,43 +97,45 @@ func main() {
 		auth = "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
 	)
 
-	sk := protocol.SigningKey{Key: key, CertificateDER: cert.Raw, SignatureMethod: method}
+	signing := protocol.SigningKey{Key: key, CertificateDER: cert.Raw, SignatureMethod: method}
 
-	switch *mode {
+	switch mode {
 	case "sign-response":
-		d, e = protocol.SignResponse(ctx, protocol.Response{ID: "_response", Issuer: idp, Audience: sp, Destination: acs, InResponseTo: nameRequest, IssueInstant: at, Assertion: protocol.AssertionData{ID: "_assertion", NameID: "alice@example.test", NameIDFormat: protocol.NameIDEmail, NotBefore: at.Add(-time.Minute), NotOnOrAfter: at.Add(5 * time.Minute), AuthnInstant: at.Add(-time.Second), AuthnContext: auth, SessionIndex: "session", Attributes: []protocol.Attribute{{Name: "role", Values: []string{"reader"}}}}}, sk)
-	case "verify-response":
-		d, e = document.Parse(ctx, read(*in), document.DefaultLimits())
-		must(e)
-		_, e = protocol.VerifyResponse(ctx, d, []crypto.PublicKey{cert.PublicKey}, protocol.ResponseOptions{Issuer: idp, Audience: sp, Destination: acs, ExpectedRequestID: nameRequest, At: at, ExpectedAuthnContexts: []string{auth}})
+		return protocol.SignResponse(ctx, protocol.Response{ID: "_response", Issuer: idp, Audience: sp, Destination: acs, InResponseTo: nameRequest, IssueInstant: at, Assertion: protocol.AssertionData{ID: "_assertion", NameID: "alice@example.test", NameIDFormat: protocol.NameIDEmail, NotBefore: at.Add(-time.Minute), NotOnOrAfter: at.Add(5 * time.Minute), AuthnInstant: at.Add(-time.Second), AuthnContext: auth, SessionIndex: "session", Attributes: []protocol.Attribute{{Name: "role", Values: []string{"reader"}}}}}, signing)
 	case "sign-request":
-		d, e = protocol.SignAuthnRequest(ctx, protocol.AuthnRequest{ID: nameRequest, Issuer: sp, Destination: sso, ACS: acs, IssueInstant: at, NameIDFormat: protocol.NameIDEmail, RequestedContexts: []string{auth}}, sk)
-	case "verify-request":
-		d, e = document.Parse(ctx, read(*in), document.DefaultLimits())
-		must(e)
-		_, e = protocol.VerifyAuthnRequest(ctx, d, []crypto.PublicKey{cert.PublicKey}, protocol.RequestOptions{Issuer: sp, Destination: sso, ACS: []metadata.Endpoint{{Binding: metadata.HTTPPost, Location: acs, Index: 0, Indexed: true}}, At: at})
+		return protocol.SignAuthnRequest(ctx, protocol.AuthnRequest{ID: nameRequest, Issuer: sp, Destination: sso, ACS: acs, IssueInstant: at, NameIDFormat: protocol.NameIDEmail, RequestedContexts: []string{auth}}, signing)
+	case modeVerifyResponse, "verify-request":
+		doc, err := document.Parse(ctx, input, document.DefaultLimits())
+		if err != nil {
+			return nil, err
+		}
+
+		if mode == modeVerifyResponse {
+			_, err = protocol.VerifyResponse(ctx, doc, []crypto.PublicKey{cert.PublicKey}, protocol.ResponseOptions{Issuer: idp, Audience: sp, Destination: acs, ExpectedRequestID: nameRequest, At: at, ExpectedAuthnContexts: []string{auth}})
+		} else {
+			_, err = protocol.VerifyAuthnRequest(ctx, doc, []crypto.PublicKey{cert.PublicKey}, protocol.RequestOptions{Issuer: sp, Destination: sso, ACS: []metadata.Endpoint{{Binding: metadata.HTTPPost, Location: acs, Index: 0, Indexed: true}}, At: at})
+		}
+
+		return doc, err
 	case "sign-metadata":
-		d, e = metadata.Build(ctx, metadata.EntityDescriptor{ID: "_metadata", EntityID: sp, ValidUntil: at.Add(time.Hour), SP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{CertificateDER: cert.Raw, Use: "signing"}}, AuthnRequestsSigned: true, WantAssertionsSigned: true, Endpoints: map[string][]metadata.Endpoint{"AssertionConsumerService": {{Binding: metadata.HTTPPost, Location: acs, Index: 0, Indexed: true, Default: true}}}}}, at, metadata.Options{})
-		must(e)
-		d, e = metadata.Sign(ctx, d, key, cert.Raw, method, at, metadata.Options{})
+		doc, err := metadata.Build(ctx, metadata.EntityDescriptor{ID: "_metadata", EntityID: sp, ValidUntil: at.Add(time.Hour), SP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{CertificateDER: cert.Raw, Use: "signing"}}, AuthnRequestsSigned: true, WantAssertionsSigned: true, Endpoints: map[string][]metadata.Endpoint{"AssertionConsumerService": {{Binding: metadata.HTTPPost, Location: acs, Index: 0, Indexed: true, Default: true}}}}}, at, metadata.Options{})
+		if err != nil {
+			return nil, err
+		}
+
+		return metadata.Sign(ctx, doc, key, cert.Raw, method, at, metadata.Options{})
 	case "verify-metadata":
-		v, err := metadata.NewVerifier(metadata.Config{TrustedKeys: []crypto.PublicKey{cert.PublicKey}, Options: metadata.Options{}})
-		must(err)
+		verifier, err := metadata.NewVerifier(metadata.Config{TrustedKeys: []crypto.PublicKey{cert.PublicKey}, Options: metadata.Options{}})
+		if err != nil {
+			return nil, err
+		}
 
-		_, e = v.Verify(ctx, read(*in), at)
+		_, err = verifier.Verify(ctx, input, at)
+
+		return nil, err
 	default:
-		must(errors.New("mode"))
+		return nil, errors.New("mode")
 	}
-
-	must(e)
-
-	if *out != "" {
-		b, e := d.XML(ctx)
-		must(e)
-		must(os.WriteFile(*out, b, 0o600))
-	}
-
-	fmt.Println("OK", *mode)
 }
 
 func must(e error) {

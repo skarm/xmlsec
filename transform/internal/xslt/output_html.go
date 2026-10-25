@@ -72,6 +72,12 @@ func serializeXHTML(w io.Writer, doc *xdm.Document, definition *OutputDef, charM
 		return err
 	}
 
+	return serializeOwnedXHTML(w, owned, definition, charMap)
+}
+
+// The caller transfers a private normalized tree; namespace and metadata edits
+// must never reach nodes retained by a reusable Result or borrowed document.
+func serializeOwnedXHTML(w io.Writer, owned *xdm.Document, definition *OutputDef, charMap map[rune]string) error {
 	html5 := isHTMLVersion5(definition.HTMLVersion)
 	contentType := ""
 
@@ -121,6 +127,23 @@ func serializeEncodedXHTML(w io.Writer, doc *xdm.Document, definition *OutputDef
 	}
 
 	if err = serializeXHTML(output, doc, definition, charMap); err != nil {
+		return err
+	}
+
+	return finish()
+}
+
+func serializeEncodedOwnedXHTML(ctx context.Context, w io.Writer, owned *xdm.Document, definition *OutputDef) error {
+	if err := validateSerializationParams(ctx, definition, owned); err != nil {
+		return err
+	}
+
+	output, finish, err := encodedOutput(ctx, w, definition)
+	if err != nil {
+		return err
+	}
+
+	if err := serializeOwnedXHTML(output, owned, definition, definition.ResolvedCharMap); err != nil {
 		return err
 	}
 

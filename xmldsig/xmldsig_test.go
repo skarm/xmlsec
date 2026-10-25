@@ -37,8 +37,10 @@ func TestAlgorithmsAndReferences(t *testing.T) {
 	key := rsaKey(t)
 
 	tests := []struct {
-		name, method, digest string
-		key                  crypto.Signer
+		name   string
+		method string
+		digest string
+		key    crypto.Signer
 	}{
 		{"RSA256", xmldsig.RSASHA256, xmldsig.SHA256, key},
 		{"RSA384", xmldsig.RSASHA384, xmldsig.SHA384, key},
@@ -188,8 +190,9 @@ func TestPolicyAndID(t *testing.T) {
 	key := ecKey(t, elliptic.P256())
 
 	tests := []struct {
-		name, src string
-		opt       xmldsig.SignOptions
+		name string
+		src  string
+		opt  xmldsig.SignOptions
 	}{
 		{"missing ID", `<r/>`, xmldsig.SignOptions{}},
 		{"duplicate ID", `<r ID="r"><c ID="r"/></r>`, xmldsig.SignOptions{}},
@@ -253,7 +256,10 @@ func TestECDSAIsNotDER(t *testing.T) {
 		t.Fatalf("XMLDSig ECDSA signature has %d bytes, want 64", len(raw))
 	}
 
-	pair := struct{ R, S *big.Int }{new(big.Int).SetBytes(raw[:32]), new(big.Int).SetBytes(raw[32:])}
+	pair := struct {
+		R *big.Int
+		S *big.Int
+	}{new(big.Int).SetBytes(raw[:32]), new(big.Int).SetBytes(raw[32:])}
 
 	der, err := asn1.Marshal(pair)
 	if err != nil {
@@ -373,9 +379,10 @@ func TestModernSignatureMethods(t *testing.T) {
 	}
 
 	tests := []struct {
-		name, method string
-		key          crypto.Signer
-		hash         crypto.Hash
+		name   string
+		method string
+		key    crypto.Signer
+		hash   crypto.Hash
 	}{
 		{"pss256", xmldsig.RSAPSSSHA256, rsaKey, crypto.SHA256},
 		{"pss384", xmldsig.RSAPSSSHA384, rsaKey, crypto.SHA384},

@@ -69,9 +69,15 @@ func buildBaselineRoles(ctx context.Context, properties BaselineProperties) (*tr
 	out := xnode("SignerRoleV2")
 
 	groups := []struct {
-		local, child string
-		values       []PropertyValue
-	}{{"ClaimedRoles", "ClaimedRole", properties.ClaimedRoles}, {"CertifiedRolesV2", "CertifiedRole", properties.CertifiedRoles}, {"SignedAssertions", "SignedAssertion", properties.SignedAssertions}}
+		local  string
+		child  string
+		values []PropertyValue
+	}{
+		{"ClaimedRoles", "ClaimedRole", properties.ClaimedRoles},
+		{"CertifiedRolesV2", "CertifiedRole", properties.CertifiedRoles},
+		{"SignedAssertions", "SignedAssertion", properties.SignedAssertions},
+	}
+
 	for _, group := range groups {
 		if len(group.values) == 0 {
 			continue

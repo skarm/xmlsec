@@ -1,9 +1,9 @@
 package reference_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/skarm/xmlsec/c14n"
@@ -20,8 +20,9 @@ func TestSameDocumentSemantics(t *testing.T) {
 	}
 
 	cases := []struct {
-		uri             string
-		whole, comments bool
+		uri      string
+		whole    bool
+		comments bool
 	}{
 		{"", true, false},
 		{"#foo", false, false},
@@ -43,16 +44,18 @@ func TestSameDocumentSemantics(t *testing.T) {
 			}
 
 			out := process(t, resolved.Data(), []reference.Transform{{Algorithm: c14n.ExclusiveWithComments}}, reference.Options{})
-			if strings.Contains(string(out.Bytes()), "<!--inside-->") != tc.comments {
-				t.Fatal(string(out.Bytes()))
+
+			raw := out.Bytes()
+			if bytes.Contains(raw, []byte("<!--inside-->")) != tc.comments {
+				t.Fatalf("%s", raw)
 			}
 
-			if strings.Contains(string(out.Bytes()), "<?p before?>") != tc.whole {
-				t.Fatal("document-level PI lost", string(out.Bytes()))
+			if bytes.Contains(raw, []byte("<?p before?>")) != tc.whole {
+				t.Fatalf("document-level PI lost: %s", raw)
 			}
 
-			if strings.Contains(string(out.Bytes()), "<!--before-->") != (tc.whole && tc.comments) {
-				t.Fatal("wrong document comment", string(out.Bytes()))
+			if bytes.Contains(raw, []byte("<!--before-->")) != (tc.whole && tc.comments) {
+				t.Fatalf("wrong document comment: %s", raw)
 			}
 		})
 	}
@@ -127,8 +130,9 @@ func TestScopedIDRules(t *testing.T) {
 	scoped := reference.IDAttributeRule{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: "urn:ds", Local: "Object"}}}
 
 	for _, tc := range []struct {
-		name, xml string
-		valid     bool
+		name  string
+		xml   string
+		valid bool
 	}{
 		{"scoped", `<r><x ID="app"/><d:Object xmlns:d="urn:ds" Id="object"/><x Id="object"/></r>`, true},
 		{"collision", `<r><x ID="app"/><d:Object xmlns:d="urn:ds" Id="app"/></r>`, false},

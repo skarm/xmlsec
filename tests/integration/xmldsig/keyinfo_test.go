@@ -25,7 +25,14 @@ func TestKeyInfoIndependentPythonFixtures(t *testing.T) {
 	}
 
 	var manifest struct {
-		Cases []struct{ Name, KeyInfo, Signature, SPKI, Negative, SHA256 string }
+		Cases []struct {
+			Name      string
+			KeyInfo   string
+			Signature string
+			SPKI      string
+			Negative  string
+			SHA256    string
+		}
 	}
 	if e = json.Unmarshal(raw, &manifest); e != nil {
 		t.Fatal(e)

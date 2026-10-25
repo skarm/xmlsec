@@ -20,11 +20,12 @@ const (
 	XSLT = "http://www.w3.org/TR/1999/REC-xslt-19991116"
 )
 
-// XPathExpression carries the XPath 1.0 static namespace context. The default
-// binding does not give unprefixed names an element namespace. Here is the exact
-// expression element from the original snapshot; it is runtime context, not a
-// caller-provided replacement for an expression in the signature.
+// XPathExpression supplies XPath 1.0 source and static namespace bindings.
+// A default binding does not put unprefixed names in an element namespace.
+// Here must identify the original expression element for runtime context; it
+// cannot substitute a caller-created expression for one in the signature.
 type XPathExpression struct {
+	// Expression is the XPath source evaluated with these namespace bindings.
 	Expression string `json:"expression"`
 	// Filter is the Filter2 operation: intersect, subtract or union.
 	// It must be empty for an ordinary XPath transform.
@@ -35,19 +36,21 @@ type XPathExpression struct {
 	Here document.Element `json:"-"`
 }
 
-// ExtensionContext is supplied by the reference processor, not by the XML.
-// IDRules must agree with same-document resolution. No ID guessing is allowed.
+// ExtensionContext supplies signature and ID context from the reference processor.
+// IDRules must match same-document resolution; implementations must not guess IDs.
 type ExtensionContext struct {
+	// Signature is the containing signature handle used by signature-aware transforms.
 	Signature document.Element
-	IDRules   []IDAttributeRule
+	// IDRules supplies the same explicit ID typing used for same-document resolution.
+	IDRules []IDAttributeRule
 }
 
-// ExtensionProcessor is an explicitly trusted execution boundary. Validate must
-// reject programs not approved by the application; Apply must enforce execution
-// limits. The library also checks returned kind, snapshot identity, subset
-// membership and size. A context alone cannot interrupt a malicious callback.
-// Implementations must be concurrency-safe. No implementation is enabled by
-// default. The transform package implements this contract in Go.
+// ExtensionProcessor executes application-approved programs within explicit limits.
+// Validate must reject unapproved programs; Apply must enforce execution limits.
+// The library also checks output kind, snapshot identity, subset membership and
+// size. Implementations must support concurrent use and cooperative cancellation;
+// a context cannot interrupt a callback that ignores it. No processor is enabled
+// by default. Package transform provides an implementation.
 type ExtensionProcessor interface {
 	// Validate approves a transform program before any chain execution or resource
 	// resolution. It must reject programs outside application policy.
@@ -58,11 +61,11 @@ type ExtensionProcessor interface {
 	Apply(context.Context, Transform, Data, ExtensionContext) (Data, error)
 }
 
-// ReaderExtensionProcessor accepts approved XSLT input and output as streams.
-// Write and WriteReader prefer this interface when available; otherwise they
-// buffer octets for ExtensionProcessor.Apply. Implementations define their own
-// storage requirements, which may include trees, results or complete byte buffers.
-// Both streams remain caller-owned. Errors may leave partial output.
+// ReaderExtensionProcessor executes approved XSLT programs using input and output
+// streams. Write and WriteReader prefer it when available; otherwise they buffer
+// octets for ExtensionProcessor.Apply. Streams remain caller-owned and errors can
+// leave partial output. The implementation determines storage needs, which may
+// include complete trees, results or byte buffers.
 type ReaderExtensionProcessor interface {
 	ExtensionProcessor
 	// WriteTransform handles the XSLT transform. The library bounds actual I/O

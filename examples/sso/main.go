@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -130,14 +131,19 @@ func run() error {
 		return e
 	}
 
-	grant, e := service.ConsumePOST(ctx, response.POSTBody(), sp.ConsumeOptions{At: now.Add(3 * time.Second), BrowserBinding: browserSecret})
+	var form bytes.Buffer
+	if _, e := response.WritePOST(ctx, &form); e != nil {
+		return e
+	}
+
+	grant, e := service.ConsumePOST(ctx, form.Bytes(), sp.ConsumeOptions{At: now.Add(3 * time.Second), BrowserBinding: browserSecret})
 	if e != nil {
 		return e
 	}
 
 	fmt.Printf("subject=%s response-authenticated=%t request-correlated=%t\n", grant.NameID(), grant.ResponseAuthenticated(), grant.InResponseTo() == request.RequestID())
 
-	_, e = service.ConsumePOST(ctx, response.POSTBody(), sp.ConsumeOptions{At: now.Add(3 * time.Second), BrowserBinding: browserSecret})
+	_, e = service.ConsumePOST(ctx, form.Bytes(), sp.ConsumeOptions{At: now.Add(3 * time.Second), BrowserBinding: browserSecret})
 	if !errors.Is(e, replay.ErrReplay) {
 		if e == nil {
 			return errors.New("replay unexpectedly accepted")

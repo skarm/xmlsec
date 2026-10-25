@@ -91,11 +91,14 @@ type compiled struct {
 
 // v1Processor retains XMLDSig 1.0 semantics for explicitly approved programs.
 type v1Processor struct {
-	engine                            *Engine
-	programs                          map[string][]compiled
-	stylesheets                       map[string]*xslt.Stylesheet
-	timeout                           time.Duration
-	input, nodes, operations, strings int
+	engine      *Engine
+	programs    map[string][]compiled
+	stylesheets map[string]*xslt.Stylesheet
+	timeout     time.Duration
+	input       int
+	nodes       int
+	operations  int
+	strings     int
 }
 
 // newV1Processor compiles the approved XMLDSig compatibility programs.
@@ -142,20 +145,20 @@ func newV1Processor(e *Engine, programs []reference.Transform) (*v1Processor, er
 			functions := map[string]xpath.Function{"here": hereFunction(document.Element{}, nil)}
 
 			expr, err := xpath.NewCompiler().Context(ctx).Language(10, ns).Compile(x.Expression)
-			if err == nil {
-				err = expr.Validate(ns)
-			}
-
-			if err == nil {
-				err = xpath.CheckStandaloneFunctions(expr, ns, functions)
-			}
-
-			if err == nil && len(expr.StaticReferences(ns).FreeVariables) > 0 {
-				err = fmt.Errorf("%w: XMLDSig XPath has no variable bindings", reference.ErrInput)
-			}
-
 			if err != nil {
 				return nil, executionError(err)
+			}
+
+			if err := expr.Validate(ns); err != nil {
+				return nil, executionError(err)
+			}
+
+			if err := xpath.CheckStandaloneFunctions(expr, ns, functions); err != nil {
+				return nil, executionError(err)
+			}
+
+			if len(expr.StaticReferences(ns).FreeVariables) > 0 {
+				return nil, fmt.Errorf("%w: XMLDSig XPath has no variable bindings", reference.ErrInput)
 			}
 
 			ev := xpath.NewEvaluator(xpath.DefaultEvaluatorOptions).Namespaces(ns).Functions(functions, nil).OpLimit(p.operations)
@@ -206,13 +209,13 @@ func (p *v1Processor) Apply(ctx context.Context, t reference.Transform, in refer
 	limits := document.DefaultLimits()
 	limits.MaxBytes = p.input
 	limits.MaxNodes = p.nodes
-
 	limits.MaxDepth = p.engine.limits.MaxDepth
-	if err = tree.CheckSnapshotLimits(ctx, doc, limits); err != nil {
+
+	if err := tree.CheckSnapshotLimits(ctx, doc, limits); err != nil {
 		return reference.Data{}, executionError(err)
 	}
 
-	if err = xpath.Charge(ctx, set.Len()+1); err != nil {
+	if err := xpath.Charge(ctx, set.Len()+1); err != nil {
 		return reference.Data{}, executionError(err)
 	}
 
@@ -254,7 +257,7 @@ func (p *v1Processor) Apply(ctx context.Context, t reference.Transform, in refer
 		return reference.Data{}, err
 	}
 
-	if err = ctx.Err(); err != nil {
+	if err := ctx.Err(); err != nil {
 		return reference.Data{}, err
 	}
 
@@ -319,7 +322,7 @@ func idArgumentValues(ctx context.Context, argument xdm.Sequence) ([]string, err
 }
 
 func resolveIDValues(ctx context.Context, values []string, resolve func(string) xdm.Node, maxTokens int) (xdm.Sequence, error) {
-	seen := map[xdm.Node]bool{}
+	seen := map[xdm.Node]struct{}{}
 
 	var out xdm.ItemSlice
 
@@ -337,8 +340,8 @@ func resolveIDValues(ctx context.Context, values []string, resolve func(string) 
 			}
 
 			n := resolve(id)
-			if n != nil && !seen[n] {
-				seen[n] = true
+			if _, duplicate := seen[n]; n != nil && !duplicate {
+				seen[n] = struct{}{}
 				out = append(out, xdm.NodeItem{Node: n})
 			}
 		}
@@ -391,9 +394,9 @@ func applyFilter2Nodes(ctx context.Context, expressions []reference.XPathExpress
 			return nil, executionError(err)
 		}
 
-		roots := make(map[document.Node]bool, len(selected))
+		roots := make(map[document.Node]struct{}, len(selected))
 		for _, node := range selected {
-			roots[node.Reference()] = true
+			roots[node.Reference()] = struct{}{}
 		}
 
 		filters[i] = filterSelection{expressions[i].Filter, roots}
@@ -476,12 +479,12 @@ func executionError(err error) error {
 }
 
 type v1Function struct {
-	min, max int
-	call     func(context.Context, []xdm.Sequence) (xdm.Sequence, error)
+	min  int
+	max  int
+	call func(context.Context, []xdm.Sequence) (xdm.Sequence, error)
 }
 
 func (f v1Function) MinArity() int { return f.min }
-
 func (f v1Function) MaxArity() int { return f.max }
 
 func (f v1Function) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {

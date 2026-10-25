@@ -316,7 +316,8 @@ func fnDeepEqual(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 
 // deepEqualMapMatcher tracks the right-hand entries already matched by value.
 type deepEqualMapMatcher struct {
-	a, b xdm.MapItem
+	a    xdm.MapItem
+	b    xdm.MapItem
 	opts deepEqualOptions
 	keys []xdm.AtomicValue
 	used []bool

@@ -429,11 +429,11 @@ func rewriteSuiteNamespaceNames(ctx context.Context, data []byte, aliases map[st
 		start := decoder.InputOffset()
 
 		token, err := decoder.RawToken()
-		if errors.Is(err, io.EOF) {
-			return output.Bytes(), nil
-		}
-
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return output.Bytes(), nil
+			}
+
 			return nil, err
 		}
 

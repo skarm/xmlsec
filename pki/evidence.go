@@ -28,22 +28,30 @@ const (
 // Result includes an assertion only after its required freshness/coverage policy
 // passes. Report can also expose authenticated but stale or inapplicable evidence.
 type VerifiedEvidence struct {
-	revoked, invalidity                 time.Time
-	issued, this, next, validation      time.Time
-	signerAuthority                     string
-	signatureOID                        string
-	kind                                EvidenceKind
-	status                              string
-	scope                               string
-	signerChain                         [][]byte
-	sources                             []*evidence.Observation
-	raw                                 []byte
-	dependencies                        []string
-	reason                              int
-	historicalCoverage                  crlReasonMask
-	scopeReasons, coverage              crlReasonMask
-	fingerprint, target, issuer, signer [32]byte
-	authenticated                       bool
+	revoked            time.Time
+	invalidity         time.Time
+	issued             time.Time
+	this               time.Time
+	next               time.Time
+	validation         time.Time
+	signerAuthority    string
+	signatureOID       string
+	kind               EvidenceKind
+	status             string
+	scope              string
+	signerChain        [][]byte
+	sources            []*evidence.Observation
+	raw                []byte
+	dependencies       []string
+	reason             int
+	historicalCoverage crlReasonMask
+	scopeReasons       crlReasonMask
+	coverage           crlReasonMask
+	fingerprint        [32]byte
+	target             [32]byte
+	issuer             [32]byte
+	signer             [32]byte
+	authenticated      bool
 }
 
 // Kind returns the original evidence encoding.
@@ -220,13 +228,13 @@ func canonicalEvidence(items []*VerifiedEvidence) []*VerifiedEvidence {
 			merged := *previous
 			merged.coverage |= item.coverage
 
-			dependencies := make(map[string]bool, len(previous.dependencies)+len(item.dependencies))
+			dependencies := make(map[string]struct{}, len(previous.dependencies)+len(item.dependencies))
 			for _, dependency := range previous.dependencies {
-				dependencies[dependency] = true
+				dependencies[dependency] = struct{}{}
 			}
 
 			for _, dependency := range item.dependencies {
-				dependencies[dependency] = true
+				dependencies[dependency] = struct{}{}
 			}
 
 			merged.dependencies = make([]string, 0, len(dependencies))

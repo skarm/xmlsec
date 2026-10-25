@@ -48,15 +48,20 @@ type stage4Vectors struct {
 }
 
 type stage4Case struct {
-	Name, Kind, XML string
-	Resources       map[string][]byte
-	Programs        []reference.Transform
-	DigestInputs    [][]byte `json:"digest_inputs"`
+	Name         string
+	Kind         string
+	XML          string
+	Resources    map[string][]byte
+	Programs     []reference.Transform
+	DigestInputs [][]byte `json:"digest_inputs"`
 }
 
 type stage4URIContext struct {
-	Name, XML, Relative, Resolved string
-	BaseURI                       string `json:"base_uri"`
+	Name     string
+	XML      string
+	Relative string
+	Resolved string
+	BaseURI  string `json:"base_uri"`
 }
 
 func loadStage4Vectors(t testing.TB) (stage4Vectors, crypto.PublicKey) {

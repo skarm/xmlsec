@@ -104,20 +104,20 @@ func xpath10Double(v float64) xdm.Sequence {
 // XPath10FunctionArity reports the core function's minimum and maximum arity.
 // A maximum of -1 is variadic. Host functions live in the host's own registry.
 func XPath10FunctionArity(name string) ([2]int, bool) {
-	v, ok := lookupxpath10Functions(name)
+	v, ok := lookupXPath10FunctionArity(name)
 	return v, ok
 }
 
 // XPath 1.0 uses the same parseOptions, VM, axes and builtins. This table specifies
 // its core library; stylesheet functions and explicitly registered extensions
 // are checked by their host, rather than being mistaken for newer builtins.
-func lookupxpath10Functions(key string) ([2]int, bool) {
+func lookupXPath10FunctionArity(key string) ([2]int, bool) {
 	switch key {
 	case lexicon.FnLast, lexicon.FnPosition, lexicon.ValueTrue, lexicon.ValueFalse:
 		return [2]int{0, 0}, true
 	case fnNameCount, "id", fnNameBoolean, fnNameNot, lexicon.AttrLang, nameSum, nameFloor, nameCeiling, nameRound:
 		return [2]int{1, 1}, true
-	case nameLocalName, nameNamespaceUri, lexicon.FnName, lexicon.TypeString, nameStringLength, fnNameNormalizeSpace, lexicon.TypeNumber:
+	case nameLocalName, nameNamespaceURI, lexicon.FnName, lexicon.TypeString, nameStringLength, fnNameNormalizeSpace, lexicon.TypeNumber:
 		return [2]int{0, 1}, true
 	case nameConcat:
 		return [2]int{2, -1}, true
@@ -192,7 +192,7 @@ func xpath10Number(seq xdm.Sequence) (xdm.AtomicValue, error) {
 }
 
 func xpath10FunctionArity(name string, arity int) bool {
-	a, ok := lookupxpath10Functions(name)
+	a, ok := lookupXPath10FunctionArity(name)
 	return ok && arity >= a[0] && (a[1] < 0 || arity <= a[1])
 }
 
@@ -371,7 +371,7 @@ func xpath10ContextArgument(ec *evalContext, args []xdm.Sequence) (xdm.Sequence,
 
 func coerceXPath10Argument(ctx context.Context, name string, index int, argument xdm.Sequence) (xdm.Sequence, error) {
 	switch name {
-	case fnNameCount, nameLocalName, nameNamespaceUri, lexicon.FnName:
+	case fnNameCount, nameLocalName, nameNamespaceURI, lexicon.FnName:
 		if err := xpath10NodeSet(argument); err != nil {
 			return nil, err
 		}

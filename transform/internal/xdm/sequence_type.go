@@ -5,6 +5,7 @@ package xdm
 
 // NodeTest filters nodes selected by an axis.
 type NodeTest interface {
+	// nodeTest restricts item tests to implementations declared in this package.
 	nodeTest()
 }
 
@@ -20,15 +21,19 @@ const (
 
 // NameTest matches by qualified name. Local=="*" is a wildcard.
 type NameTest struct {
+	// Prefix is the lexical namespace prefix, including wildcard syntax when permitted by
+	// the grammar.
 	Prefix string
-	Local  string
-	URI    string // set for URIQualifiedNames (Q{uri}local)
+	// Local is the local name, or * for a wildcard.
+	Local string
+	URI   string // set for URIQualifiedNames (Q{uri}local)
 }
 
 func (NameTest) nodeTest() {}
 
 // TypeTest matches by node kind (node(), text(), comment()).
 type TypeTest struct {
+	// Kind selects the node-kind test.
 	Kind NodeKind
 }
 
@@ -36,7 +41,9 @@ func (TypeTest) nodeTest() {}
 
 // PITest matches processing-instruction nodes, optionally by target name.
 type PITest struct {
-	Target    string // empty means match any PI
+	Target string // empty means match any PI
+	// HasTarget distinguishes an explicit target test from a test matching any processing
+	// instruction.
 	HasTarget bool
 }
 
@@ -44,8 +51,11 @@ func (PITest) nodeTest() {}
 
 // ElementTest matches element(name?, type?).
 type ElementTest struct {
-	Name     string
+	// Name is the optional element name test in its parsed lexical form.
+	Name string
+	// TypeName is the optional type annotation name used by the test.
 	TypeName string
+	// Nillable permits a nilled element when the type test includes ?.
 	Nillable bool
 }
 
@@ -53,7 +63,9 @@ func (ElementTest) nodeTest() {}
 
 // AttributeTest matches attribute(name?, type?).
 type AttributeTest struct {
-	Name     string
+	// Name is the optional attribute name test in its parsed lexical form.
+	Name string
+	// TypeName is the optional attribute type annotation name.
 	TypeName string
 }
 
@@ -68,6 +80,7 @@ func (DocumentTest) nodeTest() {}
 
 // SchemaElementTest matches schema-element(name).
 type SchemaElementTest struct {
+	// Name identifies the required global element declaration.
 	Name string
 }
 
@@ -75,6 +88,7 @@ func (SchemaElementTest) nodeTest() {}
 
 // SchemaAttributeTest matches schema-attribute(name).
 type SchemaAttributeTest struct {
+	// Name identifies the required global attribute declaration.
 	Name string
 }
 
@@ -118,8 +132,10 @@ func (AnyItemTest) nodeTest() {}
 
 // AtomicOrUnionType matches a named atomic/union type (e.g. xs:integer).
 type AtomicOrUnionType struct {
+	// Prefix is the lexical prefix of the atomic or union type name.
 	Prefix string
-	Name   string
+	// Name is the local part of the atomic or union type name.
+	Name string
 }
 
 func (AtomicOrUnionType) nodeTest() {}
@@ -136,7 +152,9 @@ const (
 
 // SequenceType is used in instance-of, cast-as, castable-as, treat-as.
 type SequenceType struct {
-	ItemTest   NodeTest // reuses NodeTest interface for item type matching
+	ItemTest NodeTest // reuses NodeTest interface for item type matching
+	// Occurrence selects the allowed item count. Zero requires exactly one item unless
+	// Void is true.
 	Occurrence Occurrence
 	Void       bool // true for empty-sequence()
 }

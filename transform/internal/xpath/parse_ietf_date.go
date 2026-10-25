@@ -15,7 +15,7 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
-func lookupParseIetfDate(name string) (*builtinFunc, bool) {
+func lookupParseIETFDate(name string) (*builtinFunc, bool) {
 	switch name {
 	case "parse-ietf-date":
 		return &builtinFunc{name: name, min: 1, max: 1, fn: fnParseIETFDate}, true
@@ -345,7 +345,7 @@ func (p *ietfDateParser) skipComment() error {
 		}
 		// The suffix is a timezone name, not arbitrary comment text.
 		content := strings.Trim(p.input[contentStart:p.pos-1], " \t\r\n")
-		if _, ok := lookupietfTimezones(strings.ToUpper(content)); !ok {
+		if _, ok := lookupIETFTimezone(strings.ToUpper(content)); !ok {
 			return fmt.Errorf("invalid timezone-name suffix")
 		}
 	}
@@ -389,7 +389,7 @@ func (p *ietfDateParser) peekMonth() bool {
 		return false
 	}
 
-	_, ok := lookupmonthNames(strings.ToLower(s))
+	_, ok := lookupMonthNumber(strings.ToLower(s))
 
 	return ok
 }
@@ -417,7 +417,7 @@ func (p *ietfDateParser) peekTZ() bool {
 			return false
 		}
 
-		_, ok := lookupietfTimezones(strings.ToUpper(name))
+		_, ok := lookupIETFTimezone(strings.ToUpper(name))
 
 		return ok
 	}
@@ -512,7 +512,7 @@ func (p *ietfDateParser) parseNamedTimezone() (*time.Location, error) {
 	name, _ := p.readAlpha()
 
 	nameUpper := strings.ToUpper(name)
-	if offset, ok := lookupietfTimezones(nameUpper); ok {
+	if offset, ok := lookupIETFTimezone(nameUpper); ok {
 		// Named TZ must not be immediately followed by digits (e.g., "GMT2014")
 		if p.pos < len(p.input) && p.input[p.pos] >= '0' && p.input[p.pos] <= '9' {
 			p.pos = saved
@@ -597,7 +597,7 @@ func parseMonth(s string) (int, error) {
 		return 0, fmt.Errorf("month abbreviation must be exactly 3 letters: %q", s)
 	}
 
-	m, ok := lookupmonthNames(strings.ToLower(s))
+	m, ok := lookupMonthNumber(strings.ToLower(s))
 	if !ok {
 		return 0, fmt.Errorf("unknown month: %q", s)
 	}
@@ -651,7 +651,7 @@ func daysInMonth(year, month int) int {
 	return 31
 }
 
-func lookupmonthNames(key string) (int, bool) {
+func lookupMonthNumber(key string) (int, bool) {
 	switch key {
 	case "jan":
 		return 1, true
@@ -684,9 +684,9 @@ func lookupmonthNames(key string) (int, bool) {
 	return zero, false
 }
 
-// ietfTimezones maps timezone abbreviations to UTC offsets in seconds.
+// lookupIETFTimezone maps timezone abbreviations to UTC offsets in seconds.
 // Per the XPath spec, only the US military-origin abbreviations are recognized.
-func lookupietfTimezones(key string) (int, bool) {
+func lookupIETFTimezone(key string) (int, bool) {
 	switch key {
 	case "UT", "UTC", "GMT", "Z":
 		return 0, true

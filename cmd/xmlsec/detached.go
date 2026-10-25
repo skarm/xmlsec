@@ -85,12 +85,12 @@ func loadResourcesContext(ctx context.Context, path string) ([]resourceEntry, xm
 			return nil, err
 		}
 
-		path, ok := paths[uri]
+		p, ok := paths[uri]
 		if !ok {
 			return nil, errors.New("URI is not allowed by the local manifest")
 		}
 		// Do not open named pipes/devices as though they were finite payload files.
-		stat, err := os.Stat(path)
+		stat, err := os.Stat(p)
 		if err != nil {
 			return nil, err
 		}
@@ -99,7 +99,7 @@ func loadResourcesContext(ctx context.Context, path string) ([]resourceEntry, xm
 			return nil, errors.New("resource must be a regular file")
 		}
 
-		f, err := os.Open(path) // #nosec G304 -- Only paths in the operator-supplied manifest are opened.
+		f, err := os.Open(p) // #nosec G304 -- Only paths in the operator-supplied manifest are opened.
 		if err != nil {
 			return nil, err
 		}
@@ -263,7 +263,14 @@ func detachedVerificationReport(result *xmldsig.DetachedResult) ([]byte, error) 
 		SignatureMethod string             `json:"signature_method"`
 		KeyFingerprint  string             `json:"key_fingerprint_sha256"`
 		References      []checkedReference `json:"references"`
-	}{Status: statusValid, Profile: "external-detached-v0", Trust: "externally-supplied-key", SignatureMethod: result.SignatureMethod(), KeyFingerprint: result.KeyFingerprintSHA256()}
+	}{
+		Status:          statusValid,
+		Profile:         "external-detached-v0",
+		Trust:           "externally-supplied-key",
+		SignatureMethod: result.SignatureMethod(),
+		KeyFingerprint:  result.KeyFingerprintSHA256(),
+	}
+
 	for _, r := range result.References() {
 		report.References = append(report.References, checkedReference{r.URI(), r.Type(), r.DigestMethod(), r.Size(), r.CanonicalizationMethod(), r.Steps()})
 	}

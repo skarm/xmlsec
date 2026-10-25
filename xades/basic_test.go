@@ -82,8 +82,10 @@ func TestBasicProfileRejects(t *testing.T) {
 	other := certificate(t, k, 2)
 
 	tests := []struct {
-		name, from, to string
-		cert           []byte
+		name string
+		from string
+		to   string
+		cert []byte
 	}{
 		{"target", `Target="#signature"`, `Target="#other"`, der},
 		{"wrong-type", `Type="` + xades.SignedPropertiesType + `"`, `Type="urn:wrong"`, der},

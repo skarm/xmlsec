@@ -11,11 +11,12 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 
-	valuepkg "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
+	lexical "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -140,7 +141,7 @@ func validNumberOption(name, value string) bool {
 	case nameLetterValue:
 		return value == "alphabetic" || value == "traditional"
 	case lexicon.AttrLang:
-		return value == "" || valuepkg.ValidLanguage(value)
+		return value == "" || lexical.ValidLanguage(value)
 	case nameStartAt:
 		_, valid := parseStartAt(value)
 		return valid
@@ -200,8 +201,8 @@ func formatSingleNumber(num int, token string, groupSep string, groupSize int, l
 		minWidth := len(token)
 
 		s := strconv.Itoa(num)
-		for len(s) < minWidth {
-			s = "0" + s
+		if padding := minWidth - len(s); padding > 0 {
+			s = strings.Repeat("0", padding) + s
 		}
 
 		if groupSep != "" && groupSize > 0 {
@@ -283,10 +284,9 @@ func numericOrdinalSuffixBig(num *big.Int, _ string) string {
 	}
 }
 
-// knownAlphabetLengths maps the start character of well-known alphabets to their
+// lookupAlphabetLength maps the start character of well-known alphabets to their
 // standard length, preventing over-counting into diacritical variants.
-
-func lookupknownAlphabetLengths(key rune) (int, bool) {
+func lookupAlphabetLength(key rune) (int, bool) {
 	switch key {
 	case 'а', 'А':
 		return 32, true
@@ -311,7 +311,7 @@ func formatWithAlphaSystem(num int64, start rune) string {
 	}
 
 	// Use known alphabet length if available, otherwise detect
-	seqLen, ok := lookupknownAlphabetLengths(start)
+	seqLen, ok := lookupAlphabetLength(start)
 	if !ok {
 		seqLen = 0
 		for r := start; unicode.IsLetter(r); r++ {
@@ -473,8 +473,8 @@ func formatBigSingleNumber(num *big.Int, token string, groupSep string, groupSiz
 	minWidth := len(token)
 
 	s := num.String()
-	for len(s) < minWidth {
-		s = "0" + s
+	if padding := minWidth - len(s); padding > 0 {
+		s = strings.Repeat("0", padding) + s
 	}
 
 	if groupSep != "" && groupSize > 0 {
@@ -495,31 +495,7 @@ func formatBigWithDigitSystem(num *big.Int, zero rune, minWidth int) string {
 		return "-" + formatBigWithDigitSystem(new(big.Int).Neg(num), zero, minWidth)
 	}
 
-	if num.Sign() == 0 {
-		s := string(zero)
-		for len([]rune(s)) < minWidth {
-			s = string(zero) + s
-		}
-
-		return s
-	}
-
-	ten := big.NewInt(10)
-
-	var result []rune
-
-	n := new(big.Int).Set(num)
-	for n.Sign() > 0 {
-		mod := new(big.Int)
-		n.DivMod(n, ten, mod)
-		result = append([]rune{zero + rune(mod.Int64())}, result...)
-	}
-
-	for len(result) < minWidth {
-		result = append([]rune{zero}, result...)
-	}
-
-	return string(result)
+	return localizeDecimalDigits(num.String(), zero, minWidth)
 }
 
 // digitZeroOf returns the zero digit for the Unicode digit block containing r.
@@ -553,26 +529,7 @@ func formatWithDigitSystem(num int, zero rune, minWidth int) string {
 		magnitude = uint(num)
 	}
 
-	if magnitude == 0 {
-		s := string(zero)
-		for len([]rune(s)) < minWidth {
-			s = string(zero) + s
-		}
-
-		return s
-	}
-
-	var runes []rune
-	for magnitude > 0 {
-		runes = append([]rune{zero + rune(magnitude%10)}, runes...)
-		magnitude /= 10
-	}
-
-	for len(runes) < minWidth {
-		runes = append([]rune{zero}, runes...)
-	}
-
-	formatted := string(runes)
+	formatted := localizeDecimalDigits(strconv.FormatUint(uint64(magnitude), 10), zero, minWidth)
 	if negative {
 		return "-" + formatted
 	}
@@ -580,8 +537,27 @@ func formatWithDigitSystem(num int, zero rune, minWidth int) string {
 	return formatted
 }
 
-// knownOrdinalSystems maps the "1" character to its ordinal system definition.
-func lookupknownOrdinalSystems(key rune) (ordinalSystem, bool) {
+// localizeDecimalDigits pads a nonnegative ASCII magnitude while writing each
+// output digit once. Repeated string/rune-slice prepends made wide pictures
+// quadratic even though the final representation is linear in the width.
+func localizeDecimalDigits(digits string, zero rune, minWidth int) string {
+	var out strings.Builder
+
+	out.Grow(max(minWidth, len(digits)) * utf8.RuneLen(zero))
+
+	for padding := minWidth - len(digits); padding > 0; padding-- {
+		out.WriteRune(zero)
+	}
+
+	for _, digit := range digits {
+		out.WriteRune(zero + digit - '0')
+	}
+
+	return out.String()
+}
+
+// lookupOrdinalSystem maps the "1" character to its ordinal system definition.
+func lookupOrdinalSystem(key rune) (ordinalSystem, bool) {
 	switch key {
 	case 0x2460:
 		return ordinalSystem{oneChar: 0x2460, zero: 0x24EA, ranges: []rune{0x2460, 0x2473, 0x3251, 0x325F, 0x32B1, 0x32BF}}, true
@@ -631,7 +607,7 @@ func formatWithOrdinalSystem(num int, start rune) string {
 		return strconv.Itoa(num)
 	}
 
-	sys, ok := lookupknownOrdinalSystems(start)
+	sys, ok := lookupOrdinalSystem(start)
 	if !ok {
 		// Unknown system: detect range by finding the block boundaries.
 		// First check if start-1 is also a numbering character (the zero).
@@ -1339,11 +1315,8 @@ func numberDefaultKey(node xdm.Node) (xdm.ElementType, string, string) {
 	return node.Type(), node.Name(), ""
 }
 
-// numberPrevSibling returns the node before node on the XDM
-// preceding-sibling axis. helium links an element's attributes to each other
-// as siblings, but XDM gives attribute and namespace nodes no siblings, so for
-// those it returns nil. A DOCTYPE declaration or an entity reference is not an
-// XDM child, so it is skipped.
+// numberPrevSibling returns the previous XDM child sibling, skipping storage nodes
+// outside the XDM child model. Attribute and namespace nodes have no siblings.
 func numberPrevSibling(node xdm.Node) xdm.Node {
 	switch node.Type() {
 	case xdm.AttributeNode, xdm.NamespaceNode:

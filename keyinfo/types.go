@@ -46,43 +46,46 @@ var (
 	ErrKey = errors.New("invalid KeyInfo public key")
 )
 
-// Limits apply to one entire Parse, including repeated references. Zero fields
-// use the defaults. Negative values and values above documented hard caps fail.
+// Limits bounds an entire Parse call, including repeated reference visits.
+// Zero fields select defaults. Negative values and values above the documented
+// maximum are rejected.
 type Limits struct {
-	// MaxDepth bounds reference depth; default 8, maximum 32.
+	// MaxDepth bounds reference depth. Zero selects 8. The maximum is 32.
 	MaxDepth int
-	// MaxElements bounds visited elements, including duplicates; default 256, maximum
-	// 4096.
+	// MaxElements bounds all element visits, including repeated visits. Zero selects 256.
+	// The maximum is 4096.
 	MaxElements int
-	// MaxCandidates bounds decoded candidates, including duplicates; default 32, maximum
-	// 256.
+	// MaxCandidates bounds decoded candidates, including duplicates. Zero selects 32. The
+	// maximum is 256.
 	MaxCandidates int
-	// MaxBlobBytes bounds each decoded key, certificate or CRL; default 1 MiB, maximum 8
-	// MiB.
+	// MaxBlobBytes bounds each decoded key, certificate or CRL. Zero selects 1 MiB. The
+	// maximum is 8 MiB.
 	MaxBlobBytes int
-	// MaxTotalBytes bounds all decoded blobs and text; default 4 MiB, maximum 64 MiB.
+	// MaxTotalBytes bounds aggregate decoded blobs and text. Zero selects 4 MiB. The
+	// maximum is 64 MiB.
 	MaxTotalBytes int
-	// MaxExternalResources bounds distinct external resource reads; default 8, maximum 64.
+	// MaxExternalResources bounds distinct external reads. Zero selects 8. The maximum is
+	// 64.
 	MaxExternalResources int
-	// MaxExternalBytes bounds aggregate external bytes read; default 4 MiB, maximum 64
-	// MiB.
+	// MaxExternalBytes bounds aggregate external bytes read. Zero selects 4 MiB. The
+	// maximum is 64 MiB.
 	MaxExternalBytes int
-	// MaxTransformBytes bounds aggregate intermediate and final retrieval output
-	// when RetrievalProcessing is enabled;
-	// default 32 MiB, maximum 64 MiB. Raw external input has its separate budget.
+	// MaxTransformBytes bounds aggregate intermediate and final retrieval output when
+	// RetrievalProcessing is enabled. Zero selects 32 MiB. The maximum is 64 MiB. Raw
+	// external input has a separate budget.
 	MaxTransformBytes int
-	// MaxTransformNodes bounds reference-processor visits and result-parsing work
-	// when RetrievalProcessing is enabled;
-	// default 2,000,000, maximum 16,000,000.
+	// MaxTransformNodes bounds reference-processor visits and result parsing when
+	// RetrievalProcessing is enabled. Zero selects 2,000,000. The maximum is 16,000,000.
 	MaxTransformNodes int
-	// MaxRSABits bounds RSA modulus size; default 8192, maximum 16384. Minimum key
-	// strength belongs to the trust policy.
+	// MaxRSABits bounds RSA modulus size. Zero selects 8192. The maximum is 16384. Trust
+	// policy sets minimum key strength.
 	MaxRSABits int
 }
 
-// ResourceResolver must honor context itself, including during Read. It is
-// called BEFORE SignatureValue can be verified. Never use an unrestricted HTTP
-// or filesystem resolver for attacker-controlled KeyInfo.
+// ResourceResolver opens explicitly authorized KeyInfo resources. Retrieval can
+// precede SignatureValue verification. Implementations must honor cancellation
+// while resolving and reading, and must restrict attacker-controlled URIs through
+// application policy.
 type ResourceResolver interface {
 	// Resolve receives the complete authorized URI, including a fragment, and
 	// returns the identified subresource as octets. XML subresources must be
@@ -91,8 +94,8 @@ type ResourceResolver interface {
 	Resolve(context.Context, string) (io.ReadCloser, error)
 }
 
-// ExternalResources authorizes exact external KeyInfo URIs through an application-supplied
-// resolver.
+// ExternalResources grants access to exact KeyInfo resource URIs through a trusted
+// application resolver.
 type ExternalResources struct {
 	// Resolver is the trusted application adapter used to read explicitly authorized
 	// resources.
@@ -109,20 +112,22 @@ type ExternalResources struct {
 	BaseURI string
 }
 
-// Options controls bounded KeyInfo parsing and authorized key representations. Parsing
-// alone never establishes trust.
+// Options selects KeyInfo representations, retrieval permissions and parsing budgets.
+// Parsing alone establishes no trust.
 type Options struct {
+	// Limits bounds the complete parse, including retrievals. Zero fields select defaults.
 	Limits Limits
 	// AdditionalIDRules adds explicit ID attributes to the default KeyInfo resolution rules.
 	AdditionalIDRules []reference.IDAttributeRule
-	// AllowedKeyData restricts representations by expanded QName: KeyName,
-	// RSAKeyValue, DSAKeyValue, ECKeyValue, DEREncodedKeyValue, X509Data, RetrievalMethod,
-	// KeyInfoReference. Nil preserves all supported forms; empty denies all.
-	// KeyValue is a wrapper, not a representation. Raw certificate retrieval
-	// requires both RetrievalMethod and X509Data. This controls parsing, not trust.
+	// AllowedKeyData selects representations by expanded name: KeyName, RSAKeyValue,
+	// DSAKeyValue, ECKeyValue, DEREncodedKeyValue, X509Data, RetrievalMethod or
+	// KeyInfoReference. Nil permits every supported form; an empty slice denies all.
+	// KeyValue is a wrapper and cannot select a representation. Raw certificate
+	// retrieval requires both RetrievalMethod and X509Data. These parsing permissions
+	// grant no trust.
 	AllowedKeyData []document.Name
-	// External authorizes external KeyInfo resources. Nil denies all such resources; this
-	// policy is separate from signed-data URIs.
+	// External authorizes external KeyInfo resources. Nil denies them. This permission is
+	// separate from signed-data resource access.
 	External *ExternalResources
 	// RetrievalProcessing explicitly permits additional RetrievalMethod chains.
 	// Nil preserves raw-certificate retrieval with at most one Base64 step.
@@ -138,14 +143,15 @@ type Options struct {
 	DSAParameters *dsa.Parameters
 }
 
-// Candidate is an immutable, untrusted key description. All mutable key, DER and
-// certificate data returned by methods are fresh copies. It can be read safely
-// by concurrent policy callbacks. The zero value is invalid.
+// Candidate is an immutable, untrusted key description with an invalid zero value.
+// Its accessors copy mutable key objects, DER and certificate data. Concurrent
+// policy callbacks can read the same Candidate safely.
 type Candidate struct {
-	spki, certificate []byte
-	source            document.Element
-	resource          string
-	kind              document.Name
+	spki        []byte
+	certificate []byte
+	source      document.Element
+	resource    string
+	kind        document.Name
 }
 
 // Valid returns whether this value is initialized.
@@ -200,17 +206,18 @@ func (c Candidate) FingerprintSHA256() string {
 	return hex.EncodeToString(h[:])
 }
 
-// X509Group preserves the grouping of certificates and selectors in one
-// X509Data. Strings (including DN spellings) are not authenticated identifiers.
-// DNs are NOT normalized or compared as strings to decide trust. The caller's
-// policy must resolve/check selectors and certificate-chain relationships.
+// X509Group retains certificates and selectors from one X509Data element.
+// Names and distinguished-name spellings are untrusted hints. The parser does not
+// normalize or compare those strings to establish trust. Application policy must
+// resolve selectors and validate certificate relationships.
 type X509Group struct {
-	source      document.Element
-	certs, crls [][]byte
-	issuers     []IssuerSerial
-	subjects    []string
-	skis        [][]byte
-	digests     []CertificateDigest
+	source   document.Element
+	certs    [][]byte
+	crls     [][]byte
+	issuers  []IssuerSerial
+	subjects []string
+	skis     [][]byte
+	digests  []CertificateDigest
 }
 
 // Source returns the immutable XML source handle.
@@ -250,17 +257,25 @@ func cloneBlobs(a [][]byte) [][]byte {
 	return out
 }
 
-// IssuerSerial is an unverified X.509 issuer distinguished name and decimal serial number.
-type IssuerSerial struct{ Issuer, Serial string }
-
-// CertificateDigest is an unverified certificate digest identified by its algorithm URI.
-type CertificateDigest struct {
-	Algorithm string
-	Value     []byte
+// IssuerSerial pairs an unverified X.509 issuer distinguished name with a decimal
+// certificate serial number.
+type IssuerSerial struct {
+	// Issuer is the issuer distinguished name in XMLDSig/RFC 4514 spelling.
+	Issuer string
+	// Serial is the certificate serial number in nonnegative decimal notation.
+	Serial string
 }
 
-// Result records decoded hints. It deliberately exposes no Valid/Trusted flag.
-// It is never returned partially on an error.
+// CertificateDigest pairs unverified digest bytes with a digest algorithm URI.
+type CertificateDigest struct {
+	// Algorithm is the digest method URI.
+	Algorithm string
+	// Value contains the raw digest bytes, without Base64 encoding.
+	Value []byte
+}
+
+// Result contains untrusted decoded key hints. A successful parse provides neither
+// a validity flag nor a trust decision. Parse returns no partial Result on error.
 type Result struct {
 	candidates []Candidate
 	names      []string
@@ -323,8 +338,9 @@ func (r *Result) CheckKeyDeclarations(selected int) error {
 
 func normalizeLimits(l Limits) (Limits, error) {
 	fields := []struct {
-		p        *int
-		def, cap int
+		p   *int
+		def int
+		cap int
 	}{
 		{&l.MaxDepth, 8, 32},
 		{&l.MaxElements, 256, 4096},

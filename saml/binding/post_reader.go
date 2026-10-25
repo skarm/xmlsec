@@ -33,7 +33,7 @@ func DecodePOSTReader(ctx context.Context, src io.Reader, expected Parameter, li
 
 	input := bufio.NewReader(&streamio.Reader{Context: ctx, Source: src, Limit: int64(l.MaxFormBytes), LimitError: ErrBinding})
 	message := &POSTMessage{parameter: expected}
-	seen := make(map[string]bool, 2)
+	seen := make(map[string]struct{}, 2)
 
 	for {
 		if _, err := input.Peek(1); err != nil {
@@ -53,11 +53,11 @@ func DecodePOSTReader(ctx context.Context, src io.Reader, expected Parameter, li
 			continue
 		}
 
-		if seen[key] || key != string(expected) && key != fieldRelayState {
+		if _, exists := seen[key]; exists || key != string(expected) && key != fieldRelayState {
 			return nil, ErrBinding
 		}
 
-		seen[key] = true
+		seen[key] = struct{}{}
 
 		value := &postValueReader{input: input, done: !hasValue}
 		if key == fieldRelayState {

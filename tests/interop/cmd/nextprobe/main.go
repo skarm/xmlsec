@@ -27,15 +27,28 @@ import (
 )
 
 type task struct {
-	Mode, Key, Certificate, Root, CRL, Input, Method, Relay, At string
-	DataAlgorithm, KeyAlgorithm                                 string
-	Selection                                                   string
-	OAEPHash, CipherURI, Resource, KeyName                      string
-	OAEPAlgorithm, OAEPMGFHash                                  string
-	OAEPLabel                                                   []byte
-	XML                                                         bool
-	OAEPAllowLegacy                                             bool
-	AllowLegacy                                                 bool
+	Mode            string
+	Key             string
+	Certificate     string
+	Root            string
+	CRL             string
+	Input           string
+	Method          string
+	Relay           string
+	At              string
+	DataAlgorithm   string
+	KeyAlgorithm    string
+	Selection       string
+	OAEPHash        string
+	CipherURI       string
+	Resource        string
+	KeyName         string
+	OAEPAlgorithm   string
+	OAEPMGFHash     string
+	OAEPLabel       []byte
+	XML             bool
+	OAEPAllowLegacy bool
+	AllowLegacy     bool
 }
 
 type output struct {
@@ -78,7 +91,7 @@ func read(path string) ([]byte, error) {
 	return os.ReadFile(path) // #nosec G304 -- The local interoperability harness supplies fixture paths.
 }
 
-func private(path string) (crypto.Signer, error) {
+func loadPrivateKey(path string) (crypto.Signer, error) {
 	b, err := read(path)
 	if err != nil {
 		return nil, err
@@ -88,7 +101,7 @@ func private(path string) (crypto.Signer, error) {
 	return keys.ParsePrivate(b, keys.Limits{})
 }
 
-func public(path string) (crypto.PublicKey, error) {
+func loadPublicKey(path string) (crypto.PublicKey, error) {
 	b, err := read(path)
 	if err != nil {
 		return nil, err
@@ -224,7 +237,7 @@ func probeElement(ctx context.Context, t task, doc *document.Document, options x
 			result, _, e = xmlenc.DecryptElementWithKeyWrap(ctx, doc, selected, kek, kw)
 		}
 	} else if strings.HasPrefix(t.Mode, "encrypt-") {
-		public, err := public(t.Key)
+		public, err := loadPublicKey(t.Key)
 		if err != nil {
 			return o, err
 		}
@@ -240,7 +253,7 @@ func probeElement(ctx context.Context, t task, doc *document.Document, options x
 			result, _, e = xmlenc.EncryptElement(ctx, doc, selected, rsaKey, options)
 		}
 	} else {
-		key, err := private(t.Key)
+		key, err := loadPrivateKey(t.Key)
 		if err != nil {
 			return o, err
 		}
@@ -328,7 +341,7 @@ func probeSymmetric(ctx context.Context, t task, b []byte, doc *document.Documen
 }
 
 func probeXAdESSign(ctx context.Context, t task, doc *document.Document) (o output, e error) {
-	k, e := private(t.Key)
+	k, e := loadPrivateKey(t.Key)
 	if e != nil {
 		return o, e
 	}
@@ -377,7 +390,7 @@ func probeXAdESVerify(ctx context.Context, t task, doc *document.Document) (o ou
 func probeEncrypt(ctx context.Context, t task, b []byte, options xmlenc.Options) (o output, e error) {
 	var doc *document.Document
 
-	k, e := public(t.Key)
+	k, e := loadPublicKey(t.Key)
 	if e != nil {
 		return o, e
 	}
@@ -410,7 +423,7 @@ func probeEncrypt(ctx context.Context, t task, b []byte, options xmlenc.Options)
 }
 
 func probeDecrypt(ctx context.Context, t task, doc *document.Document, options xmlenc.Options) (o output, e error) {
-	k, e := private(t.Key)
+	k, e := loadPrivateKey(t.Key)
 	if e != nil {
 		return o, e
 	}
@@ -487,7 +500,7 @@ func probeKeyWrap(ctx context.Context, t task, b []byte, doc *document.Document,
 }
 
 func probeRedirectSign(ctx context.Context, t task, doc *document.Document) (o output, e error) {
-	k, e := private(t.Key)
+	k, e := loadPrivateKey(t.Key)
 	if e != nil {
 		return o, e
 	}
@@ -498,7 +511,7 @@ func probeRedirectSign(ctx context.Context, t task, doc *document.Document) (o o
 }
 
 func probeRedirectVerify(ctx context.Context, t task, b []byte) (o output, e error) {
-	k, e := public(t.Key)
+	k, e := loadPublicKey(t.Key)
 	if e != nil {
 		return o, e
 	}

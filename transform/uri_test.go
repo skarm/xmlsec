@@ -19,7 +19,10 @@ const (
 // their dot segments).
 func TestResolveURIRFC3986(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, tc := range []struct{ relative, want string }{
+	for _, tc := range []struct {
+		relative string
+		want     string
+	}{
 		{"g:h", "g:h"},
 		{"g", "http://a/b/c/g"},
 		{"./g", "http://a/b/c/g"},
@@ -78,7 +81,12 @@ func TestResolveURIRFC3986(t *testing.T) {
 
 func TestResolveURIBaseValidationAndIRIIdentity(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, tc := range []struct{ expr, base, want, code string }{
+	for _, tc := range []struct {
+		expr string
+		base string
+		want string
+		code string
+	}{
 		{`resolve-uri('g')`, "", "", "FONS0005"},
 		{`resolve-uri('')`, "", "", "FONS0005"},
 		{`resolve-uri('g', '')`, "https://example.test/base", "", uriInvalidError},

@@ -14,8 +14,8 @@ import (
 // ErrLevel reports missing evidence or an unavailable required XAdES profile level.
 var ErrLevel = errors.New("required XAdES profile level or evidence unavailable")
 
-// Level identifies a validation level supported by the closed XAdES profile.
-// It does not assert full ETSI conformance or a legal signature qualification.
+// Level identifies a validation level within the closed XAdES profile. It does not
+// establish full ETSI conformance or legal qualification.
 type Level string
 
 const (
@@ -29,8 +29,8 @@ const (
 	LevelLTA Level = "B-LTA"
 )
 
-// ValidatorConfig sets signer and TSA trust, required validation level and evidence
-// budgets.
+// ValidatorConfig supplies signer and TSA trust, the required validation level and
+// evidence budgets.
 type ValidatorConfig struct {
 	// SignerPKI sets explicit document signer trust and offline revocation policy.
 	SignerPKI pki.Config
@@ -42,7 +42,8 @@ type ValidatorConfig struct {
 	// AllowUncheckedSignerRevocation explicitly permits signer verification without
 	// revocation evidence.
 	AllowUncheckedSignerRevocation bool
-	Basic                          VerifyOptions
+	// Basic sets the closed basic signature profile's ID and algorithm policy.
+	Basic VerifyOptions
 	// MaxTimestamps bounds timestamp tokens; zero selects 8, with a maximum of 32.
 	MaxTimestamps int
 	// MaxTokenBytes bounds each timestamp token; zero selects 4 MiB, with a 16 MiB maximum.
@@ -53,16 +54,18 @@ type ValidatorConfig struct {
 	MaxArchiveBytes int
 }
 
-// Validator holds an immutable policy for the closed XAdES profile and offline evidence
-// validation.
+// Validator retains immutable policy for closed-profile XAdES signatures and offline
+// evidence validation.
 type Validator struct {
-	signer                       *pki.Verifier
-	tsa                          *timestamp.Verifier
-	minimum                      Level
-	unchecked                    bool
-	basic                        VerifyOptions
-	maxTimestamps, maxTokenBytes int
-	maxArchives, maxArchiveBytes int
+	signer          *pki.Verifier
+	tsa             *timestamp.Verifier
+	minimum         Level
+	unchecked       bool
+	basic           VerifyOptions
+	maxTimestamps   int
+	maxTokenBytes   int
+	maxArchives     int
+	maxArchiveBytes int
 }
 
 // NewValidator validates and snapshots the required XAdES level, explicit trust and
@@ -162,11 +165,17 @@ func (v *Validator) ValidateEnveloped(ctx context.Context, doc *document.Documen
 	return result, nil
 }
 
-// ValidationEvidence supplies distinct offline evidence for the document signer and TSA.
-type ValidationEvidence struct{ Signer, TSA pki.Evidence }
+// ValidationEvidence supplies separate offline inputs for document signer and TSA
+// validation.
+type ValidationEvidence struct {
+	// Signer supplies untrusted intermediates and revocation data for the document signer.
+	Signer pki.Evidence
+	// TSA supplies untrusted intermediates and revocation data for timestamp authorities.
+	TSA pki.Evidence
+}
 
-// ValidationResult is an immutable validated XAdES signature with its achieved level,
-// trust and evidence.
+// ValidationResult retains an immutable accepted XAdES signature, its achieved level,
+// trust results and evidence.
 type ValidationResult struct {
 	basic      *BasicResult
 	timestamps []*timestamp.Result

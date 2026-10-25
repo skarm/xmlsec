@@ -1,6 +1,7 @@
 package xpathregex_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/skarm/xmlsec/transform/internal/pattern"
@@ -9,8 +10,10 @@ import (
 
 func TestTranslateXPathCharacterClasses(t *testing.T) {
 	for _, tc := range []struct {
-		pattern, yes, no string
-		dotAll           bool
+		pattern string
+		yes     string
+		no      string
+		dotAll  bool
 	}{
 		{`^\s$`, "\t", "\u00a0", false},
 		{`^\d$`, "٣", "A", false},
@@ -67,4 +70,40 @@ func TestValidateXPathRegex(t *testing.T) {
 	if err := xpathregex.Validate(`(a)\1`, false); err == nil {
 		t.Fatal("back-reference accepted while disabled")
 	}
+}
+
+func BenchmarkTranslation(b *testing.B) {
+	for _, tc := range []struct {
+		name   string
+		source string
+		valid  bool
+	}{
+		{"Short", `^\i\c*$`, true},
+		{"Unicode", `^[\p{L}-[\p{IsBasicLatin}]]+$`, true},
+		{"Large", strings.Repeat(`[a-z-[aeiou]]`, 256), true},
+		{"Malformed", strings.Repeat(`[a-z]`, 256) + `\p{UnknownProperty}`, false},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, err := xpathregex.Translate(tc.source, false, false)
+				if (err == nil) != tc.valid {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+	// ResolveProperty is a shared immutable Unicode-table lookup; independent
+	// parallel calls exercise its supported concurrent use without a fake cache.
+	b.Run("PropertyParallel", func(b *testing.B) {
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				if xpathregex.ResolveProperty("IsBasicLatin") == nil {
+					b.Error("missing property")
+					return
+				}
+			}
+		})
+	})
 }

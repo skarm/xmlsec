@@ -12,7 +12,10 @@ import (
 )
 
 type (
-	interval struct{ lo, hi rune }
+	interval struct {
+		lo rune
+		hi rune
+	}
 	property struct {
 		table  *unicode.RangeTable
 		negate bool
@@ -20,10 +23,11 @@ type (
 )
 
 type characterSet struct {
-	ranges       []interval
-	properties   []property
-	negate, fold bool
-	subtract     *characterSet
+	ranges     []interval
+	properties []property
+	negate     bool
+	fold       bool
+	subtract   *characterSet
 }
 
 // Literal/range folding precedes complement and subtraction. Property
@@ -101,6 +105,7 @@ func parseCharacterSet(src string, dotAll, fold bool, resolver func(string) *uni
 		s   *characterSet
 		err error
 	)
+
 	if strings.HasPrefix(src, "[") {
 		s, err = p.bracket(0)
 	} else {

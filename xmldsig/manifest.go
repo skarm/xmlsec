@@ -29,7 +29,7 @@ const (
 	ManifestRecursive ManifestMode = "recursive"
 )
 
-// ManifestPolicy sets the Manifest mode and bounded graph traversal limits.
+// ManifestPolicy selects recursive Manifest validation and bounds graph traversal.
 type ManifestPolicy struct {
 	// Mode defaults to ManifestNone; recursive validation is opt-in.
 	Mode ManifestMode
@@ -57,7 +57,8 @@ type ManifestPolicy struct {
 	MaxReferences int
 }
 
-// ManifestResult is an immutable validated Manifest and its reference results.
+// ManifestResult retains an immutable validated Manifest and its child reference
+// results.
 type ManifestResult struct {
 	target      document.Element
 	references  []ReferenceResult
@@ -81,21 +82,33 @@ func (m ManifestResult) References() []ReferenceResult {
 	return append([]ReferenceResult(nil), m.references...)
 }
 
-// ManifestReport records a local Manifest check and its reference diagnostics.
+// ManifestReport records a Manifest validation outcome and its child reference
+// diagnostics.
 type ManifestReport struct {
-	Index       int               `json:"index"`
-	ID          string            `json:"id,omitempty"`
-	ResourceURI string            `json:"resource_uri,omitempty"`
-	Transformed bool              `json:"transformed,omitempty"`
-	Status      CheckStatus       `json:"status"`
-	References  []ReferenceReport `json:"references"`
+	// Index is the zero-based position in VerificationReport.Manifests.
+	Index int `json:"index"`
+	// ID is the Manifest's XML Id, when present.
+	ID string `json:"id,omitempty"`
+	// ResourceURI identifies the authorized external resource, or is empty for local data.
+	ResourceURI string `json:"resource_uri,omitempty"`
+	// Transformed reports whether the Manifest was parsed from authenticated transform
+	// output.
+	Transformed bool `json:"transformed,omitempty"`
+	// Status records the Manifest validation outcome.
+	Status CheckStatus `json:"status"`
+	// References contains the Manifest's child reference diagnostics.
+	References []ReferenceReport `json:"references"`
 }
 
-// ManifestReferenceError identifies a nested failure without pretending it is a
-// direct SignedInfo reference. Manifest is the report index; ID is diagnostic.
+// ManifestReferenceError identifies a failure inside a Manifest. Manifest indexes
+// the verification report's Manifest list; ID is diagnostic. The nested Reference
+// is distinct from a direct SignedInfo reference.
 type ManifestReferenceError struct {
-	Manifest  int
-	ID        string
+	// Manifest is the zero-based index in the verification report's Manifest list.
+	Manifest int
+	// ID is the Manifest's diagnostic XML Id, when present.
+	ID string
+	// Reference describes the failing child reference and its underlying error.
 	Reference *ReferenceError
 }
 
@@ -191,7 +204,7 @@ type manifestGraph struct {
 	manifests      []*manifestPlan
 	tasks          []*coreTask
 	byNode         map[*tree.Node]*manifestPlan
-	active         map[*tree.Node]bool
+	active         map[*tree.Node]struct{}
 	externalScopes map[manifestResourceKey]*manifestScope
 }
 
@@ -210,7 +223,7 @@ func (g *manifestGraph) signingOrder(ctx context.Context, p *corePlan) ([]*coreT
 }
 
 func (g *manifestGraph) verify(ctx context.Context, doc *document.Document, p *corePlan, b *coreBudget, result *SignatureResult, report *VerificationReport) error {
-	verifier := manifestVerifier{ctx: ctx, doc: doc, plan: p, budget: b, result: result, report: report, done: make(map[*manifestPlan]bool), active: make(map[*manifestPlan]bool)}
+	verifier := manifestVerifier{ctx: ctx, doc: doc, plan: p, budget: b, result: result, report: report, done: make(map[*manifestPlan]struct{}), active: make(map[*manifestPlan]struct{})}
 
 	result.manifests = make([]ManifestResult, len(g.manifests))
 	for _, m := range g.manifests {
@@ -426,7 +439,7 @@ func (b *manifestGraphBuilder) attachManifest(t *coreTask, depth int) error {
 		return t.wrap("graph", fmt.Errorf("%w: Manifest depth", ErrPolicy))
 	}
 
-	if g.active[t.target] {
+	if _, exists := g.active[t.target]; exists {
 		return t.wrap("graph", fmt.Errorf("%w: cyclic Manifest graph", ErrReference))
 	}
 
@@ -449,7 +462,7 @@ func (b *manifestGraphBuilder) attachManifest(t *coreTask, depth int) error {
 		return err
 	}
 
-	g.active[t.target] = false
+	delete(g.active, t.target)
 
 	return nil
 }
@@ -473,7 +486,7 @@ func (b *manifestGraphBuilder) registerManifest(t *coreTask) ([]*tree.Node, erro
 	m := &manifestPlan{node: t.target, id: id, index: len(g.manifests), height: 1, scope: t.scope}
 	t.child = m
 	g.byNode[t.target] = m
-	g.active[t.target] = true
+	g.active[t.target] = struct{}{}
 	g.manifests = append(g.manifests, m)
 	mr := ManifestReport{Index: m.index, ID: id, ResourceURI: m.scope.uri, Transformed: m.scope.transformed, Status: NotChecked}
 
@@ -520,7 +533,7 @@ func prepareManifestGraph(ctx context.Context, doc *document.Document, p *corePl
 		return nil, err
 	}
 
-	g := &manifestGraph{policy: policy, byNode: make(map[*tree.Node]*manifestPlan), active: make(map[*tree.Node]bool), externalScopes: make(map[manifestResourceKey]*manifestScope)}
+	g := &manifestGraph{policy: policy, byNode: make(map[*tree.Node]*manifestPlan), active: make(map[*tree.Node]struct{}), externalScopes: make(map[manifestResourceKey]*manifestScope)}
 	if p.external != nil {
 		p.external.captureManifests = policy.AllowExternal
 		p.external.captureTransformed = policy.AllowTransformed
@@ -608,8 +621,8 @@ type manifestVerifier struct {
 	budget *coreBudget
 	result *SignatureResult
 	report *VerificationReport
-	done   map[*manifestPlan]bool
-	active map[*manifestPlan]bool
+	done   map[*manifestPlan]struct{}
+	active map[*manifestPlan]struct{}
 }
 
 func (v *manifestVerifier) referenceReport(t *coreTask) *ReferenceReport {
@@ -642,8 +655,10 @@ func (v *manifestVerifier) checkReferenceAt(t *coreTask, depth int) error {
 
 	rrpt.ResourceURI = t.resourceURI
 	if t.external && t.ref.typeURI == ManifestType && v.plan.graph.policy.AllowExternal && !transformedManifestEdge(t) {
-		if scope := v.plan.graph.externalScopes[manifestResourceKey{uri: t.resourceURI}]; scope != nil && v.active[v.plan.graph.byNode[tree.Root(scope.doc)]] {
-			return v.fail(t, "graph", fmt.Errorf("%w: cyclic external Manifest graph", ErrReference))
+		if scope := v.plan.graph.externalScopes[manifestResourceKey{uri: t.resourceURI}]; scope != nil {
+			if _, active := v.active[v.plan.graph.byNode[tree.Root(scope.doc)]]; active {
+				return v.fail(t, "graph", fmt.Errorf("%w: cyclic external Manifest graph", ErrReference))
+			}
 		}
 	}
 
@@ -694,15 +709,15 @@ func (v *manifestVerifier) checkManifest(m *manifestPlan, depth int) error {
 		return fmt.Errorf("%w: Manifest depth", ErrPolicy)
 	}
 
-	if v.active[m] {
+	if _, exists := v.active[m]; exists {
 		return fmt.Errorf("%w: cyclic Manifest graph", ErrReference)
 	}
 
-	if v.done[m] {
+	if _, exists := v.done[m]; exists {
 		return nil
 	}
 
-	v.active[m] = true
+	v.active[m] = struct{}{}
 	defer delete(v.active, m)
 
 	for _, child := range m.refs {
@@ -716,7 +731,7 @@ func (v *manifestVerifier) checkManifest(m *manifestPlan, depth int) error {
 		}
 	}
 
-	v.done[m] = true
+	v.done[m] = struct{}{}
 	v.report.Manifests[m.index].Status = Valid
 
 	return nil

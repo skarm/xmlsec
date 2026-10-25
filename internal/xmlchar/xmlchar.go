@@ -18,24 +18,18 @@ func IsChar(r rune) bool {
 		return r == 0x9 || r == 0xA || r == 0xD || r >= 0x20
 	}
 
-	return (r >= 0x100 && r <= 0xD7FF) || (r >= 0xE000 && r <= 0xFFFD) || (r >= 0x10000 && r <= 0x10FFFF)
+	return r <= 0xD7FF || (r >= 0xE000 && r <= 0xFFFD) || (r >= 0x10000 && r <= 0x10FFFF)
 }
 
-// IsXML11Char implements the XML 1.1 §2.2 Char production:
-//
-//	Char ::= [#x1-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
-//
-// The C0/C1 control characters (0x1-0x1F, 0x7F-0x9F) the XML 1.0 Char
-// production forbids are valid XML 1.1 characters; only U+0000 is disallowed.
-// XML 1.1 requires the restricted characters to appear as character references
-// and never literally, so on its own this predicate governs only the
-// character-reference value check; IsLiteralChar governs literal text.
+// IsXML11Char implements the XML 1.1 Char production: U+0001 through U+D7FF, U+E000
+// through U+FFFD, and U+10000 through U+10FFFF. Restricted control characters require
+// character references; use IsLiteralChar to check literal text.
 func IsXML11Char(r rune) bool {
 	if r < 0x100 {
 		return r > 0
 	}
 
-	return (r >= 0x100 && r <= 0xD7FF) || (r >= 0xE000 && r <= 0xFFFD) || (r >= 0x10000 && r <= 0x10FFFF)
+	return r <= 0xD7FF || (r >= 0xE000 && r <= 0xFFFD) || (r >= 0x10000 && r <= 0x10FFFF)
 }
 
 // IsXML11RestrictedChar reports whether r is an XML 1.1 RestrictedChar
@@ -162,10 +156,9 @@ func IsNCNameChar(r rune) bool {
 		r == 0xB7 || (r >= 0x0300 && r <= 0x036F) || (r >= 0x203F && r <= 0x2040)
 }
 
-// IsValidPITarget reports whether target is a valid XML processing
-// instruction target. A PI target is an NCName (colons are forbidden, matching
-// helium's parser, which rejects colons in PI targets) and must not be the
-// reserved name "xml" (any case).
+// IsValidPITarget reports whether target is a valid processing-instruction target in
+// this parser's namespace-aware XML profile: a UTF-8 NCName other than the reserved
+// name xml, compared without case sensitivity.
 func IsValidPITarget(target string) bool {
 	if target == "" {
 		return false
@@ -267,7 +260,7 @@ func IsASCIIDigit(b byte) bool {
 // Unlike NCName/QName, a Name may contain colons anywhere (including leading,
 // trailing, or repeated), so the Name production is strictly broader than
 // QName. This matches the XML DTD productions for element, attlist, notation,
-// and doctype names, which helium's parser reads as the Name production.
+// and doctype names, which use the Name production.
 func IsValidName(s string) bool {
 	if s == "" {
 		return false

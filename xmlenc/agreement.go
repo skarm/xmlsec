@@ -25,10 +25,12 @@ const (
 	SignatureNamespace11 = lexicon.NamespaceDSig11
 )
 
-// ECDHOptions selects an explicit static recipient and the expected wire profile.
-// AES256GCM and AES256KeyWrap are the defaults. Agreement does not authenticate
-// the sender; applications must authenticate the ciphertext and its context.
+// ECDHOptions selects a static recipient and the expected wire parameters.
+// Defaults are AES256GCM and AES256KeyWrap. Agreement establishes no sender
+// identity; the application must authenticate the ciphertext and its context.
 type ECDHOptions struct {
+	// Data selects the data cipher, plaintext and XML limits, and external ciphertext
+	// policy.
 	Data Options
 	// KeyAlgorithm selects AES128KeyWrap, AES192KeyWrap or AES256KeyWrap (default).
 	KeyAlgorithm string
@@ -44,18 +46,24 @@ type ECDHOptions struct {
 	RecipientKeyName string
 }
 
-// ECDHRecipient supplies the application's static private-key operation.
-// *ecdh.PrivateKey implements it. Returned secrets belong to the caller and
-// preserve the curve's full 32/48/66-byte x-coordinate, including leading zeros.
+// ECDHRecipient provides the application's static private-key operation.
+// An *ecdh.PrivateKey implements this interface. Returned secrets are caller-owned
+// and must preserve the full 32-, 48- or 66-byte x-coordinate, including leading
+// zeros.
 type ECDHRecipient interface {
+	// PublicKey returns the static recipient public key corresponding to the private operation.
 	PublicKey() *ecdh.PublicKey
+	// ECDH derives an owned, full-width secret from the supplied peer public key.
 	ECDH(*ecdh.PublicKey) ([]byte, error)
 }
 
-// ContextECDHRecipient receives the caller's cancellation and deadline context.
-// Its returned secret follows ECDHRecipient's ownership and width contracts.
+// ContextECDHRecipient accepts the caller's cancellation and deadline context for
+// key agreement. Its returned secret follows ECDHRecipient's ownership and
+// full-width encoding contract.
 type ContextECDHRecipient interface {
+	// PublicKey returns the static recipient public key corresponding to the private operation.
 	PublicKey() *ecdh.PublicKey
+	// ECDH derives an owned, full-width secret and must honor cancellation.
 	ECDH(context.Context, *ecdh.PublicKey) ([]byte, error)
 }
 

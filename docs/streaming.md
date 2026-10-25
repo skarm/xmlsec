@@ -1,5 +1,13 @@
 # Streaming and memory
 
+## Contents
+
+- [Parsing and ownership](#parsing-and-ownership)
+- [Independent XML records](#independent-xml-records)
+- [Serialization](#serialization)
+- [Cryptographic and protocol APIs](#cryptographic-and-protocol-apis)
+- [Measuring memory](#measuring-memory)
+
 Reader/writer APIs avoid collecting complete byte slices when the operation
 allows it. They preserve limits and cancellation. Caller-supplied streams stay
 open; streams acquired from resolvers/transports are closed on every path,
@@ -11,10 +19,15 @@ signature alone says nothing about constant memory or early output.
 ## Parsing and ownership
 
 `document.ParseReader`, `Engine.ParseReader` and `CompileXSLTReader` parse
-incrementally but retain a complete XML tree. URI-loaded XML follows the same
-path. Working storage includes the current lexical token; a large start tag,
-comment or unfinished reference can require token-sized storage. DTDs and
-external entities are rejected.
+incrementally but retain a complete XML tree. URI-loaded XML also retains a
+complete tree. Working storage includes the current lexical token; a large start
+tag, comment or unfinished reference can require token-sized storage.
+
+`document.ParseReader` and `Engine.ParseReader` reject DTDs and external entities.
+Stylesheets and language XML resources use a separate bounded, nonvalidating
+DTD mode. External DTDs and entities require the explicit resolver and invocation
+resource policy. Entity expansion and default attributes also consume parser
+budgets. See [XML input profiles](transforms.md#xml-input-profiles).
 
 `unparsed-text()` returns a complete decoded string; `unparsed-text-lines()`
 returns materialized lines. Availability checks validate and discard input.
@@ -92,11 +105,13 @@ serialized byte. XML/HTML/text escaping, common JSON output and supported
 encoding conversions write incrementally; this does not make evaluation an
 input-to-output stream.
 
-XHTML, adaptive output, disable-output-escaping and FULLY-NORMALIZED can require
-an extra tree and serialized bytes proportional to the current result. JSON
-embedded nodes, character maps and normalization can buffer individual values;
-one value can be as large as the result. Writer methods select these paths
-automatically. Record processing applies them to one record's result at a time.
+JSON embedded nodes serialize through incremental JSON escaping, without a
+complete intermediate XML string. Adaptive quoted strings escape directly into
+the text serializer. XHTML, disable-output-escaping and FULLY-NORMALIZED can
+still require an extra tree or serialized bytes proportional to the current
+result. Character maps and normalization retain their required lexical or
+normalization segments. Writer methods select these paths automatically.
+Record processing applies them to one record's result at a time.
 
 NFC/NFD/NFKC/NFKD output emits completed normalization segments without inserting
 CGJ. An uninterrupted combining sequence needs storage proportional to its length,
@@ -130,6 +145,9 @@ collect complete `Output` values and return no partial output on error.
   `SignedData.VerifyReader` does not retain detached content; use `ContentSize()`.
   Embedded content and parsed DER/models remain materialized. `DiscardContent`
   omits the verification result's extra message copy, not the parsed container.
+  `ParseBERReader` retains its bounded source while building one normalized DER
+  encoding. `ParseBER` borrows byte input during normalization and returns an
+  owned model; neither operation authenticates the container.
 - `timestamp.ImprintReader` and `CreateRequestReader` hash incrementally.
   `WriteResponse` writes around CMS output; `IssueResponse` collects it. Parsing
   tokens/responses retains bounded complete DER. Parsed tokens can be reused
@@ -137,14 +155,43 @@ collect complete `Output` values and return no partial output on error.
 - `saml/binding.WritePOST` / `WritePOSTForm` serialize, encode and escape directly;
   `DecodePOSTReader` decodes into the XML parser. Metadata reader methods retain
   XML snapshots. Redirect produces a complete signed query. SP/IdP outbound
-  objects retain complete POST forms; use binding writers for incremental output.
+  objects retain immutable signed XML and expose `WritePOST` / `WritePOSTForm`
+  directly. Form limits are checked before state/replay commitment; output
+  serialization is repeated when requested. No full form is mandatory in heap.
 - `keys` PEM/DER parsers, PKIX/OCSP, KeyInfo and XAdES retain bounded key,
   certificate or evidence models. `WriteEncryptedPrivate`, `WritePKCS12` and
   `pki.WriteOCSPResponse` write encoded segments; their byte counterparts collect
   the same output. Export still retains cryptographic snapshots/ciphertext.
+- `evidence.ReadObservation` owns bounded reader input without a second snapshot
+  copy; `evidence/collect` uses it for response bodies. Observations still retain
+  complete untrusted bytes and their SHA-256 for later offline authentication.
+  Mutable accessors return copies; reading does not assert trust or existence time.
+- `evidence.NewStore` owns private temporary files and requires `Close`.
+  `PutReader` stores exact bytes under byte/record reservations, and `Record.Open`
+  returns independently positioned caller-owned readers. Records also require
+  `Close` to release storage early. `collect.HTTP.CollectTo` rolls back its new
+  records on any error. Disk capacity and directory integrity belong to the
+  application; open readers remain caller-owned after record/store closure.
+  File storage avoids retaining payloads in heap, at a substantial fixed I/O
+  cost for small objects. Parsing those records still retains parser models.
+- The CLI uses Reader APIs for XML/CMS/stylesheet input and Writer APIs for XML,
+  canonicalization, CMS signing, SAML POST and XSLT text output. Timestamp request
+  creation and standalone-token data verification hash streams; issuance writes
+  the response directly. Local output streams through
+  a bounded buffer into a same-directory temporary file and is renamed after
+  successful serialization and close. Application stdout retains complete
+  serialized output so serialization failure publishes no prefix. CLI JSON
+  still uses encoding/json's complete value buffer; local files avoid an extra
+  collected copy. Development suite/proof reports write cases/events separately,
+  keeping their complete result metadata but no full serialized report. File
+  reports are atomic; developer stdout can contain a prefix after a sink error.
 - XML Encryption uses complete AES-GCM messages and releases plaintext only after
   authentication. Unknown-length external ciphertext can temporarily occupy both
-  chunks and contiguous GCM input. XML replacement and signature/XAdES editing
+  chunks and contiguous GCM input. Raw external readers implementing
+  `resource.SizedReader` can allocate one ciphertext buffer: the declared length
+  is bounded and verified against the actual stream, including EOF/late errors.
+  Base64 transform chains retain their ordinary bounded path.
+  XML replacement and signature/XAdES editing
   retain source and result snapshots. These APIs do not promise constant memory.
 
 ## Measuring memory

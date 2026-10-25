@@ -46,9 +46,13 @@ func TestNormativeCanonicalRejections(t *testing.T) {
 
 	var corpus struct {
 		Rejected []struct {
-			Name, XML, At, Category, Algorithm string
-			Prefixes                           []string
-			MaxOutputBytes                     int `json:"max_output_bytes"`
+			Name           string
+			XML            string
+			At             string
+			Category       string
+			Algorithm      string
+			Prefixes       []string
+			MaxOutputBytes int `json:"max_output_bytes"`
 		} `json:"rejected"`
 	}
 	if err := json.Unmarshal(raw, &corpus); err != nil {
@@ -96,15 +100,22 @@ func TestNormativeCanonicalRejections(t *testing.T) {
 }
 
 type canonicalVector struct {
-	Name, XML, Scope, Algorithm, Expected string
-	Prefixes                              []string
-	Subtree                               []int
-	Select                                []canonicalVectorSelection
+	Name      string
+	XML       string
+	Scope     string
+	Algorithm string
+	Expected  string
+	Prefixes  []string
+	Subtree   []int
+	Select    []canonicalVectorSelection
 }
 
 type canonicalVectorSelection struct {
-	Path                       []int
-	Kind, Local, Space, Prefix string
+	Path   []int
+	Kind   string
+	Local  string
+	Space  string
+	Prefix string
 }
 
 func checkCanonicalVector(t *testing.T, vector canonicalVector) {
@@ -226,8 +237,12 @@ const (
 
 func TestCanonicalAlgorithms(t *testing.T) {
 	tests := []struct {
-		name, xml, want10, want11, wantExclusive string
-		child                                    bool
+		name          string
+		xml           string
+		want10        string
+		want11        string
+		wantExclusive string
+		child         bool
 	}{
 		{"namespace context", `<r xmlns:p="urn:p"><c/></r>`, `<r xmlns:p="urn:p"><c></c></r>`, `<r xmlns:p="urn:p"><c></c></r>`, `<r><c></c></r>`, false},
 		{"empty default", `<r xmlns="urn:r"><c xmlns=""><x/></c></r>`, xmlRXmlnsUrnRCXmlnsXX, xmlRXmlnsUrnRCXmlnsXX, xmlRXmlnsUrnRCXmlnsXX, false},
@@ -254,7 +269,10 @@ func testCanonicalAlgorithmsCase(t *testing.T, tt *struct {
 },
 ) {
 	d := parse(t, tt.xml)
-	for _, method := range []struct{ uri, want string }{{c14n.Canonical10, tt.want10}, {c14n.Canonical11, tt.want11}, {c14n.Exclusive, tt.wantExclusive}} {
+	for _, method := range []struct {
+		uri  string
+		want string
+	}{{c14n.Canonical10, tt.want10}, {c14n.Canonical11, tt.want11}, {c14n.Exclusive, tt.wantExclusive}} {
 		t.Run(method.uri, func(t *testing.T) {
 			var (
 				direct bytes.Buffer

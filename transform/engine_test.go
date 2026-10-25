@@ -23,7 +23,11 @@ func TestSingleByteXMLInputs(t *testing.T) {
 	ordinary := engine(t, transform.Config{})
 	extended := engine(t, transform.Config{AllowSingleByteEncodings: true})
 
-	for _, tc := range []struct{ encoding, content, want string }{
+	for _, tc := range []struct {
+		encoding string
+		content  string
+		want     string
+	}{
 		{xmlASCIIEncoding, "ascii text", "ascii text"},
 		{"ASCII", "alias text", "alias text"},
 		{"aScIi", "alias text", "alias text"},
@@ -186,7 +190,10 @@ func TestKeyAtomizationBudget(t *testing.T) {
 
 	e := engine(t, transform.Config{Limits: transform.Limits{MaxOperations: 10000}})
 
-	for _, test := range []struct{ use, lookup string }{
+	for _, test := range []struct {
+		use    string
+		lookup string
+	}{
 		{`@k`, expansion},
 		{expansion, `'a'`},
 	} {
@@ -320,7 +327,10 @@ func TestPackageModeBudget(t *testing.T) {
 }
 
 func TestNumericIntermediateBudget(t *testing.T) {
-	for _, tt := range []struct{ name, expression string }{
+	for _, tt := range []struct {
+		name       string
+		expression string
+	}{
 		{"integer fold", `fold-left(1 to 12, 2, function($a, $b) { $a * $a }) mod 2`},
 		{"decimal numerator", `fold-left(1 to 12, xs:decimal('2'), function($a, $b) { $a * $a }) gt 0`},
 		{"decimal denominator", `fold-left(1 to 12, xs:decimal('0.5'), function($a, $b) { $a * $a }) gt 0`},

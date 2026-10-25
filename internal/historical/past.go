@@ -335,7 +335,7 @@ func hasPreCARevocationProof(target []byte, claims []*pki.VerifiedEvidence, proo
 
 func freshForSignature(target []byte, claims []*pki.VerifiedEvidence, at time.Time, maximum *time.Duration) bool {
 	targetHash := sha256.Sum256(target)
-	dependencies := make(map[string]bool)
+	dependencies := make(map[string]struct{})
 
 	for _, claim := range claims {
 		if decodeDigest(claim.TargetCertificateSHA256()) != targetHash {
@@ -343,14 +343,18 @@ func freshForSignature(target []byte, claims []*pki.VerifiedEvidence, at time.Ti
 		}
 
 		for _, dependency := range claim.Dependencies() {
-			dependencies[dependency] = true
+			dependencies[dependency] = struct{}{}
 		}
 	}
 
 	checked := false
 
 	for _, claim := range claims {
-		if decodeDigest(claim.TargetCertificateSHA256()) != targetHash || dependencies[claim.FingerprintSHA256()] {
+		if decodeDigest(claim.TargetCertificateSHA256()) != targetHash {
+			continue
+		}
+
+		if _, exists := dependencies[claim.FingerprintSHA256()]; exists {
 			continue
 		}
 
