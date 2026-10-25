@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"sort"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -769,9 +768,10 @@ func fnArraySort(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 		return nil, err
 	}
 
-	src := a.MembersView()
-	members := make([]xdm.Sequence, len(src))
-	copy(members, src)
+	members := a.MembersView()
+	if len(members) > fnMaxNodes(getFnContext(ctx)) {
+		return nil, ErrNodeSetLimit
+	}
 
 	coll, err := sortCollation(ctx, args)
 	if err != nil {
@@ -790,35 +790,31 @@ func fnArraySort(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 		keyFn = &fi
 	}
 
-	entries := make([]arraySortEntry, len(members))
-	if err := populateArraySortKeys(ctx, members, keyFn, entries); err != nil {
+	entries, err := populateArraySortKeys(ctx, members, keyFn)
+	if err != nil {
 		return nil, err
 	}
 
-	var sortErr error
+	if err := stableSortWithError(entries, func(i, j int) (bool, error) {
+		return sequenceSortKeyLess(ctx, entries[i].key, entries[j].key, coll)
+	}); err != nil {
+		return nil, err
+	}
 
-	sort.SliceStable(entries, func(i, j int) bool {
-		if sortErr != nil {
-			return false
-		}
-
-		var less bool
-
-		less, sortErr = sequenceSortKeyLess(ctx, entries[i].key, entries[j].key, coll)
-
-		return less
-	})
-
-	if sortErr != nil {
-		return nil, sortErr
+	if err := fnCountOps(ctx, getFnContext(ctx), len(entries)); err != nil {
+		return nil, err
 	}
 
 	sorted := make([]xdm.Sequence, len(entries))
 	for i, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		sorted[i] = e.member
 	}
 
-	return xdm.ItemSlice{xdm.NewArray(sorted)}, nil
+	return xdm.ItemSlice{xdm.NewArrayFromImmutableMembers(sorted)}, nil
 }
 
 type arraySortEntry struct {
@@ -826,9 +822,14 @@ type arraySortEntry struct {
 	key    xdm.Sequence // atomized key sequence for comparison
 }
 
-func populateArraySortKeys(ctx context.Context, members []xdm.Sequence, keyFn *xdm.FunctionItem, entries []arraySortEntry) error {
-	for i, member := range members {
-		entries[i].member = member
+func populateArraySortKeys(ctx context.Context, members []xdm.Sequence, keyFn *xdm.FunctionItem) ([]arraySortEntry, error) {
+	var entries []arraySortEntry
+
+	for _, member := range members {
+		if err := fnCountOp(ctx, getFnContext(ctx)); err != nil {
+			return nil, err
+		}
+
 		value := member
 
 		if keyFn != nil {
@@ -836,17 +837,17 @@ func populateArraySortKeys(ctx context.Context, members []xdm.Sequence, keyFn *x
 
 			value, err = keyFn.Invoke(ctx, []xdm.Sequence{member})
 			if err != nil {
-				return err
+				return nil, err
 			}
 		}
 
-		key, err := atomizedSortKey(value)
+		key, err := atomizedSortKey(ctx, value)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
-		entries[i].key = key
+		entries = append(entries, arraySortEntry{member: member, key: key})
 	}
 
-	return nil
+	return entries, nil
 }

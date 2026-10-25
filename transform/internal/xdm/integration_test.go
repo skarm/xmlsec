@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/skarm/xmlsec/internal/tree"
@@ -245,6 +247,95 @@ func TestXMLIDViewAndMutation(t *testing.T) {
 	}
 	if value := tree.Root(doc.Snapshot()).Attrs[0].Value; value != " old " {
 		t.Fatal("view rewrote the original XML attribute", value)
+	}
+}
+
+func TestAttributeValueIteration(t *testing.T) {
+	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<r xml:id=" own&#x9; " xmlns:p="urn:p" p:n="value" bare=""/>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := doc.DocumentElement()
+	type attribute struct{ local, uri, value string }
+	want := []attribute{{"id", tree.XMLNamespace, "own"}, {"n", "urn:p", "value"}, {"bare", "", ""}}
+	var got []attribute
+	root.ForEachAttributeValue(func(local, uri, value string) bool {
+		got = append(got, attribute{local, uri, value})
+		return true
+	})
+	if root.AttributeCount() != len(want) || len(got) != len(want) {
+		t.Fatal("attribute count includes namespaces or loses values", root.AttributeCount(), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatal("expanded name, stored order or normalized value changed", i, got[i], want[i])
+		}
+	}
+	if raw := tree.Root(doc.Snapshot()).Attrs[0].Value; raw != " own\t " {
+		t.Fatal("iteration rewrote the original xml:id snapshot", raw)
+	}
+	calls := 0
+	root.ForEachAttributeValue(func(string, string, string) bool { calls++; return false })
+	if calls != 1 {
+		t.Fatal("attribute iteration continued after early stop", calls)
+	}
+	if allocations := testing.AllocsPerRun(10, func() {
+		root.ForEachAttributeValue(func(string, string, string) bool { return false })
+	}); allocations != 0 {
+		t.Fatal("early attribute iteration constructed views or a slice", allocations)
+	}
+}
+
+func TestAttributeIndexMutationAndConcurrentReads(t *testing.T) {
+	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<r first="A" xmlns:p="urn:p" p:last="B" xml:id=" own "/>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := doc.DocumentElement()
+	removed := root.GetAttributeNodeNS("first", "")
+	last := root.GetAttributeNodeNS("last", "urn:p")
+	id := root.GetAttributeNodeNS("id", tree.XMLNamespace)
+	if !root.RemoveAttribute("first") || removed.Parent() != nil || last.Value() != "B" || id.Value() != "own" {
+		t.Fatal("removing an earlier attribute invalidated retained views")
+	}
+	if err := root.SetAttributeNS("last", "updated", xdm.NewNamespace("q", "urn:p")); err != nil {
+		t.Fatal(err)
+	}
+	if last.Value() != "updated" || last.Prefix() != "q" || last.Name() != "q:last" {
+		t.Fatal("replacement or prefix change lost the indexed attribute")
+	}
+	if err := root.SetAttribute("first", "again"); err != nil {
+		t.Fatal(err)
+	}
+	if replacement := root.GetAttributeNodeNS("first", ""); replacement == removed || replacement.Value() != "again" || root.AttributeCount() != 3 {
+		t.Fatal("re-added attribute reused a removed view or the wrong position")
+	}
+	destination := xdm.NewDefaultDocument()
+	if err := destination.AddChild(root); err != nil {
+		t.Fatal(err)
+	}
+	if last.OwnerDocument() != destination || last.Value() != "updated" || last.Prefix() != "q" || id.Value() != "own" || destination.GetElementByID("own") != root {
+		t.Fatal("adopting the element invalidated attribute positions or xml:id")
+	}
+	destination.Freeze()
+	before := slices.Clone(tree.Root(destination.Snapshot()).Attrs)
+	var readers sync.WaitGroup
+	for range 8 {
+		readers.Go(func() {
+			for range 100 {
+				if last.Value() != "updated" || last.Prefix() != "q" || id.Value() != "own" {
+					t.Error("concurrent indexed reads changed attribute metadata")
+				}
+				// A retained removed view uses the read-only fallback. Reading it
+				// must never populate a mutable cache in a shared frozen view.
+				_ = removed.Value()
+				_ = removed.Prefix()
+			}
+		})
+	}
+	readers.Wait()
+	if !slices.Equal(before, tree.Root(destination.Snapshot()).Attrs) {
+		t.Fatal("attribute reads rewrote the published raw snapshot")
 	}
 }
 

@@ -1063,6 +1063,14 @@ func NewArray(members []Sequence) ArrayItem {
 	return ArrayItem{members: CloneSequences(members)}
 }
 
+// NewArrayFromImmutableMembers takes ownership of an outer member slice whose
+// sequences and items are already immutable. It performs no cloning. Callers
+// must not modify the slice or its members after handing them over. Trusted
+// internal producers can use it to reorder existing ArrayItem members.
+func NewArrayFromImmutableMembers(members []Sequence) ArrayItem {
+	return ArrayItem{members: members}
+}
+
 // Get returns the member at the given 1-based index.
 func (a ArrayItem) Get(index int) (Sequence, error) {
 	if index < 1 || index > len(a.members) {

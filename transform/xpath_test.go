@@ -2121,6 +2121,156 @@ func TestSubsequenceArgumentCardinality(t *testing.T) {
 	}
 }
 
+func TestSubsequenceWorkBudget(t *testing.T) {
+	e := engine(t, transform.Config{Limits: transform.Limits{MaxNodes: 10_000_000, MaxOperations: 64}})
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath31} {
+		q, err := e.CompileXPath(t.Context(), `subsequence(1 to 10000000,9999996,5)`, transform.XPathOptions{Version: version})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
+		if err != nil || result.Len() != 5 {
+			t.Fatal("skipped range prefix must require no traversal", result.Len(), err)
+		}
+		for i := range result.Len() {
+			value, ok := result.At(i)
+			got, textErr := value.Text()
+			if !ok || textErr != nil || got != strconv.Itoa(9_999_996+i) {
+				t.Fatal("incorrect indexed range result", i, got, textErr)
+			}
+		}
+
+		q, err = e.CompileXPath(t.Context(), `count(subsequence(1 to 1000,1))`, transform.XPathOptions{Version: version})
+		if err == nil {
+			_, err = q.Evaluate(t.Context(), nil, transform.XPathContext{})
+		}
+		if !errors.Is(err, transform.ErrLimit) {
+			t.Fatal("materialized subsequence ignored its work budget", err)
+		}
+	}
+}
+
+func TestSequenceTraversalWorkBudgets(t *testing.T) {
+	e := engine(t, transform.Config{Limits: transform.Limits{MaxOperations: 64}})
+	for _, expression := range []string{
+		`count(tail(1 to 1000))`,
+		`count(reverse(1 to 1000))`,
+		`count(insert-before(1 to 1000,1,0))`,
+		`count(remove(1 to 1000,1))`,
+		`deep-equal(1 to 1000,1 to 1000)`,
+		`deep-equal(map{'a':1 to 1000},map{'a':1 to 1000})`,
+		`count(sort(1 to 1000))`,
+	} {
+		q, err := e.CompileXPath(t.Context(), expression, transform.XPathOptions{})
+		if err == nil {
+			_, err = q.Evaluate(t.Context(), nil, transform.XPathContext{})
+		}
+		if !errors.Is(err, transform.ErrLimit) {
+			t.Fatalf("%s did not preserve the work limit: %v", expression, err)
+		}
+	}
+
+	// The declared argument type check already visits 100000 atoms. The
+	// following atomization and equality scan must not run for free afterwards.
+	e = engine(t, transform.Config{Limits: transform.Limits{MaxOperations: 100_064}})
+	q, err := e.CompileXPath(t.Context(), `index-of(1 to 100000,100000)`, transform.XPathOptions{})
+	if err == nil {
+		_, err = q.Evaluate(t.Context(), nil, transform.XPathContext{})
+	}
+	if !errors.Is(err, transform.ErrLimit) {
+		t.Fatal("index-of ran its second traversal beyond the remaining budget", err)
+	}
+}
+
+func TestDeepEqualIndexedMapAndAttributeContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for expression, want := range map[string]string{
+		`deep-equal(parse-xml('<r xml:id=" own "/>'),parse-xml('<r xml:id="own"/>'))`:                                                                             "true",
+		`deep-equal(parse-xml('<r a=""/>'),parse-xml('<r b=""/>'))`:                                                                                               "false",
+		`deep-equal(parse-xml('<r a=""/>'),parse-xml('<r a=""/>'))`:                                                                                               "true",
+		`deep-equal(map{xs:integer(1):'v'},map{xs:decimal('1'):'v'})`:                                                                                             "true",
+		`deep-equal(map{xs:token('x'):'v'},map{xs:anyURI('x'):'v'})`:                                                                                              "true",
+		`deep-equal(map{xs:float('NaN'):'v'},map{xs:double('NaN'):'v'})`:                                                                                          "true",
+		`deep-equal(map{QName('urn:a','a:k'):'v'},map{QName('urn:a','b:k'):'v'})`:                                                                                 "true",
+		`deep-equal(map{QName('urn:a','a:k'):'v'},map{QName('urn:b','a:k'):'v'})`:                                                                                 "false",
+		`deep-equal(map{'a':[1,map{'b':2}]},map{'a':[1,map{'b':3}]})`:                                                                                             "false",
+		`deep-equal(map{'a':[function(){1}]},map{'a':[1]})`:                                                                                                       "FOTY0015",
+		`deep-equal(parse-xml('<r xmlns:a="urn:a" xmlns:b="urn:b" a:x="one" b:x="two"/>'),parse-xml('<r xmlns:p="urn:b" xmlns:q="urn:a" p:x="two" q:x="one"/>'))`: "true",
+		`deep-equal(parse-xml('<r xmlns:a="urn:a" xmlns:b="urn:b" a:x="one" b:x="two"/>'),parse-xml('<r xmlns:p="urn:b" xmlns:q="urn:a" p:x="one" q:x="two"/>'))`: "false",
+		`string-join(sort(('a2','a1','b1'),(),function($s){substring($s,1,1)}),'|')`:                                                                              "a2|a1|b1",
+	} {
+		t.Run(expression, func(t *testing.T) {
+			result, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if want == "FOTY0015" {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != want {
+					t.Fatalf("got %v, want %s", err, want)
+				}
+			} else if err != nil || text(t, result) != want {
+				t.Fatalf("got %v (%v), want %s", result, err, want)
+			}
+		})
+	}
+}
+
+func TestArraySortImmutableMembers(t *testing.T) {
+	e := engine(t, transform.Config{})
+	number := big.NewInt(2)
+	first, err := transform.Map(transform.MapEntry{Key: transform.String("n"), Value: transform.Values(transform.BigInteger(number))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := transform.Map(transform.MapEntry{Key: transform.String("n"), Value: transform.Values(transform.Integer(1))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	members := []transform.Sequence{transform.Values(first), transform.Values(second)}
+	input := transform.Array(members...)
+	number.SetInt64(9)
+	clear(members)
+	q := query(t, e, `array:sort($a,(),function($m){$m?n})`, transform.XPath31)
+	result, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "a"}: transform.Values(input)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := result.Single()
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(array transform.Value, index int) *big.Int {
+		t.Helper()
+		member, err := array.Member(index)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry, err := member.Single()
+		if err != nil {
+			t.Fatal(err)
+		}
+		sequence, found := entry.Lookup(transform.String("n"))
+		if !found {
+			t.Fatal("sorted nested map lost its numeric value")
+		}
+		value, err := sequence.Single()
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, err := value.Integer()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if get(output, 0).Int64() != 1 || get(output, 1).Int64() != 2 || get(input, 0).Int64() != 2 || get(input, 1).Int64() != 1 {
+		t.Fatal("sorting changed source order or retained a mutable input")
+	}
+	get(output, 1).SetInt64(99)
+	get(input, 0).SetInt64(88)
+	if get(output, 1).Int64() != 2 || get(input, 0).Int64() != 2 {
+		t.Fatal("public numeric accessors leaked borrowed member storage")
+	}
+}
+
 func TestSumUntypedPromotion(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for source, want := range map[string]string{

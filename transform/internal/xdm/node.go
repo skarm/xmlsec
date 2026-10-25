@@ -544,8 +544,8 @@ func (d *Document) wrap(ctx context.Context, r *tree.Node, slot int) error {
 
 	d.nodes[r] = n
 	if e, ok := n.(*Element); ok {
-		for _, a := range r.Attrs {
-			d.attribute(e, a.Name)
+		for i, a := range r.Attrs {
+			d.attribute(e, a.Name, i)
 
 			if d.native.AttributeDTDType(r, a.Name) == tree.DTDID || a.Name == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
 				d.ids[d.attrs[attrKey{r, a.Name}].Value()] = e
@@ -575,7 +575,7 @@ func (d *Document) adopt(n Node) {
 
 	d.nodes[n.view().raw] = n
 	if e, ok := n.(*Element); ok {
-		for _, entry := range e.raw.Attrs {
+		for i, entry := range e.raw.Attrs {
 			if entry.Name == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
 				d.ids[xmlchar.CollapseSpace(entry.Value)] = e
 			}
@@ -586,10 +586,11 @@ func (d *Document) adopt(n Node) {
 				a.doc = d
 				a.owner = e
 				a.parent = e
+				a.attributeIndex = i
 				d.attrs[key] = a
 				a.SetIDType(kind)
 			} else {
-				d.attribute(e, entry.Name)
+				d.attribute(e, entry.Name, i)
 			}
 		}
 	}
@@ -601,16 +602,17 @@ func (d *Document) adopt(n Node) {
 	}
 }
 
-func (d *Document) attribute(e *Element, name tree.Name) {
+func (d *Document) attribute(e *Element, name tree.Name, index int) {
 	key := attrKey{e.raw, name}
 	if a := d.attrs[key]; a != nil {
 		a.detached = false
+		a.attributeIndex = index
 		a.refreshXMLID()
 
 		return
 	}
 
-	a := &Attribute{raw: e.raw, doc: d, kind: AttributeNode, slot: -1, parent: e, key: name, owner: e}
+	a := &Attribute{raw: e.raw, doc: d, kind: AttributeNode, slot: -1, parent: e, key: name, owner: e, attributeIndex: index}
 	a.self = a
 	a.refreshXMLID()
 	d.attrs[key] = a
@@ -776,7 +778,7 @@ func (e *Element) SetAttributeNS(local, value string, ns *Namespace) error {
 	}
 
 	e.raw.Attrs = append(e.raw.Attrs, tree.Attribute{Name: name, Prefix: prefix, Value: value})
-	e.doc.attribute(e, name)
+	e.doc.attribute(e, name, len(e.raw.Attrs)-1)
 
 	if uri == tree.XMLNamespace && local == "id" {
 		e.doc.RegisterID(value, e)
@@ -843,6 +845,20 @@ func (e *Element) Attributes() []*Attribute {
 	return out
 }
 
+// AttributeCount returns the number of attributes without constructing views.
+func (e *Element) AttributeCount() int { return len(e.raw.Attrs) }
+
+// ForEachAttributeValue visits expanded names and XDM-normalized values in stored
+// order without constructing attribute views or a slice. It stops when fn returns
+// false. The callback must not mutate the element during iteration.
+func (e *Element) ForEachAttributeValue(fn func(local, uri, value string) bool) {
+	for _, a := range e.raw.Attrs {
+		if !fn(a.Name.Local, a.Name.Space, e.attributeValue(a)) {
+			return
+		}
+	}
+}
+
 // ForEachAttribute visits attributes in stored order until fn returns false.
 func (e *Element) ForEachAttribute(fn func(*Attribute) bool) {
 	for _, a := range e.Attributes() {
@@ -876,6 +892,12 @@ func (e *Element) RemoveAttributeNS(local, uri string) bool {
 			view := e.doc.attrs[attrKey{e.raw, a.Name}]
 
 			e.raw.Attrs = slices.Delete(e.raw.Attrs, i, i+1)
+			for index := i; index < len(e.raw.Attrs); index++ {
+				if shifted := e.doc.attrs[attrKey{e.raw, e.raw.Attrs[index].Name}]; shifted != nil {
+					shifted.attributeIndex = index
+				}
+			}
+
 			if view != nil && view.IDType() == IDAttribute {
 				if id := xmlchar.CollapseSpace(a.Value); e.doc.ids[id] == e {
 					delete(e.doc.ids, id)
@@ -884,6 +906,7 @@ func (e *Element) RemoveAttributeNS(local, uri string) bool {
 
 			if view != nil {
 				view.detached = true
+				view.attributeIndex = -1
 			}
 
 			e.doc.native.SetAttributeDTDType(e.raw, a.Name, tree.DTDNoType)
@@ -916,6 +939,9 @@ type Attribute struct {
 	key tree.Name
 	// owner retains the element supplying attribute storage, including while detached.
 	owner *Element
+	// attributeIndex identifies the raw entry. Draft mutations update shifted
+	// views; read-only access never changes this index.
+	attributeIndex int
 	// Cache the derived value so repeated reads do not rescan or allocate for
 	// an immutable input attribute. Private mutations refresh it before publishing.
 	xmlIDValue string
@@ -1049,6 +1075,11 @@ func (a *Attribute) SetIDType(t AttributeIDType) {
 }
 
 func (a *Attribute) entry() tree.Attribute {
+	if i := a.attributeIndex; i >= 0 && i < len(a.owner.raw.Attrs) && a.owner.raw.Attrs[i].Name == a.key {
+		return a.owner.raw.Attrs[i]
+	}
+
+	// Retain detached/stale-view behavior without writing a cache during reads.
 	for _, v := range a.owner.raw.Attrs {
 		if v.Name == a.key {
 			return v

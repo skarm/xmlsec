@@ -268,7 +268,7 @@ product/capability report `FOXT0001`. `initial-function` requires `function-para
 (`FOXT0002` when absent). Failure to resolve a supplied stylesheet location also
 reports `FOXT0002` before compilation. Compilation and execution retain more
 specific language errors; cancellation and exhausted implementation budgets keep
-their control causes. See the measured [suite diagnostics](language-suites.md)
+their control causes. See the [suite diagnostics](language-suites.md)
 and [validation profiles](language-baseline.md) for reproducible Basic-profile checks.
 
 Package exposure uses the winning explicit, declared or wildcard visibility
@@ -301,8 +301,7 @@ lookup and initial invocation. Function results use the same conversion rules
 with XSLT's `XTTE0780` result error. A converted function checks arguments against
 the requested signature before converting them for the original function;
 incompatible calls fail when invoked. Returned adapters keep static type names
-and borrow the caller's current cancellation and work limits. Their native and
-Saxon atomization-code differences are recorded separately in the baseline.
+and borrow the caller's current cancellation and work limits.
 
 `xsl:evaluate` uses its explicitly supplied variables and public/final stylesheet
 functions. Private overloads do not hide public siblings, and XSLT-specific
@@ -372,7 +371,7 @@ selection.
 
 Complete component/import graphs, local-rule placement and signature combinations
 remain open. Indirect `apply-imports` across packages remains an independent-engine
-difference under investigation. The baseline records diagnostics separately.
+difference under investigation.
 
 Attribute-set cycle detection tracks component identity across constructors and
 callbacks. XSLT 3.0 reports an evaluated circularity as `XTDE0640`; unused cycles

@@ -913,13 +913,21 @@ func TestResidualFailureConditions(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			actual := suiteOutcome{Status: suiteFailed, Kind: test.kind, ErrorCode: test.code, FailureCause: test.cause, FailureSignature: "reserved namespace in template name"}
-			if got := residualFailureMatches(evidence, test.profile, actual); got != test.want {
-				t.Fatal(got, test.want)
+			for _, disposition := range []string{"fixture", "environment"} {
+				candidate := evidence
+				candidate.Disposition = disposition
+				if got := residualFailureMatches(candidate, test.profile, actual); got != test.want {
+					t.Fatal(disposition, got, test.want)
+				}
 			}
 		})
 	}
-	if residualFailureMatches(evidence, selected, suiteOutcome{Kind: "assertion", ErrorCode: "XTSE0080", FailureCause: "execution-error", FailureSignature: "a different reserved namespace argument"}) {
-		t.Fatal("same code from a different argument-dependent failure inherited the old cause")
+	for _, disposition := range []string{"fixture", "environment"} {
+		candidate := evidence
+		candidate.Disposition = disposition
+		if residualFailureMatches(candidate, selected, suiteOutcome{Kind: "assertion", ErrorCode: "XTSE0080", FailureCause: "execution-error", FailureSignature: "a different reserved namespace argument"}) {
+			t.Fatal(disposition, "same code from a different argument-dependent failure inherited the old cause")
+		}
 	}
 	resource := residualEvidence{Disposition: suiteResourceLimit, Failures: []residualFailureCondition{{Profile: selected, Kind: suiteResourceLimit, ErrorCodes: []string{"", "XPDY0130"}, Cause: "resource-bound"}}}
 	for _, code := range []string{"", "XPDY0130"} {

@@ -327,7 +327,7 @@ func checkConformanceRegister(root string, data []byte) (int, []error, error) {
 
 		residuals[id] = struct{}{}
 		c.choice(id, residual.Suite, "qt3", "xslt30")
-		c.choice(id, residual.Disposition, "fixed", "resource-limit", "fixture", "optional-feature", "permitted-outcome")
+		c.choice(id, residual.Disposition, "fixed", "resource-limit", "fixture", "environment", "optional-feature", "permitted-outcome")
 		c.text(id, residual.File, residual.Name, residual.Reason)
 
 		if len(residual.Checks) == 0 {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"math"
 	"math/big"
 	"runtime"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/text/language"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
@@ -800,6 +802,473 @@ func TestSubsequenceBackwardsCompatibility(t *testing.T) {
 				t.Fatalf("length=%d error=%v", xdm.SequenceLen(result), err)
 			}
 		})
+	}
+}
+
+func TestSubsequenceIndexedBounds(t *testing.T) {
+	for _, source := range []xdm.Sequence{nil, xdm.ItemSlice(nil)} {
+		result, err := fnSubsequence(t.Context(), []xdm.Sequence{source, xdm.SingleInteger(1)})
+		if err != nil || xdm.SequenceLen(result) != 0 {
+			t.Fatal("empty source changed", result, err)
+		}
+	}
+	for _, source := range []xdm.Sequence{xdm.NewRangeSequence(1, 3), xdm.ItemSlice{xdm.SingleInteger(1).Get(0), xdm.SingleInteger(2).Get(0), xdm.SingleInteger(3).Get(0)}} {
+		for _, tc := range []struct {
+			start, length float64
+			bounded       bool
+			want          []int64
+		}{
+			{2, 0, false, []int64{2, 3}},
+			{1.5, 1.5, true, []int64{2, 3}},
+			{-0.5, 2.5, true, []int64{1, 2}},
+			{0, 3, true, []int64{1, 2}},
+			{2, 0, true, nil},
+			{2, -1, true, nil},
+			{4, 1, true, nil},
+			{math.NaN(), 1, true, nil},
+			{1, math.NaN(), true, nil},
+			{math.Inf(-1), 0, false, []int64{1, 2, 3}},
+			{math.Inf(1), 0, false, nil},
+			{1, math.Inf(1), true, []int64{1, 2, 3}},
+			{math.Inf(-1), math.Inf(1), true, nil},
+			{1, math.Inf(-1), true, nil},
+		} {
+			args := []xdm.Sequence{source, xdm.SingleDouble(tc.start)}
+			if tc.bounded {
+				args = append(args, xdm.SingleDouble(tc.length))
+			}
+			result, err := fnSubsequence(t.Context(), args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []int64
+			for item := range xdm.SequenceItems(result) {
+				n, ok := item.(xdm.AtomicValue).Int64Val()
+				if !ok {
+					t.Fatal("non-integer subsequence item", item)
+				}
+				got = append(got, n)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("start=%v length=%v bounded=%v: got %v, want %v", tc.start, tc.length, tc.bounded, got, tc.want)
+			}
+		}
+	}
+	if strconv.IntSize == 64 {
+		result, err := fnSubsequence(t.Context(), []xdm.Sequence{xdm.NewRangeSequence(1, 3_000_000_000), xdm.SingleInteger(2_147_483_647), xdm.SingleInteger(5)})
+		if err != nil || xdm.SequenceLen(result) != 5 {
+			t.Fatal("large logical positions changed", result, err)
+		}
+		for i := range result.Len() {
+			n, ok := result.Get(i).(xdm.AtomicValue).Int64Val()
+			if !ok || n != int64(2_147_483_647+i) {
+				t.Fatal("large position rounded or wrapped", i, n)
+			}
+		}
+	}
+}
+
+type indexedSequenceProbe struct {
+	xdm.Sequence
+	visited []int
+	cancel  context.CancelFunc
+}
+
+func (s *indexedSequenceProbe) Get(i int) xdm.Item {
+	s.visited = append(s.visited, i)
+	if s.cancel != nil && len(s.visited) == 3 {
+		s.cancel()
+	}
+	return s.Sequence.Get(i)
+}
+
+func (*indexedSequenceProbe) Items() iter.Seq[xdm.Item] {
+	panic("sequence operation must use bounded indexed access")
+}
+
+func (*indexedSequenceProbe) Materialize() []xdm.Item {
+	panic("sequence operation must not materialize the complete input")
+}
+
+func TestSubsequenceResourceLimits(t *testing.T) {
+	t.Run("indexed prefix and exact work", func(t *testing.T) {
+		operations := 0
+		ec := &evalContext{maxNodes: 10, opLimit: 5, opCount: &operations}
+		ctx := withFnContext(t.Context(), ec)
+		source := &indexedSequenceProbe{Sequence: xdm.NewRangeSequence(1, 10_000_000)}
+		result, err := fnSubsequence(ctx, []xdm.Sequence{source, xdm.SingleInteger(9_999_996), xdm.SingleInteger(5)})
+		if err != nil || xdm.SequenceLen(result) != 5 || operations != 5 {
+			t.Fatal("selected items must be the only visited work", result, operations, err)
+		}
+		if !slices.Equal(source.visited, []int{9_999_995, 9_999_996, 9_999_997, 9_999_998, 9_999_999}) {
+			t.Fatal("skipped or out-of-range items were visited", source.visited)
+		}
+		for i := range result.Len() {
+			n, ok := result.Get(i).(xdm.AtomicValue).Int64Val()
+			if !ok || n != int64(9_999_996+i) {
+				t.Fatal("wrong selected value", i, n)
+			}
+		}
+	})
+	for _, tc := range []struct {
+		name  string
+		nodes int
+		ops   int
+		want  error
+		gets  int
+	}{
+		{"operation cap", 100, 3, ErrOpLimit, 3},
+		{"collection cap", 3, 100, ErrNodeSetLimit, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			operations := 0
+			ec := &evalContext{maxNodes: tc.nodes, opLimit: tc.ops, opCount: &operations}
+			source := &indexedSequenceProbe{Sequence: xdm.NewRangeSequence(1, 100)}
+			result, err := fnSubsequence(withFnContext(t.Context(), ec), []xdm.Sequence{source, xdm.SingleInteger(96), xdm.SingleInteger(5)})
+			if !errors.Is(err, tc.want) || result != nil || len(source.visited) != tc.gets {
+				t.Fatal("limit must stop work and return no partial sequence", source.visited, result, err)
+			}
+		})
+	}
+	t.Run("cancellation during selected traversal", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		source := &indexedSequenceProbe{Sequence: xdm.NewRangeSequence(1, 100), cancel: cancel}
+		result, err := fnSubsequence(ctx, []xdm.Sequence{source, xdm.SingleInteger(50)})
+		if !errors.Is(err, context.Canceled) || result != nil || !slices.Equal(source.visited, []int{49, 50, 51}) {
+			t.Fatal("cancellation must stop before the next item", source.visited, result, err)
+		}
+	})
+	t.Run("owned result container", func(t *testing.T) {
+		source := xdm.ItemSlice{xdm.SingleInteger(1).Get(0), xdm.SingleInteger(2).Get(0)}
+		result, err := fnSubsequence(t.Context(), []xdm.Sequence{source, xdm.SingleInteger(1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result.(xdm.ItemSlice)[0] = xdm.SingleInteger(9).Get(0)
+		n, ok := source.Get(0).(xdm.AtomicValue).Int64Val()
+		if !ok || n != 1 {
+			t.Fatal("subsequence changed the caller's input container", source)
+		}
+	})
+}
+
+func BenchmarkSubsequenceSkippedPrefix(b *testing.B) {
+	args := []xdm.Sequence{xdm.NewRangeSequence(1, 10_000_000), xdm.SingleInteger(9_999_996), xdm.SingleInteger(5)}
+	b.ReportAllocs()
+	for b.Loop() {
+		result, err := fnSubsequence(b.Context(), args)
+		if err != nil || xdm.SequenceLen(result) != 5 {
+			b.Fatal(result, err)
+		}
+	}
+}
+
+func TestSequenceMaterializationLimits(t *testing.T) {
+	functions := []struct {
+		name string
+		call func(context.Context, xdm.Sequence) (xdm.Sequence, error)
+	}{
+		{"tail", func(ctx context.Context, seq xdm.Sequence) (xdm.Sequence, error) {
+			return fnTail(ctx, []xdm.Sequence{seq})
+		}},
+		{"reverse", func(ctx context.Context, seq xdm.Sequence) (xdm.Sequence, error) {
+			return fnReverse(ctx, []xdm.Sequence{seq})
+		}},
+		{"insert-before", func(ctx context.Context, seq xdm.Sequence) (xdm.Sequence, error) {
+			return fnInsertBefore(ctx, []xdm.Sequence{seq, xdm.SingleInteger(1), nil})
+		}},
+		{"remove", func(ctx context.Context, seq xdm.Sequence) (xdm.Sequence, error) {
+			return fnRemove(ctx, []xdm.Sequence{seq, xdm.SingleInteger(1)})
+		}},
+		{"sort", func(ctx context.Context, seq xdm.Sequence) (xdm.Sequence, error) {
+			return fnSort(ctx, []xdm.Sequence{seq})
+		}},
+	}
+	for _, fn := range functions {
+		t.Run(fn.name, func(t *testing.T) {
+			t.Run("work before materialization", func(t *testing.T) {
+				operations := 0
+				ec := &evalContext{maxNodes: 1000, opLimit: 16, opCount: &operations}
+				source := &indexedSequenceProbe{Sequence: xdm.NewRangeSequence(1, 1000)}
+				result, err := fn.call(withFnContext(t.Context(), ec), source)
+				if !errors.Is(err, ErrOpLimit) || result != nil || len(source.visited) == 0 || len(source.visited) > 16 {
+					t.Fatal("work limit must precede whole-source allocation", source.visited, result, err)
+				}
+			})
+			t.Run("collection before access", func(t *testing.T) {
+				source := &indexedSequenceProbe{Sequence: xdm.NewRangeSequence(1, 1000)}
+				result, err := fn.call(withFnContext(t.Context(), &evalContext{maxNodes: 3}), source)
+				if !errors.Is(err, ErrNodeSetLimit) || result != nil || len(source.visited) != 0 {
+					t.Fatal("collection bound must precede item access", source.visited, result, err)
+				}
+			})
+			t.Run("cancel during traversal", func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				source := &indexedSequenceProbe{Sequence: xdm.NewRangeSequence(1, 1000), cancel: cancel}
+				result, err := fn.call(ctx, source)
+				if !errors.Is(err, context.Canceled) || result != nil || len(source.visited) != 3 {
+					t.Fatal("cancellation must stop the current traversal", source.visited, result, err)
+				}
+			})
+		})
+	}
+
+	// Invalid remove positions are metadata-only and must not visit the input.
+	for _, position := range []int64{-1, 0, math.MaxInt64} {
+		source := &indexedSequenceProbe{Sequence: xdm.NewRangeSequence(1, 1000)}
+		result, err := fnRemove(t.Context(), []xdm.Sequence{source, xdm.SingleInteger(position)})
+		if err != nil || result != source || len(source.visited) != 0 {
+			t.Fatal("remove outside the sequence must remain a no-op", position, source.visited, err)
+		}
+	}
+}
+
+func TestDeepEqualTraversalLimits(t *testing.T) {
+	for _, text := range []string{
+		`<r>` + strings.Repeat(`<n/>`, 100) + `</r>`,
+		`<r>` + strings.Repeat(`<!-- ignored -->`, 100) + `</r>`,
+		`<r ` + func() string {
+			var attrs strings.Builder
+			for i := range 100 {
+				fmt.Fprintf(&attrs, "a%d='v' ", i)
+			}
+			return attrs.String()
+		}() + `/>`,
+	} {
+		doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(text))
+		if err != nil {
+			t.Fatal(err)
+		}
+		operations := 0
+		ec := &evalContext{maxNodes: 1000, opLimit: 16, opCount: &operations}
+		seq := xdm.SingleNode(doc)
+		result, err := fnDeepEqual(withFnContext(t.Context(), ec), []xdm.Sequence{seq, seq})
+		if !errors.Is(err, ErrOpLimit) || result != nil {
+			t.Fatal("node traversal budget error must not become false", result, err)
+		}
+		ctx := &budgetCancelContext{Context: t.Context(), remaining: 16}
+		result, err = fnDeepEqual(ctx, []xdm.Sequence{seq, seq})
+		if !errors.Is(err, context.Canceled) || result != nil {
+			t.Fatal("node traversal cancellation must not become false", result, err)
+		}
+	}
+
+	for _, container := range []string{"sequence", "borrowed map value", "array member"} {
+		t.Run(container, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			source := &indexedSequenceProbe{Sequence: xdm.NewRangeSequence(1, 1000), cancel: cancel}
+			var seq xdm.Sequence = source
+			switch container {
+			case "borrowed map value":
+				seq = xdm.ItemSlice{xdm.SingleEntryMap(xdm.AtomicValue{TypeName: xdm.TypeString, Value: "key"}, source)}
+			case "array member":
+				// Construct the array before installing cancellation; map values
+				// specifically exercise a borrowed nonmaterializable sequence.
+				seq = xdm.ItemSlice{xdm.NewArray([]xdm.Sequence{xdm.NewRangeSequence(1, 1000)})}
+				ctx = &budgetCancelContext{Context: t.Context(), remaining: 16}
+			}
+			result, err := fnDeepEqual(ctx, []xdm.Sequence{seq, seq})
+			if !errors.Is(err, context.Canceled) || result != nil {
+				t.Fatal("container traversal must propagate cancellation", result, err)
+			}
+			if container != "array member" && len(source.visited) > 4 {
+				t.Fatal("borrowed input continued after cancellation", source.visited)
+			}
+		})
+	}
+
+	seq := xdm.SingleInteger(1)
+	for range 4 {
+		seq = xdm.ItemSlice{xdm.SingleEntryMap(xdm.AtomicValue{TypeName: xdm.TypeString, Value: "nested"}, seq)}
+	}
+	result, err := fnDeepEqual(WithBudget(t.Context(), 1000, 1000, 8<<20, 3), []xdm.Sequence{seq, seq})
+	if !errors.Is(err, ErrRecursionLimit) || result != nil {
+		t.Fatal("nested map traversal must preserve the depth error", result, err)
+	}
+}
+
+func TestDeepEqualAttributeBudgetBeforeCopy(t *testing.T) {
+	var source strings.Builder
+	source.WriteString(`<r `)
+	for i := range 8192 {
+		fmt.Fprintf(&source, "a%d='v' ", i)
+	}
+	source.WriteString(`/>`)
+	limits := tree.DefaultLimits()
+	limits.MaxAttributesPerElement = 8192
+	doc, err := (xdm.ParseOptions{Limits: limits}).Parse(t.Context(), []byte(source.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := doc.DocumentElement()
+	operations := 1
+	opts := deepEqualOptions{ctx: t.Context(), ec: &evalContext{opLimit: 1, opCount: &operations}}
+	allocations := testing.AllocsPerRun(10, func() {
+		operations = 1
+		_, err = deepEqualAttributes(root, root, opts)
+		if !errors.Is(err, ErrOpLimit) {
+			t.Fatal("attribute traversal must retain its work error", err)
+		}
+	})
+	if allocations != 0 {
+		t.Fatal("exhausted budget still copied or indexed the wide attribute set", allocations)
+	}
+}
+
+func BenchmarkDeepEqualWideAttributes(b *testing.B) {
+	var source strings.Builder
+	source.WriteString(`<r `)
+	for i := range 2000 {
+		fmt.Fprintf(&source, "a%d='v' ", i)
+	}
+	source.WriteString(`/>`)
+	limits := tree.DefaultLimits()
+	limits.MaxAttributesPerElement = 2000
+	doc, err := (xdm.ParseOptions{Limits: limits}).Parse(b.Context(), []byte(source.String()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	attributes := doc.DocumentElement().Attributes()
+	attributeItems := make(xdm.ItemSlice, len(attributes))
+	for i, attribute := range attributes {
+		attributeItems[i] = xdm.NodeItem{Node: attribute}
+	}
+	for _, tc := range []struct {
+		name string
+		seq  xdm.Sequence
+	}{
+		{"element", xdm.SingleNode(doc.DocumentElement())},
+		{"attribute nodes", attributeItems},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				result, err := fnDeepEqual(b.Context(), []xdm.Sequence{tc.seq, tc.seq})
+				if err != nil || !result.Get(0).(xdm.AtomicValue).BooleanVal() {
+					b.Fatal(result, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSequenceSortKeyLimits(t *testing.T) {
+	operations := 0
+	ec := &evalContext{maxNodes: 1000, opLimit: 16, opCount: &operations}
+	ctx := withFnContext(t.Context(), ec)
+	source := &indexedSequenceProbe{Sequence: xdm.NewRangeSequence(1, 1000)}
+	_, err := atomizedSortKey(ctx, source)
+	if !errors.Is(err, ErrOpLimit) || len(source.visited) == 0 || len(source.visited) > 16 {
+		t.Fatal("key atomization must be bounded before materialization", source.visited, err)
+	}
+
+	operations = 0
+	_, err = sequenceSortKeyLess(ctx, xdm.NewRangeSequence(1, 1000), xdm.NewRangeSequence(1, 1000), nil)
+	if !errors.Is(err, ErrOpLimit) {
+		t.Fatal("long equal key comparison ignored its work budget", err)
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := sequenceSortKeyLess(canceled, nil, nil, nil); !errors.Is(err, context.Canceled) {
+		t.Fatal("empty sort keys must still observe cancellation", err)
+	}
+}
+
+func TestStableSortStopsOnComparatorFailure(t *testing.T) {
+	for _, failure := range []error{ErrOpLimit, context.Canceled} {
+		calls := 0
+		values := make([]int, 1000)
+		err := stableSortWithError(values, func(int, int) (bool, error) {
+			calls++
+			return false, failure
+		})
+		if err != failure || calls != 1 {
+			t.Fatal("sort must stop at the first comparator error", calls, err)
+		}
+	}
+	for _, marker := range []any{new(int), &sequenceSortFailure{err: ErrOpLimit}} {
+		func() {
+			defer func() {
+				if stopped := recover(); stopped != marker {
+					t.Fatal("sort changed or swallowed an unrelated panic", stopped)
+				}
+			}()
+			_ = stableSortWithError([]int{2, 1}, func(int, int) (bool, error) { panic(marker) })
+		}()
+	}
+	type value struct{ key, id int }
+	values := []value{{1, 0}, {0, 1}, {1, 2}}
+	if err := stableSortWithError(values, func(i, j int) (bool, error) { return values[i].key < values[j].key, nil }); err != nil || !slices.Equal(values, []value{{0, 1}, {1, 0}, {1, 2}}) {
+		t.Fatal("successful sorting lost stable order", values, err)
+	}
+}
+
+func TestArraySortEmptyMemberLimits(t *testing.T) {
+	array := xdm.NewArray(make([]xdm.Sequence, 1000))
+	for _, tc := range []struct {
+		name  string
+		nodes int
+		want  error
+	}{
+		{"collection cap", 3, ErrNodeSetLimit},
+		{"empty keys still consume work", 1000, ErrOpLimit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			operations, calls := 0, 0
+			ec := &evalContext{maxNodes: tc.nodes, opLimit: 16, opCount: &operations}
+			keyFn := xdm.FunctionItem{Arity: 1, Invoke: func(context.Context, []xdm.Sequence) (xdm.Sequence, error) { calls++; return nil, nil }}
+			result, err := fnArraySort(withFnContext(t.Context(), ec), []xdm.Sequence{xdm.ItemSlice{array}, nil, xdm.ItemSlice{keyFn}})
+			if !errors.Is(err, tc.want) || result != nil || calls > 16 || (tc.nodes == 3 && calls != 0) || (tc.nodes == 1000 && calls == 0) {
+				t.Fatal("array members must be bounded before key work", calls, result, err)
+			}
+		})
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	calls := 0
+	keyFn := xdm.FunctionItem{Arity: 1, Invoke: func(context.Context, []xdm.Sequence) (xdm.Sequence, error) {
+		calls++
+		if calls == 3 {
+			cancel()
+		}
+		return nil, nil
+	}}
+	result, err := fnArraySort(ctx, []xdm.Sequence{xdm.ItemSlice{array}, nil, xdm.ItemSlice{keyFn}})
+	if !errors.Is(err, context.Canceled) || result != nil || calls != 3 {
+		t.Fatal("empty-key array sorting continued after cancellation", calls, result, err)
+	}
+
+	// Sorting one immutable range member by an empty key uses its descriptor;
+	// it must neither materialize nor debit ten million nonexistent visits.
+	operations := 0
+	ec := &evalContext{maxNodes: 10_000_000, opLimit: 16, opCount: &operations}
+	lazy := xdm.NewArray([]xdm.Sequence{xdm.NewRangeSequence(1, 10_000_000)})
+	keyFn = xdm.FunctionItem{Arity: 1, Invoke: func(context.Context, []xdm.Sequence) (xdm.Sequence, error) { return nil, nil }}
+	result, err = fnArraySort(withFnContext(t.Context(), ec), []xdm.Sequence{xdm.ItemSlice{lazy}, nil, xdm.ItemSlice{keyFn}})
+	if err != nil || result == nil {
+		t.Fatal("immutable range metadata was treated as linear work", operations, err)
+	}
+	member, err := result.Get(0).(xdm.ArrayItem).GetView(1)
+	if err != nil || xdm.SequenceLen(member) != 10_000_000 || operations > 16 {
+		t.Fatal("array sorting changed or materialized the range descriptor", operations, err)
+	}
+}
+
+func BenchmarkDeepEqualMapLookup(b *testing.B) {
+	entries := make([]xdm.MapEntry, 2000)
+	for i := range entries {
+		entries[i] = xdm.MapEntry{Key: xdm.AtomicValue{TypeName: xdm.TypeString, Value: strconv.Itoa(i)}, Value: xdm.SingleInteger(int64(i))}
+	}
+	seq := xdm.ItemSlice{xdm.NewMap(entries)}
+	b.ReportAllocs()
+	for b.Loop() {
+		result, err := fnDeepEqual(b.Context(), []xdm.Sequence{seq, seq})
+		if err != nil || !result.Get(0).(xdm.AtomicValue).BooleanVal() {
+			b.Fatal(result, err)
+		}
 	}
 }
 

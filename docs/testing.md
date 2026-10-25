@@ -92,42 +92,12 @@ Pinned external QT3/XSLT diagnostics have a separate
 [suite runner](language-suites.md), explicit language/feature selection and JSON
 outcomes. They are optional and do not affect ordinary Go checks.
 
-`TestXMLSecRetrievalMethods` in the existing signature interoperability suite
-exchanges thirteen retrieval recipes each direction using the installed `xmlsec1`
-binary: six C14N forms, Base64/XML, XPath, enveloped/XPath, Filter2, XSLT, raw certificates and
-two Base64 steps. X509Data/raw-certificate forms are the measured intersection;
-four additional RSA/EC XML/DER controls record that this xmlsec1 CLI cannot
-retrieve those bare key roots. Those controls verify core cryptography with an
-explicit native key and validate Go retrieval on both signature directions; they
-are not claimed as native key-form discovery. Inputs and outputs stay in temporary
-directories. KeyInfo tests also check whole-chain
-preflight, immutable resource snapshots, cancellation/close/final-read failures,
-cycles, aggregate limits and explicit trust ordering. Legacy DSA context tests
-reuse the pinned JDK signature/key fixtures, preserving their signed bytes.
-
-`testdata/next/dsig-stage4-vectors.json` contains eleven fixed signatures,
-templates, resolver inputs, approved programs and exact reference digest-input
-bytes produced by ready xmlsec1 1.3.10/OpenSSL 3.6.5/libxml2 2.15.4 binaries with
-networking disabled. Its recipes cover XPath/Filter2/XSLT/PrefixList/`here()`
-retrieval, raw-certificate Base64, an external KeyInfo fragment and four transformed
-Manifest forms. Disposable private material is excluded. This is a signed test
-corpus, not a generated diagnostic report.
-
-`TestXMLDSigStage4IndependentVectors` verifies those signatures, pins discovered
-keys, compares exact digest-input bytes and rejects payload/parameter/namespace
-mutations. `TestXMLSecStage4Vectors` rechecks the stored native signatures and
-fresh Go signatures with installed xmlsec1, including strict KeyInfo discovery.
-Four stored URI contexts use xmllint's independently computed inherited bases
-and Python's RFC 3986 join; Go checks the resolved identity separately for signed
-references and KeyInfo. The live test rechecks libxml2's bases. This does not claim
-that xmlsec1's URI mapping implements XML Base or recursive external Manifests.
-
-The existing Manifest and KeyInfo fuzz targets include these valid cases.
-Transform-result tests separately cover different outputs from one URI,
-independent derived IDs, authenticated discovery order, graph/node/byte limits,
-private-signer ordering, concurrent replay and nested-content failures. Optional PGP/SPKI/MgmtData, explicit arbitrary EC
-parameters, DSA-SHA256, DTD/entity processing and complete LEIRI handling are not
-part of the selected XMLDSig/KeyInfo profile.
+Fixed XMLDSig exchange vectors are in `testdata/next/dsig-stage4-vectors.json`;
+legacy JDK fixtures are in `testdata/legacy-dsig`. Their manifests retain
+producer versions, source hashes and fixture hashes. Generated exchange files
+and disposable private keys stay outside Git. See the
+[oracle differences](compatibility.md#known-oracle-differences) before treating
+processor agreement as normative evidence.
 
 ## Test layout
 
@@ -168,60 +138,19 @@ go test -tags=interop -count=1 -v ./tests/interop -run '^TestLegacySignatureFixt
 GODEBUG=fips140=only go test -count=1 ./xmldsig -run '^TestLegacyMethodsFIPS$'
 ```
 
-The interop test replays the committed JDK signatures and verifies Go-generated
-HMAC-SHA1 and SHA-1 reference digests in JDK. `CoreOracle` has explicit
-`legacy-fixture`, `verify-legacy` and `verify-legacy-hmac` modes: only these
-compatibility modes disable JSR 105 secure validation. All modes retain the
-same-document URI resolver and hardened XML parser; ordinary oracle modes
-retain secure validation. DSAKeyValue builders emit complete 1024/160 parameters;
-the parser can obtain omitted P/Q/G from explicit `Options.DSAParameters`.
-Component tests remove those unsigned fields from the independent fixture and
-verify the original signed bytes with the same SPKI pin. Other DSA parameter
-sizes and automatic parameter inference remain outside this scope.
+The JDK adapter enables legacy algorithms only in its explicit compatibility
+modes; ordinary oracle modes retain secure validation. All modes keep the
+same-document resolver and hardened XML parser.
 
-`TestExternalManifestInterop` in the existing interoperability profile tests
-uses OpenJDK 27 JSR 105 to generate external Manifest references and nested
-digests, verifies them through both the Go API and CLI, and verifies Go's
-signature in JDK. Changing only the nested payload keeps the parent reference
-valid and causes both implementations to reject recursive validation.
-The oracle explicitly unmarshals the original external Manifest references;
-JSR 105's core validation alone does not assert their success.
+External Manifest regressions use the fixed
+`testdata/next/external-manifest-vector.json` and live JDK/xmlsec1 exchanges:
 
 ```sh
 go test -tags=interop -count=1 -v ./tests/interop -run '^TestExternalManifestInterop$'
 ```
 
-Local Manifest tests cover independent ID/namespace scopes, shared nodes,
-source-preserving transforms, cycles, malformed XML, graph/byte limits,
-resource closure, and the absence of nested I/O before parent authentication.
-Generated exchange files remain in the test's temporary directory. A small
-committed JDK vector in `testdata/next/external-manifest-vector.json` fixes the
-original signature, public key and resource bytes for ordinary Go regressions;
-it records its oracle source hash and contains no private key.
-
-`TestXMLSecExternalManifestURIContext` uses the ready xmlsec1 executable for a
-bidirectional external fragment exchange. The native engine selects an ID from
-its XML source; the Go adapter supplies the identified standalone Manifest
-octets. A local DTD types the ID only in the native test input; the Go
-`document` security parser remains DTD-free. Native verification rejects a changed selected
-Manifest. Changing only its nested payload is rejected by Go recursive checking
-while xmlsec1 core validation still succeeds; this boundary is asserted.
-`TestXMLSecRelativeURIContext` also records that this CLI profile opens the
-literal relative URI instead of applying inherited `xml:base`. It then exchanges
-identical bytes through an explicit native literal mapping and Go's resolved
-allowlist. This is not independent confirmation of XML Base processing.
-
-Manifest component tests cover retrieval bases,
-inherited/empty `xml:base`, query/fragment escaping, exact authorization before
-I/O, caller-option snapshots, retained replay identity, shared resolved edges,
-separate fragment scopes, alias cycles and graph limits. RFC 3986 section 5 and
-XML Base sections 4.2-4.4 supply the selected resolution rules. Fixed independent
-fixtures cover the URI contexts in the XMLDSig corpus described above;
-broader LEIRI and retrieval-metadata handling remain outside the bounded profile.
-`TestExternalExtensionContextIsNotReused` verifies that repeated or aliased
-resource URIs cannot bypass a trusted processor's runtime denial at a different
-original expression element. Extension results are not shared between references;
-built-in chains keep their resource-result cache and replay behavior.
+Native core validation and recursive Go validation have different boundaries;
+see [known oracle differences](compatibility.md#known-oracle-differences).
 
 ## Performance
 
@@ -283,16 +212,9 @@ see [the complete language workflow](language-suites.md).
 
 ## Independent engines
 
-The ordinary C14N tests read 138 exact-byte vectors and 24 rejection fixtures from
-[normative-vectors.json](../c14n/testdata/normative-vectors.json). Their producer
-metadata records OpenJDK, libxml2 and both existing adapter source hashes. Cases
-cover all six algorithm URIs, document/subtree/sparse inputs, all seven node
-kinds, namespace rebinding and sibling restoration, selected/omitted attributes
-and bindings, PrefixList, inherited XML attributes, comments/PIs and normalization.
-Rejection cases distinguish malformed XML, unavailable input-model features and
-invalid canonicalization options. Both byte and one-byte reader inputs are checked.
-Partial writer tests exercise every output byte boundary, including inside UTF-8
-characters and escapes, across document, subtree and node-set paths.
+Ordinary C14N tests use the exact-byte and rejection cases in
+[normative-vectors.json](../c14n/testdata/normative-vectors.json). Producer metadata
+records OpenJDK, libxml2 and adapter source hashes.
 
 Recheck the committed vectors against the installed JDK without C dependencies:
 
@@ -303,10 +225,8 @@ go test -tags=interop -count=1 -v ./tests/interop -run '^TestCanonicalVectorsAga
 `TestCanonicalVectorsAgainstLibXML` replays the same fixed corpus against
 libxml2. Each unexplained mismatch fails. Documented oracle limitations are
 reported as diagnostics and excluded from agreement; their normative bytes stay
-mandatory in ordinary tests. This includes loose/omitted attributes, DOM
-namespace-axis ownership, nearest inherited XML attributes, empty selections,
-fragment removal during C14N 1.1 base joining and original-order comment/PI line
-breaks. A case with a diagnostic is not evidence of oracle agreement.
+mandatory in ordinary tests. See [known oracle differences](compatibility.md#known-oracle-differences).
+A diagnostic is not evidence of oracle agreement.
 
 The JDK adapter uses its subtree API for subtree requests; arbitrary DOM
 namespace-axis node sets have different limitations. For a manual libxml2 check,
@@ -371,24 +291,10 @@ modified ciphertext, incorrect passwords/MACs and malformed encodings. Known
 [oracle differences](compatibility.md#known-oracle-differences) are asserted as
 diagnostics, excluded from successful exchange counts; unexpected differences fail.
 
-`TestXMLSecX509DataGroups` exchanges nine X509Data forms in each direction:
-certificate, issuer/serial, subject, SKI, SHA-256/384/512 certificate digests,
-certificate plus CRL, and a combined group. Both payload and KeyInfo are referenced;
-altered content or authenticated selectors fail. Native verification uses strict
-key discovery and an explicit certificate store, without a public-key fallback.
-A separate native-generation case asks xmlsec1 to populate certificate/selector
-placeholders and checks their values against the OpenSSL-issued identity. The
-OpenSSL CLI also generates a v2 CRL. Native `--insecure` avoids treating the
-disposable self-signed identity as PKIX evidence; Go verification pins its key.
-These are representation/signature checks, not chain or revocation validation.
-Generated identities and exchange files stay in temporary directories.
-
-`TestXMLSecEncryption` also checks all 25 SHA-1/SHA-224/SHA-256/SHA-384/SHA-512
-OAEP/MGF1 combinations for the 1.1 URI, and all five digest choices with the
-1.0 URI's fixed MGF1-SHA1. Both empty and binary labels, opaque/XML plaintext,
-parameter mismatches and damaged tags are covered. These exchanges use the
-installed `xmlsec1` CLI directly. SHA-1/legacy URI selection is explicit on
-the Go side; default parameters do not broaden when compatibility is enabled.
+The X509Data exchange uses strict native key discovery with an explicit
+certificate store. Its disposable identities establish representation and
+signature checks, not chain or revocation validity. XMLENC exchanges include
+OAEP/MGF1 parameters, explicit legacy policy and authenticated plaintext release.
 
 ```sh
 go test ./xmlenc -run '^TestOAEP' -count=1
@@ -398,17 +304,9 @@ GODEBUG=fips140=only go test ./xmlenc -run '^TestOAEPLegacyFIPSPolicy$' -count=1
 The latter checks policy denial before private-key operations. It does not
 assert execution of the entire AES-GCM profile in FIPS-only mode.
 
-CMS BER tests reuse the existing independent CMS fixtures. They change only
-permitted envelope/content encodings and check that normalization reproduces
-the exact original definite container and verifies the independent signature.
-Malformed EOC, primitive indefinite lengths, non-octet chunks, structural/byte/
-content limits, cancellation and non-DER signed attributes are rejected.
-The existing CMS fuzz target exercises both strict and explicit BER parsers.
-
-`TestCMSBEROpenSSL` generates chunked indefinite SignedData with the installed
-OpenSSL CLI, verifies RSA/ECDSA signatures and content in Go, and verifies both
-original BER and normalized output in OpenSSL. Both reject altered content.
-It requires no Java/C adapter and writes exchange data only to temporary files.
+`TestCMSBEROpenSSL` exchanges chunked indefinite SignedData with the installed
+OpenSSL CLI. It verifies signatures and content before and after normalization;
+malformed envelopes and altered content remain rejection cases.
 
 ```sh
 go test ./cms -run '^TestCMSBER' -count=1
@@ -429,13 +327,6 @@ not committed; the DSS input pairs below are generated outside the checkout.
 `TestIndependentEvidence` checks the literal RSA/ECDSA inclusive-archive
 imprints against lxml/libxml2 and OpenSSL. It rejects input that canonicalizes
 SignedInfo with a method different from the archive method.
-
-Historical unit tests distinguish raw signature/object proofs, token accuracy,
-covering-archive order, optional untrusted attributes, current versus past PKI,
-per-material algorithm cutoffs, revocation-source scope and ownership. The PKI
-tests also verify stale/expired targets, delegated signers, complete/base-delta
-compositions and strict time boundaries. OpenSSL checks the exact old sources
-and path dates; it does not implement the ETSI time-sliding process.
 
 The ready DSS 6.5.1 demonstration bundle provides a separate process comparison.
 Use the [official release](https://github.com/esig/dss-demonstrations/releases/tag/6.5.1)

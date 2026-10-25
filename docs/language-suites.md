@@ -84,8 +84,7 @@ resource/output/intermediate budgets, a 1 MiB program limit, two million nodes
 and fifty million operations. Depth, resource-count and engine timeout defaults
 remain in force; the per-case deadline also applies. Both runs record their
 budgets and keep limit failures as failures. This flag does not change the
-library's defaults. Catalogs, query files and directly read modules remain
-limited to 16 MiB; resolved resources use the selected resource-read limit.
+library's defaults.
 
 Every catalog case receives one outcome:
 

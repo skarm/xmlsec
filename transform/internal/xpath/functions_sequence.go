@@ -74,79 +74,128 @@ func fnHead(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	return xdm.ItemSlice{args[0].Get(0)}, nil
 }
 
-func fnTail(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnTail(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	if xdm.SequenceLen(args[0]) <= 1 {
 		return nil, nil
 	}
 
-	return xdm.ItemSlice(xdm.Materialize(args[0])[1:]), nil
+	result, err := appendIndexedSequence(ctx, getFnContext(ctx), nil, args[0], 1, args[0].Len())
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 func fnInsertBefore(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	target := args[0]
-	// $position is xs:integer: reject empty/multi-item/non-integer (XPTY0004).
 	posVal, err := coerceArgToInteger(ctx, args[1])
 	if err != nil {
 		return nil, err
 	}
 
-	inserts := args[2]
-	tItems := xdm.Materialize(target)
+	target, inserts := args[0], args[2]
+	n := xdm.SequenceLen(target)
+	ec := getFnContext(ctx)
 
-	// Clamp on the int64 value so an oversized position cannot wrap when
-	// converted to int (e.g. on 32-bit platforms): a position past the end
-	// must insert at the end, a position before the start at position 1.
-	var pos int
-
-	switch {
-	case posVal < 1:
-		pos = 1
-	case posVal > int64(len(tItems)+1):
-		pos = len(tItems) + 1
-	default:
-		pos = int(posVal)
+	if n > fnMaxNodes(ec) || xdm.SequenceLen(inserts) > fnMaxNodes(ec)-n {
+		return nil, ErrNodeSetLimit
 	}
 
-	iItems := xdm.Materialize(inserts)
-	result := make(xdm.ItemSlice, 0, len(tItems)+len(iItems))
-	result = append(result, tItems[:pos-1]...)
-	result = append(result, iItems...)
-	result = append(result, tItems[pos-1:]...)
+	// Clamp before converting to int, without overflowing n+1 at MaxInt.
+	pos := 0
+	if posVal > int64(n) {
+		pos = n
+	} else if posVal > 1 {
+		pos = int(posVal) - 1
+	}
+
+	result, err := appendIndexedSequence(ctx, ec, nil, target, 0, pos)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err = appendIndexedSequence(ctx, ec, result, inserts, 0, xdm.SequenceLen(inserts))
+	if err != nil {
+		return nil, err
+	}
+
+	result, err = appendIndexedSequence(ctx, ec, result, target, pos, n)
+	if err != nil {
+		return nil, err
+	}
 
 	return result, nil
 }
 
 func fnRemove(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	target := args[0]
-
 	posVal, err := coerceArgToInteger(ctx, args[1])
 	if err != nil {
 		return nil, err
 	}
 
-	tItems := xdm.Materialize(target)
-	// Range-check on int64 before converting so an out-of-int position cannot
-	// wrap into a valid index (e.g. on 32-bit platforms).
-	if posVal < 1 || posVal > int64(len(tItems)) {
+	target := args[0]
+	n := xdm.SequenceLen(target)
+
+	if posVal < 1 || posVal > int64(n) {
 		return target, nil
 	}
 
-	pos := int(posVal)
+	ec := getFnContext(ctx)
 
-	result := make(xdm.ItemSlice, 0, len(tItems)-1)
-	result = append(result, tItems[:pos-1]...)
-	result = append(result, tItems[pos:]...)
+	if n-1 > fnMaxNodes(ec) {
+		return nil, ErrNodeSetLimit
+	}
+
+	pos := int(posVal) - 1
+
+	result, err := appendIndexedSequence(ctx, ec, nil, target, 0, pos)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err = appendIndexedSequence(ctx, ec, result, target, pos+1, n)
+	if err != nil {
+		return nil, err
+	}
 
 	return result, nil
 }
 
-func fnReverse(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnReverse(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	seq := args[0]
-	items := xdm.Materialize(seq)
+	n := xdm.SequenceLen(seq)
+	ec := getFnContext(ctx)
 
-	result := make(xdm.ItemSlice, len(items))
-	for i, item := range items {
-		result[len(items)-1-i] = item
+	if n > fnMaxNodes(ec) {
+		return nil, ErrNodeSetLimit
+	}
+
+	var result xdm.ItemSlice
+
+	for i := n - 1; i >= 0; i-- {
+		if err := fnCountOp(ctx, ec); err != nil {
+			return nil, err
+		}
+
+		result = append(result, seq.Get(i))
+	}
+
+	return result, nil
+}
+
+// appendIndexedSequence visits only the selected items, checking work and size
+// before accessing or appending each item. It never materializes its input.
+func appendIndexedSequence(ctx context.Context, ec *evalContext, result xdm.ItemSlice, seq xdm.Sequence, first, last int) (xdm.ItemSlice, error) {
+	if last-first > fnMaxNodes(ec)-len(result) {
+		return nil, ErrNodeSetLimit
+	}
+
+	for i := first; i < last; i++ {
+		if err := fnCountOp(ctx, ec); err != nil {
+			return nil, err
+		}
+
+		result = append(result, seq.Get(i))
 	}
 
 	return result, nil
@@ -176,7 +225,7 @@ func fnSubsequence(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, erro
 		return nil, nil
 	}
 
-	return collectSubsequence(args[0], start, end, bounded), nil
+	return collectSubsequence(ctx, args[0], start, end, bounded)
 }
 
 func roundSubsequenceArgument(arg xdm.Sequence, compat bool, role string) (float64, error) {
@@ -232,26 +281,29 @@ func subsequenceLength(args []xdm.Sequence, compat bool) (float64, bool, error) 
 	return length, true, err
 }
 
-func collectSubsequence(seq xdm.Sequence, start, end float64, bounded bool) xdm.Sequence {
-	var result xdm.ItemSlice
-
-	i := 0
-	for item := range xdm.SequenceItems(seq) {
-		position := float64(i + 1)
-		if position < start {
-			i++
-			continue
-		}
-
-		if bounded && position >= end {
-			break
-		}
-
-		result = append(result, item)
-		i++
+// collectSubsequence uses the indexed Sequence contract to avoid visiting the
+// skipped prefix of a lazy range. Searching with the original position
+// comparison preserves float64 rounding even when a sequence length exceeds
+// the integers exactly representable by a double.
+func collectSubsequence(ctx context.Context, seq xdm.Sequence, start, end float64, bounded bool) (xdm.Sequence, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
-	return result
+	n := xdm.SequenceLen(seq)
+	first := sort.Search(n, func(i int) bool { return float64(i+1) >= start })
+	last := n
+
+	if bounded {
+		last = sort.Search(n, func(i int) bool { return float64(i+1) >= end })
+	}
+
+	result, err := appendIndexedSequence(ctx, getFnContext(ctx), nil, seq, first, last)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 func fnUnordered(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -283,6 +335,9 @@ func fnExactlyOne(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 }
 
 type deepEqualOptions struct {
+	ctx        context.Context
+	ec         *evalContext
+	depth      int
 	coll       *collationImpl
 	implicitTZ *time.Location
 }
@@ -301,7 +356,7 @@ func fnDeepEqual(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 		return nil, err
 	}
 
-	opts := deepEqualOptions{coll: coll}
+	opts := deepEqualOptions{coll: coll, ctx: ctx, ec: getFnContext(ctx)}
 	if ec := getFnContext(ctx); ec != nil {
 		opts.implicitTZ = ec.getImplicitTimezone()
 	}
@@ -314,64 +369,13 @@ func fnDeepEqual(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 	return xdm.SingleBoolean(eq), nil
 }
 
-// deepEqualMapMatcher tracks the right-hand entries already matched by value.
-type deepEqualMapMatcher struct {
-	a    xdm.MapItem
-	b    xdm.MapItem
-	opts deepEqualOptions
-	keys []xdm.AtomicValue
-	used []bool
-}
-
-func (m *deepEqualMapMatcher) match(key xdm.AtomicValue) (bool, error) {
-	// Exact lookup precedes cross-type key matching and its value comparisons.
-	if value, ok := m.b.Get(key); ok {
-		aValue, _ := m.a.Get(key)
-
-		equal, err := deepEqualSequence(aValue, value, m.opts)
-		if err != nil {
-			return false, err
-		}
-
-		if equal {
-			m.markKeyUsed(key)
-			return true, nil
-		}
+func (opts deepEqualOptions) descend() (deepEqualOptions, error) {
+	opts.depth++
+	if opts.depth > DepthLimit(opts.ctx, 128) {
+		return opts, ErrRecursionLimit
 	}
 
-	return m.matchByValue(key)
-}
-
-func (m *deepEqualMapMatcher) markKeyUsed(key xdm.AtomicValue) {
-	for i, candidate := range m.keys {
-		if !m.used[i] && sameMapKey(key, candidate) {
-			m.used[i] = true
-			return
-		}
-	}
-}
-
-func (m *deepEqualMapMatcher) matchByValue(key xdm.AtomicValue) (bool, error) {
-	aValue, _ := m.a.Get(key)
-	for i, candidate := range m.keys {
-		if m.used[i] || !sameMapKey(key, candidate) {
-			continue
-		}
-
-		bValue, _ := m.b.Get(candidate)
-
-		equal, err := deepEqualSequence(aValue, bValue, m.opts)
-		if err != nil {
-			return false, err
-		}
-
-		if equal {
-			m.used[i] = true
-			return true, nil
-		}
-	}
-
-	return false, nil
+	return opts, fnCountOp(opts.ctx, opts.ec)
 }
 
 func deepEqualSequence(a, b xdm.Sequence, opts deepEqualOptions) (bool, error) {
@@ -380,6 +384,10 @@ func deepEqualSequence(a, b xdm.Sequence, opts deepEqualOptions) (bool, error) {
 	}
 
 	for i := range xdm.SequenceLen(a) {
+		if err := fnCountOp(opts.ctx, opts.ec); err != nil {
+			return false, err
+		}
+
 		eq, err := deepEqualItem(a.Get(i), b.Get(i), opts)
 		if err != nil {
 			return false, err
@@ -416,21 +424,31 @@ func deepEqualItem(a, b xdm.Item, opts deepEqualOptions) (bool, error) {
 			return false, nil
 		}
 
-		return deepEqualNode(av.Node, bv.Node, opts), nil
+		return deepEqualNode(av.Node, bv.Node, opts)
 	case xdm.MapItem:
 		bv, ok := b.(xdm.MapItem)
 		if !ok {
 			return false, nil
 		}
 
-		return deepEqualMap(av, bv, opts)
+		nested, err := opts.descend()
+		if err != nil {
+			return false, err
+		}
+
+		return deepEqualMap(av, bv, nested)
 	case xdm.ArrayItem:
 		bv, ok := b.(xdm.ArrayItem)
 		if !ok {
 			return false, nil
 		}
 
-		return deepEqualArray(av, bv, opts)
+		nested, err := opts.descend()
+		if err != nil {
+			return false, err
+		}
+
+		return deepEqualArray(av, bv, nested)
 	default:
 		return false, nil
 	}
@@ -464,9 +482,16 @@ func deepEqualAtomic(a, b xdm.AtomicValue, opts deepEqualOptions) (bool, error) 
 	return eq, nil
 }
 
-func deepEqualNode(a, b xdm.Node, opts deepEqualOptions) bool {
+func deepEqualNode(a, b xdm.Node, opts deepEqualOptions) (bool, error) {
 	if deepEqualNodeKind(a) != deepEqualNodeKind(b) {
-		return false
+		return false, nil
+	}
+
+	var err error
+
+	opts, err = opts.descend()
+	if err != nil {
+		return false, err
 	}
 
 	switch a.Type() {
@@ -478,15 +503,15 @@ func deepEqualNode(a, b xdm.Node, opts deepEqualOptions) bool {
 		aa, aOK := a.(*xdm.Attribute)
 		ba, bOK := b.(*xdm.Attribute)
 
-		return aOK && bOK && deepEqualAttribute(aa, ba, opts)
+		return aOK && bOK && deepEqualAttribute(aa, ba, opts), nil
 	case xdm.NamespaceNode, xdm.ProcessingInstructionNode:
-		return a.Name() == b.Name() && xdm.CharacterData(a) == xdm.CharacterData(b)
+		return a.Name() == b.Name() && xdm.CharacterData(a) == xdm.CharacterData(b), nil
 	case xdm.TextNode, xdm.CDATASectionNode:
-		return opts.stringsEqual(xdm.CharacterData(a), xdm.CharacterData(b))
+		return opts.stringsEqual(xdm.CharacterData(a), xdm.CharacterData(b)), nil
 	case xdm.CommentNode:
-		return xdm.CharacterData(a) == xdm.CharacterData(b)
+		return xdm.CharacterData(a) == xdm.CharacterData(b), nil
 	default:
-		return false
+		return false, nil
 	}
 }
 
@@ -498,108 +523,148 @@ func deepEqualNodeKind(node xdm.Node) xdm.ElementType {
 	return node.Type()
 }
 
-func deepEqualElementNodes(a, b xdm.Node, opts deepEqualOptions) bool {
+func deepEqualElementNodes(a, b xdm.Node, opts deepEqualOptions) (bool, error) {
 	ae, aOK := a.(*xdm.Element)
-
 	be, bOK := b.(*xdm.Element)
-	if !aOK || !bOK {
-		return false
+
+	if !aOK || !bOK || ae.LocalName() != be.LocalName() || ae.URI() != be.URI() {
+		return false, nil
 	}
 
-	// Expanded names and order-independent attributes precede child comparison.
-	if ae.LocalName() != be.LocalName() || ae.URI() != be.URI() {
-		return false
-	}
-
-	if !deepEqualAttributes(ae.Attributes(), be.Attributes(), opts) {
-		return false
+	equal, err := deepEqualAttributes(ae, be, opts)
+	if err != nil || !equal {
+		return false, err
 	}
 
 	return deepEqualChildren(a, b, opts)
 }
 
-func deepEqualAttributes(a, b []*xdm.Attribute, opts deepEqualOptions) bool {
-	if len(a) != len(b) {
-		return false
+func deepEqualAttributes(a, b *xdm.Element, opts deepEqualOptions) (bool, error) {
+	if a.AttributeCount() != b.AttributeCount() {
+		return false, nil
 	}
+	// Walk stored expanded names and normalized values directly: Attributes
+	// would allocate both complete view slices, and Attribute.Value would
+	// rescan the owner's raw attributes for each ordinary value.
+	type name struct{ local, uri string }
 
-	for _, attr := range a {
-		match := findExpandedAttribute(b, attr.LocalName(), attr.URI())
-		if match == nil || !opts.stringsEqual(attr.Value(), match.Value()) {
+	byName := make(map[name]string)
+
+	var walkErr error
+
+	b.ForEachAttributeValue(func(local, uri, value string) bool {
+		if walkErr = fnCountOp(opts.ctx, opts.ec); walkErr != nil {
 			return false
 		}
-	}
 
-	return true
-}
-
-func findExpandedAttribute(attrs []*xdm.Attribute, localName, uri string) *xdm.Attribute {
-	for _, attr := range attrs {
-		if attr.LocalName() == localName && attr.URI() == uri {
-			return attr
+		key := name{local, uri}
+		if _, exists := byName[key]; !exists {
+			byName[key] = value
 		}
+
+		return true
+	})
+
+	if walkErr != nil {
+		return false, walkErr
 	}
 
-	return nil
+	equal := true
+
+	a.ForEachAttributeValue(func(local, uri, value string) bool {
+		if walkErr = fnCountOp(opts.ctx, opts.ec); walkErr != nil {
+			return false
+		}
+
+		match, found := byName[name{local, uri}]
+		equal = found && opts.stringsEqual(value, match)
+
+		return equal
+	})
+
+	return equal, walkErr
 }
 
 func deepEqualAttribute(a, b *xdm.Attribute, opts deepEqualOptions) bool {
 	return a.LocalName() == b.LocalName() && a.URI() == b.URI() && opts.stringsEqual(a.Value(), b.Value())
 }
 
-func deepEqualChildren(a, b xdm.Node, opts deepEqualOptions) bool {
-	ac := nextDeepEqualChild(a.FirstChild())
-
-	bc := nextDeepEqualChild(b.FirstChild())
-	for ac != nil && bc != nil {
-		if !deepEqualNode(ac, bc, opts) {
-			return false
-		}
-
-		ac = nextDeepEqualChild(ac.NextSibling())
-		bc = nextDeepEqualChild(bc.NextSibling())
+func deepEqualChildren(a, b xdm.Node, opts deepEqualOptions) (bool, error) {
+	ac, err := nextDeepEqualChild(a.FirstChild(), opts)
+	if err != nil {
+		return false, err
 	}
 
-	return ac == nil && bc == nil
+	bc, err := nextDeepEqualChild(b.FirstChild(), opts)
+	if err != nil {
+		return false, err
+	}
+
+	for ac != nil && bc != nil {
+		equal, err := deepEqualNode(ac, bc, opts)
+		if err != nil || !equal {
+			return false, err
+		}
+
+		ac, err = nextDeepEqualChild(ac.NextSibling(), opts)
+		if err != nil {
+			return false, err
+		}
+
+		bc, err = nextDeepEqualChild(bc.NextSibling(), opts)
+		if err != nil {
+			return false, err
+		}
+	}
+
+	return ac == nil && bc == nil, nil
 }
 
-func nextDeepEqualChild(node xdm.Node) xdm.Node {
+func nextDeepEqualChild(node xdm.Node, opts deepEqualOptions) (xdm.Node, error) {
 	for node != nil {
+		if err := fnCountOp(opts.ctx, opts.ec); err != nil {
+			return nil, err
+		}
+
 		switch node.Type() {
 		case xdm.ElementNode, xdm.TextNode, xdm.CDATASectionNode:
-			return node
+			return node, nil
 		}
 
 		node = node.NextSibling()
 	}
 
-	return nil
+	return nil, nil
 }
 
 func deepEqualMap(a, b xdm.MapItem, opts deepEqualOptions) (bool, error) {
 	if a.Size() != b.Size() {
 		return false, nil
 	}
+	// KeysView copies the key list; charge that work before allocating it.
+	if err := fnCountOps(opts.ctx, opts.ec, a.Size()); err != nil {
+		return false, err
+	}
 
-	keys := b.KeysView()
-
-	matcher := deepEqualMapMatcher{a: a, b: b, opts: opts, keys: keys, used: make([]bool, len(keys))}
 	for _, key := range a.KeysView() {
-		found, err := matcher.match(key)
-		if err != nil {
+		if err := fnCountOp(opts.ctx, opts.ec); err != nil {
 			return false, err
 		}
 
+		bv, found := b.GetView(key)
 		if !found {
 			return false, nil
+		}
+
+		av, _ := a.GetView(key)
+
+		equal, err := deepEqualSequence(av, bv, opts)
+		if err != nil || !equal {
+			return false, err
 		}
 	}
 
 	return true, nil
-}
-
-func sameMapKey(a, b xdm.AtomicValue) bool {
-	return xdm.NormalizeMapKey(a) == xdm.NormalizeMapKey(b)
 }
 
 func deepEqualArray(a, b xdm.ArrayItem, opts deepEqualOptions) (bool, error) {
@@ -609,6 +674,10 @@ func deepEqualArray(a, b xdm.ArrayItem, opts deepEqualOptions) (bool, error) {
 	}
 
 	for i := range am0 {
+		if err := fnCountOp(opts.ctx, opts.ec); err != nil {
+			return false, err
+		}
+
 		am, bm := am0[i], bm0[i]
 
 		eq, err := deepEqualSequence(am, bm, opts)
@@ -627,7 +696,7 @@ func deepEqualArray(a, b xdm.ArrayItem, opts deepEqualOptions) (bool, error) {
 func fnIndexOf(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	// $search is declared xs:anyAtomicType (exactly one item): an empty or
 	// multi-item search value is a type error, not a search for the first item.
-	searchAtoms, err := AtomizeSequence(args[1])
+	searchAtoms, err := FnAtomize(ctx, args[1])
 	if err != nil {
 		return nil, err
 	}
@@ -656,7 +725,7 @@ func fnIndexOf(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	}
 
 	// Atomize sequence to handle arrays (XPath 3.1: atomizing flattens arrays)
-	atoms, err := AtomizeSequence(args[0])
+	atoms, err := FnAtomize(ctx, args[0])
 	if err != nil {
 		return nil, err
 	}
@@ -664,6 +733,10 @@ func fnIndexOf(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	var result xdm.ItemSlice
 
 	for i, a := range atoms {
+		if err := fnCountOp(ctx, getFnContext(ctx)); err != nil {
+			return nil, err
+		}
+
 		if a.TypeName == xdm.TypeUntypedAtomic {
 			a = xdm.AtomicValue{TypeName: xdm.TypeString, Value: a.StringVal()}
 		}
@@ -718,31 +791,60 @@ func fnSort(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return nil, err
 	}
 
-	var sortErr error
+	if err := stableSortWithError(pairs, func(i, j int) (bool, error) {
+		return sequenceSortKeyLess(ctx, pairs[i].key, pairs[j].key, coll)
+	}); err != nil {
+		return nil, err
+	}
 
-	sort.SliceStable(pairs, func(i, j int) bool {
-		if sortErr != nil {
-			return false
-		}
-
-		var less bool
-
-		less, sortErr = sequenceSortKeyLess(ctx, pairs[i].key, pairs[j].key, coll)
-
-		return less
-	})
-
-	if sortErr != nil {
-		return nil, sortErr
+	if err := fnCountOps(ctx, getFnContext(ctx), len(pairs)); err != nil {
+		return nil, err
 	}
 
 	result := make(xdm.ItemSlice, len(pairs))
+
 	for i, pair := range pairs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		result[i] = pair.item
 	}
 
 	return result, nil
 }
+
+// stableSortWithError keeps the standard stable algorithm but stops immediately
+// when its comparator fails. Only this invocation's private sentinel is caught;
+// panics from the comparator or the sort itself propagate unchanged.
+func stableSortWithError(items any, less func(int, int) (bool, error)) (err error) {
+	var failure sequenceSortFailure
+
+	defer func() {
+		if stopped := recover(); stopped != nil {
+			if stopped == &failure {
+				err = failure.err
+				return
+			}
+
+			panic(stopped)
+		}
+	}()
+
+	sort.SliceStable(items, func(i, j int) bool {
+		value, compareErr := less(i, j)
+		if compareErr != nil {
+			failure.err = compareErr
+			panic(&failure)
+		}
+
+		return value
+	})
+
+	return nil
+}
+
+type sequenceSortFailure struct{ err error }
 
 func sortCollation(ctx context.Context, args []xdm.Sequence) (*collationImpl, error) {
 	return getCollation(ctx, args, 1)
@@ -767,16 +869,28 @@ type sequenceSortPair struct {
 }
 
 func sequenceSortPairs(ctx context.Context, input xdm.Sequence, keyFn *xdm.FunctionItem) ([]sequenceSortPair, error) {
-	items := xdm.Materialize(input)
+	n := xdm.SequenceLen(input)
+	ec := getFnContext(ctx)
 
-	pairs := make([]sequenceSortPair, len(items))
-	for i, item := range items {
+	if n > fnMaxNodes(ec) {
+		return nil, ErrNodeSetLimit
+	}
+
+	var pairs []sequenceSortPair
+
+	for i := range n {
+		if err := fnCountOp(ctx, ec); err != nil {
+			return nil, err
+		}
+
+		item := input.Get(i)
+
 		key, err := sequenceSortKey(ctx, item, keyFn)
 		if err != nil {
 			return nil, err
 		}
 
-		pairs[i] = sequenceSortPair{item: item, key: key}
+		pairs = append(pairs, sequenceSortPair{item: item, key: key})
 	}
 
 	return pairs, nil
@@ -794,19 +908,27 @@ func sequenceSortKey(ctx context.Context, item xdm.Item, keyFn *xdm.FunctionItem
 		}
 	}
 
-	return atomizedSortKey(value)
+	return atomizedSortKey(ctx, value)
 }
 
-func atomizedSortKey(value xdm.Sequence) (xdm.Sequence, error) {
+func atomizedSortKey(ctx context.Context, value xdm.Sequence) (xdm.Sequence, error) {
 	// Both default and application keys are atomized, including for a singleton
 	// input whose key is never visited by the sorting comparator.
-	atoms, err := AtomizeSequence(value)
+	atoms, err := FnAtomize(ctx, value)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := fnCountOps(ctx, getFnContext(ctx), len(atoms)); err != nil {
 		return nil, err
 	}
 
 	key := make(xdm.ItemSlice, len(atoms))
 	for i, atom := range atoms {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		key[i] = atom
 	}
 
@@ -814,20 +936,26 @@ func atomizedSortKey(value xdm.Sequence) (xdm.Sequence, error) {
 }
 
 func sequenceSortKeyLess(ctx context.Context, a, b xdm.Sequence, coll *collationImpl) (bool, error) {
+	if err := fnCountOp(ctx, getFnContext(ctx)); err != nil {
+		return false, err
+	}
+
 	var implicitTZ *time.Location
 	if fc := getFnContext(ctx); fc != nil {
 		implicitTZ = fc.implicitTimezone
 	}
 
 	for i := range min(xdm.SequenceLen(a), xdm.SequenceLen(b)) {
+		if err := fnCountOp(ctx, getFnContext(ctx)); err != nil {
+			return false, err
+		}
+
 		av, aErr := AtomizeItem(a.Get(i))
-
-		bv, bErr := AtomizeItem(b.Get(i))
-
 		if aErr != nil {
 			return false, aErr
 		}
 
+		bv, bErr := AtomizeItem(b.Get(i))
 		if bErr != nil {
 			return false, bErr
 		}

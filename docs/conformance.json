@@ -855630,7 +855630,7 @@
       "suite": "xslt30",
       "file": "tests/decl/accumulator/_accumulator-test-set.xml",
       "name": "accumulator-038",
-      "disposition": "fixture",
+      "disposition": "permitted-outcome",
       "reason": "The package entry template main is private, so the actual initial-template call fails with XTDE0040. Adding only visibility=public makes that entry eligible and reaches the unchanged expected XPTY0004 assertion.",
       "checks": [
         {
@@ -855682,7 +855682,7 @@
       "suite": "xslt30",
       "file": "tests/insn/analyze-string/_analyze-string-test-set.xml",
       "name": "analyze-string-097a",
-      "disposition": "fixture",
+      "disposition": "permitted-outcome",
       "reason": "The exact result differs only by permitted namespace-prefix spelling. Enabling only the catalog assertion’s documented ignore-prefixes comparison succeeds; changing the expected namespace URI still fails, proving that expanded names and content remain checked.",
       "checks": [
         {
@@ -855856,8 +855856,8 @@
       "suite": "xslt30",
       "file": "tests/insn/attribute/_attribute-test-set.xml",
       "name": "attribute-0301",
-      "disposition": "permitted-outcome",
-      "reason": "tests/insn/attribute/attribute-0301.xsl emits two input type=text value=père elements; catalog:160 requires their value to remain père, while href must be percent escaped. Fresh serialization /tmp/xmlsec-audit-attribute-0301.serialized has correct href and all other content; only input values become p%C3%A8re. transform/internal/xdm/html/dump.go isURIAttr explicitly lists value for input, following the published REC rather than changing behavior to match a later issue/test expectation. Executable unchanged-original and semantic intervention controls are in the exact named residual subtest.",
+      "disposition": "fixture",
+      "reason": "Publisher expectation conflicts with the selected Serialization3.0/3.1 REC URI-attribute table: Appendix D includes input/@value and requires non-ASCII URI escaping when escape-uri-attributes=yes. The selected3.0 processor preserves that requirement; the original expectation assumes a later change. The unchanged original and escape-uri-attributes=no controls isolate the mismatch without changing production escaping.",
       "checks": [
         {
           "file": "tests/cmd/dev/run_test.go",
@@ -856676,7 +856676,7 @@
       "suite": "xslt30",
       "file": "tests/decl/context-item/_context-item-test-set.xml",
       "name": "context-item-903",
-      "disposition": "fixture",
+      "disposition": "permitted-outcome",
       "reason": "The exact declaration requests a schema-annotated custom element type and is rejected by the Basic processor with XTSE1660. Changing only that optional PSVI type requirement to item() permits the unchanged body and yields the explicitly checked 1 2 3 4 5 result.",
       "checks": [
         {
@@ -857456,8 +857456,8 @@
       "suite": "xslt30",
       "file": "tests/insn/evaluate/_evaluate-test-set.xml",
       "name": "evaluate-048",
-      "disposition": "optional-feature",
-      "reason": "Exact dynamic lookup of the optional XSLT-only fn:document is absent, followed by empty function target XPTY0004. Lookup-only proves absence without fetching a remote resource; the required fn:doc with an explicitly supplied pinned file succeeds in native and independent standard-library controls.",
+      "disposition": "permitted-outcome",
+      "reason": "The static context of xsl:evaluate deliberately excludes XSLT-only fn:document (XSLT30 10.4.1). Additional dynamic named functions are implementation-defined (10.4.2; FO31 16.1.1), so empty function-lookup followed by XPTY0004 is a permitted outcome. This is not an omitted mandatory XPath function or a user extension: extensions cannot use the reserved fn namespace. Required fn:doc with explicitly supplied local data succeeds independently.",
       "checks": [
         {
           "file": "tests/cmd/dev/run_test.go",
@@ -857689,7 +857689,7 @@
       "suite": "xslt30",
       "file": "tests/insn/for-each-group/_for-each-group-test-set.xml",
       "name": "for-each-group-085",
-      "disposition": "fixture",
+      "disposition": "permitted-outcome",
       "reason": "The exact supplied XML retains significant layout text; ready Saxon with explicit strip:none preserves the same complete original result. Removing only whitespace between supplied source tags (retaining the DTD and every non-whitespace byte) makes the unchanged stylesheet and full publisher assertion pass. The production comparator continues to compare original text exactly.",
       "checks": [
         {
@@ -858015,7 +858015,7 @@
       "suite": "xslt30",
       "file": "tests/fn/id/_id-test-set.xml",
       "name": "id-003",
-      "disposition": "fixture",
+      "disposition": "permitted-outcome",
       "reason": "The exact supplied XML retains significant layout text; ready Saxon with explicit strip:none preserves the same complete original result. Removing only whitespace between supplied source tags (retaining the DTD and every non-whitespace byte) makes the unchanged stylesheet and full publisher assertion pass. The production comparator continues to compare original text exactly.",
       "checks": [
         {
@@ -858076,7 +858076,7 @@
       "suite": "xslt30",
       "file": "tests/fn/id/_id-test-set.xml",
       "name": "id-036",
-      "disposition": "fixture",
+      "disposition": "permitted-outcome",
       "reason": "The exact supplied XML retains significant layout text; ready Saxon with explicit strip:none preserves the same complete original result. Removing only whitespace between supplied source tags (retaining the DTD and every non-whitespace byte) makes the unchanged stylesheet and full publisher assertion pass. The production comparator continues to compare original text exactly.",
       "checks": [
         {
@@ -858162,7 +858162,7 @@
       "suite": "xslt30",
       "file": "tests/insn/iterate/_iterate-test-set.xml",
       "name": "iterate-023",
-      "disposition": "fixture",
+      "disposition": "permitted-outcome",
       "reason": "The exact non-tail next-iteration raises XTSE3120 before the misplaced on-completion is diagnosed. Excluding only that first invalid instruction exposes the unchanged XTSE0010 placement assertion.",
       "checks": [
         {
@@ -858214,7 +858214,7 @@
       "suite": "xslt30",
       "file": "tests/insn/iterate/_iterate-test-set.xml",
       "name": "iterate-024",
-      "disposition": "fixture",
+      "disposition": "permitted-outcome",
       "reason": "The exact unsupported export attribute raises XTSE0090 before the misplaced on-completion is diagnosed. Removing only that attribute exposes the unchanged XTSE0010 placement assertion.",
       "checks": [
         {
@@ -858318,7 +858318,7 @@
       "suite": "xslt30",
       "file": "tests/fn/key/_key-test-set.xml",
       "name": "key-092",
-      "disposition": "fixture",
+      "disposition": "permitted-outcome",
       "reason": "The exact xsl:key combines @use with content, which raises XTSE1205. Removing only @use exposes the already invalid child declaration and satisfies the unchanged XTSE0010 assertion; both source errors are real.",
       "checks": [
         {
@@ -858741,7 +858741,7 @@
       "suite": "xslt30",
       "file": "tests/insn/merge/_merge-test-set.xml",
       "name": "merge-097",
-      "disposition": "fixture",
+      "disposition": "permitted-outcome",
       "reason": "The exact stylesheet requests a processor-specific URI collection with no declared membership. Supplying only its two pinned member URIs makes the unchanged merge and complete publisher assertion pass.",
       "checks": [
         {
@@ -858949,8 +858949,8 @@
       "suite": "xslt30",
       "file": "tests/attr/mode/_mode-test-set.xml",
       "name": "mode-1439",
-      "disposition": "permitted-outcome",
-      "reason": "A Basic processor rejects the exact schema-aware prerequisite statically. Removing only the first forbidden schema prerequisite exposes the next unchanged fixture assertion or the explicitly verified untyped copying behavior; no PSVI support is claimed.",
+      "disposition": "fixture",
+      "reason": "Missing schema-aware profile dependency in the publisher test: typed=yes on xsl:mode requires a schema-aware processor. Under the selected Basic profile XSLT30 27.2 requires static XTSE1660; the expected dynamic XTTE3100 assumes the unavailable typed-processing role. The original declares only XSLT30+, so its applicability metadata does not match its expected error.",
       "checks": [
         {
           "file": "tests/cmd/dev/run_test.go",
@@ -859191,8 +859191,8 @@
       "suite": "xslt30",
       "file": "tests/insn/number/_number-test-set.xml",
       "name": "number-0111",
-      "disposition": "permitted-outcome",
-      "reason": "Published REC xs:integer(round(number($V))) and subsequent start-at rebasing are checked against the exact independently executed formula; a value below the binary precision boundary gives native/Saxon agreement.",
+      "disposition": "fixture",
+      "reason": "The publisher expectation retains large-integer precision beyond the explicit REC12.2 conversion xs:integer(round(number($V))) followed by start-at rebasing. The original selected3.0 result agrees with independent execution of that exact formula; a below-double-precision-boundary control gives complete native/Saxon agreement. Do not replace the required conversion merely to match the exact-integer fixture expectation.",
       "checks": [
         {
           "file": "tests/cmd/dev/run_test.go",
@@ -859329,7 +859329,7 @@
       "suite": "xslt30",
       "file": "tests/insn/number/_number-test-set.xml",
       "name": "number-4501",
-      "disposition": "fixture",
+      "disposition": "permitted-outcome",
       "reason": "The exact supplied XML retains significant layout text; ready Saxon with explicit strip:none preserves the same complete original result. Removing only whitespace between supplied source tags (retaining the DTD and every non-whitespace byte) makes the unchanged stylesheet and full publisher assertion pass. The production comparator continues to compare original text exactly.",
       "checks": [
         {
@@ -859720,8 +859720,8 @@
       "suite": "xslt30",
       "file": "tests/decl/output/_output-test-set.xml",
       "name": "output-0724",
-      "disposition": "permitted-outcome",
-      "reason": "tests/decl/output/output-0724.xsl uses method=html html-version=5 and input type=text value=✈. Catalog:4967 requires a literal airplane value, referencing a later spec issue. Fresh /tmp/xmlsec-audit-output-0724.serialized is <input type=\"text\" value=\"%E2%9C%88\">. transform/internal/xdm/html/dump.go isURIAttr explicitly lists value for input, following the published REC rather than changing behavior to match a later issue/test expectation. Executable unchanged-original and semantic intervention controls are in the exact named residual subtest.",
+      "disposition": "fixture",
+      "reason": "Publisher expectation conflicts with the selected Serialization3.0/3.1 REC URI-attribute table: Appendix D includes input/@value and requires non-ASCII URI escaping when escape-uri-attributes=yes. The selected3.0 processor preserves that requirement; the original expectation assumes a later change. The unchanged original and escape-uri-attributes=no controls isolate the mismatch without changing production escaping.",
       "checks": [
         {
           "file": "tests/cmd/dev/run_test.go",
@@ -860200,7 +860200,7 @@
       "suite": "xslt30",
       "file": "tests/misc/regex-syntax-xslt20/_regex-syntax-xslt20-test-set.xml",
       "name": "regex-syntax-xslt20-0984",
-      "disposition": "fixture",
+      "disposition": "permitted-outcome",
       "reason": "The original legacy Unicode vector classifies U+2308/U+2309 differently from the declared Unicode17 input model (Ps/Pe rather than the old word-character expectation). Moving only those literal characters between the positive and negative catalog vectors makes the entire unchanged regex/assertion pass; no production category or expectation is globally weakened.",
       "checks": [
         {
@@ -860225,7 +860225,7 @@
       "suite": "xslt30",
       "file": "tests/misc/regex-syntax-xslt20/_regex-syntax-xslt20-test-set.xml",
       "name": "regex-syntax-xslt20-0985",
-      "disposition": "fixture",
+      "disposition": "permitted-outcome",
       "reason": "The original legacy Unicode vector classifies U+1369–U+1371 differently from the declared Unicode17 input model (No rather than decimal-digit Nd). Moving only those literal characters between the positive and negative catalog vectors makes the entire unchanged regex/assertion pass; no production category or expectation is globally weakened.",
       "checks": [
         {
@@ -860753,8 +860753,8 @@
       "suite": "xslt30",
       "file": "tests/fn/unparsed-text/_unparsed-text-test-set.xml",
       "name": "unparsed-text-2003",
-      "disposition": "fixture",
-      "reason": "The exact remote text resource is unavailable in the offline profile. Supplying known pinned UTF-8 bytes explicitly at that URI makes the unchanged availability assertions pass; the proof performs no network fetch.",
+      "disposition": "environment",
+      "reason": "Offline runner/environment gap: the original catalog declares http://www.w3.org/Consortium/mission.html but supplies no local bytes. The runner deliberately registers that remote resource as unavailable and the library correctly returns false. An explicit mapping of known valid UTF-8 bytes to the same URI demonstrates availability only; it neither fetches nor authenticates the declared remote document. This is not a malformed publisher fixture or a text-decoding defect.",
       "checks": [
         {
           "file": "tests/cmd/dev/run_test.go",
