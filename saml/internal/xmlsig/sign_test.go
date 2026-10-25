@@ -76,3 +76,29 @@ func TestCloneKeysAndPolicyOwnTheirInputs(t *testing.T) {
 		}
 	}
 }
+
+func TestSigningCertificateEncodingConsistency(t *testing.T) {
+	chain := testcert.New(t)
+	for _, test := range testcert.CertificateEncodings(t, chain) {
+		t.Run(test.Name, func(t *testing.T) {
+			doc, err := document.Parse(t.Context(), []byte(`<Request ID="_certificate"><Value>signed</Value></Request>`), document.DefaultLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			signed, err := xmlsig.Sign(t.Context(), doc, doc.Root(), xmlsig.SigningKey{Key: chain.LeafKey, CertificateDER: test.DER, Method: xmldsig.ECDSASHA256}, false)
+			if !test.Valid {
+				if signed != nil || err == nil {
+					t.Fatal("SAML signing accepted invalid certificate DER")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := xmlsig.Verify(t.Context(), signed, signed.Root(), []crypto.PublicKey{chain.LeafKey.Public()}, xmldsig.Policy{})
+			if err != nil || result == nil || !result.CoversElement(signed.Root()) {
+				t.Fatal("certificate syntax changed signing/trust contract", err)
+			}
+		})
+	}
+}

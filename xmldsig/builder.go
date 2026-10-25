@@ -2,12 +2,12 @@ package xmldsig
 
 import (
 	"context"
-	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/reference"
 )
 
@@ -214,7 +214,7 @@ func appendTemplateKeyInfo(ctx context.Context, sig *tree.Node, spec SignatureTe
 			return fmt.Errorf("%w: certificate size", ErrPolicy)
 		}
 
-		if _, err := x509.ParseCertificate(der); err != nil {
+		if _, err := x509cert.ParseWithMaxBytes(der, len(der)); err != nil {
 			return fmt.Errorf("%w: invalid embedded certificate: %w", ErrStructure, err)
 		}
 

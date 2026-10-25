@@ -38,6 +38,10 @@ func algorithm(v asn1.RawValue) (asn1.ObjectIdentifier, asn1.RawValue, error) {
 }
 
 func hmacHash(v asn1.RawValue) (crypto.Hash, error) {
+	return parseHMACHash(v, false)
+}
+
+func parseHMACHash(v asn1.RawValue, legacy bool) (crypto.Hash, error) {
 	oid, param, err := algorithm(v)
 	if err != nil {
 		return 0, err
@@ -48,6 +52,8 @@ func hmacHash(v asn1.RawValue) (crypto.Hash, error) {
 	}
 
 	switch {
+	case oid.Equal(oidHMAC1()) && legacy:
+		return crypto.SHA1, nil
 	case oid.Equal(oidHMAC256()):
 		return crypto.SHA256, nil
 	case oid.Equal(oidHMAC384()):
@@ -89,12 +95,12 @@ func parseKDF(v asn1.RawValue, expectedSize int, requiredSize bool) (pbes2Parame
 		return pbes2Parameters{}, ErrPolicy
 	}
 
-	f, err := der.Sequence(params, 3, 4) // Explicit SHA-2 PRF is required; omitted means SHA-1.
+	f, err := der.Sequence(params, 2, 4)
 	if err != nil || !der.Is(f[0], 0, asn1.TagOctetString, false) {
 		return pbes2Parameters{}, ErrFormat
 	}
 
-	p := pbes2Parameters{salt: f[0].Bytes, keyBytes: expectedSize}
+	p := pbes2Parameters{salt: f[0].Bytes, keyBytes: expectedSize, hash: crypto.SHA1}
 	if len(p.salt) < 8 || len(p.salt) > 64 {
 		return p, ErrPolicy
 	}
@@ -104,26 +110,39 @@ func parseKDF(v asn1.RawValue, expectedSize int, requiredSize bool) (pbes2Parame
 		return p, err
 	}
 
-	prfIndex := 2
-
-	if len(f) == 4 {
-		n, err := integer(f[2])
-		if err != nil {
-			return p, err
+	at := 2
+	if at < len(f) && der.Is(f[at], 0, asn1.TagInteger, false) {
+		n, err := integer(f[at])
+		if err != nil || n < 1 {
+			return p, ErrFormat
 		}
 
-		if n != expectedSize {
+		// PBES2 fixes the key size through its cipher. RFC 9879 only recommends
+		// matching the MAC size; another explicitly encoded bounded size is valid.
+		if n > 64 || !requiredSize && n != expectedSize {
 			return p, ErrPolicy
 		}
 
-		prfIndex = 3
+		p.keyBytes = n
+		at++
 	} else if requiredSize {
 		return p, ErrFormat
 	}
 
-	p.hash, err = hmacHash(f[prfIndex])
+	if at < len(f) {
+		p.hash, err = parseHMACHash(f[at], true)
+		if err != nil {
+			return p, err
+		}
 
-	return p, err
+		at++
+	}
+
+	if at != len(f) {
+		return p, ErrFormat
+	}
+
+	return p, nil
 }
 
 func parsePBES2(v asn1.RawValue) (pbes2Parameters, error) {

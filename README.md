@@ -22,7 +22,9 @@ The optional [CLI](docs/cli.md) exposes operations through the same public APIs.
 
 ## Quick start
 
-Requires **Go 1.27.0 or later**. To try the library in a new project:
+Requires **Go 1.27.3 or later**, including the `crypto/x509` security fixes in
+[Go 1.27.3](https://go.dev/doc/devel/release#go1.27.3).
+To try the library in a new project:
 
 ```sh
 mkdir invoice-demo

@@ -6,22 +6,27 @@ import (
 )
 
 var (
+	// ErrUnsupported reports a semantic feature outside the selected CMS profile.
+	ErrUnsupported = errors.New("unsupported CMS feature")
 	// ErrSyntax reports invalid or unsupported CMS SignedData.
 	ErrSyntax = errors.New("invalid or unsupported CMS SignedData")
 	// ErrPolicy reports CMS policy violation.
 	ErrPolicy = errors.New("CMS policy violation")
 	// ErrSignature reports CMS signature or content digest mismatch.
 	ErrSignature = errors.New("CMS signature or content digest mismatch")
+	// ErrTrust reports failure of an explicitly requested signer PKIX/revocation check.
+	ErrTrust = errors.New("CMS signer trust policy failed")
 	// ErrCertificate reports CMS signer certificate binding mismatch.
 	ErrCertificate = errors.New("CMS signer certificate binding mismatch")
 )
 
-// Limits bounds DER parsing and CMS collections. Zero fields select defaults;
+// Limits bounds encoded containers, content and CMS collections. Zero fields select defaults;
 // invalid or excessive limits return [ErrPolicy].
 type Limits struct {
-	// MaxBytes bounds the DER container; zero selects 16 MiB, with a 64 MiB maximum.
+	// MaxBytes bounds the container; zero selects 16 MiB, with a 64 MiB maximum.
+	// ParseBER also applies this bound to the normalized definite encoding.
 	MaxBytes int
-	// MaxContentBytes bounds content independently of the DER container size.
+	// MaxContentBytes bounds content independently of the container size.
 	// Zero selects the smaller of 12 MiB and MaxBytes.
 	MaxContentBytes int
 	// MaxCertificates bounds embedded certificates; zero selects 32, with a maximum of 128.

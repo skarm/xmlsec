@@ -16,6 +16,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -873,7 +874,7 @@ func parseKey(ctx context.Context, c document.Element) ([]key, error) {
 			return nil, errors.Join(ErrMetadata, e)
 		}
 
-		cert, e := x509.ParseCertificate(b)
+		cert, e := x509cert.ParseWithMaxBytes(b, len(b))
 		if e != nil {
 			return nil, ErrMetadata
 		}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -58,7 +59,7 @@ func TestMetadataSignedAndPinnedTrust(t *testing.T) {
 	}
 
 	keys := role.SigningKeys()
-	keys[0].(*ecdsa.PublicKey).X.SetInt64(0) //nolint:staticcheck // Deliberately mutate legacy coordinates to test malformed keys and snapshot ownership.
+	*keys[0].(*ecdsa.PublicKey) = ecdsa.PublicKey{}
 
 	if !role.SigningKeys()[0].(*ecdsa.PublicKey).Equal(&c.LeafKey.PublicKey) {
 		t.Fatal("mutable keys")
@@ -240,5 +241,54 @@ func BenchmarkVerify(b *testing.B) {
 		if _, err := v.Verify(ctx, raw, testcert.Now()); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestCertificateEncodingConsistency(t *testing.T) {
+	chain := testcert.New(t)
+	base := metadata.EntityDescriptor{EntityID: "urn:test:certificate-encodings", ValidUntil: testcert.Now().Add(time.Hour), IDP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{Use: nameSigning, CertificateDER: chain.Leaf.Raw}}, Endpoints: map[string][]metadata.Endpoint{"SingleSignOnService": {{Binding: metadata.HTTPRedirect, Location: "https://idp.example.test/sso"}}}}}
+	canonical, err := metadata.Build(t.Context(), base, testcert.Now(), metadata.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalXML, err := canonical.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range testcert.CertificateEncodings(t, chain) {
+		t.Run(test.Name, func(t *testing.T) {
+			before := bytes.Clone(test.DER)
+			spec := base
+			role := *base.IDP
+			role.Keys = []metadata.KeyDescriptor{{Use: nameSigning, CertificateDER: test.DER}}
+			spec.IDP = &role
+			built, err := metadata.Build(t.Context(), spec, testcert.Now(), metadata.Options{})
+			if test.Valid {
+				if err != nil || built == nil {
+					t.Fatal(err)
+				}
+			} else if built != nil || err == nil {
+				t.Fatal("builder accepted invalid DER")
+			}
+			wire := strings.Replace(string(canonicalXML), base64.StdEncoding.EncodeToString(chain.Leaf.Raw), base64.StdEncoding.EncodeToString(test.DER), 1)
+			snapshot, err := metadata.ParseTrusted(t.Context(), []byte(wire), testcert.Now(), metadata.Options{})
+			if !test.Valid {
+				if snapshot != nil || err == nil {
+					t.Fatal("metadata parser accepted invalid DER")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			entity, err := snapshot.Find(base.EntityID, testcert.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := entity.Role(metadata.IdentityProvider, testcert.Now())
+			if err != nil || !bytes.Equal(got.Certificates(nameSigning)[0], test.DER) || !bytes.Equal(before, test.DER) {
+				t.Fatal("metadata changed original certificate bytes", err)
+			}
+		})
 	}
 }

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/fips140"
 	"crypto/hmac"
+	_ "crypto/sha1" // #nosec G505 -- Import-only SHA-1 requires explicit legacy policy and is denied in FIPS mode.
 	_ "crypto/sha256"
 	_ "crypto/sha512"
 	"encoding/asn1"
@@ -23,7 +25,7 @@ var (
 // EncryptionOptions selects PBES2 with PBKDF2-HMAC-SHA-2 and AES-CBC for key
 // storage. Fresh 16-byte salts and IVs are generated for every encryption. Standalone
 // encrypted PKCS#8 has no MAC; this is a storage format, not an authenticated
-// transport or a network decryption service. XML Encryption still uses AES-GCM.
+// transport or a network decryption service. XML Encryption applies its own algorithm and legacy policies.
 type EncryptionOptions struct {
 	// KeyBits selects AES-128, AES-192 or AES-256; zero selects 256.
 	KeyBits int
@@ -34,10 +36,13 @@ type EncryptionOptions struct {
 }
 
 type passwordState struct {
-	ctx       context.Context
-	password  []byte
-	limits    Limits
-	remaining int
+	ctx                         context.Context
+	password                    []byte
+	limits                      Limits
+	remaining                   int
+	allowLegacy                 bool
+	allowBER                    bool
+	allowNonDefaultMACKeyLength bool
 }
 
 func newPasswordState(ctx context.Context, password []byte, limits Limits) (*passwordState, error) {
@@ -77,7 +82,7 @@ func (p *passwordState) charge(iterations, blocks int) error {
 }
 
 func (p *passwordState) derive(hash crypto.Hash, salt []byte, iterations, size int) ([]byte, error) {
-	if !sha2(hash) || size < 1 || size > 64 || len(salt) < 8 || len(salt) > 64 {
+	if !p.acceptHash(hash) || size < 1 || size > 64 || len(salt) < 8 || len(salt) > 64 {
 		return nil, ErrPolicy
 	}
 
@@ -132,6 +137,12 @@ func (p *passwordState) derive(hash crypto.Hash, salt []byte, iterations, size i
 	return out[:size:size], nil
 }
 
+// SHA-1 is an import-only compatibility choice. It never widens export or
+// RFC 9879 PBMAC1 policy, and is unavailable when the FIPS backend is enabled.
+func (p *passwordState) acceptHash(h crypto.Hash) bool {
+	return sha2(h) || h == crypto.SHA1 && p.allowLegacy && !fips140.Enabled()
+}
+
 func sha2(h crypto.Hash) bool { return h == crypto.SHA256 || h == crypto.SHA384 || h == crypto.SHA512 }
 
 func normalizeEncryption(options EncryptionOptions) (EncryptionOptions, error) {
@@ -159,6 +170,8 @@ func oidPBES2() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 840, 
 func oidPBKDF2() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 12} }
 
 func oidPBMAC1() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 14} }
+
+func oidHMAC1() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 840, 113549, 2, 7} }
 
 func oidHMAC256() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 840, 113549, 2, 9} }
 

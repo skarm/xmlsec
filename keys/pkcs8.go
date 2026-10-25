@@ -1,6 +1,7 @@
 package keys
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -14,23 +15,101 @@ import (
 	"math/big"
 
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/ecdsakey"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 )
 
+// PrivateParseOptions explicitly enables selected PKCS#8 input forms.
+// Traditional PKCS#1 and SEC1 encodings always remain strict DER.
+type PrivateParseOptions struct {
+	// AllowBER permits PKCS#8 SEQUENCE and privateKey OCTET STRING BER wrappers.
+	// Algorithms, attributes and the encoded private-key payload remain strict DER.
+	AllowBER bool
+}
+
+// EncryptedPrivateParseOptions explicitly enables compatibility during import.
+// Export policy and the default strict DER/SHA-2 profile are unchanged.
+type EncryptedPrivateParseOptions struct {
+	// AllowLegacy permits PBKDF2-HMAC-SHA-1, including an omitted default PRF.
+	// It is unavailable when the FIPS backend is enabled.
+	AllowLegacy bool
+	// AllowBER permits outer EncryptedPrivateKeyInfo and inner PrivateKeyInfo
+	// BER wrappers and constructed OCTET STRINGs. Algorithms, attributes and
+	// the encoded private-key payload remain strict DER.
+	AllowBER bool
+}
+
+// ParsePrivateWithOptions parses one unencrypted private key with explicit
+// PKCS#8 wrapper compatibility. It preserves the ownership and component limits
+// of ParsePrivate, adds cancellation, and leaves input unchanged.
+func ParsePrivateWithOptions(ctx context.Context, data []byte, options PrivateParseOptions, limits Limits) (crypto.Signer, error) {
+	if ctx == nil {
+		return nil, ErrPolicy
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	limits, err := normalizeLimits(limits)
+	if err != nil {
+		return nil, err
+	}
+
+	decoded, err := privateMaterial(ctx, data, limits.MaxKeyBytes, limits, options.AllowBER)
+	if err != nil {
+		return nil, err
+	}
+	defer decoded.clear()
+
+	if options.AllowBER && (decoded.label == "" || decoded.label == "PRIVATE KEY") {
+		// An unlabelled traditional key is already a strict DER format. Detect
+		// only PrivateKeyInfo's AlgorithmIdentifier in the second field.
+		normalized, err := normalizePrivateBER(ctx, decoded.der, limits.MaxKeyBytes, limits, false)
+		if err != nil {
+			return nil, err
+		}
+		defer clear(normalized)
+
+		decoded.der = normalized
+	}
+
+	key, err := parsePrivateDER(decoded.label, decoded.der, limits)
+	if err == nil {
+		err = ctx.Err()
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return key, nil
+}
+
 // ParseEncryptedPrivate decrypts one PEM ENCRYPTED PRIVATE KEY or DER
-// EncryptedPrivateKeyInfo using explicit password bytes. Only PBES2/PBKDF2 with
-// explicit HMAC-SHA-256/384/512 and AES-128/192/256-CBC are accepted. The KDF is
-// bounded and cancellable. RSA component limits apply before private-key
-// validation. Inputs are retained unchanged; temporary key/plaintext buffers
-// are cleared. PKCS#8 does not authenticate ciphertext; parsing is not trust.
+// EncryptedPrivateKeyInfo using explicit password bytes. PBES2/PBKDF2 with
+// HMAC-SHA-256/384/512 and AES-128/192/256-CBC are accepted. Use
+// ParseEncryptedPrivateWithOptions for explicit SHA-1/BER compatibility.
+// The KDF is bounded and cancellable. Inputs remain unchanged, and temporary
+// key/plaintext buffers are cleared. PKCS#8 has no ciphertext authentication.
 func ParseEncryptedPrivate(ctx context.Context, data, password []byte, limits Limits) (crypto.Signer, error) {
+	return ParseEncryptedPrivateWithOptions(ctx, data, password, EncryptedPrivateParseOptions{}, limits)
+}
+
+// ParseEncryptedPrivateWithOptions imports encrypted PKCS#8 with explicit
+// compatibility choices. Passwords are exact octets: no UTF-8 validation,
+// normalization, NUL termination or BOM handling is applied. Resource and
+// iteration limits apply equally to all enabled forms and algorithms.
+func ParseEncryptedPrivateWithOptions(ctx context.Context, data, password []byte, options EncryptedPrivateParseOptions, limits Limits) (crypto.Signer, error) {
 	state, err := newPasswordState(ctx, password, limits)
 	if err != nil {
 		return nil, err
 	}
 	defer state.close()
 
-	decoded, err := material(state.ctx, data, state.limits.MaxContainerBytes, state.limits)
+	state.allowLegacy, state.allowBER = options.AllowLegacy, options.AllowBER
+
+	decoded, err := privateMaterial(state.ctx, data, state.limits.MaxContainerBytes, state.limits, options.AllowBER)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +122,40 @@ func ParseEncryptedPrivate(ctx context.Context, data, password []byte, limits Li
 	return decryptPrivateInfo(state, decoded.der)
 }
 
+// Framing is shared with strict DER import. Only an explicit BER option defers
+// the structural scan to the schema-specific bounded wrapper normalizer.
+func privateMaterial(ctx context.Context, data []byte, maximum int, limits Limits, allowBER bool) (decodedMaterial, error) {
+	if !allowBER {
+		return material(ctx, data, maximum, limits)
+	}
+
+	if len(data) > limits.MaxInputBytes {
+		return decodedMaterial{}, ErrLimit
+	}
+
+	trimmed := bytes.TrimSpace(data)
+	if bytes.HasPrefix(trimmed, []byte("-----BEGIN ")) {
+		return decodePEM(ctx, trimmed, maximum)
+	}
+
+	if len(data) > maximum {
+		return decodedMaterial{}, ErrLimit
+	}
+
+	return decodedMaterial{der: data}, nil
+}
+
 func decryptPrivateInfo(state *passwordState, raw []byte) (crypto.Signer, error) {
+	if state.allowBER {
+		normalized, err := normalizePrivateBER(state.ctx, raw, state.limits.MaxContainerBytes, state.limits, true)
+		if err != nil {
+			return nil, err
+		}
+		defer clear(normalized)
+
+		raw = normalized
+	}
+
 	v, err := readDER(raw, state.limits.MaxContainerBytes, state.limits)
 	if err != nil {
 		return nil, err
@@ -64,6 +176,20 @@ func decryptPrivateInfo(state *passwordState, raw []byte) (crypto.Signer, error)
 }
 
 func parseDecryptedPrivate(state *passwordState, plain []byte) (crypto.Signer, error) {
+	if state.allowBER {
+		normalized, err := normalizePrivateBER(state.ctx, plain, state.limits.MaxKeyBytes, state.limits, false)
+		if err != nil {
+			if errors.Is(err, ErrLimit) || state.ctx.Err() != nil {
+				return nil, err
+			}
+
+			return nil, ErrDecrypt
+		}
+		defer clear(normalized)
+
+		plain = normalized
+	}
+
 	// Do not enable PEM, PKCS#1 or SEC1 parsing inside an encrypted PKCS#8 object.
 	v, err := readDER(plain, state.limits.MaxKeyBytes, state.limits)
 	if err != nil {
@@ -212,7 +338,7 @@ func copyECDSAPrivateKey(key *ecdsa.PrivateKey) (*ecdsa.PrivateKey, error) {
 		return nil, ErrPolicy
 	}
 
-	if key.X == nil || key.Y == nil || key.D == nil { //nolint:staticcheck // Bytes panics on nil legacy fields; reject malformed caller keys first.
+	if key.Curve == nil {
 		return nil, ErrFormat
 	}
 
@@ -220,7 +346,7 @@ func copyECDSAPrivateKey(key *ecdsa.PrivateKey) (*ecdsa.PrivateKey, error) {
 		return nil, ErrPolicy
 	}
 
-	raw, err := key.Bytes()
+	raw, err := ecdsakey.PrivateBytes(key)
 	if err != nil {
 		return nil, ErrFormat
 	}

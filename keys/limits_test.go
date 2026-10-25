@@ -3,8 +3,6 @@ package keys_test
 import (
 	"bytes"
 	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -46,10 +44,7 @@ func TestEncodedAndDecodedKeyLimits(t *testing.T) {
 }
 
 func TestRSAResourceLimits(t *testing.T) {
-	key, err := rsa.GenerateMultiPrimeKey(rand.Reader, 3, 2048) //nolint:staticcheck // Exercise multi-prime import limits with disposable test material.
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := multiPrimeRSA(t)
 
 	raw, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {

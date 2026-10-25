@@ -21,6 +21,7 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/internal/xmltime"
 	"github.com/skarm/xmlsec/pki"
 	"github.com/skarm/xmlsec/reference"
@@ -790,7 +791,7 @@ func cert(der []byte) (*x509.Certificate, error) {
 		return nil, ErrCertificate
 	}
 
-	c, e := x509.ParseCertificate(bytes.Clone(der))
+	c, e := x509cert.ParseWithMaxBytes(bytes.Clone(der), len(der))
 	if e != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCertificate, e)
 	}

@@ -21,7 +21,18 @@
 // [Verifier.VerifyResponse] checks the response against its original request.
 // [Verifier.VerifyToken] requires an expected imprint and any required
 // nonce/policy binding. Successful [Result] values contain authenticated token
-// information and the TSA trust result.
+// information and the TSA trust result. [Result.Assertion] separately retains an
+// opaque [VerifiedAssertion] binding the token digest, imprint and asserted time;
+// [Result.Evidence] exposes the authenticated PKI records used by its trust check.
+// Neither accessor upgrades unchecked revocation or proves historical validity.
+// Optional ESS multi-certificate path restrictions are rejected rather than
+// silently ignored by a trusted timestamp operation.
+//
+// Timestamp-kind observations in pki.Evidence.Sources must match exact token
+// bytes, or exact original response bytes for response verification.
+// [VerifiedAssertion.Sources] retains their acquisition metadata separately from
+// authenticated time and trust. Unmatched observations fail; source URIs and
+// retrieval times never supply TSA authority, freshness or historical proof.
 //
 // PKIX and freshness checks use the explicit verification time, never silently
 // the token's claimed GenTime. The TSA certificate must meet this profile's

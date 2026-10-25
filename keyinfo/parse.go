@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/ecdsakey"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -689,10 +690,6 @@ func validateKey(key crypto.PublicKey, maxRSA int) error {
 			return ErrKey
 		}
 	case *ecdsa.PublicKey:
-		if k != nil && (k.X == nil || k.Y == nil) { //nolint:staticcheck // Bytes panics on nil legacy coordinates; reject malformed caller keys first.
-			return ErrKey
-		}
-
 		if k == nil || k.Curve == nil {
 			return ErrKey
 		}
@@ -701,7 +698,7 @@ func validateKey(key crypto.PublicKey, maxRSA int) error {
 			return ErrUnsupported
 		}
 
-		if _, err := k.Bytes(); err != nil {
+		if _, err := ecdsakey.PublicBytes(k); err != nil {
 			return ErrKey
 		}
 	case ed25519.PublicKey:

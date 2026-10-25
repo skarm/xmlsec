@@ -25,22 +25,87 @@ type PKCS12Identity struct {
 	ExtraCertificates []*x509.Certificate
 }
 
-// ParsePKCS12 imports one complete DER PFX version 3 with mandatory password
-// integrity and exactly one private key with one matching certificate. It accepts
-// PBMAC1/PBKDF2 or traditional SHA-2 MAC, and PBES2/AES-CBC encrypted SafeContents
-// and shrouded keys. UTF-8 password bytes are passed unchanged to PBKDF2; classic
-// MAC converts a BMP-only password to big-endian BMP with a terminal zero pair.
-// Limits apply across all KDFs; the MAC is verified before decrypting any bags.
-// Limits also bound ContentInfos, flat bags and certificate objects.
-// Unknown/nested bags, attributes other than localKeyId/friendlyName, conflicting
-// identifiers and ambiguous identities are rejected. No partial identity is
-// returned on error, and no I/O or certificate trust validation is performed.
+// PKCS12ParseOptions explicitly enables selected container forms. Zero retains
+// the strict flat DER profile. All contents authenticate before bag processing.
+type PKCS12ParseOptions struct {
+	// AllowLegacy permits import-only HMAC-SHA-1 PBKDF2 and traditional SHA-1
+	// container MACs. RFC 9879 PBMAC1 remains SHA-2 only. FIPS rejects SHA-1.
+	AllowLegacy bool
+	// AllowNonDefaultMACKeyLength permits RFC 9879 PBMAC1 keys of 16..64 bytes
+	// whose size differs from the MAC output. Zero requires the MAC output size.
+	// Export always uses the MAC output size; shorter keys remain unsupported.
+	AllowNonDefaultMACKeyLength bool
+	// AllowBER enables indefinite container/ContentInfo/SafeBag wrappers and
+	// constructed OCTET STRING payloads. Keys, algorithms and attributes retain
+	// their strict DER rules. MAC parameters keep primitive/structure checks;
+	// the explicit PBMAC1 outer DEFAULT1 placeholder in RFC9879 vectors is
+	// tolerated independently of this option. Original MAC input stays unchanged.
+	AllowBER bool
+	// AllowNestedSafeContents enables bounded recursive safeContentsBag values.
+	AllowNestedSafeContents bool
+	// CertificateSHA256 selects one exact certificate when parsing one identity.
+	// Zero requires exactly one identity. Local names never select a key.
+	CertificateSHA256 [32]byte
+}
+
+// ParsePKCS12 imports exactly one identity from the strict flat DER profile.
+// It authenticates the mandatory password MAC before decryption, enforces
+// aggregate KDF work, and performs no certificate trust processing or I/O.
 func ParsePKCS12(ctx context.Context, data, password []byte, limits Limits) (*PKCS12Identity, error) {
+	return ParsePKCS12WithOptions(ctx, data, password, PKCS12ParseOptions{}, limits)
+}
+
+// ParsePKCS12WithOptions imports one identity using an explicit container-form
+// policy and optional exact certificate digest. Every bag and identity must be
+// valid, including unselected keys; no partial success is returned on error.
+func ParsePKCS12WithOptions(ctx context.Context, data, password []byte, options PKCS12ParseOptions, limits Limits) (*PKCS12Identity, error) {
+	items, err := parsePKCS12Identities(ctx, data, password, options, limits)
+	if err != nil {
+		return nil, err
+	}
+
+	if options.CertificateSHA256 == [32]byte{} {
+		if len(items) != 1 {
+			return nil, ErrFormat
+		}
+
+		return items[0], nil
+	}
+
+	for _, item := range items {
+		if sha256.Sum256(item.Certificate.Raw) == options.CertificateSHA256 {
+			return item, nil
+		}
+	}
+
+	return nil, ErrFormat
+}
+
+// ParsePKCS12Identities imports every unambiguously bound private-key/certificate
+// pair in bag order. It never chooses a wire-named identity or grants PKIX trust.
+// CertificateSHA256 must be zero; use ParsePKCS12WithOptions for exact selection.
+// Certificate objects are owned by this result and can be shared between its
+// identities' ExtraCertificates. Callers must coordinate mutation within it.
+// Password bytes are UTF-8; classic MAC uses BMP with a terminal zero pair.
+// Unsupported bags/attributes, duplicate keys/certificates, conflicting IDs and
+// unmatched/ambiguous keys fail the entire operation. Output remains DER-only.
+func ParsePKCS12Identities(ctx context.Context, data, password []byte, options PKCS12ParseOptions, limits Limits) ([]*PKCS12Identity, error) {
+	if options.CertificateSHA256 != [32]byte{} {
+		return nil, ErrPolicy
+	}
+
+	return parsePKCS12Identities(ctx, data, password, options, limits)
+}
+
+func parsePKCS12Identities(ctx context.Context, data, password []byte, options PKCS12ParseOptions, limits Limits) ([]*PKCS12Identity, error) {
 	state, err := newPasswordState(ctx, password, limits)
 	if err != nil {
 		return nil, err
 	}
 	defer state.close()
+
+	state.allowLegacy = options.AllowLegacy
+	state.allowNonDefaultMACKeyLength = options.AllowNonDefaultMACKeyLength
 
 	if !validPKCS12Password(state.password) {
 		return nil, ErrPolicy
@@ -52,7 +117,16 @@ func ParsePKCS12(ctx context.Context, data, password []byte, limits Limits) (*PK
 
 	// The container is borrowed for this call. Keys are decoded into independent
 	// objects, and certificates get their own DER before plaintext is cleared.
-	v, err := readDER(data, state.limits.MaxContainerBytes, state.limits)
+	encoded := data
+	if options.AllowBER {
+		encoded, err = normalizePKCS12BER(state, data, pfxForm)
+		if err != nil {
+			return nil, err
+		}
+		defer clear(encoded)
+	}
+
+	v, err := readDER(encoded, state.limits.MaxContainerBytes, state.limits)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +150,16 @@ func ParsePKCS12(ctx context.Context, data, password []byte, limits Limits) (*PK
 		return nil, err
 	}
 
-	v, err = readDER(authSafe.Bytes, state.limits.MaxContainerBytes, state.limits)
+	authenticated := authSafe.Bytes
+	if options.AllowBER {
+		authenticated, err = normalizePKCS12BER(state, authenticated, authenticatedForm)
+		if err != nil {
+			return nil, err
+		}
+		defer clear(authenticated)
+	}
+
+	v, err = readDER(authenticated, state.limits.MaxContainerBytes, state.limits)
 	if err != nil {
 		return nil, err
 	}
@@ -86,17 +169,17 @@ func ParsePKCS12(ctx context.Context, data, password []byte, limits Limits) (*PK
 		return nil, derError(err)
 	}
 
-	parser := identityParser{state: state}
+	parser := identityParser{state: state, options: options}
 
-	if returned1, matchedBranch := parsePKCS12Infos(infos, &parser, state); matchedBranch {
-		return nil, returned1
+	if err := parser.contentInfos(infos); err != nil {
+		return nil, err
 	}
 
-	if parser.private == nil || len(parser.certs) == 0 {
+	if len(parser.keys) == 0 || len(parser.certs) == 0 {
 		return nil, ErrFormat
 	}
 
-	identity, err := matchIdentity(parser.private, parser.certs, parser.keyID, parser.certIDs)
+	identities, err := parser.identities()
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +188,7 @@ func ParsePKCS12(ctx context.Context, data, password []byte, limits Limits) (*PK
 		return nil, err
 	}
 
-	return identity, nil
+	return identities, nil
 }
 
 func contentInfo(v asn1.RawValue) (asn1.ObjectIdentifier, asn1.RawValue, error) {
@@ -146,40 +229,40 @@ func decryptSafeContents(state *passwordState, v asn1.RawValue) ([]byte, error) 
 	return decryptPBES2(state, info[1], info[2].Bytes, state.limits.MaxContainerBytes)
 }
 
-func parsePKCS12Infos(infos []asn1.RawValue, parser *identityParser, state *passwordState) (returned1 error, matchedBranch bool) {
+func (p *identityParser) contentInfos(infos []asn1.RawValue) error {
 	for _, info := range infos {
 		oid, content, err := contentInfo(info)
 		if err != nil {
-			return err, true
+			return err
 		}
 
 		switch {
 		case oid.Equal(oidData()):
 			if !der.Is(content, 0, asn1.TagOctetString, false) {
-				return ErrFormat, true
+				return ErrFormat
 			}
 
-			if err := parser.safeContents(content.Bytes); err != nil {
-				return err, true
+			if err := p.safeContents(content.Bytes); err != nil {
+				return err
 			}
 		case oid.Equal(oidEncryptedData()):
-			plain, err := decryptSafeContents(state, content)
+			plain, err := decryptSafeContents(p.state, content)
 			if err != nil {
-				return err, true
+				return err
 			}
 
-			err = parser.safeContents(plain)
+			err = p.safeContents(plain)
 			clear(plain[:cap(plain)])
 
 			if err != nil {
-				return err, true
+				return err
 			}
 		default:
-			return ErrPolicy, true
+			return ErrPolicy
 		}
 	}
 
-	return returned1, matchedBranch
+	return nil
 }
 
 // PKCS12Options selects encryption and integrity for DER PKCS#12 output.
@@ -246,18 +329,59 @@ func oidX509Cert() asn1.ObjectIdentifier {
 
 func oidLocalKeyID() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 21} }
 
+type privateBag struct {
+	key    crypto.Signer
+	id     []byte
+	public []byte
+}
+
 type identityParser struct {
-	state   *passwordState
-	private crypto.Signer
-	keyID   []byte
-	certs   []*x509.Certificate
-	certIDs [][]byte
-	bags    int
+	state       *passwordState
+	options     PKCS12ParseOptions
+	keys        []privateBag
+	certs       []*x509.Certificate
+	certIDs     [][]byte
+	bags, depth int
+}
+
+func (p *identityParser) identities() ([]*PKCS12Identity, error) {
+	output := make([]*PKCS12Identity, 0, len(p.keys))
+	for _, bag := range p.keys {
+		if err := p.state.ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		item, err := matchIdentity(bag.key, p.certs, bag.id, p.certIDs)
+		if err != nil {
+			return nil, err
+		}
+
+		output = append(output, item)
+	}
+
+	return output, nil
 }
 
 func (p *identityParser) safeContents(raw []byte) error {
 	if err := p.state.ctx.Err(); err != nil {
 		return err
+	}
+
+	p.depth++
+	defer func() { p.depth-- }()
+
+	if p.depth > p.state.limits.MaxASN1Depth {
+		return ErrLimit
+	}
+
+	if p.options.AllowBER {
+		normalized, err := normalizePKCS12BER(p.state, raw, safeContentsForm)
+		if err != nil {
+			return err
+		}
+		defer clear(normalized)
+
+		raw = normalized
 	}
 
 	v, err := readDER(raw, p.state.limits.MaxContainerBytes, p.state.limits)
@@ -305,21 +429,13 @@ func (p *identityParser) parseSafeBag(bag asn1.RawValue) error {
 
 	switch {
 	case der.OIDEqual(f[0], oidShroudedKeyBag()), der.OIDEqual(f[0], oidKeyBag()):
-		if p.private != nil {
-			return ErrFormat
+		return p.privateBag(value, id, der.OIDEqual(f[0], oidShroudedKeyBag()))
+	case der.OIDEqual(f[0], oidSafeContentsBag()):
+		if !p.options.AllowNestedSafeContents {
+			return ErrPolicy
 		}
 
-		if der.OIDEqual(f[0], oidShroudedKeyBag()) {
-			p.private, err = decryptPrivateInfo(p.state, value.FullBytes)
-		} else {
-			p.private, err = parseDecryptedPrivate(p.state, value.FullBytes)
-		}
-
-		if err != nil {
-			return err
-		}
-
-		p.keyID = id
+		return p.safeContents(value.FullBytes)
 	case der.OIDEqual(f[0], oidCertBag()):
 		if len(p.certs) >= p.state.limits.MaxCertificates {
 			return ErrLimit
@@ -351,6 +467,37 @@ func (p *identityParser) parseSafeBag(bag asn1.RawValue) error {
 	default:
 		return ErrPolicy
 	}
+
+	return nil
+}
+
+func (p *identityParser) privateBag(value asn1.RawValue, id []byte, shrouded bool) error {
+	var (
+		err error
+		key crypto.Signer
+	)
+	if shrouded {
+		key, err = decryptPrivateInfo(p.state, value.FullBytes)
+	} else {
+		key, err = parseDecryptedPrivate(p.state, value.FullBytes)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	public, err := x509.MarshalPKIXPublicKey(key.Public())
+	if err != nil {
+		return ErrFormat
+	}
+
+	for _, prior := range p.keys {
+		if bytes.Equal(public, prior.public) || len(id) > 0 && bytes.Equal(id, prior.id) {
+			return ErrFormat
+		}
+	}
+
+	p.keys = append(p.keys, privateBag{key: key, id: id, public: public})
 
 	return nil
 }

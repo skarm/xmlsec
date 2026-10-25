@@ -23,10 +23,12 @@
 //
 // # With-time validation
 //
-// [NewWithTimeValidator] selects a separate B-T profile. It establishes trusted
-// SignatureValue existence from verified timestamp evidence, checks signer
-// trust and revocation at the proof time, and checks TSA trust at verification
-// time. It does not recover expired TSA paths, slide control time or process
+// [NewWithTimeValidator] selects a separate B-T profile. Supplied signer CRLs
+// are limited to direct complete lists; indirect, delta and distribution-scoped
+// CRL artifacts are rejected even though current-time PKI supports them.
+// It establishes trusted SignatureValue existence from verified timestamp
+// evidence, checks signer trust and revocation at the proof time, and checks TSA
+// trust at verification time. It does not recover expired TSA paths, slide control time or process
 // general archive evidence. Claimed SigningTime alone is never proof of
 // existence.
 //

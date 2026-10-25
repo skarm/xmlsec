@@ -78,14 +78,25 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
   builtin datatype/regex rules (default 1.1), independently of schema awareness.
   Recurring decimal results use at least twenty fractional places/significant
   digits; terminating decimals remain exact.
-- PKIX with explicit roots/time, direct complete offline CRLs and restricted
-  OCSP; definite-length CMS SignedData and RFC 3161/5816 timestamps. Explicit
-  CMS `ParseBER`/`ParseBERReader` also accept indefinite envelope/SignedData/
-  encapsulated-content wrappers and constructed content OCTET STRINGs. Signed
-  attributes retain their original strict DER encoding. Other BER fields remain
-  restricted; timestamp APIs retain their existing input profile. There is no
-  automatic network fetching, indirect/delta CRL processing or unrestricted BER.
+- PKIX with explicit roots/time and bounded offline v1/v2 complete, scoped,
+  indirect and base/delta CRLs. Issuer authorization, DP/IDP names, reasons,
+  FreshestCRL availability and freshness remain required. UTF8/Printable DN
+  comparisons use RFC 4518; original DER remains the signature/CertID input.
+  OCSP supports exact CertID selection, signature-authorized responders and
+  explicit issuer-scoped local authority. Verified evidence retains object,
+  issuer/signer, time, status, scope and source bindings. URI/retrieval metadata
+  never establishes trust or historical proof. There is no implicit network I/O;
+  the separate `evidence/collect` HTTP adapter requires explicit application policy.
+- CMS SignedData and RFC 3161/5816 timestamps. `VerifyWithTrust` composes every
+  CMS signer with an explicit PKIX/revocation policy; ordinary `Verify` remains
+  cryptographic verification. Optional ESS multi-certificate path restrictions
+  are rejected by trusted operations. Explicit `ParseBER`/`ParseBERReader` accept
+  selected envelope/SignedData/content wrappers and constructed content octets;
+  signed attributes retain their strict original DER. General BER and other CMS
+  content types remain outside scope; timestamp input rules remain explicit.
 - Closed XAdES basic/T/LT/LTA current-time and separate with-time B-T profiles.
+  The latter retains direct-complete signer CRLs; scoped/indirect/delta artifacts
+  require a separate workflow and cannot bypass its no-recovery policy.
   A complete historical EN 319 102-1 evidence engine is unsupported.
 - Signed SAML metadata, POST/Redirect and solicited WebSSO. SLO, Artifact/ECP,
   queries, unsolicited SSO and encrypted Assertion/NameID/Attribute profiles are unsupported.
@@ -95,8 +106,23 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
 - PEM/DER PKCS#8, RSA PKCS#1, EC SEC1, SPKI, X.509 certificates and CRLs.
   Encrypted PKCS#8 uses PBES2/PBKDF2 with SHA-2 and AES-CBC. DER PKCS#12 requires
   a SHA-2 classic MAC or PBMAC1, one private key and matching certificate, with
-  optional extra certificates. KDF work and collections are bounded. Legacy
-  RC2/3DES/SHA-1, scrypt, BER, nested bags and multiple identities are unsupported.
+  optional extra certificates. Explicit import options accept selected BER
+  wrappers/constructed data, ciphertext and certificate OCTET STRINGs, and nested
+  SafeContents. Keys, algorithms and attributes stay DER; the PBMAC1 placeholder
+  tolerance is described below. Collection import
+  returns every unambiguous identity; single import requires one identity or an
+  exact certificate SHA-256 selector. All contents pass before selection. KDF
+  work and collections are bounded. Output remains one DER identity. Legacy
+  RC2/3DES password ciphers and scrypt remain unsupported. Explicit import
+  `AllowLegacy` permits PBKDF2-HMAC-SHA-1 (including the default PRF) and
+  traditional PKCS#12 SHA-1 MACs; FIPS mode rejects SHA-1. Export and RFC 9879
+  PBMAC1 retain SHA-2 policy. Non-default PBMAC1 key sizes require a separate
+  compatibility option and contain 16..64 bytes; default keys match the MAC size.
+  PKCS#8 import options accept selected BER SEQUENCE/OCTET STRING wrappers;
+  embedded key payloads, algorithms and attributes stay strict DER. PBMAC1
+  accepts the explicitly encoded outer iteration DEFAULT1 in the published
+  RFC 9879 vectors; this is a known placeholder tolerance, not general BER MAC
+  parameter support.
   Private DER versions/components are checked; EC scalar size, curve and optional
   public key must agree. Schema-dependent DER rules for custom attributes remain
   the application's responsibility.

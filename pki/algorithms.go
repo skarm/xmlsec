@@ -8,6 +8,8 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"fmt"
+
+	"github.com/skarm/xmlsec/internal/ecdsakey"
 )
 
 // This package currently uses a fixed modern offline validation profile. It does
@@ -19,15 +21,11 @@ func allowedPublicKey(key crypto.PublicKey) error {
 			return fmt.Errorf("%w: RSA key strength", ErrPolicy)
 		}
 	case *ecdsa.PublicKey:
-		if k != nil && (k.X == nil || k.Y == nil) { //nolint:staticcheck // Bytes panics on nil legacy coordinates; reject malformed caller keys first.
-			return fmt.Errorf("%w: ECDSA key", ErrPolicy)
-		}
-
 		if k == nil || (k.Curve != elliptic.P256() && k.Curve != elliptic.P384() && k.Curve != elliptic.P521()) {
 			return fmt.Errorf("%w: ECDSA key", ErrPolicy)
 		}
 
-		if _, err := k.Bytes(); err != nil {
+		if _, err := ecdsakey.PublicBytes(k); err != nil {
 			return fmt.Errorf("%w: ECDSA key", ErrPolicy)
 		}
 	case ed25519.PublicKey:

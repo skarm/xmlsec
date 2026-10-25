@@ -7,8 +7,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/hmac"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -22,6 +25,205 @@ import (
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/keys"
 )
+
+func pkcs12FormOID(last int) asn1.ObjectIdentifier {
+	return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 12, 10, 1, last}
+}
+
+func pkcs12FormData(input []byte) []byte {
+	return der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 1}), der.Ctx(0, der.Octets(input)))
+}
+
+func pkcs12FormIndefinite(tag byte, parts ...[]byte) []byte {
+	return append(append([]byte{tag, 0x80}, bytes.Join(parts, nil)...), 0, 0)
+}
+
+// Build the MAC with the independent standard-library PBKDF2 implementation.
+// The authenticated octets deliberately need not be a canonical DER encoding.
+func pkcs12FormPFX(t *testing.T, authenticated, macInput []byte, outerBER bool) []byte {
+	t.Helper()
+	salt := []byte("published form test salt")
+	key, err := pbkdf2.Key(sha256.New, "forms password", salt, 1000, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(key)
+	mac := hmac.New(sha256.New, key)
+	mac.Write(macInput)
+	prf := der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 2, 9}), []byte{5, 0})
+	kdf := der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 12}), der.Seq(der.Octets(salt), der.Int(1000), der.Int(32), prf))
+	algorithm := der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 14}), der.Seq(kdf, prf))
+	macData := der.Seq(der.Seq(algorithm, der.Octets(mac.Sum(nil))), der.Octets(nil))
+	if outerBER {
+		mid := len(authenticated) / 2
+		octets := pkcs12FormIndefinite(0x24, der.Octets(authenticated[:mid]), pkcs12FormIndefinite(0x24, der.Octets(authenticated[mid:])))
+		info := pkcs12FormIndefinite(0x30, der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 1}), pkcs12FormIndefinite(0xa0, octets))
+		return pkcs12FormIndefinite(0x30, der.Int(3), info, macData)
+	}
+	return der.Seq(der.Int(3), pkcs12FormData(authenticated), macData)
+}
+
+func pkcs12FormBags(t *testing.T, key crypto.Signer, certificate *x509.Certificate, encrypted bool) []byte {
+	t.Helper()
+	private, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { clear(private) }()
+	bagType := 1
+	if encrypted {
+		clear(private)
+		private, err = keys.MarshalEncryptedPrivate(t.Context(), key, []byte("forms password"), protection(crypto.SHA256, 256), keys.Limits{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bagType = 2
+	}
+	id := sha256.Sum256(certificate.Raw)
+	attributes := der.Set(der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 21}), der.Set(der.Octets(id[:]))))
+	keyBag := der.Seq(der.OID(pkcs12FormOID(bagType)), der.Ctx(0, private), attributes)
+	certBag := der.Seq(der.OID(pkcs12FormOID(3)), der.Ctx(0, der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 22, 1}), der.Ctx(0, der.Octets(certificate.Raw)))), attributes)
+	return bytes.Join([][]byte{keyBag, certBag}, nil)
+}
+
+func TestPKCS12ExplicitIdentitiesAndSelection(t *testing.T) {
+	a, b := testcert.New(t), testcert.New(t)
+	bags := bytes.Join([][]byte{pkcs12FormBags(t, a.LeafKey, a.Leaf, false), pkcs12FormBags(t, b.LeafKey, b.Leaf, false)}, nil)
+	authenticated := der.Seq(pkcs12FormData(der.Seq(bags)))
+	raw := pkcs12FormPFX(t, authenticated, authenticated, false)
+	items, err := keys.ParsePKCS12Identities(t.Context(), raw, []byte("forms password"), keys.PKCS12ParseOptions{}, keys.Limits{})
+	if err != nil || len(items) != 2 {
+		t.Fatal(items, err)
+	}
+	for i, cert := range []*x509.Certificate{a.Leaf, b.Leaf} {
+		if !bytes.Equal(items[i].Certificate.Raw, cert.Raw) {
+			t.Fatal("identity order or certificate binding changed")
+		}
+		selected, err := keys.ParsePKCS12WithOptions(t.Context(), raw, []byte("forms password"), keys.PKCS12ParseOptions{CertificateSHA256: sha256.Sum256(cert.Raw)}, keys.Limits{})
+		if err != nil || !bytes.Equal(selected.Certificate.Raw, cert.Raw) {
+			t.Fatal(selected, err)
+		}
+	}
+	if item, err := keys.ParsePKCS12(t.Context(), raw, []byte("forms password"), keys.Limits{}); item != nil || !errors.Is(err, keys.ErrFormat) {
+		t.Fatal(item, err)
+	}
+	if item, err := keys.ParsePKCS12WithOptions(t.Context(), raw, []byte("forms password"), keys.PKCS12ParseOptions{CertificateSHA256: sha256.Sum256([]byte("absent"))}, keys.Limits{}); item != nil || !errors.Is(err, keys.ErrFormat) {
+		t.Fatal(item, err)
+	}
+	clear(raw)
+	if !bytes.Equal(items[0].Certificate.Raw, a.Leaf.Raw) || !bytes.Equal(items[1].Certificate.Raw, b.Leaf.Raw) {
+		t.Fatal("identities borrowed the source encoding")
+	}
+	if items, err := keys.ParsePKCS12Identities(t.Context(), pkcs12FormPFX(t, authenticated, authenticated, false), []byte("wrong"), keys.PKCS12ParseOptions{}, keys.Limits{}); items != nil || !errors.Is(err, keys.ErrDecrypt) {
+		t.Fatal(items, err)
+	}
+}
+
+func TestPKCS12BERAndNestedSafeContents(t *testing.T) {
+	c := testcert.New(t)
+	contents := der.Seq(pkcs12FormBags(t, c.LeafKey, c.Leaf, false))
+	bags := privateFields(t, contents)
+	mid := len(c.Leaf.Raw) / 2
+	certificate := pkcs12FormIndefinite(0x30, der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 22, 1}), pkcs12FormIndefinite(0xa0, pkcs12FormIndefinite(0x24, der.Octets(c.Leaf.Raw[:mid]), der.Octets(c.Leaf.Raw[mid:]))))
+	certBag := pkcs12FormIndefinite(0x30, der.OID(pkcs12FormOID(3)), pkcs12FormIndefinite(0xa0, certificate))
+	contents = pkcs12FormIndefinite(0x30, bags[0], certBag)
+	nestedBag := pkcs12FormIndefinite(0x30, der.OID(pkcs12FormOID(6)), pkcs12FormIndefinite(0xa0, contents))
+	nested := pkcs12FormIndefinite(0x30, nestedBag)
+	authenticated := pkcs12FormIndefinite(0x30, pkcs12FormData(nested))
+	raw := pkcs12FormPFX(t, authenticated, authenticated, true)
+	options := keys.PKCS12ParseOptions{AllowBER: true, AllowNestedSafeContents: true}
+	if item, err := keys.ParsePKCS12WithOptions(t.Context(), raw, []byte("forms password"), options, keys.Limits{}); item == nil || err != nil || !bytes.Equal(item.Certificate.Raw, c.Leaf.Raw) {
+		t.Fatal(item, err)
+	}
+	for _, disabled := range []keys.PKCS12ParseOptions{{}, {AllowBER: true}, {AllowNestedSafeContents: true}} {
+		if item, err := keys.ParsePKCS12WithOptions(t.Context(), raw, []byte("forms password"), disabled, keys.Limits{}); item != nil || err == nil {
+			t.Fatal(item, err)
+		}
+	}
+	for _, limits := range []keys.Limits{{MaxBags: 2}, {MaxASN1Depth: 4}, {MaxASN1Nodes: 4}, {MaxContainerBytes: len(raw) - 1}, {MaxKDFWork: 999}} {
+		if item, err := keys.ParsePKCS12WithOptions(t.Context(), raw, []byte("forms password"), options, limits); item != nil || !errors.Is(err, keys.ErrLimit) {
+			t.Fatal(item, err, limits)
+		}
+	}
+	if item, err := keys.ParsePKCS12WithOptions(t.Context(), raw, []byte("forms password"), options, keys.Limits{MaxBags: 3}); item == nil || err != nil {
+		t.Fatal(item, err)
+	}
+	canonical := der.Seq(pkcs12FormData(nested))
+	wrongMAC := pkcs12FormPFX(t, authenticated, canonical, true)
+	if item, err := keys.ParsePKCS12WithOptions(t.Context(), wrongMAC, []byte("forms password"), options, keys.Limits{}); item != nil || !errors.Is(err, keys.ErrDecrypt) {
+		t.Fatal("MAC used repaired ASN.1 instead of original octets", item, err)
+	}
+	for _, malformed := range [][]byte{raw[:len(raw)-1], append(bytes.Clone(raw), 0, 0), append(bytes.Clone(raw), raw...), {0x30, 0x80, 0, 0, 0, 0}, {4, 0x80, 0, 0}} {
+		if item, err := keys.ParsePKCS12WithOptions(t.Context(), malformed, []byte("forms password"), options, keys.Limits{}); item != nil || !errors.Is(err, keys.ErrFormat) {
+			t.Fatal(item, err)
+		}
+	}
+}
+
+func TestPKCS12MultipleIdentityWorkAndFailures(t *testing.T) {
+	a, b := testcert.New(t), testcert.New(t)
+	bags := bytes.Join([][]byte{pkcs12FormBags(t, a.LeafKey, a.Leaf, true), pkcs12FormBags(t, b.LeafKey, b.Leaf, true)}, nil)
+	authenticated := der.Seq(pkcs12FormData(der.Seq(bags)))
+	raw := pkcs12FormPFX(t, authenticated, authenticated, false)
+	if items, err := keys.ParsePKCS12Identities(t.Context(), raw, []byte("forms password"), keys.PKCS12ParseOptions{}, keys.Limits{MaxKDFWork: 3000}); len(items) != 2 || err != nil {
+		t.Fatal(items, err)
+	}
+	if items, err := keys.ParsePKCS12Identities(t.Context(), raw, []byte("forms password"), keys.PKCS12ParseOptions{}, keys.Limits{MaxKDFWork: 2999}); items != nil || !errors.Is(err, keys.ErrLimit) {
+		t.Fatal(items, err)
+	}
+	// A valid selected key cannot hide an unmatched or corrupt later identity.
+	badBags := bytes.Join([][]byte{pkcs12FormBags(t, a.LeafKey, a.Leaf, false), pkcs12FormBags(t, b.LeafKey, a.Root, false)}, nil)
+	badSafe := der.Seq(pkcs12FormData(der.Seq(badBags)))
+	if item, err := keys.ParsePKCS12WithOptions(t.Context(), pkcs12FormPFX(t, badSafe, badSafe, false), []byte("forms password"), keys.PKCS12ParseOptions{CertificateSHA256: sha256.Sum256(a.Leaf.Raw)}, keys.Limits{}); item != nil || !errors.Is(err, keys.ErrFormat) {
+		t.Fatal(item, err)
+	}
+}
+
+func TestPKCS12BEREncryptedContentAndStrictOpaqueFields(t *testing.T) {
+	c := testcert.New(t)
+	raw, err := keys.MarshalPKCS12(t.Context(), keys.PKCS12Identity{PrivateKey: c.LeafKey, Certificate: c.Leaf}, []byte("forms password"), keys.PKCS12Options{Encryption: protection(crypto.SHA256, 256)}, keys.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer := privateFields(t, raw)
+	authInfo := privateFields(t, outer[1])
+	var explicit, octets asn1.RawValue
+	if _, err := asn1.Unmarshal(authInfo[1], &explicit); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := asn1.Unmarshal(explicit.Bytes, &octets); err != nil {
+		t.Fatal(err)
+	}
+	infos := privateFields(t, octets.Bytes)
+	certInfo := privateFields(t, infos[0])
+	if _, err := asn1.Unmarshal(certInfo[1], &explicit); err != nil {
+		t.Fatal(err)
+	}
+	encrypted := privateFields(t, explicit.Bytes)
+	fields := privateFields(t, encrypted[1])
+	var ciphertext asn1.RawValue
+	if _, err := asn1.Unmarshal(fields[2], &ciphertext); err != nil {
+		t.Fatal(err)
+	}
+	mid := len(ciphertext.Bytes) / 2
+	chunks := pkcs12FormIndefinite(0xa0, der.Octets(ciphertext.Bytes[:mid]), pkcs12FormIndefinite(0x24, der.Octets(ciphertext.Bytes[mid:])))
+	makeSafe := func(algorithm []byte) []byte {
+		info := pkcs12FormIndefinite(0x30, fields[0], algorithm, chunks)
+		content := pkcs12FormIndefinite(0x30, encrypted[0], info)
+		return pkcs12FormIndefinite(0x30, pkcs12FormIndefinite(0x30, certInfo[0], pkcs12FormIndefinite(0xa0, content)), infos[1])
+	}
+	valid := makeSafe(fields[1])
+	options := keys.PKCS12ParseOptions{AllowBER: true}
+	if item, err := keys.ParsePKCS12WithOptions(t.Context(), pkcs12FormPFX(t, valid, valid, true), []byte("forms password"), options, keys.Limits{}); item == nil || err != nil {
+		t.Fatal(item, err)
+	}
+	// AlgorithmIdentifier remains DER even under explicit container BER support.
+	algorithmFields := privateFields(t, fields[1])
+	bad := makeSafe(pkcs12FormIndefinite(0x30, algorithmFields...))
+	if item, err := keys.ParsePKCS12WithOptions(t.Context(), pkcs12FormPFX(t, bad, bad, true), []byte("forms password"), options, keys.Limits{}); item != nil || !errors.Is(err, keys.ErrFormat) {
+		t.Fatal(item, err)
+	}
+}
 
 func TestPrivateExportOwnership(t *testing.T) {
 	r, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -370,10 +572,7 @@ func TestPKCS1VersionAndComponentStructure(t *testing.T) {
 }
 
 func TestMultiPrimeRSAEncodingConsistency(t *testing.T) {
-	key, err := rsa.GenerateMultiPrimeKey(rand.Reader, 3, 2048) //nolint:staticcheck // Deliberate multi-prime fixture for the supported PKCS#1 import profile.
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := multiPrimeRSA(t)
 
 	raw := x509.MarshalPKCS1PrivateKey(key)
 

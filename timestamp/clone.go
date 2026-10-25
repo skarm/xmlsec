@@ -2,8 +2,8 @@ package timestamp
 
 import (
 	"bytes"
-	"crypto/x509"
 
+	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/pki"
 )
 
@@ -24,7 +24,7 @@ func (v *Verifier) WithEvidenceCertificates(raw [][]byte) (*Verifier, error) {
 			return nil, ErrPolicy
 		}
 
-		if _, e := x509.ParseCertificate(b); e != nil {
+		if _, e := x509cert.ParseDefault(b); e != nil {
 			return nil, e
 		}
 

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto"
-	"crypto/x509"
 	"encoding/asn1"
 	"errors"
 	"io"
@@ -15,6 +14,7 @@ import (
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
+	"github.com/skarm/xmlsec/internal/x509cert"
 )
 
 // IssueOptions uses a caller-supplied clock/serial. A real TSA must independently
@@ -78,7 +78,7 @@ func WriteResponse(ctx context.Context, dst io.Writer, requestDER []byte, signer
 		return 0, ErrBinding
 	}
 
-	c, e := x509.ParseCertificate(tsaCertificateDER)
+	c, e := x509cert.ParseDefault(tsaCertificateDER)
 	if e != nil {
 		return 0, ErrTrust
 	}
@@ -165,10 +165,10 @@ func encodeAccuracy(d time.Duration) ([]byte, error) {
 // Only the small DER SEQUENCE header is buffered, regardless of Write boundaries.
 type responseWriter struct {
 	target   *streamio.Writer
-	header   [10]byte
 	used     int
-	started  bool
 	expected int64
+	header   [10]byte
+	started  bool
 }
 
 func (w *responseWriter) Write(p []byte) (int, error) {

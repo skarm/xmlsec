@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/asn1"
 	"fmt"
 	"time"
@@ -12,6 +11,8 @@ import (
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/x509cert"
+	"github.com/skarm/xmlsec/internal/x509crl"
 	"github.com/skarm/xmlsec/pki"
 	"github.com/skarm/xmlsec/xmldsig"
 )
@@ -698,11 +699,11 @@ func (c *timestampMaterialCursor) certificates(ctx context.Context, children []d
 func validateMaterialObject(kind int, raw []byte) error {
 	switch kind {
 	case 0:
-		if _, e := x509.ParseCertificate(raw); e != nil {
+		if _, e := x509cert.ParseWithMaxBytes(raw, len(raw)); e != nil {
 			return fmt.Errorf("%w: embedded certificate", ErrProfile)
 		}
 	case 1:
-		if _, e := x509.ParseRevocationList(raw); e != nil {
+		if _, e := x509crl.ParseEvidence(raw, len(raw)); e != nil {
 			return fmt.Errorf("%w: embedded CRL", ErrProfile)
 		}
 	case 2:

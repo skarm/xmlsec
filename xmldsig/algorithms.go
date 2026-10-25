@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/skarm/xmlsec/internal/ecdsakey"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/signature"
 )
@@ -158,7 +159,7 @@ func validateKey(key crypto.PublicKey, p Policy) error {
 			return fmt.Errorf("%w: RSA key outside policy", ErrKey)
 		}
 	case *ecdsa.PublicKey:
-		if k == nil || k.Curve == nil || k.X == nil || k.Y == nil { //nolint:staticcheck // Bytes panics on nil legacy coordinates; reject malformed caller keys first.
+		if k == nil || k.Curve == nil {
 			return fmt.Errorf("%w: incomplete ECDSA key", ErrKey)
 		}
 
@@ -166,7 +167,7 @@ func validateKey(key crypto.PublicKey, p Policy) error {
 			return fmt.Errorf("%w: unsupported ECDSA curve", ErrKey)
 		}
 
-		if _, err := k.Bytes(); err != nil {
+		if _, err := ecdsakey.PublicBytes(k); err != nil {
 			return fmt.Errorf("%w: point not on curve", ErrKey)
 		}
 	case ed25519.PublicKey:

@@ -12,6 +12,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -29,6 +31,36 @@ type keyFormatCase struct {
 	name, label string
 	raw         []byte
 	private     bool
+}
+
+func multiPrimeRSA(t testing.TB) *rsa.PrivateKey {
+	t.Helper()
+
+	raw, err := os.ReadFile(filepath.Join("testdata", "rsa-three-prime.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	block, rest := pem.Decode(raw)
+	if block == nil || block.Type != privateKeyPEMType || len(bytes.TrimSpace(rest)) != 0 {
+		t.Fatal("invalid multi-prime RSA fixture")
+	}
+
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key, ok := parsed.(*rsa.PrivateKey)
+	if !ok || key.N.BitLen() != 2048 || len(key.Primes) != 3 {
+		t.Fatal("fixture must contain a 2048-bit three-prime RSA key")
+	}
+
+	if err := key.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	return key
 }
 
 func TestPrivateAndPublicFormats(t *testing.T) {
@@ -393,6 +425,41 @@ func TestLargeCRLResourceLimits(t *testing.T) {
 	} {
 		if crl, err := keys.ParseCRL(raw, small); crl != nil || !errors.Is(err, keys.ErrLimit) {
 			t.Fatalf("CRL limits %+v: %v", small, err)
+		}
+	}
+}
+
+func TestParseV1CRLOriginalOwnership(t *testing.T) {
+	chain := testcert.New(t)
+	for _, revoked := range []bool{false, true} {
+		var targets []*x509.Certificate
+		if revoked {
+			targets = []*x509.Certificate{chain.Leaf}
+		}
+		source := testcert.CRLV1(t, chain, targets...)
+		for _, asPEM := range []bool{false, true} {
+			input := bytes.Clone(source)
+			if asPEM {
+				input = pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: input})
+			}
+			parsed, err := keys.ParseCRL(input, keys.Limits{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			clear(input)
+			if !bytes.Equal(parsed.Raw, source) || parsed.Number != nil || len(parsed.Extensions) != 0 {
+				t.Fatal("v1 source fields were synthesized")
+			}
+			if err := parsed.CheckSignatureFrom(chain.Root); err != nil {
+				t.Fatal("original signed bytes not retained", err)
+			}
+			want := 0
+			if revoked {
+				want = 1
+			}
+			if len(parsed.RevokedCertificateEntries) != want {
+				t.Fatal("entry omitted")
+			}
 		}
 	}
 }

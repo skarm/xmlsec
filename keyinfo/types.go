@@ -16,6 +16,7 @@ import (
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/reference"
 )
 
@@ -185,7 +186,7 @@ func (c Candidate) Certificate() (*x509.Certificate, error) {
 		return nil, nil
 	}
 
-	return x509.ParseCertificate(bytes.Clone(c.certificate))
+	return x509cert.ParseWithMaxBytes(bytes.Clone(c.certificate), len(c.certificate))
 }
 
 // FingerprintSHA256 returns the hexadecimal SHA-256 fingerprint of the candidate SPKI.

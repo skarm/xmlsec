@@ -14,6 +14,7 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/streamio"
+	"github.com/skarm/xmlsec/internal/x509cert"
 )
 
 // Signer supplies an explicit key/certificate pair and signed attributes.
@@ -261,7 +262,7 @@ func (e *signedDataEncoder) signerCertificate(s Signer) (*x509.Certificate, erro
 		return nil, ErrPolicy
 	}
 
-	c, err := x509.ParseCertificate(bytes.Clone(s.CertificateDER))
+	c, err := x509cert.ParseDefault(bytes.Clone(s.CertificateDER))
 	if err != nil || c.SerialNumber == nil || c.SerialNumber.Sign() <= 0 || c.SerialNumber.BitLen() > 160 {
 		return nil, ErrCertificate
 	}
@@ -311,7 +312,7 @@ func (e *signedDataEncoder) addCertificates(ctx context.Context, extra [][]byte)
 			return ErrPolicy
 		}
 
-		c, err := x509.ParseCertificate(bytes.Clone(b))
+		c, err := x509cert.ParseDefault(bytes.Clone(b))
 		if err != nil {
 			return ErrCertificate
 		}

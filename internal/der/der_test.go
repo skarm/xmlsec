@@ -328,3 +328,57 @@ func FuzzComposition(f *testing.F) {
 type sequenceReader struct{ read func([]byte) (int, error) }
 
 func (r *sequenceReader) Read(p []byte) (int, error) { return r.read(p) }
+
+// The optimized validator retains encoding/asn1's exact existing OID profile,
+// including its MaxInt32 subidentifier cap. It does not broaden ASN.1 support.
+func TestObjectIdentifierStrictEquivalence(t *testing.T) {
+	checkObjectIdentifier(t, nil)
+	for first := range 256 {
+		checkObjectIdentifier(t, []byte{byte(first)})
+		for second := range 256 {
+			checkObjectIdentifier(t, []byte{byte(first), byte(second)})
+		}
+	}
+	for _, body := range [][]byte{
+		{0x87, 0xff, 0xff, 0xff, 0x7f}, // MaxInt32 as the first subidentifier.
+		{0x88, 0x80, 0x80, 0x80, 0x00}, // MaxInt32+1.
+		{42, 0x87, 0xff, 0xff, 0xff, 0x7f},
+		{42, 0x88, 0x80, 0x80, 0x80, 0x00},
+		{42, 0x80, 0x00},
+		{42, 0x81},
+		{0x81, 0x80},
+		{0x81, 0x80, 0x80, 0x80, 0x80, 0x00},
+		{42, 0x81, 0x00, 0, 127, 0x81, 0x7f},
+	} {
+		checkObjectIdentifier(t, body)
+	}
+}
+
+func FuzzObjectIdentifierStrictEquivalence(f *testing.F) {
+	for _, body := range [][]byte{nil, {0}, {42, 0x86, 0x48}, {0x80, 0}, {0x81}, {0x87, 0xff, 0xff, 0xff, 0x7f}, {0x88, 0x80, 0x80, 0x80, 0}} {
+		f.Add(body)
+	}
+	f.Fuzz(func(t *testing.T, body []byte) {
+		if len(body) > 4096 {
+			t.Skip("bounded independent OID comparison")
+		}
+		checkObjectIdentifier(t, body)
+	})
+}
+
+func checkObjectIdentifier(t testing.TB, body []byte) {
+	t.Helper()
+	raw := der.Wrap(0, asn1.TagOID, false, body)
+	var oid asn1.ObjectIdentifier
+	rest, err := asn1.Unmarshal(raw, &oid)
+	valid := err == nil && len(rest) == 0
+	if valid {
+		canonical, marshalErr := asn1.Marshal(oid)
+		valid = marshalErr == nil && bytes.Equal(raw, canonical)
+	}
+	for _, input := range [][]byte{raw, der.Seq(raw)} {
+		if _, err := der.Read(input, len(input)); (err == nil) != valid {
+			t.Fatalf("OID %x: standard profile valid=%t, optimized=%v", body, valid, err)
+		}
+	}
+}

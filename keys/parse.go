@@ -14,6 +14,8 @@ import (
 	"math/bits"
 
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/x509cert"
+	"github.com/skarm/xmlsec/internal/x509crl"
 )
 
 const certificatePEMType = "CERTIFICATE"
@@ -255,7 +257,7 @@ func certificateKey(raw []byte, limits Limits) (crypto.PublicKey, error) {
 		return nil, ErrLimit
 	}
 
-	cert, err := x509.ParseCertificate(raw)
+	cert, err := x509cert.Parse(raw, x509cert.Limits{Bytes: limits.MaxCertificateBytes, Depth: limits.MaxASN1Depth, Nodes: limits.MaxASN1Nodes})
 	if err != nil {
 		return nil, fmt.Errorf("%w: certificate: %w", ErrFormat, err)
 	}
@@ -291,7 +293,7 @@ func ParseCertificate(data []byte, limits Limits) (*x509.Certificate, error) {
 		return nil, ErrFormat
 	}
 
-	cert, err := x509.ParseCertificate(decoded.ownedDER())
+	cert, err := x509cert.Parse(decoded.ownedDER(), x509cert.Limits{Bytes: limits.MaxCertificateBytes, Depth: limits.MaxASN1Depth, Nodes: limits.MaxASN1Nodes})
 	if err != nil {
 		return nil, fmt.Errorf("%w: certificate: %w", ErrFormat, err)
 	}
@@ -324,12 +326,12 @@ func ParseCRL(data []byte, limits Limits) (*x509.RevocationList, error) {
 		return nil, err
 	}
 
-	crl, err := x509.ParseRevocationList(decoded.ownedDER())
+	view, err := x509crl.Parse(decoded.ownedDER(), x509crl.Limits{Bytes: limits.MaxCRLBytes, Depth: limits.MaxASN1Depth, Nodes: limits.MaxASN1Nodes, Entries: limits.MaxCRLEntries})
 	if err != nil {
 		return nil, fmt.Errorf("%w: CRL: %w", ErrFormat, err)
 	}
 
-	return crl, nil
+	return view.CRL, nil
 }
 
 func crlBudget(raw []byte, limits Limits) error {

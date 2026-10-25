@@ -26,6 +26,7 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/keyinfo"
 	"github.com/skarm/xmlsec/pki"
 	"github.com/skarm/xmlsec/reference"
@@ -333,7 +334,7 @@ func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 
 		o.SelectTrustedKey = func(_ context.Context, info *keyinfo.Result) (int, error) {
 			p, _ := info.Candidates()[0].PublicKey()
-			p.(*ecdsa.PublicKey).X.SetInt64(0) //nolint:staticcheck // Deliberately mutate legacy coordinates to test malformed keys and snapshot ownership.
+			*p.(*ecdsa.PublicKey) = ecdsa.PublicKey{}
 
 			return 0, nil
 		}
@@ -819,5 +820,28 @@ func assertTemplateKeyInfoCount(t testing.TB, doc *document.Document, present bo
 
 	if count != want {
 		t.Fatalf("KeyInfo count %d, want %d", count, want)
+	}
+}
+
+func TestTemplateCertificateEncodingConsistency(t *testing.T) {
+	chain := testcert.New(t)
+	for _, test := range testcert.CertificateEncodings(t, chain) {
+		t.Run(test.Name, func(t *testing.T) {
+			before := bytes.Clone(test.DER)
+			draft, selected, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: "#data"}}, Certificates: [][]byte{test.DER}})
+			if !test.Valid {
+				if draft != nil || selected.Valid() || !errors.Is(err, xmldsig.ErrStructure) {
+					t.Fatal("template accepted invalid certificate DER", err)
+				}
+				return
+			}
+			if err != nil || draft == nil || !selected.Valid() {
+				t.Fatal(err)
+			}
+			wire, err := draft.XML(t.Context())
+			if err != nil || !bytes.Contains(wire, []byte(base64.StdEncoding.EncodeToString(test.DER))) || !bytes.Equal(before, test.DER) {
+				t.Fatal("template changed original certificate bytes", err)
+			}
+		})
 	}
 }

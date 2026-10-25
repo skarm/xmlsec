@@ -10,7 +10,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
+
+	"github.com/skarm/xmlsec/evidence"
+	derpkg "github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/x509cert"
 )
 
 var (
@@ -24,6 +29,8 @@ var (
 	ErrUnavailable = errors.New("sufficient fresh revocation evidence unavailable")
 	// ErrRevoked reports certificate revoked.
 	ErrRevoked = errors.New("certificate revoked")
+	// ErrLimit reports an exhausted bounded implementation work budget.
+	ErrLimit = errors.New("PKI resource limit exceeded")
 	// ErrUnsupported reports unsupported revocation feature.
 	ErrUnsupported = errors.New("unsupported revocation feature")
 )
@@ -74,6 +81,8 @@ type Config struct {
 	AllowCALeaf bool
 	// Revocation selects required offline revocation checks.
 	Revocation RevocationMode
+	// CRL selects the offline CRL/delta and missing-NextUpdate freshness policy.
+	CRL CRLOptions
 	// MaxChainDepth bounds certificate chain depth; default 10, maximum 32.
 	MaxChainDepth int
 	// MaxEvidenceBytes bounds supplied revocation evidence bytes; default 8 MiB, maximum
@@ -83,6 +92,8 @@ type Config struct {
 	MaxCRLs int
 	// MaxOCSPResponses bounds supplied OCSP responses; default 32, maximum 256.
 	MaxOCSPResponses int
+	// OCSPAuthorities supplies explicit issuer-scoped local responder authorities.
+	OCSPAuthorities []OCSPAuthority
 	// OCSPMaxAge bounds offline OCSP evidence age; zero selects 24 hours,
 	// with a 30-day maximum.
 	OCSPMaxAge time.Duration
@@ -94,6 +105,9 @@ type Config struct {
 // Evidence supplies untrusted DER intermediates and offline revocation evidence for an
 // operation.
 type Evidence struct {
+	// Sources optionally binds at most1024 immutable observations to exact
+	// suppliedDER kinds/digests. URI/time provenance never grants trust or PoE.
+	Sources []*evidence.Observation
 	// Intermediates contains untrusted DER certificates used only to build paths to explicit
 	// roots.
 	Intermediates [][]byte
@@ -114,6 +128,10 @@ type Verifier struct {
 	maxDepth, maxBytes, maxCRLs int
 	maxOCSP                     int
 	ocspOptions                 OCSPOptions
+	crlOptions                  CRLOptions
+	issuerCertificates          [][]byte
+	anchorCertificates          [][]byte
+	originalCertificates        map[[32]byte]*x509.Certificate
 }
 
 // NewVerifier validates and snapshots explicit trust and revocation policy for concurrent use.
@@ -122,10 +140,17 @@ func NewVerifier(c Config) (*Verifier, error) {
 		return nil, err
 	}
 
-	opts, err := normalizeOCSP(OCSPOptions{MaxAge: c.OCSPMaxAge, ClockSkew: c.OCSPClockSkew})
+	opts, err := normalizeOCSP(OCSPOptions{MaxAge: c.OCSPMaxAge, ClockSkew: c.OCSPClockSkew, Authorities: c.OCSPAuthorities})
 	if err != nil {
 		return nil, err
 	}
+
+	crlOptions, err := normalizeCRLOptions(c.CRL)
+	if err != nil {
+		return nil, err
+	}
+
+	crlOptions.signerDepth = c.MaxChainDepth
 
 	usages := append([]x509.ExtKeyUsage(nil), c.KeyUsages...)
 	if len(usages) == 0 {
@@ -148,6 +173,7 @@ func NewVerifier(c Config) (*Verifier, error) {
 		maxCRLs:       c.MaxCRLs,
 		maxOCSP:       c.MaxOCSPResponses,
 		ocspOptions:   opts,
+		crlOptions:    crlOptions,
 	}
 
 	if err := v.snapshotCertificates(c.Roots, c.Intermediates); err != nil {
@@ -200,6 +226,32 @@ func normalizeVerifierPolicy(c *Config) error {
 		return ErrPolicy
 	}
 
+	if len(c.OCSPAuthorities) > 8 {
+		return ErrPolicy
+	}
+
+	configuredBytes := 0
+
+	for _, group := range [][][]byte{c.Roots, c.Intermediates} {
+		for _, raw := range group {
+			if len(raw) > c.MaxEvidenceBytes-configuredBytes {
+				return ErrPolicy
+			}
+
+			configuredBytes += len(raw)
+		}
+	}
+
+	for _, authority := range c.OCSPAuthorities {
+		for _, raw := range [][]byte{authority.ResponderCertificateDER, authority.IssuerCertificateDER} {
+			if len(raw) > c.MaxEvidenceBytes-configuredBytes {
+				return ErrPolicy
+			}
+
+			configuredBytes += len(raw)
+		}
+	}
+
 	return nil
 }
 
@@ -236,12 +288,24 @@ func (v *Verifier) Verify(ctx context.Context, leafDER []byte, at time.Time, e E
 		return nil, report, err
 	}
 
-	pool, err := v.evidenceIntermediatePool(ctx, e.Intermediates)
+	sources, err := v.validatedSources(ctx, leafDER, e)
 	if err != nil {
 		return nil, report, err
 	}
 
-	chains, err := leaf.Verify(x509.VerifyOptions{Roots: v.roots, Intermediates: pool, CurrentTime: at, KeyUsages: append([]x509.ExtKeyUsage(nil), v.usages...), MaxConstraintComparisions: 100000})
+	originals := v.certificateOriginals(leaf)
+
+	pool, err := v.evidenceIntermediatePool(ctx, e.Intermediates, originals)
+	if err != nil {
+		return nil, report, err
+	}
+
+	leafView, err := normalizedCertificate(ctx, leaf)
+	if err != nil {
+		return nil, report, err
+	}
+
+	chains, err := leafView.Verify(x509.VerifyOptions{Roots: v.roots, Intermediates: pool, CurrentTime: at, KeyUsages: append([]x509.ExtKeyUsage(nil), v.usages...), MaxConstraintComparisions: 100000})
 	if err != nil {
 		report.Chain = Invalid
 		return nil, report, fmt.Errorf("%w: %w", ErrCertificate, err)
@@ -251,24 +315,36 @@ func (v *Verifier) Verify(ctx context.Context, leafDER []byte, at time.Time, e E
 		return nil, report, err
 	}
 
-	report.Chain = Valid
-
-	var lists []*x509.RevocationList
-	if v.revocation == RequireCRL {
-		lists, err = parseCRLs(ctx, e.CRLs)
-		if err != nil {
-			report.Revocation = Indeterminate
-			return nil, report, err
-		}
+	chains, err = originalCertificateChains(ctx, chains, originals)
+	if err != nil {
+		return nil, report, err
 	}
 
-	selected, chainErr := v.selectVerifiedChain(ctx, chains, lists, at, e)
+	report.Chain = Valid
+
+	lists, err := v.crlEvidence(ctx, e, sources)
+	if err != nil {
+		report.Revocation = Indeterminate
+		return nil, report, err
+	}
+
+	ocsp := ocspEvidence{raw: e.OCSPResponses, options: v.ocspOptions, provenanceSources: sources}
+	ocsp.options.ResponderCRLs = e.CRLs
+
+	selected, chainErr := v.selectVerifiedChain(ctx, chains, lists, at, &ocsp)
+	for _, list := range lists {
+		report.evidence = append(report.evidence, list.authenticated...)
+	}
+
+	report.evidence = canonicalEvidence(append(report.evidence, ocsp.authenticated...))
+	bindVerifiedSources(report.evidence, sources)
+
 	if selected == nil {
 		if chainErr == nil {
 			chainErr = ErrUnavailable
 		}
 
-		if errors.Is(chainErr, ErrPolicy) {
+		if errors.Is(chainErr, ErrPolicy) && !errors.Is(chainErr, ErrLimit) {
 			report.Chain = Invalid
 			report.Revocation = NotChecked
 
@@ -297,6 +373,13 @@ func (v *Verifier) Verify(ctx context.Context, leafDER []byte, at time.Time, e E
 	// Every certificate was parsed from privately owned storage. Results may
 	// share that immutable DER; application-facing accessors still copy it.
 	result = &Result{at: at, spki: leaf.RawSubjectPublicKeyInfo, revocation: report.Revocation}
+	for _, list := range lists {
+		result.evidence = append(result.evidence, list.used...)
+	}
+
+	result.evidence = canonicalEvidence(append(result.evidence, ocsp.used...))
+	bindVerifiedSources(result.evidence, sources)
+
 	for _, cert := range selected {
 		result.chain = append(result.chain, cert.Raw)
 	}
@@ -308,6 +391,7 @@ func (v *Verifier) Verify(ctx context.Context, leafDER []byte, at time.Time, e E
 // to one byte limit. Root constraints precede each anchor's public-key policy.
 func (v *Verifier) snapshotCertificates(roots, intermediates [][]byte) error {
 	configuredBytes := 0
+	v.originalCertificates = make(map[[32]byte]*x509.Certificate)
 
 	for _, group := range []struct {
 		ders [][]byte
@@ -334,7 +418,19 @@ func (v *Verifier) snapshotCertificates(roots, intermediates [][]byte) error {
 				return err
 			}
 
-			group.pool.AddCert(cert)
+			view, err := normalizedCertificate(context.Background(), cert)
+			if err != nil {
+				return err
+			}
+
+			group.pool.AddCert(view)
+
+			v.originalCertificates[sha256.Sum256(cert.Raw)] = cert
+
+			v.issuerCertificates = append(v.issuerCertificates, cert.Raw)
+			if group.root {
+				v.anchorCertificates = append(v.anchorCertificates, cert.Raw)
+			}
 		}
 	}
 
@@ -390,7 +486,7 @@ func (v *Verifier) validateLeaf(der []byte) (*x509.Certificate, error) {
 	return leaf, nil
 }
 
-func (v *Verifier) evidenceIntermediatePool(ctx context.Context, ders [][]byte) (*x509.CertPool, error) {
+func (v *Verifier) evidenceIntermediatePool(ctx context.Context, ders [][]byte, originals map[[32]byte]*x509.Certificate) (*x509.CertPool, error) {
 	if len(ders) == 0 {
 		return v.intermediates, nil
 	}
@@ -411,7 +507,14 @@ func (v *Verifier) evidenceIntermediatePool(ctx context.Context, ders [][]byte) 
 			return nil, err
 		}
 
-		pool.AddCert(cert)
+		view, err := normalizedCertificate(ctx, cert)
+		if err != nil {
+			return nil, err
+		}
+
+		pool.AddCert(view)
+
+		originals[sha256.Sum256(cert.Raw)] = cert
 	}
 
 	return pool, nil
@@ -419,20 +522,26 @@ func (v *Verifier) evidenceIntermediatePool(ctx context.Context, ders [][]byte) 
 
 // selectVerifiedChain keeps x509's candidate order and the final rejected
 // candidate's diagnostic, accepting the first chain that passes every policy.
-func (v *Verifier) selectVerifiedChain(ctx context.Context, chains [][]*x509.Certificate, lists []*x509.RevocationList, at time.Time, e Evidence) ([]*x509.Certificate, error) {
+func (v *Verifier) selectVerifiedChain(ctx context.Context, chains [][]*x509.Certificate, lists []*parsedCRL, at time.Time, ocsp *ocspEvidence) ([]*x509.Certificate, error) {
 	var chainErr error
 
-	ocsp := ocspEvidence{raw: e.OCSPResponses, options: v.ocspOptions}
-	ocsp.options.ResponderCRLs = e.CRLs
-
 	for _, chain := range chains {
+		ocsp.used = nil
+		for _, list := range lists {
+			list.used = nil
+		}
+
 		chainErr = v.validateChainPolicy(chain)
 		if chainErr != nil {
 			continue
 		}
 
 		if v.revocation == RequireCRL {
-			chainErr = checkChainCRLs(ctx, chain, lists, at)
+			chainErr = checkChainCRLs(ctx, chain, lists, at, v.crlOptions)
+			if errors.Is(chainErr, ErrLimit) || ctx.Err() != nil {
+				return nil, chainErr
+			}
+
 			if chainErr != nil {
 				continue
 			}
@@ -440,6 +549,10 @@ func (v *Verifier) selectVerifiedChain(ctx context.Context, chains [][]*x509.Cer
 
 		if v.revocation == RequireOCSP {
 			chainErr = ocsp.checkChain(ctx, chain, at)
+			if errors.Is(chainErr, ErrLimit) || ctx.Err() != nil {
+				return nil, chainErr
+			}
+
 			if chainErr != nil {
 				continue
 			}
@@ -480,7 +593,8 @@ func parseCertificate(der []byte) (*x509.Certificate, error) {
 // Report records diagnostic chain and revocation outcomes; successful verification
 // additionally returns a Result.
 type Report struct {
-	Chain Status `json:"chain"`
+	evidence []*VerifiedEvidence
+	Chain    Status `json:"chain"`
 	// Revocation records the evidence-check outcome; NoRevocation leaves it NotChecked.
 	Revocation       Status    `json:"revocation"`
 	VerificationTime time.Time `json:"verification_time"`
@@ -495,6 +609,7 @@ type Result struct {
 	spki       []byte
 	at         time.Time
 	revocation Status
+	evidence   []*VerifiedEvidence
 }
 
 // ChainDER returns owned copies of the verified certificate chain, starting with the leaf.
@@ -596,10 +711,41 @@ func parseBorrowedCertificate(der []byte) (*x509.Certificate, error) {
 		return nil, fmt.Errorf("%w: certificate size", ErrCertificate)
 	}
 
-	c, err := x509.ParseCertificate(der)
+	c, err := x509cert.Parse(der, x509cert.Limits{Bytes: 1 << 20, Depth: 33, Nodes: 100000})
+	if errors.Is(err, derpkg.ErrLimit) {
+		return nil, fmt.Errorf("%w: %w: %w", ErrPolicy, ErrLimit, err)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCertificate, err)
 	}
 
 	return c, nil
+}
+
+func (v *Verifier) certificateOriginals(leaf *x509.Certificate) map[[32]byte]*x509.Certificate {
+	originals := make(map[[32]byte]*x509.Certificate, len(v.originalCertificates)+1)
+	maps.Copy(originals, v.originalCertificates)
+
+	originals[sha256.Sum256(leaf.Raw)] = leaf
+
+	return originals
+}
+
+func (v *Verifier) crlEvidence(ctx context.Context, e Evidence, sources map[evidenceBinding][]*evidence.Observation) ([]*parsedCRL, error) {
+	if v.revocation != RequireCRL {
+		return nil, nil
+	}
+
+	lists, err := parseCRLs(ctx, e.CRLs)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, list := range lists {
+		list.candidates = append(append([][]byte(nil), v.issuerCertificates...), e.Intermediates...)
+		list.sources = sources[evidenceBinding{kind: evidence.CRL, hash: sha256.Sum256(list.raw)}]
+	}
+
+	return lists, nil
 }

@@ -15,6 +15,8 @@ import (
 	"github.com/skarm/xmlsec/cms"
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/nilcheck"
+	"github.com/skarm/xmlsec/internal/x509cert"
+	"github.com/skarm/xmlsec/internal/x509name"
 	"github.com/skarm/xmlsec/pki"
 )
 
@@ -104,7 +106,7 @@ func NewVerifier(c Config) (*Verifier, error) {
 			return nil, ErrPolicy
 		}
 
-		if _, e := x509.ParseCertificate(b); e != nil {
+		if _, e := x509cert.ParseDefault(b); e != nil {
 			return nil, ErrPolicy
 		}
 
@@ -140,7 +142,7 @@ func (v *Verifier) VerifyToken(ctx context.Context, raw []byte, want Expectation
 // Verify authenticates a previously parsed token without copying or reparsing
 // its DER. It enforces this verifier's byte budget, bindings and trust policy.
 func (v *Verifier) Verify(ctx context.Context, token *Token, want Expectation, at time.Time, evidence pki.Evidence) (*Result, error) {
-	result, _, err := v.verify(ctx, token, want, at, evidence)
+	result, _, err := v.verify(ctx, token, want, at, evidence, nil)
 	return result, err
 }
 
@@ -181,7 +183,7 @@ func (v *Verifier) VerifyResponseReader(ctx context.Context, src io.Reader, q *R
 		return nil, e
 	}
 
-	out, certs, e := v.verify(ctx, token, Expectation{q.imprint, q.nonce, q.policy}, at, evidence)
+	out, certs, e := v.verify(ctx, token, Expectation{q.imprint, q.nonce, q.policy}, at, evidence, value.FullBytes)
 	if e != nil {
 		return nil, e
 	}
@@ -207,7 +209,7 @@ func (v *Verifier) VerifyResponseReader(ctx context.Context, src io.Reader, q *R
 	return out, nil
 }
 
-func (v *Verifier) verify(ctx context.Context, token *Token, want Expectation, at time.Time, evidence pki.Evidence) (*Result, [][]byte, error) {
+func (v *Verifier) verify(ctx context.Context, token *Token, want Expectation, at time.Time, evidence pki.Evidence, response []byte) (*Result, [][]byte, error) {
 	if v == nil || v.trust == nil || ctx == nil || token == nil || token.signed == nil || token.Size() == 0 || token.Size() > v.maxBytes || at.IsZero() || !validImprint(want.Imprint) {
 		return nil, nil, ErrPolicy
 	}
@@ -220,6 +222,11 @@ func (v *Verifier) verify(ctx context.Context, token *Token, want Expectation, a
 		return nil, nil, ErrPolicy
 	}
 
+	evidence, sources, err := v.timestampSources(ctx, token, response, evidence)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	s := token.signed
 	certificates := s.Certificates()
 
@@ -228,29 +235,25 @@ func (v *Verifier) verify(ctx context.Context, token *Token, want Expectation, a
 		return nil, nil, e
 	}
 
-	cert, e := x509.ParseCertificate(chosen)
+	cert, e := x509cert.ParseDefault(chosen)
 	if e != nil {
 		return nil, nil, ErrTrust
 	}
 
-	_, e = s.Verify(ctx, [][]byte{chosen}, cms.VerifyOptions{ExpectedContentType: tstOID(), RequireCertificateBinding: true, AllowLegacyESSCertID: v.legacy, DiscardContent: true})
-	if e != nil {
-		return nil, nil, e
-	}
-
 	info := token.info
 
-	if e := v.validateTokenInfo(info, want, cert, at); e != nil {
+	if e := v.validateTokenInfo(ctx, info, want, cert, at); e != nil {
 		return nil, nil, e
 	}
 
 	ev := tokenEvidence(evidence, certificates, chosen)
 
-	trust, _, e := v.trust.Verify(ctx, chosen, at, ev)
+	verified, e := s.VerifyWithTrust(ctx, [][]byte{chosen}, cms.VerifyOptions{ExpectedContentType: tstOID(), RequireCertificateBinding: true, AllowLegacyESSCertID: v.legacy, DiscardContent: true}, cms.TrustOptions{Verifier: v.trust, VerificationTime: at, Evidence: ev})
 	if e != nil {
 		return nil, nil, fmt.Errorf("%w: %w", ErrTrust, e)
 	}
 
+	trust := verified.Signers()[0].Trust()
 	if !v.allowUnchecked && trust.RevocationStatus() != pki.Valid {
 		return nil, nil, ErrTrust
 	}
@@ -259,7 +262,14 @@ func (v *Verifier) verify(ctx context.Context, token *Token, want Expectation, a
 		return nil, nil, e
 	}
 
-	return &Result{token, info, chosen, trust}, certificates, nil
+	assertion, err := verifiedAssertion(ctx, token, info, chosen, trust)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	assertion.sources = sources
+
+	return &Result{token: token, info: info, tsa: chosen, trust: trust, assertion: assertion}, certificates, nil
 }
 
 func tokenEvidence(evidence pki.Evidence, certificates [][]byte, chosen []byte) pki.Evidence {
@@ -275,7 +285,7 @@ func tokenEvidence(evidence pki.Evidence, certificates [][]byte, chosen []byte) 
 	return ev
 }
 
-func (v *Verifier) validateTokenInfo(info Info, want Expectation, cert *x509.Certificate, at time.Time) error {
+func (v *Verifier) validateTokenInfo(ctx context.Context, info Info, want Expectation, cert *x509.Certificate, at time.Time) error {
 	if err := validateTimestampBinding(info, want); err != nil {
 		return err
 	}
@@ -296,7 +306,7 @@ func (v *Verifier) validateTokenInfo(info Info, want Expectation, cert *x509.Cer
 		return e
 	}
 
-	if e := matchTSAName(info.tsa, cert); e != nil {
+	if e := matchTSAName(ctx, info.tsa, cert); e != nil {
 		return e
 	}
 
@@ -323,7 +333,7 @@ func checkTSACertificate(c *x509.Certificate, at time.Time) error {
 	return nil
 }
 
-func matchTSAName(n asn1.RawValue, c *x509.Certificate) error {
+func matchTSAName(ctx context.Context, n asn1.RawValue, c *x509.Certificate) error {
 	if len(n.FullBytes) == 0 {
 		return nil
 	}
@@ -339,7 +349,12 @@ func matchTSAName(n asn1.RawValue, c *x509.Certificate) error {
 			return ErrFormat
 		}
 
-		if bytes.Equal(rv.FullBytes, c.RawSubject) {
+		equal, err := x509name.EqualOrExact(ctx, rv.FullBytes, c.RawSubject)
+		if err != nil {
+			return fmt.Errorf("%w: TSA name: %w", ErrTrust, err)
+		}
+
+		if equal {
 			return nil
 		}
 	case 1:
@@ -516,10 +531,11 @@ func (t *Token) WriterTo(ctx context.Context) io.WriterTo {
 
 // Result is an immutable timestamp token with authenticated TSTInfo and TSA trust result.
 type Result struct {
-	token *Token
-	info  Info
-	tsa   []byte
-	trust *pki.Result
+	token     *Token
+	info      Info
+	tsa       []byte
+	trust     *pki.Result
+	assertion *VerifiedAssertion
 }
 
 // TokenDER returns an owned copy of the timestamp token DER.

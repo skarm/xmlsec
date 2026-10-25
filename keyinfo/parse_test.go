@@ -258,7 +258,7 @@ func TestReturnedDataCannotChangeHints(t *testing.T) {
 	c := info.Candidates()[1]
 	fp := c.FingerprintSHA256()
 	p, _ := c.PublicKey()
-	p.(*ecdsa.PublicKey).X.SetInt64(0) //nolint:staticcheck // Deliberately mutate legacy coordinates to test malformed keys and snapshot ownership.
+	*p.(*ecdsa.PublicKey) = ecdsa.PublicKey{}
 
 	raw := c.SPKI()
 	raw[0] ^= 255
@@ -271,7 +271,7 @@ func TestReturnedDataCannotChangeHints(t *testing.T) {
 	}
 
 	certificate.Raw[0] ^= 255
-	certificate.PublicKey.(*ecdsa.PublicKey).Y.SetInt64(0) //nolint:staticcheck // Deliberately mutate legacy coordinates to test malformed keys and snapshot ownership.
+	*certificate.PublicKey.(*ecdsa.PublicKey) = ecdsa.PublicKey{}
 
 	group := info.X509Groups()[0]
 	group.CertificatesDER()[0][0] ^= 255
@@ -297,7 +297,7 @@ func TestReturnedDataCannotChangeHints(t *testing.T) {
 					return
 				}
 
-				key.(*ecdsa.PublicKey).X.SetInt64(0) //nolint:staticcheck // Deliberately mutate legacy coordinates to test malformed keys and snapshot ownership.
+				*key.(*ecdsa.PublicKey) = ecdsa.PublicKey{}
 
 				c.CertificateDER()[0] = 0
 			}

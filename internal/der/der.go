@@ -140,18 +140,7 @@ func validateUniversalDER(v asn1.RawValue) error {
 			return ErrInvalidDER
 		}
 	case asn1.TagOID:
-		var o asn1.ObjectIdentifier
-
-		if v.IsCompound {
-			return ErrInvalidDER
-		}
-
-		if _, e := asn1.Unmarshal(v.FullBytes, &o); e != nil {
-			return ErrInvalidDER
-		}
-
-		c, e := asn1.Marshal(o)
-		if e != nil || !bytes.Equal(c, v.FullBytes) {
+		if v.IsCompound || !validDEROID(v.Bytes) {
 			return ErrInvalidDER
 		}
 	case asn1.TagOctetString, asn1.TagUTF8String, asn1.TagPrintableString, asn1.TagT61String, asn1.TagIA5String, asn1.TagUTCTime, asn1.TagGeneralizedTime, asn1.TagGeneralString, asn1.TagBMPString, asn1.TagNumericString:
@@ -163,6 +152,42 @@ func validateUniversalDER(v asn1.RawValue) error {
 	}
 
 	return nil
+}
+
+// Match encoding/asn1's canonical base-128, signed32-bit subidentifier profile
+// without allocating an OID slice and re-marshaling an already validated header.
+func validDEROID(content []byte) bool {
+	if len(content) == 0 {
+		return false
+	}
+
+	for at := 0; at < len(content); {
+		if content[at] == 128 { // Leading zero base-128 group is nonminimal.
+			return false
+		}
+
+		var value int64
+
+		for {
+			if at == len(content) {
+				return false
+			}
+
+			octet := content[at]
+			at++
+
+			value = value<<7 | int64(octet&127)
+			if value > 1<<31-1 {
+				return false
+			}
+
+			if octet&128 == 0 {
+				break
+			}
+		}
+	}
+
+	return true
 }
 
 func validDERContent(tag int, b []byte) bool {

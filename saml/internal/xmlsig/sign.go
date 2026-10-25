@@ -11,6 +11,7 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -127,7 +128,7 @@ func Sign(ctx context.Context, d *document.Document, target document.Element, k 
 	}
 
 	if len(k.CertificateDER) > 0 {
-		c, e := x509.ParseCertificate(k.CertificateDER)
+		c, e := x509cert.ParseWithMaxBytes(k.CertificateDER, len(k.CertificateDER))
 		if e != nil {
 			return nil, e
 		}

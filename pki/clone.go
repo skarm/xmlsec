@@ -1,6 +1,8 @@
 package pki
 
 import (
+	"context"
+	"crypto/sha256"
 	"crypto/x509"
 )
 
@@ -14,6 +16,14 @@ func (v *Verifier) WithIntermediateCertificates(raw [][]byte) (*Verifier, error)
 
 	out := *v
 	out.intermediates = x509.NewCertPool()
+
+	out.issuerCertificates = append([][]byte(nil), v.anchorCertificates...)
+	out.originalCertificates = make(map[[32]byte]*x509.Certificate, len(v.anchorCertificates)+len(raw))
+
+	for _, source := range v.anchorCertificates {
+		digest := sha256.Sum256(source)
+		out.originalCertificates[digest] = v.originalCertificates[digest]
+	}
 
 	remaining := v.maxBytes
 	for _, b := range raw {
@@ -32,7 +42,14 @@ func (v *Verifier) WithIntermediateCertificates(raw [][]byte) (*Verifier, error)
 			return nil, e
 		}
 
-		out.intermediates.AddCert(c)
+		view, err := normalizedCertificate(context.Background(), c)
+		if err != nil {
+			return nil, err
+		}
+
+		out.intermediates.AddCert(view)
+		out.originalCertificates[sha256.Sum256(c.Raw)] = c
+		out.issuerCertificates = append(out.issuerCertificates, c.Raw)
 	}
 
 	return &out, nil

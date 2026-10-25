@@ -2,6 +2,7 @@ package cms
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/signature"
+	"github.com/skarm/xmlsec/internal/x509cert"
+	"github.com/skarm/xmlsec/internal/x509name"
 )
 
 // Attribute pairs an OID with complete DER-encoded values. A signature over an
@@ -29,7 +32,7 @@ func CertificateBindingAttribute(b []byte) (Attribute, error) {
 		return Attribute{}, ErrPolicy
 	}
 
-	cert, err := x509.ParseCertificate(b)
+	cert, err := x509cert.ParseDefault(b)
 	if err != nil || cert.SerialNumber == nil {
 		return Attribute{}, ErrCertificate
 	}
@@ -42,7 +45,7 @@ func CertificateBindingAttribute(b []byte) (Attribute, error) {
 	return Attribute{append(asn1.ObjectIdentifier(nil), oidSigningCertificateV2()...), [][]byte{der.Seq(der.Seq(id))}}, nil
 }
 
-func verifyESS(attrs []Attribute, cert *x509.Certificate, legacy bool) (bool, error) {
+func verifyESS(ctx context.Context, attrs []Attribute, cert *x509.Certificate, legacy bool) (bool, error) {
 	bound := false
 
 	for _, v2 := range []bool{false, true} {
@@ -64,7 +67,7 @@ func verifyESS(attrs []Attribute, cert *x509.Certificate, legacy bool) (bool, er
 			return false, ErrPolicy
 		}
 
-		if err := verifyESSAttribute(raw, cert, v2); err != nil {
+		if err := verifyESSAttribute(ctx, raw, cert, v2); err != nil {
 			return false, err
 		}
 
@@ -74,7 +77,7 @@ func verifyESS(attrs []Attribute, cert *x509.Certificate, legacy bool) (bool, er
 	return bound, nil
 }
 
-func verifyESSAttribute(raw []byte, cert *x509.Certificate, v2 bool) error {
+func verifyESSAttribute(ctx context.Context, raw []byte, cert *x509.Certificate, v2 bool) error {
 	v, err := der.Read(raw, 1<<20)
 	if err != nil {
 		return ErrSyntax
@@ -91,7 +94,7 @@ func verifyESSAttribute(raw []byte, cert *x509.Certificate, v2 bool) error {
 	}
 
 	for i, id := range ids {
-		if err := verifyESSCertID(id, cert, v2, i == 0); err != nil {
+		if err := verifyESSCertID(ctx, id, cert, v2, i == 0); err != nil {
 			return err
 		}
 	}
@@ -105,7 +108,7 @@ func verifyESSAttribute(raw []byte, cert *x509.Certificate, v2 bool) error {
 	return nil
 }
 
-func verifyESSCertID(v asn1.RawValue, cert *x509.Certificate, v2, signer bool) error {
+func verifyESSCertID(ctx context.Context, v asn1.RawValue, cert *x509.Certificate, v2, signer bool) error {
 	fields, err := der.Sequence(v, 1, 3)
 	if err != nil {
 		return ErrSyntax
@@ -130,7 +133,7 @@ func verifyESSCertID(v asn1.RawValue, cert *x509.Certificate, v2, signer bool) e
 		}
 
 		if signer {
-			if err := verifyESSIssuer(names, serial, cert); err != nil {
+			if err := verifyESSIssuer(ctx, names, serial, cert); err != nil {
 				return err
 			}
 		}
@@ -202,25 +205,24 @@ func parseESSIssuer(v asn1.RawValue) ([]asn1.RawValue, *big.Int, error) {
 	return names, serial, nil
 }
 
-func verifyESSIssuer(names []asn1.RawValue, serial *big.Int, cert *x509.Certificate) error {
-	match := false
-
-	for _, name := range names {
-		if !der.Is(name, 2, 4, true) {
-			continue
-		}
-
-		directory, err := der.Explicit(name, 4)
-		if err != nil {
-			return ErrSyntax
-		}
-
-		if bytes.Equal(directory.FullBytes, cert.RawIssuer) {
-			match = true
-		}
+func verifyESSIssuer(ctx context.Context, names []asn1.RawValue, serial *big.Int, cert *x509.Certificate) error {
+	// RFC5035 section4: a public-key certificate's issuerSerial contains only
+	// its issuer's directoryName, not a matching name among unrelated aliases.
+	if len(names) != 1 || !der.Is(names[0], 2, 4, true) {
+		return ErrCertificate
 	}
 
-	if !match || serial.Cmp(cert.SerialNumber) != 0 {
+	directory, err := der.Explicit(names[0], 4)
+	if err != nil {
+		return ErrSyntax
+	}
+
+	equal, err := x509name.EqualOrExact(ctx, directory.FullBytes, cert.RawIssuer)
+	if err != nil {
+		return fmt.Errorf("%w: ESS issuer name: %w", ErrCertificate, err)
+	}
+
+	if !equal || serial.Cmp(cert.SerialNumber) != 0 {
 		return ErrCertificate
 	}
 

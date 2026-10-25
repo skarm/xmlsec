@@ -124,8 +124,8 @@ func TestCRLRejectsUnsupportedAndWrongSignature(t *testing.T) {
 	delta := makeCRL(t, c, false, &x509.RevocationList{Number: big.NewInt(2), ThisUpdate: verificationTime().Add(-time.Minute), NextUpdate: verificationTime().Add(time.Minute), ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 27}, Critical: true, Value: []byte{2, 1, 1}}}})
 
 	r, _, e := v.Verify(context.Background(), c.leaf.Raw, verificationTime(), pki.Evidence{CRLs: [][]byte{delta}})
-	if r != nil || !errors.Is(e, pki.ErrUnsupported) {
-		t.Fatalf("delta silently treated as full: %v", e)
+	if r != nil || !errors.Is(e, pki.ErrUnavailable) {
+		t.Fatalf("recognized delta without base treated as full: %v", e)
 	}
 
 	wrong := makeCRL(t, other, false, nil)

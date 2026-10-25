@@ -23,7 +23,7 @@ type Limits struct {
 	// MaxContainerBytes bounds encrypted PKCS#8, PKCS#12 and their intermediate
 	// encoded contents, including exported DER. Zero selects 16 MiB.
 	MaxContainerBytes int
-	// MaxASN1Depth bounds nested DER values, counting the root at depth one;
+	// MaxASN1Depth bounds nested DER or explicitly enabled BER values, counting the root at depth one;
 	// zero selects 32. OCTET STRING payloads are checked separately when decoded.
 	MaxASN1Depth int
 	// MaxASN1Nodes bounds DER values in each decoded structure; zero selects 1000000.
@@ -35,7 +35,8 @@ type Limits struct {
 	MaxRSAPrimes int
 	// MaxCertificates bounds all PKCS#12 certificate bags; zero selects 16.
 	MaxCertificates int
-	// MaxBags bounds all flat PKCS#12 safe bags; zero selects 32.
+	// MaxBags bounds all PKCS#12 safe bags, including enabled nested containers;
+	// zero selects 32. Nested SafeContents also obey MaxASN1Depth.
 	MaxBags int
 	// MaxContentInfos bounds PKCS#12 authenticated-safe content infos; zero selects 8.
 	MaxContentInfos int

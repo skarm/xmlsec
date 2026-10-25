@@ -17,6 +17,8 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/streamio"
+	"github.com/skarm/xmlsec/internal/x509cert"
+	"github.com/skarm/xmlsec/internal/x509name"
 )
 
 // SignedData is an immutable parsed container. Parsing does not authenticate
@@ -192,7 +194,7 @@ func parseCertificateBag(ctx context.Context, value asn1.RawValue, l Limits) ([]
 			return nil, ErrSyntax
 		}
 
-		c, e := x509.ParseCertificate(rv.FullBytes)
+		c, e := x509cert.ParseWithMaxBytes(rv.FullBytes, l.MaxBytes)
 		if e != nil || !seen.add(c.Raw) {
 			return nil, ErrSyntax
 		}
@@ -203,7 +205,8 @@ func parseCertificateBag(ctx context.Context, value asn1.RawValue, l Limits) ([]
 	return certificates, nil
 }
 
-// DER returns an owned copy of the original DER encoding.
+// DER returns an owned copy of the definite encoding. ParseBER normalizes its
+// selected BER wrappers/content; it does not retain the original BER encoding.
 func (s *SignedData) DER() []byte {
 	if s == nil {
 		return nil
@@ -212,7 +215,7 @@ func (s *SignedData) DER() []byte {
 	return bytes.Clone(s.raw)
 }
 
-// Size returns the size of the complete DER container in bytes.
+// Size returns the size of the complete definite container in bytes.
 func (s *SignedData) Size() int {
 	if s == nil {
 		return 0
@@ -221,8 +224,8 @@ func (s *SignedData) Size() int {
 	return len(s.raw)
 }
 
-// WriterTo returns an io.WriterTo that emits the original DER without copying
-// the container. It checks ctx and may leave partial output on destination error.
+// WriterTo returns an io.WriterTo that emits the same encoding as DER without
+// copying the container. It checks ctx and may leave partial output on error.
 func (s *SignedData) WriterTo(ctx context.Context) io.WriterTo {
 	return signedDataWriter{source: s, ctx: ctx}
 }
@@ -278,17 +281,31 @@ func (s *SignedData) MatchesSigner(index int, raw []byte) bool {
 		return false
 	}
 
-	c, e := x509.ParseCertificate(raw)
-
-	return e == nil && certificateMatch(s.signers[index], c)
-}
-
-func certificateMatch(p parsedSigner, c *x509.Certificate) bool {
-	if len(p.ski) > 0 {
-		return len(c.SubjectKeyId) > 0 && bytes.Equal(p.ski, c.SubjectKeyId)
+	c, e := x509cert.ParseDefault(raw)
+	if e != nil {
+		return false
 	}
 
-	return p.serial.Cmp(c.SerialNumber) == 0 && bytes.Equal(p.issuer, c.RawIssuer)
+	match, _ := certificateMatch(context.Background(), s.signers[index], c)
+
+	return match
+}
+
+func certificateMatch(ctx context.Context, p parsedSigner, c *x509.Certificate) (bool, error) {
+	if len(p.ski) > 0 {
+		return len(c.SubjectKeyId) > 0 && bytes.Equal(p.ski, c.SubjectKeyId), nil
+	}
+
+	if p.serial.Cmp(c.SerialNumber) != 0 {
+		return false, nil
+	}
+
+	match, err := x509name.EqualOrExact(ctx, p.issuer, c.RawIssuer)
+	if err != nil {
+		return false, fmt.Errorf("%w: issuer name: %w", ErrCertificate, err)
+	}
+
+	return match, nil
 }
 
 func (s *SignedData) parseSigners(ctx context.Context, value asn1.RawValue, digests map[crypto.Hash]bool, version int) error {

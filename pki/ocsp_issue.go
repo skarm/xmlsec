@@ -15,7 +15,7 @@ import (
 	"github.com/skarm/xmlsec/internal/streamio"
 )
 
-// OCSPResponseTemplate contains caller-asserted status and UTC instants.
+// OCSPResponseTemplate contains caller-asserted status and whole-second UTC instants.
 // The encoder does not determine revocation status.
 type OCSPResponseTemplate struct {
 	Status                 OCSPStatus
@@ -80,7 +80,7 @@ func WriteOCSPResponse(ctx context.Context, dst io.Writer, requestDER, certifica
 }
 
 func genTime(t time.Time) ([]byte, error) {
-	if t.IsZero() || t.Year() < 1 || t.Year() > 9999 {
+	if t.IsZero() || t.Year() < 1 || t.Year() > 9999 || t.Nanosecond() != 0 {
 		return nil, ErrPolicy
 	}
 
@@ -160,7 +160,7 @@ func prepareOCSPResponse(ctx context.Context, requestDER, certificateDER, issuer
 
 	h, _ := signature.Hash(r.id.alg, true)
 
-	want, e := makeCertID(c, issuer, h)
+	want, e := makeCertID(ctx, c, issuer, h)
 	if e != nil || !sameCertID(r.id, want) {
 		return nil, ErrCertificate
 	}

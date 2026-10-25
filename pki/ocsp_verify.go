@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/sha1" // #nosec G505 -- RFC 6960 ResponderID byKey requires SHA-1, independent of the signature algorithm.
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/x509"
 	"encoding/asn1"
@@ -12,8 +13,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/skarm/xmlsec/evidence"
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/signature"
+	"github.com/skarm/xmlsec/internal/x509cert"
+	"github.com/skarm/xmlsec/internal/x509name"
 )
 
 // VerifyOCSP returns a result only for an authenticated fresh GOOD response.
@@ -42,12 +46,24 @@ func VerifyOCSP(ctx context.Context, response, certificateDER, issuerDER []byte,
 		return nil, report, err
 	}
 
+	if len(response) > o.MaxBytes || len(certificateDER) > 1<<20 || len(issuerDER) > 1<<20 {
+		return nil, report, ErrEvidence
+	}
+
+	sources, err := (&Verifier{maxBytes: 8 << 20}).validatedSources(ctx, certificateDER, Evidence{Intermediates: [][]byte{issuerDER}, OCSPResponses: [][]byte{response}, CRLs: o.ResponderCRLs, Sources: o.Sources})
+	if err != nil {
+		return nil, report, err
+	}
+
 	verification, err := prepareOCSPVerification(response, certificateDER, issuerDER, o)
 	if err != nil {
 		return nil, report, err
 	}
 
-	report, err = verifyOCSPData(ctx, verification, at, o)
+	verification.source.sources = sources[evidenceBinding{kind: evidence.OCSP, hash: sha256.Sum256(response)}]
+	verification.authorization = &ocspResponderEvidence{raw: o.ResponderCRLs, sources: sources}
+
+	report, err = verifyOCSPData(ctx, &verification, at, o)
 	if err != nil {
 		return nil, report, err
 	}
@@ -96,54 +112,54 @@ func prepareOCSPVerification(response, certificateDER, issuerDER []byte, o OCSPO
 		return ocspVerification{}, fmt.Errorf("%w: OCSP nonce", ErrEvidence)
 	}
 
-	responder, err := selectOCSPResponder(parsed, issuer)
-	if err != nil {
-		return ocspVerification{}, err
-	}
-
-	return ocspVerification{response: response, parsed: parsed, certificate: certificate, issuer: issuer, responder: responder}, nil
+	return ocspVerification{response: response, source: &ocspSource{owned: response}, parsed: parsed, certificate: certificate, issuer: issuer}, nil
 }
 
-func responderMatches(rid asn1.RawValue, c *x509.Certificate) bool {
+func responderMatches(ctx context.Context, rid asn1.RawValue, c *x509.Certificate) (bool, error) {
 	v, e := der.Explicit(rid, rid.Tag)
 	if e != nil {
-		return false
+		return false, e
 	}
 
 	if rid.Tag == 1 {
-		return bytes.Equal(v.FullBytes, c.RawSubject)
+		return x509name.EqualOrExact(ctx, v.FullBytes, c.RawSubject)
 	}
 
 	var expected []byte
 	if der.Decode(v, &expected) != nil || len(expected) != sha1.Size {
-		return false
+		return false, ErrEvidence
 	}
 
 	bits, e := publicBits(c)
 	if e != nil {
-		return false
+		return false, e
 	}
 
 	sum := sha1.Sum(bits) // #nosec G401 -- RFC 6960 section 4.2.1 fixes this identifier to SHA-1.
 
-	return subtle.ConstantTimeCompare(expected, sum[:]) == 1
+	return subtle.ConstantTimeCompare(expected, sum[:]) == 1, nil
 }
 
-func authorizeResponder(ctx context.Context, r, issuer *x509.Certificate, at, produced time.Time, crls [][]byte) error {
+func authorizeResponder(ctx context.Context, r, issuer *x509.Certificate, at, produced time.Time, revocation *ocspResponderEvidence) ([]*VerifiedEvidence, error) {
 	if e := allowedPublicKey(r.PublicKey); e != nil {
-		return e
+		return nil, e
 	}
 
 	if at.Before(r.NotBefore) || at.After(r.NotAfter) || produced.Before(r.NotBefore) || produced.After(r.NotAfter) {
-		return fmt.Errorf("%w: responder validity", ErrEvidence)
+		return nil, fmt.Errorf("%w: responder validity", ErrEvidence)
 	}
 
 	if bytes.Equal(r.Raw, issuer.Raw) {
-		return nil
+		return nil, nil
 	}
 
-	if r.IsCA || r.CheckSignatureFrom(issuer) != nil || !bytes.Equal(r.RawIssuer, issuer.RawSubject) || r.KeyUsage&x509.KeyUsageDigitalSignature == 0 || !allowedSignature(r.SignatureAlgorithm) || len(r.UnhandledCriticalExtensions) > 0 {
-		return fmt.Errorf("%w: responder delegation", ErrEvidence)
+	equal, err := x509name.EqualOrExact(ctx, r.RawIssuer, issuer.RawSubject)
+	if err != nil {
+		return nil, fmt.Errorf("%w: responder issuer name: %w", ErrEvidence, err)
+	}
+
+	if r.IsCA || r.CheckSignatureFrom(issuer) != nil || !equal || r.KeyUsage&x509.KeyUsageDigitalSignature == 0 || !allowedSignature(r.SignatureAlgorithm) || len(r.UnhandledCriticalExtensions) > 0 {
+		return nil, fmt.Errorf("%w: responder delegation", ErrEvidence)
 	}
 
 	eku := false
@@ -155,32 +171,53 @@ func authorizeResponder(ctx context.Context, r, issuer *x509.Certificate, at, pr
 	}
 
 	if !eku {
-		return fmt.Errorf("%w: responder EKU", ErrEvidence)
+		return nil, fmt.Errorf("%w: responder EKU", ErrEvidence)
 	}
 
 	for _, ex := range r.Extensions {
 		if ex.Id.Equal(oidOCSPNoCheck()) {
-			if !bytes.Equal(ex.Value, []byte{5, 0}) {
-				return ErrEvidence
+			if ex.Critical || !bytes.Equal(ex.Value, []byte{5, 0}) {
+				return nil, ErrEvidence
 			}
 
-			return nil
+			return nil, nil
 		}
 	}
 
-	if len(crls) == 0 {
-		return fmt.Errorf("%w: responder revocation proof", ErrUnavailable)
+	if revocation == nil || len(revocation.raw) == 0 {
+		return nil, fmt.Errorf("%w: responder revocation proof", ErrUnavailable)
 	}
 
-	lists, e := parseCRLs(ctx, crls)
-	if e != nil {
-		return e
+	lists, err := revocation.parsed(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	return checkChainCRLs(ctx, []*x509.Certificate{r, issuer}, lists, at)
+	for _, list := range lists {
+		list.used = nil
+	}
+
+	if err := checkChainCRLs(ctx, []*x509.Certificate{r, issuer}, lists, at); err != nil {
+		return nil, err
+	}
+
+	var dependencies []*VerifiedEvidence
+	for _, list := range lists {
+		dependencies = appendOCSPEvidence(dependencies, list.used...)
+	}
+
+	return dependencies, nil
 }
 
 func normalizeOCSP(o OCSPOptions) (OCSPOptions, error) {
+	authorities, err := normalizeOCSPAuthorities(o.Authorities)
+	if err != nil {
+		return o, err
+	}
+
+	o.Authorities = authorities
+	o.ExpectedNonce = bytes.Clone(o.ExpectedNonce)
+
 	if o.MaxAge == 0 {
 		o.MaxAge = 24 * time.Hour
 	}
@@ -204,22 +241,30 @@ func normalizeOCSP(o OCSPOptions) (OCSPOptions, error) {
 	return o, nil
 }
 
-func verifyOCSPData(ctx context.Context, verification ocspVerification, at time.Time, o OCSPOptions) (OCSPReport, error) {
+func verifyOCSPData(ctx context.Context, verification *ocspVerification, at time.Time, o OCSPOptions) (OCSPReport, error) {
 	report := OCSPReport{Signature: NotChecked}
 	p := &verification.parsed
 
-	responder := verification.responder
-	if err := signature.Verify(responder.PublicKey, p.alg, p.tbs, p.sig); err != nil {
-		report.Signature = Invalid
-		return report, fmt.Errorf("%w: OCSP signature: %w", ErrEvidence, err)
-	}
+	responder, dependencies, status, err := selectOCSPResponder(ctx, *p, verification.issuer, at, o, verification.authorization)
 
-	report.Signature = Valid
-	if err := authorizeResponder(ctx, responder, verification.issuer, at, p.produced, o.ResponderCRLs); err != nil {
+	report.Signature = status
+	if err != nil {
 		return report, err
 	}
 
-	report.Delegated = !bytes.Equal(responder.Raw, verification.issuer.Raw)
+	verification.responder = responder
+	verification.dependencies = dependencies
+
+	report.Authorization = OCSPAuthorityIssuer
+
+	if !bytes.Equal(responder.Raw, verification.issuer.Raw) {
+		if configuredOCSPAuthority(o.Authorities, responder, verification.issuer) {
+			report.Authorization = OCSPAuthorityLocal
+		} else {
+			report.Authorization = OCSPAuthorityDelegated
+			report.Delegated = true
+		}
+	}
 
 	chosen, err := matchingOCSPEntry(ctx, p.entries, verification.certificate, verification.issuer)
 	if err != nil {
@@ -227,6 +272,13 @@ func verifyOCSPData(ctx context.Context, verification ocspVerification, at time.
 	}
 
 	report.recordEntry(p.produced, chosen)
+
+	if verification.source == nil {
+		verification.source = &ocspSource{owned: verification.response}
+	}
+
+	report.evidence = appendOCSPEvidence(report.evidence, dependencies...)
+	report.evidence = appendOCSPEvidence(report.evidence, newOCSPEvidence(verification, chosen, at))
 
 	if err := validateOCSPEntry(p.produced, at, chosen, o); err != nil {
 		return report, err
@@ -240,33 +292,89 @@ func verifyOCSPData(ctx context.Context, verification ocspVerification, at time.
 }
 
 type ocspVerification struct {
-	response    []byte
-	parsed      parsedOCSP
-	certificate *x509.Certificate
-	issuer      *x509.Certificate
-	responder   *x509.Certificate
+	authorization *ocspResponderEvidence
+	dependencies  []*VerifiedEvidence
+	source        *ocspSource
+	response      []byte
+	parsed        parsedOCSP
+	certificate   *x509.Certificate
+	issuer        *x509.Certificate
+	responder     *x509.Certificate
 }
 
-func selectOCSPResponder(p parsedOCSP, issuer *x509.Certificate) (*x509.Certificate, error) {
-	var responder *x509.Certificate
+func selectOCSPResponder(ctx context.Context, p parsedOCSP, issuer *x509.Certificate, at time.Time, options OCSPOptions, revocation *ocspResponderEvidence) (*x509.Certificate, []*VerifiedEvidence, Status, error) {
+	var (
+		selected     *x509.Certificate
+		dependencies []*VerifiedEvidence
+	)
 
-	for _, candidate := range append([]*x509.Certificate{issuer}, p.certs...) {
-		if !responderMatches(p.rid, candidate) {
+	status := NotChecked
+
+	var failure error
+
+	candidates := append([]*x509.Certificate{issuer}, p.certs...)
+	for _, authority := range options.Authorities {
+		if !bytes.Equal(authority.IssuerCertificateDER, issuer.Raw) {
 			continue
 		}
 
-		if responder != nil && !bytes.Equal(responder.Raw, candidate.Raw) {
-			return nil, fmt.Errorf("%w: ambiguous responder", ErrEvidence)
+		candidate, err := x509cert.ParseDefault(authority.ResponderCertificateDER)
+		if err != nil {
+			return nil, nil, status, ErrPolicy
 		}
 
-		responder = candidate
+		candidates = append(candidates, candidate)
 	}
 
-	if responder == nil {
-		return nil, ErrEvidence
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, status, err
+		}
+
+		matches, err := responderMatches(ctx, p.rid, candidate)
+		if err != nil {
+			failure = fmt.Errorf("%w: responder name: %w", ErrEvidence, err)
+			continue
+		}
+
+		if !matches {
+			continue
+		}
+
+		if err := signature.Verify(candidate.PublicKey, p.alg, p.tbs, p.sig); err != nil {
+			if status == NotChecked {
+				status = Invalid
+				failure = fmt.Errorf("%w: OCSP signature: %w", ErrEvidence, err)
+			}
+
+			continue
+		}
+
+		status = Valid
+
+		candidateDependencies, err := authorizeOCSPCandidate(ctx, candidate, issuer, at, p.produced, options, revocation)
+		if err != nil {
+			failure = err
+			continue
+		}
+
+		if selected != nil && !bytes.Equal(selected.Raw, candidate.Raw) {
+			return nil, nil, status, fmt.Errorf("%w: ambiguous authenticated responder", ErrEvidence)
+		}
+
+		selected = candidate
+		dependencies = candidateDependencies
 	}
 
-	return responder, nil
+	if selected == nil {
+		if failure == nil {
+			failure = ErrEvidence
+		}
+
+		return nil, nil, status, failure
+	}
+
+	return selected, dependencies, status, nil
 }
 
 func matchingOCSPEntry(ctx context.Context, entries []singleResponse, certificate, issuer *x509.Certificate) (*singleResponse, error) {
@@ -287,7 +395,7 @@ func matchingOCSPEntry(ctx context.Context, entries []singleResponse, certificat
 		if !found {
 			var err error
 
-			wanted, err = makeCertID(certificate, issuer, h)
+			wanted, err = makeCertID(ctx, certificate, issuer, h)
 			if err != nil {
 				return nil, err
 			}
@@ -343,12 +451,16 @@ func validateOCSPEntry(produced, at time.Time, s *singleResponse, o OCSPOptions)
 // ocspEvidence borrows operation-local evidence and parses each response once,
 // including when path building presents several candidate chains.
 type ocspEvidence struct {
-	raw         [][]byte
-	options     OCSPOptions
-	parsed      []parsedOCSP
-	errors      []error
-	initialized bool
-	initErr     error
+	authorization       *ocspResponderEvidence
+	provenanceSources   map[evidenceBinding][]*evidence.Observation
+	authenticated, used []*VerifiedEvidence
+	raw                 [][]byte
+	options             OCSPOptions
+	sources             []*ocspSource
+	parsed              []parsedOCSP
+	errors              []error
+	initialized         bool
+	initErr             error
 }
 
 func (e *ocspEvidence) parse(ctx context.Context) (err error) {
@@ -366,12 +478,15 @@ func (e *ocspEvidence) parse(ctx context.Context) (err error) {
 	}
 
 	e.options = options
+
+	e.authorization = &ocspResponderEvidence{raw: options.ResponderCRLs, sources: e.provenanceSources}
 	for _, raw := range e.raw {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
 		parsed, err := parseOCSP(raw, options.MaxBytes)
+		e.sources = append(e.sources, &ocspSource{input: raw, sources: e.provenanceSources[evidenceBinding{kind: evidence.OCSP, hash: sha256.Sum256(raw)}]})
 		e.parsed = append(e.parsed, parsed)
 		e.errors = append(e.errors, err)
 	}
@@ -400,18 +515,17 @@ func (e *ocspEvidence) checkChain(ctx context.Context, chain []*x509.Certificate
 				continue
 			}
 
-			responder, err := selectOCSPResponder(parsed, chain[i+1])
-			if err != nil {
-				continue
-			}
+			verification := ocspVerification{authorization: e.authorization, source: e.sources[j], parsed: parsed, certificate: chain[i], issuer: chain[i+1]}
+			report, err := verifyOCSPData(ctx, &verification, at, e.options)
+			e.authenticated = appendOCSPEvidence(e.authenticated, report.evidence...)
 
-			_, err = verifyOCSPData(ctx, ocspVerification{parsed: parsed, certificate: chain[i], issuer: chain[i+1], responder: responder}, at, e.options)
 			if errors.Is(err, ErrRevoked) {
 				return err
 			}
 
 			if err == nil {
 				good = true
+				e.used = appendOCSPEvidence(e.used, report.evidence...)
 			}
 		}
 
@@ -421,4 +535,16 @@ func (e *ocspEvidence) checkChain(ctx context.Context, chain []*x509.Certificate
 	}
 
 	return nil
+}
+
+func authorizeOCSPCandidate(ctx context.Context, responder, issuer *x509.Certificate, at, produced time.Time, options OCSPOptions, revocation *ocspResponderEvidence) ([]*VerifiedEvidence, error) {
+	if configuredOCSPAuthority(options.Authorities, responder, issuer) {
+		if at.Before(responder.NotBefore) || at.After(responder.NotAfter) || produced.Before(responder.NotBefore) || produced.After(responder.NotAfter) {
+			return nil, fmt.Errorf("%w: local responder validity", ErrEvidence)
+		}
+
+		return nil, ctx.Err()
+	}
+
+	return authorizeResponder(ctx, responder, issuer, at, produced, revocation)
 }

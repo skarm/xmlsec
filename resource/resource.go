@@ -144,7 +144,7 @@ type HTTPResolver struct {
 
 // NewHTTPResolver requires an explicit client and at least one allowed origin.
 func NewHTTPResolver(config HTTPConfig) (*HTTPResolver, error) {
-	if config.Client == nil || len(config.AllowedOrigins) == 0 {
+	if config.Client == nil || config.Client.Transport != nil && nilcheck.IsNil(config.Client.Transport) || len(config.AllowedOrigins) == 0 {
 		return nil, ErrInput
 	}
 
@@ -166,7 +166,15 @@ func NewHTTPResolver(config HTTPConfig) (*HTTPResolver, error) {
 		}
 
 		if redirect != nil {
-			return redirect(req, via)
+			if err := redirect(req, via); err != nil {
+				return err
+			}
+
+			if !r.allowed(req.URL) {
+				return ErrPolicy
+			}
+
+			return nil
 		}
 
 		if len(via) >= 10 {

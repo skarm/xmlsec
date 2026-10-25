@@ -2,17 +2,18 @@ package keyinfo
 
 import (
 	"context"
-	"crypto/x509"
 	"fmt"
 	"strings"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/x509cert"
+	"github.com/skarm/xmlsec/internal/x509crl"
 )
 
 func (p *parser) certificate(s *scope, n *tree.Node, der []byte) error {
-	c, err := x509.ParseCertificate(der)
+	c, err := x509cert.ParseWithMaxBytes(der, p.limits.MaxBlobBytes)
 	if err != nil {
 		return fmt.Errorf("%w: X509Certificate: %w", ErrInput, err)
 	}
@@ -68,7 +69,7 @@ func (p *parser) x509DataItem(s *scope, n *tree.Node, group *X509Group) error {
 			return err
 		}
 
-		if _, err := x509.ParseRevocationList(der); err != nil {
+		if _, err := x509crl.ParseEvidence(der, p.limits.MaxBlobBytes); err != nil {
 			return fmt.Errorf("%w: X509CRL: %w", ErrInput, err)
 		}
 
@@ -273,11 +274,11 @@ func buildX509Blobs(ctx context.Context, node *tree.Node, group X509Data) error 
 
 			switch field.name {
 			case nameX509Certificate:
-				if _, err := x509.ParseCertificate(value); err != nil {
+				if _, err := x509cert.ParseWithMaxBytes(value, len(value)); err != nil {
 					return fmt.Errorf("%w: certificate: %w", ErrInput, err)
 				}
 			case nameX509CRL:
-				if _, err := x509.ParseRevocationList(value); err != nil {
+				if _, err := x509crl.ParseEvidence(value, len(value)); err != nil {
 					return fmt.Errorf("%w: CRL: %w", ErrInput, err)
 				}
 			case nameX509SKI:

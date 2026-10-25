@@ -8,7 +8,9 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"path/filepath"
@@ -16,8 +18,82 @@ import (
 	"testing"
 	"time"
 
+	"github.com/skarm/xmlsec/cms"
+	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/pki"
 )
+
+func TestCMSBEROpenSSL(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "portable")
+
+	for _, name := range []string{nameRsaSha256, nameEcdsaSha256} {
+		t.Run(name, func(t *testing.T) { checkCMSBEROpenSSL(t, fixture, name) })
+	}
+}
+
+func checkCMSBEROpenSSL(t *testing.T, fixture *interopFixture, name string) {
+	t.Helper()
+	dir := t.TempDir()
+	key := generateKey(t, dir, name)
+	at := time.Now().UTC()
+	tpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "BER fixture signer"}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}
+	_, certDER, certPEM := certificateFiles(t, dir, "ber-signer", tpl, tpl, key.signer, key.signer)
+	content := bytes.Repeat([]byte("CMS BER payload\x00\x00\r\n"), 2048)
+	input := write(t, filepath.Join(dir, "content.bin"), content)
+	encoded := filepath.Join(dir, "stream.ber")
+	command(t, fixture, true, nil, "openssl", "cms", "-sign", "-stream", "-binary", "-nodetach", "-nosmimecap", "-cades", "-md", "sha256", "-in", input, "-signer", certPEM, "-inkey", key.private, "-outform", "DER", "-out", encoded)
+
+	raw := read(t, encoded)
+	if !bytes.HasPrefix(raw, []byte{0x30, 0x80}) {
+		t.Fatal("OpenSSL did not generate indefinite BER")
+	}
+
+	if parsed, err := cms.Parse(t.Context(), raw, cms.Limits{}); parsed != nil || !errors.Is(err, cms.ErrSyntax) {
+		t.Fatal("strict parser accepted BER", err)
+	}
+
+	parsed, err := cms.ParseBER(t.Context(), raw, cms.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	certificate := read(t, certDER)
+	options := cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true}
+
+	result, err := parsed.Verify(t.Context(), [][]byte{certificate}, options)
+	if err != nil || !bytes.Equal(result.Content(), content) {
+		t.Fatal("OpenSSL BER content/signature binding", err)
+	}
+
+	normalized := write(t, filepath.Join(dir, "normalized.der"), parsed.DER())
+	for _, path := range []string{encoded, normalized} {
+		verified := filepath.Join(dir, "verified")
+		command(t, fixture, true, nil, "openssl", "cms", "-verify", "-binary", "-inform", "DER", "-in", path, "-noverify", "-out", verified)
+
+		if !bytes.Equal(read(t, verified), content) {
+			t.Fatal("OpenSSL disagrees after normalization")
+		}
+	}
+
+	bad := bytes.Replace(raw, []byte("CMS BER payload"), []byte("CMS BAD payload"), 1)
+	if bytes.Equal(bad, raw) {
+		t.Fatal("ineffective content mutation")
+	}
+
+	mutated, err := cms.ParseBER(t.Context(), bad, cms.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result, err := mutated.Verify(t.Context(), [][]byte{certificate}, options); result != nil || !errors.Is(err, cms.ErrSignature) {
+		t.Fatal("changed BER content authenticated", err)
+	}
+
+	badFile := write(t, filepath.Join(dir, "changed.ber"), bad)
+	command(t, fixture, false, nil, "openssl", "cms", "-verify", "-binary", "-inform", "DER", "-in", badFile, "-noverify", "-out", filepath.Join(dir, "unverified"))
+}
 
 const (
 	xadesNS   = "http://uri.etsi.org/01903/v1.3.2#"
@@ -389,4 +465,220 @@ func archiveInput(t *testing.T, fixture *interopFixture, d *tree.Document, stamp
 	}
 
 	return out
+}
+
+func TestCMSTrustBindingsOpenSSL(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "portable")
+	dir := t.TempDir()
+	at := time.Now().UTC().Truncate(time.Second)
+	rootKey := generateKey(t, dir, nameEcdsaSha256)
+	rootTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "CMS trust fixture root"}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(24 * time.Hour), BasicConstraintsValid: true, IsCA: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{1, 2, 3, 4}}
+	root, rootDER, rootPEM := certificateFiles(t, dir, "cms-root", rootTemplate, rootTemplate, rootKey.signer, rootKey.signer)
+	signerKey := generateKey(t, dir, nameEcdsaSha384)
+	signerTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "CMS selected signer"}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning}}
+	signer, _, signerPEM := certificateFiles(t, dir, "cms-signer", signerTemplate, root, signerKey.signer, rootKey.signer)
+	content := []byte("independent CMS content, certificate and trust bindings\x00\xff")
+	raw, err := cms.Sign(t.Context(), content, []cms.Signer{{Key: signerKey.signer, CertificateDER: signer.Raw}}, cms.SignOptions{ExtraCertificates: [][]byte{root.Raw}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := cms.Parse(t.Context(), raw, cms.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker, err := pki.NewVerifier(pki.Config{Roots: [][]byte{read(t, rootDER)}, Revocation: pki.RequireCRL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyOptions := cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true}
+	epoch := strconv.FormatInt(at.Unix(), 10)
+	for _, revoked := range []bool{false, true} {
+		t.Run(strconv.FormatBool(revoked), func(t *testing.T) {
+			crlTemplate := &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: at.Add(-time.Minute), NextUpdate: at.Add(time.Hour)}
+			if revoked {
+				crlTemplate.RevokedCertificateEntries = []x509.RevocationListEntry{{SerialNumber: signer.SerialNumber, RevocationTime: at.Add(-time.Minute)}}
+			}
+			crl, err := x509.CreateRevocationList(rand.Reader, crlTemplate, root, rootKey.signer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			crlPEM := write(t, filepath.Join(t.TempDir(), "status.pem"), pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: crl}))
+			result, err := signed.VerifyWithTrust(t.Context(), [][]byte{signer.Raw}, verifyOptions, cms.TrustOptions{Verifier: checker, VerificationTime: at, Evidence: pki.Evidence{CRLs: [][]byte{crl}}})
+			if revoked {
+				if result != nil || !errors.Is(err, cms.ErrTrust) || !errors.Is(err, pki.ErrRevoked) {
+					t.Fatal("revoked signer trusted", err)
+				}
+			} else if err != nil || !result.TrustChecked() || !bytes.Equal(result.Content(), content) || result.Signers()[0].Trust().RevocationStatus() != pki.Valid {
+				t.Fatal("CMS full trust", err)
+			}
+			command(t, fixture, !revoked, nil, "openssl", "verify", "-purpose", "any", "-CAfile", rootPEM, "-CRLfile", crlPEM, "-crl_check", "-attime", epoch, signerPEM)
+		})
+	}
+	source := write(t, filepath.Join(dir, "signed.der"), raw)
+	output := filepath.Join(dir, "verified.bin")
+	command(t, fixture, true, nil, "openssl", "cms", "-verify", "-cades", "-binary", "-inform", "DER", "-in", source, "-purpose", "any", "-CAfile", rootPEM, "-attime", epoch, "-out", output)
+	if !bytes.Equal(read(t, output), content) {
+		t.Fatal("OpenSSL authenticated different content")
+	}
+	changed := bytes.Replace(raw, content, append([]byte("bad"), content[3:]...), 1)
+	if bytes.Equal(changed, raw) {
+		t.Fatal("content mutation failed")
+	}
+	damaged, err := cms.Parse(t.Context(), changed, cms.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := damaged.VerifyWithTrust(t.Context(), [][]byte{signer.Raw}, verifyOptions, cms.TrustOptions{Verifier: checker, VerificationTime: at}); result != nil || !errors.Is(err, cms.ErrSignature) {
+		t.Fatal("content mutation reached trusted success", err)
+	}
+	path := write(t, filepath.Join(dir, "bad-content.der"), changed)
+	command(t, fixture, false, nil, "openssl", "cms", "-verify", "-cades", "-binary", "-inform", "DER", "-in", path, "-purpose", "any", "-CAfile", rootPEM, "-attime", epoch, "-out", output)
+	t.Log("P6_ORACLE OpenSSL CMS content/ESS certificate binding and independent authenticated CRL status")
+}
+
+func TestOCSPAuthorizationOpenSSL(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "portable")
+	dir := t.TempDir()
+	at := time.Now().UTC().Truncate(time.Second)
+	rootKey := generateKey(t, dir, nameEcdsaSha256)
+	rootTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "OCSP authority root"}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{1, 2, 3, 4}}
+	root, _, rootPEM := certificateFiles(t, dir, "ocsp-root", rootTemplate, rootTemplate, rootKey.signer, rootKey.signer)
+	leafKey := generateKey(t, dir, nameEcdsaSha384)
+	leafTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "OCSP target"}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}
+	leaf, _, leafPEM := certificateFiles(t, dir, "ocsp-leaf", leafTemplate, root, leafKey.signer, rootKey.signer)
+	request, err := pki.CreateOCSPRequest(leaf.Raw, root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, local := range []bool{false, true} {
+		t.Run(strconv.FormatBool(local), func(t *testing.T) {
+			responderKey := generateKey(t, t.TempDir(), nameEcdsaSha256)
+			responderTemplate := &x509.Certificate{AuthorityKeyId: root.SubjectKeyId, SerialNumber: big.NewInt(3), Subject: root.Subject, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 5}, Value: []byte{5, 0}}}}
+			parent, issuerKey := root, rootKey.signer
+			if local {
+				parent = responderTemplate
+				issuerKey = responderKey.signer
+				responderTemplate.Subject = pkix.Name{CommonName: "configured local OCSP authority"}
+			}
+			responder, _, responderPEM := certificateFiles(t, t.TempDir(), "selected-responder", responderTemplate, parent, responderKey.signer, issuerKey)
+			raw, err := pki.CreateOCSPResponse(t.Context(), request, leaf.Raw, root.Raw, responder.Raw, responderKey.signer, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: at, ThisUpdate: at.Add(-time.Minute), NextUpdate: at.Add(time.Minute)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := pki.OCSPOptions{}
+			if local {
+				if result, _, err := pki.VerifyOCSP(t.Context(), raw, leaf.Raw, root.Raw, at, options); result != nil || !errors.Is(err, pki.ErrEvidence) {
+					t.Fatal("embedded local responder gained implicit authority", err)
+				}
+				options.Authorities = []pki.OCSPAuthority{{ResponderCertificateDER: responder.Raw, IssuerCertificateDER: root.Raw}}
+			}
+			result, _, err := pki.VerifyOCSP(t.Context(), raw, leaf.Raw, root.Raw, at, options)
+			if err != nil || result == nil || !bytes.Equal(result.ResponderDER(), responder.Raw) {
+				t.Fatal("selected responder authorization", err)
+			}
+			path := write(t, filepath.Join(t.TempDir(), "response.der"), raw)
+			args := []string{"ocsp", "-respin", path, "-issuer", rootPEM, "-sha256", flagCert, leafPEM, "-CAfile", rootPEM, "-attime", strconv.FormatInt(at.Unix(), 10), "-no_nonce"}
+			if local {
+				args = append(args, "-VAfile", responderPEM)
+			} else {
+				// Automatic same-name selection cannot authenticate this fixture.
+				// Pin the explicit signer for this independent wire-binding control.
+				command(t, fixture, false, nil, "openssl", args...)
+				args = append(args, "-VAfile", responderPEM)
+				t.Log("P6_DIAGNOSTIC OpenSSL same-name path selection fails; explicit trusted-signer control follows")
+			}
+			out, stderr := command(t, fixture, true, nil, "openssl", args...)
+			if !bytes.Contains(out, []byte(": good")) || !bytes.Contains(stderr, []byte("Response verify OK")) {
+				t.Fatalf("independent OCSP verification missing: %s %s", out, stderr)
+			}
+			damaged := bytes.Clone(raw)
+			// The final bytes are the optional certificate, so change the signature BIT STRING explicitly.
+			rootValue, err := der.Read(damaged, len(damaged))
+			if err != nil {
+				t.Fatal(err)
+			}
+			outer, err := der.Sequence(rootValue, 2, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wrapped, err := der.Explicit(outer[1], 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := der.Sequence(wrapped, 2, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			basic, err := der.Read(response[1].Bytes, len(response[1].Bytes))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fields, err := der.Sequence(basic, 3, 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fields[2].Bytes[len(fields[2].Bytes)-1] ^= 1
+			if result, _, err := pki.VerifyOCSP(t.Context(), damaged, leaf.Raw, root.Raw, at, options); result != nil || !errors.Is(err, pki.ErrEvidence) {
+				t.Fatal("damaged signature authenticated", err)
+			}
+			args[2] = write(t, filepath.Join(t.TempDir(), "bad-signature.der"), damaged)
+			command(t, fixture, false, nil, "openssl", args...)
+			t.Log("P6_ORACLE OpenSSL authenticated selected responder and rejected changed signature")
+		})
+	}
+}
+
+func TestOCSPNonceBindingOpenSSL(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "portable")
+	dir := t.TempDir()
+	at := time.Now().UTC().Truncate(time.Second)
+	rootKey := generateKey(t, dir, nameEcdsaSha256)
+	rootTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "OCSP nonce root"}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
+	root, _, rootPEM := certificateFiles(t, dir, "nonce-root", rootTemplate, rootTemplate, rootKey.signer, rootKey.signer)
+	leafKey := generateKey(t, dir, nameEcdsaSha384)
+	leaf, _, _ := certificateFiles(t, dir, "nonce-leaf", &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "OCSP nonce target"}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}, root, leafKey.signer, rootKey.signer)
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	request, err := pki.CreateOCSPRequest(leaf.Raw, root.Raw, crypto.SHA256, nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := pki.CreateOCSPResponse(t.Context(), request, leaf.Raw, root.Raw, root.Raw, rootKey.signer, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: at, ThisUpdate: at.Add(-time.Minute), NextUpdate: at.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	responsePath := write(t, filepath.Join(dir, "response.der"), response)
+	for _, different := range []bool{false, true} {
+		t.Run(strconv.FormatBool(different), func(t *testing.T) {
+			expected := bytes.Clone(nonce)
+			if different {
+				expected[0] ^= 1
+			}
+			selectedRequest, err := pki.CreateOCSPRequest(leaf.Raw, root.Raw, crypto.SHA256, expected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, _, err := pki.VerifyOCSP(t.Context(), response, leaf.Raw, root.Raw, at, pki.OCSPOptions{ExpectedNonce: expected})
+			if different {
+				if result != nil || !errors.Is(err, pki.ErrEvidence) {
+					t.Fatal("mismatched request nonce accepted", err)
+				}
+			} else if result == nil || err != nil {
+				t.Fatal("original request nonce rejected", err)
+			}
+			requestPath := write(t, filepath.Join(t.TempDir(), "request.der"), selectedRequest)
+			_, stderr := command(t, fixture, !different, nil, "openssl", "ocsp", "-reqin", requestPath, "-respin", responsePath, "-CAfile", rootPEM, "-verify_other", rootPEM, "-attime", strconv.FormatInt(at.Unix(), 10))
+			if different && !bytes.Contains(stderr, []byte("Nonce Verify error")) {
+				t.Fatalf("independent failure was not nonce binding: %s", stderr)
+			}
+			if !different && !bytes.Contains(stderr, []byte("Response verify OK")) {
+				t.Fatalf("independent response verification missing: %s", stderr)
+			}
+		})
+	}
 }

@@ -1,5 +1,5 @@
 // Package cms creates, parses and verifies a bounded CMS SignedData profile
-// based on RFC 5652, with definite-length encoding and DER signed attributes.
+// based on RFC 5652, with definite-length generation and DER signed attributes.
 // It supports attached and detached content and explicit signer certificates.
 //
 // # Sign and inspect
@@ -20,6 +20,12 @@
 // infer application semantics from an unknown attribute.
 //
 // [Parse] checks bounded container structure, versions and attribute placement.
+// [ParseBER] and [ParseBERReader] explicitly accept selected indefinite wrappers
+// and constructed content OCTET STRINGs, preserving original signed attributes.
+// They produce a normalized definite representation for DER/Size/WriterTo;
+// the source encoding, metadata and intermediate buffers coexist temporarily.
+// Default Parse/ParseReader retain their strict encoding rules. Other BER forms,
+// including indefinite SignerInfos and certificate bags, remain unsupported.
 // A parsed [SignedData] is unverified: embedded certificates and
 // UnverifiedContent are inspection data, not authenticated results.
 //
@@ -35,8 +41,15 @@
 // [SignedData.WriterTo] replays that DER without another container-sized
 // allocation. All signers and required certificate bindings must pass before a
 // [Result] is returned. Certificate binding and cryptographic validity do not
-// establish PKIX trust; compose github.com/skarm/xmlsec/pki for chain, usage
-// and revocation policy.
+// establish PKIX trust. [SignedData.VerifyWithTrust] and
+// [SignedData.VerifyReaderWithTrust] additionally apply an explicit pki.Verifier
+// at a caller-selected time to every authenticated signer. They return no Result
+// after a partial trust failure; [Result.TrustChecked] and [SignerResult.Trust]
+// distinguish full configured-policy checks from cryptographic authentication.
+// Signed ESS identifiers after the signer constrain certification-path selection.
+// This profile does not evaluate those optional restrictions: trusted operations
+// return ErrUnsupported when they are present. Ordinary Verify binds only the
+// first signer certificate and does not claim PKIX or ESS path-policy validation.
 //
 // [Limits] bounds bytes and collections; zero fields use the documented
 // defaults. The package performs no implicit resource fetching and is not a

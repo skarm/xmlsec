@@ -245,7 +245,7 @@ func TestEd25519phReaderMemory(t *testing.T) {
 				{"sign", func(src io.Reader) error {
 					value, err := xmldsig.SignMessageReader(t.Context(), src, key, xmldsig.Ed25519ph, policy)
 					if err == nil && !bytes.Equal(value, want) {
-						return errors.New("Ed25519ph signature differs from Go")
+						return errors.New("ed25519ph signature differs from Go")
 					}
 					return err
 				}},

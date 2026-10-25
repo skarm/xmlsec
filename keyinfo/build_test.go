@@ -5,12 +5,16 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"math/big"
 	"os"
 	"path/filepath"
 	"slices"
@@ -290,6 +294,8 @@ func TestBuildX509CertificateDigests(t *testing.T) {
 
 func TestBuildPolicyAndZeroValues(t *testing.T) {
 	k := ec(t, elliptic.P256())
+	invalidPoint := k.PublicKey
+	invalidPoint.Curve = elliptic.P384()
 	oversized := make([]reference.Transform, 64)
 
 	source := make([]byte, 64<<10)
@@ -316,7 +322,7 @@ func TestBuildPolicyAndZeroValues(t *testing.T) {
 		{"invalid-retrieval-parameters", keyinfo.Template{RetrievalMethods: []keyinfo.RetrievalMethod{{URI: uriUrnKey, Transforms: []reference.Transform{{Algorithm: reference.Base64, XPath: []reference.XPathExpression{{Expression: "true()"}}}}}}}, keyinfo.ErrInput},
 		{"too-many-retrievals", keyinfo.Template{RetrievalMethods: make([]keyinfo.RetrievalMethod, 33)}, keyinfo.ErrLimit},
 		{"retrieval-source-budget-before-XML-parse", keyinfo.Template{RetrievalMethods: []keyinfo.RetrievalMethod{{URI: uriUrnKey, Transforms: oversized}}}, keyinfo.ErrLimit},
-		{"invalid-point", keyinfo.Template{Keys: []keyinfo.PublicKeyValue{{Key: &ecdsa.PublicKey{Curve: elliptic.P256(), X: big.NewInt(0), Y: big.NewInt(0)}}}}, keyinfo.ErrKey}, //nolint:staticcheck // Deliberately mutate legacy coordinates to test malformed keys and snapshot ownership.
+		{"invalid-point", keyinfo.Template{Keys: []keyinfo.PublicKeyValue{{Key: &invalidPoint}}}, keyinfo.ErrKey},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			d, e := keyinfo.Build(context.Background(), test.spec)
@@ -366,5 +372,76 @@ func BenchmarkBuildCertificateKeyInfo(b *testing.B) {
 		if _, err := keyinfo.Build(b.Context(), template); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestCertificateEncodingConsistency(t *testing.T) {
+	chain := testcert.New(t)
+	for _, test := range testcert.CertificateEncodings(t, chain) {
+		t.Run(test.Name, func(t *testing.T) {
+			before := bytes.Clone(test.DER)
+			built, err := keyinfo.Build(t.Context(), keyinfo.Template{Certificates: [][]byte{test.DER}})
+			if test.Valid {
+				if err != nil || built == nil {
+					t.Fatal(built, err)
+				}
+			} else if built != nil || !errors.Is(err, keyinfo.ErrInput) {
+				t.Fatal("builder accepted invalid DER", err)
+			}
+			wire := `<ds:KeyInfo xmlns:ds="` + keyinfo.Namespace + `"><ds:X509Data><ds:X509Certificate>` + base64.StdEncoding.EncodeToString(test.DER) + `</ds:X509Certificate></ds:X509Data></ds:KeyInfo>`
+			doc, err := document.Parse(t.Context(), []byte(wire), document.DefaultLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := keyinfo.Parse(t.Context(), doc, doc.Root(), keyinfo.Options{})
+			if !test.Valid {
+				if result != nil || !errors.Is(err, keyinfo.ErrInput) {
+					t.Fatal("parser accepted invalid DER", err)
+				}
+				return
+			}
+			if err != nil || len(result.Candidates()) != 1 {
+				t.Fatal(result, err)
+			}
+			candidate := result.Candidates()[0]
+			certificate, err := candidate.Certificate()
+			if err != nil || !bytes.Equal(certificate.Raw, test.DER) || certificate.CheckSignatureFrom(chain.Root) != nil {
+				t.Fatal("certificate snapshot lost original DER/signature", err)
+			}
+			certificate.Raw[0] ^= 1
+			fresh, err := candidate.Certificate()
+			if err != nil || !bytes.Equal(fresh.Raw, test.DER) || !bytes.Equal(test.DER, before) {
+				t.Fatal("certificate snapshot aliases caller", err)
+			}
+		})
+	}
+}
+
+func TestCertificateSnapshotPreservesConfiguredBlobLimit(t *testing.T) {
+	chain := testcert.New(t)
+	large := *chain.Leaf
+	large.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 2, 3, 4, 5}, Value: bytes.Repeat([]byte{0x42}, 1536<<10)}}
+	raw, err := x509.CreateCertificate(rand.Reader, &large, chain.Root, chain.LeafKey.Public(), chain.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) <= 1<<20 {
+		t.Fatal("fixture did not exceed default blob cap")
+	}
+	wire := `<ds:KeyInfo xmlns:ds="` + keyinfo.Namespace + `"><ds:X509Data><ds:X509Certificate>` + base64.StdEncoding.EncodeToString(raw) + `</ds:X509Certificate></ds:X509Data></ds:KeyInfo>`
+	doc, err := document.Parse(t.Context(), []byte(wire), document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := keyinfo.Parse(t.Context(), doc, doc.Root(), keyinfo.Options{}); result != nil || !errors.Is(err, keyinfo.ErrLimit) {
+		t.Fatal("default blob cap was ignored", err)
+	}
+	result, err := keyinfo.Parse(t.Context(), doc, doc.Root(), keyinfo.Options{Limits: keyinfo.Limits{MaxBlobBytes: 2 << 20}})
+	if err != nil || len(result.Candidates()) != 1 {
+		t.Fatal(result, err)
+	}
+	certificate, err := result.Candidates()[0].Certificate()
+	if err != nil || !bytes.Equal(certificate.Raw, raw) {
+		t.Fatal("snapshot imposed a smaller byte cap", err)
 	}
 }

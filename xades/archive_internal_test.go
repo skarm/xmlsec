@@ -549,3 +549,67 @@ func (c *decodeCancelContext) Err() error {
 
 	return c.Context.Err()
 }
+
+func TestValidationMaterialCertificateEncodings(t *testing.T) {
+	chain := testcert.New(t)
+	for _, test := range testcert.CertificateEncodings(t, chain) {
+		t.Run(test.Name, func(t *testing.T) {
+			err := checkRawMaterial(t.Context(), ValidationMaterial{Certificates: [][]byte{test.DER}})
+			if test.Valid {
+				if err != nil {
+					t.Fatal("valid embedded certificate rejected", err)
+				}
+			} else if !errors.Is(err, ErrProfile) {
+				t.Fatal("invalid embedded certificate accepted", err)
+			}
+		})
+	}
+	large := *chain.Leaf
+	large.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 2, 3, 4, 5}, Value: bytes.Repeat([]byte{0x42}, 2<<20)}}
+	raw, err := x509.CreateCertificate(rand.Reader, &large, chain.Root, chain.LeafKey.Public(), chain.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) <= 1<<20 {
+		t.Fatal("fixture did not exceed a default certificate cap")
+	}
+	if err := checkRawMaterial(t.Context(), ValidationMaterial{Certificates: [][]byte{raw}}); err != nil {
+		t.Fatal("new decoder narrowed the existing4MiB material cap", err)
+	}
+}
+
+func TestValidationMaterialCRLVersions(t *testing.T) {
+	chain := testcert.New(t)
+	for _, version := range []string{"v1", "v2"} {
+		t.Run(version, func(t *testing.T) {
+			raw := testcert.CRL(t, chain)
+			if version == "v1" {
+				raw = testcert.CRLV1(t, chain)
+			}
+			material := ValidationMaterial{CRLs: [][]byte{raw}}
+			if err := checkRawMaterial(t.Context(), material); err != nil {
+				t.Fatal("valid CRL material rejected", err)
+			}
+			node, err := makeRevocationValues(t.Context(), material.evidence())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := node.Children[0].Children[0].Children[0].Data; got != base64.StdEncoding.EncodeToString(raw) {
+				t.Fatal("embedded CRL no longer has its original DER")
+			}
+			if err := checkRawMaterial(t.Context(), ValidationMaterial{CRLs: [][]byte{append(bytes.Clone(raw), 0)}}); !errors.Is(err, ErrProfile) {
+				t.Fatal("trailing CRL data accepted", err)
+			}
+		})
+	}
+	large, err := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(2), ThisUpdate: testcert.Now(), NextUpdate: testcert.Now().Add(time.Hour), ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 2, 3, 4, 5}, Value: bytes.Repeat([]byte{42}, 2<<20)}}}, chain.Root, chain.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkRawMaterial(t.Context(), ValidationMaterial{CRLs: [][]byte{large}}); err != nil {
+		t.Fatal("existing4MiB CRL material cap narrowed", err)
+	}
+	if err := checkRawMaterial(t.Context(), ValidationMaterial{CRLs: [][]byte{make([]byte, (4<<20)+1)}}); !errors.Is(err, ErrProfile) {
+		t.Fatal("material byte cap weakened", err)
+	}
+}

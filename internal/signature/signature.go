@@ -20,6 +20,7 @@ import (
 	"io"
 
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/ecdsakey"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 )
 
@@ -83,15 +84,11 @@ func Key(k crypto.PublicKey) error {
 			return Err
 		}
 	case *ecdsa.PublicKey:
-		if p != nil && (p.X == nil || p.Y == nil) { //nolint:staticcheck // Bytes panics on nil legacy coordinates; reject malformed caller keys first.
-			return Err
-		}
-
 		if p == nil || (p.Curve != elliptic.P256() && p.Curve != elliptic.P384() && p.Curve != elliptic.P521()) {
 			return Err
 		}
 
-		if _, err := p.Bytes(); err != nil {
+		if _, err := ecdsakey.PublicBytes(p); err != nil {
 			return Err
 		}
 	case ed25519.PublicKey:

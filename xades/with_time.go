@@ -2,12 +2,12 @@ package xades
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/pki"
 	"github.com/skarm/xmlsec/timestamp"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -19,6 +19,8 @@ import (
 // Signer evidence must be fresh at the proof time; TSA evidence at verification.
 type WithTimeConfig struct {
 	// SignerPKI sets explicit document signer trust and offline revocation policy.
+	// Only direct complete signer CRLs are supported. Delta, scoped and indirect
+	// CRLs remain outside this B-T profile even when accepted by general PKI.
 	SignerPKI pki.Config
 	// TSA supplies a trusted timestamp verifier with revocation checks enabled.
 	TSA   *timestamp.Verifier
@@ -126,7 +128,9 @@ func (v *WithTimeValidator) ValidateEnveloped(ctx context.Context, doc *document
 
 	report.proof = proof.at
 
-	certificate, err := x509.ParseCertificate(basic.CertificateDER())
+	originalCertificate := basic.CertificateDER()
+
+	certificate, err := x509cert.ParseWithMaxBytes(originalCertificate, len(originalCertificate))
 	if err != nil {
 		return reject(ErrCertificate)
 	}

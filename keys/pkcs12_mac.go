@@ -19,6 +19,8 @@ import (
 	"github.com/skarm/xmlsec/internal/der"
 )
 
+func oidSHA1() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 3, 14, 3, 2, 26} }
+
 func oidSHA256() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1} }
 
 func oidSHA384() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 2} }
@@ -41,8 +43,11 @@ func bmpPassword(password []byte) ([]byte, error) {
 	}
 
 	out := make([]byte, 0, len(password)*2+2)
-	for _, r := range string(password) {
-		if r > 0xffff || r == 0xfeff || r == 0 {
+	for len(password) > 0 {
+		r, size := utf8.DecodeRune(password)
+		password = password[size:]
+
+		if r > 0xffff {
 			clear(out)
 			return nil, ErrPolicy
 		}
@@ -53,22 +58,12 @@ func bmpPassword(password []byte) ([]byte, error) {
 	return append(out, 0, 0), nil
 }
 
-func validPKCS12Password(password []byte) bool {
-	if !utf8.Valid(password) {
-		return false
-	}
-
-	for _, r := range string(password) {
-		if r == 0 || r == 0xfeff {
-			return false
-		}
-	}
-
-	return true
-}
+// Password bytes are UTF-8 content, not a NUL-terminated API argument. Neither
+// an embedded U+0000 nor U+FEFF is discarded or interpreted as framing.
+func validPKCS12Password(password []byte) bool { return utf8.Valid(password) }
 
 func classicMACKey(state *passwordState, hash crypto.Hash, salt []byte, iterations int) ([]byte, error) {
-	if !sha2(hash) || len(salt) < 8 || len(salt) > 64 {
+	if !state.acceptHash(hash) || len(salt) < 8 || len(salt) > 64 {
 		return nil, ErrPolicy
 	}
 
@@ -125,6 +120,8 @@ func digestHash(v asn1.RawValue) (crypto.Hash, error) {
 	}
 
 	switch {
+	case oid.Equal(oidSHA1()):
+		return crypto.SHA1, nil
 	case oid.Equal(oidSHA256()):
 		return crypto.SHA256, nil
 	case oid.Equal(oidSHA384()):
@@ -175,6 +172,10 @@ func pkcs12MACKey(state *passwordState, mac asn1.RawValue) (crypto.Hash, []byte,
 		}
 
 		kdf, err := parseKDF(p[0], hash.Size(), true)
+		if err == nil && (!sha2(kdf.hash) || kdf.keyBytes != hash.Size() && (!state.allowNonDefaultMACKeyLength || kdf.keyBytes < 16)) {
+			err = ErrPolicy
+		}
+
 		if err != nil {
 			return 0, nil, nil, err
 		}

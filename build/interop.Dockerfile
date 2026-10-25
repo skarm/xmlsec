@@ -1,4 +1,4 @@
-FROM golang:1.27.2 AS go
+FROM golang:1.27.3 AS go
 
 FROM debian:forky-slim
 

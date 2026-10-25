@@ -2,6 +2,7 @@ package pki
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/subtle"
 	"crypto/x509"
@@ -11,14 +12,23 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/skarm/xmlsec/evidence"
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/signature"
+	"github.com/skarm/xmlsec/internal/x509name"
 )
 
 // OCSPOptions configures offline evidence checks at the supplied verification
 // time; it does not authenticate the issuer itself. SHA-1 CertID/ResponderID
 // values are identifiers, not signature algorithms.
 type OCSPOptions struct {
+	// Sources optionally binds untrusted acquisition metadata to exact supplied
+	// response/certificate/CRL bytes, with at most 1024 observations totaling
+	// 8 MiB. It never establishes trust or freshness.
+	Sources []*evidence.Observation
+	// Authorities supplies at most 8 explicit issuer-scoped local signing pins,
+	// totaling at most 8MiB. Nil permits only the issuer or its delegated responder.
+	Authorities []OCSPAuthority
 	// ExpectedNonce requires an exact response nonce match when nonempty.
 	// At most 128 bytes are accepted.
 	ExpectedNonce []byte
@@ -46,14 +56,28 @@ const (
 	OCSPUnknown OCSPStatus = "unknown"
 )
 
+// OCSPAuthorization identifies why the response signer was authorized.
+type OCSPAuthorization string
+
+const (
+	// OCSPAuthorityIssuer identifies the actual certificate issuer.
+	OCSPAuthorityIssuer OCSPAuthorization = "issuer"
+	// OCSPAuthorityDelegated identifies an issuer-authorized delegated signer.
+	OCSPAuthorityDelegated OCSPAuthorization = "delegated"
+	// OCSPAuthorityLocal identifies an explicit issuer-scoped local signing pin.
+	OCSPAuthorityLocal OCSPAuthorization = "local-configuration"
+)
+
 // OCSPReport records OCSP signature, freshness and certificate-status checks.
 type OCSPReport struct {
+	evidence               []*VerifiedEvidence
 	Signature              Status     `json:"signature"`
 	Status                 OCSPStatus `json:"certificate_status,omitempty"`
 	ProducedAt, RevokedAt  time.Time
 	ThisUpdate, NextUpdate time.Time
 	RevocationReason       int
 	Delegated              bool
+	Authorization          OCSPAuthorization
 	Error                  string `json:"error,omitempty"`
 }
 
@@ -150,7 +174,7 @@ func ParseOCSPRequest(b []byte) (*OCSPRequest, error) {
 		}
 
 		for _, x := range ext {
-			if !x.Id.Equal(oidOCSPNonce()) {
+			if !x.Id.Equal(oidOCSPNonce()) && x.Critical {
 				return nil, ErrUnsupported
 			}
 		}
@@ -304,7 +328,7 @@ func CreateOCSPRequest(certificateDER, issuerDER []byte, h crypto.Hash, nonce []
 		return nil, e
 	}
 
-	id, e := makeCertID(c, issuer, h)
+	id, e := makeCertID(context.Background(), c, issuer, h)
 	if e != nil {
 		return nil, e
 	}
@@ -336,7 +360,7 @@ func publicBits(c *x509.Certificate) ([]byte, error) {
 	return b.Bytes, nil
 }
 
-func makeCertID(c, issuer *x509.Certificate, h crypto.Hash) (certID, error) {
+func makeCertID(ctx context.Context, c, issuer *x509.Certificate, h crypto.Hash) (certID, error) {
 	if h == 0 {
 		h = crypto.SHA256
 	}
@@ -346,7 +370,12 @@ func makeCertID(c, issuer *x509.Certificate, h crypto.Hash) (certID, error) {
 		return certID{}, ErrPolicy
 	}
 
-	if c.SerialNumber == nil || c.SerialNumber.Sign() <= 0 || c.SerialNumber.BitLen() > 160 || !bytes.Equal(c.RawIssuer, issuer.RawSubject) || c.CheckSignatureFrom(issuer) != nil {
+	equal, err := x509name.EqualOrExact(ctx, c.RawIssuer, issuer.RawSubject)
+	if err != nil {
+		return certID{}, fmt.Errorf("%w: issuer name: %w", ErrCertificate, err)
+	}
+
+	if c.SerialNumber == nil || c.SerialNumber.Sign() <= 0 || c.SerialNumber.BitLen() > 160 || !equal || c.CheckSignatureFrom(issuer) != nil {
 		return certID{}, ErrCertificate
 	}
 
@@ -355,7 +384,7 @@ func makeCertID(c, issuer *x509.Certificate, h crypto.Hash) (certID, error) {
 		return certID{}, e
 	}
 
-	n, _ := signature.Sum(h, issuer.RawSubject)
+	n, _ := signature.Sum(h, c.RawIssuer)
 	k, _ := signature.Sum(h, bits)
 
 	return certID{a, n, k, new(big.Int).Set(c.SerialNumber)}, nil

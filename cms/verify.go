@@ -14,6 +14,8 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/streamio"
+	"github.com/skarm/xmlsec/internal/x509cert"
+	"github.com/skarm/xmlsec/pki"
 )
 
 // VerifyOptions binds content interpretation to the caller's expectation.
@@ -42,6 +44,7 @@ type SignerResult struct {
 	certificate []byte
 	signed      []Attribute
 	bound       bool
+	trust       *pki.Result
 }
 
 // CertificateDER returns an owned copy of the certificate DER.
@@ -177,7 +180,7 @@ func parseVerificationCertificates(ctx context.Context, expected [][]byte) ([]*x
 			return nil, ErrCertificate
 		}
 
-		certificate, err := x509.ParseCertificate(bytes.Clone(raw))
+		certificate, err := x509cert.ParseDefault(bytes.Clone(raw))
 		if err != nil {
 			return nil, ErrCertificate
 		}
@@ -224,7 +227,7 @@ func (s *SignedData) verifySigners(ctx context.Context, certs []*x509.Certificat
 			return nil, err
 		}
 
-		index, err := signerCertificateIndex(p, certs)
+		index, err := signerCertificateIndex(ctx, p, certs)
 		if err != nil {
 			return nil, err
 		}
@@ -250,11 +253,16 @@ func (s *SignedData) verifySigners(ctx context.Context, certs []*x509.Certificat
 	return signers, nil
 }
 
-func signerCertificateIndex(p parsedSigner, certs []*x509.Certificate) (int, error) {
+func signerCertificateIndex(ctx context.Context, p parsedSigner, certs []*x509.Certificate) (int, error) {
 	index := -1
 
 	for i, certificate := range certs {
-		if !certificateMatch(p, certificate) {
+		matched, err := certificateMatch(ctx, p, certificate)
+		if err != nil {
+			return -1, err
+		}
+
+		if !matched {
 			continue
 		}
 
@@ -313,7 +321,7 @@ func (s *SignedData) verifySigner(ctx context.Context, p parsedSigner, cert *x50
 		return SignerResult{}, fmt.Errorf("%w: %w", ErrSignature, err)
 	}
 
-	bound, err := verifyESS(p.signed, cert, opt.AllowLegacyESSCertID)
+	bound, err := verifyESS(ctx, p.signed, cert, opt.AllowLegacyESSCertID)
 	if err != nil {
 		return SignerResult{}, err
 	}
@@ -322,7 +330,7 @@ func (s *SignedData) verifySigner(ctx context.Context, p parsedSigner, cert *x50
 		return SignerResult{}, ErrCertificate
 	}
 
-	return SignerResult{cert.Raw, p.signed, bound}, nil
+	return SignerResult{certificate: cert.Raw, signed: p.signed, bound: bound}, nil
 }
 
 func normalizeSignature(aid pkix.AlgorithmIdentifier, h crypto.Hash) (pkix.AlgorithmIdentifier, error) {

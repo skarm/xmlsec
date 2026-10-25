@@ -1,6 +1,7 @@
 package testcert
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -11,6 +12,9 @@ import (
 	"math/big"
 	"testing"
 	"time"
+
+	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/signature"
 )
 
 // Chain contains disposable test identities and their private keys.
@@ -83,4 +87,186 @@ func CRL(t testing.TB, c Chain, revoked ...*x509.Certificate) []byte {
 	}
 
 	return b
+}
+
+// CRLV1 issues an original signed v1 complete CRL, omitting v2 extensions.
+func CRLV1(t testing.TB, c Chain, revoked ...*x509.Certificate) []byte {
+	t.Helper()
+	original := CRL(t, c, revoked...)
+
+	value, err := der.Read(original, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fields, err := der.Sequence(value, 3, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tbs, err := der.Sequence(fields[0], 5, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parts [][]byte
+
+	for index, field := range tbs {
+		if index == 0 || field.Class == 2 && field.Tag == 0 {
+			continue
+		}
+
+		parts = append(parts, field.FullBytes)
+	}
+
+	raw := der.Seq(parts...)
+
+	algorithm, err := signature.Algorithm(fields[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	signed, err := signature.Sign(context.Background(), c.RootKey, algorithm, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bits, _ := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
+
+	return der.Seq(raw, fields[1].FullBytes, bits)
+}
+
+// CertificateEncoding is a signed encoding control; Valid refers only to its
+// RFC5280/DER syntax, not application trust or certificate policy.
+type CertificateEncoding struct {
+	Name  string
+	DER   []byte
+	Valid bool
+}
+
+// CertificateEncodings supplies canonical controls and exactly three schema
+// variants for the same leaf public key: a valid relative distribution point,
+// an explicitly encoded DEFAULT version0, and explicit extension criticalFALSE.
+// Fixtures are built/re-signed with standard crypto; no production decoder is
+// used to decide whether their original bytes are valid.
+func CertificateEncodings(t testing.TB, c Chain) []CertificateEncoding {
+	t.Helper()
+
+	value, err := der.Read(c.Leaf.Raw, len(c.Leaf.Raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outer, err := der.Sequence(value, 3, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := der.Sequence(outer[0], 6, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resign := func(parts [][]byte) []byte {
+		t.Helper()
+
+		tbs := der.Seq(parts...)
+
+		algorithm, err := signature.Algorithm(outer[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		signed, err := signature.Sign(context.Background(), c.RootKey, algorithm, tbs)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		bits, err := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return der.Seq(tbs, outer[1].FullBytes, bits)
+	}
+
+	var v1 [][]byte
+
+	for _, field := range body {
+		if field.Class == 2 && (field.Tag == 0 || field.Tag == 3) {
+			continue
+		}
+
+		v1 = append(v1, field.FullBytes)
+	}
+
+	canonicalV1 := resign(v1)
+	explicitV1 := resign(append([][]byte{der.Ctx(0, der.Int(0))}, v1...))
+	criticalParts := certificateCriticalFalse(t, body)
+
+	template := *c.Leaf
+	attribute := der.Seq(der.OID(asn1.ObjectIdentifier{2, 5, 4, 3}), der.Wrap(0, asn1.TagUTF8String, false, []byte("relative partition")))
+	point := der.Seq(der.Ctx(0, der.Wrap(2, 1, true, attribute)))
+	template.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 31}, Value: der.Seq(point)}}
+
+	relative, err := x509.CreateCertificate(rand.Reader, &template, c.Root, &c.LeafKey.PublicKey, c.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return []CertificateEncoding{
+		{Name: "canonical v3", DER: c.Leaf.Raw, Valid: true},
+		{Name: "canonical v1", DER: canonicalV1, Valid: true},
+		{Name: "relative distribution point", DER: relative, Valid: true},
+		{Name: "explicit default version0", DER: explicitV1},
+		{Name: "explicit critical false", DER: resign(criticalParts)},
+	}
+}
+
+// certificateCriticalFalse changes only one omitted DEFAULT in signed fixture
+// metadata; the caller re-signs the result without consulting a production parser.
+func certificateCriticalFalse(t testing.TB, body []asn1.RawValue) [][]byte {
+	t.Helper()
+
+	criticalParts := make([][]byte, len(body))
+	changed := false
+
+	for i, field := range body {
+		criticalParts[i] = field.FullBytes
+		if field.Class != 2 || field.Tag != 3 {
+			continue
+		}
+
+		v, err := der.Explicit(field, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		extensions, err := der.Sequence(v, 1, 256)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		parts := make([][]byte, len(extensions))
+		for at, extension := range extensions {
+			fields, err := der.Sequence(extension, 2, 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			parts[at] = extension.FullBytes
+			if len(fields) == 2 && !changed {
+				parts[at] = der.Seq(fields[0].FullBytes, []byte{1, 1, 0}, fields[1].FullBytes)
+				changed = true
+			}
+		}
+
+		criticalParts[i] = der.Ctx(3, der.Seq(parts...))
+	}
+
+	if !changed {
+		t.Fatal("fixture needs a noncritical extension")
+	}
+
+	return criticalParts
 }

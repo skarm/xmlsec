@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"errors"
 	"io"
 	"math/big"
@@ -17,6 +18,9 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/testutil/testcert"
+	"github.com/skarm/xmlsec/internal/x509name"
 	"github.com/skarm/xmlsec/keyinfo"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/transform"
@@ -604,7 +608,7 @@ func TestRetrievalTransformReaderFailures(t *testing.T) {
 			defer cancel()
 
 			failure := errors.New("resource failure")
-			input := bytes.NewReader([]byte(enc(certificate)))
+			input := strings.NewReader(enc(certificate))
 			source := &reader{read: func(dst []byte) (int, error) {
 				n, err := input.Read(dst)
 				if input.Len() == 0 {
@@ -649,3 +653,222 @@ type retrievalCloseFailure struct {
 
 func (r *retrievalCloseFailure) Read(dst []byte) (int, error) { return r.source.Read(dst) }
 func (r *retrievalCloseFailure) Close() error                 { _ = r.source.Close(); return r.err }
+
+func distinguishedAVA(oid asn1.ObjectIdentifier, tag int, text string) []byte {
+	return der.Seq(der.OID(oid), der.Wrap(0, tag, false, []byte(text)))
+}
+
+func distinguishedCN(tag int, text string) []byte {
+	return der.Seq(der.Set(distinguishedAVA(asn1.ObjectIdentifier{2, 5, 4, 3}, tag, text)))
+}
+
+func TestDistinguishedNameStringPreparation(t *testing.T) {
+	for _, tc := range []struct {
+		name, a, b string
+		equal      bool
+	}{
+		{"case and insignificant spaces", " Alice  SMITH ", "alice smith", true},
+		{"sharp s fold", "Straße", "STRASSE", true},
+		{"compatibility", "ＡK", "ak", true},
+		{"normalization", "A\u0308", "ä", true},
+		{"mapped nothing", "a\u00ad\u1806\u034f\u180b\ufe00\ufffc\x00\u200b\u2060\U000e0001b", "ab", true},
+		{"mapped spaces", "a\t\u0085\u00a0\u1680\u2028b", "a b", true},
+		{"direction controls removed", "a\u200fb", "AB", true},
+		{"bidi is ignored", "aא", "Aא", true},
+		{"protected space before mark", "a \u0308  b", " A \u0308 b ", true},
+		{"protected space is significant", "a \u0308 b", "ä b", false},
+		{"all spaces", " \t\u00a0 ", "", true},
+		{"distinct value", "alice", "bob", false},
+		{"Unicode32 Georgian still assigned", "\u10a0", "\u10a0", true},
+		{"Unicode32 correction", "\uf951", "\u964b", true},
+		{"correction32 old value differs", "\uf951", "\u96fb", false},
+		{"pre40 correction1", "\U0002f868", "\U0002136a", true},
+		{"pre40 correction2", "\U0002f874", "\u5f33", true},
+		{"pre40 correction3", "\U0002f91f", "\u43ab", true},
+		{"pre40 correction4", "\U0002f95f", "\u7aae", true},
+		{"pre40 correction5", "\U0002f9bf", "\u4d57", true},
+		{"current correction not substituted", "\U0002f868", "\u36fc", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := distinguishedCN(asn1.TagUTF8String, tc.a), distinguishedCN(asn1.TagUTF8String, tc.b)
+			beforeA, beforeB := bytes.Clone(a), bytes.Clone(b)
+			got, err := x509name.Equal(t.Context(), a, b)
+			if err != nil || got != tc.equal {
+				t.Fatal(got, tc.equal, err)
+			}
+			if !bytes.Equal(a, beforeA) || !bytes.Equal(b, beforeB) {
+				t.Fatal("DER changed")
+			}
+		})
+	}
+	t.Run("Printable and UTF8 match", func(t *testing.T) {
+		got, err := x509name.Equal(t.Context(), distinguishedCN(asn1.TagPrintableString, " ALICE "), distinguishedCN(asn1.TagUTF8String, "alice"))
+		if err != nil || !got {
+			t.Fatal(got, err)
+		}
+	})
+	// RFC4518 section2.6.1 publishes this precise stored-value preparation.
+	k, err := x509name.Key(t.Context(), distinguishedCN(asn1.TagUTF8String, "foo bar  "))
+	if err != nil || !strings.HasSuffix(k, " foo  bar ") {
+		t.Fatal("published stored-space example", k, err)
+	}
+}
+
+func TestDistinguishedNameStructureAndFailure(t *testing.T) {
+	cn := asn1.ObjectIdentifier{2, 5, 4, 3}
+	org := asn1.ObjectIdentifier{2, 5, 4, 10}
+	a := distinguishedAVA(cn, asn1.TagUTF8String, "alice")
+	b := distinguishedAVA(org, asn1.TagPrintableString, "EXAMPLE")
+	first := der.Seq(der.Set(a, b))
+	other := der.Seq(der.Set(distinguishedAVA(org, asn1.TagUTF8String, "example"), distinguishedAVA(cn, asn1.TagPrintableString, "ALICE")))
+	if got, err := x509name.Equal(t.Context(), first, other); err != nil || !got {
+		t.Fatal("unordered AVAs", got, err)
+	}
+	for _, pair := range [][2][]byte{{der.Seq(der.Set(a), der.Set(b)), der.Seq(der.Set(b), der.Set(a))}, {der.Seq(der.Set(a)), der.Seq(der.Set(a, a))}, {der.Seq(der.Set(a)), der.Seq(der.Set(b))}} {
+		if got, err := x509name.Equal(t.Context(), pair[0], pair[1]); err != nil || got {
+			t.Fatal("sequence/cardinality/OID mismatch", got, err)
+		}
+	}
+	dc := asn1.ObjectIdentifier{0, 9, 2342, 19200300, 100, 1, 25}
+	if got, err := x509name.Equal(t.Context(), der.Seq(der.Set(distinguishedAVA(dc, asn1.TagIA5String, "XN--EXAMPLE"))), der.Seq(der.Set(distinguishedAVA(dc, asn1.TagIA5String, "xn--example")))); err != nil || !got {
+		t.Fatal("domainComponent ASCII rule", got, err)
+	}
+	for _, text := range []string{"\u0221", "\u1e9e", "\ue000", "\U000f0000", "\ufdd0", "\uffff", "\ufffd"} {
+		if k, err := x509name.Key(t.Context(), distinguishedCN(asn1.TagUTF8String, text)); k != "" || !errors.Is(err, x509name.ErrInvalid) {
+			t.Fatal("prohibited/unassigned stored value", k, err)
+		}
+	}
+	for _, raw := range [][]byte{nil, der.Set(a), der.Seq(der.Set()), der.Seq(der.Set(der.Seq(der.OID(cn)))), append(bytes.Clone(first), 0), distinguishedCN(asn1.TagUTF8String, "\xff"), distinguishedCN(asn1.TagPrintableString, "a@b"), distinguishedCN(asn1.TagPrintableString, "a_b")} {
+		if k, err := x509name.Key(t.Context(), raw); k != "" || !errors.Is(err, x509name.ErrInvalid) {
+			t.Fatal("malformed DER/name", k, err)
+		}
+	}
+	if k, err := x509name.Key(t.Context(), distinguishedCN(asn1.TagBMPString, "\x00A")); k != "" || !errors.Is(err, x509name.ErrUnsupported) {
+		t.Fatal("optional encoding not explicit", k, err)
+	}
+	if got, err := x509name.Equal(t.Context(), der.Seq(), der.Seq()); err != nil || !got {
+		t.Fatal("empty RDNSequence", got, err)
+	}
+}
+
+func TestDistinguishedNameBoundsAndCache(t *testing.T) {
+	t.Parallel()
+	raw := distinguishedCN(asn1.TagUTF8String, "Cached Name")
+	before := bytes.Clone(raw)
+	want, err := x509name.Key(t.Context(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got, err := x509name.Key(canceled, raw); got != "" || !errors.Is(err, context.Canceled) {
+		t.Fatal("cache bypassed cancellation", got, err)
+	}
+	if !bytes.Equal(raw, before) {
+		t.Fatal("cached input changed")
+	}
+	for i := range 200 {
+		n := distinguishedCN(asn1.TagUTF8String, "cache "+strconv.Itoa(i))
+		if _, err := x509name.Key(t.Context(), n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := x509name.Key(t.Context(), raw); err != nil || got != want {
+		t.Fatal("bounded eviction changed value", got, err)
+	}
+	for _, raw := range [][]byte{make([]byte, (64<<10)+1), der.Seq(bytes.Repeat(der.Set(distinguishedAVA(asn1.ObjectIdentifier{2, 5, 4, 3}, asn1.TagUTF8String, "a")), 257)), der.Seq(der.Set(bytes.Repeat(distinguishedAVA(asn1.ObjectIdentifier{2, 5, 4, 3}, asn1.TagUTF8String, "a"), 1025)))} {
+		if k, err := x509name.Key(t.Context(), raw); k != "" || !errors.Is(err, x509name.ErrLimit) {
+			t.Fatal("name budget", k, err)
+		}
+	}
+	for i := range 16 {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			t.Parallel()
+			for range 20 {
+				got, err := x509name.Equal(t.Context(), raw, distinguishedCN(asn1.TagPrintableString, "cached name"))
+				if err != nil || !got {
+					t.Fatal(got, err)
+				}
+			}
+		})
+	}
+}
+
+func TestDistinguishedNameExactFallback(t *testing.T) {
+	t61 := distinguishedCN(asn1.TagT61String, "Alice")
+	if got, err := x509name.Equal(t.Context(), t61, t61); got || !errors.Is(err, x509name.ErrUnsupported) {
+		t.Fatal("strict optional encoding", got, err)
+	}
+	if got, err := x509name.EqualOrExact(t.Context(), t61, t61); err != nil || !got {
+		t.Fatal("exact optional encoding", got, err)
+	}
+	if got, err := x509name.EqualOrExact(t.Context(), t61, distinguishedCN(asn1.TagT61String, "alice")); got || !errors.Is(err, x509name.ErrUnsupported) {
+		t.Fatal("optional semantic claim", got, err)
+	}
+	badSupported := der.Seq(der.Set(distinguishedAVA(asn1.ObjectIdentifier{2, 5, 4, 3}, asn1.TagT61String, "a"), distinguishedAVA(asn1.ObjectIdentifier{2, 5, 4, 3}, asn1.TagUTF8String, "\ue000")))
+	badStructure := der.Seq(der.Set(distinguishedAVA(asn1.ObjectIdentifier{2, 5, 4, 3}, asn1.TagT61String, "a")), der.Set())
+	for _, bad := range [][]byte{badSupported, badStructure, append(bytes.Clone(t61), 0)} {
+		if got, err := x509name.EqualOrExact(t.Context(), bad, bad); got || !errors.Is(err, x509name.ErrInvalid) {
+			t.Fatal("unsupported masked invalid remainder", got, err)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got, err := x509name.EqualOrExact(ctx, t61, t61); got || !errors.Is(err, context.Canceled) {
+		t.Fatal("fallback ignored cancellation", got, err)
+	}
+}
+
+func TestCRLVersionsAndOriginalDER(t *testing.T) {
+	chain := testcert.New(t)
+	for _, version := range []string{"v1", "v2"} {
+		t.Run(version, func(t *testing.T) {
+			raw := testcert.CRL(t, chain)
+			if version == "v1" {
+				raw = testcert.CRLV1(t, chain)
+			}
+			expected := bytes.Clone(raw)
+			built, err := keyinfo.Build(t.Context(), keyinfo.Template{X509Data: []keyinfo.X509Data{{CRLs: [][]byte{raw}}}})
+			if err != nil {
+				t.Fatal("valid CRL builder rejected", err)
+			}
+			parsed, err := keyinfo.Parse(t.Context(), built, built.Root(), keyinfo.Options{})
+			if err != nil || len(parsed.Candidates()) != 0 || len(parsed.X509Groups()) != 1 {
+				t.Fatal("CRL syntax became a key/trust decision", err)
+			}
+			clear(raw)
+			group := parsed.X509Groups()[0]
+			values := group.CRLsDER()
+			if len(values) != 1 || !bytes.Equal(values[0], expected) {
+				t.Fatal("original CRL DER was replaced")
+			}
+			clear(values[0])
+			if !bytes.Equal(group.CRLsDER()[0], expected) {
+				t.Fatal("CRL result borrowed caller state")
+			}
+			if result, err := keyinfo.Parse(t.Context(), built, built.Root(), keyinfo.Options{Limits: keyinfo.Limits{MaxBlobBytes: len(expected) - 1}}); result != nil || !errors.Is(err, keyinfo.ErrLimit) {
+				t.Fatal("existing CRL byte cap weakened", err)
+			}
+			bad := append(bytes.Clone(expected), 0)
+			if result, err := keyinfo.Build(t.Context(), keyinfo.Template{X509Data: []keyinfo.X509Data{{CRLs: [][]byte{bad}}}}); result != nil || !errors.Is(err, keyinfo.ErrInput) {
+				t.Fatal("trailing CRL data accepted", err)
+			}
+		})
+	}
+}
+
+func TestCRLConfiguredBlobBudget(t *testing.T) {
+	chain := testcert.New(t)
+	raw, err := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: testcert.Now(), NextUpdate: testcert.Now().Add(time.Hour), ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 2, 3, 4, 5}, Value: bytes.Repeat([]byte{42}, (1<<20)+(1<<18))}}}, chain.Root, chain.RootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := parseXML(t, wrap(`<ds:X509Data><ds:X509CRL>`+enc(raw)+`</ds:X509CRL></ds:X509Data>`))
+	if result, err := keyinfo.Parse(t.Context(), doc, doc.Root(), keyinfo.Options{}); result != nil || !errors.Is(err, keyinfo.ErrLimit) {
+		t.Fatal("default blob cap changed", err)
+	}
+	result, err := keyinfo.Parse(t.Context(), doc, doc.Root(), keyinfo.Options{Limits: keyinfo.Limits{MaxBlobBytes: 2 << 20}})
+	if err != nil || result == nil || !bytes.Equal(result.X509Groups()[0].CRLsDER()[0], raw) {
+		t.Fatal("configured larger CRL cap narrowed", err)
+	}
+}

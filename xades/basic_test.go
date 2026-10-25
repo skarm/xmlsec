@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/xades"
@@ -385,4 +386,27 @@ func sign(t testing.TB) (*document.Document, *xades.BasicResult, *ecdsa.PrivateK
 	}
 
 	return d, r, k, der
+}
+
+func TestCertificateEncodingConsistency(t *testing.T) {
+	chain := testcert.New(t)
+	for _, test := range testcert.CertificateEncodings(t, chain) {
+		t.Run(test.Name, func(t *testing.T) {
+			before := bytes.Clone(test.DER)
+			signed, result, err := xades.SignBasicEnveloped(t.Context(), input(t), chain.LeafKey, test.DER, xades.SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: testcert.Now()})
+			if !test.Valid {
+				if signed != nil || result != nil || !errors.Is(err, xades.ErrCertificate) {
+					t.Fatal("XAdES accepted invalid certificate DER", err)
+				}
+				return
+			}
+			if err != nil || !bytes.Equal(result.CertificateDER(), test.DER) {
+				t.Fatal("XAdES signing changed certificate bytes", err)
+			}
+			verified, err := xades.VerifyBasicEnveloped(t.Context(), signed, xmldsig.Signatures(signed)[0], test.DER, xades.VerifyOptions{})
+			if err != nil || verified == nil || !bytes.Equal(verified.CertificateDER(), test.DER) || !bytes.Equal(test.DER, before) {
+				t.Fatal("XAdES pin verification changed DER", err)
+			}
+		})
+	}
 }

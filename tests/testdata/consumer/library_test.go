@@ -715,13 +715,32 @@ func TestPKIWorkingStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var crlResult *pki.Result
 	allocated = allocatedDuring(t, func() error {
-		_, _, err := withCRL.Verify(t.Context(), leafInput, now, pki.Evidence{CRLs: [][]byte{crl}})
+		var err error
+		crlResult, _, err = withCRL.Verify(t.Context(), leafInput, now, pki.Evidence{CRLs: [][]byte{crl}})
 		return err
 	})
 	t.Logf("PKI verification with %d CRL bytes: %d allocated", len(crl), allocated)
-	if allocated > uint64(len(leafInput))+(256<<10) {
-		t.Fatal("CRL evidence was copied", allocated)
+	// Verification owns one leaf snapshot and retains one immutable original
+	// CRL source for authenticated evidence. Parsed extensions and signer
+	// candidates must not introduce any further input-sized copies.
+	if allocated > uint64(len(leafInput)+len(crl))+(256<<10) {
+		t.Fatal("CRL verification duplicated source or candidate DER", allocated)
+	}
+	facts := crlResult.Evidence()
+	if len(facts) != 1 || facts[0].AuthenticationStatus() != pki.Valid {
+		t.Fatal("missing authenticated CRL source")
+	}
+	originalCRL := bytes.Clone(crl)
+	clear(crl)
+	if !bytes.Equal(facts[0].DER(), originalCRL) {
+		t.Fatal("authenticated evidence retained caller-owned CRL")
+	}
+	ownedCRL := facts[0].DER()
+	clear(ownedCRL)
+	if !bytes.Equal(facts[0].DER(), originalCRL) {
+		t.Fatal("evidence getter exposes immutable source")
 	}
 	clear(rootInput)
 	clear(leafInput)

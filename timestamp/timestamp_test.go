@@ -4,18 +4,24 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/hex"
 	"errors"
 	"io"
 	"math"
 	"math/big"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/skarm/xmlsec/cms"
+	"github.com/skarm/xmlsec/evidence"
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/pki"
 	"github.com/skarm/xmlsec/timestamp"
@@ -669,3 +675,393 @@ func (panicReader) Read([]byte) (int, error) { panic("read after cancellation") 
 type failingReader struct{ err error }
 
 func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestVerifiedTimestampAssertion(t *testing.T) {
+	for _, empty := range []*timestamp.VerifiedAssertion{nil, new(timestamp.VerifiedAssertion)} {
+		if empty.Valid() || empty.TokenSHA256() != "" || empty.TSACertificateSHA256() != "" || empty.Trust() != nil || !empty.GenTime().IsZero() || !empty.ValidationTime().IsZero() || empty.Policy() != nil || len(empty.Imprint().Digest) != 0 {
+			t.Fatal("caller-created timestamp fact was authenticated")
+		}
+	}
+	chain := testcert.New(t)
+	request, err := timestamp.CreateRequest(t.Context(), []byte("assertion binding"), timestamp.RequestOptions{Policy: policy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation := testcert.Now().Add(-time.Second)
+	accuracy := 1500 * time.Millisecond
+	raw, err := timestamp.IssueResponse(t.Context(), request.DER(), chain.TSAKey, chain.TSA.Raw, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(18), GenTime: generation, Accuracy: &accuracy, Ordering: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker := verifier(t, chain)
+	result, err := checker.VerifyResponse(t.Context(), raw, request, testcert.Now(), pki.Evidence{CRLs: [][]byte{testcert.CRL(t, chain)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := result.Evidence()
+	if len(records) != 1 || records[0].AuthenticationStatus() != pki.Valid {
+		t.Fatal("timestamp lost authenticated chain evidence", len(records))
+	}
+	records[0] = nil
+	if result.Evidence()[0] == nil {
+		t.Fatal("mutable timestamp evidence slice")
+	}
+	fact := result.Assertion()
+	if value, present := fact.Accuracy(); !present || value != accuracy || !fact.Ordering() {
+		t.Fatal("timestamp accuracy/ordering lost from authenticated assertion")
+	}
+	token := sha256.Sum256(result.TokenDER())
+	tsa := sha256.Sum256(chain.TSA.Raw)
+	if !fact.Valid() || fact.TokenSHA256() != hex.EncodeToString(token[:]) || fact.TSACertificateSHA256() != hex.EncodeToString(tsa[:]) || fact.GenTime() != generation || fact.ValidationTime() != testcert.Now() || fact.Trust() != result.Trust() || !fact.Policy().Equal(policy()) || !bytes.Equal(fact.Imprint().Digest, request.Imprint().Digest) {
+		t.Fatal("authenticated timestamp fact bindings")
+	}
+	imprint := fact.Imprint()
+	imprint.Digest[0] ^= 1
+	oid := fact.Policy()
+	oid[0] ^= 1
+	if !bytes.Equal(fact.Imprint().Digest, request.Imprint().Digest) || !fact.Policy().Equal(policy()) {
+		t.Fatal("mutable timestamp assertion getter")
+	}
+	changed, err := timestamp.CreateRequest(t.Context(), []byte("other bytes"), timestamp.RequestOptions{Policy: policy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejected, err := checker.VerifyResponse(t.Context(), raw, changed, testcert.Now(), pki.Evidence{CRLs: [][]byte{testcert.CRL(t, chain)}}); rejected != nil || !errors.Is(err, timestamp.ErrBinding) {
+		t.Fatal("bad imprint minted assertion", err)
+	}
+	var absent *timestamp.Result
+	if absent.Assertion() != nil || absent.Evidence() != nil {
+		t.Fatal("nil result yielded an assertion")
+	}
+}
+
+func TestTimestampSemanticDirectoryName(t *testing.T) {
+	chain := testcert.New(t)
+	request, err := timestamp.CreateRequest(t.Context(), []byte("TSA name binding"), timestamp.RequestOptions{Policy: policy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := timestamp.IssueResponse(t.Context(), request.DER(), chain.TSAKey, chain.TSA.Raw, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(39), GenTime: testcert.Now(), OmitTSAName: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedResponse, err := timestamp.ParseResponse(t.Context(), response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	container, err := cms.Parse(t.Context(), parsedResponse.TokenDER(), cms.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := der.Read(container.UnverifiedContent(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := der.Sequence(info, 5, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wrong := range []bool{false, true} {
+		t.Run(strconv.FormatBool(wrong), func(t *testing.T) {
+			value := " TEST  TSA "
+			if wrong {
+				value = "unrelated"
+			}
+			name, _ := asn1.Marshal(pkix.RDNSequence{{{Type: asn1.ObjectIdentifier{2, 5, 4, 3}, Value: asn1.RawValue{Tag: asn1.TagUTF8String, Bytes: []byte(value)}}}})
+			parts := make([][]byte, 0, len(fields)+1)
+			for _, field := range fields {
+				parts = append(parts, field.FullBytes)
+			}
+			parts = append(parts, der.Ctx(0, der.Ctx(4, name)))
+			token, err := cms.Sign(t.Context(), der.Seq(parts...), []cms.Signer{{Key: chain.TSAKey, CertificateDER: chain.TSA.Raw}}, cms.SignOptions{ContentType: timestamp.TSTInfoOID()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := verifier(t, chain).VerifyToken(t.Context(), token, timestamp.Expectation{Imprint: request.Imprint(), Nonce: request.Nonce(), Policy: request.Policy()}, testcert.Now(), pki.Evidence{CRLs: [][]byte{testcert.CRL(t, chain)}})
+			if wrong {
+				if result != nil || !errors.Is(err, timestamp.ErrTrust) {
+					t.Fatal("unrelated TSA name accepted", err)
+				}
+			} else if result == nil || err != nil || !result.Assertion().Valid() {
+				t.Fatal("equivalent TSA name rejected", err)
+			}
+		})
+	}
+}
+
+func TestTimestampExactSourceBindings(t *testing.T) {
+	chain := testcert.New(t)
+	request, err := timestamp.CreateRequest(t.Context(), []byte("observed timestamp"), timestamp.RequestOptions{Policy: policy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := timestamp.IssueResponse(t.Context(), request.DER(), chain.TSAKey, chain.TSA.Raw, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(41), GenTime: testcert.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := timestamp.ParseResponse(t.Context(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseSource, err := evidence.NewObservation(t.Context(), evidence.Timestamp, raw, evidence.Provenance{URI: "https://example.test/tsa", RetrievedAt: testcert.Now().Add(24 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenSource, err := evidence.NewObservation(t.Context(), evidence.Timestamp, parsed.TokenDER(), evidence.Provenance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crl := testcert.CRL(t, chain)
+	crlSource, err := evidence.NewObservation(t.Context(), evidence.CRL, crl, evidence.Provenance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := pki.Evidence{CRLs: [][]byte{crl}, Sources: []*evidence.Observation{responseSource, tokenSource, crlSource}}
+	result, err := verifier(t, chain).VerifyResponseReader(t.Context(), bytes.NewReader(raw), request, testcert.Now(), input)
+	if err != nil || result == nil {
+		t.Fatal(err)
+	}
+	sources := result.Assertion().Sources()
+	if len(sources) != 2 || sources[0] != responseSource || sources[1] != tokenSource || result.Assertion().GenTime() != testcert.Now() || result.Assertion().ValidationTime() != testcert.Now() || len(result.Evidence()[0].Sources()) != 1 {
+		t.Fatal("source binding confused acquisition and trusted time")
+	}
+	sources[0] = nil
+	if result.Assertion().Sources()[0] == nil {
+		t.Fatal("mutable assertion provenance")
+	}
+	want := timestamp.Expectation{Imprint: request.Imprint(), Nonce: request.Nonce(), Policy: request.Policy()}
+	input.Sources = []*evidence.Observation{tokenSource, crlSource}
+	if verified, err := verifier(t, chain).VerifyToken(t.Context(), parsed.TokenDER(), want, testcert.Now(), input); err != nil || verified == nil || len(verified.Assertion().Sources()) != 1 {
+		t.Fatal("exact token observation rejected", err)
+	}
+	wrongSource, err := evidence.NewObservation(t.Context(), evidence.Timestamp, []byte("different"), evidence.Provenance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []*evidence.Observation{nil, {}, wrongSource, responseSource} {
+		input.Sources = []*evidence.Observation{source}
+		if verified, err := verifier(t, chain).VerifyToken(t.Context(), parsed.TokenDER(), want, testcert.Now(), input); verified != nil || !errors.Is(err, timestamp.ErrBinding) {
+			t.Fatal("unmatched/invalid source returned assertion", err)
+		}
+	}
+	bounded, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}, AllowedPolicies: []asn1.ObjectIdentifier{policy()}, Certificates: [][]byte{chain.TSA.Raw}, MaxBytes: len(raw)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Sources = []*evidence.Observation{responseSource, tokenSource}
+	if verified, err := bounded.VerifyResponse(t.Context(), raw, request, testcert.Now(), input); verified != nil || !errors.Is(err, timestamp.ErrPolicy) {
+		t.Fatal("aggregate source byte bound ignored", err)
+	}
+}
+
+func TestTimestampRejectsUnevaluatedESSPathRestrictions(t *testing.T) {
+	chain := testcert.New(t)
+	request, err := timestamp.CreateRequest(t.Context(), []byte("restricted TSA path"), timestamp.RequestOptions{Policy: policy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := timestamp.IssueResponse(t.Context(), request.DER(), chain.TSAKey, chain.TSA.Raw, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(42), GenTime: testcert.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := timestamp.ParseResponse(t.Context(), response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := timestampDuplicateESSID(t, parsed.TokenDER(), chain.TSAKey)
+	cryptoOnly, err := cms.Parse(t.Context(), token, cms.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := cryptoOnly.Verify(t.Context(), [][]byte{chain.TSA.Raw}, cms.VerifyOptions{ExpectedContentType: timestamp.TSTInfoOID(), RequireCertificateBinding: true}); err != nil || result == nil {
+		t.Fatal("re-signed first-certificate binding invalid", err)
+	}
+	want := timestamp.Expectation{Imprint: request.Imprint(), Nonce: request.Nonce(), Policy: request.Policy()}
+	if result, err := verifier(t, chain).VerifyToken(t.Context(), token, want, testcert.Now(), pki.Evidence{CRLs: [][]byte{testcert.CRL(t, chain)}}); result != nil || !errors.Is(err, cms.ErrUnsupported) {
+		t.Fatal("unsupported ESS path restriction returned trusted assertion", err)
+	}
+}
+
+func timestampDuplicateESSID(t *testing.T, raw []byte, key crypto.Signer, variant ...string) []byte {
+	t.Helper()
+	outer, _ := der.Read(raw, len(raw))
+	ci, _ := der.Sequence(outer, 2, 2)
+	content, _ := der.Explicit(ci[1], 0)
+	sd, _ := der.Sequence(content, 4, 6)
+	signers, _ := der.SetFields(sd[len(sd)-1], 0, asn1.TagSet, 1)
+	signer, _ := der.Sequence(signers[0], 6, 6)
+	attributes, _ := der.Children(signer[3])
+	attrs := make([][]byte, 0, len(attributes))
+	for _, value := range attributes {
+		attribute, _ := der.Sequence(value, 2, 2)
+		var oid asn1.ObjectIdentifier
+		if der.Decode(attribute[0], &oid) != nil {
+			t.Fatal("attribute OID")
+		}
+		if oid.Equal(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 16, 2, 47}) {
+			values, _ := der.SetFields(attribute[1], 0, asn1.TagSet, 1)
+			top, _ := der.Sequence(values[0], 1, 2)
+			ids, _ := der.Sequence(top[0], 1, 1)
+			if len(variant) == 0 {
+				attrs = append(attrs, der.Seq(attribute[0].FullBytes, der.Set(der.Seq(der.Seq(ids[0].FullBytes, ids[0].FullBytes)))))
+			} else {
+				id, _ := der.Sequence(ids[0], 2, 2)
+				issuer, _ := der.Sequence(id[1], 2, 2)
+				names, _ := der.Sequence(issuer[0], 1, 1)
+				extra := der.Wrap(2, 6, false, []byte("https://unrelated.test/"))
+				if variant[0] == "directoryName" {
+					extra = names[0].FullBytes
+				}
+				changed := der.Seq(id[0].FullBytes, der.Seq(der.Seq(names[0].FullBytes, extra), issuer[1].FullBytes))
+				attrs = append(attrs, der.Seq(attribute[0].FullBytes, der.Set(der.Seq(der.Seq(changed)))))
+			}
+		} else {
+			attrs = append(attrs, value.FullBytes)
+		}
+	}
+	set := der.Set(attrs...)
+	signedAttrs, _ := der.Read(set, len(set))
+	parts := make([][]byte, len(signer))
+	for i := range signer {
+		parts[i] = signer[i].FullBytes
+	}
+	parts[3] = der.Wrap(2, 0, true, signedAttrs.Bytes)
+	algorithm, err := signature.Algorithm(signer[4])
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := signature.Sign(t.Context(), key, algorithm, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts[5] = der.Octets(signed)
+	sdParts := make([][]byte, len(sd))
+	for i := range sd {
+		sdParts[i] = sd[i].FullBytes
+	}
+	sdParts[len(sdParts)-1] = der.Set(der.Seq(parts...))
+	return der.Seq(ci[0].FullBytes, der.Ctx(0, der.Seq(sdParts...)))
+}
+
+func TestTimestampRejectsExplicitDefaultFields(t *testing.T) {
+	c := testcert.New(t)
+	request, err := timestamp.CreateRequest(t.Context(), []byte("DER defaults"), timestamp.RequestOptions{Policy: policy(), OmitNonce: true, OmitCertificates: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, _ := der.Read(request.DER(), 1<<16)
+	fields, _ := der.Sequence(value, 2, 4)
+	parts := make([][]byte, len(fields), len(fields)+1)
+	for i := range fields {
+		parts[i] = fields[i].FullBytes
+	}
+	parts = append(parts, []byte{1, 1, 0})
+	if changed, err := timestamp.ParseRequest(der.Seq(parts...)); changed != nil || !errors.Is(err, timestamp.ErrFormat) {
+		t.Fatal("certReq DEFAULT FALSE accepted", err)
+	}
+	raw, err := timestamp.IssueResponse(t.Context(), request.DER(), c.TSAKey, c.TSA.Raw, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(44), GenTime: testcert.Now(), OmitTSAName: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := timestamp.ParseResponse(t.Context(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := cms.Parse(t.Context(), response.TokenDER(), cms.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, _ := der.Read(signed.UnverifiedContent(), 1<<20)
+	required, _ := der.Sequence(info, 5, 5)
+	for _, name := range []string{"ordering", "extension critical"} {
+		t.Run(name, func(t *testing.T) {
+			fields := make([][]byte, len(required))
+			for i := range required {
+				fields[i] = required[i].FullBytes
+			}
+			if name == "ordering" {
+				fields = append(fields, []byte{1, 1, 0})
+			} else {
+				fields = append(fields, der.Ctx(1, der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 3, 4, 5}), []byte{1, 1, 0}, der.Octets([]byte{5, 0}))))
+			}
+			token, err := cms.Sign(t.Context(), der.Seq(fields...), []cms.Signer{{Key: c.TSAKey, CertificateDER: c.TSA.Raw}}, cms.SignOptions{ContentType: timestamp.TSTInfoOID()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parsed, err := timestamp.ParseToken(t.Context(), token); parsed != nil || !errors.Is(err, timestamp.ErrFormat) {
+				t.Fatal("re-signed explicit FALSE DEFAULT accepted", err)
+			}
+		})
+	}
+}
+
+func TestTimestampRejectsAdditionalESSIssuerNames(t *testing.T) {
+	c := testcert.New(t)
+	request, err := timestamp.CreateRequest(t.Context(), []byte("ESS issuer only"), timestamp.RequestOptions{Policy: policy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := timestamp.IssueResponse(t.Context(), request.DER(), c.TSAKey, c.TSA.Raw, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(45), GenTime: testcert.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := timestamp.ParseResponse(t.Context(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"URI", "directoryName"} {
+		t.Run(name, func(t *testing.T) {
+			token := timestampDuplicateESSID(t, response.TokenDER(), c.TSAKey, name)
+			want := timestamp.Expectation{Imprint: request.Imprint(), Nonce: request.Nonce(), Policy: request.Policy()}
+			result, err := verifier(t, c).VerifyToken(t.Context(), token, want, testcert.Now(), pki.Evidence{CRLs: [][]byte{testcert.CRL(t, c)}})
+			if result != nil || !errors.Is(err, cms.ErrCertificate) {
+				t.Fatal("additional ESS issuer names returned a timestamp assertion", err)
+			}
+		})
+	}
+}
+
+func TestTimestampRejectsSchemaInvalidCertificate(t *testing.T) {
+	c := testcert.New(t)
+	value, _ := der.Read(c.TSA.Raw, len(c.TSA.Raw))
+	outer, _ := der.Sequence(value, 3, 3)
+	fields, _ := der.Sequence(outer[0], 7, 10)
+	extensions, _ := der.Explicit(fields[len(fields)-1], 3)
+	values, _ := der.Sequence(extensions, 1, 32)
+	encoded := make([][]byte, len(values))
+	changed := false
+	for i, extension := range values {
+		f, _ := der.Sequence(extension, 2, 3)
+		encoded[i] = extension.FullBytes
+		if len(f) == 2 && !changed {
+			encoded[i] = der.Seq(f[0].FullBytes, []byte{1, 1, 0}, f[1].FullBytes)
+			changed = true
+		}
+	}
+	if !changed {
+		t.Fatal("no omitted critical FALSE")
+	}
+	parts := make([][]byte, len(fields))
+	for i := range fields {
+		parts[i] = fields[i].FullBytes
+	}
+	parts[len(parts)-1] = der.Ctx(3, der.Seq(encoded...))
+	tbs := der.Seq(parts...)
+	algorithm, _ := signature.Algorithm(outer[1])
+	signed, err := signature.Sign(t.Context(), c.RootKey, algorithm, tbs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bits, _ := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
+	certificate := der.Seq(tbs, outer[1].FullBytes, bits)
+	request, err := timestamp.CreateRequest(t.Context(), nil, timestamp.RequestOptions{Policy: policy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := timestamp.IssueResponse(t.Context(), request.DER(), c.TSAKey, certificate, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(46), GenTime: testcert.Now()}); raw != nil || !errors.Is(err, timestamp.ErrTrust) {
+		t.Fatal("schema-invalid TSA certificate accepted", err)
+	}
+	if v, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{c.Root.Raw}, Revocation: pki.RequireCRL}, AllowedPolicies: []asn1.ObjectIdentifier{policy()}, Certificates: [][]byte{certificate}}); v != nil || !errors.Is(err, timestamp.ErrPolicy) {
+		t.Fatal("schema-invalid lookup certificate accepted", err)
+	}
+}

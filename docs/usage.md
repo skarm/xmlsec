@@ -159,6 +159,25 @@ accept an explicit empty password. Passwords are not normalized. KDF work and
 collection limits apply across the operation. Writer variants are described in
 [streaming](streaming.md).
 
+`ParsePKCS12WithOptions` explicitly enables selected BER wrappers and constructed
+data/ciphertext/certificate OCTET STRINGs with `AllowBER`, or nested SafeContents
+with `AllowNestedSafeContents`. MAC input remains the exact original octets;
+algorithms, attributes, MAC and private-key structures retain DER rules. Set
+`CertificateSHA256` to select one exact certificate from multiple identities.
+Every identity must pass, including unselected keys. `ParsePKCS12Identities`
+returns all unambiguous pairs for application selection; certificate objects can
+be shared within that returned collection. Output remains one identity in DER.
+
+`evidence.NewObservation` owns a byte snapshot, SHA-256 and untrusted provenance.
+`evidence/collect.NewHTTP` requires an explicit HTTP client and exact allowed
+URIs. Its `Collect` method permits GET, or explicit OCSP POST requests; redirects
+require a positive limit and separately authorized exact targets. Per-body,
+aggregate, request-count and request-body budgets, an overall timeout and context
+cancellation apply. Read, HTTP-status, close or policy failures return no partial
+collection. The application owns transport DNS/IP/proxy/TLS policy. Collection
+never invokes certificate, CRL, OCSP or timestamp authentication. Retrieval time
+and HTTPS transport cannot establish historical proof of existence.
+
 `keyinfo.Parse` returns untrusted candidates. `AllowedKeyData: nil` allows
 supported forms; an empty list denies all. Retrieval needs an exact URI allowlist
 and bounded resolver. rawX509Certificate retrieval accepts raw certificate bytes
@@ -200,8 +219,24 @@ verifying. Authenticating a selector still requires an application trust decisio
 `pki.NewVerifier` snapshots explicit roots and policy; it never uses system roots.
 Verification requires an explicit time, application EKUs and chosen offline
 revocation policy. `KeyPin` checks SPKI identity, not lifetime or revocation.
+`RequireCRL` supports bounded complete, scoped, indirect and base/delta evidence.
+Issuer authorization, exact scope, reason coverage, critical extensions and
+freshness apply before success. Delta processing is enabled unless explicitly
+disabled; advertised FreshestCRL needs matching supplied evidence. Missing
+evidence fails without a network fallback. `Result.Evidence()` returns immutable
+authenticated assertions, including their target/signer/issuer bindings, times,
+reasons, scope and composite dependencies. `Evidence.Sources` attaches only exact
+kind/digest-matched observations; URI/retrieval metadata grants no trust. A failed
+report can retain authenticated diagnostics without becoming a successful result.
+
 CMS `Parse` is unauthenticated; `SignedData.Verify` checks the required signers
-against supplied certificates. Compose PKIX separately when needed.
+against supplied certificates. `VerifyWithTrust` and `VerifyReaderWithTrust`
+add the supplied `pki.Verifier` at an explicit time for every authenticated signer.
+A failure returns no successful result; `TrustChecked`, per-signer `Trust`, and
+`Evidence` retain the chosen policy and certificate-bound revocation assertions.
+Ordinary `Verify` remains cryptographic authentication only. Optional ESS
+multi-certificate path restrictions are rejected by trusted operations until
+that path-selection feature is implemented.
 For selected BER input, explicitly use `cms.ParseBER` or `cms.ParseBERReader`.
 They coalesce constructed content and normalize the permitted wrappers within
 byte/content/depth/value limits. They preserve signed-attribute bytes and reject
@@ -210,8 +245,27 @@ they do not replay the original BER. Parsing still establishes no authenticity.
 
 Timestamp verification binds a token to an expected imprint and a response to
 its original request. Configure TSA trust, allowed policies and revocation.
-`Token.UnverifiedInfo()` only selects processing parameters. Claimed signing time
-is not trusted time evidence. XAdES validates the closed current-time/with-time
+`Token.UnverifiedInfo()` only selects processing parameters. A successful
+`Result.Assertion()` is an opaque assertion bound to the exact token digest,
+imprint, TSA, policy, GenTime and explicit validation time. Its `Accuracy` and
+`Ordering` retain the TSA's signed qualifications. `Result.Evidence()` separately
+retains PKI assertions and their authorization dependencies. This does not establish
+historical validity after TSA expiry or revocation.
+
+`pki.Evidence.Sources` can link immutable `evidence.Timestamp` observations to the
+exact token, or original response bytes in response verification. Unmatched sources
+fail. `Assertion().Sources()` retains URI/retrieval metadata separately from trust;
+retrieval time does not become authenticated time.
+
+Offline OCSP verification chooses one exact CertID among at most 64 status entries.
+The actual signature and issuer/delegated authorization determine the responder;
+`OCSPOptions.Authorities` supplies explicit issuer-scoped local pins. Acquired
+certificates never grant authority. Only fresh authenticated GOOD produces a
+successful result; authenticated stale, revoked or unknown diagnostic assertions
+can remain in `OCSPReport.Evidence()`. `OCSPOptions.Sources` binds exact supplied
+bytes and keeps acquisition metadata separate from the signed status.
+
+Claimed signing time is not trusted time evidence. XAdES validates the closed current-time/with-time
 profiles described in [compatibility](compatibility.md).
 
 ## XML Encryption
