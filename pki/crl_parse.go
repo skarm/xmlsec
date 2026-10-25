@@ -28,6 +28,8 @@ type parsedCRL struct {
 	issuerKey                   string
 	algorithm                   pkix.AlgorithmIdentifier
 	version                     int
+	signatureAlgorithm          x509.SignatureAlgorithm
+	retainedFrom                time.Time
 	this, next                  time.Time
 	number, base                *big.Int
 	authorityKeyID              []byte
@@ -61,8 +63,19 @@ func parseCRL(ctx context.Context, raw []byte) (*parsedCRL, error) {
 	}
 
 	source := view.CRL
+	list := &parsedCRL{
+		raw:                source.Raw,
+		tbs:                source.RawTBSRevocationList,
+		issuer:             source.RawIssuer,
+		signature:          source.Signature,
+		algorithm:          view.Algorithm,
+		version:            view.Version,
+		signatureAlgorithm: source.SignatureAlgorithm,
+		this:               source.ThisUpdate,
+		next:               source.NextUpdate,
+		scope:              crlScope{crlDistributionPoint: crlDistributionPoint{reasons: allCRLReasons}},
+	}
 
-	list := &parsedCRL{raw: source.Raw, tbs: source.RawTBSRevocationList, issuer: source.RawIssuer, signature: source.Signature, algorithm: view.Algorithm, version: view.Version, this: source.ThisUpdate, next: source.NextUpdate, scope: crlScope{crlDistributionPoint: crlDistributionPoint{reasons: allCRLReasons}}}
 	if !list.next.IsZero() && !list.next.After(list.this) {
 		return nil, ErrEvidence
 	}
@@ -199,6 +212,11 @@ func (l *parsedCRL) parseExtension(ctx context.Context, ext pkix.Extension) erro
 		l.authorityKeyID = id.keyID
 		l.authorityIssuers = id.issuers
 		l.authoritySerial = id.serial
+	case "2.5.29.60":
+		retained, err := parseExpiredCRLRetention(ext, l.this)
+		l.retainedFrom = retained
+
+		return err
 	case "2.5.29.46":
 		if ext.Critical {
 			return ErrEvidence
@@ -434,4 +452,22 @@ func parseCRLCertificateIssuer(ctx context.Context, raw []byte) ([]crlGeneralNam
 	}
 
 	return nil, ErrEvidence
+}
+
+func parseExpiredCRLRetention(extension pkix.Extension, issued time.Time) (time.Time, error) {
+	if extension.Critical {
+		return time.Time{}, ErrEvidence
+	}
+
+	value, err := der.Read(extension.Value, 64)
+	if err != nil {
+		return time.Time{}, ErrEvidence
+	}
+
+	retained, err := generalized(value)
+	if err != nil || retained.After(issued) {
+		return time.Time{}, ErrEvidence
+	}
+
+	return retained, nil
 }

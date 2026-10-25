@@ -21,6 +21,7 @@ type transformPipeline struct {
 	reader    *streamio.Reader
 	closers   []io.Closer
 	finalize  []func()
+	alternate *canonicalOutput
 }
 
 func (p *transformPipeline) input(src io.Reader, limit int) *streamio.Reader {
@@ -56,6 +57,15 @@ func (p *transformPipeline) run(dst io.Writer, transforms []Transform) (*Report,
 
 		if err != nil {
 			return nil, pipelineError(i, tr.Algorithm, err)
+		}
+	}
+
+	if p.alternate != nil {
+		var err error
+
+		dst, err = p.writeAlternate(dst)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -381,4 +391,26 @@ func (r *producedReader) Close() error {
 	}
 
 	return nil
+}
+
+// writeAlternate observes only the final immutable transform value. It never
+// reruns a resolver or application transform to construct the second output.
+func (p *transformPipeline) writeAlternate(original io.Writer) (io.Writer, error) {
+	output := p.alternate
+	if p.value.kind != NodeSet || output.method.Algorithm == c14n.Canonical10 {
+		return io.MultiWriter(original, output.writer), nil
+	}
+
+	if err := p.processor.visit(p.value); err != nil {
+		return nil, err
+	}
+
+	writer := &producedWriter{processor: p.processor, dst: output.writer}
+
+	err := c14n.WriteNodeSet(p.ctx, writer, p.value.nodes, c14n.Options{Algorithm: output.method.Algorithm, InclusivePrefixes: output.method.InclusivePrefixes, MaxOutputBytes: p.processor.opt.MaxOutputBytes})
+	if err != nil {
+		return nil, err
+	}
+
+	return original, nil
 }

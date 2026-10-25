@@ -36,7 +36,11 @@ func manifestOutputWriter(dst io.Writer, capture bool) (io.Writer, *bytes.Buffer
 	return io.MultiWriter(dst, output), output
 }
 
-func (s *referenceSource) write(ctx context.Context, dst io.Writer, ts []reference.Transform, opt reference.Options, remaining, resources *int) (out *reference.Report, resultErr error) {
+func (s *referenceSource) write(ctx context.Context, dst io.Writer, ts []reference.Transform, opt reference.Options, remaining, resources *int) (*reference.Report, error) {
+	return s.writeOutputs(ctx, dst, nil, reference.Transform{}, ts, opt, remaining, resources)
+}
+
+func (s *referenceSource) writeOutputs(ctx context.Context, dst, canonical io.Writer, method reference.Transform, ts []reference.Transform, opt reference.Options, remaining, resources *int) (out *reference.Report, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -84,7 +88,13 @@ func (s *referenceSource) write(ctx context.Context, dst io.Writer, ts []referen
 		rawWriter = io.MultiWriter(rawHash, &captured)
 	}
 
-	out, err = reference.WriteReader(ctx, dst, io.TeeReader(bounded, rawWriter), ts, opt)
+	source := io.TeeReader(bounded, rawWriter)
+	if canonical == nil {
+		out, err = reference.WriteReader(ctx, dst, source, ts, opt)
+	} else {
+		out, err = reference.WriteReaderAndCanonicalize(ctx, dst, canonical, source, ts, method, opt)
+	}
+
 	*resources -= int(bounded.ReadBytes)
 
 	if err != nil {

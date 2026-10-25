@@ -30,14 +30,17 @@ const (
 type VerifiedEvidence struct {
 	revoked, invalidity                 time.Time
 	issued, this, next, validation      time.Time
+	signerAuthority                     string
 	signatureOID                        string
 	kind                                EvidenceKind
 	status                              string
 	scope                               string
+	signerChain                         [][]byte
 	sources                             []*evidence.Observation
 	raw                                 []byte
 	dependencies                        []string
 	reason                              int
+	historicalCoverage                  crlReasonMask
 	scopeReasons, coverage              crlReasonMask
 	fingerprint, target, issuer, signer [32]byte
 	authenticated                       bool

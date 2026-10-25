@@ -97,12 +97,24 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
 - Closed XAdES basic/T/LT/LTA current-time and separate with-time B-T profiles.
   The latter retains direct-complete signer CRLs; scoped/indirect/delta artifacts
   require a separate workflow and cannot bypass its no-recovery policy.
-  A complete historical EN 319 102-1 evidence engine is unsupported.
+  Separate baseline format APIs support nested enveloped, enveloping, detached
+  and explicit external data, signed properties, content timestamps and
+  countersignature bindings. These format results do not grant trust or a level.
+  `NewHistoricalValidator` adds a bounded EN 319 102-1 V1.4.1 workflow with
+  exact-object PoE, shell/chain path models, revocation/algorithm time constraints
+  and expired-TSA archive recovery. Full EN processing remains incomplete:
+  evidence records, historical countersignature/attribute-authority workflows,
+  wider preservation properties and remaining current-process indication
+  branches are not supplied by this API. Unknown unsigned properties reject.
 - Signed SAML metadata, POST/Redirect and solicited WebSSO. SLO, Artifact/ECP,
   queries, unsolicited SSO and encrypted Assertion/NameID/Attribute profiles are unsupported.
-  SAML/XAdES dateTime values use UTC, positive four-digit years and at most nine
+  SAML and the closed XAdES APIs use UTC, positive four-digit years and at most nine
   fractional digits; `24:00:00` is normalized. Metadata cache durations use a
   positive day/time profile, capped at 365 days and nine fractional digits.
+  The separate XAdES baseline API preserves UTC dateTime years and fractions
+  exactly, within a 4096-byte lexical budget; extended values can have no
+  `time.Time` convenience representation. Use `CompareSigningTime` for exact
+  comparisons. Neither representation establishes a trusted signing time.
 - PEM/DER PKCS#8, RSA PKCS#1, EC SEC1, SPKI, X.509 certificates and CRLs.
   Encrypted PKCS#8 uses PBES2/PBKDF2 with SHA-2 and AES-CBC. DER PKCS#12 requires
   a SHA-2 classic MAC or PBMAC1, one private key and matching certificate, with
@@ -175,6 +187,12 @@ is tested locally. Its notice is retained in the fixture and
 [Unicode license](../licenses/Unicode-3.0.txt).
 
 ## Known oracle differences
+
+Archive timestamp input now canonicalizes SignedInfo with the archive's selected
+algorithm, alongside SignatureValue and KeyInfo (EN319132-1 §5.5.2.3). Earlier
+output using a different SignedInfo algorithm can have an invalid archive imprint;
+the verifier does not accept that old computation as a compatibility mode.
+Archives with identical algorithms retain their input bytes.
 
 [Native comparisons](testing.md#xmlsec1-comparisons) cover overlapping profiles
 and assert these differences separately:

@@ -700,3 +700,59 @@ func within(n, ancestor *tree.Node) bool {
 
 	return false
 }
+
+// WriteCanonicalizedInput replays the approved transforms once and checks the
+// original signed digest while writing a timestamp input. Final octets are
+// unchanged; a final node set is serialized with method instead of the implicit
+// XMLDSig Canonical XML 1.0 conversion. Resolvers and extension transforms are
+// each invoked once. External raw-resource identity, Close and all work bounds
+// remain checked. On error dst may contain bytes that must be discarded.
+func (r ReferenceResult) WriteCanonicalizedInput(ctx context.Context, dst io.Writer, method reference.Transform) (int64, error) {
+	if ctx == nil || nilcheck.IsNil(dst) || r.processed == nil {
+		return 0, ErrPolicy
+	}
+
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	h, err := hashForDigest(r.digestMethod)
+	if err != nil {
+		return 0, err
+	}
+
+	digest := h.New()
+	writer := streamio.Writer{Context: ctx, Target: dst, Limit: math.MaxInt64, LimitError: ErrPolicy}
+
+	if r.external != nil {
+		resources := r.external.limits.MaxResourceBytes
+
+		remaining := r.processing.MaxProducedBytes
+		if remaining == 0 {
+			remaining = reference.DefaultOptions().MaxProducedBytes
+		}
+
+		_, err = r.external.writeOutputs(ctx, digest, &writer, method, r.transforms, r.processing, &remaining, &resources)
+	} else {
+		if r.resolver == nil {
+			return 0, ErrPolicy
+		}
+
+		resolved, resolveErr := r.resolver.Resolve(ctx, r.uri)
+		if resolveErr != nil {
+			return 0, resolveErr
+		}
+
+		_, err = reference.WriteAndCanonicalize(ctx, digest, &writer, resolved.Data(), r.transforms, method, r.processing)
+	}
+
+	if err != nil {
+		return writer.Written, err
+	}
+
+	if !bytes.Equal(digest.Sum(nil), r.digest) {
+		return writer.Written, ErrDigest
+	}
+
+	return writer.Written, nil
+}

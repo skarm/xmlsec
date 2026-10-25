@@ -5,27 +5,36 @@ package interop_test
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
+	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/keyinfo"
 	"github.com/skarm/xmlsec/reference"
+	"github.com/skarm/xmlsec/timestamp"
 	"github.com/skarm/xmlsec/transform"
+	"github.com/skarm/xmlsec/xades"
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
@@ -1044,4 +1053,225 @@ func native(t *testing.T, fixture *interopFixture, success bool, mode string, ar
 	out, _ := command(t, fixture, success, nil, xmlsecExecutable(), all...)
 
 	return out
+}
+
+func TestXAdESBaselineFormats(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	schema := xadesPublishedSchema(t)
+	key := generateKey(t, fixture.work, nameEcdsaSha256)
+	extra := generateKey(t, t.TempDir(), nameEcdsaSha384)
+	for _, method := range canonicalizations() {
+		for _, form := range []string{"nested-enveloped", "sibling", "enveloping", "external"} {
+			t.Run(method+"/"+form, func(t *testing.T) {
+				options := xades.BaselineSignOptions{Template: xmldsig.SignatureTemplate{ID: "baseline", SignatureMethod: key.method, Canonicalization: reference.Transform{Algorithm: method}, Certificates: [][]byte{key.cert.Raw, extra.cert.Raw}}, SignedPropertiesID: "properties", Properties: xades.BaselineProperties{SigningTime: time.Now().UTC(), SigningCertificateDigest: xmldsig.SHA512, AdditionalCertificates: []xades.CertificateIdentifier{{DER: extra.cert.Raw, DigestMethod: xmldsig.SHA384, IncludeIssuerSerial: true}}, ProductionPlace: &xades.ProductionPlace{City: "Perm", StreetAddress: "Main", CountryName: "RU"}, ClaimedRoles: []xades.PropertyValue{{Text: "author"}}, Commitments: []xades.CommitmentType{{Identifier: xades.ObjectIdentifier{Identifier: "urn:commitment:origin"}, All: true}}, Policy: &xades.SignaturePolicy{Identifier: xades.ObjectIdentifier{Identifier: "urn:policy:1"}, DigestMethod: xmldsig.SHA384, Qualifiers: []xades.PolicyQualifier{{URI: "https://example.test/policy"}, {Notice: &xades.PolicyNotice{Organization: "Example", NoticeNumbers: []string{"1", "-9999999999999999999999999999"}, ExplicitText: "terms"}}, {Specification: &xades.ObjectIdentifier{Identifier: "urn:oid:1.2.3", Qualifier: "OIDAsURN"}}}}}, Validation: xades.BaselineVerifyOptions{PolicyDocument: []byte("independent policy bytes")}}
+				var doc *document.Document
+				var parent document.Element
+				switch form {
+				case "nested-enveloped":
+					doc = xmlDoc(t, []byte(`<Envelope><payload ID="payload">123</payload></Envelope>`))
+					parent = doc.Root().Children()[0]
+					options.Template.References = []xmldsig.ReferenceTemplate{{ID: "data", URI: "#payload", Transforms: []reference.Transform{{Algorithm: reference.EnvelopedSignature}, {Algorithm: method}}}}
+				case "sibling":
+					doc = xmlDoc(t, []byte(`<Envelope><payload ID="payload">123</payload><slot/></Envelope>`))
+					parent = doc.Root().Children()[1]
+					options.Template.References = []xmldsig.ReferenceTemplate{{ID: "data", URI: "#payload", Transforms: []reference.Transform{{Algorithm: method}}}}
+				case "enveloping":
+					value := "123"
+					options.Template.Objects = []xmldsig.ObjectTemplate{{ID: "payload", Text: &value}}
+					options.Template.References = []xmldsig.ReferenceTemplate{{ID: "data", URI: "#payload", Transforms: []reference.Transform{{Algorithm: method}}}}
+				case "external":
+					path := write(t, filepath.Join(t.TempDir(), "payload.bin"), []byte("123"))
+					uri := (&url.URL{Scheme: "file", Path: path}).String()
+					options.Template.References = []xmldsig.ReferenceTemplate{{ID: "data", URI: uri}}
+					options.Validation.Signature.External = &xmldsig.ExternalReferences{AllowedURIs: []string{uri}, Resolver: xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+						return io.NopCloser(strings.NewReader("123")), nil
+					})}
+				}
+				options.Properties.DataObjects = []xades.DataObjectFormat{{ObjectReference: "#data", Description: "data", MIMEType: "application/octet-stream", ObjectIdentifier: &xades.ObjectIdentifier{Identifier: "urn:oid:1.2.840.113549", Qualifier: "OIDAsURN", Documentation: []string{"https://example.test/format"}}}}
+				signed, result, err := xades.SignBaseline(t.Context(), doc, parent, key.signer, key.cert.Raw, options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := write(t, filepath.Join(t.TempDir(), "baseline.xml"), xmlBytes(t, signed))
+				arguments := []string{flagPubkeyPem, key.public, flagIDAttrID, "payload", flagMixedCaseIDAttribute, xades.Namespace + ":SignedProperties", flagMixedCaseIDAttribute, ds + ":Signature", flagMixedCaseIDAttribute, ds + ":Object", "--node-id", "baseline", flagEnabledReferenceUris, "same-doc,local", path}
+				native(t, fixture, true, nameVerify, arguments...)
+				xadesSchemaFragment(t, fixture, schema, result.Basic().Signature().Signature(), true)
+				for _, reference := range result.CertificateReferences() {
+					hash := "-sha512"
+					if reference.DigestMethod() == xmldsig.SHA384 {
+						hash = "-sha384"
+					}
+					expected, _ := command(t, fixture, true, reference.CertificateDER(), "openssl", "dgst", hash, flagBinary)
+					if !bytes.Equal(reference.Digest(), expected) {
+						t.Fatal("OpenSSL certificate digest")
+					}
+				}
+				expected, _ := command(t, fixture, true, options.Validation.PolicyDocument, "openssl", "dgst", "-sha384", flagBinary)
+				if !bytes.Equal(result.SignaturePolicy().Digest, expected) {
+					t.Fatal("OpenSSL policy digest")
+				}
+				// The ready XMLSec engine independently signs the same property-bearing
+				// template; native validation then checks the exact policy/certificate binding.
+				draft, err := tree.Clone(t.Context(), signed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				selectedSignature := xmldsig.Signatures(draft)[0]
+				_, sv := tree.Unwrap(selectedSignature.Children()[1])
+				sv.Children = nil
+				for _, ref := range selectedSignature.Children()[0].Children()[2:] {
+					fields := ref.Children()
+					_, value := tree.Unwrap(fields[len(fields)-1])
+					value.Children = nil
+				}
+				template := write(t, filepath.Join(t.TempDir(), "template.xml"), xmlBytes(t, draft))
+				theirs := filepath.Join(t.TempDir(), "xmlsec.xml")
+				signArgs := []string{"--privkey-pem", key.private, flagIDAttrID, "payload", flagMixedCaseIDAttribute, xades.Namespace + ":SignedProperties", flagMixedCaseIDAttribute, ds + ":Signature", flagMixedCaseIDAttribute, ds + ":Object", "--node-id", "baseline", flagEnabledReferenceUris, "same-doc,local", flagNativeOutput, theirs, template}
+				native(t, fixture, true, nameSign, signArgs...)
+				parsed := xmlDoc(t, read(t, theirs))
+				if _, err := xades.VerifyBaseline(t.Context(), parsed, xmldsig.Signatures(parsed)[0], key.cert.Raw, options.Validation); err != nil {
+					t.Fatal(err)
+				}
+				if method == exc && form == "sibling" {
+					xadesPublishedSchemaRejects(t, fixture, schema, signed)
+				}
+				t.Log("P7_ORACLE xmlsec1 baseline topology/core; pinned ETSI XSD properties; OpenSSL certificate and policy digests")
+			})
+		}
+	}
+}
+
+func xadesPublishedSchema(t *testing.T) string {
+	t.Helper()
+	dir := os.Getenv("XADES_SCHEMA_DIR")
+	if dir == "" {
+		if os.Getenv("XMLSEC_REQUIRE_P7_PROOFS") == "1" {
+			t.Fatal("XADES_SCHEMA_DIR is required")
+		}
+		t.Skip("set XADES_SCHEMA_DIR to exact ETSI v1.3.1 schemas and their W3C2008 XMLDSig import")
+	}
+	pins := map[string]string{"1913201-XAdES01903v132.xsd": "457745286eaa292ae1aaa6e976e0f30eeceb0a37cc2301151576175e0ae1986c", "1913201-XAdES01903v141.xsd": "286bd63f122aafb907c03724c5959455d114020e523631cc22e90c5f5aa667e2", "xmldsig-core-schema-2008.xsd": "35cf8197da812c85e40d57891b35c94187569ed474a2dac813ce5090dafcd35c"}
+	local := t.TempDir()
+	for name, pin := range pins {
+		raw := read(t, filepath.Join(dir, name))
+		sum := sha256.Sum256(raw)
+		if hex.EncodeToString(sum[:]) != pin {
+			t.Fatal("published XAdES schema pin mismatch", name)
+		}
+		write(t, filepath.Join(local, name), raw)
+	}
+	uri := func(name string) string { return (&url.URL{Scheme: "file", Path: filepath.Join(local, name)}).String() }
+	catalog := `<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog"><uri name="http://www.w3.org/TR/2008/REC-xmldsig-core-20080610/xmldsig-core-schema.xsd" uri="` + uri("xmldsig-core-schema-2008.xsd") + `"/><uri name="https://forge.etsi.org/rep/esi/x19_13201_XAdES/raw/v1.3.1/1913201-XAdES01903v132.xsd" uri="` + uri("1913201-XAdES01903v132.xsd") + `"/></catalog>`
+	t.Setenv("XML_CATALOG_FILES", write(t, filepath.Join(local, "catalog.xml"), []byte(catalog)))
+	entry := `<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:import namespace="` + ds + `" schemaLocation="` + uri("xmldsig-core-schema-2008.xsd") + `"/><xs:import namespace="` + xades.Namespace + `" schemaLocation="` + uri("1913201-XAdES01903v132.xsd") + `"/><xs:import namespace="` + xades.Namespace141 + `" schemaLocation="` + uri("1913201-XAdES01903v141.xsd") + `"/></xs:schema>`
+	return write(t, filepath.Join(local, "xades-schema.xsd"), []byte(entry))
+}
+
+func xadesSchemaFragment(t *testing.T, fixture *interopFixture, schema string, selected document.Element, success bool) {
+	t.Helper()
+	owner, node := tree.Unwrap(selected)
+	fragment := tree.FromNodes([]*tree.Node{tree.ImportSubtree(node)}, tree.Policy(owner))
+	path := write(t, filepath.Join(t.TempDir(), "signature.xml"), xmlBytes(t, fragment))
+	command(t, fixture, success, nil, "xmllint", "--nonet", "--noout", "--schema", schema, path)
+}
+
+func xadesPublishedSchemaRejects(t *testing.T, fixture *interopFixture, schema string, signed *document.Document) {
+	t.Helper()
+	for _, tc := range []struct {
+		name   string
+		change func(*tree.Node)
+	}{
+		{"duplicate signing time", func(root *tree.Node) {
+			ssp := one(t, root, xades.Namespace, "SignedSignatureProperties")
+			duplicate := tree.ImportSubtree(ssp.Children[0])
+			duplicate.Parent = ssp
+			ssp.Children = append([]*tree.Node{duplicate}, ssp.Children...)
+		}},
+		{"missing format reference", func(root *tree.Node) { node := one(t, root, xades.Namespace, "DataObjectFormat"); node.Attrs = nil }},
+		{"production place order", func(root *tree.Node) {
+			node := one(t, root, xades.Namespace, "SignatureProductionPlaceV2")
+			node.Children[0], node.Children[1] = node.Children[1], node.Children[0]
+		}},
+		{"both signature policy alternatives", func(root *tree.Node) {
+			node := one(t, root, xades.Namespace, "SignaturePolicyIdentifier")
+			node.Children = append(node.Children, &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: xades.Namespace, Local: "SignaturePolicyImplied"}, Prefix: "xades", Parent: node})
+		}},
+		{"duplicate claimed role container", func(root *tree.Node) {
+			node := one(t, root, xades.Namespace, "SignerRoleV2")
+			duplicate := tree.ImportSubtree(node.Children[0])
+			duplicate.Parent = node
+			node.Children = append(node.Children, duplicate)
+		}},
+	} {
+		t.Run("published grammar rejects/"+tc.name, func(t *testing.T) {
+			draft, err := tree.Clone(t.Context(), signed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.change(tree.Root(draft))
+			xadesSchemaFragment(t, fixture, schema, xmldsig.Signatures(draft)[0], false)
+		})
+	}
+}
+
+func TestXAdESBaselineDataTimestampInputs(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	schema := xadesPublishedSchema(t)
+	key := generateKey(t, fixture.work, nameEcdsaSha256)
+	chain := testcert.New(t)
+	rootPEM := write(t, filepath.Join(fixture.work, "timestamp-root.pem"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: chain.Root.Raw}))
+	for _, method := range canonicalizations() {
+		for _, individual := range []bool{false, true} {
+			t.Run(method+"/"+strconv.FormatBool(individual), func(t *testing.T) {
+				source := xmlDoc(t, []byte(`<Message xmlns:u="urn:unused"><payload ID="payload">content<!--retained by XPointer--></payload><slot/></Message>`))
+				uri := `#xpointer(id('payload'))`
+				oracle, _, err := xmldsig.BuildTemplate(t.Context(), source, source.Root().Children()[1], xmldsig.SignatureTemplate{SignatureMethod: key.method, References: []xmldsig.ReferenceTemplate{{URI: uri, Transforms: []reference.Transform{{Algorithm: method}}}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				template := write(t, filepath.Join(t.TempDir(), "oracle.xml"), xmlBytes(t, oracle))
+				signedOracle := filepath.Join(t.TempDir(), "signed-oracle.xml")
+				command(t, fixture, true, nil, xmlsecExecutable(), nameSign, "--lax-key-search", "--privkey-pem", key.private, flagIDAttrID, "payload", flagNativeOutput, signedOracle, template)
+				output, stderr := command(t, fixture, true, nil, xmlsecExecutable(), nameVerify, "--lax-key-search", "--verbose", "--print-debug", "--store-references", flagPubkeyPem, key.public, flagIDAttrID, "payload", signedOracle)
+				buffers := regexp.MustCompile(`(?s)== PreDigest data - start buffer:\n(.*?)\n== PreDigest data - end buffer`).FindAllSubmatch(append(output, stderr...), -1)
+				if len(buffers) != 1 {
+					t.Fatalf("XMLSec exact canonical reference input missing: stdout=%s stderr=%s", output, stderr)
+				}
+				expected := buffers[0][1]
+				request, err := timestamp.CreateRequest(t.Context(), expected, timestamp.RequestOptions{Hash: crypto.SHA384})
+				if err != nil {
+					t.Fatal(err)
+				}
+				response, err := timestamp.IssueResponse(t.Context(), request.DER(), chain.TSAKey, chain.TSA.Raw, timestamp.IssueOptions{Policy: []int{1, 2, 3, 4}, SerialNumber: big.NewInt(1), GenTime: testcert.Now(), ExtraCertificates: [][]byte{chain.Root.Raw}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				parsed, err := timestamp.ParseResponse(t.Context(), response)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data := write(t, filepath.Join(t.TempDir(), "content.bin"), expected)
+				reply := write(t, filepath.Join(t.TempDir(), "response.tsr"), response)
+				command(t, fixture, true, nil, "openssl", "ts", flagVerify, flagIn, reply, "-data", data, "-CAfile", rootPEM, "-attime", strconv.FormatInt(testcert.Now().Unix(), 10))
+				property := xades.DataTimestampProperty{Individual: individual, Canonicalization: reference.Transform{Algorithm: method}, TokenDER: parsed.TokenDER()}
+				if individual {
+					property.ObjectReferences = []string{"#data"}
+				}
+				doc, result, err := xades.SignBaseline(t.Context(), source, source.Root().Children()[1], key.signer, key.cert.Raw, xades.BaselineSignOptions{Template: xmldsig.SignatureTemplate{SignatureMethod: key.method, References: []xmldsig.ReferenceTemplate{{ID: "data", URI: uri}}}, Properties: xades.BaselineProperties{SigningTime: time.Now().UTC(), DataTimestamps: []xades.DataTimestampProperty{property}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var actual bytes.Buffer
+				if _, err := result.DataTimestamps()[0].WriteImprintInput(t.Context(), &actual); err != nil || !bytes.Equal(actual.Bytes(), expected) {
+					t.Fatal("timestamp bytes disagree with ready XMLSec canonicalization", actual.String(), string(expected), err)
+				}
+				xadesSchemaFragment(t, fixture, schema, result.Basic().Signature().Signature(), true)
+				path := write(t, filepath.Join(t.TempDir(), "baseline.xml"), xmlBytes(t, doc))
+				native(t, fixture, true, nameVerify, flagPubkeyPem, key.public, flagIDAttrID, "payload", flagMixedCaseIDAttribute, xades.Namespace+":SignedProperties", path)
+				t.Log("P7_ORACLE XMLSec exact final-node-set canonicalization; OpenSSL RFC3161 SHA384 token; published XAdES Include/encapsulation schema")
+			})
+		}
+	}
 }

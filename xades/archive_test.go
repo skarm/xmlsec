@@ -4,15 +4,17 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"math/big"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -129,9 +131,9 @@ func TestArchiveProtectsUnsignedMaterialAndNoFallback(t *testing.T) {
 	oldRoot := base64.StdEncoding.EncodeToString(c.Root.Raw)
 	other := testcert.New(t)
 	replace := base64.StdEncoding.EncodeToString(other.Root.Raw)
-	noChain := strings.Replace(string(raw), oldRoot, replace, 1)
+	noChain := bytes.Replace(raw, []byte(oldRoot), []byte(replace), 1)
 
-	bad, e = document.Parse(t.Context(), []byte(noChain), document.DefaultLimits())
+	bad, e = document.Parse(t.Context(), noChain, document.DefaultLimits())
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -315,4 +317,189 @@ func (t *archiveTransport) RoundTrip(ctx context.Context, q []byte) (io.ReadClos
 	}
 
 	return io.NopCloser(bytes.NewReader(b)), nil
+}
+
+func TestHistoricalArchiveChronology(t *testing.T) {
+	chain, original, _, tsa := historicalArchivePair(t)
+	originalToken := historicalArchiveToken(t, original)
+	var archiveCertificate []byte
+	for _, raw := range originalToken.Certificates() {
+		certificate, err := x509.ParseCertificate(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if certificate.SerialNumber.Cmp(big.NewInt(103)) == 0 {
+			archiveCertificate = raw
+		}
+	}
+	if len(archiveCertificate) == 0 {
+		t.Fatal("missing current archive TSA certificate")
+	}
+
+	zero := time.Duration(0)
+	config := xades.HistoricalConfig{
+		SignerPKI: pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}},
+		TSA:       tsa, MissingTSAAccuracy: &zero, RequireAllTimestamps: true,
+		Baseline: xades.BaselineVerifyOptions{Signature: xmldsig.SignatureOptions{IDAttribute: document.Name{Local: "ID"}}},
+	}
+	at := testcert.Now().Add(48 * time.Hour)
+	variants := map[string]*document.Document{}
+	for _, test := range []struct {
+		name     string
+		file     string
+		issued   time.Time
+		accuracy time.Duration
+		want     string
+	}{
+		{"covering archive precedes protected token in processing", "overlap.xml", testcert.Now().Add(-time.Minute), 10 * time.Minute, ""},
+		{"disjoint archive before protected token fails", "disjoint.xml", testcert.Now().Add(-2 * time.Hour), 0, "TIMESTAMP_ORDER_FAILURE"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := reissueHistoricalArchive(t, original, chain.TSAKey, archiveCertificate, chain.Root.Raw, test.issued, test.accuracy)
+			variants[test.file] = changed
+			verifyOnlyXML(t, changed, chain)
+			validator, err := xades.NewHistoricalValidator(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, report, err := validator.Validate(t.Context(), changed, xmldsig.Signatures(changed)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{})
+			if test.want != "" {
+				if result != nil || err == nil || report.Indication() != xades.Indeterminate || report.SubIndication() != test.want {
+					t.Fatalf("indication=%v sub=%s result=%v err=%v", report.Indication(), report.SubIndication(), result != nil, err)
+				}
+				return
+			}
+			if result == nil || err != nil || report.Indication() != xades.Passed || !report.BestSignatureTime().Equal(testcert.Now().Add(-time.Second)) {
+				t.Fatalf("indication=%v sub=%s best=%s err=%v", report.Indication(), report.SubIndication(), report.BestSignatureTime(), err)
+			}
+			stamps := report.Timestamps()
+			if len(stamps) != 2 || !stamps[0].Archive || stamps[0].Indication != xades.Passed || stamps[1].Archive || stamps[1].Indication != xades.Passed {
+				t.Fatal("covering proof was not accepted before protected token", stamps)
+			}
+		})
+	}
+	exportHistoricalChronology(t, chain, variants)
+
+	t.Run("optional untrusted clock cannot reject covering archive", func(t *testing.T) {
+		other := testcert.New(t)
+		template := *other.TSA
+		template.SerialNumber = big.NewInt(103)
+		template.NotAfter = testcert.Now().Add(8 * 24 * time.Hour)
+		eku, err := asn1.Marshal([]asn1.ObjectIdentifier{{1, 3, 6, 1, 5, 5, 7, 3, 8}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		template.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Critical: true, Value: eku}}
+		certificate := testcert.Issue(t, &template, other.Root, other.TSAKey.Public(), other.RootKey)
+		otherTSA, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{other.Root.Raw}, Revocation: pki.RequireCRL}, Certificates: [][]byte{certificate.Raw}, AllowedPolicies: []asn1.ObjectIdentifier{tsaPolicy()}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		archiveTime := testcert.Now().Add(-time.Minute)
+		changed := reissueHistoricalArchive(t, original, other.TSAKey, certificate.Raw, other.Root.Raw, archiveTime, 0)
+		verifyOnlyXML(t, changed, chain)
+		config.TSA = otherTSA
+		config.RequireAllTimestamps = false
+		validator, err := xades.NewHistoricalValidator(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, report, err := validator.Validate(t.Context(), changed, xmldsig.Signatures(changed)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{TSA: pki.Evidence{CRLs: [][]byte{historicalLongCRL(t, other)}}})
+		if result == nil || err != nil || report.Indication() != xades.Passed || !report.BestSignatureTime().Equal(archiveTime) {
+			t.Fatalf("optional foreign clock poisoned archive: %v/%s best=%s err=%v", report.Indication(), report.SubIndication(), report.BestSignatureTime(), err)
+		}
+		stamps := report.Timestamps()
+		if len(stamps) != 2 || !stamps[0].Archive || stamps[0].Indication != xades.Passed || stamps[1].Archive || stamps[1].Indication == xades.Passed {
+			t.Fatal("untrusted signature timestamp was treated as an accepted clock", stamps)
+		}
+	})
+}
+
+func exportHistoricalChronology(t testing.TB, chain testcert.Chain, documents map[string]*document.Document) {
+	t.Helper()
+	directory := os.Getenv("XMLSEC_P7_EXPORT_CHRONOLOGY_FIXTURES")
+	if directory == "" {
+		return
+	}
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, document := range documents {
+		raw, err := document.XML(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, name), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(directory, "root.pem"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: chain.Root.Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func historicalArchiveToken(t testing.TB, doc *document.Document) *timestamp.Token {
+	t.Helper()
+	var values []document.Element
+	stack := []document.Element{doc.Root()}
+	for len(stack) != 0 {
+		element := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		stack = append(stack, element.Children()...)
+		if element.Name() != (document.Name{Space: "http://uri.etsi.org/01903/v1.4.1#", Local: "ArchiveTimeStamp"}) {
+			continue
+		}
+		for _, child := range element.Children() {
+			if child.Name() == (document.Name{Space: xades.Namespace, Local: "EncapsulatedTimeStamp"}) {
+				values = append(values, child)
+			}
+		}
+	}
+	if len(values) != 1 {
+		t.Fatal("expected one archive timestamp token")
+	}
+	raw, err := base64.StdEncoding.DecodeString(values[0].Text())
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := timestamp.ParseToken(t.Context(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+func reissueHistoricalArchive(t testing.TB, doc *document.Document, signer crypto.Signer, certificate, root []byte, at time.Time, accuracy time.Duration) *document.Document {
+	t.Helper()
+	previous := historicalArchiveToken(t, doc)
+	info := previous.UnverifiedInfo()
+	request, err := timestamp.CreateImprintRequest(info.Imprint(), timestamp.RequestOptions{Policy: info.Policy(), OmitNonce: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseDER, err := timestamp.IssueResponse(t.Context(), request.DER(), signer, certificate, timestamp.IssueOptions{GenTime: at, Accuracy: &accuracy, SerialNumber: big.NewInt(at.Unix()), Policy: info.Policy(), ExtraCertificates: [][]byte{root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := timestamp.ParseResponse(t.Context(), responseDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := doc.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldText := []byte(base64.StdEncoding.EncodeToString(previous.DER()))
+	if bytes.Count(raw, oldText) != 1 {
+		t.Fatal("archive token replacement must be exact and unique")
+	}
+	changed := bytes.Replace(raw, oldText, []byte(base64.StdEncoding.EncodeToString(response.TokenDER())), 1)
+	result, err := document.Parse(t.Context(), changed, document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(mustSignatureValue(t, doc), mustSignatureValue(t, result)) {
+		t.Fatal("unsigned timestamp intervention changed primary SignatureValue")
+	}
+	return result
 }

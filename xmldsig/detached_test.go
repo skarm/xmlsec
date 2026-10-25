@@ -850,3 +850,53 @@ func (stuckReader) Read([]byte) (int, error) { return 0, nil }
 type badCountReader struct{}
 
 func (badCountReader) Read([]byte) (int, error) { return -1, nil }
+
+func TestCanonicalizedReferenceReadsAndTransformsOnce(t *testing.T) {
+	source := `<r xmlns:u="urn:unused">text</r>`
+	calls := 0
+	resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+		calls++
+		value := source
+		if calls > 1 {
+			value = `<r>changed</r>`
+		}
+		return io.NopCloser(strings.NewReader(value)), nil
+	})
+	program := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "true()", Namespaces: map[string]string{"xml": document.XMLNamespace, "ds": xmldsig.Namespace}}}}
+	engine, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{program}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := xmldsig.SignatureOptions{External: &xmldsig.ExternalReferences{Resolver: resolver, AllowedURIs: []string{uriUrnXML}}, Processing: reference.DefaultOptions()}
+	options.Processing.Extension = engine
+	options.Processing.AllowedTransforms = append(options.Processing.AllowedTransforms, reference.XPath)
+	draft, selected, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: uriUrnXML, Transforms: []reference.Transform{program}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Signing and its self-verification each require the same stable resource.
+	options.External.Resolver = xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(source)), nil
+	})
+	key := coreEC(t)
+	signed, err := xmldsig.SignTemplate(t.Context(), draft, selected, key, xmldsig.TemplateSignOptions{Validation: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.External.Resolver = resolver
+	calls = 0
+	checked, err := xmldsig.VerifySignature(t.Context(), signed, signed.Root(), key.Public(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls = 0
+	var alternate bytes.Buffer
+	_, err = checked.References()[0].WriteCanonicalizedInput(t.Context(), &alternate, reference.Transform{Algorithm: c14n.Exclusive})
+	if err != nil || calls != 1 || alternate.String() != `<r>text</r>` {
+		t.Fatal(alternate.String(), calls, err)
+	}
+	alternate.Reset()
+	if _, err := checked.References()[0].WriteCanonicalizedInput(t.Context(), &alternate, reference.Transform{Algorithm: c14n.Exclusive}); !errors.Is(err, xmldsig.ErrDigest) {
+		t.Fatal("changed resource was accepted", err)
+	}
+}

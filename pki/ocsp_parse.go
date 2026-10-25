@@ -15,6 +15,7 @@ type singleResponse struct {
 	id                  certID
 	status              OCSPStatus
 	this, next, revoked time.Time
+	archiveCutoff       time.Time
 	reason              int
 }
 
@@ -93,6 +94,26 @@ func (s *singleResponse) parseOptionalFields(fields []asn1.RawValue) error {
 
 		if _, err := nonceFrom(ext, false); err != nil {
 			return err
+		}
+
+		for _, extension := range ext {
+			if !extension.Id.Equal(asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 6}) {
+				continue
+			}
+
+			if extension.Critical {
+				return ErrEvidence
+			}
+
+			value, err := der.Read(extension.Value, 64)
+			if err != nil {
+				return ErrEvidence
+			}
+
+			s.archiveCutoff, err = generalized(value)
+			if err != nil {
+				return err
+			}
 		}
 
 		i++

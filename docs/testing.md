@@ -415,3 +415,58 @@ go test ./cms -run '^TestCMSBER' -count=1
 docker run --rm --network=none xmlsec-interop:local \
   go test -tags=interop -count=1 -v ./tests/interop -run '^TestCMSBEROpenSSL$'
 ```
+
+## XAdES baseline and historical checks
+
+`TestXAdESBaselineFormats` exchanges 24 topology/canonicalization combinations
+with ready xmlsec1, checks certificate/policy hashes with OpenSSL and validates
+the property grammar with xmllint against pinned official XAdES V1.3.1 schemas.
+Set `XADES_SCHEMA_DIR` to the two ETSI schemas and their W3C2008 XMLDSig import;
+the test verifies their SHA-256 pins before use. `XMLSEC_REQUIRE_P7_PROOFS=1`
+turns missing independent dependencies into failures. Schemas and binaries are
+not committed; the DSS input pairs below are generated outside the checkout.
+
+The existing RSA/ECDSA inclusive-archive vectors were corrected independently
+with lxml/libxml2 and OpenSSL. `TestIndependentEvidence` checks their literal
+archive imprints and rejects the earlier mixed-canonicalization computation.
+
+Historical unit tests distinguish raw signature/object proofs, token accuracy,
+covering-archive order, optional untrusted attributes, current versus past PKI,
+per-material algorithm cutoffs, revocation-source scope and ownership. The PKI
+tests also verify stale/expired targets, delegated signers, complete/base-delta
+compositions and strict time boundaries. OpenSSL checks the exact old sources
+and path dates; it does not implement the ETSI time-sliding process.
+
+The ready DSS 6.5.1 demonstration bundle provides a separate process comparison.
+Use the [official release](https://github.com/esig/dss-demonstrations/releases/tag/6.5.1)
+and [prebuilt bundle](https://ec.europa.eu/digital-building-blocks/artifact/repository/esignaturedss/eu/europa/ec/joinup/sd-dss/dss-demo-bundle/6.5.1/dss-demo-bundle-6.5.1.zip).
+The bundle SHA-256 is
+`f0e10bb218795b966824887a8c73b555ab9d88a8e84997882d3e5a807cc9cb37`.
+Extract its Tomcat directory; `build/dss.sh` additionally verifies the exact WAR.
+Generate the sufficient/insufficient pair outside the checkout:
+
+```sh
+XMLSEC_P7_EXPORT_FIXTURES=/tmp/xmlsec-history go test ./xades \
+  -run '^TestHistoricalExpiredTSAArchiveEvidence$' -count=1
+XMLSEC_DSS_TOMCAT=/path/to/extracted/apache-tomcat-11.0.27 \
+XMLSEC_DSS_FIXTURE_DIR=/tmp/xmlsec-history XMLSEC_DSS_CA_PEM=root.pem \
+XMLSEC_DSS_IMAGE=xmlsec-interop:local sh build/dss.sh
+```
+
+The image needs the ready JDK and Go/module dependencies from the existing
+interop build. Offline runs may supply `XMLSEC_DSS_GOMODCACHE` and
+`XMLSEC_DSS_GOCACHE`. `XMLSEC_DSS_REPORT_DIR` saves complete reports and a
+source-bound capture. The runner imports only the explicit fixture CA, disables
+trust-list loading, starts DSS and Go in one `--network none` container, and
+stops the server afterward. It creates no Java/C adapter or persistent job.
+
+The main pair requires the same primary signature, intact references and exact
+best-signature times. A sufficient archive must recover the old timestamp's
+trust in DSS's detailed report, beyond a top-level success indication. Both
+engines reject the insufficient pair as indeterminate. Their negative
+sub-indications differ: DSS uses `OUT_OF_BOUNDS_NOT_REVOKED`; this bounded
+workflow conservatively retains `OUT_OF_BOUNDS_NO_POE` without post-expiry CA
+assurance. DSS's default optional-timestamp policy also differs from
+`RequireAllTimestamps=true` for disjoint/overlapping clock cases. These are
+recorded diagnostic boundaries, not complete EN319102-1 process agreement or
+an independent security assessment.

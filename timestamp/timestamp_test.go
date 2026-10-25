@@ -86,6 +86,30 @@ func testParsedTokenIndependentFixture(t *testing.T, name string) {
 	if !bytes.Equal(result.TokenDER(), want) {
 		t.Fatal("token mutated through getter")
 	}
+
+	// Independent OpenSSL token bytes can be authenticated after the TSA path
+	// expires, but that cryptographic fact must not become a trusted Result.
+	later := fixture.At.AddDate(100, 0, 0)
+	expectation := timestamp.Expectation{Imprint: request.Imprint(), Nonce: request.Nonce(), Policy: request.Policy()}
+	assertion, err := v.Authenticate(t.Context(), token, expectation, later)
+	if err != nil || !assertion.Valid() || assertion.TokenSHA256() != sha256.Sum256(want) || assertion.SignatureHash() == 0 || assertion.SignatureAlgorithmOID() == "" || !bytes.Equal(assertion.CertificateDER(), result.TSACertificateDER()) {
+		t.Fatal("cryptographic token authentication", err)
+	}
+	if trusted, err := v.Verify(t.Context(), token, expectation, later, pki.Evidence{}); trusted != nil || err == nil {
+		t.Fatal("authentication bypassed expired TSA trust", err)
+	}
+	assertion.CertificateDER()[0] ^= 1
+	if !bytes.Equal(assertion.CertificateDER(), result.TSACertificateDER()) {
+		t.Fatal("mutable authenticated certificate")
+	}
+	expectation.Imprint.Digest[0] ^= 1
+	if assertion, err := v.Authenticate(t.Context(), token, expectation, later); assertion != nil || !errors.Is(err, timestamp.ErrBinding) {
+		t.Fatal("unbound token authentication", err)
+	}
+	var zero timestamp.AuthenticatedToken
+	if zero.Valid() || zero.Token() != nil || zero.CertificateDER() != nil || zero.SignatureHash() != 0 || zero.TokenSHA256() != ([32]byte{}) {
+		t.Fatal("zero authenticated assertion")
+	}
 }
 
 func TestTimestampTokenWorkingStorage(t *testing.T) {

@@ -3,9 +3,11 @@ package evidence_test
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"encoding/asn1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -97,13 +99,13 @@ func testIndependentEvidenceCase(t *testing.T, base string, tc evidenceFixture) 
 			t.Fatalf("%v %+v", e, rep)
 		}
 	case "timestamp", "xades", "archive":
-		checkTimedEvidence(t, tc.Group, read, at)
+		checkTimedEvidence(t, tc, read, at)
 	default:
 		t.Fatal(tc.Group)
 	}
 }
 
-func checkTimedEvidence(t *testing.T, group string, read func(string) []byte, at time.Time) {
+func checkTimedEvidence(t *testing.T, tc evidenceFixture, read func(string) []byte, at time.Time) {
 	t.Helper()
 
 	ctx := context.Background()
@@ -115,7 +117,7 @@ func checkTimedEvidence(t *testing.T, group string, read func(string) []byte, at
 
 	ev := pki.Evidence{CRLs: [][]byte{read("crl.der")}}
 
-	switch group {
+	switch tc.Group {
 	case "timestamp":
 		q, e := timestamp.ParseRequest(read("request.der"))
 		if e != nil {
@@ -140,6 +142,8 @@ func checkTimedEvidence(t *testing.T, group string, read func(string) []byte, at
 		if e != nil || r == nil {
 			t.Fatal(e)
 		}
+
+		checkInclusiveArchiveImprint(t, tc.Name, r, v, at, ev)
 	default:
 		d, e := document.Parse(ctx, read("signed.xml"), document.DefaultLimits())
 		if e != nil {
@@ -149,5 +153,45 @@ func checkTimedEvidence(t *testing.T, group string, read func(string) []byte, at
 		if r, e := xades.VerifyTimedEnveloped(ctx, d, xmldsig.Signatures(d)[0], read("signer.der"), xades.TimedOptions{TSA: v, At: at, Evidence: ev}); e != nil || r == nil {
 			t.Fatal(e)
 		}
+	}
+}
+
+func checkInclusiveArchiveImprint(t *testing.T, name string, result *xades.ValidationResult, verifier *timestamp.Verifier, at time.Time, evidence pki.Evidence) {
+	t.Helper()
+
+	var correct, legacy string
+
+	// Independent lxml/libxml2 archive inputs, signed and verified with OpenSSL.
+	// EN 319 132-1, 5.5.2.3 applies archive C14N to SignedInfo too, although
+	// these signatures select exclusive C14N and their archives select inclusive.
+	switch name {
+	case "archive-rsa-inclusive":
+		correct = "4d7d5c9344290eb04f4edd7e8dcfb536d902f20a9c6bb9e0d25579dd1828317d"
+		legacy = "33b9c9d0f072d22a8a9c2eb0093f674775de8e1de9ab6ff5a987ec9cef619fdc"
+	case "archive-ecdsa-inclusive":
+		correct = "7e13f90757431216e409eda4c4a32fbec332b4457b7133ef97b506fba4f314f2"
+		legacy = "88d01f26d4701eda70a7e9c2d67cf80d599f233bb2effa670d01f365a94e50ff"
+	default:
+		return
+	}
+
+	archives := result.ArchiveTimestamps()
+	if len(archives) != 1 {
+		t.Fatal("expected one independently generated archive timestamp")
+	}
+
+	imprint := archives[0].Info().Imprint()
+	if imprint.Hash != crypto.SHA256 || hex.EncodeToString(imprint.Digest) != correct || correct == legacy {
+		t.Fatalf("archive imprint does not match independent inclusive input: %+v", imprint)
+	}
+
+	wrong, err := hex.DecodeString(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := timestamp.Expectation{Imprint: timestamp.Imprint{Hash: crypto.SHA256, Digest: wrong}}
+	if accepted, err := verifier.Verify(t.Context(), archives[0].Token(), want, at, evidence); accepted != nil || !errors.Is(err, timestamp.ErrBinding) {
+		t.Fatalf("legacy mixed-canonicalization archive input accepted: %v", err)
 	}
 }

@@ -3,21 +3,28 @@ package pki_test
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/hex"
 	"errors"
 	"math/big"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/skarm/xmlsec/evidence"
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/historical"
+	"github.com/skarm/xmlsec/internal/historicalproof"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/keys"
 	"github.com/skarm/xmlsec/pki"
+	"github.com/skarm/xmlsec/timestamp"
 )
 
 func TestOCSPNextUpdateIsExclusive(t *testing.T) {
@@ -1528,6 +1535,1186 @@ func TestCRLRejectsInvalidURIs(t *testing.T) {
 			}
 			if result, _, err := verifier.Verify(t.Context(), leaf.Raw, at, pki.Evidence{CRLs: [][]byte{source}}); result != nil || !errors.Is(err, pki.ErrEvidence) {
 				t.Fatal(result != nil, err)
+			}
+		})
+	}
+}
+
+func p7Proofs(t *testing.T, now time.Time, objects [][]byte, roles []string, at time.Time) *historicalproof.Set {
+	t.Helper()
+	source := sha256.Sum256([]byte("published historical building-block vector"))
+	facts := make([]historicalproof.Fact, 0, len(objects))
+	for index, object := range objects {
+		facts = append(facts, historicalproof.Fact{Digest: sha256.Sum256(object), Source: source, At: at, Kind: roles[index]})
+	}
+	set, err := historicalproof.New(t.Context(), now, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return set
+}
+
+func TestHistoricalExpiredTargetAuthentication(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime().Add(3 * time.Hour)
+	raw := makeCRL(t, c, false, nil)
+	current, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, _, err := current.Verify(t.Context(), c.leaf.Raw, now, pki.Evidence{CRLs: [][]byte{raw}}); result != nil || !errors.Is(err, pki.ErrCertificate) {
+		t.Fatal(result != nil, err)
+	}
+	session, err := current.NewHistoricalSession(t.Context(), pki.HistoricalOptions{}, now, pki.Evidence{CRLs: [][]byte{raw}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := session.Paths(t.Context(), c.leaf.Raw)
+	if err != nil || len(paths) != 1 {
+		t.Fatal(len(paths), err)
+	}
+	checked, err := session.CheckPath(t.Context(), paths[0])
+	if err != nil || checked == nil || checked.Model() != pki.ShellModel || !checked.ReferenceTime().Equal(c.leaf.NotBefore) {
+		t.Fatal(checked != nil, err)
+	}
+	claims, err := session.AuthenticateEvidence(t.Context(), paths[0])
+	if err != nil || len(claims) != 1 {
+		t.Fatal(len(claims), err)
+	}
+	claim := claims[0]
+	if claim.AuthenticationStatus() != pki.Valid || !bytes.Equal(claim.DER(), raw) || !claim.ValidationTime().Equal(verificationTime().Add(-time.Minute)) || claim.SignerAuthority() != "issuer" {
+		t.Fatal("unbound historical assertion")
+	}
+	chain := claim.SignerChainDER()
+	if len(chain) != 1 || !bytes.Equal(chain[0], c.root.Raw) {
+		t.Fatal("wrong signer path")
+	}
+	clear(chain[0])
+	if !bytes.Equal(claim.SignerChainDER()[0], c.root.Raw) {
+		t.Fatal("mutable signer path")
+	}
+	clear(raw)
+	if len(claim.DER()) == 0 || bytes.Equal(claim.DER(), raw) {
+		t.Fatal("session retained mutable evidence")
+	}
+	foreign, err := current.NewHistoricalSession(t.Context(), pki.HistoricalOptions{}, now, pki.Evidence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := foreign.CheckPath(t.Context(), paths[0]); !errors.Is(err, pki.ErrPolicy) {
+		t.Fatal("foreign path accepted", err)
+	}
+}
+
+func TestHistoricalCertificateTimeSliding(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime().Add(3 * time.Hour)
+	raw := makeCRL(t, c, false, nil)
+	input := pki.Evidence{CRLs: [][]byte{raw}}
+	options := pki.HistoricalOptions{}
+	config := pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL}, HistoricalOptions: options}
+	for _, test := range []struct {
+		name    string
+		objects [][]byte
+		roles   []string
+		proofAt time.Time
+		pass    bool
+	}{
+		{"old authenticated data", [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, verificationTime(), true},
+		{"proof at control inclusive", [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, now, true},
+		{"missing certificate proof", [][]byte{raw}, []string{"crl"}, verificationTime(), false},
+		{"missing CRL proof", [][]byte{c.leaf.Raw}, []string{"certificate"}, verificationTime(), false},
+		{"wrong CRL role", [][]byte{c.leaf.Raw, raw}, []string{"certificate", "data"}, verificationTime(), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), config, now, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proofs := p7Proofs(t, now, test.objects, test.roles, test.proofAt)
+			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, proofs)
+			if !test.pass {
+				if result != nil || !errors.Is(err, pki.ErrUnavailable) || report.SubIndication() != "NO_POE" {
+					t.Fatal(result != nil, report.SubIndication(), err)
+				}
+				return
+			}
+			bound := verificationTime().Add(-time.Minute)
+			if err != nil || result == nil || !result.ValidationTime().Equal(bound) {
+				t.Fatal(result != nil, err)
+			}
+			steps := report.Transitions()
+			if len(steps) != 1 || steps[0].Reason != "freshness" || !steps[0].Before.Equal(now) || !steps[0].After.Equal(bound) {
+				t.Fatal(steps)
+			}
+			steps[0].Reason = "forged"
+			if report.Transitions()[0].Reason != "freshness" {
+				t.Fatal("mutable transitions")
+			}
+			if len(result.Evidence()) != 1 || !bytes.Equal(result.Path().ChainDER()[0], c.leaf.Raw) {
+				t.Fatal("lost process source/path")
+			}
+		})
+	}
+	session, err := pki.NewHistoricalSession(t.Context(), config, now, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, &historicalproof.Set{}); result != nil || !errors.Is(err, pki.ErrPolicy) {
+		t.Fatal(result != nil, err)
+	}
+	different := p7Proofs(t, now.Add(time.Second), [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, verificationTime())
+	if result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, different); result != nil || !errors.Is(err, pki.ErrPolicy) {
+		t.Fatal("cross-operation proof", result != nil, err)
+	}
+}
+
+func TestHistoricalRevocationAndFreshnessBoundaries(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	config := pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL}
+	for _, test := range []struct {
+		name      string
+		issued    time.Time
+		next      time.Time
+		model     pki.ValidityModel
+		reason    int
+		freshness *time.Duration
+		want      time.Time
+		pass      bool
+	}{
+		{"issued strictly before", now.Add(-time.Minute), now.Add(time.Minute), pki.ShellModel, -1, nil, now, true},
+		{"issued exactly at control", now, now.Add(time.Minute), pki.ShellModel, -1, nil, time.Time{}, false},
+		{"missing next update", now.Add(-time.Minute), time.Time{}, pki.ShellModel, -1, nil, now.Add(-time.Minute), true},
+		{"shell revocation", now.Add(-time.Minute), now.Add(time.Minute), pki.ShellModel, 3, nil, now.Add(-2 * time.Minute), true},
+		{"chain noncompromise", now.Add(-time.Minute), now.Add(time.Minute), pki.ChainModel, 3, nil, now, true},
+		{"chain key compromise", now.Add(-time.Minute), now.Add(time.Minute), pki.ChainModel, 1, nil, now.Add(-2 * time.Minute), true},
+		{"chain unknown reason", now.Add(-time.Minute), now.Add(time.Minute), pki.ChainModel, 0, nil, now.Add(-2 * time.Minute), true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var entries []x509.RevocationListEntry
+			if test.reason >= 0 {
+				entries = []x509.RevocationListEntry{{SerialNumber: c.leaf.SerialNumber, RevocationTime: now.Add(-2 * time.Minute), ReasonCode: test.reason}}
+			}
+			next := test.next
+			if next.IsZero() {
+				next = now.Add(time.Minute)
+			}
+			raw := p6CRL(t, c, 1, test.issued, next, -1, nil, entries)
+			if test.next.IsZero() {
+				raw = p6TransformCRL(t, raw, c, func(fields []asn1.RawValue) [][]byte {
+					parts := make([][]byte, 0, len(fields))
+					for index, field := range fields {
+						if index != 4 {
+							parts = append(parts, field.FullBytes)
+						}
+					}
+					return parts
+				})
+			}
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: config, Model: test.model, RevocationFreshness: test.freshness}, now, pki.Evidence{CRLs: [][]byte{raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			proofs := p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, now)
+			result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, proofs)
+			if test.pass {
+				if err != nil || result == nil || !result.ValidationTime().Equal(test.want) {
+					t.Fatal(result != nil, err)
+				}
+			} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
+				t.Fatal(result != nil, err)
+			}
+		})
+	}
+}
+
+func TestHistoricalCurrentPolicy(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	raw := makeCRL(t, c, false, nil)
+	zero, minute, two := time.Duration(0), time.Minute, 2*time.Minute
+	digest := sha256.Sum256(c.root.Raw)
+	root := hex.EncodeToString(digest[:])
+	for _, tc := range []struct {
+		name    string
+		options pki.HistoricalOptions
+		sub     string
+	}{
+		{"implicit interval", pki.HistoricalOptions{}, ""},
+		{"explicit zero", pki.HistoricalOptions{RevocationFreshness: &zero}, "TRY_LATER"},
+		{"strict freshness equality", pki.HistoricalOptions{RevocationFreshness: &minute}, "TRY_LATER"},
+		{"configured fresh", pki.HistoricalOptions{RevocationFreshness: &two}, ""},
+		{"anchor sunset at now", pki.HistoricalOptions{TrustAnchorSunsets: map[string]time.Time{root: now}}, "NO_CERTIFICATE_CHAIN_FOUND_NO_POE"},
+		{"anchor future sunset", pki.HistoricalOptions{TrustAnchorSunsets: map[string]time.Time{root: now.Add(time.Second)}}, ""},
+		{"signature cutoff at now", pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{SignatureAlgorithm: x509.ECDSAWithSHA256, ReliableUntil: now}}}, "CRYPTO_CONSTRAINTS_FAILURE_NO_POE"},
+		{"digest cutoff", pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{Hash: crypto.SHA256, ReliableUntil: now.Add(-time.Second)}}}, "CRYPTO_CONSTRAINTS_FAILURE_NO_POE"},
+		{"weak key cutoff", pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{PublicKeyAlgorithm: x509.ECDSA, MinimumKeyBits: 384, ReliableUntil: now}}}, "CRYPTO_CONSTRAINTS_FAILURE_NO_POE"},
+		{"sufficient key size", pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{PublicKeyAlgorithm: x509.ECDSA, MinimumKeyBits: 256, ReliableUntil: now}}}, ""},
+		{"other digest unaffected", pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{Hash: crypto.SHA512, ReliableUntil: now}}}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL}, HistoricalOptions: tc.options}, now, pki.Evidence{CRLs: [][]byte{raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, _, err := session.VerifyCurrent(t.Context(), c.leaf.Raw)
+			if err != nil || current == nil {
+				t.Fatal("current verifier changed", err)
+			}
+			sub, err := session.CheckCurrentPolicy(t.Context(), current)
+			if sub != tc.sub || (err == nil) != (tc.sub == "") {
+				t.Fatal(sub, err)
+			}
+			if _, err := session.CheckCurrentPolicy(t.Context(), nil); !errors.Is(err, pki.ErrPolicy) {
+				t.Fatal("zero current result accepted", err)
+			}
+		})
+	}
+}
+
+func TestHistoricalCryptoAndSunsetProofs(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	raw := makeCRL(t, c, false, nil)
+	cutoff := now.Add(-30 * time.Second)
+	hash := sha256.Sum256(c.root.Raw)
+	root := hex.EncodeToString(hash[:])
+	for _, tc := range []struct {
+		name          string
+		options       pki.HistoricalOptions
+		proofAt, want time.Time
+		pass          bool
+	}{
+		{"algorithm protected before cutoff", pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{Hash: crypto.SHA256, ReliableUntil: cutoff}}}, now.Add(-45 * time.Second), cutoff, true},
+		{"proof exactly at cutoff", pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{Hash: crypto.SHA256, ReliableUntil: cutoff}}}, cutoff, time.Time{}, false},
+		{"current observation cannot rescue old algorithm", pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{Hash: crypto.SHA256, ReliableUntil: cutoff}}}, now, time.Time{}, false},
+		{"anchor cutoff initial bound", pki.HistoricalOptions{TrustAnchorSunsets: map[string]time.Time{root: cutoff}}, now.Add(-45 * time.Second), cutoff, true},
+		{"certificate exists only after sunset", pki.HistoricalOptions{TrustAnchorSunsets: map[string]time.Time{root: cutoff}}, now, time.Time{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL}, HistoricalOptions: tc.options}, now, pki.Evidence{CRLs: [][]byte{raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, tc.proofAt))
+			if tc.pass {
+				if err != nil || result == nil || !result.ValidationTime().Equal(tc.want) || len(report.Transitions()) != 1 {
+					t.Fatal(result != nil, report.Transitions(), err)
+				}
+			} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
+				t.Fatal(result != nil, err)
+			}
+		})
+	}
+}
+
+func p7Response(t *testing.T, c chainData, template pki.OCSPResponseTemplate) []byte {
+	t.Helper()
+	request, err := pki.CreateOCSPRequest(c.leaf.Raw, c.root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pki.CreateOCSPResponse(t.Context(), request, c.leaf.Raw, c.root.Raw, c.root.Raw, c.rootKey, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestHistoricalOCSPAndConflictingSources(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	two := 2 * time.Minute
+	old := p7Response(t, c, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: now, ThisUpdate: now.Add(-10 * time.Minute), NextUpdate: now.Add(time.Minute)})
+	latest := p7Response(t, c, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: now, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Minute)})
+	revoked := p7Response(t, c, pki.OCSPResponseTemplate{Status: pki.OCSPRevoked, ProducedAt: now, ThisUpdate: now.Add(-30 * time.Second), NextUpdate: now.Add(time.Minute), RevokedAt: now.Add(-5 * time.Minute), RevocationReason: 1})
+	unknown := p7Response(t, c, pki.OCSPResponseTemplate{Status: pki.OCSPUnknown, ProducedAt: now, ThisUpdate: now.Add(-30 * time.Second), NextUpdate: now.Add(time.Minute)})
+	goodCRL := makeCRL(t, c, false, nil)
+	for _, tc := range []struct {
+		name            string
+		mode            pki.RevocationMode
+		responses, crls [][]byte
+		want            time.Time
+		pass            bool
+	}{
+		{"thisUpdate controls freshness", pki.RequireOCSP, [][]byte{old}, nil, now.Add(-10 * time.Minute), true},
+		{"latest status replaces stale good", pki.RequireOCSP, [][]byte{old, latest}, nil, now, true},
+		{"latest revocation beats earlier good", pki.RequireOCSP, [][]byte{latest, revoked}, nil, now.Add(-5 * time.Minute), true},
+		{"latest unknown is not old good", pki.RequireOCSP, [][]byte{latest, unknown}, nil, time.Time{}, false},
+		{"OCSP revocation not hidden by CRL", pki.RequireCRL, [][]byte{revoked}, [][]byte{goodCRL}, now.Add(-5 * time.Minute), true},
+		{"configured CRL family still required", pki.RequireCRL, [][]byte{latest}, nil, time.Time{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := pki.Evidence{CRLs: tc.crls, OCSPResponses: tc.responses}
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: tc.mode}, RevocationFreshness: &two}, now, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			objects := make([][]byte, 1, 1+len(tc.responses)+len(tc.crls))
+			objects[0] = c.leaf.Raw
+			roles := make([]string, 1, 1+len(tc.responses)+len(tc.crls))
+			roles[0] = "certificate"
+			for _, raw := range tc.responses {
+				objects = append(objects, raw)
+				roles = append(roles, "ocsp")
+			}
+			for _, raw := range tc.crls {
+				objects = append(objects, raw)
+				roles = append(roles, "crl")
+			}
+			result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, objects, roles, now))
+			if tc.pass {
+				if err != nil || result == nil || !result.ValidationTime().Equal(tc.want) {
+					t.Fatal(result != nil, err)
+				}
+			} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
+				t.Fatal(result != nil, err)
+			}
+		})
+	}
+}
+
+func p7SingleExtension(t *testing.T, raw []byte, c chainData, extension pkix.Extension) []byte {
+	t.Helper()
+	encoded, err := asn1.Marshal(extension)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rewriteOCSPData(t, raw, c.rootKey, func(fields []asn1.RawValue) [][]byte {
+		responses, err := der.Sequence(fields[2], 1, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		single, err := der.Sequence(responses[0], 3, 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		responses[0].FullBytes = der.Seq(append(ocspFieldBytes(single), der.Ctx(1, der.Seq(encoded)))...)
+		fields[2].FullBytes = der.Seq(ocspFieldBytes(responses)...)
+		return ocspFieldBytes(fields)
+	})
+}
+
+func TestHistoricalExpiredRetention(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime().Add(3 * time.Hour)
+	issued := now.Add(-time.Minute)
+	base := p6CRL(t, c, 1, issued, now.Add(time.Hour), -1, nil, nil)
+	response := p7Response(t, c, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: now, ThisUpdate: issued, NextUpdate: now.Add(time.Hour)})
+	for _, kind := range []string{"crl", "ocsp"} {
+		for _, tc := range []struct {
+			name                    string
+			from                    time.Time
+			present, critical, pass bool
+		}{
+			{"no retention", time.Time{}, false, false, false},
+			{"inclusive expiry cutoff", c.leaf.NotAfter, true, false, true},
+			{"earlier cutoff", c.leaf.NotAfter.Add(-time.Second), true, false, true},
+			{"cutoff excludes target", c.leaf.NotAfter.Add(time.Second), true, false, false},
+			{"critical extension rejected", c.leaf.NotAfter, true, true, false},
+		} {
+			t.Run(kind+"/"+tc.name, func(t *testing.T) {
+				input := pki.Evidence{}
+				mode := pki.RequireCRL
+				raw := base
+				extension := pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 60}, Critical: tc.critical, Value: der.Wrap(0, asn1.TagGeneralizedTime, false, []byte(tc.from.UTC().Format("20060102150405Z")))}
+				if kind == "ocsp" {
+					mode = pki.RequireOCSP
+					raw = response
+					extension.Id = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 6}
+				}
+				if tc.present {
+					if kind == "crl" {
+						raw = p6ReplaceCRLExtension(t, raw, c, extension)
+					} else {
+						raw = p7SingleExtension(t, raw, c, extension)
+					}
+				}
+				if kind == "crl" {
+					input.CRLs = [][]byte{raw}
+				} else {
+					input.OCSPResponses = [][]byte{raw}
+				}
+				session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: mode}}, now, input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", kind}, now))
+				if tc.pass {
+					if err != nil || result == nil || !result.ValidationTime().Equal(now) {
+						t.Fatal(result != nil, err)
+					}
+				} else if result != nil || err == nil {
+					t.Fatal("unsupported retention accepted", result != nil, err)
+				}
+			})
+		}
+	}
+}
+
+func TestHistoricalModelAndPathAlternatives(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	caKey := testcert.Key(t)
+	template := &x509.Certificate{SerialNumber: big.NewInt(17), Subject: pkix.Name{CommonName: "historical intermediate"}, NotBefore: now.Add(-10 * time.Hour), NotAfter: now.Add(-2 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{8, 8, 8}}
+	ca := testcert.Issue(t, template, c.root, caKey.Public(), c.rootKey)
+	leafTemplate := &x509.Certificate{SerialNumber: big.NewInt(18), Subject: c.leaf.Subject, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}
+	for _, tc := range []struct {
+		name       string
+		model      pki.ValidityModel
+		generation time.Time
+		pass       bool
+	}{
+		{"shell disjoint intervals", pki.ShellModel, time.Time{}, false},
+		{"chain fallback notBefore outside issuer", pki.ChainModel, time.Time{}, false},
+		{"chain explicit generation", pki.ChainModel, now.Add(-3 * time.Hour), true},
+		{"generation exactly issuer expiry", pki.ChainModel, ca.NotAfter, true},
+		{"generation after issuer expiry", pki.ChainModel, ca.NotAfter.Add(time.Second), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			local := *leafTemplate
+			if !tc.generation.IsZero() {
+				local.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 36, 8, 3, 1}, Value: der.Wrap(0, asn1.TagGeneralizedTime, false, []byte(tc.generation.UTC().Format("20060102150405Z")))}}
+			}
+			leaf := testcert.Issue(t, &local, ca, c.leafKey.Public(), caKey)
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}}, Model: tc.model}, now, pki.Evidence{Intermediates: [][]byte{ca.Raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), leaf.Raw)
+			if err != nil || len(paths) != 1 {
+				t.Fatal(len(paths), err)
+			}
+			assessment, err := session.CheckPath(t.Context(), paths[0])
+			if tc.pass {
+				if err != nil || assessment == nil || !assessment.ReferenceTime().Equal(leaf.NotBefore) {
+					t.Fatal(err)
+				}
+			} else if assessment != nil || !errors.Is(err, pki.ErrCertificate) {
+				t.Fatal(assessment != nil, err)
+			}
+		})
+	}
+	// Two exact issuer certificates with the same issuer subject/AKI are two prospective
+	// paths. The invalid path must not mask the independently valid alternative.
+	badTemplate := *c.root
+	badTemplate.SerialNumber = big.NewInt(91)
+	badKey := testcert.Key(t)
+	badTemplate.PublicKey = badKey.Public()
+	bad := testcert.Issue(t, &badTemplate, &badTemplate, badKey.Public(), badKey)
+	validTemplate := *c.root
+	validTemplate.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 2, 3, 4, 6}, Value: make([]byte, 64)}}
+	validRoot := testcert.Issue(t, &validTemplate, &validTemplate, c.rootKey.Public(), c.rootKey)
+	originalCRL := makeCRL(t, c, false, nil)
+
+	for _, pathLimit := range []int{1, 2} {
+		t.Run("path limit "+big.NewInt(int64(pathLimit)).String(), func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{bad.Raw, validRoot.Raw}, Revocation: pki.RequireCRL}, MaxPaths: pathLimit}, now, pki.Evidence{CRLs: [][]byte{originalCRL}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), c.leaf.Raw)
+			if pathLimit == 1 {
+				if paths != nil || !errors.Is(err, pki.ErrLimit) {
+					t.Fatal(len(paths), err)
+				}
+				return
+			}
+			if err != nil || len(paths) != 2 {
+				t.Fatal(len(paths), err)
+			}
+			valid := 0
+			for _, path := range paths {
+				if _, err := session.CheckPath(t.Context(), path); err == nil {
+					valid++
+				}
+			}
+			if valid != 1 {
+				t.Fatal("bad issuer constraints ignored", valid)
+			}
+			if !bytes.Equal(paths[0].ChainDER()[1], bad.Raw) {
+				t.Fatal("fixture must enumerate rejected path first")
+			}
+			result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, originalCRL}, []string{"certificate", "crl"}, now))
+			if err != nil || result == nil || !bytes.Equal(result.Path().ChainDER()[1], validRoot.Raw) {
+				t.Fatal("failed first path masked valid alternate", result != nil, err)
+			}
+		})
+	}
+}
+
+func TestHistoricalDelegatedSourcePaths(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime().Add(3 * time.Hour)
+	request, err := pki.CreateOCSPRequest(c.leaf.Raw, c.root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name                                 string
+		noCheck, crl, certificateProof, pass bool
+	}{
+		{"delegated nocheck", true, false, true, true},
+		{"delegated CRL dependency", false, true, true, true},
+		{"missing responder status", false, false, true, false},
+		{"nocheck does not waive responder PoE", true, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key := testcert.Key(t)
+			template := &x509.Certificate{SerialNumber: big.NewInt(44), Subject: pkix.Name{CommonName: "historical responder"}, NotBefore: c.leaf.NotBefore, NotAfter: c.leaf.NotAfter, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}}
+			if tc.noCheck {
+				template.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 5}, Value: []byte{5, 0}}}
+			}
+			responder := testcert.Issue(t, template, c.root, key.Public(), c.rootKey)
+			response, err := pki.CreateOCSPResponse(t.Context(), request, c.leaf.Raw, c.root.Raw, responder.Raw, key, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: verificationTime(), ThisUpdate: verificationTime().Add(-time.Minute), NextUpdate: verificationTime().Add(time.Minute)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := pki.Evidence{OCSPResponses: [][]byte{response}}
+			objects, roles := [][]byte{c.leaf.Raw, response}, []string{"certificate", "ocsp"}
+			if tc.certificateProof {
+				objects = append(objects, responder.Raw)
+				roles = append(roles, "certificate")
+			}
+			if tc.crl {
+				raw := makeCRL(t, c, false, nil)
+				input.CRLs = [][]byte{raw}
+				objects = append(objects, raw)
+				roles = append(roles, "crl")
+			}
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireOCSP}}, now, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), c.leaf.Raw)
+			if err != nil || len(paths) != 1 {
+				t.Fatal(len(paths), err)
+			}
+			facts, err := session.AuthenticateEvidence(t.Context(), paths[0])
+			if err != nil || len(facts) < 1 {
+				t.Fatal(len(facts), err)
+			}
+			var selected *pki.VerifiedEvidence
+			for _, fact := range facts {
+				if fact.Kind() == pki.EvidenceOCSP {
+					selected = fact
+				}
+			}
+			if selected == nil || selected.SignerAuthority() != "delegated" || len(selected.SignerChainDER()) != 2 || !bytes.Equal(selected.SignerChainDER()[0], responder.Raw) {
+				t.Fatal("wrong historical signer path")
+			}
+			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, objects, roles, verificationTime()))
+			if tc.pass {
+				if err != nil || result == nil || !result.ValidationTime().Equal(verificationTime().Add(-time.Minute)) {
+					t.Fatal(result != nil, report.Transitions(), err)
+				}
+			} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
+				t.Fatal(result != nil, err)
+			}
+		})
+	}
+}
+
+func TestHistoricalDeltaAndReasonCoverage(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	held := []x509.RevocationListEntry{{SerialNumber: c.leaf.SerialNumber, RevocationTime: now.Add(-20 * time.Minute), ReasonCode: 6}}
+	base := p6CRL(t, c, 1, now.Add(-10*time.Minute), now.Add(-time.Minute), -1, nil, held)
+	release := p6CRL(t, c, 2, now.Add(-time.Minute), now.Add(time.Hour), 1, nil, []x509.RevocationListEntry{{SerialNumber: c.leaf.SerialNumber, RevocationTime: now.Add(-30 * time.Second), ReasonCode: 8}})
+	left := p6CRL(t, c, 1, now.Add(-time.Minute), now.Add(time.Hour), -1, der.Seq(der.Wrap(2, 3, false, []byte{3, 0x78})), nil)
+	// Reason masks cover bits1..8. The pair partitions the whole RFC5280 set.
+	right := p6CRL(t, c, 1, now.Add(-time.Minute), now.Add(time.Hour), -1, der.Seq(der.Wrap(2, 3, false, []byte{7, 0x07, 0x80})), nil)
+	for _, tc := range []struct {
+		name                string
+		raws                [][]byte
+		omitBaseProof, pass bool
+		want                time.Time
+	}{
+		{"held base", [][]byte{base}, false, true, now.Add(-20 * time.Minute)},
+		{"fresh delta supersedes expired base", [][]byte{base, release}, false, true, now},
+		{"delta without base", [][]byte{release}, false, false, time.Time{}},
+		{"delta missing base PoE", [][]byte{base, release}, true, false, time.Time{}},
+		{"partial reason scope", [][]byte{left}, false, false, time.Time{}},
+		{"complete reason union", [][]byte{left, right}, false, true, now},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL}}, now, pki.Evidence{CRLs: tc.raws})
+			if err != nil {
+				t.Fatal(err)
+			}
+			objects, roles := [][]byte{c.leaf.Raw}, []string{"certificate"}
+			for _, raw := range tc.raws {
+				if tc.omitBaseProof && bytes.Equal(raw, base) {
+					continue
+				}
+				objects = append(objects, raw)
+				roles = append(roles, "crl")
+			}
+			result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, objects, roles, now))
+			if tc.pass {
+				if err != nil || result == nil || !result.ValidationTime().Equal(tc.want) {
+					t.Fatal(result != nil, err)
+				}
+				if len(tc.raws) == 2 && bytes.Equal(tc.raws[1], release) {
+					found := false
+					for _, fact := range result.Evidence() {
+						if bytes.Equal(fact.DER(), release) {
+							found = len(fact.Dependencies()) == 1 && fact.CoveredReasons() == 255
+						}
+					}
+					if !found {
+						t.Fatal("lost effective delta dependencies")
+					}
+				}
+			} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
+				t.Fatal(result != nil, err)
+			}
+		})
+	}
+}
+
+func TestHistoricalSessionBoundsAndSnapshots(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	raw := makeCRL(t, c, false, nil)
+	base := pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL}
+	rootDigest := sha256.Sum256(c.root.Raw)
+	root := hex.EncodeToString(rootDigest[:])
+	freshness := 2 * time.Minute
+	options := pki.HistoricalOptions{RevocationFreshness: &freshness, TrustAnchorSunsets: map[string]time.Time{root: now.Add(time.Hour)}, CryptoConstraints: []pki.CryptoConstraint{{Hash: crypto.SHA256, ReliableUntil: now.Add(time.Hour)}}}
+	ownedRaw := bytes.Clone(raw)
+	session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: base, HistoricalOptions: options}, now, pki.Evidence{CRLs: [][]byte{ownedRaw}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clear(ownedRaw)
+	freshness = 0
+	options.TrustAnchorSunsets[root] = now.Add(-time.Hour)
+	options.CryptoConstraints[0].ReliableUntil = now.Add(-time.Hour)
+	current, _, err := session.VerifyCurrent(t.Context(), c.leaf.Raw)
+	if err != nil || current == nil {
+		t.Fatal(err)
+	}
+	if sub, err := session.CheckCurrentPolicy(t.Context(), current); err != nil || sub != "" {
+		t.Fatal("mutable historical options", sub, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := session.Paths(ctx, c.leaf.Raw); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	paths, err := session.Paths(t.Context(), c.leaf.Raw)
+	if err != nil || len(paths) != 1 {
+		t.Fatal(len(paths), err)
+	}
+	if _, err := session.CheckPath(ctx, paths[0]); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if _, err := session.AuthenticateEvidence(ctx, paths[0]); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if _, _, err := session.ValidatePast(ctx, c.leaf.Raw, nil); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if _, _, err := session.VerifyCurrent(ctx, c.leaf.Raw); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if _, err := session.CheckCurrentPolicy(ctx, current); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	var zero pki.HistoricalSession
+	if _, err := zero.Paths(t.Context(), c.leaf.Raw); !errors.Is(err, pki.ErrPolicy) {
+		t.Fatal("zero session accepted", err)
+	}
+	if _, err := session.CheckPath(t.Context(), &pki.HistoricalPath{}); !errors.Is(err, pki.ErrPolicy) {
+		t.Fatal("zero path accepted", err)
+	}
+	other := makeChain(t)
+	otherTemplate := *other.root
+	otherTemplate.Subject = pkix.Name{CommonName: "another historical authority"}
+	otherTemplate.RawSubject = nil
+	otherTemplate.RawIssuer = nil
+	otherRoot := testcert.Issue(t, &otherTemplate, &otherTemplate, other.rootKey.Public(), other.rootKey)
+	foreignLeaf := testcert.Issue(t, c.leaf, otherRoot, other.leafKey.Public(), other.rootKey)
+	empty, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: base}, now, pki.Evidence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, report, err := empty.ValidatePast(t.Context(), foreignLeaf.Raw, p7Proofs(t, now, nil, nil, now)); result != nil || !errors.Is(err, pki.ErrUnavailable) || report.SubIndication() != "NO_CERTIFICATE_CHAIN_FOUND" {
+		t.Fatal(result != nil, report.SubIndication(), err)
+	}
+	for _, tc := range []struct {
+		name    string
+		options pki.HistoricalOptions
+	}{
+		{"unknown model", pki.HistoricalOptions{Model: "ignored"}},
+		{"negative path count", pki.HistoricalOptions{MaxPaths: -1}},
+		{"excessive path count", pki.HistoricalOptions{MaxPaths: 257}},
+		{"unknown sunset anchor", pki.HistoricalOptions{TrustAnchorSunsets: map[string]time.Time{"unknown": now}}},
+		{"multiple crypto selectors", pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{Hash: crypto.SHA256, SignatureAlgorithm: x509.ECDSAWithSHA256, ReliableUntil: now}}}},
+		{"unknown crypto selector", pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{SignatureAlgorithm: x509.SignatureAlgorithm(999), ReliableUntil: now}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if result, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: base, HistoricalOptions: tc.options}, now, pki.Evidence{}); result != nil || !errors.Is(err, pki.ErrPolicy) {
+				t.Fatal(result != nil, err)
+			}
+		})
+	}
+	raw = makeCRL(t, c, false, &x509.RevocationList{Number: big.NewInt(4), ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour), ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 2, 3, 4, 5}, Value: make([]byte, 1024)}}})
+	tooSmall := base
+	tooSmall.MaxEvidenceBytes = len(raw) - 1
+	if result, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: tooSmall}, now, pki.Evidence{CRLs: [][]byte{raw}}); result != nil || !errors.Is(err, pki.ErrLimit) {
+		t.Fatal(result != nil, err)
+	}
+	fitting := base
+	fitting.MaxEvidenceBytes = len(raw)
+	if result, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: fitting}, now, pki.Evidence{CRLs: [][]byte{raw}}); result == nil || err != nil {
+		t.Fatal(result != nil, err)
+	}
+}
+
+func TestHistoricalIssuerToTargetOrder(t *testing.T) {
+	c := makeChain(t)
+	at := verificationTime()
+	now := at.Add(3 * time.Hour)
+	caKey := testcert.Key(t)
+	template := &x509.Certificate{SerialNumber: big.NewInt(100), Subject: pkix.Name{CommonName: "historical time-order intermediate"}, NotBefore: at.Add(-8 * time.Hour), NotAfter: at.Add(8 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{4, 5, 6}}
+	ca := testcert.Issue(t, template, c.root, caKey.Public(), c.rootKey)
+	leaf := testcert.Issue(t, c.leaf, ca, c.leafKey.Public(), caKey)
+	caList := p6CRL(t, c, 1, at.Add(time.Hour), at.Add(2*time.Hour), -1, nil, nil)
+	leafList := p6CRL(t, chainData{root: ca, rootKey: caKey}, 1, at.Add(-10*time.Minute), at.Add(-5*time.Minute), -1, nil, nil)
+	source := sha256.Sum256([]byte("issuer to target chronological vector"))
+	facts := []historicalproof.Fact{{Digest: sha256.Sum256(ca.Raw), Source: source, At: at.Add(-30 * time.Minute), Kind: "certificate"}, {Digest: sha256.Sum256(leaf.Raw), Source: source, At: at.Add(-30 * time.Minute), Kind: "certificate"}, {Digest: sha256.Sum256(caList), Source: source, At: at.Add(time.Hour), Kind: "crl"}, {Digest: sha256.Sum256(leafList), Source: source, At: at.Add(-10 * time.Minute), Kind: "crl"}}
+	proofs, err := historicalproof.New(t.Context(), now, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reverse := range []bool{false, true} {
+		t.Run(strconv.FormatBool(reverse), func(t *testing.T) {
+			lists := [][]byte{caList, leafList}
+			if reverse {
+				lists[0], lists[1] = lists[1], lists[0]
+			}
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL}}, now, pki.Evidence{Intermediates: [][]byte{ca.Raw}, CRLs: lists})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, report, err := session.ValidatePast(t.Context(), leaf.Raw, proofs)
+			if err != nil || result == nil || !result.ValidationTime().Equal(at.Add(-10*time.Minute)) {
+				t.Fatal(result != nil, err)
+			}
+			transitions := report.Transitions()
+			caDigest := sha256.Sum256(ca.Raw)
+			leafDigest := sha256.Sum256(leaf.Raw)
+			if len(transitions) != 2 || transitions[0].CertificateSHA256 != hex.EncodeToString(caDigest[:]) || !transitions[0].After.Equal(at.Add(time.Hour)) || transitions[1].CertificateSHA256 != hex.EncodeToString(leafDigest[:]) || !transitions[1].Before.Equal(at.Add(time.Hour)) {
+				t.Fatal("wrong processing order", transitions)
+			}
+		})
+	}
+}
+
+func TestHistoricalGenerationEncodings(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	caKey := testcert.Key(t)
+	caTemplate := &x509.Certificate{SerialNumber: big.NewInt(55), Subject: pkix.Name{CommonName: "generation encoding intermediate"}, NotBefore: now.Add(-8 * time.Hour), NotAfter: now.Add(8 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign, SubjectKeyId: []byte{6, 7, 8}}
+	ca := testcert.Issue(t, caTemplate, c.root, caKey.Public(), c.rootKey)
+	for _, tc := range []struct {
+		name     string
+		value    []byte
+		critical bool
+	}{
+		{"wrong ASN1 type", der.Octets([]byte("20261008110000Z")), false},
+		{"offset encoding", der.Wrap(0, asn1.TagGeneralizedTime, false, []byte("20261008110000+0000")), false},
+		{"fractional encoding", der.Wrap(0, asn1.TagGeneralizedTime, false, []byte("20261008110000.5Z")), false},
+		{"unsupported critical semantics", der.Wrap(0, asn1.TagGeneralizedTime, false, []byte("20261008110000Z")), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			local := *c.leaf
+			local.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 36, 8, 3, 1}, Value: tc.value, Critical: tc.critical}}
+			leaf := testcert.Issue(t, &local, ca, c.leafKey.Public(), caKey)
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}}, HistoricalOptions: pki.HistoricalOptions{Model: pki.ChainModel}}, now, pki.Evidence{Intermediates: [][]byte{ca.Raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), leaf.Raw)
+			if err != nil || len(paths) != 1 {
+				t.Fatal(len(paths), err)
+			}
+			if result, err := session.CheckPath(t.Context(), paths[0]); result != nil || !errors.Is(err, pki.ErrCertificate) {
+				t.Fatal("invalid generation metadata accepted", result != nil, err)
+			}
+		})
+	}
+}
+
+func TestHistoricalAuthenticationBindings(t *testing.T) {
+	c := makeChain(t)
+	other := makeChain(t)
+	now := verificationTime()
+	foreignList := makeCRL(t, other, false, nil)
+	ownList := makeCRL(t, c, false, nil)
+	for _, tc := range []struct {
+		name   string
+		source []byte
+		pass   bool
+	}{
+		{"matching source anchor", ownList, true},
+		{"other explicitly trusted source anchor", foreignList, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw, other.root.Raw}, Revocation: pki.RequireCRL}}, now, pki.Evidence{CRLs: [][]byte{tc.source}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), c.leaf.Raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var path *pki.HistoricalPath
+			for _, candidate := range paths {
+				chain := candidate.ChainDER()
+				if bytes.Equal(chain[len(chain)-1], c.root.Raw) {
+					path = candidate
+				}
+			}
+			if path == nil {
+				t.Fatal("missing selected target path")
+			}
+			claims, err := session.AuthenticateEvidence(t.Context(), path)
+			if err != nil || (len(claims) == 1) != tc.pass {
+				t.Fatal("wrong source anchor binding", len(claims), err)
+			}
+		})
+	}
+	template := *c.leaf
+	template.SerialNumber = big.NewInt(777)
+	unrelated := testcert.Issue(t, &template, c.root, c.leafKey.Public(), c.rootKey)
+	foreign := p7Response(t, chainData{root: c.root, rootKey: c.rootKey, leaf: unrelated}, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: now, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Minute)})
+	correct := p7Response(t, c, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: now, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Minute)})
+	duplicate := rewriteOCSPData(t, correct, c.rootKey, func(fields []asn1.RawValue) [][]byte {
+		entries, err := der.Sequence(fields[2], 1, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fields[2].FullBytes = der.Seq(entries[0].FullBytes, entries[0].FullBytes)
+		return ocspFieldBytes(fields)
+	})
+	for _, tc := range []struct {
+		name      string
+		responses [][]byte
+		pass      bool
+		want      error
+	}{
+		{"foreign status is not target status", [][]byte{foreign}, false, nil},
+		{"foreign response does not mask matching source", [][]byte{foreign, correct}, true, nil},
+		{"ambiguous matching response rejected", [][]byte{duplicate}, false, pki.ErrEvidence},
+		{"good response does not hide duplicate match", [][]byte{correct, duplicate}, false, pki.ErrEvidence},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireOCSP}}, now, pki.Evidence{OCSPResponses: tc.responses})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), c.leaf.Raw)
+			if err != nil || len(paths) != 1 {
+				t.Fatal(len(paths), err)
+			}
+			claims, err := session.AuthenticateEvidence(t.Context(), paths[0])
+			if tc.want != nil {
+				if len(claims) != 0 || !errors.Is(err, tc.want) {
+					t.Fatal(len(claims), err)
+				}
+				return
+			}
+			if err != nil || (len(claims) == 1) != tc.pass {
+				t.Fatal(len(claims), err)
+			}
+		})
+	}
+}
+
+func TestHistoricalSourceIssuanceBounds(t *testing.T) {
+	c := makeChain(t)
+	at := verificationTime()
+	now := at.Add(28 * time.Hour)
+	for _, tc := range []struct {
+		name   string
+		issued time.Time
+		pass   bool
+	}{
+		{"CRL signer lifetime inclusive", c.root.NotAfter, true},
+		{"CRL issued after signer expiry", c.root.NotAfter.Add(time.Second), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := p6CRL(t, c, 1, tc.issued, tc.issued.Add(time.Hour), -1, nil, nil)
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL}}, now, pki.Evidence{CRLs: [][]byte{raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), c.leaf.Raw)
+			if err != nil || len(paths) != 1 {
+				t.Fatal(len(paths), err)
+			}
+			facts, err := session.AuthenticateEvidence(t.Context(), paths[0])
+			if err != nil || (len(facts) == 1) != tc.pass {
+				t.Fatal(len(facts), err)
+			}
+		})
+	}
+	request, err := pki.CreateOCSPRequest(c.leaf.Raw, c.root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, valid := range []bool{false, true} {
+		t.Run("OCSP signer issuance lifetime "+strconv.FormatBool(valid), func(t *testing.T) {
+			key := testcert.Key(t)
+			end := at.Add(-time.Minute)
+			if valid {
+				end = at.Add(time.Minute)
+			}
+			template := &x509.Certificate{SerialNumber: big.NewInt(222), Subject: pkix.Name{CommonName: "issued status signer"}, NotBefore: at.Add(-time.Hour), NotAfter: end, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 5}, Value: []byte{5, 0}}}}
+			responder := testcert.Issue(t, template, c.root, key.Public(), c.rootKey)
+			raw, err := pki.CreateOCSPResponse(t.Context(), request, c.leaf.Raw, c.root.Raw, responder.Raw, key, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: at, ThisUpdate: at.Add(-time.Minute), NextUpdate: at.Add(time.Minute)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireOCSP}}, now, pki.Evidence{OCSPResponses: [][]byte{raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), c.leaf.Raw)
+			if err != nil || len(paths) != 1 {
+				t.Fatal(len(paths), err)
+			}
+			facts, err := session.AuthenticateEvidence(t.Context(), paths[0])
+			if err != nil || (len(facts) == 1) != valid {
+				t.Fatal(len(facts), err)
+			}
+		})
+	}
+}
+
+func TestHistoricalEmbeddedCertificates(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	responderTemplate := *c.leaf
+	responderTemplate.SerialNumber = big.NewInt(78)
+	responderTemplate.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}
+	responder := testcert.Issue(t, &responderTemplate, c.root, c.leafKey.Public(), c.rootKey)
+	request, err := pki.CreateOCSPRequest(c.leaf.Raw, c.root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pki.CreateOCSPResponse(t.Context(), request, c.leaf.Raw, c.root.Raw, responder.Raw, c.leafKey, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: now, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificates, err := pki.InspectOCSPCertificates(t.Context(), raw)
+	if err != nil || len(certificates) != 1 || !bytes.Equal(certificates[0], responder.Raw) {
+		t.Fatal(len(certificates), err)
+	}
+	clear(certificates[0])
+	next, err := pki.InspectOCSPCertificates(t.Context(), raw)
+	if err != nil || !bytes.Equal(next[0], responder.Raw) {
+		t.Fatal("inspection retained caller storage", err)
+	}
+	// The parser reports actual byte containment only. It must not pretend that
+	// syntactic inspection verified an envelope signature or conferred trust.
+	broken := rewriteOCSPData(t, raw, c.leafKey, ocspFieldBytes)
+	value, err := der.Read(broken, len(broken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := der.Sequence(value, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := der.Explicit(outer[1], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseFields, err := der.Sequence(response, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	basic, err := der.Read(responseFields[1].Bytes, len(broken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := der.Sequence(basic, 3, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signatureBits := bytes.Clone(fields[2].FullBytes)
+	signatureBits[len(signatureBits)-1] ^= 1
+	fields[2].FullBytes = signatureBits
+	broken = der.Seq(outer[0].FullBytes, der.Ctx(0, der.Seq(responseFields[0].FullBytes, der.Octets(der.Seq(ocspFieldBytes(fields)...)))))
+	if certificates, err := pki.InspectOCSPCertificates(t.Context(), broken); err != nil || len(certificates) != 1 || !bytes.Equal(certificates[0], responder.Raw) {
+		t.Fatal("inspection confused containment and authentication", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if result, err := pki.InspectOCSPCertificates(ctx, raw); result != nil || !errors.Is(err, context.Canceled) {
+		t.Fatal(result != nil, err)
+	}
+	if result, err := pki.InspectOCSPCertificates(nil, raw); result != nil || !errors.Is(err, pki.ErrPolicy) {
+		t.Fatal(result != nil, err)
+	}
+	if result, err := pki.InspectOCSPCertificates(t.Context(), raw[:len(raw)-1]); result != nil || !errors.Is(err, pki.ErrEvidence) {
+		t.Fatal(result != nil, err)
+	}
+}
+
+func TestHistoricalConstraintIndications(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	raw := makeCRL(t, c, false, nil)
+	for _, tc := range []struct {
+		name  string
+		usage x509.ExtKeyUsage
+		pass  bool
+	}{
+		{"configured signer usage", x509.ExtKeyUsageCodeSigning, true},
+		{"wrong configured usage", x509.ExtKeyUsageServerAuth, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, KeyUsages: []x509.ExtKeyUsage{tc.usage}, Revocation: pki.RequireCRL}}, now, pki.Evidence{CRLs: [][]byte{raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, now))
+			if tc.pass {
+				if err != nil || result == nil || report.SubIndication() != "" {
+					t.Fatal(result != nil, report.SubIndication(), err)
+				}
+			} else if result != nil || !errors.Is(err, pki.ErrCertificate) || report.SubIndication() != "CHAIN_CONSTRAINTS_FAILURE" {
+				t.Fatal(result != nil, report.SubIndication(), err)
+			}
+		})
+	}
+}
+
+func TestHistoricalMixedCryptoCutoffs(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	raw := makeCRL(t, c, false, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour), SignatureAlgorithm: x509.ECDSAWithSHA384})
+	sourceCutoff := now.Add(-20 * time.Second)
+	certificateCutoff := now.Add(-10 * time.Second)
+	for _, tc := range []struct {
+		name    string
+		proofAt time.Time
+		pass    bool
+	}{
+		{"both signed materials protected", now.Add(-45 * time.Second), true},
+		{"source proof exactly at earliest cutoff", sourceCutoff, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL}, HistoricalOptions: pki.HistoricalOptions{CryptoConstraints: []pki.CryptoConstraint{{Hash: crypto.SHA256, ReliableUntil: certificateCutoff}, {Hash: crypto.SHA384, ReliableUntil: sourceCutoff}}}}, now, pki.Evidence{CRLs: [][]byte{raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, tc.proofAt))
+			if tc.pass {
+				if err != nil || result == nil || !result.ValidationTime().Equal(sourceCutoff) {
+					t.Fatal(result != nil, err)
+				}
+			} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
+				t.Fatal(result != nil, err)
+			}
+		})
+	}
+}
+
+func TestHistoricalFreshnessDependenciesAreTargetBound(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	proofTime := now.Add(-time.Hour)
+	caKey := testcert.Key(t)
+	caTemplate := &x509.Certificate{SerialNumber: big.NewInt(300), Subject: pkix.Name{CommonName: "mixed composite intermediate"}, NotBefore: now.Add(-8 * time.Hour), NotAfter: now.Add(8 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{3, 0, 0}}
+	ca := testcert.Issue(t, caTemplate, c.root, caKey.Public(), c.rootKey)
+	local := *c.leaf
+	local.NotBefore = now.Add(-6 * time.Hour)
+	local.NotAfter = now.Add(6 * time.Hour)
+	point := der.Seq(der.Wrap(2, 2, true, der.Ctx(4, c.root.RawSubject)))
+	local.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 31}, Value: der.Seq(point)}}
+	leaf := testcert.Issue(t, &local, ca, c.leafKey.Public(), caKey)
+	scope := der.Seq(der.Wrap(2, 4, false, []byte{255}))
+	base := p6CRL(t, c, 1, now.Add(-2*time.Hour), now.Add(10*time.Minute), -1, scope, nil)
+	delta := p6CRL(t, c, 2, proofTime, now.Add(-30*time.Minute), 1, scope, nil)
+	signerEvidence := pki.Evidence{Intermediates: [][]byte{ca.Raw}, CRLs: [][]byte{base, delta}}
+	verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This is a core-phase fixture after format cryptographic validation. Its
+	// timestamp actually hashes the exact bundle whose children receive PoE.
+	signatureValue := []byte("already verified core-phase signature value")
+	protected := [][]byte{signatureValue, leaf.Raw, ca.Raw, c.root.Raw, base}
+	roles := []string{"signature", "certificate", "certificate", "certificate", "crl"}
+	objects := make([]historical.Object, 0, len(protected)+1)
+	children := make([][32]byte, 0, len(protected))
+	for index, raw := range protected {
+		objects = append(objects, historical.Object{Bytes: raw, Kind: roles[index]})
+		children = append(children, sha256.Sum256(raw))
+	}
+	bundle := bytes.Join(protected, nil)
+	objects = append(objects, historical.Object{Bytes: bundle, Kind: "data", Contains: children})
+	tsaChain := testcert.New(t)
+	policy := asn1.ObjectIdentifier{1, 2, 3, 5, 8}
+	tsa, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{tsaChain.Root.Raw}, Revocation: pki.RequireCRL}, Certificates: [][]byte{tsaChain.TSA.Raw}, AllowedPolicies: []asn1.ObjectIdentifier{policy}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := timestamp.CreateRequest(t.Context(), bundle, timestamp.RequestOptions{Hash: crypto.SHA256, Policy: policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := timestamp.IssueResponse(t.Context(), request.DER(), tsaChain.TSAKey, tsaChain.TSA.Raw, timestamp.IssueOptions{Policy: policy, SerialNumber: big.NewInt(77), GenTime: proofTime})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := timestamp.ParseResponse(t.Context(), response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := timestamp.ParseToken(t.Context(), envelope.TokenDER())
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := time.Duration(0)
+	input := historical.Input{Signature: sha256.Sum256(signatureValue), Certificate: leaf.Raw, SignatureMethod: x509.ECDSAWithSHA256, Hashes: []crypto.Hash{crypto.SHA256}, Objects: objects, Timestamps: []historical.Candidate{{Token: token, Imprint: request.Imprint(), Covered: [][32]byte{sha256.Sum256(bundle)}, Archive: true}}}
+	config := historical.Config{Signer: verifier, TSA: tsa, MissingAccuracy: &zero, RequireAllTimestamps: true}
+	for _, archive := range []bool{false, true} {
+		t.Run(strconv.FormatBool(archive), func(t *testing.T) {
+			selected := input
+			if !archive {
+				selected.Timestamps = nil
+			}
+			report, err := historical.Validate(t.Context(), config, selected, now, signerEvidence, pki.Evidence{CRLs: [][]byte{testcert.CRL(t, tsaChain)}})
+			if !archive {
+				if err == nil || report.Indication == historical.Passed || report.SubIndication != "TRY_LATER" {
+					t.Fatal("missing historical proof accepted", report.SubIndication, err)
+				}
+				return
+			}
+			if err != nil || report.Indication != historical.Passed || !report.Validation.Equal(proofTime) {
+				t.Fatal("another target's delta dependency suppressed signer head", report.Indication, report.SubIndication, err)
+			}
+			leafHash := sha256.Sum256(leaf.Raw)
+			caHash := sha256.Sum256(ca.Raw)
+			leafHead, caComposite := false, false
+			for _, fact := range report.Past.Evidence() {
+				if fact.TargetCertificateSHA256() == hex.EncodeToString(leafHash[:]) && bytes.Equal(fact.DER(), base) && len(fact.Dependencies()) == 0 {
+					leafHead = true
+				}
+				if fact.TargetCertificateSHA256() == hex.EncodeToString(caHash[:]) && bytes.Equal(fact.DER(), delta) && len(fact.Dependencies()) == 1 {
+					caComposite = true
+				}
+			}
+			if !leafHead || !caComposite {
+				t.Fatal("fixture did not select distinct target composite roles", leafHead, caComposite)
 			}
 		})
 	}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -471,3 +472,73 @@ func BenchmarkReaderDigestStreaming(b *testing.B) {
 		}
 	}
 }
+
+func TestWriteAndCanonicalize(t *testing.T) {
+	doc := parse(t, `<r xmlns:u="urn:unused" b="2" a="1">text<!--comment--></r>`)
+	input := all(t, doc)
+	for _, explicit := range []bool{false, true} {
+		t.Run(strconv.FormatBool(explicit), func(t *testing.T) {
+			var transforms []reference.Transform
+			if explicit {
+				transforms = []reference.Transform{{Algorithm: c14n.Canonical10}}
+			}
+			var original, alternate bytes.Buffer
+			report, err := reference.WriteAndCanonicalize(t.Context(), &original, &alternate, input, transforms, reference.Transform{Algorithm: c14n.ExclusiveWithComments}, reference.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if original.String() != `<r xmlns:u="urn:unused" a="1" b="2">text</r>` {
+				t.Fatal(original.String())
+			}
+			want := `<r a="1" b="2">text<!--comment--></r>`
+			if explicit {
+				want = original.String()
+			}
+			if alternate.String() != want {
+				t.Fatal(alternate.String())
+			}
+			if report.Size() != original.Len() {
+				t.Fatal("wrong digest input size")
+			}
+		})
+	}
+	t.Run("opaque octets stay opaque", func(t *testing.T) {
+		var a, b bytes.Buffer
+		raw := []byte{0, 255, '<'}
+		if _, err := reference.WriteReaderAndCanonicalize(t.Context(), &a, &b, bytes.NewReader(raw), nil, reference.Transform{Algorithm: c14n.Exclusive}, reference.Options{}); err != nil || !bytes.Equal(a.Bytes(), raw) || !bytes.Equal(b.Bytes(), raw) {
+			t.Fatal(a.Bytes(), b.Bytes(), err)
+		}
+	})
+	for _, kind := range []string{"produced", "visits", "cancel", "writer"} {
+		t.Run(kind, func(t *testing.T) {
+			options := reference.DefaultOptions()
+			var a, b bytes.Buffer
+			ctx := t.Context()
+			var output io.Writer = &b
+			want := reference.ErrLimit
+			switch kind {
+			case "produced":
+				options.MaxProducedBytes = 10
+			case "visits":
+				nodes, _ := input.Nodes()
+				options.MaxNodeVisits = nodes.Len() * 2
+			case "cancel":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+				want = context.Canceled
+			case "writer":
+				want = errors.New("alternate writer")
+				output = canonicalErrorWriter{want}
+			}
+			report, err := reference.WriteAndCanonicalize(ctx, &a, output, input, nil, reference.Transform{Algorithm: c14n.Exclusive}, options)
+			if report != nil || !errors.Is(err, want) {
+				t.Fatal(report, err)
+			}
+		})
+	}
+}
+
+type canonicalErrorWriter struct{ err error }
+
+func (w canonicalErrorWriter) Write([]byte) (int, error) { return 0, w.err }

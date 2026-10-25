@@ -265,8 +265,36 @@ successful result; authenticated stale, revoked or unknown diagnostic assertions
 can remain in `OCSPReport.Evidence()`. `OCSPOptions.Sources` binds exact supplied
 bytes and keeps acquisition metadata separate from the signed status.
 
-Claimed signing time is not trusted time evidence. XAdES validates the closed current-time/with-time
-profiles described in [compatibility](compatibility.md).
+Claimed signing time is not trusted time evidence. XAdES offers separate
+closed current/with-time, baseline-format and bounded historical operations;
+their distinct scopes are recorded in [compatibility](compatibility.md).
+
+`SignBaseline`/`VerifyBaseline` authenticate an explicitly selected signature,
+its typed SignedProperties Reference, certificate digests and signed claims.
+The caller still selects application coverage and external URI/resource policy.
+Certified-role and assertion containers do not grant third-party authority.
+Content timestamp writers bind actual transformed bytes; a parsed token alone
+does not grant TSA trust. `VerifyCounterSignature` binds an already authenticated
+child signature to the enclosing SignatureValue, independently of child trust.
+
+`NewHistoricalValidator` takes explicit signer PKI, an immutable TSA verifier,
+separate historical constraints and baseline coverage options. Both signer and
+TSA policies must require revocation checking. Call `Validate`
+with a selected signature, certificate, explicit present time and offline evidence.
+Consume a result only when the error is nil. Its report exposes indication,
+sub-indication, best-signature/validation times, exact source hashes, proof facts
+and timestamp outcomes. A diagnostic report is not a partly trusted result.
+
+The workflow uses the published EN 319 102-1 V1.4.1 process as its reference;
+it is not a complete implementation of that standard. It constructs exact-object
+PoE, processes protecting archives before protected tokens, authenticates old
+revocation sources separately from freshness, and checks each material against
+its caller-configured algorithm cutoff. Missing timestamp accuracy requires an
+explicit trusted TSA-policy bound to produce an old-time proof; it is never
+silently treated as zero. `RequireAllTimestamps` makes invalid or untrusted
+present timestamp attributes an operation failure. Network collection remains
+a separate opt-in adapter. General evidence-record, historical countersignature/attribute and
+remaining indication branches require further work.
 
 ## XML Encryption
 

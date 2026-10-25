@@ -378,6 +378,21 @@ func selectOCSPResponder(ctx context.Context, p parsedOCSP, issuer *x509.Certifi
 }
 
 func matchingOCSPEntry(ctx context.Context, entries []singleResponse, certificate, issuer *x509.Certificate) (*singleResponse, error) {
+	chosen, err := findOCSPEntry(ctx, entries, certificate, issuer)
+	if err != nil {
+		return nil, err
+	}
+
+	if chosen == nil {
+		return nil, fmt.Errorf("%w: no matching CertID", ErrEvidence)
+	}
+
+	return chosen, nil
+}
+
+// findOCSPEntry distinguishes an ordinary miss from malformed or ambiguous
+// matching status data. The standalone verifier still requires a matching entry.
+func findOCSPEntry(ctx context.Context, entries []singleResponse, certificate, issuer *x509.Certificate) (*singleResponse, error) {
 	var chosen *singleResponse
 	// CertID algorithms can vary across entries. Cache each expected identifier
 	// so a response cannot repeat certificate signature checks for every entry.
@@ -410,10 +425,6 @@ func matchingOCSPEntry(ctx context.Context, entries []singleResponse, certificat
 
 			chosen = entry
 		}
-	}
-
-	if chosen == nil {
-		return nil, fmt.Errorf("%w: no matching CertID", ErrEvidence)
 	}
 
 	return chosen, nil

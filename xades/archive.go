@@ -5,7 +5,6 @@ import (
 	"crypto"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/skarm/xmlsec/c14n"
@@ -339,7 +338,7 @@ func (v *Validator) appendArchive(ctx context.Context, doc *document.Document, s
 
 // writeArchiveInput implements EN 319 132-1 5.5.2.3's non-distributed input for this
 // closed profile: processed References; SignedInfo; SignatureValue; KeyInfo;
-// preceding unsigned properties; other unreferenced Objects (none in this
+// preceding unsigned properties; other Objects (none in this
 // profile). It never merely timestamps the SignatureValue a second time.
 func writeArchiveInput(ctx context.Context, dst io.Writer, basic *BasicResult, unsigned, before document.Element, method string, maximum int) error {
 	if ctx == nil || basic == nil || !unsigned.Valid() || !timestampCanonicalization(method) || maximum < 1 {
@@ -360,23 +359,6 @@ func writeArchiveInput(ctx context.Context, dst io.Writer, basic *BasicResult, u
 		}
 
 		options := c14n.Options{Algorithm: method, MaxOutputBytes: maximum}
-
-		if local == "SignedInfo" {
-			cm, err := childNamed(n, ds("CanonicalizationMethod"))
-			if err != nil {
-				return err
-			}
-
-			options.Algorithm, _ = cm.Attribute(document.Name{Local: "Algorithm"})
-			for _, p := range cm.Children() {
-				if p.Name() != (document.Name{Space: c14n.Exclusive, Local: "InclusiveNamespaces"}) {
-					return ErrProfile
-				}
-
-				value, _ := p.Attribute(document.Name{Local: "PrefixList"})
-				options.InclusivePrefixes = strings.Fields(value)
-			}
-		}
 
 		if e = c14n.WriteElement(ctx, b, n, options); e != nil {
 			return e

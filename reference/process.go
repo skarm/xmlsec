@@ -192,3 +192,98 @@ func (p *processor) validateExtensionOutput(ctx context.Context, algorithm strin
 
 	return p.visit(out)
 }
+
+// WriteAndCanonicalize executes the approved transform chain once. Original
+// receives its XMLDSig digest input. Canonical receives the same final octets,
+// or the same final immutable node set serialized with method. The original
+// node-set-to-octet conversion remains Canonical XML 1.0. Both serializations
+// share the work/output budgets. On error both outputs must be discarded.
+func WriteAndCanonicalize(ctx context.Context, original, canonical io.Writer, input Data, transforms []Transform, method Transform, opt Options) (*Report, error) {
+	pipeline, chain, err := canonicalPipeline(ctx, original, canonical, transforms, method, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	if input.kind != OctetStream && (input.kind != NodeSet || !input.nodes.Valid()) {
+		return nil, ErrInput
+	}
+
+	if input.kind == OctetStream && len(input.octets) > pipeline.processor.opt.MaxInputBytes {
+		return nil, ErrLimit
+	}
+
+	pipeline.value = input
+
+	pipeline.processor.out.input = input.kind
+	if err := pipeline.processor.visit(input); err != nil {
+		return nil, err
+	}
+
+	if input.kind == OctetStream {
+		pipeline.reader = pipeline.input(bytes.NewReader(input.octets), pipeline.processor.opt.MaxInputBytes)
+	}
+
+	return pipeline.run(original, chain)
+}
+
+// WriteReaderAndCanonicalize is the streaming octet-input form of
+// WriteAndCanonicalize. The caller owns src and both sinks. It reads src once.
+func WriteReaderAndCanonicalize(ctx context.Context, original, canonical io.Writer, src io.Reader, transforms []Transform, method Transform, opt Options) (*Report, error) {
+	if nilcheck.IsNil(src) {
+		return nil, ErrInput
+	}
+
+	pipeline, chain, err := canonicalPipeline(ctx, original, canonical, transforms, method, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	pipeline.value = Data{kind: OctetStream}
+	pipeline.processor.out.input = OctetStream
+	pipeline.reader = pipeline.input(src, pipeline.processor.opt.MaxInputBytes)
+
+	return pipeline.run(original, chain)
+}
+
+type canonicalOutput struct {
+	writer io.Writer
+	method Transform
+}
+
+func canonicalPipeline(ctx context.Context, original, canonical io.Writer, transforms []Transform, method Transform, opt Options) (*transformPipeline, []Transform, error) {
+	if ctx == nil || nilcheck.IsNil(original) || nilcheck.IsNil(canonical) {
+		return nil, nil, ErrInput
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	normalized, err := normalize(opt)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if !isC14N(method.Algorithm) {
+		return nil, nil, ErrUnsupported
+	}
+
+	if !allowed(normalized, method.Algorithm) {
+		return nil, nil, ErrPolicy
+	}
+
+	method = CloneTransforms([]Transform{method})[0]
+	if err := ValidateTransformParameters(method); err != nil {
+		return nil, nil, err
+	}
+
+	chain, err := snapshotTransforms(ctx, transforms, normalized)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	state := &processor{opt: normalized}
+	pipeline := &transformPipeline{processor: state, ctx: ctx, alternate: &canonicalOutput{writer: canonical, method: method}}
+
+	return pipeline, chain, nil
+}

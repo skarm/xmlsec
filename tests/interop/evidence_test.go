@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/skarm/xmlsec/cms"
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/historicalproof"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/pki"
 )
@@ -679,6 +681,87 @@ func TestOCSPNonceBindingOpenSSL(t *testing.T) {
 			if !different && !bytes.Contains(stderr, []byte("Response verify OK")) {
 				t.Fatalf("independent response verification missing: %s", stderr)
 			}
+		})
+	}
+}
+
+func TestHistoricalPKIAuthenticationOpenSSL(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "portable")
+	dir := t.TempDir()
+	issued := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	now := issued.Add(3 * time.Hour)
+	rootKey := generateKey(t, dir, nameEcdsaSha256)
+	rootTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "historical PKI oracle root"}, NotBefore: issued.Add(-24 * time.Hour), NotAfter: issued.Add(24 * time.Hour), BasicConstraintsValid: true, IsCA: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{9, 8, 7}}
+	root, _, rootPEM := certificateFiles(t, dir, "history-root", rootTemplate, rootTemplate, rootKey.signer, rootKey.signer)
+	leafKey := generateKey(t, dir, nameEcdsaSha384)
+	leafTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "expired historical target"}, NotBefore: issued.Add(-time.Hour), NotAfter: issued.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}
+	leaf, _, leafPEM := certificateFiles(t, dir, "history-target", leafTemplate, root, leafKey.signer, rootKey.signer)
+	command(t, fixture, true, nil, "openssl", "verify", "-purpose", "any", "-CAfile", rootPEM, "-attime", strconv.FormatInt(issued.Unix(), 10), leafPEM)
+	command(t, fixture, false, nil, "openssl", "verify", "-purpose", "any", "-CAfile", rootPEM, "-attime", strconv.FormatInt(now.Unix(), 10), leafPEM)
+	for _, revoked := range []bool{false, true} {
+		t.Run(strconv.FormatBool(revoked), func(t *testing.T) {
+			template := &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: issued.Add(-time.Minute), NextUpdate: issued.Add(time.Minute)}
+			expected := template.ThisUpdate
+			if revoked {
+				expected = issued.Add(-2 * time.Minute)
+				template.RevokedCertificateEntries = []x509.RevocationListEntry{{SerialNumber: leaf.SerialNumber, RevocationTime: expected, ReasonCode: 1}}
+			}
+			raw, err := x509.CreateRevocationList(rand.Reader, template, root, rootKey.signer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := write(t, filepath.Join(t.TempDir(), "old-status.der"), raw)
+			crlPEM := write(t, filepath.Join(t.TempDir(), "old-status.pem"), pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: raw}))
+			command(t, fixture, true, nil, "openssl", "crl", "-in", path, "-inform", "DER", "-verify", "-CAfile", rootPEM, "-noout")
+			command(t, fixture, !revoked, nil, "openssl", "verify", "-purpose", "any", "-CAfile", rootPEM, "-CRLfile", crlPEM, "-crl_check", "-attime", strconv.FormatInt(issued.Unix(), 10), leafPEM)
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{root.Raw}, Revocation: pki.RequireCRL}}, now, pki.Evidence{CRLs: [][]byte{raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result, _, err := session.VerifyCurrent(t.Context(), leaf.Raw); result != nil || !errors.Is(err, pki.ErrCertificate) {
+				t.Fatal("current validity contract changed", err)
+			}
+			paths, err := session.Paths(t.Context(), leaf.Raw)
+			if err != nil || len(paths) != 1 {
+				t.Fatal(len(paths), err)
+			}
+			claims, err := session.AuthenticateEvidence(t.Context(), paths[0])
+			if err != nil || len(claims) != 1 || !bytes.Equal(claims[0].DER(), raw) {
+				t.Fatal("source authentication mismatch", len(claims), err)
+			}
+			source := sha256.Sum256([]byte("independent exact source/path acceptance vector"))
+			proofs, err := historicalproof.New(t.Context(), now, []historicalproof.Fact{{Digest: sha256.Sum256(leaf.Raw), Source: source, At: issued, Kind: "certificate"}, {Digest: sha256.Sum256(raw), Source: source, At: issued, Kind: "crl"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, _, err := session.ValidatePast(t.Context(), leaf.Raw, proofs)
+			if err != nil || result == nil || !result.ValidationTime().Equal(expected) {
+				t.Fatal("published EN319102-1 time transition", result != nil, err)
+			}
+			missing, err := historicalproof.New(t.Context(), now, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result, _, err := session.ValidatePast(t.Context(), leaf.Raw, missing); result != nil || !errors.Is(err, pki.ErrUnavailable) {
+				t.Fatal("authentication substituted for PoE", err)
+			}
+			broken := bytes.Clone(raw)
+			broken[len(broken)-1] ^= 1
+			bad := write(t, filepath.Join(t.TempDir(), "invalid-signature.der"), broken)
+			command(t, fixture, false, nil, "openssl", "crl", "-in", bad, "-inform", "DER", "-verify", "-CAfile", rootPEM, "-noout")
+			invalid, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{root.Raw}, Revocation: pki.RequireCRL}}, now, pki.Evidence{CRLs: [][]byte{broken}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidates, err := invalid.Paths(t.Context(), leaf.Raw)
+			if err != nil || len(candidates) != 1 {
+				t.Fatal(len(candidates), err)
+			}
+			if facts, err := invalid.AuthenticateEvidence(t.Context(), candidates[0]); err != nil || len(facts) != 0 {
+				t.Fatal("invalid signature produced an authenticated fact", len(facts), err)
+			}
+			t.Log("Independent OpenSSL signature, status and path-time agreement; sliding time uses the literal EN319102-1 branch expectation, not an OpenSSL historical oracle")
 		})
 	}
 }

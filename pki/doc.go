@@ -60,9 +60,29 @@
 // # Time and scope
 //
 // Choosing a past verification time does not prove that a signature existed
-// then. This package does not infer trust from XML KeyInfo or implement
-// historical AdES proof-of-existence validation. Application code supplies
-// trusted time, evidence collection and any network policy.
+// then. This package does not infer trust from XML KeyInfo, acquisition times,
+// XML SigningTime or an unauthenticated timestamp generation time.
+//
+// [HistoricalSession] separates prospective exact path discovery, shell/chain
+// calendar checking and original revocation-source authentication at issuance
+// from present-time acceptance. Authentic stale assertions and exact signer
+// chains are available through [HistoricalSession.AuthenticateEvidence] even
+// when the target is expired now. They are not trusted-past results.
+// [HistoricalSession.CheckCurrentPolicy] adds explicit historical-policy
+// freshness, anchor-sunset and cryptographic cutoffs after current verification.
+// The current [Verifier.Verify] policy and its result meaning remain unchanged.
+//
+// The library's historical workflow supplies an immutable, object-bound proof
+// set to the past-certificate and time-sliding primitives. Revocation status
+// issuance must precede control time; certificate/source proofs can equal it.
+// Shell and chain models differ for noncompromise revocation. Delegated sources
+// retain their own bounded authorization paths. A later not-listed assertion
+// covers an expired target only with authenticated retention scope, such as
+// expiredCertsOnCRL or OCSP archiveCutoff. A missing freshness constraint derives
+// nextUpdate-thisUpdate; missing nextUpdate fails that checker. Explicit zero
+// remains distinct. [PastCertificateResult] decides only that certificate
+// building block; signature PoE extraction and past-signature acceptance belong
+// to the separate historical signature workflow.
 //
 // # Input and storage
 //

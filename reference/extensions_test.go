@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/skarm/xmlsec/c14n"
@@ -251,4 +252,21 @@ func extensionOptions(p reference.ExtensionProcessor) reference.Options {
 
 func xpathTrue() reference.Transform {
 	return reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: nameTrue}}}
+}
+
+func TestCanonicalizedOutputRunsProgramOnce(t *testing.T) {
+	calls := 0
+	engine := &extensionStub{apply: func(_ context.Context, _ reference.Transform, input reference.Data, _ reference.ExtensionContext) (reference.Data, error) {
+		calls++
+		if calls > 1 {
+			return reference.Data{}, errors.New("program replayed")
+		}
+		return input, nil
+	}}
+	var original, alternate bytes.Buffer
+	source := `<r xmlns:u="urn:unused">text</r>`
+	report, err := reference.WriteReaderAndCanonicalize(t.Context(), &original, &alternate, strings.NewReader(source), []reference.Transform{xpathTrue()}, reference.Transform{Algorithm: c14n.Exclusive}, extensionOptions(engine))
+	if err != nil || report == nil || calls != 1 || original.String() != source || alternate.String() != `<r>text</r>` {
+		t.Fatal(original.String(), alternate.String(), calls, err)
+	}
 }

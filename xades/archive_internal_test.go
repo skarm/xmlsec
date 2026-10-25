@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -31,7 +32,7 @@ func TestArchiveImprintWorkingStorage(t *testing.T) {
 	ctx := t.Context()
 	chain := testcert.New(t)
 
-	payload, err := document.ParseReader(ctx, strings.NewReader(`<r ID="data">`+strings.Repeat("&amp;", 1<<20)+`</r>`), document.DefaultLimits())
+	payload, err := document.ParseReader(ctx, strings.NewReader(`<r ID="data" xmlns:unused="urn:archive-context">`+strings.Repeat("&amp;", 1<<20)+`</r>`), document.DefaultLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +115,42 @@ func TestArchiveImprintWorkingStorage(t *testing.T) {
 	current, err := doc.XML(ctx)
 	if err != nil || !bytes.Equal(current, raw) {
 		t.Fatal("archive hashing changed source", err)
+	}
+	for _, method := range []string{c14n.Canonical10, c14n.Canonical11} {
+		t.Run("archive method applies to SignedInfo/"+method, func(t *testing.T) {
+			var expected, wrong bytes.Buffer
+			if err := archiveInputReferences(ctx, basic, &expected); err != nil {
+				t.Fatal(err)
+			}
+			wrong.Write(expected.Bytes())
+			for _, local := range []string{"SignedInfo", "SignatureValue", "KeyInfo"} {
+				element, err := childNamed(selected, ds(local))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var archiveBytes, signatureBytes bytes.Buffer
+				if err := c14n.WriteElement(ctx, &archiveBytes, element, c14n.Options{Algorithm: method}); err != nil {
+					t.Fatal(err)
+				}
+				expected.Write(archiveBytes.Bytes())
+				if local == "SignedInfo" {
+					if err := c14n.WriteElement(ctx, &signatureBytes, element, c14n.Options{Algorithm: c14n.Exclusive}); err != nil {
+						t.Fatal(err)
+					}
+					if bytes.Equal(archiveBytes.Bytes(), signatureBytes.Bytes()) || !bytes.Contains(archiveBytes.Bytes(), []byte(`xmlns:unused="urn:archive-context"`)) {
+						t.Fatal("canonicalization countercontrol has identical bytes")
+					}
+					wrong.Write(signatureBytes.Bytes())
+				} else {
+					wrong.Write(archiveBytes.Bytes())
+				}
+			}
+			want, old := sha256.Sum256(expected.Bytes()), sha256.Sum256(wrong.Bytes())
+			got, err := archiveImprint(ctx, basic, usp, document.Element{}, method, 16<<20, crypto.SHA256)
+			if err != nil || !bytes.Equal(got.Digest, want[:]) || bytes.Equal(got.Digest, old[:]) {
+				t.Fatal("archive SignedInfo used the signature method", err)
+			}
+		})
 	}
 }
 

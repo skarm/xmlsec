@@ -36,6 +36,10 @@ type VerifyOptions struct {
 	// AllowLegacyESSCertID permits the SHA-1 ESSCertID certificate identifier.
 	// It does not enable SHA-1 CMS signatures.
 	AllowLegacyESSCertID bool
+	// RequireUnrestrictedCertificatePath rejects ESS path/policy restrictions
+	// that this CMS profile cannot apply. Historical trust workflows must set it,
+	// just as VerifyWithTrust always rejects such unsupported restrictions.
+	RequireUnrestrictedCertificatePath bool
 }
 
 // SignerResult authenticates one caller-selected certificate and signed
@@ -45,6 +49,8 @@ type SignerResult struct {
 	signed      []Attribute
 	bound       bool
 	trust       *pki.Result
+	hash        crypto.Hash
+	algorithm   string
 }
 
 // CertificateDER returns an owned copy of the certificate DER.
@@ -56,6 +62,14 @@ func (r SignerResult) SignedAttributes() []Attribute { return cloneAttributes(r.
 // CertificateBound returns whether signed ESS attributes bind the exact signer
 // certificate.
 func (r SignerResult) CertificateBound() bool { return r.bound }
+
+// SignatureHash is the authenticated CMS digest/signature hash. Zero means
+// that this is not a successfully verified signer result.
+func (r SignerResult) SignatureHash() crypto.Hash { return r.hash }
+
+// SignatureAlgorithmOID returns the normalized authenticated signature OID.
+// In particular, rsaEncryption plus SHA-256 is reported as sha256WithRSAEncryption.
+func (r SignerResult) SignatureAlgorithmOID() string { return r.algorithm }
 
 // Result is returned only after every signer and the content have been checked.
 // Accessors return copies; a Result alone makes no claim about PKIX trust.
@@ -330,7 +344,13 @@ func (s *SignedData) verifySigner(ctx context.Context, p parsedSigner, cert *x50
 		return SignerResult{}, ErrCertificate
 	}
 
-	return SignerResult{certificate: cert.Raw, signed: p.signed, bound: bound}, nil
+	if opt.RequireUnrestrictedCertificatePath {
+		if err := unrestrictedESSBinding(p.signed); err != nil {
+			return SignerResult{}, err
+		}
+	}
+
+	return SignerResult{certificate: cert.Raw, signed: p.signed, bound: bound, hash: h, algorithm: algorithm.Algorithm.String()}, nil
 }
 
 func normalizeSignature(aid pkix.AlgorithmIdentifier, h crypto.Hash) (pkix.AlgorithmIdentifier, error) {
