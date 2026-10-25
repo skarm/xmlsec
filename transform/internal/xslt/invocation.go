@@ -462,7 +462,7 @@ func (inv Invocation) WriteTo(ctx context.Context, w io.Writer) error {
 	if outDef := tcfg.resolvedOutputDef; outDef != nil && resultDoc.FirstChild() == nil &&
 		isItemSerializationMethod(outDef.Method) &&
 		xdm.SequenceLen(tcfg.primaryItems) > 0 {
-		return SerializeItems(w, tcfg.primaryItems, resultDoc, outDef)
+		return SerializeItems(ctx, w, tcfg.primaryItems, resultDoc, outDef)
 	}
 
 	return SerializeResult(w, resultDoc, tcfg.resolvedOutputDef)

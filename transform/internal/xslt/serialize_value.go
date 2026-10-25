@@ -3,7 +3,6 @@ package xslt
 import (
 	"context"
 	"io"
-	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
@@ -24,6 +23,12 @@ func SerializeValue(ctx context.Context, w io.Writer, result ValueResult) error 
 		return err
 	}
 
+	if (definition.Method == methodXML || definition.Method == methodXHTML) && (definition.DoctypeSystem != "" || definition.Standalone == lexicon.ValueYes || definition.Standalone == lexicon.ValueNo) {
+		if err := xpath.ValidateSerializationDocument(ctx, result.Items, definition.ItemSeparator); err != nil {
+			return err
+		}
+	}
+
 	if handled, err := streamValue(ctx, w, result, definition); handled {
 		return err
 	}
@@ -34,19 +39,15 @@ func SerializeValue(ctx context.Context, w io.Writer, result ValueResult) error 
 			return err
 		}
 
-		return SerializeItems(w, result.Items, doc, definition)
+		return SerializeItems(ctx, w, result.Items, doc, definition)
 	}
 
-	normalizer := valueNormalizer{ctx: ctx, doc: xdm.NewDefaultDocument(), separator: definition.ItemSeparator}
-	if err := normalizer.appendItems(result.Items, 0); err != nil {
+	doc, err := xpath.NormalizeSerialization(ctx, result.Items, definition.ItemSeparator, "")
+	if err != nil {
 		return err
 	}
 
-	if err := normalizer.flushText(); err != nil {
-		return err
-	}
-
-	return SerializeResult(w, normalizer.doc, definition)
+	return SerializeResult(w, doc, definition)
 }
 
 // streamValue reports handled=false only before writing anything. This is an
@@ -75,7 +76,7 @@ func streamValue(ctx context.Context, w io.Writer, result ValueResult, definitio
 	case methodHTML:
 		err = streamHTMLValue(ctx, writer, result, definition)
 	case methodJSON:
-		err = SerializeItems(writer, result.Items, result.Document, definition)
+		err = SerializeItems(ctx, writer, result.Items, result.Document, definition)
 	}
 
 	if err != nil {
@@ -83,147 +84,6 @@ func streamValue(ctx context.Context, w io.Writer, result ValueResult, definitio
 	}
 
 	return true, closeOutput()
-}
-
-type valueNormalizer struct {
-	ctx                          context.Context
-	doc                          *xdm.Document
-	separator                    *string
-	previousAtomic, previousItem bool
-	pendingText                  strings.Builder
-}
-
-func (n *valueNormalizer) text(value string) error {
-	if err := xpath.ChargeString(n.ctx, len(value)); err != nil {
-		return err
-	}
-
-	n.pendingText.WriteString(value)
-
-	return nil
-}
-
-func (n *valueNormalizer) flushText() error {
-	if n.pendingText.Len() == 0 {
-		return n.ctx.Err()
-	}
-
-	value := n.pendingText.String()
-	n.pendingText.Reset()
-
-	return n.doc.AddChild(n.doc.CreateText(value))
-}
-
-func (n *valueNormalizer) appendItems(items xdm.Sequence, depth int) error {
-	if depth > xpath.DepthLimit(n.ctx, 128) {
-		return xpath.ErrBudget
-	}
-
-	for item := range xdm.SequenceItems(items) {
-		if err := xpath.Charge(n.ctx, 1); err != nil {
-			return err
-		}
-
-		if array, ok := item.(xdm.ArrayItem); ok {
-			for _, member := range array.MembersView() {
-				if err := n.appendItems(member, depth+1); err != nil {
-					return err
-				}
-			}
-
-			continue
-		}
-
-		if err := n.appendItem(item); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (n *valueNormalizer) appendItem(item xdm.Item) error {
-	if n.previousItem && n.separator != nil {
-		if err := n.text(*n.separator); err != nil {
-			return err
-		}
-	}
-
-	switch value := item.(type) {
-	case xdm.AtomicValue:
-		if n.previousAtomic && n.separator == nil {
-			if err := n.text(" "); err != nil {
-				return err
-			}
-		}
-
-		s, err := xpath.AtomicToString(value)
-		if err != nil {
-			return err
-		}
-
-		if err := n.text(s); err != nil {
-			return err
-		}
-
-		n.previousAtomic = true
-	case xdm.NodeItem:
-		if err := n.node(value.Node); err != nil {
-			return err
-		}
-
-		n.previousAtomic = false
-	default:
-		return dynamicError("SENR0001", "cannot serialize maps or functions using this output method")
-	}
-
-	n.previousItem = true
-
-	return nil
-}
-
-func (n *valueNormalizer) node(value xdm.Node) error {
-	if value == nil || value.Type() == xdm.AttributeNode || value.Type() == xdm.NamespaceNode {
-		return dynamicError("SENR0001", "cannot serialize a free attribute or namespace")
-	}
-
-	if err := xpath.ChargeTree(n.ctx, value); err != nil {
-		return err
-	}
-
-	if value.Type() == xdm.DocumentNode {
-		for child := range xdm.Children(value) {
-			if err := n.node(child); err != nil {
-				return err
-			}
-		}
-
-		return nil
-	}
-
-	if value.Type() == xdm.TextNode || value.Type() == xdm.CDATASectionNode {
-		return n.text(xdm.CharacterData(value))
-	}
-
-	if err := n.flushText(); err != nil {
-		return err
-	}
-
-	if element, ok := value.(*xdm.Element); ok {
-		subtree, err := xdm.ElementDocument(n.ctx, element)
-		if err != nil {
-			return err
-		}
-
-		return n.doc.AddChild(subtree.DocumentElement())
-	}
-
-	cloned, err := xdm.CopyNode(value, n.doc)
-	if err != nil {
-		return err
-	}
-
-	return n.doc.AddChild(cloned)
 }
 
 // NormalizeExecution applies stylesheet-directed or forced final tree
@@ -273,19 +133,13 @@ func normalizeValue(ctx context.Context, value ValueResult, forceTree *bool, bas
 		baseURI = value.Document.URL()
 	}
 
-	normalizer := valueNormalizer{ctx: ctx, doc: xdm.NewDefaultDocument(), separator: separator}
-	normalizer.doc.SetURL(baseURI)
-
-	if err := normalizer.appendItems(value.Items, 0); err != nil {
+	doc, err := xpath.NormalizeSerialization(ctx, value.Items, separator, baseURI)
+	if err != nil {
 		return ValueResult{}, err
 	}
 
-	if err := normalizer.flushText(); err != nil {
-		return ValueResult{}, err
-	}
-
-	value.Document = normalizer.doc
-	value.Items = xdm.ItemSlice{xdm.NodeItem{Node: normalizer.doc}}
+	value.Document = doc
+	value.Items = xdm.ItemSlice{xdm.NodeItem{Node: doc}}
 
 	return value, nil
 }

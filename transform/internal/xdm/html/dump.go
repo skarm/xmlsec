@@ -6,6 +6,7 @@ package html
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -15,6 +16,8 @@ import (
 	"unicode/utf8"
 
 	norm "github.com/skarm/xmlsec/internal/normalization"
+	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
@@ -26,6 +29,11 @@ const (
 	htmlAttrEscLt   = "&lt;"
 	htmlAttrEscGt   = "&gt;"
 	htmlAttrEscQuot = "&quot;"
+)
+
+const (
+	xmlIslandCharacterError = "SERE0006"
+	markupEncodingError     = "SERE0008"
 )
 
 // windows1252Runes and windows1252Bytes retain the reverse Windows-1252
@@ -91,7 +99,9 @@ func (w Writer) dumper() htmlDumper {
 	return htmlDumper{
 		ctx:                   context.Background(),
 		canEncode:             cfg.canEncode,
+		cdataElements:         cfg.cdataElements,
 		contentType:           cfg.contentType,
+		normalizationForm:     cfg.normalizationForm,
 		foreignNamespaces:     cfg.foreignNamespaces,
 		format:                !cfg.noFormat,
 		preserveCase:          cfg.preserveCase,
@@ -107,7 +117,8 @@ func (w Writer) dumper() htmlDumper {
 }
 
 type htmlDumper struct {
-	ctx context.Context
+	ctx           context.Context
+	cdataElements map[string]struct{}
 	// err is a sticky serialization error. Once set, all checked write
 	// helpers become no-ops and terminal methods return it. This mirrors
 	// the writeSession sticky-error pattern in writer.go so that a writer
@@ -129,6 +140,7 @@ type htmlDumper struct {
 	// Used to find URIs for attribute namespace prefixes.
 	nsAvailable           map[string]string
 	contentType           string
+	normalizationForm     string
 	normForm              norm.Form
 	foreignNamespaces     bool
 	format                bool
@@ -241,6 +253,11 @@ func (d *htmlDumper) checkName(kind, name string) {
 			return
 		}
 
+		if d.canEncode != nil && !d.canEncode(r) {
+			d.check(&xdm.Error{Code: markupEncodingError, Message: "HTML attribute name is not representable in output encoding"})
+			return
+		}
+
 		if isUnsafeNameRune(r) {
 			d.check(fmt.Errorf("invalid HTML %s name %q", kind, name))
 			return
@@ -304,6 +321,11 @@ func (d *htmlDumper) checkElementName(name string) {
 			return
 		}
 
+		if d.canEncode != nil && !d.canEncode(r) {
+			d.check(&xdm.Error{Code: markupEncodingError, Message: "HTML element name is not representable in output encoding"})
+			return
+		}
+
 		if !isElementNameRune(r) {
 			d.check(fmt.Errorf("invalid HTML element name %q", name))
 			return
@@ -352,6 +374,12 @@ func (d *htmlDumper) dumpNode(out io.Writer, n xdm.Node) error {
 		return d.dumpDocument(out, doc)
 
 	case xdm.CommentNode:
+		if d.xmlIslandNode(n) {
+			if err := d.checkXMLMarkup(n); err != nil {
+				return err
+			}
+		}
+
 		d.writeString(out, "<!--")
 		d.writeString(out, xdm.CharacterData(n))
 		d.writeString(out, "-->")
@@ -369,6 +397,13 @@ func (d *htmlDumper) dumpNode(out io.Writer, n xdm.Node) error {
 			}
 		}
 
+		xml := d.xmlIslandNode(n)
+		if xml {
+			if err := d.checkXMLMarkup(n); err != nil {
+				return err
+			}
+		}
+
 		d.writeString(out, "<?")
 		d.writeString(out, n.Name())
 
@@ -377,7 +412,11 @@ func (d *htmlDumper) dumpNode(out io.Writer, n xdm.Node) error {
 			d.writeString(out, c)
 		}
 
-		d.writeString(out, ">")
+		if xml {
+			d.writeString(out, "?>")
+		} else {
+			d.writeString(out, ">")
+		}
 
 		return d.err
 
@@ -390,6 +429,31 @@ func (d *htmlDumper) dumpNode(out io.Writer, n xdm.Node) error {
 		}
 
 		return d.dumpElement(out, elem)
+	}
+
+	return nil
+}
+
+func (d *htmlDumper) xmlIslandNode(node xdm.Node) bool {
+	parent, ok := node.Parent().(*xdm.Element)
+	return ok && !d.isHTMLElement(parent)
+}
+
+func (d *htmlDumper) checkXMLMarkup(node xdm.Node) error {
+	for _, value := range []string{node.Name(), xdm.CharacterData(node)} {
+		if !utf8.ValidString(value) {
+			return &xdm.Error{Code: xmlIslandCharacterError, Message: "invalid XML island markup characters"}
+		}
+
+		for _, r := range value {
+			if !xmlchar.IsChar(r) {
+				return &xdm.Error{Code: xmlIslandCharacterError, Message: "character is not permitted in XML 1.0 island markup"}
+			}
+
+			if d.canEncode != nil && !d.canEncode(r) {
+				return &xdm.Error{Code: markupEncodingError, Message: "XML island markup cannot be represented in output encoding"}
+			}
+		}
 	}
 
 	return nil
@@ -456,14 +520,36 @@ func (d *htmlDumper) dumpText(out io.Writer, n xdm.Node) error {
 	rawText := d.doeActive
 
 	parent := n.Parent()
-	if parent != nil && parent.Type() == xdm.ElementNode {
-		parentName := strings.ToLower(parent.Name())
+	if element, ok := parent.(*xdm.Element); ok && !d.isHTMLElement(element) && !rawText {
+		mode := tree.XMLTextContent
+		if _, selected := d.cdataElements[xdm.ClarkName(element.URI(), element.LocalName())]; selected {
+			mode = tree.XMLCDATAContent
+		}
+
+		return d.dumpXMLCharacters(out, content, mode)
+	}
+
+	if element, ok := parent.(*xdm.Element); ok && d.isHTMLElement(element) {
+		parentName := strings.ToLower(element.LocalName())
 		if desc := lookupElement(parentName); desc != nil && desc.dataMode >= dataRawText {
 			rawText = true
 		}
 	}
 
 	return d.dumpTextContent(out, content, rawText)
+}
+
+func (d *htmlDumper) dumpXMLCharacters(out io.Writer, content string, mode tree.XMLCharacterMode) error {
+	options := tree.XMLWriteOptions{CanEncode: d.canEncode, CharacterMap: d.charMap, Normalization: d.normalizationForm, EscapeControlChars: true}
+
+	_, err := tree.WriteXMLCharacters(d.ctx, out, content, mode, int(^uint(0)>>1), options)
+	if errors.Is(err, tree.ErrMalformed) {
+		err = &xdm.Error{Code: xmlIslandCharacterError, Message: "character is not permitted in an XML 1.0 island", Cause: err}
+	}
+
+	d.check(err)
+
+	return d.err
 }
 
 func (d *htmlDumper) dumpTextContent(out io.Writer, content string, rawText bool) error {
@@ -656,7 +742,11 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 	}
 
 	nameLower := strings.ToLower(name)
-	info := lookupElement(nameLower)
+
+	var info *htmlElemDesc
+	if d.isHTMLElement(e) {
+		info = lookupElement(strings.ToLower(e.LocalName()))
+	}
 
 	if !d.preserveCase {
 		name = nameLower
@@ -675,7 +765,7 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 	d.writeString(out, "<")
 	d.writeString(out, name)
 
-	d.emitElementNSDecls(out, e, info)
+	d.emitElementNSDecls(out, e)
 
 	// Attributes
 	if err := d.dumpAttributes(out, e); err != nil {
@@ -707,10 +797,10 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 	}
 
 	// Only bindings emitted by ancestors suppress descendant declarations.
-	savedEmitted, savedAvailable := d.pushElementNamespaces(e, info)
+	savedEmitted, savedAvailable := d.pushElementNamespaces(e)
 
 	// Children
-	if d.metadataHead(e) && !hasContentTypeMeta(e) {
+	if d.metadataHead(e) {
 		d.writeString(out, `<meta http-equiv="Content-Type" content="`)
 		d.check(d.htmlEscapeAttrValue(out, d.contentType, false, true, d.charMap))
 		d.writeString(out, `">`)
@@ -720,6 +810,10 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 
 	d.doeActive = false
 	for child := range xdm.Children(e) {
+		if meta, ok := child.(*xdm.Element); ok && d.metadataHead(e) && d.isHTMLElement(meta) && strings.EqualFold(meta.LocalName(), "meta") && isContentTypeMeta(meta) {
+			continue
+		}
+
 		if err := d.dumpNode(out, child); err != nil {
 			return err
 		}
@@ -747,16 +841,6 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 	}
 
 	return d.err
-}
-
-func hasContentTypeMeta(e *xdm.Element) bool {
-	for n := range xdm.Children(e) {
-		if child, ok := n.(*xdm.Element); ok && strings.EqualFold(child.LocalName(), "meta") && isContentTypeMeta(child) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // Format newline helper functions matching libxml2's HTMLtree.c:968-1108.
@@ -877,7 +961,38 @@ func shouldNewlineAfterClose(e *xdm.Element, info *htmlElemDesc) bool {
 }
 
 func (d *htmlDumper) foreign(e *xdm.Element) bool {
-	return d.foreignNamespaces && e.Prefix() != "" && (e.URI() == lexicon.NamespaceSVG || e.URI() == lexicon.NamespaceMathML)
+	return d.foreignNamespaces && e.Prefix() != "" && (e.URI() == lexicon.NamespaceSVG || e.URI() == lexicon.NamespaceMathML || e.URI() == lexicon.NamespaceXHTML)
+}
+
+// Special HTML element/attribute rules never apply within an XML island.
+func (d *htmlDumper) isHTMLElement(e *xdm.Element) bool {
+	return IsHTMLNamespace(e.URI(), !d.nullNamespaceHTMLOnly)
+}
+
+func (d *htmlDumper) namespaceAllowed(e *xdm.Element, ns *xdm.Namespace) bool {
+	if ns.URI() == lexicon.NamespaceXML {
+		return false
+	}
+
+	if !d.foreign(e) {
+		return true
+	}
+
+	if ns.Prefix() == "" {
+		return ns.URI() == e.URI()
+	}
+
+	if ns.Prefix() == e.Prefix() {
+		for _, attr := range e.Attributes() {
+			if attr.Prefix() == ns.Prefix() {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	return true
 }
 
 func (d *htmlDumper) metadataHead(e *xdm.Element) bool {
@@ -886,42 +1001,42 @@ func (d *htmlDumper) metadataHead(e *xdm.Element) bool {
 
 func (d *htmlDumper) metadataHeadElement(n xdm.Node) bool {
 	e, ok := n.(*xdm.Element)
-	return ok && strings.EqualFold(e.LocalName(), "head") && e.Parent() != nil && e.Parent().Parent() != nil && e.Parent().Parent().Type() == xdm.DocumentNode
+	return ok && d.isHTMLElement(e) && strings.EqualFold(e.LocalName(), "head")
 }
 
-// emitElementNSDecls writes namespaces for roots and non-HTML elements.
-// Non-root HTML elements suppress declarations but retain available bindings.
-func (d *htmlDumper) emitElementNSDecls(out io.Writer, e *xdm.Element, info *htmlElemDesc) {
-	if !d.preserveCase || !emitsElementNSDecls(e, info) {
+// Namespace suppression and scope tracking share the same HTML5 rules.
+func (d *htmlDumper) emitElementNSDecls(out io.Writer, e *xdm.Element) {
+	if !d.preserveCase {
 		return
 	}
+
+	defaultEmitted := false
 
 	for _, namespace := range e.Namespaces() {
 		prefix := namespace.Prefix()
 
 		uri := namespace.URI()
 
-		if d.foreign(e) && prefix == e.Prefix() {
+		if !d.namespaceAllowed(e, namespace) {
 			continue
 		}
 
-		if d.nsEmitted != nil && d.nsEmitted[prefix] == uri {
+		if (prefix == "" || d.nsEmitted != nil) && d.nsEmitted[prefix] == uri {
 			continue
 		}
 
 		d.writeNSDecl(out, prefix, uri)
+		defaultEmitted = defaultEmitted || prefix == ""
 	}
 
-	if d.foreign(e) && d.nsEmitted[""] != e.URI() {
+	if d.foreign(e) && !defaultEmitted && d.nsEmitted[""] != e.URI() {
 		d.writeNSDecl(out, "", e.URI())
 	}
 
-	if info == nil {
-		d.emitAttrNSDecls(out, e)
-	}
+	d.emitAttrNSDecls(out, e)
 }
 
-func (d *htmlDumper) pushElementNamespaces(e *xdm.Element, info *htmlElemDesc) (map[string]string, map[string]string) {
+func (d *htmlDumper) pushElementNamespaces(e *xdm.Element) (map[string]string, map[string]string) {
 	if !d.preserveCase {
 		return nil, nil
 	}
@@ -930,11 +1045,10 @@ func (d *htmlDumper) pushElementNamespaces(e *xdm.Element, info *htmlElemDesc) (
 	savedAvailable := d.nsAvailable
 	emitted := copyMap(d.nsEmitted)
 	available := copyMap(d.nsAvailable)
-	emitDecls := emitsElementNSDecls(e, info)
 
 	for _, namespace := range e.Namespaces() {
 		available[namespace.Prefix()] = namespace.URI()
-		if emitDecls {
+		if d.namespaceAllowed(e, namespace) {
 			emitted[namespace.Prefix()] = namespace.URI()
 		}
 	}
@@ -944,13 +1058,11 @@ func (d *htmlDumper) pushElementNamespaces(e *xdm.Element, info *htmlElemDesc) (
 		available[""] = e.URI()
 	}
 
-	if emitDecls && info == nil {
-		for _, attribute := range e.Attributes() {
-			prefix := attribute.Prefix()
-			if prefix != "" && attribute.URI() != "" {
-				emitted[prefix] = attribute.URI()
-				available[prefix] = attribute.URI()
-			}
+	for _, attribute := range e.Attributes() {
+		prefix := attribute.Prefix()
+		if prefix != "" && attribute.URI() != "" {
+			emitted[prefix] = attribute.URI()
+			available[prefix] = attribute.URI()
 		}
 	}
 
@@ -989,7 +1101,7 @@ func (d *htmlDumper) dumpAttributes(out io.Writer, e *xdm.Element) error {
 
 		// HTML boolean attributes: minimize when value equals the
 		// attribute name (case-insensitive), per XSLT serialization spec.
-		if isHTMLBooleanAttribute(attrNameLower) {
+		if d.isHTMLElement(e) && attr.URI() == "" && isHTMLBooleanAttribute(attrNameLower) {
 			val := attr.Value()
 			if strings.EqualFold(val, attrNameLower) {
 				continue
@@ -997,12 +1109,8 @@ func (d *htmlDumper) dumpAttributes(out io.Writer, e *xdm.Element) error {
 		}
 
 		val := attr.Value()
-		if d.contentType != "" && attrNameLower == "content" && strings.EqualFold(e.LocalName(), "meta") && d.metadataHeadElement(e.Parent()) && isContentTypeMeta(e) {
-			val = d.contentType
-		}
-
 		elemName := strings.ToLower(e.LocalName())
-		isURI := isURIAttr(attrNameLower, elemName)
+		isURI := d.isHTMLElement(e) && attr.URI() == "" && isURIAttr(attrNameLower, elemName)
 
 		uriEscaped := isURI && !d.noEscapeURIAttributes
 
@@ -1018,6 +1126,8 @@ func (d *htmlDumper) dumpAttributes(out io.Writer, e *xdm.Element) error {
 			// URI-escaped value is already ASCII (percent-encoded), so normalization
 			// is a no-op there and character mapping is skipped.
 			switch {
+			case !d.isHTMLElement(e) || attr.URI() != "":
+				d.check(d.dumpXMLCharacters(out, val, tree.XMLAttributeValue))
 			case uriEscaped:
 				d.check(writeURIAttribute(d.ctx, out, val))
 			case d.normalize:
@@ -1034,10 +1144,58 @@ func (d *htmlDumper) dumpAttributes(out io.Writer, e *xdm.Element) error {
 }
 
 // isURIAttr reports HTML attributes whose values contain URIs.
-// The name attribute is a URI only on anchor elements.
+// Serialization 3.1 Appendix D defines URI attributes by both element and
+// attribute name. Unknown elements and namespace-qualified names are excluded
+// by the caller (section 7.1).
 func isURIAttr(attribute, element string) bool {
-	return attribute == "href" || attribute == "action" || attribute == "src" ||
-		attribute == "name" && element == "a"
+	var elements string
+
+	switch attribute {
+	case "action":
+		elements = "form"
+	case "archive", "classid", elemData:
+		elements = "object"
+	case "background":
+		elements = "body"
+	case "cite":
+		elements = "blockquote del ins q"
+	case "codebase":
+		elements = "applet object"
+	case "datasrc":
+		elements = "button div input object select span table textarea"
+	case "for":
+		elements = "script"
+	case "formaction":
+		elements = "button input"
+	case "href":
+		elements = "a area base link"
+	case "icon":
+		elements = "command"
+	case "longdesc":
+		elements = "frame iframe img"
+	case "manifest":
+		elements = "html"
+	case "name":
+		elements = "a"
+	case "poster":
+		elements = elemVideo
+	case "profile":
+		elements = "head"
+	case "src":
+		elements = "audio embed frame iframe img input script source track video"
+	case "usemap":
+		elements = "img input object"
+	case "value":
+		elements = elemInput
+	}
+
+	for name := range strings.FieldsSeq(elements) {
+		if name == element {
+			return true
+		}
+	}
+
+	return false
 }
 
 // isHTMLBooleanAttribute reports attributes minimized when their value matches
@@ -1074,7 +1232,7 @@ func writeURIAttribute(ctx context.Context, out io.Writer, s string) error {
 
 	if err := norm.NFC.EachBytes(ctx, s, func(part []byte) error {
 		for _, c := range part {
-			if n+5 > len(buffer) {
+			if n+6 > len(buffer) {
 				if err := flush(); err != nil {
 					return err
 				}
@@ -1083,7 +1241,11 @@ func writeURIAttribute(ctx context.Context, out io.Writer, s string) error {
 			switch {
 			case c == '&':
 				n += copy(buffer[n:], htmlAttrEscAmp)
-			case isURISafe(c):
+			case c == '"':
+				n += copy(buffer[n:], htmlAttrEscQuot)
+			case c == '<':
+				n += copy(buffer[n:], htmlAttrEscLt)
+			case c >= 0x20 && c <= 0x7e:
 				buffer[n] = c
 				n++
 			default:
@@ -1102,38 +1264,6 @@ func writeURIAttribute(ctx context.Context, out io.Writer, s string) error {
 	}
 
 	return nil
-}
-
-// isURISafe returns true if the byte should NOT be percent-encoded.
-// Matches libxml2's xmlURIEscapeStr unreserved set plus allowed set "@/:=?;#%&,+".
-// Also includes <, >, \, and other printable chars that our parseOptions may have
-// produced by resolving entity refs (libxml2 preserves entity ref nodes and
-// doesn't encounter these as literal chars during URI escaping).
-func isURISafe(c byte) bool {
-	if c >= 'A' && c <= 'Z' {
-		return true
-	}
-
-	if c >= 'a' && c <= 'z' {
-		return true
-	}
-
-	if c >= '0' && c <= '9' {
-		return true
-	}
-
-	switch c {
-	case '-', '_', '.', '~': // unreserved (RFC 3986)
-		return true
-	case '!', '*', '\'', '(', ')': // unreserved (libxml2)
-		return true
-	case '@', '/', ':', '=', '?', ';', '#', '%', '&', ',', '+': // libxml2 allowed set
-		return true
-	case '<', '>', '\\', '[', ']', '{', '}', '|', '^', '`', '"', '$': // chars from resolved entity refs
-		return true
-	}
-
-	return false
 }
 
 func (d *htmlDumper) writeNSDecl(out io.Writer, prefix, uri string) {
@@ -1173,15 +1303,18 @@ func (d *htmlDumper) writeNSDecl(out io.Writer, prefix, uri string) {
 // that aren't already declared on the element or emitted by an ancestor.
 func (d *htmlDumper) emitAttrNSDecls(out io.Writer, e *xdm.Element) {
 	declared := make(map[string]struct{})
+
 	for _, ns := range e.Namespaces() {
-		declared[ns.Prefix()] = struct{}{}
+		if d.namespaceAllowed(e, ns) {
+			declared[ns.Prefix()] = struct{}{}
+		}
 	}
 
 	seen := make(map[string]struct{})
 
 	for _, attr := range e.Attributes() {
 		prefix := attr.Prefix()
-		if prefix == "" {
+		if prefix == "" || prefix == "xml" {
 			continue
 		}
 
@@ -1275,18 +1408,12 @@ func htmlEscapeString(w io.Writer, s string, escCtrl bool, charMap map[rune]stri
 
 func isContentTypeMeta(e *xdm.Element) bool {
 	for _, a := range e.Attributes() {
-		if strings.EqualFold(a.Name(), "http-equiv") && strings.EqualFold(a.Value(), "Content-Type") {
+		if a.URI() == "" && strings.EqualFold(a.Name(), "http-equiv") && strings.EqualFold(strings.Trim(a.Value(), " \t\r\n"), "Content-Type") {
 			return true
 		}
 	}
 
 	return false
-}
-
-func emitsElementNSDecls(e *xdm.Element, info *htmlElemDesc) bool {
-	isRoot := e.Parent() != nil && e.Parent().Type() != xdm.ElementNode
-
-	return isRoot || info == nil
 }
 
 // htmlNormalizationForm maps a normalization-form parameter name to its

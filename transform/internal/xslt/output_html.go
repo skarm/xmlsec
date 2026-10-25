@@ -4,10 +4,8 @@
 package xslt
 
 import (
-	"bytes"
 	"context"
 	"io"
-	"strconv"
 	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -15,51 +13,14 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
-func serializeHTML(w io.Writer, doc *xdm.Document, outDef *OutputDef) error {
-	// Use explicit HTMLVersion for DOCTYPE/structural decisions.
-	isHTML5 := isHTMLVersion5(outDef.HTMLVersion)
-	// Use effective version (with XSLT 3.0 default=5) for character escaping.
-	escapeCtrl := effectiveHTMLVersion5(outDef)
-	// HTML 4.01 mode: an explicit html-version < 5. Under HTML 4 rules only
-	// no-namespace elements are HTML elements, so a namespaced void element
-	// (e.g. an XHTML-namespace <meta>) is serialized with an explicit end tag.
-	html4 := isHTMLVersionBelow5(outDef.HTMLVersion)
-
-	// Insert <meta http-equiv="Content-Type"> in <head> if not already present.
-	if outDef.IncludeContentType == nil || *outDef.IncludeContentType {
-		insertHTMLMeta(doc, outDef)
-	}
-
-	// For HTML5: normalize SVG and MathML namespaces so that elements in
-	// those namespaces use the default namespace (unprefixed) per the
-	// HTML5 serialization spec.
-	if isHTML5 {
-		normalizeForeignNamespaces(doc)
-	}
-
-	// For HTML5 without explicit doctype attrs, we need to serialize
-	// children manually to insert <!DOCTYPE html> before the first element.
-	noEscapeURI := outDef.EscapeURIAttributes != nil && !*outDef.EscapeURIAttributes
-
-	hw := htmlpkg.NewWriter().DefaultDTD(false).Format(false).PreserveCase(true).DOEMarkers(true)
-	if noEscapeURI {
-		hw = hw.EscapeURIAttributes(false)
-	}
-
-	if escapeCtrl {
-		hw = hw.EscapeControlChars(true)
-	}
-
-	if html4 {
-		hw = hw.NullNamespaceHTMLOnly(true)
-	}
-
-	return serializeHTMLChildren(w, doc, hw, outDef)
+func serializeHTML(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMap map[rune]string) error {
+	writer := htmlResultWriter(outDef).DOEMarkers(true).CharacterMap(charMap)
+	return serializeHTMLChildren(w, doc, writer, outDef)
 }
 
 func serializeHTMLChildren(w io.Writer, doc *xdm.Document, hw htmlpkg.Writer, outDef *OutputDef) error {
 	emitted := false
-	automatic := isHTMLVersion5(outDef.HTMLVersion)
+	automatic := effectiveHTMLVersion5(outDef)
 	explicit := outDef.DoctypePublic != "" || outDef.DoctypeSystem != ""
 	items := func(yield func(xdm.XMLItem, error) bool) {
 		for child := range xdm.Children(doc) {
@@ -89,71 +50,6 @@ func serializeHTMLChildren(w io.Writer, doc *xdm.Document, hw htmlpkg.Writer, ou
 	return hw.WriteSequence(context.Background(), w, items)
 }
 
-// serializeXHTML serializes using the XHTML output method.
-// XHTML is essentially XML with HTML-specific additions:
-// - meta charset tag in <head>
-// - For HTML5, simplified DOCTYPE
-// - Self-closing void elements with a space before />
-func serializeXHTML(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMap map[rune]string) error {
-	isHTML5 := isHTMLVersion5(outDef.HTMLVersion)
-
-	// Per XSLT spec, doctype-public without doctype-system is ignored for xhtml.
-	if outDef.DoctypeSystem == "" && outDef.DoctypePublic != "" {
-		outDef.DoctypePublic = ""
-	}
-
-	// For HTML5: only use explicit doctype when doctype-system is specified.
-	// Without doctype-system (even if doctype-public is set), use <!DOCTYPE html>.
-	// Only emit the HTML5 DOCTYPE when the root element is "html" in the XHTML namespace.
-	if isHTML5 && outDef.DoctypeSystem == "" && allowsAutomaticResultDoctype(doc) {
-		root := doc.DocumentElement()
-		if root != nil && strings.EqualFold(root.LocalName(), methodHTML) &&
-			root.URI() == lexicon.NamespaceXHTML {
-			dtdName := root.LocalName()
-			doc.SetDoctype(dtdName, "", "")
-		}
-	}
-
-	// Insert <meta http-equiv="Content-Type"> in <head>, but only when the
-	// root element is in the XHTML namespace (non-XHTML documents should not
-	// get an injected meta tag).
-	if outDef.IncludeContentType == nil || *outDef.IncludeContentType {
-		root := doc.DocumentElement()
-		if root != nil && root.URI() == lexicon.NamespaceXHTML {
-			insertHTMLMeta(doc, outDef)
-		}
-	}
-
-	if isHTML5 {
-		normalizeXHTML5Prefixes(doc)
-	} else {
-		normalizeXHTMLNamespace(doc)
-	}
-
-	// Serialize as XML first.
-	var buf bytes.Buffer
-	if err := serializeXML(&buf, doc, outDef, charMap); err != nil {
-		return err
-	}
-
-	result := buf.String()
-
-	// Post-process for XHTML rules:
-	// 0. Replace &quot; with &#34; — XHTML uses numeric character references
-	//    for double quotes in attribute values, not the named entity.
-	result = strings.ReplaceAll(result, "&quot;", "&#34;")
-
-	escapeURI := outDef.EscapeURIAttributes == nil || *outDef.EscapeURIAttributes
-	if escapeURI {
-		result = escapeXHTMLURIAttrsInString(result)
-	}
-
-	result = escapeC1ControlsInString(result)
-	result = fixXHTMLSelfClosing(result)
-
-	return writeFullString(w, result)
-}
-
 func allowsAutomaticResultDoctype(doc *xdm.Document) bool {
 	for child := range xdm.Children(doc) {
 		if child.Type() == xdm.ElementNode {
@@ -168,456 +64,65 @@ func allowsAutomaticResultDoctype(doc *xdm.Document) bool {
 	return false
 }
 
-// normalizeXHTMLNamespace walks the document and converts prefixed XHTML
-// namespace elements to use the default namespace (unprefixed), as required
-// by the XHTML output method. The default namespace declaration is added
-// only to the root element; descendants inherit it.
-func normalizeXHTMLNamespace(doc *xdm.Document) {
-	normalizer := xhtmlNamespaceNormalizer{}
-	// The freshly built tree is acyclic; namespace normalization cannot create cycles.
-	_ = xdm.Walk(doc, xdm.NodeWalkerFunc(normalizer.visit))
+// XHTML uses the common XML writer, with structural rules applied to owned
+// nodes and original attribute values rather than to serialized markup.
+func serializeXHTML(w io.Writer, doc *xdm.Document, definition *OutputDef, charMap map[rune]string) error {
+	owned, err := xdm.CopyDoc(doc)
+	if err != nil {
+		return err
+	}
+
+	html5 := isHTMLVersion5(definition.HTMLVersion)
+	contentType := ""
+
+	if definition.IncludeContentType == nil || *definition.IncludeContentType {
+		media, encoding := definition.MediaType, definition.Encoding
+		if media == "" {
+			media = "text/html"
+		}
+
+		if encoding == "" {
+			encoding = lexicon.EncodingUTF8U
+		}
+
+		contentType = media + "; charset=" + encoding
+	}
+
+	if err := htmlpkg.PrepareXHTML(context.Background(), owned, html5, contentType); err != nil {
+		return err
+	}
+
+	root := owned.DocumentElement()
+	if definition.DoctypeSystem != "" && root != nil {
+		owned.SetDoctype(root.Name(), definition.DoctypePublic, definition.DoctypeSystem)
+	} else if html5 && root != nil && htmlpkg.XHTMLIsElement(root.URI(), root.LocalName(), true) && strings.EqualFold(root.LocalName(), methodHTML) && allowsAutomaticResultDoctype(owned) {
+		owned.SetDoctype(root.LocalName(), "", "")
+	} else {
+		owned.Doctype = nil
+	}
+
+	options := streamXMLWriteOptions(definition, strings.ToLower(definition.Encoding))
+	options.CharacterMap, options.DOEMarkers = charMap, true
+	escapeURI := definition.EscapeURIAttributes == nil || *definition.EscapeURIAttributes
+	htmlpkg.ConfigureXHTML(&options, html5, escapeURI)
+
+	writer := xdm.XMLSerialization{XMLWriteOptions: options, Encoding: definition.Encoding, OmitDeclaration: definition.OmitDeclaration, CompactDeclaration: true}
+	if definition.Standalone == lexicon.ValueYes || definition.Standalone == lexicon.ValueNo {
+		writer.Standalone = definition.Standalone
+	}
+
+	return xmlInvalidCharError(writer.WriteTo(w, owned))
 }
 
-// Serialization 3.1 section 6 removes bindings for all three namespaces from
-// every element, except prefixes used by attributes on that element or an
-// ancestor. Element names in these namespaces use a new default binding.
-func normalizeXHTML5Prefixes(doc *xdm.Document) {
-	_ = xdm.Walk(doc, xdm.NodeWalkerFunc(func(n xdm.Node) error {
-		elem, ok := n.(*xdm.Element)
-		if !ok {
-			return nil
-		}
-
-		for _, ns := range elem.Namespaces() {
-			if xhtml5Namespace(ns.URI()) && !ancestorAttributeUsesPrefix(elem, ns.Prefix()) {
-				elem.RemoveNamespaceByPrefix(ns.Prefix())
-			}
-		}
-
-		if uri := elem.URI(); xhtml5Namespace(uri) {
-			_ = elem.DeclareNamespace("", uri)
-			_ = elem.SetActiveNamespace("", uri)
-		}
-
-		return nil
-	}))
-}
-
-func xhtml5Namespace(uri string) bool {
-	return uri == lexicon.NamespaceXHTML || uri == lexicon.NamespaceSVG || uri == lexicon.NamespaceMathML
-}
-
-func ancestorAttributeUsesPrefix(elem *xdm.Element, prefix string) bool {
-	if prefix == "" {
-		return false
+func serializeEncodedXHTML(w io.Writer, doc *xdm.Document, definition *OutputDef, charMap map[rune]string) error {
+	output, finish, err := encodedOutput(context.Background(), w, definition)
+	if err != nil {
+		return err
 	}
 
-	for node := xdm.Node(elem); node != nil; node = node.Parent() {
-		if parent, ok := node.(*xdm.Element); ok {
-			for _, attr := range parent.Attributes() {
-				if attr.Prefix() == prefix {
-					return true
-				}
-			}
-		}
+	if err = serializeXHTML(output, doc, definition, charMap); err != nil {
+		return err
 	}
 
-	return false
-}
-
-type xhtmlNamespaceNormalizer struct {
-	sharedNS *xdm.Namespace
-	rootDone bool
-}
-
-func (c *xhtmlNamespaceNormalizer) visit(n xdm.Node) error {
-	elem, ok := n.(*xdm.Element)
-	if !ok {
-		return nil
-	}
-
-	if elem.URI() != lexicon.NamespaceXHTML {
-		return nil
-	}
-
-	if elem.Prefix() == "" {
-		// Already using default namespace. Capture the NS node if we
-		// haven't seen one yet.
-		if c.sharedNS == nil {
-			for _, ns := range elem.Namespaces() {
-				if ns.Prefix() == "" && ns.URI() == lexicon.NamespaceXHTML {
-					c.sharedNS = ns
-					break
-				}
-			}
-		}
-
-		return nil
-	}
-
-	oldPrefix := elem.Prefix()
-	elem.RemoveNamespaceByPrefix(oldPrefix)
-
-	if !c.rootDone {
-		// First prefixed element: declare default XHTML namespace here
-		_ = elem.DeclareNamespace("", lexicon.NamespaceXHTML)
-		for _, ns := range elem.Namespaces() {
-			if ns.Prefix() == "" && ns.URI() == lexicon.NamespaceXHTML {
-				c.sharedNS = ns
-				break
-			}
-		}
-
-		c.rootDone = true
-	}
-
-	if c.sharedNS != nil {
-		elem.SetNamespace(c.sharedNS)
-	}
-
-	return nil
-}
-
-// normalizeForeignNamespaces converts prefixed SVG and MathML elements to use
-// their default namespace (unprefixed) for HTML5 XHTML output. Each element
-// in the SVG or MathML namespace gets a default xmlns declaration for its own
-// namespace, so it serializes as e.g. <svg xmlns="..."> instead of <s:svg>.
-func normalizeForeignNamespaces(doc *xdm.Document) {
-	// The result tree is freshly built via guarded AddChild, so it is acyclic
-	// and Walk cannot return ErrWalkCycle here; the error is safely ignored.
-	_ = xdm.Walk(doc, xdm.NodeWalkerFunc(func(n xdm.Node) error {
-		elem, ok := n.(*xdm.Element)
-		if !ok {
-			return nil
-		}
-
-		uri := elem.URI()
-		if uri != lexicon.NamespaceSVG && uri != lexicon.NamespaceMathML {
-			return nil
-		}
-
-		if elem.Prefix() == "" {
-			return nil // already unprefixed
-		}
-
-		oldPrefix := elem.Prefix()
-		elem.RemoveNamespaceByPrefix(oldPrefix)
-		// Declare the element's namespace as the default on this element
-		_ = elem.DeclareNamespace("", uri)
-		for _, ns := range elem.Namespaces() {
-			if ns.Prefix() == "" && ns.URI() == uri {
-				elem.SetNamespace(ns)
-				break
-			}
-		}
-
-		return nil
-	}))
-}
-
-// xhtmlVoidElements lists HTML void elements that should be self-closed
-// with a space before /> in XHTML output.
-func xhtmlVoidElements(key string) bool {
-	switch key {
-	case "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", nameParam, "source", "track", "wbr", "basefont", "frame", "isindex":
-		return true
-	}
-
-	return false
-}
-
-// fixXHTMLSelfClosing post-processes XML output for XHTML serialization rules:
-// - Void elements get space before />: <br/> -> <br />
-// - Non-void elements are expanded: <Option.../> -> <Option...></Option>
-func fixXHTMLSelfClosing(xml string) string {
-	var out strings.Builder
-	out.Grow(len(xml))
-
-	i := 0
-	for i < len(xml) {
-		if xml[i] != '<' {
-			out.WriteByte(xml[i])
-			i++
-
-			continue
-		}
-
-		tagEnd := strings.IndexByte(xml[i:], '>')
-		if tagEnd < 0 {
-			out.WriteString(xml[i:])
-			break
-		}
-
-		tag := xml[i : i+tagEnd+1]
-		if strings.HasSuffix(tag, "/>") && !strings.HasPrefix(tag, "<?") {
-			// Self-closing element. Extract element name.
-			nameStart := 1 // skip '<'
-
-			nameEnd := nameStart
-			for nameEnd < len(tag) && tag[nameEnd] != ' ' && tag[nameEnd] != '/' && tag[nameEnd] != '>' && tag[nameEnd] != '\t' && tag[nameEnd] != '\n' {
-				nameEnd++
-			}
-
-			elemName := tag[nameStart:nameEnd]
-
-			localName := elemName
-			if _, after, ok := strings.Cut(elemName, ":"); ok {
-				localName = after
-			}
-
-			if isVoid := xhtmlVoidElements(strings.ToLower(localName)); isVoid {
-				// Void element: add space before />
-				out.WriteString(tag[:len(tag)-2])
-				out.WriteString(" />")
-			} else {
-				// Non-void element: expand to open+close tags
-				out.WriteString(tag[:len(tag)-2])
-				out.WriteString("></")
-				out.WriteString(elemName)
-				out.WriteString(">")
-			}
-		} else {
-			out.WriteString(tag)
-		}
-
-		i += tagEnd + 1
-	}
-
-	return out.String()
-}
-
-// escapeXHTMLURIAttrsInString post-processes serialized XML to percent-encode
-// non-ASCII characters in URI attribute values (href, src, action, etc.)
-func escapeXHTMLURIAttrsInString(xml string) string {
-	var out strings.Builder
-	out.Grow(len(xml))
-
-	i := 0
-	for i < len(xml) {
-		if xml[i] != '<' {
-			out.WriteByte(xml[i])
-			i++
-
-			continue
-		}
-
-		tagEnd := strings.IndexByte(xml[i:], '>')
-		if tagEnd < 0 {
-			out.WriteString(xml[i:])
-			break
-		}
-
-		tag := xml[i : i+tagEnd+1]
-		out.WriteString(escapeURIAttrsInTag(tag))
-
-		i += tagEnd + 1
-	}
-
-	return out.String()
-}
-
-// escapeURIAttrsInTag finds URI attributes in a tag and percent-encodes
-// non-ASCII characters in their values.
-func escapeURIAttrsInTag(tag string) string {
-	if len(tag) < 2 || tag[1] == '/' || tag[1] == '?' || tag[1] == '!' {
-		return tag
-	}
-
-	var out strings.Builder
-	out.Grow(len(tag))
-
-	i := 0
-	for i < len(tag) {
-		if tag[i] == '=' && i > 0 {
-			isURI := htmlURIAttrs(htmlAttributeName(tag, i))
-
-			out.WriteByte('=')
-
-			i++
-			i = escapeQuotedURIValue(&out, tag, i, isURI)
-		} else {
-			out.WriteByte(tag[i])
-			i++
-		}
-	}
-
-	return out.String()
-}
-
-// percentEncodeNonASCII percent-encodes non-ASCII bytes in a string.
-func percentEncodeNonASCII(s string) string {
-	const hex = "0123456789ABCDEF"
-
-	var buf strings.Builder
-
-	for i := range len(s) {
-		c := s[i]
-		if c > 0x7E {
-			buf.WriteByte('%')
-			buf.WriteByte(hex[c>>4])
-			buf.WriteByte(hex[c&0x0F])
-		} else {
-			buf.WriteByte(c)
-		}
-	}
-
-	return buf.String()
-}
-
-// escapeC1ControlsInString replaces C1 control characters (U+0080-U+009F)
-// in the serialized string with numeric character references.
-func escapeC1ControlsInString(s string) string {
-	var (
-		buf    strings.Builder
-		digits [10]byte
-	)
-	buf.Grow(len(s))
-
-	changed := false
-
-	for _, r := range s {
-		if r >= 0x80 && r <= 0x9F {
-			buf.WriteString("&#")
-			buf.Write(strconv.AppendInt(digits[:0], int64(r), 10))
-			buf.WriteByte(';')
-
-			changed = true
-		} else {
-			buf.WriteRune(r)
-		}
-	}
-
-	if !changed {
-		return s
-	}
-
-	return buf.String()
-}
-
-// htmlURIAttrs lists HTML attributes whose values are URIs and should not
-// have character maps applied (they use URI-escaping instead).
-func htmlURIAttrs(key string) bool {
-	switch key {
-	case nameHref, "src", "action", "cite", "data", "formaction", "poster", "codebase", "longdesc", "usemap", "background", "profile":
-		return true
-	}
-
-	return false
-}
-
-// insertHTMLMeta inserts a <meta http-equiv="Content-Type"> element as the
-// first child of the <head> element if not already present.
-func insertHTMLMeta(doc *xdm.Document, outDef *OutputDef) {
-	root := doc.DocumentElement()
-	if root == nil {
-		return
-	}
-	// Find the <head> element (case-insensitive, using local name for namespace support).
-	var head *xdm.Element
-
-	for child := range xdm.Children(root) {
-		if e, ok := child.(*xdm.Element); ok && strings.EqualFold(e.LocalName(), "head") {
-			head = e
-			break
-		}
-	}
-
-	if head == nil {
-		return
-	}
-
-	enc := outDef.Encoding
-	if enc == "" {
-		enc = lexicon.EncodingUTF8U
-	}
-
-	mediaType := outDef.MediaType
-	if mediaType == "" {
-		mediaType = "text/html"
-	}
-
-	contentValue := mediaType + "; charset=" + enc
-
-	// Check if a <meta http-equiv="Content-Type"> already exists.
-	// If so, update its content attribute to match the output encoding.
-	for child := range xdm.Children(head) {
-		if e, ok := child.(*xdm.Element); ok && strings.EqualFold(e.LocalName(), "meta") {
-			for _, attr := range e.Attributes() {
-				if strings.EqualFold(attr.Name(), "http-equiv") && strings.EqualFold(attr.Value(), "Content-Type") {
-					// Update the existing content attribute
-					_ = e.SetAttribute("content", contentValue)
-					return
-				}
-			}
-		}
-	}
-
-	meta, _ := doc.CreateElement("meta")
-	// If the head element is in a namespace, put the meta element in the same namespace.
-	if headURI := head.URI(); headURI != "" {
-		_ = meta.SetActiveNamespace(head.Prefix(), headURI)
-	}
-
-	_ = meta.SetAttribute("http-equiv", "Content-Type")
-	_ = meta.SetAttribute("content", contentValue)
-	// Insert meta as first child of <head>.
-	// Unlink existing children, add meta, then re-add them.
-	var children []xdm.Node
-
-	for child := head.FirstChild(); child != nil; {
-		next := child.NextSibling()
-		xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert
-		children = append(children, child)
-		child = next
-	}
-
-	_ = head.AddChild(meta)
-	for _, child := range children {
-		_ = head.AddChild(child)
-	}
-}
-
-func htmlAttributeName(tag string, equals int) string {
-	// Look back for attribute name
-	nameEnd := equals
-
-	nameStart := nameEnd - 1
-	for nameStart > 0 && tag[nameStart] != ' ' && tag[nameStart] != '\t' && tag[nameStart] != '\n' {
-		nameStart--
-	}
-
-	if tag[nameStart] == ' ' || tag[nameStart] == '\t' || tag[nameStart] == '\n' {
-		nameStart++
-	}
-
-	return strings.ToLower(tag[nameStart:nameEnd])
-}
-
-func escapeQuotedURIValue(out *strings.Builder, tag string, i int, isURI bool) int {
-	if i < len(tag) && (tag[i] == '"' || tag[i] == '\'') {
-		quote := tag[i]
-		out.WriteByte(quote)
-
-		i++
-
-		valStart := i
-		for i < len(tag) && tag[i] != quote {
-			i++
-		}
-
-		val := tag[valStart:i]
-		if isURI {
-			out.WriteString(percentEncodeNonASCII(val))
-		} else {
-			out.WriteString(val)
-		}
-
-		if i < len(tag) {
-			out.WriteByte(quote)
-
-			i++
-		}
-	}
-
-	return i
+	return finish()
 }

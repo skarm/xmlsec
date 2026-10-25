@@ -432,28 +432,25 @@ func (d *Document) wrap(ctx context.Context, r *tree.Node, slot int) error {
 		return nil
 	}
 
-	v := nodeView{raw: r, doc: d, slot: slot, line: int(r.SourceLine), baseURI: d.native.NodeBase(r)}
-
-	var n Node
+	var (
+		n    Node
+		kind ElementType
+	)
 
 	switch r.Kind {
 	case tree.ElementNode:
-		v.kind = ElementNode
-		n = &Element{nodeView: v}
+		kind, n = ElementNode, &Element{}
 	case tree.TextNode:
-		v.kind = TextNode
-		n = &Text{nodeView: v}
+		kind, n = TextNode, &Text{}
 	case tree.CommentNode:
-		v.kind = CommentNode
-		n = &Comment{nodeView: v}
+		kind, n = CommentNode, &Comment{}
 	case tree.PINode:
-		v.kind = ProcessingInstructionNode
-		n = &ProcessingInstruction{nodeView: v}
+		kind, n = ProcessingInstructionNode, &ProcessingInstruction{}
 	default:
 		return tree.ErrUnsupported
 	}
 
-	n.view().self = n
+	*n.view() = nodeView{raw: r, doc: d, slot: slot, line: int(r.SourceLine), baseURI: d.native.NodeBase(r), kind: kind, self: n}
 
 	d.nodes[r] = n
 	if e, ok := n.(*Element); ok {
@@ -1188,15 +1185,35 @@ func FilterChildren(n Node, keep func(Node) bool) {
 	reindex(n)
 }
 
+// Views are initialized in place; an assigned identity stays with its node.
 type nodeView struct {
-	raw     *tree.Node
-	doc     *Document
-	self    Node
-	kind    ElementType
-	slot    int
-	line    int
-	baseURI string
-	parent  Node
+	identity atomic.Uint64
+	raw      *tree.Node
+	doc      *Document
+	self     Node
+	kind     ElementType
+	slot     int
+	line     int
+	baseURI  string
+	parent   Node
+}
+
+var nextNodeIdentity atomic.Uint64 //nolint:gochecknoglobals // Process-unique, non-retaining identities must survive node collection.
+
+// NodeIdentity returns a non-recycled number without retaining the node. Lazy
+// assignment is safe for shared immutable snapshots and survives node adoption.
+func NodeIdentity(n Node) uint64 {
+	nv := n.view()
+	if id := nv.identity.Load(); id != 0 {
+		return id
+	}
+
+	id := nextNodeIdentity.Add(1)
+	if nv.identity.CompareAndSwap(0, id) {
+		return id
+	}
+
+	return nv.identity.Load()
 }
 
 func (nv *nodeView) Type() ElementType { return nv.kind }

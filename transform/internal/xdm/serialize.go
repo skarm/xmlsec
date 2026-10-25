@@ -29,7 +29,7 @@ func (w XMLSerialization) WriteTo(dst io.Writer, n Node) error {
 			return err
 		}
 
-		if !w.OmitDoctype {
+		if !w.OmitDoctype && w.Doctype == nil {
 			w.Doctype = d.Doctype
 		}
 	}

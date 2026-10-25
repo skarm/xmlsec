@@ -848,3 +848,52 @@ func TestErrorObjectASTAndVM(t *testing.T) {
 		})
 	}
 }
+
+// Identifiers outlive their nodes: a collected temporary must never lend its
+// identifier to a later allocation in the same transformation.
+func TestGeneratedIDsSurviveCollection(t *testing.T) {
+	seen := make(map[string]struct{}, 2048)
+	createID := func() string {
+		doc := xdm.NewDefaultDocument()
+		node, err := doc.CreateElement("temporary")
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := StableNodeID(node)
+		if StableNodeID(node) != id {
+			t.Fatal("same node changed identity")
+		}
+		return id
+	}
+	for i := range 2048 {
+		if i%64 == 0 {
+			runtime.GC()
+		}
+		id := createID()
+		if _, exists := seen[id]; exists {
+			t.Fatalf("distinct temporary nodes shared identifier %q at allocation %d", id, i)
+		}
+		seen[id] = struct{}{}
+	}
+}
+
+func TestGeneratedIDConcurrentSnapshot(t *testing.T) {
+	doc := xdm.NewDefaultDocument()
+	node, err := doc.CreateElement("shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make(chan string, 32)
+	var workers sync.WaitGroup
+	for range 32 {
+		workers.Go(func() { ids <- StableNodeID(node) })
+	}
+	workers.Wait()
+	close(ids)
+	want := StableNodeID(node)
+	for id := range ids {
+		if id != want {
+			t.Fatal("concurrent identity changed", id, want)
+		}
+	}
+}

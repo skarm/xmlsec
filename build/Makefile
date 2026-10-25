@@ -53,7 +53,7 @@ suites:
 
 # Optional independent engines; never part of ordinary Go checks.
 interop:
-	$(GO) test -tags=interop -count=1 -v ./transform -run=Compare
+	$(GO) test -tags=interop -count=1 -v -timeout=20m ./transform -run=Compare
 	$(GO) test -tags=interop -count=1 -v -timeout=15m ./tests/interop -args $(INTEROP_ARGS)
 
 # The same complete Linux run used by the Docker image.

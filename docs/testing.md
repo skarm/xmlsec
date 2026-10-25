@@ -34,7 +34,9 @@ It invokes the published CLI with `-xsltversion:2.0`, verifies the reported vers
 and rejection of a 3.0 instruction, then checks decimal versions, import order and
 module namespace scope. A modern engine's 3.0 handling of a version 2.0 stylesheet
 does not establish strict 2.0 behavior. Keep this jar outside the repository; set
-both Saxon classpaths for a complete `-run '^TestCompare'` Docker run.
+both Saxon classpaths for a complete `-run '^TestCompare'` Docker run. Use
+`-timeout=20m` for the complete transform comparison; each JVM startup contributes
+to the suite runtime. `make interop` supplies this overall test timeout.
 
 [CI](../.github/workflows/ci.yml) defines tool versions and platform checks.
 The Go development runner also works without make:

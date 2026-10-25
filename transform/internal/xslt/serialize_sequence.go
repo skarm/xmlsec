@@ -15,104 +15,13 @@ import (
 )
 
 type serializationSequence struct {
-	ctx                          context.Context
-	definition                   *OutputDef
-	previousAtomic, previousItem bool
+	ctx        context.Context
+	definition *OutputDef
 }
 
 func (s *serializationSequence) items(seq xdm.Sequence) iter.Seq2[xdm.XMLItem, error] {
-	return func(yield func(xdm.XMLItem, error) bool) { s.append(seq, 0, yield) }
-}
-
-func (s *serializationSequence) append(seq xdm.Sequence, depth int, yield func(xdm.XMLItem, error) bool) bool {
-	if depth > xpath.DepthLimit(s.ctx, 128) {
-		yield(xdm.XMLItem{}, xpath.ErrBudget)
-		return false
-	}
-
-	for item := range xdm.SequenceItems(seq) {
-		if err := xpath.Charge(s.ctx, 1); err != nil {
-			yield(xdm.XMLItem{}, err)
-			return false
-		}
-
-		if array, ok := item.(xdm.ArrayItem); ok {
-			for _, member := range array.MembersView() {
-				if !s.append(member, depth+1, yield) {
-					return false
-				}
-			}
-
-			continue
-		}
-
-		if !s.item(item, yield) {
-			return false
-		}
-
-		s.previousItem = true
-	}
-
-	return true
-}
-
-func (s *serializationSequence) item(item xdm.Item, yield func(xdm.XMLItem, error) bool) bool {
-	if s.previousItem && s.definition.ItemSeparator != nil {
-		if !yield(xdm.XMLItem{Text: *s.definition.ItemSeparator}, nil) {
-			return false
-		}
-	}
-
-	switch value := item.(type) {
-	case xdm.AtomicValue:
-		if s.previousAtomic && s.definition.ItemSeparator == nil {
-			if !yield(xdm.XMLItem{Text: " "}, nil) {
-				return false
-			}
-		}
-
-		text, err := xpath.AtomicToString(value)
-		if err != nil {
-			yield(xdm.XMLItem{}, err)
-			return false
-		}
-
-		if !yield(xdm.XMLItem{Text: text}, nil) {
-			return false
-		}
-
-		s.previousAtomic = true
-	case xdm.NodeItem:
-		if !s.node(value.Node, yield) {
-			return false
-		}
-
-		s.previousAtomic = false
-	default:
-		yield(xdm.XMLItem{}, dynamicError("SENR0001", "cannot serialize maps or functions using this output method"))
-		return false
-	}
-
-	return true
-}
-
-func (s *serializationSequence) node(node xdm.Node, yield func(xdm.XMLItem, error) bool) bool {
-	if node == nil || node.Type() == xdm.AttributeNode || node.Type() == xdm.NamespaceNode {
-		yield(xdm.XMLItem{}, dynamicError("SENR0001", "cannot serialize a free attribute or namespace"))
-		return false
-	}
-
-	if node.Type() != xdm.DocumentNode {
-		return yield(xdm.XMLItem{Node: node}, nil)
-	}
-
-	for child := range xdm.Children(node) {
-		if !yield(xdm.XMLItem{Node: child}, nil) {
-			return false
-		}
-	}
-
-	return true
+	coalesce := s.definition.NormalizationForm != "" && s.definition.NormalizationForm != "none" && s.definition.NormalizationForm != "NONE"
+	return xpath.SerializationItems(s.ctx, seq, s.definition.ItemSeparator, coalesce)
 }
 
 func firstSerializationElement(seq xdm.Sequence) *xdm.Element {
@@ -169,7 +78,7 @@ func writeXMLProlog(w io.Writer, definition *OutputDef) error {
 		}
 
 		declaration := fmt.Sprintf("<?xml version=\"%s\" encoding=\"%s\"", version, name)
-		if definition.Standalone == "yes" || definition.Standalone == "no" {
+		if definition.Standalone == lexicon.ValueYes || definition.Standalone == lexicon.ValueNo {
 			declaration += " standalone=\"" + definition.Standalone + "\""
 		}
 
@@ -192,7 +101,7 @@ func streamXMLWriteOptions(definition *OutputDef, encoding string) tree.XMLWrite
 		version = lexicon.XSLTVersion10
 	}
 
-	options := tree.XMLWriteOptions{CanEncode: definition.canEncode, Version: version, Indent: definition.Indent, ASCII: encoding == encodingASCII, CharacterMap: definition.ResolvedCharMap, Normalization: definition.NormalizationForm, PrefixUndeclarations: definition.UndeclarePrefixes}
+	options := tree.XMLWriteOptions{EscapeControlChars: true, CanEncode: definition.canEncode, Version: version, Indent: definition.Indent, ASCII: encoding == encodingASCII, CharacterMap: definition.ResolvedCharMap, Normalization: definition.NormalizationForm, PrefixUndeclarations: definition.UndeclarePrefixes}
 	if options.Normalization == lexicon.NormFullyNormalized {
 		options.Normalization = "NFC"
 	}

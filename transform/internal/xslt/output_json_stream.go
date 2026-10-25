@@ -1,8 +1,8 @@
 package xslt
 
 import (
+	"context"
 	"io"
-	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
@@ -10,91 +10,87 @@ import (
 
 // JSON serialization does not normalize sequences into arrays (SER31 §9).
 // The same cardinality rules apply to the result and every map/array member.
-func writeJSONItems(w io.Writer, seq xdm.Sequence, out *OutputDef) error {
+func writeJSONItems(ctx context.Context, w io.Writer, seq xdm.Sequence, out *OutputDef, depth int) error {
 	switch xdm.SequenceLen(seq) {
 	case 0:
 		return writeFullString(w, "null")
 	case 1:
-		return writeJSONItem(w, seq.Get(0), out)
+		return writeJSONItem(ctx, w, seq.Get(0), out, depth)
 	default:
 		return dynamicError("SERE0023", "JSON serialization requires at most one item")
 	}
 }
 
-func writeJSONItem(w io.Writer, item xdm.Item, out *OutputDef) error {
+func writeJSONItem(ctx context.Context, w io.Writer, item xdm.Item, out *OutputDef, depth int) error {
+	if depth > xpath.DepthLimit(ctx, 128) {
+		return xpath.ErrBudget
+	}
+
+	if err := xpath.Charge(ctx, 1); err != nil {
+		return err
+	}
+
 	switch v := item.(type) {
 	case xdm.MapItem:
-		return writeJSONMap(w, v, out)
+		return writeJSONMap(ctx, w, v, out, depth)
 	case xdm.ArrayItem:
-		return writeJSONArray(w, v, out)
+		return writeJSONArray(ctx, w, v, out, depth)
+	case xdm.NodeItem:
+		method := methodXML
+		if out != nil && out.JSONNodeOutputMethod != "" {
+			method = out.JSONNodeOutputMethod
+		}
+
+		value, err := xpath.SerializeNodeForJSON(ctx, v, method)
+		if err != nil {
+			return err
+		}
+
+		return writeJSONString(ctx, w, value, out)
 	case xdm.AtomicValue:
-		if v.TypeName == xdm.TypeString || xdm.IsStringDerived(v.TypeName) || v.TypeName == xdm.TypeUntypedAtomic || v.TypeName == xdm.TypeAnyURI {
-			text, err := xpath.AtomicToString(v)
+		if !v.IsNumeric() && v.TypeName != xdm.TypeBoolean {
+			value, err := xpath.AtomicToString(v)
 			if err != nil {
 				return err
 			}
 
-			return writeJSONString(w, text, out)
+			return writeJSONString(ctx, w, value, out)
 		}
 	}
 
-	text, err := serializeItemJSON(item, out)
+	value, ok := item.(xdm.AtomicValue)
+	if !ok {
+		return dynamicError("SERE0021", "cannot serialize %T as JSON", item)
+	}
+
+	text, err := xpath.AtomicToString(value)
 	if err != nil {
 		return err
 	}
 
-	if out != nil && (len(out.ResolvedCharMap) > 0 || out.NormalizationForm != "") {
-		text = applyCharMapJSON(text, out.ResolvedCharMap, out.NormalizationForm)
+	if value.IsNumeric() && (text == valueNaN || text == "INF" || text == "-INF" || text == "+INF") {
+		return dynamicError("SERE0020", "cannot serialize NaN or infinity as JSON")
 	}
 
 	return writeFullString(w, text)
 }
 
-func writeJSONString(w io.Writer, value string, out *OutputDef) error {
-	if out != nil && (len(out.ResolvedCharMap) > 0 || out.NormalizationForm != "") {
-		return writeFullString(w, applyCharMapJSON(jsonEscapeString(value), out.ResolvedCharMap, out.NormalizationForm))
+func writeJSONString(ctx context.Context, w io.Writer, value string, out *OutputDef) error {
+	var (
+		charMap   map[rune]string
+		form      string
+		canEncode func(rune) bool
+	)
+
+	if out != nil {
+		charMap, form = out.ResolvedCharMap, out.NormalizationForm
+		canEncode = out.canEncode
 	}
 
-	if err := writeFullString(w, "\""); err != nil {
-		return err
-	}
-
-	start := 0
-
-	for offset, r := range value {
-		escaped := jsonRuneEscape(r)
-
-		width := utf8.RuneLen(r)
-		if r == utf8.RuneError {
-			_, width = utf8.DecodeRuneInString(value[offset:])
-			if width == 1 {
-				escaped = "�"
-			}
-		}
-
-		if escaped == "" {
-			continue
-		}
-
-		if err := writeFullString(w, value[start:offset]); err != nil {
-			return err
-		}
-
-		if err := writeFullString(w, escaped); err != nil {
-			return err
-		}
-
-		start = offset + width
-	}
-
-	if err := writeFullString(w, value[start:]); err != nil {
-		return err
-	}
-
-	return writeFullString(w, "\"")
+	return xpath.WriteJSONString(ctx, w, value, charMap, form, canEncode)
 }
 
-func writeJSONMap(w io.Writer, v xdm.MapItem, out *OutputDef) error {
+func writeJSONMap(ctx context.Context, w io.Writer, v xdm.MapItem, out *OutputDef, depth int) error {
 	if err := writeFullString(w, "{"); err != nil {
 		return err
 	}
@@ -122,7 +118,7 @@ func writeJSONMap(w io.Writer, v xdm.MapItem, out *OutputDef) error {
 
 		seen[text] = struct{}{}
 
-		if err := writeJSONString(w, text, out); err != nil {
+		if err := writeJSONString(ctx, w, text, out); err != nil {
 			return err
 		}
 
@@ -130,7 +126,7 @@ func writeJSONMap(w io.Writer, v xdm.MapItem, out *OutputDef) error {
 			return err
 		}
 
-		return writeJSONItems(w, value, out)
+		return writeJSONItems(ctx, w, value, out, depth+1)
 	})
 	if err != nil {
 		return err
@@ -139,7 +135,7 @@ func writeJSONMap(w io.Writer, v xdm.MapItem, out *OutputDef) error {
 	return writeFullString(w, "}")
 }
 
-func writeJSONArray(w io.Writer, v xdm.ArrayItem, out *OutputDef) error {
+func writeJSONArray(ctx context.Context, w io.Writer, v xdm.ArrayItem, out *OutputDef, depth int) error {
 	if err := writeFullString(w, "["); err != nil {
 		return err
 	}
@@ -151,41 +147,10 @@ func writeJSONArray(w io.Writer, v xdm.ArrayItem, out *OutputDef) error {
 			}
 		}
 
-		if err := writeJSONItems(w, value, out); err != nil {
+		if err := writeJSONItems(ctx, w, value, out, depth+1); err != nil {
 			return err
 		}
 	}
 
 	return writeFullString(w, "]")
-}
-
-func jsonRuneEscape(r rune) string {
-	switch r {
-	case '"':
-		return `\"`
-	case '\\':
-		return `\\`
-	case '\b':
-		return `\b`
-	case '\f':
-		return `\f`
-	case '\n':
-		return `\n`
-	case '\r':
-		return `\r`
-	case '\t':
-		return `\t`
-	case '/':
-		return `\/`
-	default:
-		if r < 0x20 {
-			const hex = "0123456789abcdef"
-
-			escaped := [6]byte{'\\', 'u', '0', '0', hex[(r>>4)&0x0F], hex[r&0x0F]}
-
-			return string(escaped[:])
-		}
-
-		return ""
-	}
 }

@@ -20,6 +20,14 @@ import (
 // XMLWriteOptions configures ordinary and XPath/XSLT XML serialization over the
 // same document storage. The zero value preserves the document writer format.
 type XMLWriteOptions struct {
+	// EmptyElement optionally selects name-dependent empty-element syntax.
+	EmptyElement func(Name) EmptyElementMode
+	// PreserveContent disables added indentation throughout selected content;
+	// InlineElement also prevents whitespace adjacent to selected children.
+	PreserveContent, InlineElement func(Name) bool
+	// AttributeWriter handles selected values before ordinary character expansion.
+	// A handled value is already escaped for its surrounding double quotes.
+	AttributeWriter func(context.Context, io.Writer, Name, Attribute) (bool, error)
 	// CanEncode reports the output character repertoire. Unrepresentable content
 	// is written as numeric references; markup names still have to be encodable.
 	CanEncode                            func(rune) bool
@@ -29,9 +37,21 @@ type XMLWriteOptions struct {
 	IndentString, Version, Normalization string
 	// NormalizeXMLID applies the XDM xml:id string value during serialization,
 	// without changing the original XML snapshot. Ordinary XML output leaves it off.
-	NormalizeXMLID                                            bool
+	NormalizeXMLID bool
+	// EscapeControlChars applies serialization's C1/NEL/LS reference rules in
+	// both XML editions; ordinary document output leaves this disabled.
+	EscapeControlChars                                        bool
+	DOEMarkers                                                bool
 	Indent, SelfClose, ASCII, PrefixUndeclarations, Reconcile bool
 }
+
+type EmptyElementMode uint8
+
+const (
+	EmptyElementDefault EmptyElementMode = iota
+	EmptyElementExpanded
+	EmptyElementSpaced
+)
 
 // WriteXMLFragment serializes a private content sequence, including empty or
 // text-only content, with the same escaping, cancellation and output budget.
@@ -55,8 +75,10 @@ func WriteXMLFragmentOptions(ctx context.Context, dst io.Writer, nodes []*Node, 
 	}
 
 	w := &xmlStream{ctx: ctx, output: streamio.Writer{Context: ctx, Target: dst, Limit: int64(maxBytes), LimitError: fmt.Errorf("%w: XML output bytes", ErrLimit)}, options: options, ns: namespaceContext{bindings: bindings}}
+
+	doe := false
 	for _, n := range nodes {
-		w.node(n)
+		w.sibling(n, &doe, false)
 
 		if w.err != nil {
 			break
@@ -80,14 +102,15 @@ func (d *Document) WriteXML(ctx context.Context, dst io.Writer, maxBytes int) (i
 }
 
 type xmlStream struct {
-	ctx       context.Context
-	output    streamio.Writer
-	escaper   xmlEscaper
-	reference [16]byte
-	err       error
-	options   XMLWriteOptions
-	ns        namespaceContext
-	depth     int
+	ctx           context.Context
+	output        streamio.Writer
+	escaper       xmlEscaper
+	reference     [16]byte
+	err           error
+	options       XMLWriteOptions
+	ns            namespaceContext
+	spacePreserve bool
+	depth         int
 }
 
 func (w *xmlStream) Write(p []byte) (int, error) {
@@ -135,12 +158,20 @@ func (w *xmlStream) node(n *Node) {
 			return
 		}
 
+		if !w.markupCharacters(n.Data) {
+			return
+		}
+
 		w.text("<!--")
 		w.text(n.Data)
 		w.text("-->")
 	case PINode:
 		if strings.Contains(n.Data, "?>") || strings.EqualFold(n.Name.Local, nameXML) {
 			w.err = ErrMalformed
+			return
+		}
+
+		if !w.markupCharacters(n.Name.Local) || !w.markupCharacters(n.Data) {
 			return
 		}
 
@@ -154,6 +185,31 @@ func (w *xmlStream) node(n *Node) {
 
 		w.text("?>")
 	}
+}
+
+func (w *xmlStream) markupCharacters(value string) bool {
+	if w.err != nil {
+		return false
+	}
+
+	if !utf8.ValidString(value) {
+		w.err = ErrMalformed
+		return false
+	}
+
+	for _, r := range value {
+		if !xmlchar.IsLiteralChar(r, w.options.Version == version11) {
+			w.err = ErrMalformed
+			return false
+		}
+
+		if w.options.ASCII && r > 127 || w.options.CanEncode != nil && !w.options.CanEncode(r) {
+			w.err = fmt.Errorf("%w: %U", ErrUnencodable, r)
+			return false
+		}
+	}
+
+	return true
 }
 
 func (w *xmlStream) newline() {
@@ -298,7 +354,7 @@ func (w *xmlStream) escapedPart(s string, attribute bool) {
 		return
 	}
 
-	if len(w.options.CharacterMap) == 0 && !w.options.ASCII && w.options.Version != version11 && w.options.CanEncode == nil {
+	if len(w.options.CharacterMap) == 0 && !w.options.ASCII && !w.options.EscapeControlChars && w.options.Version != version11 && w.options.CanEncode == nil {
 		for _, r := range s {
 			if !xmlchar.IsChar(r) {
 				w.err = ErrMalformed
@@ -363,6 +419,7 @@ func (w *xmlStream) characterReplacement(r rune, attribute bool) (string, bool) 
 
 func (w *xmlStream) needsCharacterReference(r rune) bool {
 	return w.options.ASCII && r > 127 ||
+		w.options.EscapeControlChars && (r >= 0x7f && r <= 0x9f || r == 0x2028) ||
 		w.options.Version == version11 && xmlchar.IsXML11SerializeAsCharRef(r) ||
 		r > 127 && w.options.CanEncode != nil && !w.options.CanEncode(r)
 }
@@ -377,6 +434,10 @@ func (w *xmlStream) writeCharacterReference(r rune) {
 func (w *xmlStream) writeElement(n *Node) {
 	if !NCName(n.Name.Local) || n.Prefix != "" && !NCName(n.Prefix) {
 		w.err = ErrMalformed
+		return
+	}
+
+	if !w.markupCharacters(QName(n.Prefix, n.Name.Local)) {
 		return
 	}
 
@@ -423,39 +484,26 @@ func (w *xmlStream) writeElement(n *Node) {
 
 	nodeReconcile(w, scope, n, declare)
 
-	for _, a := range n.Attrs {
-		w.text(" ")
-		w.text(QName(a.Prefix, a.Name.Local))
-		w.text("=\"")
+	w.writeAttributes(n)
 
-		value := a.Value
-		if w.options.NormalizeXMLID && a.Name == (Name{Space: XMLNamespace, Local: "id"}) {
-			value = xmlchar.CollapseSpace(value)
-		}
-
-		w.escaped(value, true)
-		w.text("\"")
-	}
-
-	if len(n.Children) == 0 && w.options.SelfClose {
-		w.text("/>")
+	if len(n.Children) == 0 && w.closeEmptyElement(n.Name) {
 		w.ns.pop(mark)
-
 		return
 	}
 
 	w.text(">")
-	pretty := w.options.Indent
+	previousSpace := w.applySpace(n)
 
-	for _, c := range n.Children {
-		if c.Kind == TextNode {
-			pretty = false
-		}
-	}
+	pretty := w.indentContent(n)
 
 	key := "{" + n.Name.Space + "}" + n.Name.Local
 
 	indent := w.options.Indent
+	if w.options.PreserveContent != nil && w.options.PreserveContent(n.Name) {
+		pretty = false
+		w.options.Indent = false
+	}
+
 	if _, suppressed := w.options.SuppressIndent[key]; suppressed {
 		pretty = false
 		w.options.Indent = false
@@ -469,6 +517,8 @@ func (w *xmlStream) writeElement(n *Node) {
 	w.depth--
 
 	w.options.Indent = indent
+
+	w.spacePreserve = previousSpace
 	if pretty && len(n.Children) > 0 {
 		w.newline()
 	}
@@ -479,21 +529,124 @@ func (w *xmlStream) writeElement(n *Node) {
 	w.ns.pop(mark)
 }
 
+func (w *xmlStream) indentContent(n *Node) bool {
+	if !w.options.Indent || w.spacePreserve {
+		return false
+	}
+
+	for _, child := range n.Children {
+		if child.Kind == TextNode || child.Kind == ElementNode && w.options.InlineElement != nil && w.options.InlineElement(child.Name) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (w *xmlStream) applySpace(n *Node) bool {
+	previousSpace := w.spacePreserve
+
+	for _, attribute := range n.Attrs {
+		if attribute.Name == (Name{Space: XMLNamespace, Local: xmlSpaceName}) {
+			switch attribute.Value {
+			case "preserve":
+				w.spacePreserve = true
+			case "default":
+				w.spacePreserve = false
+			}
+		}
+	}
+
+	return previousSpace
+}
+
+func (w *xmlStream) writeAttributes(n *Node) {
+	for _, a := range n.Attrs {
+		if !w.markupCharacters(QName(a.Prefix, a.Name.Local)) {
+			return
+		}
+
+		w.text(" ")
+		w.text(QName(a.Prefix, a.Name.Local))
+		w.text("=\"")
+
+		value := a.Value
+		if w.options.NormalizeXMLID && a.Name == (Name{Space: XMLNamespace, Local: "id"}) {
+			value = xmlchar.CollapseSpace(value)
+		}
+
+		handled := false
+
+		if w.options.AttributeWriter != nil {
+			a.Value = value
+			handled, w.err = w.options.AttributeWriter(w.ctx, w, n.Name, a)
+		}
+
+		if !handled && w.err == nil {
+			w.escaped(value, true)
+		}
+
+		w.text("\"")
+	}
+}
+
+func (w *xmlStream) closeEmptyElement(name Name) bool {
+	if !w.options.SelfClose {
+		return false
+	}
+
+	mode := EmptyElementDefault
+	if w.options.EmptyElement != nil {
+		mode = w.options.EmptyElement(name)
+	}
+
+	if mode == EmptyElementExpanded {
+		return false
+	}
+
+	if mode == EmptyElementSpaced {
+		w.text(" />")
+	} else {
+		w.text("/>")
+	}
+
+	return true
+}
+
 func nodeChildren(n *Node, pretty bool, w *xmlStream, cdata bool) {
+	doe := false
+
 	for _, c := range n.Children {
 		if pretty {
 			w.newline()
 		}
 
-		if cdata && c.Kind == TextNode {
-			w.cdata(c.Data)
-		} else {
-			w.node(c)
-		}
+		w.sibling(c, &doe, cdata)
 
 		if w.err != nil {
 			break
 		}
+	}
+}
+
+func (w *xmlStream) sibling(n *Node, doe *bool, cdata bool) {
+	if w.options.DOEMarkers && n.Kind == PINode && n.Name.Space == "" {
+		switch n.Name.Local {
+		case "disable-output-escaping":
+			*doe = true
+			return
+		case "enable-output-escaping":
+			*doe = false
+			return
+		}
+	}
+
+	if n.Kind == TextNode && *doe {
+		w.normalized(n.Data, w.text)
+	} else if n.Kind == TextNode && cdata {
+		w.cdata(n.Data)
+	} else {
+		w.node(n)
 	}
 }
 

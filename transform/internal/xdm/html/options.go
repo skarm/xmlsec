@@ -3,7 +3,37 @@
 
 package html
 
-import norm "github.com/skarm/xmlsec/internal/normalization"
+import (
+	"strconv"
+
+	norm "github.com/skarm/xmlsec/internal/normalization"
+	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+)
+
+// IsHTMLNamespace selects names subject to the special HTML output rules.
+func IsHTMLNamespace(uri string, html5 bool) bool {
+	return uri == "" || html5 && uri == lexicon.NamespaceXHTML
+}
+
+// RequestedVersion applies the serialization parameter precedence. Modern
+// language hosts select HTML 5 when neither parameter supplies a value.
+func RequestedVersion(htmlVersion, version string) string {
+	if htmlVersion != "" {
+		return htmlVersion
+	}
+
+	if version != "" {
+		return version
+	}
+
+	return "5"
+}
+
+// SupportedVersion identifies the HTML versions selected by this engine.
+func SupportedVersion(version string) bool {
+	value, err := strconv.ParseFloat(version, 64)
+	return err == nil && (value == 4 || value == 4.01 || value == 5)
+}
 
 // Writer configures HTML serialization. It is a value-style wrapper:
 // fluent methods return updated copies and the original is never mutated.
@@ -12,12 +42,14 @@ type Writer struct {
 }
 
 type dumpConfig struct {
-	canEncode func(rune) bool
+	canEncode     func(rune) bool
+	cdataElements map[string]struct{}
 	// charMap substitutes a mapped rune in text and attribute-value content with
 	// its literal replacement string (Serialization 3.1 character maps).
 	// Empty/nil disables the feature.
 	charMap               map[rune]string
 	contentType           string
+	normalizationForm     string
 	normForm              norm.Form
 	foreignNamespaces     bool
 	noDefaultDTD          bool
@@ -83,6 +115,13 @@ func (w Writer) CharacterMap(m map[rune]string) Writer {
 	return w
 }
 
+// CDATAElements selects expanded names in XML islands. HTML elements ignore
+// this serialization parameter (Serialization 3.1 section 7.4.4).
+func (w Writer) CDATAElements(names map[string]struct{}) Writer {
+	w.cdataElements = names
+	return w
+}
+
 // Normalization requests Unicode normalization of text-node and attribute-value
 // character content (the normalization-form serialization parameter). form is one
 // of "NFC", "NFD", "NFKC", "NFKD"; "", "none", or any other value disables it,
@@ -94,6 +133,8 @@ func (w Writer) CharacterMap(m map[rune]string) Writer {
 // replacement is emitted verbatim, never normalized (Serialization 3.1 §11).
 func (w Writer) Normalization(form string) Writer {
 	w.normForm, w.normalize = htmlNormalizationForm(form)
+	w.normalizationForm = form
+
 	return w
 }
 
@@ -115,7 +156,7 @@ func (w Writer) ContentType(value string) Writer {
 	return w
 }
 
-// ForeignNamespaces serializes SVG and MathML elements with a default namespace.
+// ForeignNamespaces serializes HTML5 XHTML, SVG and MathML elements without prefixes.
 func (w Writer) ForeignNamespaces(value bool) Writer {
 	w.foreignNamespaces = value
 	return w

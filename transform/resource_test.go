@@ -3168,7 +3168,7 @@ func TestLanguageDTDFailures(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	reader := &cancelReadResource{lifecycleReader: lifecycleReader{Reader: strings.NewReader(`<n/>`)}, cancel: cancel}
+	reader := &cancelReadResource{Reader: strings.NewReader(`<n/>`), cancel: cancel}
 	e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return reader, nil })})
 	value, err := query(t, e, expression, transform.XPath31).Evaluate(ctx, nil, transform.XPathContext{})
 	if !errors.Is(err, context.Canceled) || !reader.closed || value.Len() != 0 {
@@ -3264,4 +3264,21 @@ func languageDTDExternalStylesheets(base string) []languageDTDCase {
 		result = append(result, languageDTDCase{name, expression, want})
 	}
 	return result
+}
+
+func TestSerializationOutputBudgets(t *testing.T) {
+	e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 64 << 10}})
+	variables := transform.Bindings{
+		{Local: "input"}:       transform.Values(transform.String(strings.Repeat("a", 4096))),
+		{Local: "replacement"}: transform.Values(transform.String(strings.Repeat("b", 4096))),
+	}
+	for _, method := range []string{"xml", "html", "xhtml", "text", "json", "adaptive"} {
+		t.Run(method, func(t *testing.T) {
+			expression := `serialize($input,map{'method':'` + method + `','use-character-maps':map{'a':$replacement}})`
+			got, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: variables})
+			if !errors.Is(err, transform.ErrLimit) || got.Len() != 0 {
+				t.Fatal(got, err)
+			}
+		})
+	}
 }

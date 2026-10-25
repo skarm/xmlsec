@@ -2,8 +2,8 @@
 
 Recorded on 2026-10-24 with Go 1.27.3, darwin/arm64 and `GOMAXPROCS=2`.
 Tested Go sources, module manifests and suite pins have SHA-256
-`2e233ee010e8b1d544401b12761820e0d17a75f21fac6ab6e1b1eef2b08a601e`.
-Reports identify the working tree as based on `de3bfce`,
+`fe804b218c748360634b242679a10f55d33b333d4daa1317c4fda8d9fd223b15`.
+Reports identify the working tree as based on `9ad85aa`,
 `library_modified=true`; documentation is outside the source checksum.
 
 Complete XPath and Basic XSLT conformance remain open. These diagnostics and
@@ -78,10 +78,6 @@ Missing mandatory implementation must not be reclassified as not-applicable.
 XML/serialization mismatches include a bounded excerpt of the differing bytes;
 a failed transformation remains the cause of secondary-result assertion failure.
 
-The QT3 built-in JSON schema import now reaches the untyped evaluator: all 79
-applicable `json-to-xml` cases pass, with 15 not-applicable and no skips. This
-adds 44 passes in XPath 3.1; validation and arbitrary schema imports stay explicit.
-
 Specific unresolved cases:
 - `fn-transform-43`: its quantified assertion can parse an empty principal value;
   the resulting assertion-evaluation error remains a harness failure.
@@ -94,10 +90,9 @@ Specific unresolved cases:
 - XSLT 2.0 `collection-005`: the stylesheet uses XSLT 3.0 `xsl:mode`; the visible
   `XTSE0010` assertion failure remains after source loading was corrected.
 
-- HTML fixes make `output-0603b` and `bug-0701` pass. Four earlier passes now
-  fail visibly: `output-0602a`/`-0603a` require namespace removal/redeclaration
-  beyond the published HTML rules; the former's publisher comment acknowledges
-  that interpretation. `output-0724` and `attribute-0301` require an unescaped
+- HTML `output-0602a`/`-0603a` require namespace removal/redeclaration beyond the
+  published rules; the former's publisher comment acknowledges that interpretation.
+  `output-0724` and `attribute-0301` require an unescaped
   `input/@value`, contrary to the published Appendix D; [W3C qtspecs issue 21](https://github.com/w3c/qtspecs/issues/21)
   remains open. No fixture or outcome has been suppressed.
 
@@ -108,9 +103,21 @@ it does not assert complete implementation or positive/negative coverage.
 Bounded local and Saxon controls cover function signatures, value/cardinality
 errors, version modes, static preprocessing, module aliases, document references,
 namespace input, built-in templates and prepared input/context identity.
-HTML controls cover XML islands, namespace/prefix scope, metadata replacement,
-Appendix D URI attributes and consistent writer/fallback output. They do not
+Shared XML/HTML/XHTML controls cover CDATA, references/repertoires, version
+selection, original URI values, namespace scope, all-head metadata, inline and
+`xml:space` indentation, writer/fallback output and input ownership. GC/concurrent
+controls protect temporary and namespace `generate-id()` identity. They do not
 establish complete Basic semantics, grammar or clause coverage.
+XPath and XSLT now share serialization sequence normalization: a single XML
+declaration, document flattening, coalesced text before normalization and escaped
+separators. Raw/document output enforces the same DOCTYPE shape errors. All six
+XPath/XSLT methods bound character-map expansion before buffer growth. JSON maps
+original string characters, preserves syntax/replacements and normalizes before
+escaping C1, quotes, backslashes and unencodable characters. Text excludes
+comments/PIs. Shared adaptive rules cover functions, QName/primitive atomics,
+container sequences, mapped quotes and delegated XML parameters/declarations.
+Adaptive recovers unencodable markup using UTF-8, before writing the item;
+invalid XML characters retain their serialization errors.
 Remaining work:
 1. Numeric values and casts: complete datatype/value-space distinctions, schema
    types and independent clause evidence.
@@ -134,23 +141,23 @@ validation, schema-aware XSLT and normative W3C streamability remain separate wo
 
 ## Validation and independent engines
 
-`make check`, `make lint` and relevant race checks pass. DTD fuzzing completed
-538,965 inputs without failure. The full Docker transform comparison and the
-focused DTD grammar rerun pass; the latter covers the final NOTATION NCName check.
-The independent run used ready Saxon HE 12.10
-publisher jars, ready Saxon HE 9.4.0.9J in explicit XSLT 2.0 mode, libxml2 and
-libxslt, with networking disabled and no skipped tests.
-See [testing instructions](testing.md).
-Exact agreements and known differences have separate expectations in the existing
-[comparison tests](../transform/comparison_v1_test.go). Diagnostics cover XML and
-serialization editions, static/dynamic error selection, package ownership,
-function/context capture, resource identity and conditional construction.
-The comparison tests retain separate diagnostics for static evaluation order,
-QName prefixes, resource/base context, simplified modules and URI resolution.
-Of the 42 new HTML XSLT/serialize controls, eight are explicit Saxon diagnostics:
-MathML metadata, unknown-namespace href escaping and absent HTML5 URI entries.
-The other controls agree, allowing XML empty-tag spelling and DOCTYPE whitespace.
+`make check`, zero-issue lint and relevant race checks pass. External consumer
+checks, including race and writer allocation/error bounds, pass. The complete
+Docker transform comparison passes without skips using ready Saxon HE 12.10,
+Saxon HE 9.4.0.9J in XSLT 2.0 mode, libxml2 and libxslt, with networking disabled.
+See [testing instructions](testing.md) and the existing
+[comparison tests](../transform/comparison_v1_test.go).
+
+Predicates allow permitted empty-tag, entity, HTML DOCTYPE and outer-layout
+spelling. Separate native/oracle expectations retain static error selection,
+resource/context identity, conditional construction, HTML5 URI recognition,
+MathML metadata, CDATA CR/C1/NEL/LS, XML-island PI and map-default differences.
+XHTML controls also retain Saxon's leading-text DOCTYPE and unescaped
+`source/@src` diagnostics. Publisher expectations remain unchanged.
 DTD controls separately retain Saxon differences in CR normalization, unused
 predefined/NCName declarations, copied ID flags, constructed document entities
-and entity read/write tracking.
-Complete clause evidence and applicable failures remain open.
+and entity read/write tracking. DTD fuzzing completed 538,965 inputs without failure.
+
+Sequence controls retain Saxon's detached CDATA text loss and normalization
+before text coalescence as separate exact-output diagnostics. Complete clause
+evidence and applicable failures remain open.

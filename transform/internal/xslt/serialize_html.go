@@ -14,35 +14,14 @@ import (
 )
 
 func streamHTMLValue(ctx context.Context, w io.Writer, result ValueResult, definition *OutputDef) error {
-	writer := htmlpkg.NewWriter().DefaultDTD(false).Format(false).PreserveCase(true).
-		EscapeControlChars(effectiveHTMLVersion5(definition)).
-		NullNamespaceHTMLOnly(isHTMLVersionBelow5(definition.HTMLVersion)).
-		ForeignNamespaces(isHTMLVersion5(definition.HTMLVersion)).
-		CharacterMap(definition.ResolvedCharMap).Normalization(definition.NormalizationForm).Repertoire(definition.canEncode)
-	if definition.EscapeURIAttributes != nil {
-		writer = writer.EscapeURIAttributes(*definition.EscapeURIAttributes)
-	}
-
-	if definition.IncludeContentType == nil || *definition.IncludeContentType {
-		media := definition.MediaType
-		if media == "" {
-			media = "text/html"
-		}
-
-		encoding := definition.Encoding
-		if encoding == "" {
-			encoding = "UTF-8"
-		}
-
-		writer = writer.ContentType(media + "; charset=" + encoding)
-	}
+	writer := htmlResultWriter(definition)
 
 	explicitDoctype := definition.DoctypePublic != "" || definition.DoctypeSystem != ""
 	buffer := bufio.NewWriterSize(w, 4096)
 	sequence := serializationSequence{ctx: ctx, definition: definition}
 	items := func(yield func(xdm.XMLItem, error) bool) {
 		emitted := false
-		automatic := isHTMLVersion5(definition.HTMLVersion)
+		automatic := effectiveHTMLVersion5(definition)
 
 		for item, err := range sequence.items(result.Items) {
 			if err == nil {
@@ -73,6 +52,59 @@ func streamHTMLValue(ctx context.Context, w io.Writer, result ValueResult, defin
 	}
 
 	return buffer.Flush()
+}
+
+func htmlResultWriter(definition *OutputDef) htmlpkg.Writer {
+	cdata := make(map[string]struct{}, len(definition.CDATASections))
+	for _, name := range definition.CDATASections {
+		cdata[name] = struct{}{}
+	}
+
+	normalization := definition.NormalizationForm
+	if normalization == lexicon.NormFullyNormalized {
+		normalization = normalizationFormNFC
+	}
+
+	writer := htmlpkg.NewWriter().DefaultDTD(false).Format(false).PreserveCase(true).
+		EscapeControlChars(effectiveHTMLVersion5(definition)).
+		NullNamespaceHTMLOnly(!effectiveHTMLVersion5(definition)).
+		ForeignNamespaces(effectiveHTMLVersion5(definition)).
+		CDATAElements(cdata).
+		CharacterMap(definition.ResolvedCharMap).Normalization(normalization).Repertoire(definition.canEncode)
+	if definition.EscapeURIAttributes != nil {
+		writer = writer.EscapeURIAttributes(*definition.EscapeURIAttributes)
+	}
+
+	if definition.IncludeContentType == nil || *definition.IncludeContentType {
+		media := definition.MediaType
+		if media == "" {
+			media = "text/html"
+		}
+
+		encoding := definition.Encoding
+		if encoding == "" {
+			encoding = "UTF-8"
+		}
+
+		writer = writer.ContentType(media + "; charset=" + encoding)
+	}
+
+	return writer
+}
+
+// Both HTML paths choose references before octet encoding, preserving CDATA
+// boundaries and character-map provenance instead of rewriting serialized text.
+func serializeEncodedHTML(w io.Writer, doc *xdm.Document, definition *OutputDef, charMap map[rune]string) error {
+	output, finish, err := encodedOutput(context.Background(), w, definition)
+	if err != nil {
+		return err
+	}
+
+	if err := serializeHTMLResult(output, doc, definition, charMap); err != nil {
+		return err
+	}
+
+	return finish()
 }
 
 func effectiveStreamMethod(result ValueResult, definition *OutputDef) string {

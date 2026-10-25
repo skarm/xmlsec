@@ -404,7 +404,8 @@ func TestEncodedSerializationPreservesCharactersAndEncoderState(t *testing.T) {
 func TestHTMLWritersBoundAttributesAndMappedRawText(t *testing.T) {
 	const count = 1 << 18
 	cases := []struct{ name, input, declarations, output, body, want string }{
-		{"URI", strings.Repeat("e\u0301 &amp;", count), "", `method="html"`, `<a href="{/*}">link</a>`, `<a href="` + strings.Repeat("%C3%A9%20&amp;", count) + `">link</a>`},
+		// F&O escape-html-uri preserves printable ASCII, including space.
+		{"URI", strings.Repeat("e\u0301 &amp;", count), "", `method="html"`, `<a href="{/*}">link</a>`, `<a href="` + strings.Repeat("%C3%A9 &amp;", count) + `">link</a>`},
 		{"raw-text", strings.Repeat("a", count*4), `<xsl:character-map name="m"><xsl:output-character character="a" string="ab"/></xsl:character-map>`, `method="html" use-character-maps="m"`, `<script><xsl:value-of select="/*"/></script>`, `<script>` + strings.Repeat("ab", count*4) + `</script>`},
 	}
 	for _, tc := range cases {
@@ -453,7 +454,8 @@ func TestJSONNodeSerializationKeepsEncoding(t *testing.T) {
 func TestWriterSerializationSupportsBufferedOptions(t *testing.T) {
 	cases := []struct{ output, body, want string }{
 		{`method="xml" omit-xml-declaration="yes"`, `<r><xsl:text disable-output-escaping="yes">&lt;b&gt;raw&lt;/b&gt;</xsl:text></r>`, `<r><b>raw</b></r>`},
-		{`method="xhtml" omit-xml-declaration="yes"`, `<r><br/></r>`, `<r><br /></r>`},
+		{`method="xhtml" omit-xml-declaration="yes"`, `<r><br/></r>`, `<r><br></br></r>`},
+		{`method="xhtml" html-version="5" omit-xml-declaration="yes"`, `<r xmlns="http://www.w3.org/1999/xhtml"><br/></r>`, `<r xmlns="http://www.w3.org/1999/xhtml"><br /></r>`},
 		{`method="html" normalization-form="NFC"`, `<p>e&#x301;</p>`, `<p>é</p>`},
 		{`method="text" normalization-form="FULLY-NORMALIZED"`, `<p>e&#x301;</p>`, `é`},
 		{`method="adaptive"`, `<xsl:sequence select="(1,2)"/>`, "1\n2"},
@@ -488,4 +490,52 @@ func streamingResult(t *testing.T, input, output, body string) *transform.Result
 		t.Fatal(err)
 	}
 	return r
+}
+
+func TestSerializeBoundsCharacterMapExpansion(t *testing.T) {
+	e := newEngine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 64 << 10}})
+	variables := transform.Bindings{
+		{Local: "input"}:       transform.Values(transform.String(strings.Repeat("a", 4096))),
+		{Local: "replacement"}: transform.Values(transform.String(strings.Repeat("b", 4096))),
+	}
+	for _, method := range []string{"xml", "html", "xhtml", "text", "json", "adaptive"} {
+		t.Run(method, func(t *testing.T) {
+			q, err := e.CompileXPath(t.Context(), `serialize($input,map{'method':'`+method+`','use-character-maps':map{'a':$replacement}})`, transform.XPathOptions{Version: transform.XPath31})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The requested expansion is 16 MiB; the invocation permits 64 KiB.
+			allocated := allocatedDuring(t, func() error {
+				got, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: variables})
+				if !errors.Is(err, transform.ErrLimit) || got.Len() != 0 {
+					return errors.New("serialization output budget was ignored")
+				}
+				return nil
+			})
+			if allocated > 1<<20 {
+				t.Fatalf("allocated %d bytes before rejecting character-map expansion", allocated)
+			}
+		})
+	}
+}
+
+func TestXSLTBoundsCharacterMapExpansion(t *testing.T) {
+	e := newEngine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 64 << 10}})
+	bindings := transform.Bindings{{Local: "input"}: transform.Values(transform.String(strings.Repeat("a", 4096)))}
+	for _, method := range []string{"xml", "html", "xhtml", "text", "json", "adaptive"} {
+		t.Run(method, func(t *testing.T) {
+			source := `<xsl:param name="input"/><xsl:output method="` + method + `" use-character-maps="m"/><xsl:character-map name="m"><xsl:output-character character="a" string="` + strings.Repeat("b", 4096) + `"/></xsl:character-map><xsl:template name="start"><xsl:sequence select="$input"/></xsl:template>`
+			compiled := compileSheet(t, e, source)
+			allocated := allocatedDuring(t, func() error {
+				output, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: "start"}, Parameters: bindings})
+				if !errors.Is(err, transform.ErrLimit) || output != nil {
+					return errors.New("XSLT serialization output budget was ignored")
+				}
+				return nil
+			})
+			if allocated > 1<<20 {
+				t.Fatalf("allocated %d bytes before rejecting character-map expansion", allocated)
+			}
+		})
+	}
 }

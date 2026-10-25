@@ -1031,6 +1031,10 @@ func TestCompareSaxonMarkupSerializationContracts(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			check := markupSerializationCheck(test)
 			prefix := `let $s := transform(map{'stylesheet-text':'` + strings.ReplaceAll(markupSerializationSheet(test, false), "'", "''") + `','initial-template':QName('', 'start'),'delivery-format':'serialized'})?output return `
+			if oracle := serializationSequenceOracle(test.name, test.want); oracle != test.want {
+				compareSaxonExpression(t, t.Context(), e, binary, classpath, prefix+`$s`, test.want, oracle)
+				return
+			}
 			// Section 7.4.6 requires an explicit HTML DOCTYPE even without an
 			// element. Saxon defers it to the first element and loses it here.
 			switch test.name {
@@ -1044,10 +1048,13 @@ func TestCompareSaxonMarkupSerializationContracts(t *testing.T) {
 				compareSaxonExpression(t, t.Context(), e, binary, classpath, prefix+`$s`, test.want, `<!--lead--><?p v>text`)
 				return
 			}
-			oracle := nameTrue
+			oracle := markupSerializationOracleWant(test.name)
 			if test.name == "HTML5 leading text" || test.name == "XHTML5 leading text" {
 				// Serialization 3.1 §7.4.6 excludes automatic DOCTYPE after
 				// non-whitespace text; Saxon 12.10 still emits one.
+				oracle = nameFalse
+			}
+			if htmlNamespaceOracleMismatch(test.name) {
 				oracle = nameFalse
 			}
 			if test.name == "NFD text map immunity" {
@@ -1071,6 +1078,26 @@ func TestCompareSaxonMarkupSerializationContracts(t *testing.T) {
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, nameTrue)
 		})
 	}
+	for _, test := range htmlNamespaceCases() {
+		if strings.Contains(test.body, "<xsl:text") {
+			continue
+		}
+		t.Run("serialize "+test.name, func(t *testing.T) {
+			oracle := nameTrue
+			if htmlNamespaceOracleMismatch(test.name) {
+				oracle = nameFalse
+			}
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, htmlSerializationExpression(test), nameTrue, oracle)
+		})
+	}
+}
+
+// Serialization 3.1 section 7.1 excludes these special HTML rules inside XML
+// islands. Saxon 12.10 inserts metadata into MathML head and escapes an unknown
+// namespace's href. Its URI table also omits the Appendix D HTML5 attributes
+// formaction, icon, poster and value. Each difference has an explicit oracle check.
+func htmlNamespaceOracleMismatch(name string) bool {
+	return strings.HasPrefix(name, "HTML5 foreign head") || name == "HTML foreign default namespace" || strings.HasPrefix(name, "HTML URI attribute names")
 }
 
 func TestCompareSaxonContextualKeywordOperands(t *testing.T) {
@@ -1697,7 +1724,7 @@ func TestCompareSaxonHTMLContentErrors(t *testing.T) {
 			expression := `serialize(` + test.expression + `,` + test.options + `)`
 			// Saxon HE 12.10 drops DEL instead of signaling SERE0014.
 			// REC Serialization 3.1 §7.3 still requires the native error.
-			if diagnostic, separate := map[string]string{"HTML4 control": "", "HTML4 attribute": `<r a=""></r>`, "HTML4 version parameter": "", "HTML4 separator": "ab"}[test.name]; separate {
+			if diagnostic, separate := map[string]string{"HTML4 control": "", "HTML4 attribute": `<r a=""></r>`, "HTML4 separator": "ab"}[test.name]; separate {
 				compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, test.code, diagnostic)
 				t.Log("Saxon DEL handling diagnostic; excluded from exact agreements")
 				return
@@ -2196,6 +2223,178 @@ func TestCompareSaxonLanguageDTDExternalEntities(t *testing.T) {
 	for _, test := range languageDTDExternalStylesheets(base) {
 		t.Run(test.name, func(t *testing.T) {
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, test.expression, test.want)
+		})
+	}
+}
+
+func TestCompareSaxonHTMLCDATA(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, test := range htmlCDATACases() {
+		if strings.Contains(test.body, "<xsl:text") {
+			continue
+		}
+		t.Run(test.name, func(t *testing.T) {
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, htmlCDATAExpression(test), nameTrue, markupSerializationOracleWant(test.name))
+		})
+	}
+}
+
+// Serialization 3.1 sections 7.1/7.4.4 apply XML rules to islands and ignore
+// CDATA on HTML5 XHTML elements. Saxon retains separate namespace/CR/DEL/PI
+// behavior in these bounded diagnostics; they are not exact agreements.
+// XML 1.0 CDATA diagnostics also retain Saxon's literal C1/NEL/LS output,
+// while SER31 section 5 requires references even in that output version.
+func markupSerializationOracleWant(name string) string {
+	switch strings.TrimSuffix(name, " fallback") {
+	case "HTML5 CDATA XHTML ignored", "HTML CDATA split and CR", "HTML XML island whitespace", "HTML4 XML island control", "HTML4 XML qualified attribute control", "HTML XML island line separator", "XML 1.0 CDATA control references", "XHTML5 CDATA markup immunity", "XHTML5 null namespace":
+		return nameFalse
+	case "HTML XML island PI", "HTML4 XML island PI":
+		return "SERE0015"
+	default:
+		return nameTrue
+	}
+}
+
+func TestCompareSaxonHTMLVersions(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	// F&O 3.1 section 14.7.3 fixes the map form's html-version default at 5,
+	// including an empty entry. Saxon instead falls back to version or rejects
+	// the empty entry; retain those verified differences as diagnostics.
+	oracle := []string{nameFalse, "XPTY0004", "SESU0013", nameTrue}
+	for i, expression := range htmlVersionExpressions() {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, nameTrue, oracle[i])
+		})
+	}
+}
+
+func TestCompareSaxonSerializationRepertoires(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for i, expression := range serializationRepertoireExpressions() {
+		t.Run(strconv.Itoa(i), func(t *testing.T) { compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, nameTrue) })
+	}
+}
+
+func TestCompareSaxonSerializationControlReferences(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for i, expression := range serializationControlExpressions() {
+		oracle := nameTrue
+		if i%2 == 1 { // SER31 section 5 also requires reference splitting in CDATA.
+			oracle = nameFalse
+		}
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, nameTrue, oracle)
+		})
+	}
+}
+
+func TestCompareSaxonXHTMLContracts(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for i, expression := range xhtmlSerializationExpressions() {
+		oracle := nameTrue
+		if strings.Contains(expression, "parse-xml-fragment('text<html") {
+			// SER31 section 6.1.7 excludes automatic DOCTYPE after text.
+			oracle = nameFalse
+		}
+		if strings.Contains(expression, `parse-xml-fragment('<html><body><br/><p/><source src="café"`) {
+			// SER31 6.1.13 / Appendix D include source/@src in null-namespace
+			// HTML5; Saxon leaves that URI unescaped in this bounded case.
+			oracle = nameFalse
+		}
+
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, nameTrue, oracle)
+		})
+	}
+}
+
+func TestCompareSaxonSerializationSequences(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, test := range serializationSequenceCases() {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name == "XHTML trailing text newline" {
+				compareSaxonExpression(t, t.Context(), e, binary, classpath, `string-join(string-to-codepoints(serialize(`+test.expression+`,`+test.options+`))!string(.),',')`, "97,10")
+			} else {
+				compareSaxonExpression(t, t.Context(), e, binary, classpath, `serialize(`+test.expression+`,`+test.options+`)`, test.want, serializationSequenceOracle(test.name, test.want))
+			}
+		})
+	}
+}
+
+func serializationSequenceOracle(name, want string) string {
+	// SER31 §2 gives selected text a document parent and coalesces text before
+	// §4 character expansion. Saxon 12.10 loses this detached CDATA text and
+	// normalizes the original text chunks separately; retain its exact output.
+	switch name {
+	case "HTML detached text ignores source CDATA parent":
+		return ""
+	case "XML text coalescence before NFC", "HTML text coalescence before NFC", "XHTML text coalescence before NFC", "XML document flattening precedes NFC":
+		return "e\u0301"
+	default:
+		return want
+	}
+}
+
+func TestCompareSaxonJSONCharacterExpansion(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, test := range jsonCharacterExpansionCases() {
+		t.Run(test.name, func(t *testing.T) {
+			for _, output := range []string{
+				`serialize(` + test.expression + `,` + test.options + `)`,
+				`transform(map{'stylesheet-text':'` + strings.ReplaceAll(`<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0">`+test.declarations+`<xsl:template name="start"><xsl:sequence select="`+strings.NewReplacer("&", "&amp;", "<", "&lt;", `"`, "&quot;").Replace(test.expression)+`"/></xsl:template></xsl:stylesheet>`, "'", "''") + `','initial-template':QName('','start'),'delivery-format':'serialized'})?output`,
+			} {
+				check := `$s eq '` + strings.ReplaceAll(test.want, "'", "''") + `'`
+				if strings.Contains(test.name, "C1") || strings.Contains(test.name, "ASCII") {
+					// JSON hex digit case is not constrained by SER31 §9.
+					check = `lower-case($s) eq lower-case('` + test.want + `')`
+				}
+				compareSaxonExpression(t, t.Context(), e, binary, classpath, `let $s := `+output+` return `+check, nameTrue)
+			}
+		})
+	}
+}
+
+func TestCompareSaxonAdaptiveSerialization(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, test := range adaptiveSerializationCases() {
+		t.Run(test.name, func(t *testing.T) {
+			expression := `serialize(` + test.expression + `,` + test.options + `)`
+			if strings.Contains(test.expression, "namespace::") {
+				source := markupSerializationSheet(markupSerializationCase{declarations: `<xsl:output method="text"/>`, body: valueOfExpression(expression)}, false)
+				expression = `transform(map{'stylesheet-text':'` + strings.ReplaceAll(source, "'", "''") + `','initial-template':QName('','start'),'delivery-format':'serialized'})?output`
+			}
+			oracle := test.want
+			// SER31 §10 permits host-defined recovery. Native keeps UTF-8
+			// markup; Saxon displays unencodable characters as decimal markers.
+			switch test.name {
+			case "ASCII comment recovery":
+				oracle = "<!--_170_-->"
+			case "ASCII markup recovery":
+				oracle = "SERE0008"
+			}
+			if test.name == "quoted text map" {
+				oracle = `"a"`
+			} // SER31 §10 applies Text expansion after quoting; Saxon excludes the added quotes.
+			compare := func(expression string) {
+				if test.name == "ASCII text node" {
+					compareSaxonExpression(t, t.Context(), e, binary, classpath, `let $s := `+expression+` return starts-with($s,'&#') and string(parse-xml-fragment($s)) eq 'ª'`, nameTrue)
+				} else {
+					compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, test.want, oracle)
+				}
+			}
+			compare(expression)
+			expression = strings.NewReplacer("&", "&amp;", "<", "&lt;", `"`, "&quot;").Replace(test.expression)
+			source := markupSerializationSheet(markupSerializationCase{declarations: test.declarations, body: `<xsl:sequence select="` + expression + `"/>`}, false)
+			source = strings.Replace(source, `<xsl:stylesheet `, `<xsl:stylesheet xmlns:xs="http://www.w3.org/2001/XMLSchema" exclude-result-prefixes="xs" `, 1)
+			compare(`transform(map{'stylesheet-text':'` + strings.ReplaceAll(source, "'", "''") + `','initial-template':QName('','start'),'delivery-format':'serialized'})?output`)
 		})
 	}
 }

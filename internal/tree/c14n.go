@@ -649,7 +649,7 @@ func inheritedXMLAttributes(attrs []Attribute, n *Node, algorithm string) []Attr
 				continue
 			}
 
-			if algorithm == AlgorithmCanonical11 && attribute.Name.Local != "lang" && attribute.Name.Local != "space" {
+			if algorithm == AlgorithmCanonical11 && attribute.Name.Local != "lang" && attribute.Name.Local != xmlSpaceName {
 				continue
 			}
 

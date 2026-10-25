@@ -465,7 +465,11 @@ func TestSuiteSerializationEncodings(t *testing.T) {
 		}
 		for _, uri := range []string{"", "secondary"} {
 			evaluation := &suiteEvaluation{environment: &preparedSuiteEnvironment{engine: e, namespaces: map[string]string{}, variables: transform.Bindings{}}, result: result, secondaryURI: uri, item: suiteCase{node: &suiteNode{}}}
-			assertion := &suiteNode{XMLName: xml.Name{Local: "serialization-matches"}, Text: regexp.QuoteMeta(test.value)}
+			want := test.value
+			if test.method == "adaptive" {
+				want = "&#170;"
+			} // The delegated XML method retains the ASCII repertoire.
+			assertion := &suiteNode{XMLName: xml.Name{Local: "serialization-matches"}, Text: regexp.QuoteMeta(want)}
 			if err := suiteSerializationAssertion(t.Context(), evaluation, assertion); err != nil {
 				t.Fatal(test.encoding, uri, err)
 			}

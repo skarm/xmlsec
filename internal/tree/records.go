@@ -213,7 +213,7 @@ func inheritRecordAttributes(node *Node) error {
 
 	for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
 		for _, attr := range ancestor.Attrs {
-			if attr.Name.Space == XMLNamespace && (attr.Name.Local == "lang" || attr.Name.Local == "space") && !seen[attr.Name] {
+			if attr.Name.Space == XMLNamespace && (attr.Name.Local == "lang" || attr.Name.Local == xmlSpaceName) && !seen[attr.Name] {
 				node.Attrs = append(node.Attrs, attr)
 				seen[attr.Name] = true
 			}

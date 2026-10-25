@@ -6,7 +6,6 @@ package xslt
 import (
 	"context"
 	"maps"
-	"strings"
 	"time"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -114,7 +113,7 @@ func executeTransform(ctx context.Context, source *xdm.Document, ss *Stylesheet,
 
 			cfg.valueResults[uri] = ValueResult{Document: doc, Items: items, Output: ec.resultDocOutputDefs[uri]}
 		}
-	} else if err := ec.serializeSecondaryResults(); err != nil {
+	} else if err := ec.serializeSecondaryResults(ctx); err != nil {
 		return nil, err
 	}
 
@@ -668,7 +667,7 @@ func (ec *execContext) checkInitialTemplateParameters(tmpl *template) error {
 	return nil
 }
 
-func (ec *execContext) serializeSecondaryResults() error {
+func (ec *execContext) serializeSecondaryResults(ctx context.Context) error {
 	ss := ec.stylesheet
 
 	// For secondary result documents with json/adaptive method, serialize
@@ -687,7 +686,7 @@ func (ec *execContext) serializeSecondaryResults() error {
 			ec.resultDocuments[uri] = doc
 		}
 		// Serialize items into a text node in the document.
-		var buf strings.Builder
+		buf := xpath.NewSerializationBuffer(ctx)
 
 		outDef := ec.resultDocOutputDefs[uri]
 		if outDef == nil {
@@ -696,7 +695,7 @@ func (ec *execContext) serializeSecondaryResults() error {
 		// A serialization failure (e.g. SERE0006 for a character invalid in the
 		// target XML version) must surface as a transform error, not a silently
 		// empty secondary document.
-		if err := SerializeItems(&buf, items, doc, outDef); err != nil {
+		if err := SerializeItems(ctx, buf, items, doc, outDef); err != nil {
 			return err
 		}
 

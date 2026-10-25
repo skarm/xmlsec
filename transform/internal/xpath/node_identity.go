@@ -5,35 +5,32 @@ package xpath
 
 import (
 	"encoding/hex"
-	"fmt"
-	"strings"
+	"strconv"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
-// StableNodeID returns a unique string identifier for a node.  For a
-// namespace node of an element (which the namespace axis recreates on each
-// traversal) the ID is derived from the parent element pointer and the
-// namespace prefix, so that the same logical namespace node always gets the
-// same ID. Any other node, a parentless namespace node included, gets an ID
-// derived from its pointer.
+// StableNodeID returns a non-recycled identifier, even after a temporary node
+// has been collected. Namespace-axis wrappers identify their logical owner and
+// prefix rather than the newly allocated wrapper. Components are delimited so
+// different owner/prefix combinations cannot collide.
 func StableNodeID(n xdm.Node) string {
 	if n == nil {
 		return ""
 	}
 
 	if nsk, ok := xdm.NamespaceNodeKey(n); ok {
-		parentHex := strings.TrimPrefix(fmt.Sprintf("%p", nsk.Parent), "0x")
+		parentHex := strconv.FormatUint(xdm.NodeIdentity(nsk.Parent), 16)
 
 		prefixHex := hex.EncodeToString([]byte(nsk.Prefix))
 		if prefixHex == "" {
 			prefixHex = "00"
 		}
 
-		return "idns" + parentHex + prefixHex
+		return "idns" + parentHex + "p" + prefixHex
 	}
 
-	return fmt.Sprintf("id%p", n)
+	return "idn" + strconv.FormatUint(xdm.NodeIdentity(n), 16)
 }
 
 // nodeIdentityKey is a map key for node identity (see xdm.SameNode): the

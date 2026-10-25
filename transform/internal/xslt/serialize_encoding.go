@@ -13,6 +13,7 @@ import (
 	texttransform "golang.org/x/text/transform"
 
 	"github.com/skarm/xmlsec/internal/streamio"
+	xdmencoding "github.com/skarm/xmlsec/transform/internal/xdm/encoding"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -57,7 +58,7 @@ func encodedOutput(ctx context.Context, dst io.Writer, definition *OutputDef) (i
 
 		encoder = codec.NewEncoder()
 
-		definition.canEncode = repertoire(codec.NewEncoder())
+		definition.canEncode = xdmencoding.Repertoire(codec.NewEncoder())
 	}
 
 	if len(bom) > 0 {
@@ -91,24 +92,4 @@ func (asciiEncoder) Transform(dst, src []byte, _ bool) (int, int, error) {
 	}
 
 	return len(src), len(src), nil
-}
-
-func repertoire(encoder *encoding.Encoder) func(rune) bool {
-	var (
-		source      [utf8.UTFMax]byte
-		destination [64]byte
-	)
-
-	return func(r rune) bool {
-		if r < utf8.RuneSelf {
-			return true
-		}
-
-		n := utf8.EncodeRune(source[:], r)
-
-		encoder.Reset()
-		_, _, err := encoder.Transform(destination[:], source[:n], true)
-
-		return err == nil
-	}
 }

@@ -1348,6 +1348,8 @@ func hostFunctionCases() []hostFunctionCase {
 		{"host overload gaps", "", `<xsl:value-of select="not(function-available('format-date',3)) and function-available('format-date',2) and function-available('format-date',5)"/>`, nameTrue, nameTrue},
 		{"node function signature", "", `<xsl:value-of select="generate-id#1 instance of function(node()?) as xs:string"/>`, errCodeXPST0003, nameTrue},
 		{"node identity", nodes, `<xsl:value-of select="generate-id($d/r/n[1]) eq generate-id($d/r/n[1]) and generate-id($d/r/n[1]) ne generate-id($d/r/n[2])"/>`, nameTrue, nameTrue},
+		{"namespace identity", nodes, `<xsl:variable name="n" select="$d/r/n[1]"/><xsl:value-of select="generate-id($n/namespace::xml) eq generate-id($n/namespace::xml) and generate-id($n/namespace::xml) ne generate-id($d/r/n[2]/namespace::xml) and generate-id($n) ne generate-id($n/namespace::xml)"/>`, nameTrue, nameTrue},
+		{"temporary identities", `<xsl:function name="f:new" xmlns:f="urn:f" as="element()"><xsl:param name="n"/><e n="{$n}"/></xsl:function>`, `<xsl:value-of xmlns:f="urn:f" select="count(distinct-values(for $i in 1 to 1000 return generate-id(f:new($i))))"/>`, "1000", "1000"},
 		{"context node", nodes, `<xsl:for-each select="$d/r/n"><xsl:value-of select="generate-id() eq generate-id(.)"/></xsl:for-each>`, "truetrue", "truetrue"},
 		{"empty node", "", `<xsl:value-of select="generate-id(()) eq ''"/>`, nameTrue, nameTrue},
 		{"missing context", "", `<xsl:value-of select="generate-id()"/>`, "XPDY0002", "XPDY0002"},

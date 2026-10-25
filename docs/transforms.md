@@ -611,9 +611,36 @@ and `xsl:number`, excluding the lowercase final sigma and the unused capital
 U+03A2 slot. Greek numbering is implementation-defined; publisher cases assuming
 a 25-letter lowercase sequence retain a visible diagnostic difference.
 
-HTML serialization validates the normalized items actually written, including raw
-sequences and item separators. Invalid processing instructions give `SERE0015`;
-XML characters forbidden before HTML5 give `SERE0014`, including DEL, NEL and
-attribute values. `html-version` takes priority over `version`. These checks share
-live cancellation and work/depth limits. Unsupported HTML versions use
-`SESU0013`. Full serialization conformance remains subject to the language backlog.
+HTML serialization applies special HTML rules only to HTML elements; XML islands
+use XML character/attribute rules, CDATA selection and `?>` processing instructions.
+CDATA is ignored on HTML elements, including XHTML elements with HTML5 output.
+Character maps do not change CDATA content; normalization precedes repertoire
+splitting. Both writer and fallback paths choose references before octet encoding.
+
+For `method="html"`, `html-version` takes priority over `version`; modern XSLT
+output defaults to HTML5.
+XSLT 1.0 retains HTML4. XHTML output without `html-version` retains its older
+XHTML rules. The map form of `fn:serialize` independently defaults
+`html-version` to 5 for HTML and XHTML, including an empty option. The
+parameter-element form retains version fallback for HTML output. `fn:serialize` skips final octet encoding but still uses the
+selected character repertoire for references and CDATA boundaries.
+
+Invalid HTML processing instructions give `SERE0015`; forbidden HTML4 controls
+give `SERE0014`. XML islands retain XML `SERE0006`/`SERE0008` rules. Unsupported
+HTML versions give `SESU0013`. XML text/attributes reference C1, NEL and LINE
+SEPARATOR in both XML editions. Cancellation, work/depth and writer errors remain
+in force. Complete serialization conformance remains subject to the language backlog.
+
+XML and XHTML result paths use the same XML writer for namespace reconciliation,
+character expansion, CDATA and disable-output-escaping scopes. XHTML adds
+name-based empty-element syntax, prefix normalization, all-head metadata
+replacement and URI escaping before character mapping. It works on an owned
+copy; serializing a prepared input does not mutate it. Markup that the selected
+encoding cannot represent raises `SERE0008`, rather than inserting references into
+names, comments or processing instructions. URI escaping preserves printable
+ASCII and quotes the surrounding attribute correctly. Indentation respects
+`xml:space` and XHTML inline/formatted content.
+
+`generate-id()` identifiers survive collection of temporary nodes. Lazy atomic
+identity assignment keeps shared snapshot access consistent without retaining
+expired nodes; namespace identifiers use their logical owner and prefix.

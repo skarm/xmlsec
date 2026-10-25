@@ -9,6 +9,14 @@ import "strings"
 // Extracted to satisfy the goconst linter; these names appear many times
 // in the element tables and parseOptions logic below.
 const (
+	elemData     = "data"
+	elemEmbed    = "embed"
+	elemInput    = "input"
+	elemKeygen   = "keygen"
+	elemSource   = "source"
+	elemTrack    = "track"
+	elemVideo    = "video"
+	elemWbr      = "wbr"
 	elemAddress  = "address"
 	elemBody     = "body"
 	elemCaption  = "caption"
@@ -76,11 +84,11 @@ func lookupElement(name string) *htmlElemDesc {
 		return &htmlElemDesc{empty: false, inline: 1, dataMode: dataNormal}
 	case "basefont":
 		return &htmlElemDesc{empty: true, inline: 1, dataMode: dataNormal}
-	case "bgsound", "keygen", "source", "track", "wbr":
+	case "bgsound", elemKeygen, elemSource, elemTrack, elemWbr:
 		return &htmlElemDesc{empty: true, inline: 0, dataMode: dataNormal}
 	case elemBody, elemHead, elemHTML:
 		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
-	case "br", "img", "input":
+	case "br", "img", elemInput:
 		return &htmlElemDesc{empty: true, inline: 1, dataMode: dataNormal}
 	case "button", "del", "ins", "map", "object":
 		return &htmlElemDesc{empty: false, inline: 2, dataMode: dataNormal}
@@ -90,7 +98,7 @@ func lookupElement(name string) *htmlElemDesc {
 		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
 	case elemDir, elemMenu:
 		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
-	case "embed":
+	case elemEmbed:
 		return &htmlElemDesc{empty: true, inline: 1, dataMode: dataNormal}
 	case elemFont, "s", nameStrike, "u":
 		return &htmlElemDesc{empty: false, inline: 1, dataMode: dataNormal}

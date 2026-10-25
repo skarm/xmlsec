@@ -80,3 +80,48 @@ func TestHTMLLatin1CharacterReferences(t *testing.T) {
 type errorWriter struct{ err error }
 
 func (w errorWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestXMLIslandCharacterErrors(t *testing.T) {
+	for _, cdata := range []bool{false, true} {
+		for _, kind := range []string{"text", "attribute", "comment", "PI", "unencodable PI"} {
+			doc := xdm.NewDefaultDocument()
+			root, err := doc.CreateElementNS("r", xdm.NewNamespace("p", "urn:p"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := root.DeclareNamespace("p", "urn:p"); err != nil {
+				t.Fatal(err)
+			}
+			if err := doc.AddChild(root); err != nil {
+				t.Fatal(err)
+			}
+			code := "SERE0006"
+			switch kind {
+			case "text":
+				err = root.AddChild(doc.CreateText("\x01"))
+			case "attribute":
+				err = root.SetAttribute("a", "\x01")
+			case "comment":
+				err = root.AddChild(doc.CreateComment("\x01"))
+			case "PI":
+				err = root.AddChild(doc.CreatePI("p", "\x01"))
+			case "unencodable PI":
+				err = root.AddChild(doc.CreatePI("p", "é"))
+				code = "SERE0008"
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			writer := html.NewWriter().Format(false).DefaultDTD(false).PreserveCase(true).Repertoire(func(r rune) bool { return r < 128 })
+			if cdata {
+				writer = writer.CDATAElements(map[string]struct{}{"{urn:p}r": {}})
+			}
+			var output strings.Builder
+			err = writer.WriteTo(&output, doc)
+			var detail *xdm.Error
+			if !errors.As(err, &detail) || detail.Code != code {
+				t.Fatal(cdata, kind, output.String(), err, code)
+			}
+		}
+	}
+}

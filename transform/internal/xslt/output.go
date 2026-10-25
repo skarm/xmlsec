@@ -15,6 +15,7 @@ import (
 
 	"github.com/skarm/xmlsec/internal/xmloutput"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	htmlpkg "github.com/skarm/xmlsec/transform/internal/xdm/html"
 
 	"golang.org/x/text/encoding/htmlindex"
 
@@ -31,19 +32,19 @@ import (
 // error SERE0006, emitting no truncated output. Other item kinds (text,
 // attribute nodes, and atomics) are not range-checked and emit their content
 // unmodified.
-func SerializeItems(w io.Writer, items xdm.Sequence, doc *xdm.Document, outDef *OutputDef) error {
+func SerializeItems(ctx context.Context, w io.Writer, items xdm.Sequence, doc *xdm.Document, outDef *OutputDef) error {
 	if outDef == nil {
 		outDef = defaultOutputDef()
 	}
 
 	switch outDef.Method {
 	case methodJSON:
-		return serializeJSONItems(w, items, doc, outDef)
+		return serializeJSONItems(ctx, w, items, doc, outDef)
 	case methodAdaptive:
 		// Adaptive serialization uses its version serialization parameter for every
 		// XML fallback and embedded element/document/comment/PI writer. An absent
 		// version uses the XML 1.0 default; html-style versions never reach here.
-		return serializeAdaptiveItems(w, items, doc, outDef.ItemSeparator, validOutputXMLVersion(outDef.Version), outDef.NormalizationForm, outDef.ResolvedCharMap)
+		return serializeAdaptiveItems(ctx, w, items, doc, outDef)
 	default:
 		if items != nil && xdm.SequenceLen(items) > 0 {
 			return serializeItemsWithSeparator(w, items, doc, outDef)
@@ -203,6 +204,18 @@ func serializeResult(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMaps
 		charMap = charMaps[0]
 	}
 
+	if outDef.Method == methodHTML {
+		return serializeEncodedHTML(w, doc, outDef, charMap)
+	}
+
+	if outDef.Method == methodXHTML {
+		return serializeEncodedXHTML(w, doc, outDef, charMap)
+	}
+
+	if outDef.Method == methodXML {
+		return serializeEncodedXML(w, doc, outDef, charMap)
+	}
+
 	enc := strings.ToLower(outDef.Encoding)
 	isUTF16 := enc == lexicon.EncodingUTF16 || enc == nameUtf16
 	needsEncodingConversion := enc != "" && enc != lexicon.EncodingUTF8 && enc != lexicon.EncodingUTF8Alt && !isUTF16
@@ -274,37 +287,18 @@ func serializeResultContent(w io.Writer, doc *xdm.Document, outDef *OutputDef, c
 	case methodJSON:
 		return serializeJSONResult(w, doc, outDef, charMap)
 	case methodAdaptive:
-		return serializeAdaptiveItems(w, nil, doc, outDef.ItemSeparator, validOutputXMLVersion(outDef.Version), outDef.NormalizationForm, charMap)
+		return serializeAdaptiveItems(context.Background(), w, nil, doc, outDef)
 	default:
 		return serializeXML(w, doc, outDef, charMap)
 	}
 }
 
 func serializeHTMLResult(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMap map[rune]string) error {
-	var buf bytes.Buffer
-	if err := serializeHTML(&buf, doc, outDef); err != nil {
-		return err
-	}
-
-	result := buf.String()
-	if len(charMap) > 0 {
-		result = applyCharMapToHTMLText(result, charMap, outDef.NormalizationForm)
-	}
-
-	return writeFullString(w, escapeC1ControlsInString(result))
+	return serializeHTML(w, doc, outDef, charMap)
 }
 
-func serializeJSONResult(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMap map[rune]string) error {
-	if len(charMap) == 0 {
-		return serializeJSONItems(w, nil, doc, outDef)
-	}
-
-	var buf strings.Builder
-	if err := serializeJSONItems(&buf, nil, doc, outDef); err != nil {
-		return err
-	}
-
-	return writeFullString(w, applyCharMapJSON(buf.String(), charMap, outDef.NormalizationForm))
+func serializeJSONResult(w io.Writer, doc *xdm.Document, outDef *OutputDef, _ map[rune]string) error {
+	return serializeJSONItems(context.Background(), w, nil, doc, outDef)
 }
 
 func serializeText(w io.Writer, doc *xdm.Document, charMap map[rune]string, normalizationForm string) error {
@@ -387,7 +381,7 @@ func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xd
 	}
 
 	// SEPM0010: undeclare-prefixes="yes" with version="1.0"
-	if outDef.UndeclarePrefixes && outDef.Version == lexicon.XSLTVersion10 {
+	if outDef.UndeclarePrefixes && (method == methodXML || method == methodXHTML) && (outDef.Version == "" || outDef.Version == lexicon.XSLTVersion10) {
 		return dynamicError(errCodeSEPM0010,
 			"undeclare-prefixes=\"yes\" is not allowed with version=\"1.0\"")
 	}
@@ -409,8 +403,8 @@ func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xd
 		}
 	}
 
-	// SESU0007: unsupported version for html output (only when method explicitly set)
-	if err := validateExplicitHTMLVersion(method, outDef); err != nil {
+	// SESU0013: unsupported effective version for HTML output.
+	if err := validateHTMLVersion(method, outDef); err != nil {
 		return err
 	}
 
@@ -487,19 +481,14 @@ func checkFullyNormalized(doc *xdm.Document) error {
 	return firstErr
 }
 
-// effectiveHTMLVersion5 returns true when the output definition's effective
-// HTML version is 5 or higher. It checks HTMLVersion first, falls back to
-// Version, and defaults to 5 per XSLT 3.0 §20.
-func effectiveHTMLVersion5(outDef *OutputDef) bool {
-	if outDef.HTMLVersion != "" {
-		return isHTMLVersion5(outDef.HTMLVersion)
-	}
+// requestedHTMLVersion applies html-version precedence, then version, then
+// the implementation-defined modern HTML default (5.0).
+func requestedHTMLVersion(definition *OutputDef) string {
+	return htmlpkg.RequestedVersion(definition.HTMLVersion, definition.Version)
+}
 
-	if outDef.Version != "" {
-		return isHTMLVersion5(outDef.Version)
-	}
-	// XSLT 3.0 default: html-version=5
-	return true
+func effectiveHTMLVersion5(definition *OutputDef) bool {
+	return isHTMLVersion5(requestedHTMLVersion(definition))
 }
 
 // isHTMLVersion5 returns true when the html-version string represents
@@ -599,15 +588,16 @@ func allowsHTMLAutoDetection(outDef *OutputDef, doc *xdm.Document) bool {
 	return true
 }
 
-// validateExplicitHTMLVersion checks the supported numeric versions only when
-// the HTML method was explicitly selected.
-func validateExplicitHTMLVersion(method string, outDef *OutputDef) error {
-	if method == methodHTML && outDef.MethodExplicit && outDef.Version != "" {
-		v, err := strconv.ParseFloat(outDef.Version, 64)
-		if err == nil && v != 4.0 && v != 4.01 && v != 5.0 {
-			return dynamicError(errCodeSESU0013,
-				"unsupported version %q for html output method", outDef.Version)
-		}
+// validateHTMLVersion checks the effective version, including auto-detected
+// HTML output and html-version overrides of version.
+func validateHTMLVersion(method string, definition *OutputDef) error {
+	if method != methodHTML {
+		return nil
+	}
+
+	requested := requestedHTMLVersion(definition)
+	if !htmlpkg.SupportedVersion(requested) {
+		return dynamicError(errCodeSESU0013, "unsupported HTML version %q", requested)
 	}
 
 	return nil
@@ -795,72 +785,6 @@ func isValidOutputXMLVersion(v string) bool {
 	return true
 }
 
-// serializeNodeWithMethod serializes a node using the specified output method.
-// This is used for json-node-output-method to serialize nodes within JSON
-// output. htmlVersion carries the effective html-version serialization
-// parameter (empty when unset) so nested html/xhtml serialization observes the
-// same version as the principal output, e.g. HTML 4.01 minimization rules.
-// serializeXHTMLNodeForJSON uses the XHTML writer with fresh default parameters
-// and a private tree: meta/namespace rewriting must not mutate an input value.
-func serializeXHTMLNodeForJSON(node xdm.Node) (string, error) {
-	if node.Type() == xdm.AttributeNode || node.Type() == xdm.NamespaceNode {
-		return "", dynamicError("SENR0001", "cannot serialize a free attribute or namespace")
-	}
-
-	var (
-		doc *xdm.Document
-		err error
-	)
-	if source, ok := node.(*xdm.Document); ok {
-		doc, err = xdm.CopyDoc(source)
-	} else {
-		doc = xdm.NewDefaultDocument()
-
-		var copied xdm.Node
-
-		copied, err = xdm.CopyNode(node, doc)
-		if err == nil {
-			err = doc.AddChild(copied)
-		}
-	}
-
-	if err != nil {
-		return "", err
-	}
-
-	output := defaultOutputDef()
-	output.Method = methodXHTML
-	output.OmitDeclaration = true
-
-	var buf bytes.Buffer
-	if err := serializeXHTML(&buf, doc, output, nil); err != nil {
-		return "", xmlInvalidCharError(err)
-	}
-
-	return buf.String(), nil
-}
-
 func defaultOutputDef() *OutputDef {
-	return &OutputDef{
-		Method:   methodXML,
-		Encoding: lexicon.EncodingUTF8U,
-		Version:  lexicon.XSLTVersion10,
-	}
-}
-
-// isHTMLVersionBelow5 returns true when the html-version string is explicitly
-// set to a numeric value below 5.0 (e.g. "4", "4.0", "4.01"). An empty or
-// unparseable value returns false, so the default (HTML5) is not treated as
-// HTML 4.
-func isHTMLVersionBelow5(v string) bool {
-	if v == "" {
-		return false
-	}
-
-	f, err := strconv.ParseFloat(v, 64)
-	if err != nil {
-		return false
-	}
-
-	return f < 5.0
+	return &OutputDef{Method: methodXML, Encoding: lexicon.EncodingUTF8U}
 }

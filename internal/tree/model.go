@@ -17,9 +17,12 @@ const (
 	XMLNSNamespace = "http://www.w3.org/2000/xmlns/"
 )
 
+const xmlSpaceName = "space"
+
 var (
 	// ErrMalformed reports malformed XML.
-	ErrMalformed = errors.New("malformed XML")
+	ErrMalformed   = errors.New("malformed XML")
+	ErrUnencodable = errors.New("XML markup is not representable in the output encoding")
 	// ErrLimit reports XML resource limit exceeded.
 	ErrLimit = errors.New("XML resource limit exceeded")
 	// ErrUnsupported reports unsupported XML feature.

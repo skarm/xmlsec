@@ -8,6 +8,7 @@ import (
 	"io"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -53,6 +54,7 @@ func markupSerializationCases() []markupSerializationCase {
 		{"XML rootless", xmlOutput, before, `<!--lead--><?p v?>`, ""},
 		{"XML qualified doctype", xmlOutput, before + `<p:r xmlns:p="urn:r"/>`, `<!--lead--><?p v?><!DOCTYPE p:r SYSTEM "d.dtd"><p:r xmlns:p="urn:r"/>`, ""},
 		{"XML fallback doctype", xmlOutput, before + `<r><xsl:text disable-output-escaping="yes">&lt;c/&gt;</xsl:text></r>`, `<!--lead--><?p v?><!DOCTYPE r SYSTEM "d.dtd"><r><c/></r>`, ""},
+		{"XHTML5 prefixed explicit doctype", xhtml5 + `<xsl:output doctype-system="d.dtd"/>`, `<h:html xmlns:h="http://www.w3.org/1999/xhtml"/>`, `<!DOCTYPE html SYSTEM "d.dtd"><html xmlns="http://www.w3.org/1999/xhtml"></html>`, ""},
 		{"XHTML doctype", `<xsl:output method="xhtml" indent="no" omit-xml-declaration="yes" doctype-system="d.dtd"/>`, before + `<r/>`, `<!--lead--><?p v?><!DOCTYPE r SYSTEM "d.dtd"><r></r>`, ""},
 		{"HTML doctype", `<xsl:output method="html" indent="no" doctype-system="d.dtd"/>`, before + `<r/>`, "<!--lead--><?p v><!DOCTYPE html SYSTEM \"d.dtd\">\n<r></r>", `matches($s,'^<!--lead--><\?p v><!DOCTYPE (html|HTML)\s+SYSTEM\s+"d.dtd">\s*<r></r>$')`},
 		{"HTML empty explicit doctype", `<xsl:output method="html" indent="no" doctype-system="d.dtd"/>`, "", "<!DOCTYPE html SYSTEM \"d.dtd\">\n", `matches($s,'^<!DOCTYPE (html|HTML)\s+SYSTEM\s+"d.dtd">\s*$')`},
@@ -69,7 +71,87 @@ func markupSerializationCases() []markupSerializationCase {
 		{"CDATA no namespace stays exact", `<xsl:output method="xml" indent="no" omit-xml-declaration="yes" cdata-section-elements="a"/>`, `<r><a>x&amp;y</a><a xmlns="urn:r">x&amp;y</a></r>`, `<r><a><![CDATA[x&y]]></a><a xmlns="urn:r">x&amp;y</a></r>`, ""},
 		{"CDATA fallback namespace stays exact", `<xsl:output method="xml" indent="no" omit-xml-declaration="yes" cdata-section-elements="a"/>`, `<r><xsl:text disable-output-escaping="yes">x</xsl:text><a xmlns="urn:r">x&amp;y</a></r>`, `<r>x<a xmlns="urn:r">x&amp;y</a></r>`, ""},
 	}
-	return slices.Concat(tests, characterExpansionCases())
+	return slices.Concat(tests, characterExpansionCases(), htmlNamespaceCases(), htmlCDATACases(), htmlVersionCases(), xmlControlCases(), xhtmlSerializationCases(), serializationSequenceMarkupCases())
+}
+
+func htmlNamespaceCases() []markupSerializationCase {
+	const html5 = `<xsl:output method="html" html-version="5" indent="no" include-content-type="no"/>`
+	const html4 = `<xsl:output method="html" html-version="4.01" indent="no" include-content-type="no"/>`
+	const svg = "http://www.w3.org/2000/svg"
+	const math = "http://www.w3.org/1998/Math/MathML"
+	const xhtml = "http://www.w3.org/1999/xhtml"
+	cases := make([]markupSerializationCase, 0, 25)
+	cases = append(cases, []markupSerializationCase{
+		{"HTML5 XML island special names", html5, `<svg xmlns="` + svg + `"><script>&lt;&amp;&gt;</script><br disabled="disabled" href="café"/></svg>`, `<svg xmlns="` + svg + `"><script>&lt;&amp;&gt;</script><br disabled="disabled" href="café"></br></svg>`, ""},
+		{"HTML4 XHTML XML island", html4, `<h:html xmlns:h="` + xhtml + `"><h:script>&lt;&amp;&gt;</h:script><h:br disabled="disabled" href="café"/></h:html>`, `<h:html xmlns:h="` + xhtml + `"><h:script>&lt;&amp;&gt;</h:script><h:br disabled="disabled" href="café"></h:br></h:html>`, ""},
+		{"HTML5 XHTML prefixes", html5, `<h:html xmlns:h="` + xhtml + `"><h:body><h:br/></h:body></h:html>`, `<!DOCTYPE html><html xmlns="` + xhtml + `"><body><br></body></html>`, `matches($s,'^<!DOCTYPE (html|HTML)>\s*<html xmlns="http://www.w3.org/1999/xhtml"><body><br></body></html>$')`},
+		{"HTML5 descendant attribute prefix", html5, `<m:math xmlns:m="` + math + `"><m:mi m:a="v"/></m:math>`, `<math xmlns="` + math + `"><mi xmlns:m="` + math + `" m:a="v"></mi></math>`, ""},
+		{"HTML5 own attribute prefix", html5, `<s:svg xmlns:s="` + svg + `" s:a="v"/>`, `<svg xmlns:s="` + svg + `" xmlns="` + svg + `" s:a="v"></svg>`, ""},
+		{"HTML5 conflicting default binding", html5, `<s:svg xmlns:s="` + svg + `" xmlns="urn:other"><s:g/></s:svg>`, `<svg xmlns="` + svg + `"><g></g></svg>`, ""},
+		{"HTML5 nested HTML binding", html5, `<html><body xmlns:p="urn:p"><p p:a="v"/></body></html>`, `<!DOCTYPE html><html><body xmlns:p="urn:p"><p p:a="v"></p></body></html>`, ""},
+		{"HTML5 foreign head", `<xsl:output method="html" html-version="5" indent="no" include-content-type="yes"/>`, `<html><m:head xmlns:m="` + math + `"><m:title>x</m:title></m:head></html>`, `<!DOCTYPE html><html><head xmlns="` + math + `"><title>x</title></head></html>`, ""},
+		{"HTML foreign default namespace", html5, `<r xmlns="urn:foreign"><a href="café" disabled="disabled"/><script>&lt;&amp;&gt;</script></r>`, `<r xmlns="urn:foreign"><a href="café" disabled="disabled"></a><script>&lt;&amp;&gt;</script></r>`, ""},
+		{"HTML namespaced attributes", html5, `<html xmlns:p="urn:p"><p p:disabled="disabled" p:href="café"/></html>`, `<!DOCTYPE html><html xmlns:p="urn:p"><p p:disabled="disabled" p:href="café"></p></html>`, ""},
+		{"HTML implicit XML namespace", html5, `<r xmlns:xml="http://www.w3.org/XML/1998/namespace" xml:lang="en"/>`, `<r xml:lang="en"></r>`, ""},
+		{"HTML foreign prefixed void", html5, `<f:br xmlns:f="urn:foreign" disabled="disabled"/>`, `<f:br xmlns:f="urn:foreign" disabled="disabled"></f:br>`, ""},
+	}...)
+	const metadata = `<xsl:output method="html" html-version="5" indent="no" include-content-type="yes"/>`
+	const head = `<head><title>x</title><meta http-equiv=" content-type " content="old"/><meta http-equiv="CONTENT-TYPE" content="old2"/></head>`
+	const wantedHead = `<head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"><title>x</title></head>`
+	cases = append(cases, markupSerializationCase{"HTML5 metadata first and unique", metadata, head, wantedHead, `$s eq '` + wantedHead + `'`})
+	cases = append(cases, markupSerializationCase{"HTML5 nested metadata", metadata, `<r><section>` + head + `</section></r>`, `<r><section>` + wantedHead + `</section></r>`, `$s eq '<r><section>` + wantedHead + `</section></r>'`})
+	// Appendix D URI attributes include uncommon HTML 4 and HTML 5 names.
+	const uris = `<r><object archive="café" classid="café" codebase="café" data="café" datasrc="café" usemap="café"/><blockquote cite="café"/><script for="café" src="café"/><input formaction="café" longdesc="café" usemap="café" value="café"/><command icon="café"/><video poster="café" src="café"/><head profile="café"/><a name="café" href="café"/></r>`
+	const encodedURIs = `<r><object archive="caf%C3%A9" classid="caf%C3%A9" codebase="caf%C3%A9" data="caf%C3%A9" datasrc="caf%C3%A9" usemap="caf%C3%A9"></object><blockquote cite="caf%C3%A9"></blockquote><script for="caf%C3%A9" src="caf%C3%A9"></script><input formaction="caf%C3%A9" longdesc="café" usemap="caf%C3%A9" value="caf%C3%A9"><command icon="caf%C3%A9"></command><video poster="caf%C3%A9" src="caf%C3%A9"></video><head profile="caf%C3%A9"></head><a name="caf%C3%A9" href="caf%C3%A9"></a></r>`
+	cases = append(cases, markupSerializationCase{"HTML URI attribute names", html5, uris, encodedURIs, `$s eq '` + encodedURIs + `'`})
+	const otherAttrs = `<r href="café" src="café" action="café"><a src="café"/><input href="café"/><p xmlns:p="urn:p" p:href="café"/></r>`
+	const wantedOtherAttrs = `<r href="café" src="café" action="café"><a src="café"></a><input href="café"><p xmlns:p="urn:p" p:href="café"></p></r>`
+	cases = append(cases, markupSerializationCase{"HTML ordinary attributes", html5, otherAttrs, wantedOtherAttrs, `$s eq '` + wantedOtherAttrs + `'`})
+	cases = append(cases, markupSerializationCase{"HTML5 matching default binding", html5, `<s:svg xmlns:s="` + svg + `" xmlns="` + svg + `"><s:g/></s:svg>`, `<svg xmlns="` + svg + `"><g></g></svg>`, ""})
+	for _, index := range []int{0, 3, 7, 12, 13, 14, 15, 16} {
+		fallback := cases[index]
+		fallback.name += " fallback"
+		fallback.body = `<xsl:text disable-output-escaping="yes">X</xsl:text>` + fallback.body
+		fallback.want = "X" + strings.TrimPrefix(fallback.want, "<!DOCTYPE html>")
+		if fallback.check != "" {
+			fallback.check = `$s eq '` + strings.ReplaceAll(fallback.want, "'", "''") + `'`
+		}
+		cases = append(cases, fallback)
+	}
+	for i := range cases {
+		if cases[i].check != "" {
+			continue
+		}
+		want := strings.TrimPrefix(cases[i].want, "<!DOCTYPE html>")
+		cases[i].check = `deep-equal(parse-xml-fragment(replace($s,'<!DOCTYPE (html|HTML)>\s*','')),parse-xml-fragment('` + strings.ReplaceAll(want, "'", "''") + `'))`
+		if cases[i].declarations == html5 {
+			cases[i].check += ` and not(matches($s,'</?[msh]:'))`
+		}
+	}
+	return cases
+}
+
+func htmlSerializationExpressions() []string {
+	tests := htmlNamespaceCases()
+	expressions := make([]string, 0, len(tests))
+	for _, test := range tests {
+		if strings.Contains(test.body, "<xsl:text") {
+			continue // disable-output-escaping belongs to XSLT instructions
+		}
+		expressions = append(expressions, htmlSerializationExpression(test))
+	}
+	return expressions
+}
+
+func htmlSerializationExpression(test markupSerializationCase) string {
+	version, contentType := "5", "false()"
+	if strings.Contains(test.declarations, `html-version="4.01"`) {
+		version = "4.01"
+	}
+	if strings.Contains(test.declarations, `include-content-type="yes"`) {
+		contentType = "true()"
+	}
+	return `let $s := serialize(parse-xml('` + strings.ReplaceAll(test.body, "'", "''") + `'),map{'method':'html','html-version':` + version + `,'include-content-type':` + contentType + `,'indent':false()}) return ` + test.check
 }
 
 func characterExpansionCases() []markupSerializationCase {
@@ -77,6 +159,8 @@ func characterExpansionCases() []markupSerializationCase {
 	const nfd = `<xsl:output method="xml" indent="no" omit-xml-declaration="yes" normalization-form="NFD" use-character-maps="m"/>`
 	const nfc = `<xsl:output method="xml" indent="no" omit-xml-declaration="yes" normalization-form="NFC" use-character-maps="m"/>`
 	return []markupSerializationCase{
+		{"XML xml space preserve indentation", `<xsl:output method="xml" indent="yes" omit-xml-declaration="yes"/>`, `<r xml:space="preserve"><a><b/></a><c/></r>`, `<r xml:space="preserve"><a><b/></a><c/></r>`, `normalize-space($s) eq '<r xml:space="preserve"><a><b/></a><c/></r>'`},
+		{"XML xml space default override", `<xsl:output method="xml" indent="yes" omit-xml-declaration="yes"/>`, `<r xml:space="preserve"><a xml:space="default"><b/></a></r>`, "<r xml:space=\"preserve\"><a xml:space=\"default\">\n    <b/>\n  </a></r>", `let $r:=parse-xml($s)/r return $r/@xml:space eq 'preserve' and count($r/node()) eq 1 and $r/a/@xml:space eq 'default' and count($r/a/*) eq 1 and exists($r/a/b) and (every $t in $r/a/text() satisfies matches(string($t),'^\s*$'))`},
 		{"NFD character map immunity", nfd + mapC, `<r a="abcçde">abcçde</r>`, "<r a=\"ab#ç#c\u0327de\">ab#ç#c\u0327de</r>", ""},
 		{"NFC map matches original", nfc + `<xsl:character-map name="m"><xsl:output-character character="é" string="BAD"/></xsl:character-map>`, "<r a=\"e\u0301\">e\u0301</r>", `<r a="é">é</r>`, ""},
 		{"NFC map boundaries", nfc + `<xsl:character-map name="m"><xsl:output-character character="@" string="e"/></xsl:character-map>`, "<r a=\"@\u0301\">@\u0301</r>", "<r a=\"e\u0301\">e\u0301</r>", ""},
@@ -97,7 +181,11 @@ func markupSerializationCheck(test markupSerializationCase) string {
 	before, rest, found := strings.Cut(test.want, "<!DOCTYPE ")
 	if found {
 		declaration, after, _ := strings.Cut(rest, ">")
-		pattern := "^" + regexp.QuoteMeta(before) + `\s*<!DOCTYPE ` + strings.ReplaceAll(regexp.QuoteMeta(declaration), " ", `\s+`) + `>\s*` + regexp.QuoteMeta(after) + "$"
+		declarationPattern := strings.ReplaceAll(regexp.QuoteMeta(declaration), " ", `\s+`)
+		if strings.HasPrefix(test.name, "HTML ") && strings.HasPrefix(declaration, "html") {
+			declarationPattern = `(html|HTML)` + strings.TrimPrefix(declarationPattern, "html")
+		}
+		pattern := "^" + regexp.QuoteMeta(before) + `\s*<!DOCTYPE ` + declarationPattern + `>\s*` + regexp.QuoteMeta(after) + "$"
 		return `matches($s,'` + strings.ReplaceAll(pattern, "'", "''") + `')`
 	}
 	return `$s eq '` + strings.ReplaceAll(test.want, "'", "''") + `'`
@@ -178,9 +266,10 @@ func defaultMarkupMethodExpressions() []string {
 
 func TestSerializeMarkupContracts(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, expression := range append(xmlSerializationExpressions(), defaultMarkupMethodExpressions()...) {
-		if got := text(t, evaluate(t, e, expression, transform.XPath31)); got != nameTrue {
-			t.Fatal(expression, got)
+	for _, expression := range slices.Concat(xmlSerializationExpressions(), defaultMarkupMethodExpressions(), htmlSerializationExpressions()) {
+		value, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+		if err != nil || text(t, value) != nameTrue {
+			t.Fatal(expression, value, err)
 		}
 	}
 }
@@ -288,7 +377,7 @@ func (w *markupCutWriter) Write(data []byte) (int, error) {
 
 func TestMarkupSerializationDestinationErrors(t *testing.T) {
 	e := engine(t, transform.Config{})
-	for _, test := range markupSerializationCases() {
+	for _, test := range slices.Concat(markupSerializationCases(), jsonCharacterExpansionMarkupCases()) {
 		t.Run(test.name, func(t *testing.T) {
 			result, err := stylesheet(t, e, markupSerializationSheet(test, true)).Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
 			if err != nil {
@@ -590,7 +679,8 @@ func TestSerializationEscapeBytes(t *testing.T) {
 		assertSerializationSequence(t, tc.encoding, value, err, tc.want, "")
 	}
 
-	want := `"\u0000\u0001\u001f\"\\\/\b\f\n\r\t` + "\x7f\u009fé😀" + `"`
+	// SER31 §9 requires escaping C1 controls as well as the JSON C0 controls.
+	want := `"\u0000\u0001\u001F\"\\\/\b\f\n\r\t\u007F\u009Fé😀"`
 
 	for _, normalization := range []string{"", ` normalization-form="NFC"`} {
 		compiled := stylesheet(t, e, sheetStart+version30+`"><xsl:param name="source"/><xsl:output method="json"`+normalization+`/><xsl:template name="start"><xsl:sequence select="$source"/></xsl:template></xsl:stylesheet>`)
@@ -642,6 +732,9 @@ func TestSerializeParameterDocuments(t *testing.T) {
 	for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
 		for _, tc := range []struct{ body, code string }{
 			{`<indent value="perhaps"/>`, errCodeSEPM0017},
+			{`<encoding value="bad encoding"/>`, errCodeSEPM0017},
+			{`<encoding value="1bad"/>`, errCodeSEPM0017},
+			{`<encoding value=""/>`, errCodeSEPM0017},
 			{`<unknown value="yes"/>`, errCodeSEPM0017},
 			{`<indent/>`, errCodeSEPM0017},
 			{`<indent value="yes" other="no"/>`, errCodeSEPM0017},
@@ -666,6 +759,9 @@ func TestSerializeParameterDocuments(t *testing.T) {
 	}
 
 	for expression, code := range map[string]string{
+		`serialize('x',map{'encoding':'bad encoding'})`:           errCodeSEPM0016,
+		`serialize('x',map{'encoding':'1bad'})`:                   errCodeSEPM0016,
+		`serialize('x',map{'encoding':''})`:                       errCodeSEPM0016,
 		`serialize('x', 1)`:                                       errCodeXPTY0004,
 		`serialize('x', parse-xml('<wrong/>')/*)`:                 errCodeXPTY0004,
 		`serialize('x', (map{}, map{}))`:                          errCodeXPTY0004,
@@ -842,9 +938,22 @@ func markupSerializationErrorCases() []markupSerializationErrorCase {
 		{"HTML4 control", `method="html" html-version="4.01"`, `codepoints-to-string(127)`, `map{'method':'html','html-version':4.01}`, "SERE0014"},
 		{"HTML4 NEL", `method="html" html-version="4.01"`, `codepoints-to-string(133)`, `map{'method':'html','html-version':4.01}`, "SERE0014"},
 		{"HTML4 attribute", `method="html" html-version="4.01"`, `parse-xml('<r a="&#127;"/>')/r`, `map{'method':'html','html-version':4.01}`, "SERE0014"},
-		{"HTML4 version parameter", `method="html" version="4.01"`, `codepoints-to-string(127)`, `map{'method':'html','version':'4.01'}`, "SERE0014"},
+		{"HTML4 version parameter", `method="html" version="4.01"`, `codepoints-to-string(127)`, ``, "SERE0014"},
 		{"HTML4 separator", `method="html" html-version="4.01" item-separator="&#127;"`, `('a','b')`, `map{'method':'html','html-version':4.01,'item-separator':codepoints-to-string(127)}`, "SERE0014"},
 		{"unavailable HTML version", `method="html" version="0.0"`, `'text'`, ``, "SESU0013"},
+		{"XML default prefix undeclaration", `method="xml" undeclare-prefixes="yes"`, `parse-xml('<r/>')`, `map{'method':'xml','undeclare-prefixes':true()}`, "SEPM0010"},
+		{"unsupported HTML6", `method="html" html-version="6"`, `'text'`, `map{'method':'html','html-version':6}`, "SESU0013"},
+		{"XML ASCII name", `method="xml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<é/>')`, `map{'method':'xml','encoding':'US-ASCII'}`, "SERE0008"},
+		{"XML ASCII comment", `method="xml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<!--é--><r/>')/comment()`, `map{'method':'xml','encoding':'US-ASCII'}`, "SERE0008"},
+		{"XML ASCII PI", `method="xml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<?é v?><r/>')/processing-instruction()`, `map{'method':'xml','encoding':'US-ASCII'}`, "SERE0008"},
+		{"XHTML ASCII name", `method="xhtml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<é/>')`, `map{'method':'xhtml','encoding':'US-ASCII'}`, "SERE0008"},
+		{"XHTML ASCII comment", `method="xhtml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<!--é--><r/>')/comment()`, `map{'method':'xhtml','encoding':'US-ASCII'}`, "SERE0008"},
+		{"XHTML ASCII PI", `method="xhtml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<?é v?><r/>')/processing-instruction()`, `map{'method':'xhtml','encoding':'US-ASCII'}`, "SERE0008"},
+		{"HTML ASCII island name", `method="html" encoding="US-ASCII"`, `parse-xml('<p:é xmlns:p="urn:p"/>')`, `map{'method':'html','encoding':'US-ASCII'}`, "SERE0008"},
+		{"HTML ASCII attribute name", `method="html" encoding="US-ASCII"`, `parse-xml('<r é="x"/>')`, `map{'method':'html','encoding':'US-ASCII'}`, "SERE0008"},
+		{"HTML detached island PI", `method="html"`, `parse-xml('<p:r xmlns:p="urn:p"><?p a>b?></p:r>')/*/processing-instruction()`, `map{'method':'html'}`, "SERE0015"},
+		{"XML doctype fragment shape", `method="xml" omit-xml-declaration="yes" doctype-system="d.dtd"`, `(parse-xml('<a/>'),parse-xml('<b/>'))`, `map{'method':'xml','doctype-system':'d.dtd'}`, "SEPM0004"},
+		{"XHTML doctype fragment shape", `method="xhtml" omit-xml-declaration="yes" doctype-system="d.dtd"`, `(parse-xml('<a/>'),parse-xml('<b/>'))`, `map{'method':'xhtml','doctype-system':'d.dtd'}`, "SEPM0004"},
 		{"XML composing start", `method="xml" normalization-form="fully-normalized" omit-xml-declaration="yes"`, `codepoints-to-string(769)`, ``, "SERE0012"},
 	}
 }
@@ -873,6 +982,510 @@ func TestMarkupSerializationContentErrors(t *testing.T) {
 			}
 			value, err := query(t, e, transformSerializedQuery, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: variableStylesheet}: transform.Values(transform.String(source))}})
 			assertSerializationSequence(t, "fn:transform", value, err, "", test.code)
+		})
+	}
+}
+
+func htmlCDATACases() []markupSerializationCase {
+	const names = `xmlns:p="urn:p" xmlns:h="http://www.w3.org/1999/xhtml" xmlns:s="http://www.w3.org/2000/svg" xmlns:m="http://www.w3.org/1998/Math/MathML" cdata-section-elements="p:r p:script h:script s:script m:mi script div"`
+	output := func(version, extra string) string {
+		return `<xsl:output method="html" html-version="` + version + `" indent="no" include-content-type="no" ` + names + ` ` + extra + `/>`
+	}
+	html5, html4 := output("5", ""), output("4.01", "")
+	cases := make([]markupSerializationCase, 0, 28)
+	cases = append(cases, []markupSerializationCase{
+		{"HTML CDATA XML island", html5, `<p:r xmlns:p="urn:p">a&lt;b&amp;c</p:r>`, `<p:r xmlns:p="urn:p"><![CDATA[a<b&c]]></p:r>`, ""},
+		{"HTML CDATA special script", html5, `<p:script xmlns:p="urn:p">a&lt;b&amp;c</p:script>`, `<p:script xmlns:p="urn:p"><![CDATA[a<b&c]]></p:script>`, ""},
+		{"HTML CDATA SVG", html5, `<s:script xmlns:s="http://www.w3.org/2000/svg">a&lt;b&amp;c</s:script>`, `<script xmlns="http://www.w3.org/2000/svg"><![CDATA[a<b&c]]></script>`, ""},
+		{"HTML CDATA MathML", html5, `<m:mi xmlns:m="http://www.w3.org/1998/Math/MathML">a&lt;b&amp;c</m:mi>`, `<mi xmlns="http://www.w3.org/1998/Math/MathML"><![CDATA[a<b&c]]></mi>`, ""},
+		{"HTML4 CDATA XHTML", html4, `<h:script xmlns:h="http://www.w3.org/1999/xhtml">a&lt;b&amp;c</h:script>`, `<h:script xmlns:h="http://www.w3.org/1999/xhtml"><![CDATA[a<b&c]]></h:script>`, ""},
+		{"HTML5 CDATA XHTML ignored", html5, `<h:script xmlns:h="http://www.w3.org/1999/xhtml">a&lt;b&amp;c</h:script>`, `<script xmlns="http://www.w3.org/1999/xhtml">a<b&c</script>`, ""},
+		{"HTML CDATA script ignored", html5, `<script>a&lt;b&amp;c</script>`, `<script>a<b&c</script>`, ""},
+		{"HTML CDATA div ignored", html5, `<div>a&lt;b&amp;c</div>`, `<div>a&lt;b&amp;c</div>`, ""},
+		{"HTML CDATA QName selection", html5, `<p:other xmlns:p="urn:p">a&lt;b&amp;c</p:other>`, `<p:other xmlns:p="urn:p">a&lt;b&amp;c</p:other>`, ""},
+		{"HTML CDATA split and CR", html5, `<p:r xmlns:p="urn:p">a]]&gt;b&#13;</p:r>`, `<p:r xmlns:p="urn:p"><![CDATA[a]]]]><![CDATA[>b]]>&#xD;</p:r>`, ""},
+		{"HTML CDATA normalization", output("5", `normalization-form="NFC"`), `<p:r xmlns:p="urn:p">e&#769;</p:r>`, `<p:r xmlns:p="urn:p"><![CDATA[é]]></p:r>`, ""},
+		{"HTML CDATA character map immunity", output("5", `use-character-maps="cm"`) + `<xsl:character-map name="cm"><xsl:output-character character="a" string="A"/></xsl:character-map>`, `<p:r xmlns:p="urn:p" a="a">a</p:r>`, `<p:r xmlns:p="urn:p" a="A"><![CDATA[a]]></p:r>`, ""},
+		{"HTML CDATA output repertoire", output("5", `encoding="US-ASCII" normalization-form="NFD"`), `<p:r xmlns:p="urn:p">ç</p:r>`, `<p:r xmlns:p="urn:p"><![CDATA[c]]>&#807;</p:r>`, ""},
+		{"HTML XML island whitespace", html5, `<p:other xmlns:p="urn:p" a="&#9;&#10;&#13;">x&#13;y&#127;</p:other>`, `<p:other xmlns:p="urn:p" a="&#x9;&#xA;&#xD;">x&#xD;y&#127;</p:other>`, ""},
+		{"HTML XML qualified attribute", html5, `<div xmlns:p="urn:p" p:a="&#9;&#10;&#13;"/>`, `<div xmlns:p="urn:p" p:a="&#x9;&#xA;&#xD;"></div>`, ""},
+		{"HTML4 XML island control", html4, `<p:other xmlns:p="urn:p">&#127;</p:other>`, `<p:other xmlns:p="urn:p">&#127;</p:other>`, ""},
+		{"HTML4 XML qualified attribute control", html4, `<div xmlns:p="urn:p" p:a="&#127;"/>`, `<div xmlns:p="urn:p" p:a="&#127;"></div>`, ""},
+		{"HTML XML island PI", html5, `<p:other xmlns:p="urn:p"><xsl:processing-instruction name="p">a&gt;b</xsl:processing-instruction></p:other>`, `<p:other xmlns:p="urn:p"><?p a>b?></p:other>`, ""},
+		{"HTML4 XML island PI", html4, `<p:other xmlns:p="urn:p"><xsl:processing-instruction name="p">a&gt;b</xsl:processing-instruction></p:other>`, `<p:other xmlns:p="urn:p"><?p a>b?></p:other>`, ""},
+		{"HTML XML island normalization mapping", output("5", `normalization-form="NFC" use-character-maps="cm"`) + `<xsl:character-map name="cm"><xsl:output-character character="é" string="BAD"/></xsl:character-map>`, `<p:other xmlns:p="urn:p">e&#769;</p:other>`, `<p:other xmlns:p="urn:p">é</p:other>`, ""},
+		{"HTML CDATA namespace selection", html5, `<q:r xmlns:q="urn:other">a&lt;b&amp;c</q:r>`, `<q:r xmlns:q="urn:other">a&lt;b&amp;c</q:r>`, ""},
+		{"HTML CDATA default SVG", html5, `<script xmlns="http://www.w3.org/2000/svg">a&lt;b&amp;c</script>`, `<script xmlns="http://www.w3.org/2000/svg"><![CDATA[a<b&c]]></script>`, ""},
+		{"HTML XML island line separator", html5, `<p:other xmlns:p="urn:p" a="&#x2028;">&#x2028;</p:other>`, `<p:other xmlns:p="urn:p" a="&#8232;">&#8232;</p:other>`, ""},
+		{"HTML URI quoted printable characters", html5, `<a href="cafe&#769; &quot;&lt;&gt;&amp;">x</a>`, `<a href="caf%C3%A9 &quot;&lt;>&amp;">x</a>`, ""},
+	}...)
+
+	for i := range cases {
+		test := &cases[i]
+		if strings.Contains(test.name, "ignored") {
+			test.check = `$s eq '` + test.want + `'`
+		} else {
+			test.check = `deep-equal(parse-xml-fragment($s),parse-xml-fragment('` + test.want + `'))`
+			if strings.Contains(test.want, "<![CDATA[") {
+				test.check += ` and contains($s,'<![CDATA[')`
+			} else {
+				test.check += ` and not(contains($s,'<![CDATA['))`
+			}
+		}
+		if test.name == "HTML URI quoted printable characters" {
+			test.check = `matches($s,'^<a href="caf%C3%A9 (&quot;|&#34;|&#x22;)(<|&lt;)(>|&gt;)&amp;">x</a>$')`
+		}
+
+		if strings.Contains(test.name, "line separator") {
+			test.check += ` and not(contains($s,codepoints-to-string(8232)))`
+		}
+		if strings.Contains(test.declarations, `encoding="US-ASCII"`) {
+			test.check += ` and (every $c in string-to-codepoints($s) satisfies $c lt 128)`
+		}
+	}
+	for _, i := range []int{0, 9, 11, 12} {
+		test := cases[i]
+		test.name += " fallback"
+		test.body = `<xsl:text disable-output-escaping="yes">X</xsl:text>` + test.body
+		test.want = "X" + test.want
+		test.check = `starts-with($s,'X') and ` + strings.ReplaceAll(test.check, "$s", "substring($s,2)")
+		cases = append(cases, test)
+	}
+	return cases
+}
+
+func htmlCDATAExpression(test markupSerializationCase) string {
+	version := "5"
+	if strings.Contains(test.declarations, `html-version="4.01"`) {
+		version = "4.01"
+	}
+	parameters := `'method':'html','html-version':` + version + `,'include-content-type':false(),'indent':false(),'cdata-section-elements':(QName('urn:p','r'),QName('urn:p','script'),QName('http://www.w3.org/1999/xhtml','script'),QName('http://www.w3.org/2000/svg','script'),QName('http://www.w3.org/1998/Math/MathML','mi'),QName('','script'),QName('','div'))`
+	if strings.Contains(test.declarations, `normalization-form="NFC"`) {
+		parameters += `,'normalization-form':'NFC'`
+	}
+	if strings.Contains(test.declarations, `normalization-form="NFD"`) {
+		parameters += `,'normalization-form':'NFD'`
+	}
+	if strings.Contains(test.declarations, `encoding="US-ASCII"`) {
+		parameters += `,'encoding':'US-ASCII'`
+	}
+	if strings.Contains(test.declarations, `use-character-maps=`) {
+		if strings.Contains(test.declarations, `character="é"`) {
+			parameters += `,'use-character-maps':map{'é':'BAD'}`
+		} else {
+			parameters += `,'use-character-maps':map{'a':'A'}`
+		}
+	}
+	source := strings.ReplaceAll(test.body, `<xsl:processing-instruction name="p">a&gt;b</xsl:processing-instruction>`, `<?p a>b?>`)
+	return `let $s:=serialize(parse-xml('` + strings.ReplaceAll(source, "'", "''") + `'),map{` + parameters + `}) return ` + test.check
+}
+
+func TestSerializeHTMLCDATA(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range htmlCDATACases() {
+		if strings.Contains(test.body, "<xsl:text") {
+			continue
+		}
+		t.Run(test.name, func(t *testing.T) {
+			got, err := query(t, e, htmlCDATAExpression(test), transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if err != nil || text(t, got) != nameTrue {
+				t.Fatal(got, err)
+			}
+		})
+	}
+}
+
+func htmlVersionCases() []markupSerializationCase {
+	const body = `<html><h:br xmlns:h="http://www.w3.org/1999/xhtml"/></html>`
+	const html4 = `<html><h:br xmlns:h="http://www.w3.org/1999/xhtml"></h:br></html>`
+	const html5 = `<!DOCTYPE html><html><br xmlns="http://www.w3.org/1999/xhtml"></html>`
+	cases := make([]markupSerializationCase, 0, 9)
+	for _, test := range []struct{ name, attributes, want string }{
+		{"version 4", `method="html" version="4.01"`, html4},
+		{"version 5", `method="html" version="5"`, html5},
+		{"html-version 4 priority", `method="html" version="5" html-version="4.01"`, html4},
+		{"html-version 5 priority", `method="html" version="4.01" html-version="5"`, html5},
+		{"html-version 5 ignores unsupported version", `method="html" version="0.0" html-version="5"`, html5},
+		{"html-version 4 ignores unsupported version", `method="html" version="0.0" html-version="4.01"`, html4},
+		{"default version", `method="html"`, html5},
+		{"auto method version", `version="5"`, html5},
+	} {
+		declaration := `<xsl:output indent="no" include-content-type="no" ` + test.attributes + `/>`
+		check := ""
+		if test.want == html4 {
+			check = `deep-equal(parse-xml($s),parse-xml('` + html4 + `'))`
+		}
+		cases = append(cases, markupSerializationCase{"HTML " + test.name, declaration, body, test.want, check})
+	}
+	cases = append(cases, markupSerializationCase{"HTML empty output declaration", "<xsl:output/>", body, html5, ""})
+	return cases
+}
+
+func htmlVersionExpressions() []string {
+	const source = `<html><h:br xmlns:h="http://www.w3.org/1999/xhtml"/></html>`
+	const html4 = `<html><h:br xmlns:h="http://www.w3.org/1999/xhtml"></h:br></html>`
+	const html5Check = `not(contains($s,'<h:br')) and contains($s,'<br') and matches($s,'<!DOCTYPE (html|HTML)>')`
+	expressions := make([]string, 0, 4)
+	for _, options := range []string{
+		`map{'method':'html','version':'4.01','include-content-type':false()}`,
+		`map{'method':'html','version':'4.01','html-version':(),'include-content-type':false()}`,
+		`map{'method':'html','version':'0.0','include-content-type':false()}`,
+	} {
+		expressions = append(expressions, `let $s:=serialize(parse-xml('`+source+`'),`+options+`) return `+html5Check)
+	}
+	// Element-form defaults are implementation-defined. An absent html-version
+	// retains version fallback, unlike the fixed default in the map form.
+	options := `parse-xml('<serialization-parameters xmlns="http://www.w3.org/2010/xslt-xquery-serialization"><method value="html"/><version value="4.01"/><include-content-type value="no"/><indent value="no"/></serialization-parameters>')/*`
+	expressions = append(expressions, `let $s:=serialize(parse-xml('`+source+`'),`+options+`) return deep-equal(parse-xml($s),parse-xml('`+html4+`'))`)
+	return expressions
+}
+
+func TestSerializeHTMLVersions(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, expression := range htmlVersionExpressions() {
+		got, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+		if err != nil || text(t, got) != nameTrue {
+			t.Fatal(expression, got, err)
+		}
+	}
+}
+
+func TestImplicitHTMLSerializationDefault(t *testing.T) {
+	e := engine(t, transform.Config{})
+	source := markupSerializationSheet(markupSerializationCase{body: `<html><h:br xmlns:h="http://www.w3.org/1999/xhtml"/></html>`}, false)
+	compiled := stylesheet(t, e, source)
+	const want = `<!DOCTYPE html><html><br xmlns="http://www.w3.org/1999/xhtml"></html>`
+	for _, mode := range []transform.ResultMode{transform.ResultRaw, transform.ResultDefault, transform.ResultDocument} {
+		result, err := compiled.Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, ResultMode: mode})
+		if err != nil {
+			t.Fatal(err)
+		}
+		output, err := result.Serialize(t.Context())
+		if err != nil || string(output.Primary) != want {
+			t.Fatal(mode, output, err)
+		}
+	}
+}
+
+func serializationRepertoireExpressions() []string {
+	expressions := make([]string, 0, 9)
+	for _, method := range []string{"xml", "html", "xhtml"} {
+		for _, encoding := range []string{"US-ASCII", "ISO-8859-1", "UTF-16"} {
+			check := `deep-equal(parse-xml($s),parse-xml('<p:r xmlns:p="urn:p">c&#807;</p:r>')) and contains($s,'<![CDATA[')`
+			if encoding != "UTF-16" {
+				check += ` and (every $c in string-to-codepoints($s) satisfies $c lt 128)`
+			} else {
+				check += ` and contains($s,codepoints-to-string(807))`
+			}
+			expressions = append(expressions, `let $s:=serialize(parse-xml('<p:r xmlns:p="urn:p">ç</p:r>'),map{'method':'`+method+`','encoding':'`+encoding+`','cdata-section-elements':QName('urn:p','r'),'normalization-form':'NFD'}) return `+check)
+		}
+	}
+	return expressions
+}
+
+func TestSerializationRepertoires(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for i, expression := range serializationRepertoireExpressions() {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			got, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if err != nil || text(t, got) != nameTrue {
+				t.Fatal(expression, got, err)
+			}
+		})
+	}
+}
+
+// SER31 section 5 requires references even with version 1.0: an external parsed
+// entity may later be included by an XML 1.1 document.
+func xmlControlCases() []markupSerializationCase {
+	const body = `<r a="&#127;&#133;&#8232;">a&#127;b&#133;c&#8232;d</r>`
+	const cdata = `<r a="&#127;&#133;&#8232;"><![CDATA[a]]>&#127;<![CDATA[b]]>&#133;<![CDATA[c]]>&#8232;<![CDATA[d]]></r>`
+	cases := make([]markupSerializationCase, 0, 4)
+	for _, selected := range []bool{false, true} {
+		extra, name, want := "", "XML 1.0 control references", body
+		if selected {
+			extra, name, want = ` cdata-section-elements="r"`, "XML 1.0 CDATA control references", cdata
+		}
+		declaration := `<xsl:output method="xml" version="1.0" indent="no" omit-xml-declaration="yes"` + extra + `/>`
+		check := `deep-equal(parse-xml($s),parse-xml('` + body + `')) and (every $c in string-to-codepoints($s) satisfies $c lt 127)`
+		if selected {
+			check += ` and contains($s,'<![CDATA[')`
+		}
+		cases = append(cases, markupSerializationCase{name, declaration, body, want, check})
+		cases = append(cases, markupSerializationCase{name + " fallback", declaration, `<xsl:text disable-output-escaping="yes">X</xsl:text>` + body, "X" + want, `starts-with($s,'X') and ` + strings.ReplaceAll(check, "$s", "substring($s,2)")})
+	}
+	return cases
+}
+
+func serializationControlExpressions() []string {
+	expressions := make([]string, 0, 4)
+	for _, method := range []string{"xml", "xhtml"} {
+		for _, test := range xmlControlCases() {
+			if strings.Contains(test.name, "fallback") {
+				continue
+			}
+			options := `'method':'` + method + `','version':'1.0'`
+			if strings.Contains(test.declarations, "cdata-section-elements") {
+				options += `,'cdata-section-elements':QName('','r')`
+			}
+			expressions = append(expressions, `let $s:=serialize(parse-xml('`+test.body+`'),map{`+options+`}) return `+test.check)
+		}
+	}
+	return expressions
+}
+
+func TestSerializationControlReferences(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, expression := range serializationControlExpressions() {
+		got, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+		if err != nil || text(t, got) != nameTrue {
+			t.Fatal(expression, got, err)
+		}
+	}
+}
+
+func xhtmlSerializationCases() []markupSerializationCase {
+	const ns = `http://www.w3.org/1999/xhtml`
+	output := func(version, extra string) string {
+		return `<xsl:output method="xhtml" html-version="` + version + `" indent="no" omit-xml-declaration="yes" include-content-type="no" ` + extra + `/>`
+	}
+	v4, v5 := output("4.01", ""), output("5", "")
+	cases := make([]markupSerializationCase, 0, 15)
+	cases = append(cases, []markupSerializationCase{
+		{"XHTML4 empty element models", v4, `<r xmlns="` + ns + `"><br/><p/><source/><basefont/><keygen/></r>`, `<r xmlns="` + ns + `"><br /><p></p><source></source><basefont /><keygen></keygen></r>`, ""},
+		{"XHTML5 empty element models", v5, `<r xmlns="` + ns + `"><br/><p/><source/><basefont/><keygen/></r>`, `<r xmlns="` + ns + `"><br /><p></p><source /><basefont></basefont><keygen /></r>`, ""},
+		{"XHTML4 foreign void names", v4, `<r><br/><f:br xmlns:f="urn:f"/></r>`, `<r><br></br><f:br xmlns:f="urn:f"></f:br></r>`, ""},
+		{"XHTML5 null namespace", v5, `<html><body><br/><p/><source src="café"/></body></html>`, `<!DOCTYPE html><html><body><br /><p></p><source src="caf%C3%A9" /></body></html>`, ""},
+		{"XHTML5 head metadata", strings.ReplaceAll(v5, `include-content-type="no"`, `include-content-type="yes"`), `<head xmlns="` + ns + `"><title>x</title><meta http-equiv=" content-type " content="old"/><meta http-equiv="CONTENT-TYPE" content="old2"/></head>`, `<head xmlns="` + ns + `"><meta http-equiv="Content-Type" content="text/html; charset=UTF-8" /><title>x</title></head>`, ""},
+		{"XHTML5 nested head metadata", strings.ReplaceAll(v5, `include-content-type="no"`, `include-content-type="yes"`), `<r><section><head xmlns="` + ns + `"><title>x</title></head></section></r>`, `<r><section><head xmlns="` + ns + `"><meta http-equiv="Content-Type" content="text/html; charset=UTF-8" /><title>x</title></head></section></r>`, ""},
+		{"XHTML5 foreign head excluded", strings.ReplaceAll(v5, `include-content-type="no"`, `include-content-type="yes"`), `<r><f:head xmlns:f="urn:f"><f:title>x</f:title></f:head></r>`, `<r><f:head xmlns:f="urn:f"><f:title>x</f:title></f:head></r>`, ""},
+		{"XHTML5 original URI values", v5, `<r xmlns="` + ns + `"><a href="cafe&#769; &#150;&quot;&lt;&gt;&amp;"/><p href="café"/></r>`, `<r xmlns="` + ns + `"><a href="caf%C3%A9 %C2%96&quot;&lt;>&amp;"></a><p href="café"></p></r>`, ""},
+		{"XHTML5 URI expansion exclusions", output("5", `normalization-form="NFD" use-character-maps="cm"`) + `<xsl:character-map name="cm"><xsl:output-character character="é" string="BAD"/></xsl:character-map>`, `<r xmlns="` + ns + `"><a href="cafe&#769;">é</a></r>`, `<r xmlns="` + ns + `"><a href="caf%C3%A9">BAD</a></r>`, ""},
+		{"XHTML5 CDATA markup immunity", output("5", `xmlns:h="`+ns+`" cdata-section-elements="h:script"`), `<r xmlns="` + ns + `"><script>&lt;img href="café"/&gt;&#13;</script><xsl:comment>&lt;br href="café"/&gt;</xsl:comment><xsl:processing-instruction name="p">href="café"</xsl:processing-instruction></r>`, `<r xmlns="` + ns + `"><script><![CDATA[<img href="café"/>]]>&#xD;</script><!--<br href="café"/>--><?p href="café"?></r>`, ""},
+	}...)
+	for i := range cases {
+		test := &cases[i]
+		test.check = `deep-equal(parse-xml($s),parse-xml('` + test.want + `'))`
+		if strings.Contains(test.name, "empty element models") {
+			test.check += ` and contains($s,'<br') and not(contains($s,'</br>')) and not(contains($s,'<p/>')) and not(contains($s,'<p />'))`
+		}
+		if strings.Contains(test.name, "CDATA") {
+			test.check += ` and contains($s,'<![CDATA[<img href="café"/>]]>') and not(contains($s,codepoints-to-string(13)))`
+		}
+	}
+	for _, index := range []int{1, 5, 7, 8, 9} {
+		test := cases[index]
+		test.name += " fallback"
+		test.body = `<xsl:text disable-output-escaping="yes">X</xsl:text>` + test.body
+		test.want = "X" + test.want
+		test.check = `starts-with($s,'X') and ` + strings.ReplaceAll(test.check, "$s", "substring($s,2)")
+		cases = append(cases, test)
+	}
+	return cases
+}
+
+func xhtmlSerializationExpressions() []string {
+	expressions := make([]string, 0, 20)
+	for _, test := range markupSerializationCases() {
+		if !strings.HasPrefix(test.name, "XHTML") || strings.Contains(test.body, "<xsl:") {
+			continue
+		}
+		version, contentType := "4.01", "false()"
+		omit := "false()"
+		if strings.Contains(test.declarations, `omit-xml-declaration="yes"`) {
+			omit = "true()"
+		}
+		if strings.Contains(test.declarations, `html-version="5"`) {
+			version = "5"
+		}
+		if strings.Contains(test.declarations, `include-content-type="yes"`) {
+			contentType = "true()"
+		}
+		options := `'method':'xhtml','html-version':` + version + `,'include-content-type':` + contentType + `,'omit-xml-declaration':` + omit + `,'indent':false()`
+		if strings.Contains(test.declarations, `normalization-form="NFD"`) {
+			options += `,'normalization-form':'NFD'`
+		}
+		if strings.Contains(test.declarations, `doctype-system="d.dtd"`) {
+			options += `,'doctype-system':'d.dtd'`
+		}
+		if strings.Contains(test.declarations, `use-character-maps=`) {
+			options += `,'use-character-maps':map{'é':'BAD'}`
+		}
+		expressions = append(expressions, `let $s:=serialize(parse-xml-fragment('`+strings.ReplaceAll(test.body, "'", "''")+`'),map{`+options+`}) return `+markupSerializationCheck(test))
+	}
+	return expressions
+}
+
+func TestSerializeXHTMLContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, expression := range xhtmlSerializationExpressions() {
+		got, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+		if err != nil || text(t, got) != nameTrue {
+			t.Fatal(expression, got, err)
+		}
+	}
+}
+
+func TestXHTMLSerializationPreservesInput(t *testing.T) {
+	e := engine(t, transform.Config{})
+	expression := `let $n:=parse-xml('<h:html xmlns:h="http://www.w3.org/1999/xhtml"><h:head><h:title>x</h:title></h:head></h:html>'), $before:=serialize($n), $s:=serialize($n,map{'method':'xhtml'}) return serialize($n) eq $before and contains($s,'<meta ') and not(contains($s,'<h:')) and serialize($n,map{'method':'xhtml'}) eq $s`
+	got, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+	if err != nil || text(t, got) != nameTrue {
+		t.Fatal(got, err)
+	}
+}
+
+type serializationSequenceCase struct{ name, expression, attributes, options, want string }
+
+func serializationSequenceCases() []serializationSequenceCase {
+	return []serializationSequenceCase{
+		{"XML default document serialization", `parse-xml('<a/>')`, `method="xml" omit-xml-declaration="yes"`, `()`, `<a/>`},
+		{"HTML detached text ignores source CDATA parent", `parse-xml('<p:r xmlns:p="urn:p">&lt;a&amp;</p:r>')/*/text()`, `method="html" xmlns:p="urn:p" cdata-section-elements="p:r"`, `map{'method':'html','cdata-section-elements':QName('urn:p','r')}`, `&lt;a&amp;`},
+		{"XML declaration for element sequence", `(parse-xml('<a/>')/a,parse-xml('<b/>')/b)`, `method="xml" omit-xml-declaration="no" indent="no"`, `map{'method':'xml','omit-xml-declaration':false(),'indent':false()}`, `<?xml version="1.0" encoding="UTF-8"?><a/><b/>`},
+		{"XML declaration for document sequence", `(parse-xml('<a/>'),parse-xml('<b/>'))`, `method="xml" omit-xml-declaration="no" indent="no"`, `map{'method':'xml','omit-xml-declaration':false(),'indent':false()}`, `<?xml version="1.0" encoding="UTF-8"?><a/><b/>`},
+		{"XML declaration for empty sequence", `()`, `method="xml" omit-xml-declaration="no" indent="no"`, `map{'method':'xml','omit-xml-declaration':false(),'indent':false()}`, `<?xml version="1.0" encoding="UTF-8"?>`},
+		{"XML text coalescence before NFC", `(parse-xml('<r>e</r>')/r/text(),codepoints-to-string(769))`, `method="xml" omit-xml-declaration="yes" normalization-form="NFC"`, `map{'method':'xml','normalization-form':'NFC'}`, "é"},
+		{"HTML text coalescence before NFC", `(parse-xml('<r>e</r>')/r/text(),codepoints-to-string(769))`, `method="html" normalization-form="NFC"`, `map{'method':'html','normalization-form':'NFC'}`, "é"},
+		{"XHTML text coalescence before NFC", `(parse-xml('<r>e</r>')/r/text(),codepoints-to-string(769))`, `method="xhtml" omit-xml-declaration="yes" normalization-form="NFC"`, `map{'method':'xhtml','normalization-form':'NFC'}`, "é"},
+		{"XHTML trailing text newline", `concat('a',codepoints-to-string(10))`, `method="xhtml" omit-xml-declaration="yes"`, `map{'method':'xhtml'}`, "a\n"},
+		{"XML item separator expansion", `('a','b')`, `method="xml" omit-xml-declaration="yes" item-separator="&amp;"`, `map{'method':'xml','item-separator':'&'}`, "a&amp;b"},
+		{"XML empty document interrupts atomics", `(1,parse-xml-fragment(''),2)`, `method="xml" omit-xml-declaration="yes"`, `map{'method':'xml'}`, "12"},
+		{"Text excludes comments and PIs", `parse-xml-fragment('<!--c--><?p v?><r>text</r>')/node()`, `method="text"`, `map{'method':'text'}`, "text"},
+		{"XML document flattening precedes NFC", `(parse-xml-fragment('e'),parse-xml-fragment('&#769;'))`, `method="xml" omit-xml-declaration="yes" normalization-form="NFC"`, `map{'method':'xml','normalization-form':'NFC'}`, "é"},
+	}
+}
+
+func serializationSequenceMarkupCases() []markupSerializationCase {
+	tests := serializationSequenceCases()
+	cases := make([]markupSerializationCase, 0, len(tests))
+	for _, test := range tests {
+		expression := strings.NewReplacer("&", "&amp;", "<", "&lt;", `"`, "&quot;").Replace(test.expression)
+		cases = append(cases, markupSerializationCase{test.name, `<xsl:output ` + test.attributes + `/>`, `<xsl:sequence select="` + expression + `"/>`, test.want, ""})
+	}
+	return cases
+}
+
+func TestSerializeSequenceContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range serializationSequenceCases() {
+		t.Run(test.name, func(t *testing.T) {
+			expression := `serialize(` + test.expression + `,` + test.options + `)`
+			got, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if err != nil || text(t, got) != test.want {
+				t.Fatal(got, err, test.want)
+			}
+		})
+	}
+}
+
+type valueSerializationCase struct{ name, expression, declarations, options, want string }
+
+func jsonCharacterExpansionMarkupCases() []markupSerializationCase {
+	cases := jsonCharacterExpansionCases()
+	result := make([]markupSerializationCase, 0, len(cases))
+	for _, test := range cases {
+		expression := strings.NewReplacer("&", "&amp;", "<", "&lt;", `"`, "&quot;").Replace(test.expression)
+		result = append(result, markupSerializationCase{test.name, test.declarations, `<xsl:sequence select="` + expression + `"/>`, test.want, ""})
+	}
+	return result
+}
+
+func jsonCharacterExpansionCases() []valueSerializationCase {
+	return []valueSerializationCase{
+		{"JSON syntax is not character data", `map{'k':'a"b:c'}`, `<xsl:output method="json" indent="no" use-character-maps="m"/><xsl:character-map name="m"><xsl:output-character character="&quot;" string="Q"/><xsl:output-character character=":" string="C"/><xsl:output-character character="{" string="L"/></xsl:character-map>`, `map{'method':'json','use-character-maps':map{'"':'Q',':':'C','{':'L'}}`, `{"k":"aQbCc"}`},
+		{"JSON normalization introduces quote", `codepoints-to-string(65282)`, `<xsl:output method="json" indent="no" normalization-form="NFKC"/>`, `map{'method':'json','normalization-form':'NFKC'}`, `"\""`},
+		{"JSON normalization introduces backslash", `codepoints-to-string(65340)`, `<xsl:output method="json" indent="no" normalization-form="NFKC"/>`, `map{'method':'json','normalization-form':'NFKC'}`, `"\\"`},
+		{"JSON C1 controls", `codepoints-to-string((127,159))`, `<xsl:output method="json" indent="no"/>`, `map{'method':'json'}`, `"\u007F\u009F"`},
+		{"JSON ASCII supplementary characters", `'é😀'`, `<xsl:output method="json" indent="no" encoding="US-ASCII"/>`, `map{'method':'json','encoding':'US-ASCII'}`, `"\u00E9\uD83D\uDE00"`},
+		{"JSON mapped normalization immunity", `'cç'`, `<xsl:output method="json" indent="no" normalization-form="NFD" use-character-maps="m"/><xsl:character-map name="m"><xsl:output-character character="c" string="#ç#"/></xsl:character-map>`, `map{'method':'json','normalization-form':'NFD','use-character-maps':map{'c':'#ç#'}}`, "\"#ç#c\u0327\""},
+		{"JSON text node method excludes comments", `parse-xml('<r><!--c--></r>')/r/comment()`, `<xsl:output method="json" indent="no" json-node-output-method="text"/>`, `map{'method':'json','json-node-output-method':'text'}`, `""`},
+	}
+}
+
+func TestJSONCharacterExpansion(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range jsonCharacterExpansionCases() {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := query(t, e, `serialize(`+test.expression+`,`+test.options+`)`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+			assertSerializationSequence(t, "fn:serialize", got, err, test.want, "")
+			expression := strings.NewReplacer("&", "&amp;", "<", "&lt;", `"`, "&quot;").Replace(test.expression)
+			body := `<xsl:sequence select="` + expression + `"/>`
+			compiled := stylesheet(t, e, `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0">`+test.declarations+`<xsl:template name="start">`+body+`<xsl:result-document href="secondary">`+body+`</xsl:result-document></xsl:template></xsl:stylesheet>`)
+			for _, mode := range []transform.ResultMode{transform.ResultRaw, transform.ResultDefault} {
+				result, err := compiled.Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: "start"}, ResultMode: mode})
+				if err != nil {
+					t.Fatal(err)
+				}
+				output, err := result.Serialize(t.Context())
+				assertSerializationOutput(t, "Serialize", output, err, test.want, "")
+				if string(output.Secondary["secondary"]) != test.want {
+					t.Fatal(string(output.Secondary["secondary"]))
+				}
+				var buf strings.Builder
+				_, err = result.WriterTo(t.Context()).WriteTo(&buf)
+				assertSerializationResult(t, "WriterTo", buf.String(), err, test.want, "")
+			}
+		})
+	}
+	got, err := query(t, e, `serialize('é😀',map{'method':'json','encoding':'UTF-16'})`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+	assertSerializationSequence(t, "UTF-16 repertoire", got, err, `"é😀"`, "")
+}
+
+func adaptiveSerializationCases() []valueSerializationCase {
+	const output = `<xsl:output method="adaptive" omit-xml-declaration="yes" indent="no"/>`
+	const options = `map{'method':'adaptive','omit-xml-declaration':true(),'indent':false()}`
+	return []valueSerializationCase{
+		{"empty sequence", `()`, output, options, ""},
+		{"default newline separator", `(1,2)`, output, options, "1\n2"},
+		{"container sequences", `[(1,2),(),map{'k':(3,4)}]`, output, options, `[(1,2),(),map{"k":(3,4)}]`},
+		{"QName", `QName('urn:q','q:n')`, output, options, `Q{urn:q}n`},
+		{"named function", `string#1`, output, options, `fn:string#1`},
+		{"anonymous function", `function($x){$x}`, output, options, `(anonymous-function)#1`},
+		{"derived string", `xs:token(' a ')`, output, options, `"a"`},
+		{"double", `xs:double('12.5')`, output, options, `1.25e1`},
+		{"float", `xs:float('12.5')`, output, options, `xs:float("12.5")`},
+		{"date", `xs:date('2026-10-24')`, output, options, `xs:date("2026-10-24")`},
+		{"primitive duration", `xs:dayTimeDuration('P1D')`, output, options, `xs:duration("P1D")`},
+		{"hex binary", `xs:hexBinary('0a')`, output, options, `xs:hexBinary("0A")`},
+		{"ASCII comment recovery", `parse-xml('<r><!--ª--></r>')/r/comment()`, `<xsl:output method="adaptive" omit-xml-declaration="yes" encoding="US-ASCII"/>`, `map{'method':'adaptive','omit-xml-declaration':true(),'encoding':'US-ASCII'}`, `<!--ª-->`},
+		{"ASCII markup recovery", `parse-xml('<é/>')/*`, `<xsl:output method="adaptive" omit-xml-declaration="yes" encoding="US-ASCII"/>`, `map{'method':'adaptive','omit-xml-declaration':true(),'encoding':'US-ASCII'}`, `<é/>`},
+		{"ASCII text node", `parse-xml('<r>ª</r>')/r/text()`, `<xsl:output method="adaptive" omit-xml-declaration="yes" encoding="US-ASCII"/>`, `map{'method':'adaptive','omit-xml-declaration':true(),'encoding':'US-ASCII'}`, `&#170;`},
+		{"attribute XML escaping", `parse-xml('<r a="&amp;&quot;"/>')/r/@a`, output, options, `a="&amp;&quot;"`},
+		{"namespace", `parse-xml('<r xmlns:q="urn:q"/>')/r/namespace::q`, output, options, `xmlns:q="urn:q"`},
+		{"default namespace", `parse-xml('<r xmlns="urn:q"/>')/*/namespace::*[name()='']`, output, options, `xmlns="urn:q"`},
+		{"mapped replacement quote", `'a'`, `<xsl:output method="adaptive" use-character-maps="m"/><xsl:character-map name="m"><xsl:output-character character="a" string="&quot;"/></xsl:character-map>`, `map{'method':'adaptive','use-character-maps':map{'a':'"'}}`, `"""`},
+		{"quoted text map", `'a'`, `<xsl:output method="adaptive" use-character-maps="m"/><xsl:character-map name="m"><xsl:output-character character="&quot;" string="Q"/></xsl:character-map>`, `map{'method':'adaptive','use-character-maps':map{'"':'Q'}}`, `QaQ`},
+		{"per-node declarations", `(parse-xml('<a/>')/a,parse-xml('<b/>')/b)`, `<xsl:output method="adaptive" omit-xml-declaration="no" indent="no"/>`, `map{'method':'adaptive','omit-xml-declaration':false(),'indent':false()}`, "<?xml version=\"1.0\" encoding=\"UTF-8\"?><a/>\n<?xml version=\"1.0\" encoding=\"UTF-8\"?><b/>"},
+	}
+}
+
+func TestAdaptiveSerializationRules(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range adaptiveSerializationCases() {
+		t.Run(test.name, func(t *testing.T) {
+			value, err := query(t, e, `serialize(`+test.expression+`,`+test.options+`)`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+			assertSerializationSequence(t, "fn:serialize", value, err, test.want, "")
+			expression := strings.NewReplacer("&", "&amp;", "<", "&lt;", `"`, "&quot;").Replace(test.expression)
+			source := markupSerializationSheet(markupSerializationCase{declarations: test.declarations, body: `<xsl:sequence select="` + expression + `"/>`}, true)
+			source = strings.Replace(source, `<xsl:stylesheet `, `<xsl:stylesheet xmlns:xs="http://www.w3.org/2001/XMLSchema" exclude-result-prefixes="xs" `, 1)
+			compiled := stylesheet(t, e, source)
+			for _, mode := range []transform.ResultMode{transform.ResultRaw, transform.ResultDefault} {
+				result, err := compiled.Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: "start"}, ResultMode: mode})
+				if err != nil {
+					t.Fatal(err)
+				}
+				output, err := result.Serialize(t.Context())
+				assertSerializationOutput(t, "Serialize", output, err, test.want, "")
+				if output == nil {
+					t.Fatal(err)
+				}
+				if string(output.Secondary["secondary"]) != test.want {
+					t.Errorf("secondary %q, want %q", output.Secondary["secondary"], test.want)
+				}
+				var buf strings.Builder
+				_, err = result.WriterTo(t.Context()).WriteTo(&buf)
+				assertSerializationResult(t, "WriterTo", buf.String(), err, test.want, "")
+			}
 		})
 	}
 }

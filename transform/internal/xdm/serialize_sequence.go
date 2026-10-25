@@ -2,6 +2,7 @@ package xdm
 
 import (
 	"context"
+	"errors"
 	"io"
 	"iter"
 	"strings"
@@ -13,6 +14,21 @@ import (
 type XMLItem struct {
 	Node Node
 	Text string
+}
+
+// WriteAttributeValue applies the XML character rules to a standalone adaptive
+// attribute/namespace representation without constructing a containing tree.
+func (w XMLSerialization) WriteAttributeValue(ctx context.Context, dst io.Writer, value string) error {
+	_, err := tree.WriteXMLCharacters(ctx, dst, value, tree.XMLAttributeValue, int(^uint(0)>>1), w.XMLWriteOptions)
+	if errors.Is(err, tree.ErrUnencodable) {
+		return &Error{Code: "SERE0008", Message: err.Error(), Cause: err}
+	}
+
+	if errors.Is(err, tree.ErrMalformed) {
+		return &Error{Code: "SERE0006", Message: err.Error(), Cause: err}
+	}
+
+	return err
 }
 
 // WriteSequence serializes borrowed nodes and text without building another DOM.
@@ -58,7 +74,15 @@ func (w XMLSerialization) WriteSequence(ctx context.Context, dst io.Writer, item
 			}
 		}
 	}
+
 	_, err := tree.WriteXMLSequence(ctx, dst, nodes, int(^uint(0)>>1), options)
+	if errors.Is(err, tree.ErrUnencodable) {
+		return &Error{Code: "SERE0008", Message: err.Error(), Cause: err}
+	}
+
+	if errors.Is(err, tree.ErrMalformed) {
+		return &Error{Code: "SERE0006", Message: err.Error(), Cause: err}
+	}
 
 	return err
 }
