@@ -3,6 +3,8 @@ package transform_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"math/big"
 	"strings"
 	"testing"
@@ -89,6 +91,82 @@ func TestXPathLexicalCasts(t *testing.T) {
 				t.Errorf("XPath %d %s: %q, want %q", version, source, got, want)
 			}
 		}
+	}
+}
+
+func TestNumericBudgetExactness(t *testing.T) {
+	e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 64 << 10}})
+	want := new(big.Int).Lsh(big.NewInt(1), 4096)
+
+	for _, initial := range []string{"2", "xs:decimal('2')", "xs:decimal('0.5')"} {
+		t.Run(initial, func(t *testing.T) {
+			value, err := evaluate(t, e, `fold-left(1 to 12, `+initial+`, function($a,$b){$a*$a})`, transform.XPath31).Single()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if initial == "2" {
+				got, err := value.Integer()
+				if err != nil || got.Cmp(want) != 0 {
+					t.Fatalf("integer mismatch: %v", err)
+				}
+			} else {
+				got, err := value.Decimal()
+
+				expected := new(big.Rat).SetInt(want)
+				if initial == "xs:decimal('0.5')" {
+					expected.Inv(expected)
+				}
+
+				if err != nil || got.Cmp(expected) != 0 {
+					t.Fatalf("decimal mismatch: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestIntegerMultiplicationBoundaries(t *testing.T) {
+	e := engine(t, transform.Config{})
+
+	for _, a := range []int64{math.MinInt64, math.MinInt64 + 1, -3037000500, -1, 0, 1, 3037000500, math.MaxInt64} {
+		for _, b := range []int64{math.MinInt64, -2, -1, 0, 1, 2, math.MaxInt64} {
+			t.Run(fmt.Sprintf("%d/%d", a, b), func(t *testing.T) {
+				source := fmt.Sprintf(`xs:integer('%d') * xs:integer('%d')`, a, b)
+				result := evaluate(t, e, source, transform.XPath31)
+
+				value, err := result.Single()
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				got, err := value.Integer()
+
+				want := new(big.Int).Mul(big.NewInt(a), big.NewInt(b))
+				if err != nil || got.Cmp(want) != 0 {
+					t.Fatalf("%s = %v (%v), want %s", source, got, err, want)
+				}
+			})
+		}
+	}
+}
+
+func TestIntegerMinimumMultiplication(t *testing.T) {
+	e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 64}})
+	for _, source := range []string{`-1 * xs:integer("-9223372036854775808")`, `xs:integer("-9223372036854775808") * -1`} {
+		t.Run(source, func(t *testing.T) {
+			value, err := evaluate(t, e, source, transform.XPath31).Single()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := value.Integer()
+
+			want := new(big.Int).Lsh(big.NewInt(1), 63)
+			if err != nil || got.Cmp(want) != 0 {
+				t.Fatalf("got %v (%v), want %s", got, err, want)
+			}
+		})
 	}
 }
 
@@ -269,6 +347,59 @@ func TestDocumentsAndBindings(t *testing.T) {
 	atomic, err := query(t, e, `. + 1`, transform.XPath31).Evaluate(context.Background(), nil, transform.XPathContext{ContextItem: transform.Integer(41)})
 	if err != nil || text(t, atomic) != "42" {
 		t.Fatal(atomic, err)
+	}
+}
+
+// F&O 2.0 (Second Edition) §15.1.10, 3.0 §14.1.9 and 3.1 §14.1.8
+// require exactly one xs:double for each supplied position/length argument.
+func TestSubsequenceArgumentCardinality(t *testing.T) {
+	e := engine(t, transform.Config{})
+
+	if _, err := e.CompileXPath(t.Context(), `subsequence(/r/*,2)`, transform.XPathOptions{Version: transform.XPath10}); err == nil {
+		t.Fatal("XPath 1.0 accepted a function outside its library")
+	}
+
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for _, source := range []string{
+			`subsequence((1, 2, 3), 2, ())`,
+			`subsequence((1, 2, 3), (), 2)`,
+			`subsequence((1, 2, 3), 2, (1, 2))`,
+			`subsequence((1, 2, 3), xs:double('NaN'), ())`,
+		} {
+			t.Run(fmt.Sprintf("%d/%s", version, source), func(t *testing.T) {
+				q, err := e.CompileXPath(t.Context(), source, transform.XPathOptions{Version: version})
+				if err == nil {
+					_, err = q.Evaluate(t.Context(), nil, transform.XPathContext{})
+				}
+
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != "XPTY0004" {
+					t.Fatalf("expected XPTY0004 during compile/evaluate, got %v", err)
+				}
+			})
+		}
+
+		for _, tt := range []struct{ args, want string }{
+			{`2`, "2 3"},
+			{`2, 0`, ""},
+			{`2, -1`, ""},
+			{`1.5, 1.5`, "2 3"},
+			{`0, 3`, "1 2"},
+			{`xs:double('NaN'), 2`, ""},
+			{`1, xs:double('NaN')`, ""},
+			{`1, xs:double('INF')`, "1 2 3"},
+			{`xs:double('-INF')`, "1 2 3"},
+			{`xs:double('INF')`, ""},
+			{`xs:double('-INF'), xs:double('INF')`, ""},
+			{`1, xs:double('-INF')`, ""},
+		} {
+			t.Run(fmt.Sprintf("%d/%s", version, tt.args), func(t *testing.T) {
+				source := `string-join(for $n in subsequence((1, 2, 3), ` + tt.args + `) return string($n), ' ')`
+				if got := text(t, evaluate(t, e, source, version)); got != tt.want {
+					t.Fatalf("got %q, want %q", got, tt.want)
+				}
+			})
+		}
 	}
 }
 

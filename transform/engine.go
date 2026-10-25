@@ -39,7 +39,10 @@ type Limits struct {
 	// MaxProgramBytes bounds a program's source; the default is 64 KiB.
 	MaxProgramBytes int
 	// MaxOutputBytes bounds serialized output and intermediate value sizes;
-	// the default is 8 MiB.
+	// the default is 8 MiB. Numeric magnitudes use binary bytes (at least one
+	// per integer; decimals count numerator plus denominator). Evaluated numeric
+	// occurrences and temporaries share the cumulative string/tree budget.
+	// Preflight bounds can exceed reduced results; see docs/transforms.md.
 	MaxOutputBytes int
 	// MaxNodes bounds input trees and intermediate collections; the default is 100,000.
 	MaxNodes int

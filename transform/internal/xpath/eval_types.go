@@ -119,9 +119,13 @@ func schemaAwareCast(ctx context.Context, ec *evalContext, av xdm.AtomicValue, t
 }
 
 func schemaAwareCastRec(ctx context.Context, ec *evalContext, av xdm.AtomicValue, targetType string, seen map[string]struct{}) (xdm.AtomicValue, error) {
-	result, err := CastAtomic(av, targetType)
+	result, err := CastAtomicContext(ctx, av, targetType)
 	if err == nil {
 		return result, nil
+	}
+
+	if errors.Is(err, ErrBudget) || ctx.Err() != nil {
+		return xdm.AtomicValue{}, errors.Join(err, ctx.Err())
 	}
 
 	if ec == nil || ec.schemaDeclarations == nil {
@@ -234,7 +238,7 @@ func schemaAwareCastViaBuiltin(ctx context.Context, ec *evalContext, av xdm.Atom
 		return qv, nil
 	}
 
-	result, castErr := CastAtomic(av, builtinBase)
+	result, castErr := CastAtomicContext(ctx, av, builtinBase)
 	if castErr != nil {
 		return xdm.AtomicValue{}, castErr
 	}
@@ -300,7 +304,7 @@ func evalCastExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e 
 			return xdm.SingleAtomic(av), nil
 		}
 
-		result, err := CastAtomic(av, xdm.TypeDouble)
+		result, err := CastAtomicContext(ctx, av, xdm.TypeDouble)
 		if err != nil {
 			return nil, err
 		}
@@ -314,7 +318,7 @@ func evalCastExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e 
 		}
 	}
 
-	result, err := CastAtomic(av, targetType)
+	result, err := CastAtomicContext(ctx, av, targetType)
 	if err != nil {
 		if result, err = schemaAwareCast(ctx, ec, av, targetType); err != nil {
 			return nil, err
@@ -387,7 +391,10 @@ func evalCastableExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext
 			return xdm.SingleBoolean(true), nil
 		}
 
-		_, castErr := CastAtomic(av, xdm.TypeDouble)
+		_, castErr := CastAtomicContext(ctx, av, xdm.TypeDouble)
+		if errors.Is(castErr, ErrBudget) || ctx.Err() != nil {
+			return nil, errors.Join(castErr, ctx.Err())
+		}
 
 		return xdm.SingleBoolean(castErr == nil), nil
 	}
@@ -402,6 +409,9 @@ func evalCastableExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext
 	}
 
 	_, castErr := schemaAwareCast(ctx, ec, av, targetType)
+	if errors.Is(castErr, ErrBudget) || ctx.Err() != nil {
+		return nil, errors.Join(castErr, ctx.Err())
+	}
 
 	return xdm.SingleBoolean(castErr == nil), nil
 }
@@ -743,7 +753,7 @@ func coerceAtomicFunctionArgument(ctx context.Context, value xdm.AtomicValue, ta
 			return schemaAwareCast(ctx, ec, value, target)
 		}
 
-		return CastAtomic(value, target)
+		return CastAtomicContext(ctx, value, target)
 	}
 
 	if atomicMatchesTargetType(value, target, ec) {

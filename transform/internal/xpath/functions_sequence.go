@@ -82,10 +82,10 @@ func fnTail(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	return xdm.ItemSlice(xdm.Materialize(args[0])[1:]), nil
 }
 
-func fnInsertBefore(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnInsertBefore(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	target := args[0]
 	// $position is xs:integer: reject empty/multi-item/non-integer (XPTY0004).
-	posVal, err := coerceArgToInteger(args[1])
+	posVal, err := coerceArgToInteger(ctx, args[1])
 	if err != nil {
 		return nil, err
 	}
@@ -116,10 +116,10 @@ func fnInsertBefore(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error
 	return result, nil
 }
 
-func fnRemove(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnRemove(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	target := args[0]
 
-	posVal, err := coerceArgToInteger(args[1])
+	posVal, err := coerceArgToInteger(ctx, args[1])
 	if err != nil {
 		return nil, err
 	}
@@ -225,10 +225,6 @@ func subsequenceArgumentError(role, problem string) error {
 func subsequenceLength(args []xdm.Sequence, compat bool) (float64, bool, error) {
 	if len(args) <= 2 {
 		return 0, false, nil
-	}
-
-	if !compat && xdm.SequenceLen(args[2]) == 0 {
-		return 0, false, nil // Optional xs:double? is unbounded when empty.
 	}
 
 	length, err := roundSubsequenceArgument(args[2], compat, "length")

@@ -1,6 +1,7 @@
 package xmldsig_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -105,7 +106,7 @@ func TestV1TransformURIsRequireV1Processor(t *testing.T) {
 			if algorithm == reference.XSLT {
 				tr.Stylesheet = []byte(`<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0"><xsl:template match="/"/></xsl:stylesheet>`)
 			} else {
-				tr.XPath = []reference.XPathExpression{{Expression: "true()"}}
+				tr.XPath = []reference.XPathExpression{{Expression: programTrueXPath}}
 				if algorithm == reference.XPathFilter2 {
 					tr.XPath[0].Expression = "/"
 					tr.XPath[0].Filter = "intersect"
@@ -123,6 +124,110 @@ func TestV1TransformURIsRequireV1Processor(t *testing.T) {
 			result, err := xmldsig.SignTemplate(context.Background(), template, selected, coreEC(t), xmldsig.TemplateSignOptions{Validation: options})
 			if result != nil || !errors.Is(err, reference.ErrPolicy) {
 				t.Fatal(result, err)
+			}
+		})
+	}
+}
+
+func TestTemplateStylesheetNamespaceImport(t *testing.T) {
+	for _, literal := range []string{
+		`<payload><value>123</value></payload>`,
+		`<payload xmlns="urn:payload"><value/><empty xmlns=""/></payload>`,
+		`<p:payload xmlns:p="urn:payload" p:a="v"><value/></p:payload>`,
+	} {
+		t.Run(literal, func(t *testing.T) {
+			source := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:ds="` + xmldsig.Namespace + `" xmlns:p="urn:conflict" version="1.0"><xsl:output omit-xml-declaration="yes"/><xsl:template match="/">` + literal + `</xsl:template></xsl:stylesheet>`
+			program := reference.Transform{Algorithm: reference.XSLT, Stylesheet: []byte(source)}
+			host := coreParse(t, `<host xmlns="urn:host" xmlns:p="urn:conflict" ID="host"><data ID="data"/></host>`)
+
+			built, selected, err := xmldsig.BuildTemplate(t.Context(), host, host.Root(), xmldsig.SignatureTemplate{
+				SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: "#data", Transforms: []reference.Transform{program}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			style := findImportElement(t, built.Root(), document.Name{Space: "http://www.w3.org/1999/XSL/Transform", Local: "stylesheet"})
+			assertImportedTree(t, style, coreParse(t, source).Root())
+
+			e, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{program}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			processing := reference.DefaultOptions()
+			processing.Extension = e
+			processing.AllowedTransforms = append(processing.AllowedTransforms, reference.XSLT)
+			options := xmldsig.SignatureOptions{ExpectedURIs: []string{"#data"}, Processing: processing}
+			key := coreEC(t)
+
+			signed, err := xmldsig.SignTemplate(t.Context(), built, selected, key, xmldsig.TemplateSignOptions{Validation: options})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := xmldsig.VerifySignature(t.Context(), signed, xmldsig.Signatures(signed)[0], key.Public(), options)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var output bytes.Buffer
+			if _, err := result.References()[0].WriteDigestInput(t.Context(), &output); err != nil {
+				t.Fatal(err)
+			}
+
+			assertImportedTree(t, coreParse(t, output.String()).Root(), coreParse(t, literal).Root())
+		})
+	}
+}
+
+func TestImportedStylesheetDefaultNamespaceAndQNames(t *testing.T) {
+	for _, tt := range []struct{ name, declarations, body, expected string }{
+		{"default", `xmlns="urn:literal"`, `<result><empty xmlns=""/></result>`, `<result xmlns="urn:literal"><empty xmlns=""/></result>`},
+		{"QName", `xmlns:p="urn:source"`, `<xsl:element name="p:result"><xsl:value-of select="//p:value"/></xsl:element>`, `<p:result xmlns:p="urn:source">123</p:result>`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0" ` + tt.declarations + `><xsl:output omit-xml-declaration="yes"/><xsl:template match="/">` + tt.body + `</xsl:template></xsl:stylesheet>`
+			host := coreParse(t, `<host xmlns="urn:host" xmlns:p="urn:conflict"/>`)
+			before := coreXML(t, host)
+
+			built, _, err := xmldsig.BuildTemplate(t.Context(), host, host.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: uriUrnData, Transforms: []reference.Transform{{Algorithm: reference.XSLT, Stylesheet: []byte(source)}}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			style := findImportElement(t, built.Root(), document.Name{Space: "http://www.w3.org/1999/XSL/Transform", Local: "stylesheet"})
+			assertImportedTree(t, style, coreParse(t, source).Root())
+
+			var serialized bytes.Buffer
+			if err := c14n.WriteElement(t.Context(), &serialized, style, c14n.Options{Algorithm: c14n.Canonical10}); err != nil {
+				t.Fatal(err)
+			}
+
+			e, err := transform.NewEngine(transform.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			sheet, err := e.CompileXSLT(t.Context(), serialized.Bytes(), transform.XSLTOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			input, err := e.Parse(t.Context(), []byte(`<data xmlns:q="urn:source"><q:value>123</q:value></data>`))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			output, err := sheet.Transform(t.Context(), input, transform.XSLTContext{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			assertImportedTree(t, coreParse(t, string(output.Primary)).Root(), coreParse(t, tt.expected).Root())
+
+			if coreXML(t, host) != before {
+				t.Fatal("source snapshot changed")
 			}
 		})
 	}

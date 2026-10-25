@@ -13,7 +13,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -303,6 +302,40 @@ func TestCoreRepeatedURIAndExpectedSet(t *testing.T) {
 		r, e := xmldsig.VerifySignature(context.Background(), signed, xmldsig.Signatures(signed)[0], &key.PublicKey, xmldsig.SignatureOptions{ExpectedURIs: uris})
 		if r != nil || !errors.Is(e, xmldsig.ErrPolicy) {
 			t.Fatal("URI multiset accepted", e)
+		}
+	}
+}
+
+func TestTemplateObjectNamespaceImport(t *testing.T) {
+	for _, source := range []string{
+		`<payload plain="v"><value>123</value></payload>`,
+		`<payload xmlns="urn:payload"><value/><empty xmlns=""><value/></empty></payload>`,
+		`<p:payload xmlns:p="urn:payload" p:a="v"><value/></p:payload>`,
+		`<p:payload xmlns:p="urn:payload" xmlns="urn:default"><value/><empty xmlns=""/></p:payload>`,
+	} {
+		for _, hostXML := range []string{`<host ID="host"><before/></host>`, `<host xmlns="urn:host" xmlns:p="urn:conflict" ID="host"><before/></host>`} {
+			t.Run(hostXML+source, func(t *testing.T) {
+				host, payload := coreParse(t, hostXML), coreParse(t, source)
+				hostBefore, payloadBefore := coreXML(t, host), coreXML(t, payload)
+
+				built, _, err := xmldsig.BuildTemplate(t.Context(), host, host.Root(), xmldsig.SignatureTemplate{
+					SignatureMethod: xmldsig.ECDSASHA256,
+					References:      []xmldsig.ReferenceTemplate{{URI: "#object"}},
+					Objects:         []xmldsig.ObjectTemplate{{ID: "object", XML: payload}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				reparsed := coreParse(t, coreXML(t, built))
+				object := findImportElement(t, reparsed.Root(), document.Name{Space: xmldsig.Namespace, Local: "Object"})
+				assertImportedTree(t, object.Children()[0], payload.Root())
+				assertImportedTree(t, reparsed.Root().Children()[0], host.Root().Children()[0])
+
+				if coreXML(t, host) != hostBefore || coreXML(t, payload) != payloadBefore {
+					t.Fatal("source snapshot changed")
+				}
+			})
 		}
 	}
 }
@@ -677,14 +710,4 @@ func coreSign(t testing.TB, d *document.Document, key crypto.Signer, opt xmldsig
 	}
 
 	return out
-}
-
-type coreCountSigner struct {
-	crypto.Signer
-	calls int
-}
-
-func (s *coreCountSigner) Sign(r io.Reader, d []byte, o crypto.SignerOpts) ([]byte, error) {
-	s.calls++
-	return s.Signer.Sign(r, d, o)
 }

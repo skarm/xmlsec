@@ -106,7 +106,12 @@ func checkStandaloneCall(version int, prefix, name string, arity int, namespaces
 // Language pins the grammar and function library to XPath 1.0, 2.0, 3.0 or 3.1.
 // Zero selects the engine default profile.
 func (c Compiler) Language(version int, namespaces map[string]string) Compiler {
-	return Compiler{cfg: &compilerCfg{version: version, namespaces: maps.Clone(namespaces)}}
+	ctx := context.Context(nil)
+	if c.cfg != nil {
+		ctx = c.cfg.context
+	}
+
+	return Compiler{cfg: &compilerCfg{context: ctx, version: version, namespaces: maps.Clone(namespaces)}}
 }
 
 func validateVersionTokens(tokens []Token, version int) error {

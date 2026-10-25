@@ -27,16 +27,19 @@ import (
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/reference"
+	"github.com/skarm/xmlsec/transform"
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
 const (
-	uriUrnXML    = "urn:xml"
-	nameBad      = "bad"
-	nameEmptyDat = "empty.dat"
-	uriUrnA      = "urn:a"
-	uriUrnB      = "urn:b"
-	uriUrnBinary = "urn:binary"
+	programFirstURI  = "urn:first"
+	programSecondURI = "urn:second"
+	uriUrnXML        = "urn:xml"
+	nameBad          = "bad"
+	nameEmptyDat     = "empty.dat"
+	uriUrnA          = "urn:a"
+	uriUrnB          = "urn:b"
+	uriUrnBinary     = "urn:binary"
 )
 
 func TestDetachedAlgorithmsAndTransforms(t *testing.T) {
@@ -443,6 +446,272 @@ func TestDetachedConcurrencyAndZeroValues(t *testing.T) {
 	var rr xmldsig.ReferenceResult
 	if rr.Digest() != nil || rr.Size() != 0 || rr.IsCanonicalXML() || rr.InputKind() != reference.Invalid || rr.Steps() != nil {
 		t.Fatal("nonzero reference")
+	}
+}
+
+func TestDetachedProgramPreflight(t *testing.T) {
+	approved := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: programTrueXPath, Namespaces: map[string]string{"ds": xmldsig.Namespace}}}}
+
+	e, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{approved}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	processing := reference.DefaultOptions()
+	processing.Extension = e
+
+	processing.AllowedTransforms = append(processing.AllowedTransforms, reference.XPath, reference.XPathFilter2, reference.XSLT)
+	for _, tt := range []struct {
+		name    string
+		program reference.Transform
+		deny    bool
+	}{
+		{"unapproved", reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "false()", Namespaces: map[string]string{"ds": xmldsig.Namespace}}}}, false},
+		{"unapproved context", reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: programTrueXPath, Namespaces: map[string]string{"ds": xmldsig.Namespace, "p": "urn:extra"}}}}, false},
+		{"missing expression", reference.Transform{Algorithm: reference.XPath}, false},
+		{"bad Filter2", reference.Transform{Algorithm: reference.XPathFilter2, XPath: []reference.XPathExpression{{Expression: "/", Filter: "replace"}}}, false},
+		{"reserved prefix", reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: programTrueXPath, Namespaces: map[string]string{"ds": "urn:wrong"}}}}, false},
+		{"malformed stylesheet", reference.Transform{Algorithm: reference.XSLT, Stylesheet: []byte(`<broken>`)}, false},
+		{"unknown", reference.Transform{Algorithm: "urn:unknown"}, false},
+		{"forbidden", approved, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				calls++
+				return nil, errors.New("unexpected resolver call")
+			})
+			signer := &coreCountSigner{Signer: coreEC(t)}
+
+			options := processing
+			if tt.deny {
+				options = reference.DefaultOptions()
+			}
+
+			doc, err := xmldsig.SignDetached(t.Context(), []xmldsig.DetachedReference{{URI: programFirstURI}, {URI: programSecondURI, Transforms: []reference.Transform{tt.program, {Algorithm: c14n.Exclusive}}}}, signer, resolver, xmldsig.DetachedSignOptions{Processing: options})
+			if doc != nil || err == nil || calls != 0 || signer.calls != 0 {
+				t.Fatalf("doc=%v, error=%v, resolver=%d, signer=%d", doc, err, calls, signer.calls)
+			}
+		})
+	}
+}
+
+func TestDetachedDamagedProgramParameters(t *testing.T) {
+	program := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: programTrueXPath, Namespaces: map[string]string{"ds": xmldsig.Namespace}}}}
+
+	e, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{program}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	processing := reference.DefaultOptions()
+	processing.Extension = e
+	processing.AllowedTransforms = append(processing.AllowedTransforms, reference.XPath)
+	key := coreEC(t)
+
+	signed, err := xmldsig.SignDetached(t.Context(), []xmldsig.DetachedReference{{URI: uriUrnData, Transforms: []reference.Transform{program, {Algorithm: c14n.Exclusive}}}}, key, sourceMap(map[string][]byte{uriUrnData: []byte(`<r/>`)}), xmldsig.DetachedSignOptions{Processing: processing})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw := coreXML(t, signed)
+	start := strings.Index(raw, "<ds:XPath")
+
+	end := strings.Index(raw, "</ds:XPath>") + len("</ds:XPath>")
+	if start < 0 || end < start {
+		t.Fatal("parameter missing")
+	}
+
+	for _, parameter := range []string{"", raw[start:end] + raw[start:end], `<ds:XPath Filter="intersect">true()</ds:XPath>`, `<ds:XPath><bad/></ds:XPath>`, `<ds:Unknown/>`} {
+		t.Run(parameter, func(t *testing.T) {
+			changed := coreParse(t, raw[:start]+parameter+raw[end:])
+			calls := 0
+			resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				calls++
+				return nil, errors.New("unexpected resolver call")
+			})
+
+			result, err := xmldsig.VerifyDetached(t.Context(), changed, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnData}, Processing: processing})
+			if result != nil || err == nil || calls != 0 {
+				t.Fatalf("result=%v error=%v calls=%d", result, err, calls)
+			}
+		})
+	}
+}
+
+func TestDetachedVerifierPreflightsEveryProgram(t *testing.T) {
+	program := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: programTrueXPath, Namespaces: map[string]string{"ds": xmldsig.Namespace}}}}
+
+	allowed, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{program}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	processing := reference.DefaultOptions()
+	processing.Extension = allowed
+	processing.AllowedTransforms = append(processing.AllowedTransforms, reference.XPath)
+	key := coreEC(t)
+
+	signed, err := xmldsig.SignDetached(t.Context(), []xmldsig.DetachedReference{{URI: programFirstURI}, {URI: programSecondURI, Transforms: []reference.Transform{program, {Algorithm: c14n.Exclusive}}}}, key, sourceMap(map[string][]byte{programFirstURI: []byte("raw"), programSecondURI: []byte(`<r/>`)}), xmldsig.DetachedSignOptions{Processing: processing})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	program.XPath[0].Expression = "false()"
+
+	denied, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{program}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	processing.Extension = denied
+	calls := 0
+	resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+		calls++
+		return nil, errors.New("unexpected resolver call")
+	})
+
+	result, err := xmldsig.VerifyDetached(t.Context(), signed, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{programFirstURI, programSecondURI}, Processing: processing})
+	if result != nil || err == nil || calls != 0 {
+		t.Fatalf("result=%v error=%v calls=%d", result, err, calls)
+	}
+}
+
+func TestDetachedProgramParameters(t *testing.T) {
+	for _, program := range []reference.Transform{
+		{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: programTrueXPath}}},
+		{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "boolean(//p:value)", Namespaces: map[string]string{"p": uriUrnData}}}},
+		{Algorithm: reference.XPathFilter2, XPath: []reference.XPathExpression{
+			{Expression: "/", Filter: "intersect"},
+			{Expression: "//p:value", Filter: "union", Namespaces: map[string]string{"p": uriUrnData}},
+			{Expression: "//absent", Filter: "subtract"},
+		}},
+		{Algorithm: reference.XSLT, Stylesheet: []byte(`<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:p="urn:data" version="1.0"><xsl:output method="text"/><xsl:template match="/"><xsl:value-of select="//p:value"/></xsl:template></xsl:stylesheet>`)},
+	} {
+		t.Run(program.Algorithm+string(program.Stylesheet), func(t *testing.T) {
+			testDetachedProgramParameters(t, program)
+		})
+	}
+}
+
+func testDetachedProgramParameters(t *testing.T, program reference.Transform) {
+	t.Helper()
+
+	program = serializedProgramContext(program)
+
+	e, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{program}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	processing := reference.DefaultOptions()
+	processing.Extension = e
+	processing.AllowedTransforms = append(processing.AllowedTransforms, program.Algorithm)
+
+	transforms := []reference.Transform{program}
+	if program.Algorithm == reference.XPath && program.XPath[0].Expression == programTrueXPath {
+		// The recipe may omit markup bindings; the application has approved
+		// the complete context that the serializer places in the XML.
+		transforms = []reference.Transform{{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: programTrueXPath}}}}
+	}
+
+	if program.Algorithm != reference.XSLT {
+		transforms = append(transforms, reference.Transform{Algorithm: c14n.Exclusive, InclusivePrefixes: []string{"p"}})
+	}
+
+	key := coreEC(t)
+	resolver := sourceMap(map[string][]byte{uriUrnData: []byte(`<r xmlns:p="urn:data"><p:value>123</p:value></r>`)})
+
+	signed, err := xmldsig.SignDetached(t.Context(), []xmldsig.DetachedReference{{URI: uriUrnData, Transforms: transforms}}, key, resolver, xmldsig.DetachedSignOptions{Processing: processing})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parsed := coreParse(t, coreXML(t, signed))
+	assertDetachedProgramXML(t, parsed, program)
+
+	result, err := xmldsig.VerifyDetached(t.Context(), parsed, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnData}, Processing: processing})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if program.Algorithm == reference.XSLT {
+		var output bytes.Buffer
+		if _, err := result.References()[0].WriteDigestInput(t.Context(), &output); err != nil || output.String() != "123" {
+			t.Fatalf("XSLT output %q: %v", output.String(), err)
+		}
+	}
+}
+
+func serializedProgramContext(program reference.Transform) reference.Transform {
+	// Approval covers the complete namespace context present in XML,
+	// including the prefixes used by the signature/parameter markup.
+	for i := range program.XPath {
+		if program.XPath[i].Namespaces == nil {
+			program.XPath[i].Namespaces = make(map[string]string)
+		}
+
+		program.XPath[i].Namespaces["ds"] = xmldsig.Namespace
+		if program.Algorithm == reference.XPathFilter2 {
+			program.XPath[i].Namespaces["xf"] = reference.XPathFilter2
+		}
+	}
+
+	if program.Algorithm == reference.XSLT {
+		program.Stylesheet = bytes.Replace(program.Stylesheet, []byte(`version="1.0"`), []byte(`xmlns:ds="`+xmldsig.Namespace+`" version="1.0"`), 1)
+	}
+
+	return program
+}
+
+func assertDetachedProgramXML(t *testing.T, parsed *document.Document, program reference.Transform) {
+	t.Helper()
+	container := findImportElement(t, parsed.Root(), document.Name{Space: xmldsig.Namespace, Local: "Transforms"})
+
+	parameterNodes := container.Children()[0].Children()
+	if program.Algorithm == reference.XSLT {
+		if len(parameterNodes) != 1 {
+			t.Fatalf("stylesheet missing: %s", coreXML(t, parsed))
+		}
+
+		assertImportedTree(t, parameterNodes[0], coreParse(t, string(program.Stylesheet)).Root())
+	} else {
+		if len(parameterNodes) != len(program.XPath) {
+			t.Fatalf("XPath parameters missing: %s", coreXML(t, parsed))
+		}
+
+		assertXPathParameters(t, parameterNodes, program.XPath)
+
+		inclusive := container.Children()[1].Children()
+		if len(inclusive) != 1 || inclusive[0].Name() != (document.Name{Space: c14n.Exclusive, Local: "InclusiveNamespaces"}) {
+			t.Fatal("InclusiveNamespaces missing")
+		}
+
+		if prefixes, _ := inclusive[0].Attribute(document.Name{Local: "PrefixList"}); prefixes != "p" {
+			t.Fatal(prefixes)
+		}
+	}
+}
+
+func assertXPathParameters(t *testing.T, parameterNodes []document.Element, expected []reference.XPathExpression) {
+	t.Helper()
+
+	for i, parameter := range parameterNodes {
+		want := expected[i]
+		if parameter.Text() != want.Expression {
+			t.Fatalf("expression %q != %q", parameter.Text(), want.Expression)
+		}
+
+		filter, _ := parameter.Attribute(document.Name{Local: "Filter"})
+		if filter != want.Filter {
+			t.Fatalf("Filter %q != %q", filter, want.Filter)
+		}
+
+		for prefix, uri := range want.Namespaces {
+			if got, _ := parameter.Namespace(prefix); got != uri {
+				t.Fatalf("namespace %s = %q, want %q", prefix, got, uri)
+			}
+		}
 	}
 }
 

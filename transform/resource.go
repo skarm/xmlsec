@@ -10,6 +10,7 @@ import (
 
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
 type boundedBuffer struct {
@@ -200,7 +201,15 @@ func (r *resourceStream) Close() error {
 // before cloning caller bindings or publishing results.
 func checkSequence(ctx context.Context, seq xdm.Sequence, limits Limits, input bool) error {
 	checker := sequenceChecker{ctx: ctx, limits: limits, input: input}
-	return checker.walk(seq, 0)
+	if err := checker.walk(seq, 0); err != nil {
+		return err
+	}
+
+	if input {
+		return xpath.ChargeString(ctx, checker.size)
+	}
+
+	return nil
 }
 
 type sequenceChecker struct {
@@ -250,6 +259,16 @@ func (c *sequenceChecker) item(item xdm.Item, depth int) error {
 			}
 		}
 	case xdm.AtomicValue:
+		if size, numeric := xpath.NumericSize(v); numeric {
+			if size > c.limits.MaxOutputBytes-c.size {
+				return ErrLimit
+			}
+
+			c.size += size
+
+			return nil
+		}
+
 		text, err := lexical(v)
 		if err != nil {
 			return err
@@ -287,14 +306,8 @@ func (c *sequenceChecker) item(item xdm.Item, depth int) error {
 }
 
 func (c *sequenceChecker) mapMember(key xdm.AtomicValue, member xdm.Sequence, depth int) error {
-	text, err := lexical(key)
-	if err != nil {
+	if err := c.item(key, depth); err != nil {
 		return err
-	}
-
-	c.size += len(text)
-	if c.size > c.limits.MaxOutputBytes {
-		return ErrLimit
 	}
 
 	return c.walk(member, depth+1)

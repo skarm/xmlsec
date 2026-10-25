@@ -239,7 +239,7 @@ func parseEnvelopedReferenceSet(ctx context.Context, d *document.Document, idAtt
 }
 
 func isDS(n *tree.Node, local string) bool {
-	return n.Kind == tree.ElementNode && n.Name == (document.Name{Space: Namespace, Local: local})
+	return n != nil && n.Kind == tree.ElementNode && n.Name == (document.Name{Space: Namespace, Local: local})
 }
 
 func attributes(n *tree.Node, allowed ...string) error {

@@ -46,7 +46,7 @@ func fnFunctionLookup(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, e
 		return nil, err
 	}
 
-	arityArg, err = coerceToInteger(arityArg)
+	arityArg, err = coerceToInteger(ctx, arityArg)
 	if err != nil {
 		return nil, err
 	}

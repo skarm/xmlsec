@@ -1,5 +1,42 @@
 package tree
 
+import "slices"
+
+// ImportSubtree copies an element header for insertion into a private draft.
+// It preserves the source's complete in-scope namespace context, including an
+// absent default namespace, without renaming prefixes used in QName values or
+// XPath/XSLT. Descendants and attributes are borrowed read-only until Reparse;
+// callers may change only the returned header and its parent.
+func ImportSubtree(node *Node) *Node {
+	if node == nil {
+		return nil
+	}
+
+	out := *node
+	out.Parent = nil
+
+	scope := namespaceScope(node)
+	if _, exists := scope[""]; !exists {
+		scope[""] = ""
+	}
+
+	prefixes := make([]string, 0, len(scope))
+	for prefix := range scope {
+		if prefix != "xml" {
+			prefixes = append(prefixes, prefix)
+		}
+	}
+
+	slices.Sort(prefixes)
+
+	out.NS = make([]Namespace, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		out.NS = append(out.NS, Namespace{Prefix: prefix, URI: scope[prefix]})
+	}
+
+	return &out
+}
+
 type namespaceUndo struct {
 	prefix, previous string
 	existed          bool

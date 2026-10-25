@@ -111,14 +111,14 @@ func evalArithmetic(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 
 		rv, rok := ra.Int64Val()
 		if lok && rok {
-			return integerArithInt64(e.Op, lv, rv)
+			return integerArithInt64(ctx, e.Op, lv, rv)
 		}
 
-		return integerArith(e.Op, la.BigInt(), ra.BigInt())
+		return integerArith(ctx, e.Op, la.BigInt(), ra.BigInt())
 	}
 	// Tier 2: either decimal (or integer promoted) → big.Rat arithmetic
 	if needsDecimalArith(la.TypeName, ra.TypeName) {
-		return decimalArith(e.Op, toRat(la), toRat(ra))
+		return decimalArith(ctx, e.Op, toRat(la), toRat(ra))
 	}
 	// Tier 3: float/double → float64 arithmetic
 	return floatArith(e.Op, la, ra)
@@ -131,7 +131,7 @@ func promoteSchemaNumeric(a xdm.AtomicValue) xdm.AtomicValue {
 
 // integerArithInt64 performs integer arithmetic using int64 values.
 // Falls back to big.Int on overflow.
-func integerArithInt64(op TokenType, a, b int64) (xdm.Sequence, error) {
+func integerArithInt64(ctx context.Context, op TokenType, a, b int64) (xdm.Sequence, error) {
 	switch op { //nolint:exhaustive
 	case TokenPlus:
 		r, ok := addInt64(a, b)
@@ -139,24 +139,28 @@ func integerArithInt64(op TokenType, a, b int64) (xdm.Sequence, error) {
 			return xdm.SingleInteger(r), nil
 		}
 
-		return integerArith(op, big.NewInt(a), big.NewInt(b))
+		return integerArith(ctx, op, big.NewInt(a), big.NewInt(b))
 	case TokenMinus:
 		r, ok := subInt64(a, b)
 		if ok {
 			return xdm.SingleInteger(r), nil
 		}
 
-		return integerArith(op, big.NewInt(a), big.NewInt(b))
+		return integerArith(ctx, op, big.NewInt(a), big.NewInt(b))
 	case TokenStar:
 		r, ok := mulInt64(a, b)
 		if ok {
 			return xdm.SingleInteger(r), nil
 		}
 
-		return integerArith(op, big.NewInt(a), big.NewInt(b))
+		return integerArith(ctx, op, big.NewInt(a), big.NewInt(b))
 	case TokenDiv:
 		if b == 0 {
 			return nil, &xdm.Error{Code: errCodeFOAR0001, Message: textDivisionByZero}
+		}
+
+		if err := preflightNumeric(ctx, int64Bits(a), int64Bits(b)); err != nil {
+			return nil, err
 		}
 
 		r := new(big.Rat).SetFrac64(a, b)
@@ -168,7 +172,7 @@ func integerArithInt64(op TokenType, a, b int64) (xdm.Sequence, error) {
 		}
 
 		if a == math.MinInt64 && b == -1 {
-			return integerArith(op, big.NewInt(a), big.NewInt(b))
+			return integerArith(ctx, op, big.NewInt(a), big.NewInt(b))
 		}
 
 		return xdm.SingleInteger(a / b), nil
@@ -208,6 +212,11 @@ func mulInt64(a, b int64) (int64, bool) {
 	if a == 0 || b == 0 {
 		return 0, true
 	}
+	// Go's MinInt64 / -1 wraps to MinInt64, so the inverse division
+	// check alone cannot detect this product in both operand orders.
+	if a == -1 && b == math.MinInt64 || b == -1 && a == math.MinInt64 {
+		return 0, false
+	}
 
 	r := a * b
 	if r/a != b {
@@ -217,7 +226,11 @@ func mulInt64(a, b int64) (int64, bool) {
 	return r, true
 }
 
-func integerArith(op TokenType, a, b *big.Int) (xdm.Sequence, error) {
+func integerArith(ctx context.Context, op TokenType, a, b *big.Int) (xdm.Sequence, error) {
+	if err := preflightInteger(ctx, op, a, b); err != nil {
+		return nil, err
+	}
+
 	result := new(big.Int)
 
 	switch op { //nolint:exhaustive // only arithmetic operators are valid here; default handles the rest
@@ -255,7 +268,11 @@ func integerArith(op TokenType, a, b *big.Int) (xdm.Sequence, error) {
 	return xdm.SingleIntegerBig(result), nil
 }
 
-func decimalArith(op TokenType, a, b *big.Rat) (xdm.Sequence, error) {
+func decimalArith(ctx context.Context, op TokenType, a, b *big.Rat) (xdm.Sequence, error) {
+	if err := preflightDecimal(ctx, op, a, b); err != nil {
+		return nil, err
+	}
+
 	result := new(big.Rat)
 
 	switch op { //nolint:exhaustive // only arithmetic operators are valid here; default handles the rest
@@ -277,8 +294,17 @@ func decimalArith(op TokenType, a, b *big.Rat) (xdm.Sequence, error) {
 		}
 		// Truncate quotient toward zero
 		q := new(big.Rat).Quo(a, b)
+		if err := ChargeNumber(ctx, xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: q}); err != nil {
+			return nil, err
+		}
+
 		num := q.Num()
+
 		den := q.Denom()
+		if err := preflightInteger(ctx, TokenIdiv, num, den); err != nil {
+			return nil, err
+		}
+
 		intPart := new(big.Int).Quo(num, den)
 
 		return xdm.SingleIntegerBig(intPart), nil
@@ -288,9 +314,38 @@ func decimalArith(op TokenType, a, b *big.Rat) (xdm.Sequence, error) {
 		}
 		// a mod b = a - (a idiv b) * b
 		q := new(big.Rat).Quo(a, b)
+		if err := ChargeNumber(ctx, xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: q}); err != nil {
+			return nil, err
+		}
+
+		if err := preflightInteger(ctx, TokenIdiv, q.Num(), q.Denom()); err != nil {
+			return nil, err
+		}
+
 		intPart := new(big.Int).Quo(q.Num(), q.Denom())
+		if err := ChargeNumber(ctx, xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: intPart}); err != nil {
+			return nil, err
+		}
+
+		if err := preflightNumeric(ctx, intPart.BitLen(), 1); err != nil {
+			return nil, err
+		}
+
 		qr := new(big.Rat).SetInt(intPart)
-		result.Sub(a, new(big.Rat).Mul(qr, b))
+		if err := preflightDecimal(ctx, TokenStar, qr, b); err != nil {
+			return nil, err
+		}
+
+		product := new(big.Rat).Mul(qr, b)
+		if err := ChargeNumber(ctx, xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: product}); err != nil {
+			return nil, err
+		}
+
+		if err := preflightDecimal(ctx, TokenMinus, a, product); err != nil {
+			return nil, err
+		}
+
+		result.Sub(a, product)
 	default:
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "unsupported decimal arithmetic operator"}
 	}

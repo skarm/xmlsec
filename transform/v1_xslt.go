@@ -21,6 +21,8 @@ func compileV1Stylesheet(e *Engine, source []byte) (*xslt.Stylesheet, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), max(e.limits.Timeout, 3*time.Second))
 	defer cancel()
 
+	ctx = xpath.WithBudget(ctx, e.limits.MaxOperations, e.limits.MaxNodes, e.limits.MaxOutputBytes, e.limits.MaxDepth)
+
 	limits := document.DefaultLimits()
 	limits.MaxBytes = 1 << 20
 
@@ -29,7 +31,7 @@ func compileV1Stylesheet(e *Engine, source []byte) (*xslt.Stylesheet, error) {
 		return nil, v1Error(err)
 	}
 
-	if err = checkStylesheet(d.Node()); err != nil {
+	if err = checkStylesheet(ctx, d.Node()); err != nil {
 		return nil, err
 	}
 	// Keep the previous 1.0 syntax/resource preflight, and use the same embedded
@@ -47,15 +49,15 @@ func compileV1Stylesheet(e *Engine, source []byte) (*xslt.Stylesheet, error) {
 	return compiled, nil
 }
 
-func checkStylesheet(n document.Node) error {
+func checkStylesheet(ctx context.Context, n document.Node) error {
 	if e, ok := n.Element(); ok {
-		if err := checkStylesheetElement(e); err != nil {
+		if err := checkStylesheetElement(ctx, e); err != nil {
 			return err
 		}
 	}
 
 	for _, child := range n.Children() {
-		if err := checkStylesheet(child); err != nil {
+		if err := checkStylesheet(ctx, child); err != nil {
 			return err
 		}
 	}
@@ -63,7 +65,7 @@ func checkStylesheet(n document.Node) error {
 	return nil
 }
 
-func checkStylesheetElement(e document.Element) error {
+func checkStylesheetElement(ctx context.Context, e document.Element) error {
 	name := e.Name()
 
 	attrs, known := xslt.XSLT10ElementAttributes(name.Local)
@@ -81,7 +83,7 @@ func checkStylesheetElement(e document.Element) error {
 	}
 
 	for _, a := range e.Attributes() {
-		if err := checkStylesheetAttribute(a, name, attrs, ns); err != nil {
+		if err := checkStylesheetAttribute(ctx, a, name, attrs, ns); err != nil {
 			return err
 		}
 	}
@@ -89,7 +91,7 @@ func checkStylesheetElement(e document.Element) error {
 	return nil
 }
 
-func checkStylesheetAttribute(a tree.Attribute, name tree.Name, attrs string, ns map[string]string) error {
+func checkStylesheetAttribute(ctx context.Context, a tree.Attribute, name tree.Name, attrs string, ns map[string]string) error {
 	if a.Name.Space == document.XMLNamespace {
 		return nil
 	}
@@ -103,11 +105,11 @@ func checkStylesheetAttribute(a tree.Attribute, name tree.Name, attrs string, ns
 	}
 
 	if name.Space == stylesheetNamespace && a.Name.Space == "" && containsWord("select test match use count from value", a.Name.Local) {
-		return checkStylesheetXPath(a.Value, ns)
+		return checkStylesheetXPath(ctx, a.Value, ns)
 	}
 
 	if name.Space != stylesheetNamespace && a.Name.Space != stylesheetNamespace || name.Space == stylesheetNamespace && isStylesheetAVT(name.Local, a.Name.Local) {
-		return checkStylesheetAVT(a.Value, ns)
+		return checkStylesheetAVT(ctx, a.Value, ns)
 	}
 
 	return nil
@@ -150,16 +152,16 @@ func isStylesheetAVT(element, attribute string) bool {
 	return false
 }
 
-func checkStylesheetXPath(code string, ns map[string]string) error {
+func checkStylesheetXPath(ctx context.Context, code string, ns map[string]string) error {
 	if len(code) > 16<<10 {
 		return reference.ErrLimit
 	}
 
-	return staticStylesheetXPath(reference.XPathExpression{Expression: code, Namespaces: ns})
+	return staticStylesheetXPath(ctx, reference.XPathExpression{Expression: code, Namespaces: ns})
 }
 
 // Scan AVTs with XPath quoting, and honor doubled braces outside expressions.
-func checkStylesheetAVT(value string, ns map[string]string) error {
+func checkStylesheetAVT(ctx context.Context, value string, ns map[string]string) error {
 	for i := 0; i < len(value); i++ {
 		if value[i] != '{' && value[i] != '}' {
 			continue
@@ -202,7 +204,7 @@ func checkStylesheetAVT(value string, ns map[string]string) error {
 			return fmt.Errorf("%w: unterminated AVT", reference.ErrInput)
 		}
 
-		if err := checkStylesheetXPath(value[start:i], ns); err != nil {
+		if err := checkStylesheetXPath(ctx, value[start:i], ns); err != nil {
 			return err
 		}
 	}
@@ -266,8 +268,8 @@ func v1Error(err error) error {
 	return fmt.Errorf("%w: XSLT: %w", reference.ErrInput, err)
 }
 
-func staticStylesheetXPath(x reference.XPathExpression) error {
-	expr, err := xpath.NewCompiler().Language(10, x.Namespaces).Compile(x.Expression)
+func staticStylesheetXPath(ctx context.Context, x reference.XPathExpression) error {
+	expr, err := xpath.NewCompiler().Context(ctx).Language(10, x.Namespaces).Compile(x.Expression)
 	if err != nil {
 		return executionError(err)
 	}

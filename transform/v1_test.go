@@ -254,6 +254,21 @@ func TestApprovalAndLimits(t *testing.T) {
 	}
 }
 
+func TestApprovedProgramNumericCompilationBudget(t *testing.T) {
+	source := strings.Repeat("9", 160) + ` > 0`
+	for _, program := range []reference.Transform{
+		{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: source}}},
+		{Algorithm: reference.XSLT, Stylesheet: []byte(`<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0"><xsl:template match="/"><xsl:value-of select="` + source + `"/></xsl:template></xsl:stylesheet>`)},
+	} {
+		t.Run(program.Algorithm, func(t *testing.T) {
+			_, err := transform.NewEngine(transform.Config{Limits: transform.Limits{MaxOutputBytes: 64}, AllowedPrograms: []reference.Transform{program}})
+			if !errors.Is(err, transform.ErrLimit) {
+				t.Fatalf("compilation budget: %v", err)
+			}
+		})
+	}
+}
+
 func TestConcurrentImmutableApproval(t *testing.T) {
 	tr := xp(`count(//p:a)=1`)
 	tr.XPath[0].Namespaces = map[string]string{"p": namespaceP}

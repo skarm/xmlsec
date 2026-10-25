@@ -304,7 +304,18 @@ func evalWith(evalFn exprEvaluator, ctx context.Context, ec *evalContext, expr E
 	}
 	defer func() { ec.depth-- }()
 
-	return evalFn(ctx, ec, expr)
+	result, err := evalFn(ctx, ec, expr)
+	if err == nil && xdm.SequenceLen(result) == 1 {
+		if value, ok := result.Get(0).(xdm.AtomicValue); ok {
+			err = ChargeNumber(ctx, value)
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 func evalContextItemExpr(ctx context.Context, ec *evalContext) (xdm.Sequence, error) {

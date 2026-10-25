@@ -381,6 +381,41 @@ func TestKeyInfoBuilderMutualExclusion(t *testing.T) {
 	}
 }
 
+func TestTemplateKeyInfoRoot(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		info *document.Document
+		bad  bool
+	}{
+		{"absent", nil, false},
+		{"zero", &document.Document{}, true},
+		{"wrong", coreParse(t, `<KeyInfo/>`), true},
+		{"valid", coreParse(t, `<ds:KeyInfo xmlns:ds="`+xmldsig.Namespace+`"><ds:KeyName>hint</ds:KeyName></ds:KeyInfo>`), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if value := recover(); value != nil {
+					t.Errorf("BuildTemplate panicked: %v", value)
+				}
+			}()
+
+			doc, _, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{
+				SignatureMethod: xmldsig.ECDSASHA256,
+				References:      []xmldsig.ReferenceTemplate{{URI: uriUrnData}}, KeyInfo: tt.info,
+			})
+			if tt.bad {
+				if doc != nil || !errors.Is(err, xmldsig.ErrStructure) {
+					t.Fatalf("got %v, %v; want ErrStructure", doc, err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			} else {
+				assertTemplateKeyInfoCount(t, doc, tt.info != nil)
+			}
+		})
+	}
+}
+
 func FuzzVerifyWithKeyInfo(f *testing.F) {
 	dir := filepath.Join("..", "testdata", "keyinfo")
 
@@ -465,4 +500,25 @@ func makeKeyInfoSigned(t testing.TB, k crypto.Signer, ki *document.Document) (*d
 	}
 
 	return signed, xmldsig.Signatures(signed)[0]
+}
+
+func assertTemplateKeyInfoCount(t testing.TB, doc *document.Document, present bool) {
+	t.Helper()
+
+	count := 0
+
+	for _, child := range doc.Root().Children() {
+		if child.Name() == (document.Name{Space: xmldsig.Namespace, Local: "KeyInfo"}) {
+			count++
+		}
+	}
+
+	want := 0
+	if present {
+		want = 1
+	}
+
+	if count != want {
+		t.Fatalf("KeyInfo count %d, want %d", count, want)
+	}
 }

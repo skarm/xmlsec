@@ -185,7 +185,7 @@
     },
     {
       "id": "TRANSFORMS",
-      "notes": "Approved XMLDSig XPath 1.0, Filter2 and restricted XSLT 1.0 through the unified Go engine. Exact program allowlist, original node identity, here()/explicit ID rules, shared budgets and no implicit resources. Signed/tampered JDK fixtures cover selected cases; full v1 conformance is not claimed.",
+      "notes": "Approved XMLDSig XPath 1.0, Filter2 and restricted XSLT 1.0 through the unified Go engine. Exact program allowlist, original node identity, here()/explicit ID rules, shared budgets and no implicit resources. Signed/tampered JDK fixtures cover selected cases; full v1 conformance is not claimed. Detached and template APIs share parameter serialization/parsing; serialized namespace contexts and all recipes are preflighted before resource I/O. Imported stylesheet expanded names are preserved.",
       "source": "https://www.w3.org/TR/xmldsig-core1/",
       "status": "implemented-restricted",
       "tests": [
@@ -194,7 +194,10 @@
         "tests/integration/xmldsig/transforms_test.go",
         "transform/v1_test.go",
         "transform/v1_semantics_test.go",
-        "transform/v1_xslt_test.go"
+        "transform/v1_xslt_test.go",
+        "xmldsig/detached_test.go",
+        "xmldsig/core_test.go",
+        "transform/xslt_test.go"
       ],
       "title": "XPath / XPath Filter 2.0 / XSLT"
     },
@@ -839,7 +842,7 @@
     },
     {
       "id": "MODERN-TRANSFORMS",
-      "notes": "One Go engine with shared immutable XDM values, language version checks, typed parameters, invocation budgets, explicit resource resolvers and owned primary/secondary outputs. Standalone XPath/XSLT 1.0 and approved XMLDSig v1 programs use the same compiler and evaluator. Full QT3/XSLT suites have not been run; schema awareness, streaming and a public package resolver are unsupported.",
+      "notes": "One Go engine with shared immutable XDM values, language version checks, typed parameters, invocation budgets, explicit resource resolvers and owned primary/secondary outputs. Standalone XPath/XSLT 1.0 and approved XMLDSig v1 programs use the same compiler and evaluator. Full QT3/XSLT suites have not been run; schema awareness, streaming and a public package resolver are unsupported. Numeric intermediates use cumulative binary-magnitude accounting, including rational numerator/denominator, conservative arithmetic/rounding preflight and AST/VM/XSLT paths. Required subsequence length cardinality follows F&O 2.0/3.0/3.1.",
       "source": "https://www.w3.org/TR/xpath-31/",
       "status": "implemented-restricted",
       "tests": [
@@ -849,7 +852,9 @@
         "transform/xpath_test.go",
         "transform/xslt_test.go",
         "transform/xpath10_test.go",
-        "transform/xslt10_test.go"
+        "transform/xslt10_test.go",
+        "transform/v1_test.go",
+        "transform/internal/xpath/runtime_test.go"
       ],
       "title": "XPath 1.0/2.0/3.0/3.1 and XSLT 1.0 / Basic XSLT 2.0/3.0"
     },

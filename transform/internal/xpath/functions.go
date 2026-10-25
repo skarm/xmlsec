@@ -295,7 +295,32 @@ func (f *builtinFunc) MinArity() int { return f.min }
 func (f *builtinFunc) MaxArity() int { return f.max }
 
 func (f *builtinFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return f.fn(ctx, args)
+	result, err := f.fn(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	// Function items and higher-order calls can bypass scalar AST/VM evaluation.
+	if xdm.SequenceLen(result) == 1 {
+		if value, ok := result.Get(0).(xdm.AtomicValue); ok {
+			err = ChargeNumber(ctx, value)
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		return result, nil
+	}
+
+	for item := range xdm.SequenceItems(result) {
+		if value, ok := item.(xdm.AtomicValue); ok {
+			if err := ChargeNumber(ctx, value); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return result, nil
 }
 
 // seqToStringErr atomizes the argument to a string, propagating errors.
@@ -430,7 +455,7 @@ func coerceAtomizedString(ctx context.Context, seq xdm.Sequence) (value string, 
 // coerceArgToInteger applies XPath 3.1 function coercion rules for xs:integer params.
 // Accepts: xs:integer (and subtypes), xs:untypedAtomic (cast to integer).
 // Rejects all other types with XPTY0004.
-func coerceArgToInteger(seq xdm.Sequence) (int64, error) {
+func coerceArgToInteger(ctx context.Context, seq xdm.Sequence) (int64, error) {
 	switch xdm.SequenceLen(seq) {
 	case 0:
 		return 0, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "expected xs:integer, got empty sequence"}
@@ -445,7 +470,11 @@ func coerceArgToInteger(seq xdm.Sequence) (int64, error) {
 	}
 
 	if a.TypeName == xdm.TypeUntypedAtomic {
-		casted, cerr := castToInteger(a)
+		casted, cerr := CastAtomicContext(ctx, a, xdm.TypeInteger)
+		if errors.Is(cerr, ErrBudget) || ctx.Err() != nil {
+			return 0, errors.Join(cerr, ctx.Err())
+		}
+
 		if cerr != nil {
 			return 0, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("cannot cast %s to xs:integer", a.TypeName)}
 		}
@@ -529,9 +558,13 @@ func extractSingleAtomicArg(seq xdm.Sequence, fnName string) (xdm.AtomicValue, e
 // coerceToInteger applies function coercion rules for xs:integer to a single AtomicValue.
 // Accepts: xs:integer (and subtypes), xs:untypedAtomic (cast to integer).
 // Rejects double, float, decimal, and all other types with XPTY0004.
-func coerceToInteger(a xdm.AtomicValue) (xdm.AtomicValue, error) {
+func coerceToInteger(ctx context.Context, a xdm.AtomicValue) (xdm.AtomicValue, error) {
 	if a.TypeName == xdm.TypeUntypedAtomic {
-		casted, cerr := castToInteger(a)
+		casted, cerr := CastAtomicContext(ctx, a, xdm.TypeInteger)
+		if errors.Is(cerr, ErrBudget) || ctx.Err() != nil {
+			return xdm.AtomicValue{}, errors.Join(cerr, ctx.Err())
+		}
+
 		if cerr != nil {
 			return xdm.AtomicValue{}, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("cannot cast %s to xs:integer", a.TypeName)}
 		}

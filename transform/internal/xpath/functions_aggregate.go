@@ -120,7 +120,7 @@ func validateCollationArg(ctx context.Context, args []xdm.Sequence, idx int) err
 	return err
 }
 
-func fnAvg(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnAvg(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	atoms, err := AtomizeSequence(args[0])
 	if err != nil {
 		return nil, err
@@ -139,7 +139,15 @@ func fnAvg(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	widest := xdm.TypeInteger
 
-	for _, a := range atoms {
+	for i, a := range atoms {
+		// Charge bounded batches before work; exact arithmetic below also
+		// checks cancellation at every math/big operation.
+		if i%64 == 0 {
+			if err := Charge(ctx, min(64, len(atoms)-i)); err != nil {
+				return nil, err
+			}
+		}
+
 		a, err = promoteForAggregate(a)
 		if err != nil {
 			return nil, err
@@ -160,22 +168,13 @@ func fnAvg(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 			widest = a.TypeName
 		}
 
-		if xdm.IsIntegerDerived(a.TypeName) {
-			if v, ok := a.Value.(int64); ok {
-				sumRat.Add(sumRat, new(big.Rat).SetInt64(v))
-				sumFloat += float64(v)
-			} else {
-				sumRat.Add(sumRat, new(big.Rat).SetInt(a.BigInt()))
-				sumFloat += a.ToFloat64()
-			}
-		} else if a.TypeName == xdm.TypeDecimal {
-			sumRat.Add(sumRat, a.BigRat())
-			f, _ := a.BigRat().Float64()
-			sumFloat += f
-		} else {
-			allDecOrInt = false
-			sumFloat += a.ToFloat64()
+		term, exact, err := addAverageNumber(ctx, sumRat, a)
+		if err != nil {
+			return nil, err
 		}
+
+		allDecOrInt = allDecOrInt && exact
+		sumFloat += term
 	}
 
 	if family == xdm.FamilyDurationYM || family == xdm.FamilyDurationDT {
@@ -191,6 +190,10 @@ func fnAvg(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	if allDecOrInt {
 		// avg returns decimal for integer/decimal inputs
 		countRat := new(big.Rat).SetInt64(int64(count))
+		if err := preflightDecimal(ctx, TokenDiv, sumRat, countRat); err != nil {
+			return nil, err
+		}
+
 		return xdm.SingleDecimal(new(big.Rat).Quo(sumRat, countRat)), nil
 	}
 	// Float/double path
@@ -200,6 +203,24 @@ func fnAvg(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	}
 
 	return xdm.SingleDouble(avg), nil
+}
+
+func addAverageNumber(ctx context.Context, sum *big.Rat, value xdm.AtomicValue) (float64, bool, error) {
+	exact := xdm.IsIntegerDerived(value.TypeName) || value.TypeName == xdm.TypeDecimal
+	if exact {
+		term := toRat(value)
+		if err := preflightDecimal(ctx, TokenPlus, sum, term); err != nil {
+			return 0, false, err
+		}
+
+		sum.Add(sum, term)
+
+		if err := ChargeNumber(ctx, xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: sum}); err != nil {
+			return 0, false, err
+		}
+	}
+
+	return value.ToFloat64(), exact, nil
 }
 
 func avgDurations(seq xdm.Sequence, family string) (xdm.Sequence, error) {
@@ -569,7 +590,7 @@ func promoteResult(best xdm.AtomicValue, widest string) xdm.AtomicValue {
 	return best
 }
 
-func fnSum(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnSum(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	// Atomizing also flattens arrays.
 	atoms, err := AtomizeSequence(args[0])
 	if err != nil {
@@ -592,8 +613,15 @@ func fnSum(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		allInt: true, allDecOrInt: true, widest: xdm.TypeInteger,
 		sumInt: new(big.Int), sumRat: new(big.Rat),
 	}
-	for _, value := range atoms {
-		if err := sum.add(value); err != nil {
+
+	for i, value := range atoms {
+		if i%64 == 0 {
+			if err := Charge(ctx, min(64, len(atoms)-i)); err != nil {
+				return nil, err
+			}
+		}
+
+		if err := sum.add(ctx, value); err != nil {
 			return nil, err
 		}
 	}
@@ -636,7 +664,7 @@ type aggregateSum struct {
 	sumFloat            float64
 }
 
-func (s *aggregateSum) add(value xdm.AtomicValue) error {
+func (s *aggregateSum) add(ctx context.Context, value xdm.AtomicValue) error {
 	// Untyped node values promote straight to IEEE double.
 	if value.TypeName == xdm.TypeUntypedAtomic {
 		return s.addUntyped(value)
@@ -660,7 +688,23 @@ func (s *aggregateSum) add(value xdm.AtomicValue) error {
 		s.widest = value.TypeName
 	}
 
+	if xdm.IsIntegerDerived(value.TypeName) || value.TypeName == xdm.TypeDecimal {
+		if err := preflightDecimal(ctx, TokenPlus, s.sumRat, toRat(value)); err != nil {
+			return err
+		}
+
+		if xdm.IsIntegerDerived(value.TypeName) {
+			if err := preflightInteger(ctx, TokenPlus, s.sumInt, value.BigInt()); err != nil {
+				return err
+			}
+		}
+	}
+
 	s.addNumeric(value)
+
+	if xdm.IsIntegerDerived(value.TypeName) || value.TypeName == xdm.TypeDecimal {
+		return ChargeNumber(ctx, xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: s.sumRat})
+	}
 
 	return nil
 }

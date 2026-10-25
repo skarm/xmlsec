@@ -8,6 +8,8 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"io"
+	"reflect"
 	"testing"
 
 	"github.com/skarm/xmlsec/document"
@@ -15,6 +17,7 @@ import (
 )
 
 const (
+	programTrueXPath = "true()"
 	nameData         = "#data"
 	namePayload      = "#payload"
 	nameObject       = "Object"
@@ -94,4 +97,58 @@ func digestInput(t testing.TB, ref xmldsig.ReferenceResult) []byte {
 	}
 
 	return output.Bytes()
+}
+
+func findImportElement(t testing.TB, root document.Element, name document.Name) document.Element {
+	t.Helper()
+
+	var find func(document.Element) document.Element
+
+	find = func(e document.Element) document.Element {
+		if e.Name() == name {
+			return e
+		}
+
+		for _, child := range e.Children() {
+			if found := find(child); found.Valid() {
+				return found
+			}
+		}
+
+		return document.Element{}
+	}
+	if found := find(root); found.Valid() {
+		return found
+	}
+
+	t.Fatalf("element %v missing", name)
+
+	return document.Element{}
+}
+
+func assertImportedTree(t testing.TB, got, want document.Element) {
+	t.Helper()
+
+	if got.Name() != want.Name() || got.Prefix() != want.Prefix() || got.Text() != want.Text() || !reflect.DeepEqual(got.Attributes(), want.Attributes()) {
+		t.Fatalf("imported %v (%s) attrs %v, want %v (%s) attrs %v", got.Name(), got.Prefix(), got.Attributes(), want.Name(), want.Prefix(), want.Attributes())
+	}
+
+	gc, wc := got.Children(), want.Children()
+	if len(gc) != len(wc) {
+		t.Fatalf("child counts %d != %d", len(gc), len(wc))
+	}
+
+	for i := range gc {
+		assertImportedTree(t, gc[i], wc[i])
+	}
+}
+
+type coreCountSigner struct {
+	crypto.Signer
+	calls int
+}
+
+func (s *coreCountSigner) Sign(r io.Reader, d []byte, o crypto.SignerOpts) ([]byte, error) {
+	s.calls++
+	return s.Signer.Sign(r, d, o)
 }

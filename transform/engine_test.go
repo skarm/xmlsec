@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"strings"
@@ -75,6 +76,121 @@ func TestLimitsCancellationAndResources(t *testing.T) {
 	result, err := query(t, resourceEngine, `string(doc('urn:test'))`, transform.XPath31).Evaluate(ctx, nil, transform.XPathContext{})
 	if err != nil || text(t, result) != "loaded" || requested != "urn:test" {
 		t.Fatal(result, requested, err)
+	}
+}
+
+func TestNumericIntermediateBudget(t *testing.T) {
+	for _, tt := range []struct{ name, expression string }{
+		{"integer fold", `fold-left(1 to 12, 2, function($a, $b) { $a * $a }) mod 2`},
+		{"decimal numerator", `fold-left(1 to 12, xs:decimal('2'), function($a, $b) { $a * $a }) gt 0`},
+		{"decimal denominator", `fold-left(1 to 12, xs:decimal('0.5'), function($a, $b) { $a * $a }) gt 0`},
+		{"integer constructor", `xs:integer('` + strings.Repeat("9", 160) + `') mod 2`},
+		{"decimal constructor", `xs:decimal('0.` + strings.Repeat("0", 160) + `1') gt 0`},
+		{"castable", `('` + strings.Repeat("9", 160) + `') castable as xs:integer`},
+		{"untyped round precision", `round(1, xs:untypedAtomic('` + strings.Repeat("9", 160) + `'))`},
+		{"round scale", `round(1 div 3, 1000000) gt 0`},
+		{"function item", `fold-left(1 to 100, 2, sum#2) mod 2`},
+		{"format scale", `string-length(format-number(1, '0.` + strings.Repeat("0", 1000) + `'))`},
+		{"untyped range", `exists(xs:untypedAtomic('` + strings.Repeat("9", 160) + `') to xs:untypedAtomic('` + strings.Repeat("9", 160) + `'))`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 64}})
+
+			q, err := e.CompileXPath(t.Context(), tt.expression, transform.XPathOptions{})
+			if err == nil {
+				_, err = q.Evaluate(t.Context(), nil, transform.XPathContext{})
+			}
+
+			if !errors.Is(err, transform.ErrLimit) {
+				t.Fatalf("expected ErrLimit, got %v", err)
+			}
+		})
+	}
+}
+
+func TestNumericBudgetBoundaries(t *testing.T) {
+	for _, tt := range []struct {
+		source string
+		limit  int
+		fail   bool
+	}{
+		{"0", 1, false},
+		{"255", 1, false},
+		{"256", 1, true},
+		{"256", 2, false},
+		{"65535", 2, false},
+		{"65536", 2, true},
+		{"65536", 3, false},
+		{`'1' castable as xs:numeric`, 5, true},
+		{"255 + 0", 2, true}, // Both operands use the cumulative two-byte budget.
+	} {
+		t.Run(fmt.Sprintf("%s/%d", tt.source, tt.limit), func(t *testing.T) {
+			e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: tt.limit}})
+
+			q, err := e.CompileXPath(t.Context(), tt.source, transform.XPathOptions{})
+			if err == nil {
+				_, err = q.Evaluate(t.Context(), nil, transform.XPathContext{})
+			}
+
+			if errors.Is(err, transform.ErrLimit) != tt.fail || err != nil && !tt.fail {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestNumericBudgetBindingsAndXSLT(t *testing.T) {
+	large := transform.BigInteger(new(big.Int).Lsh(big.NewInt(1), 512))
+
+	m, err := transform.Map(transform.MapEntry{Key: large, Value: transform.Values(transform.Boolean(true))})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 64}})
+	for _, value := range []transform.Value{large, transform.Array(transform.Values(large)), m} {
+		_, err := query(t, e, `true()`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "unused"}: transform.Values(value)}})
+		if !errors.Is(err, transform.ErrLimit) {
+			t.Fatalf("oversized binding: %v", err)
+		}
+	}
+
+	decimal, err := transform.Decimal("0." + strings.Repeat("0", 119) + "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The exact denominator fits in the binary budget even though its lexical
+	// representation is longer; no decimal string is needed for admission.
+	if _, err := query(t, e, `true()`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "unused"}: transform.Values(decimal)}}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := stylesheet(t, e, sheet("3.0", `<xsl:template name="run"><xsl:sequence select="fold-left(1 to 12, 2, function($a,$b){$a*$a}) mod 2"/></xsl:template>`))
+	if _, err := s.Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: "run"}}); !errors.Is(err, transform.ErrLimit) {
+		t.Fatalf("XSLT numeric budget: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, err := query(t, e, `2*2`, transform.XPath31).Evaluate(ctx, nil, transform.XPathContext{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation: %v", err)
+	}
+}
+
+func TestNumericSharedWorkBudget(t *testing.T) {
+	e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 1 << 20, MaxOperations: 32}})
+
+	q := query(t, e, `fold-left(1 to 80, 2, function($a,$b){$a*$a}) mod 2`, transform.XPath31)
+	if _, err := q.Evaluate(t.Context(), nil, transform.XPathContext{}); !errors.Is(err, transform.ErrLimit) {
+		t.Fatalf("work budget: %v", err)
+	}
+
+	fresh := query(t, engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 16}}), `2+2`, transform.XPath31)
+	for range 3 {
+		if got := text(t, evaluateNumericInvocation(t, fresh)); got != "4" {
+			t.Fatal(got)
+		}
 	}
 }
 

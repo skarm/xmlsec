@@ -306,6 +306,7 @@ type Compiler struct {
 }
 
 type compilerCfg struct {
+	context    context.Context
 	version    int
 	namespaces map[string]string
 }
@@ -313,6 +314,19 @@ type compilerCfg struct {
 // NewCompiler creates a new Compiler with default settings.
 func NewCompiler() Compiler {
 	return Compiler{cfg: &compilerCfg{}}
+}
+
+// Context supplies a shared compilation budget for numeric literals.
+func (c Compiler) Context(ctx context.Context) Compiler {
+	cfg := compilerCfg{}
+	if c.cfg != nil {
+		cfg = *c.cfg
+	}
+
+	cfg.context = ctx
+	c.cfg = &cfg
+
+	return c
 }
 
 // Compile parses an XPath 3.1 expression string into a reusable Expression.
@@ -325,6 +339,16 @@ func (c Compiler) Compile(expr string) (*Expression, error) {
 	l, err := newVersionLexer(expr, version)
 	if err != nil {
 		return nil, err
+	}
+
+	if c.cfg != nil && c.cfg.context != nil {
+		for _, token := range l.tokens {
+			if token.Type == TokenNumber {
+				if err := preflightNumericLexical(c.cfg.context, token.Value, ""); err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
 
 	if c.cfg != nil && c.cfg.version != 0 {

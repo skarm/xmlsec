@@ -170,6 +170,10 @@ func nativeBindings(ctx context.Context, bindings Bindings, limits Limits) (map[
 		values[expandedName(name)] = value.items
 	}
 
+	if err := xpath.ChargeString(ctx, checker.size); err != nil {
+		return nil, err
+	}
+
 	return values, nil
 }
 
@@ -227,7 +231,7 @@ func (e *Engine) CompileXPath(ctx context.Context, source string, options XPathO
 		return nil, wrap("compile XPath", fmt.Errorf("%w: XPath 1.0 has no default element namespace", ErrInput))
 	}
 
-	expression, err := xpath.NewCompiler().Language(int(version), namespaces).Compile(source)
+	expression, err := xpath.NewCompiler().Context(ctx).Language(int(version), namespaces).Compile(source)
 	if err != nil {
 		return nil, wrap("compile XPath", err)
 	}

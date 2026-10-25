@@ -2,6 +2,7 @@ package transform_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -162,6 +163,22 @@ func BenchmarkTypedSort(b *testing.B) {
 						}
 					}
 				})
+			}
+		})
+	}
+}
+
+func BenchmarkNumericBudgetGrowth(b *testing.B) {
+	for _, limit := range []int{64, 256, 1024} {
+		b.Run(strconv.Itoa(limit), func(b *testing.B) {
+			e := engine(b, transform.Config{Limits: transform.Limits{MaxOutputBytes: limit}})
+			q := query(b, e, `fold-left(1 to 80, 2, function($a,$b){$a*$a}) mod 2`, transform.XPath31)
+			b.ReportAllocs()
+
+			for b.Loop() {
+				if _, err := q.Evaluate(b.Context(), nil, transform.XPathContext{}); !errors.Is(err, transform.ErrLimit) {
+					b.Fatal(err)
+				}
 			}
 		})
 	}

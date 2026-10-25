@@ -193,10 +193,7 @@ func appendTemplateKeyInfo(ctx context.Context, sig *tree.Node, spec SignatureTe
 			return err
 		}
 
-		// Only the root header needs a new parent; retained children are read
-		// by serialization before the independent final snapshot is parsed.
-		root := *n
-		add(sig, &root)
+		add(sig, tree.ImportSubtree(n))
 	}
 
 	if len(spec.Certificates) > 16 {
@@ -258,8 +255,7 @@ func objectTemplateNode(ctx context.Context, spec ObjectTemplate) (*tree.Node, e
 			return nil, ErrStructure
 		}
 
-		root := *tree.Root(spec.XML)
-		add(object, &root)
+		add(object, tree.ImportSubtree(tree.Root(spec.XML)))
 	case spec.Text != nil:
 		text(object, *spec.Text)
 	case spec.Binary != nil:

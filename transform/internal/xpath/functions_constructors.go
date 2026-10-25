@@ -163,7 +163,7 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 
 // makeXSConstructor returns a constructor function for a base XSD type.
 func makeXSConstructor(targetType string) func(context.Context, []xdm.Sequence) (xdm.Sequence, error) {
-	return func(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		a, empty, err := atomizeConstructorArg(args[0], targetType)
 		if err != nil {
 			return nil, err
@@ -173,7 +173,7 @@ func makeXSConstructor(targetType string) func(context.Context, []xdm.Sequence) 
 			return nil, nil
 		}
 
-		result, err := CastAtomic(a, targetType)
+		result, err := CastAtomicContext(ctx, a, targetType)
 		if err != nil {
 			return nil, err
 		}
@@ -211,7 +211,7 @@ func makeXSIntegerRange(typeName string, minVal, maxVal int64) func(context.Cont
 
 // makeXSIntegerRangeBig returns a constructor for a derived integer type with big.Int range validation.
 func makeXSIntegerRangeBig(typeName string, minBig, maxBig *big.Int) func(context.Context, []xdm.Sequence) (xdm.Sequence, error) {
-	return func(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		a, empty, err := atomizeConstructorArg(args[0], typeName)
 		if err != nil {
 			return nil, err
@@ -221,7 +221,7 @@ func makeXSIntegerRangeBig(typeName string, minBig, maxBig *big.Int) func(contex
 			return nil, nil
 		}
 
-		iv, err := CastAtomic(a, xdm.TypeInteger)
+		iv, err := CastAtomicContext(ctx, a, xdm.TypeInteger)
 		if err != nil {
 			return nil, err
 		}
@@ -248,7 +248,7 @@ func reLang(s string) bool { return valuepkg.ValidLanguage(s) }
 
 // makeXSStringRestriction returns a constructor for a derived string type.
 func makeXSStringRestriction(typeName string, validate lexicalCheck) func(context.Context, []xdm.Sequence) (xdm.Sequence, error) {
-	return func(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		a, empty, err := atomizeConstructorArg(args[0], typeName)
 		if err != nil {
 			return nil, err
@@ -284,7 +284,7 @@ func makeXSStringRestriction(typeName string, validate lexicalCheck) func(contex
 // listType (e.g. xs:NMTOKENS) drives the cardinality/type error message; itemType
 // (e.g. xs:NMTOKEN) drives per-token validation and result construction.
 func makeXSTokenList(listType, itemType string, tokenRe lexicalCheck) func(context.Context, []xdm.Sequence) (xdm.Sequence, error) {
-	return func(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		a, empty, err := atomizeConstructorArg(args[0], listType)
 		if err != nil {
 			return nil, err

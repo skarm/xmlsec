@@ -85,3 +85,14 @@ func stylesheet(t testing.TB, e *transform.Engine, source string) *transform.Sty
 func sheet(version, body string) string {
 	return sheetStart + version + `"><xsl:output method="text"/>` + body + `</xsl:stylesheet>`
 }
+
+func evaluateNumericInvocation(t testing.TB, q *transform.XPath) transform.Sequence {
+	t.Helper()
+
+	result, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return result
+}

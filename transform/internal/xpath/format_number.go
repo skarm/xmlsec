@@ -81,6 +81,26 @@ func resolveDecimalFormatName(ctx context.Context, name string) (QualifiedName, 
 	return QualifiedName{Name: name}, nil
 }
 
+func boundedFormatNumber(ctx context.Context, value xdm.AtomicValue, picture string, df icu.DecimalFormat) (string, error) {
+	// Picture width bounds the scaling powers used by the exact formatter.
+	// Reject excessive pictures before parsing/scaling, and account for the
+	// resulting text even when a surrounding expression consumes only its length.
+	if err := ChargeString(ctx, len(picture)); err != nil {
+		return "", err
+	}
+
+	if err := preflightRound(ctx, value, len(picture)); err != nil {
+		return "", err
+	}
+
+	result, err := formatNumber(value, picture, df)
+	if err == nil {
+		err = ChargeString(ctx, len(result))
+	}
+
+	return result, err
+}
+
 func formatNumber(a xdm.AtomicValue, picture string, df icu.DecimalFormat) (string, error) {
 	f := a.ToFloat64()
 

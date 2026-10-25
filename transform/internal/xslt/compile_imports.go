@@ -758,6 +758,7 @@ func compileSimplified(ctx context.Context, doc *xdm.Document, root *xdm.Element
 	}
 
 	c := &compiler{
+		invocation: ctx,
 		stylesheet: &Stylesheet{
 			version:          lexicon.XSLTVersion30,
 			namedTemplates:   make(map[string]*template),

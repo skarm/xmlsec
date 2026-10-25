@@ -207,6 +207,12 @@ func prepareDetachedVerification(ctx context.Context, doc *document.Document, ke
 		return nil, err
 	}
 
+	for i, ref := range plan.refs {
+		if err := reference.PrepareTransforms(ctx, ref.Transforms, plan.processing); err != nil {
+			return nil, &ReferenceError{i, ref.URI, nameTransform, processingError(err)}
+		}
+	}
+
 	return plan, nil
 }
 
@@ -488,13 +494,39 @@ func buildDetachedSignature(ctx context.Context, p *detachedSigningPlan) (*detac
 	// Build ALL metadata before resolving any data. Reparse the temporary template
 	// to catch invalid Type strings, prefixes, and document limits before I/O.
 	digestNodes := make([]*tree.Node, len(p.refs))
-	signDetachedReferences(p.refs, digestNodes, si)
-
-	if _, err := tree.Reparse(ctx, doc, p.xmlLimits); err != nil {
+	if err := signDetachedReferences(ctx, p.refs, digestNodes, si); err != nil {
 		return nil, err
 	}
 
-	return &detachedSignatureDraft{doc: doc, sig: sig, si: si, digestNodes: digestNodes}, nil
+	checked, err := tree.Reparse(ctx, doc, p.xmlLimits)
+	if err != nil {
+		return nil, err
+	}
+	// Approve the actual serialized namespace context and all recipes before
+	// any resource I/O. here() also needs the parsed parameter's real handle.
+	sig = tree.Root(checked)
+	si = sig.Children[0]
+	processing := p.processing
+	processing.Signature = tree.Wrap(checked, sig)
+
+	for i, n := range si.Children[2:] {
+		if isDS(n.Children[0], "Transforms") {
+			transforms, err := parseCoreTransforms(ctx, n.Children[0], processing)
+			if err != nil {
+				return nil, &ReferenceError{i, p.refs[i].URI, nameTransform, err}
+			}
+
+			p.refs[i].Transforms = transforms
+		}
+
+		if err := reference.PrepareTransforms(ctx, p.refs[i].Transforms, processing); err != nil {
+			return nil, &ReferenceError{i, p.refs[i].URI, nameTransform, processingError(err)}
+		}
+
+		digestNodes[i] = n.Children[len(n.Children)-1]
+	}
+
+	return &detachedSignatureDraft{doc: checked, sig: sig, si: si, digestNodes: digestNodes}, nil
 }
 
 func fillDetachedDigests(ctx context.Context, draft *detachedSignatureDraft, p *detachedSigningPlan, resolver Resolver, remaining *int) error {
@@ -515,37 +547,18 @@ func fillDetachedDigests(ctx context.Context, draft *detachedSignatureDraft, p *
 	return nil
 }
 
-func signDetachedReferences(refs []DetachedReference, digestNodes []*tree.Node, si *tree.Node) {
+func signDetachedReferences(ctx context.Context, refs []DetachedReference, digestNodes []*tree.Node, si *tree.Node) error {
 	for i, ref := range refs {
-		n := newDS("Reference")
-		setAttr(n, "URI", ref.URI)
-
-		if ref.Type != "" {
-			setAttr(n, "Type", ref.Type)
+		n, err := referenceTemplateNode(ctx, ReferenceTemplate{URI: ref.URI, Type: ref.Type, DigestMethod: ref.DigestMethod, Transforms: ref.Transforms})
+		if err != nil {
+			return &ReferenceError{i, ref.URI, nameTransform, err}
 		}
 
-		if len(ref.Transforms) != 0 {
-			ts := newDS("Transforms")
-			for _, tr := range ref.Transforms {
-				t := newDS("Transform")
-				setAttr(t, "Algorithm", tr.Algorithm)
-				addInclusive(t, tr.InclusivePrefixes)
-				add(ts, t)
-			}
-
-			add(n, ts)
-		}
-
-		dm := newDS("DigestMethod")
-		setAttr(dm, "Algorithm", ref.DigestMethod)
-		add(n, dm)
-
-		dv := newDS("DigestValue")
-		add(n, dv)
-		digestNodes[i] = dv
-
+		digestNodes[i] = n.Children[len(n.Children)-1]
 		add(si, n)
 	}
+
+	return nil
 }
 
 func validateDetachedReferenceCount(refs []DetachedReference, maximum int) error {
@@ -688,7 +701,7 @@ func (p *detachedVerificationPlan) parseSignature(ctx context.Context, doc *docu
 		return fmt.Errorf("%w: expected reference set size", ErrPolicy)
 	}
 
-	refs, err := parseDetachedReferenceSet(ctx, signed[2:], p.policy, p.processing, p.expected)
+	refs, err := parseDetachedReferenceSet(ctx, doc, signed[2:], p.policy, p.processing, p.expected)
 	if err != nil {
 		return err
 	}
@@ -698,7 +711,7 @@ func (p *detachedVerificationPlan) parseSignature(ctx context.Context, doc *docu
 	return nil
 }
 
-func parseDetachedReference(ctx context.Context, n *tree.Node, p Policy, processing reference.Options) (parsedDetachedReference, error) {
+func parseDetachedReference(ctx context.Context, doc *document.Document, n *tree.Node, p Policy, processing reference.Options) (parsedDetachedReference, error) {
 	var ref parsedDetachedReference
 
 	children, err := structure(n, "Reference", "URI", "Id", "Type")
@@ -728,18 +741,7 @@ func parseDetachedReference(ctx context.Context, n *tree.Node, p Policy, process
 		}
 
 		for _, tr := range transforms {
-			algorithm, err := requiredAttribute(tr, "Algorithm")
-			if err != nil {
-				return ref, err
-			}
-
-			var method reference.Transform
-			if canonicalAlgorithm(algorithm) {
-				method, err = parseCanonicalTransform(tr, "Transform")
-			} else {
-				method.Algorithm, err = simpleAlgorithm(tr, "Transform")
-			}
-
+			method, err := parseTransform(ctx, tr, doc)
 			if err != nil {
 				return ref, err
 			}
@@ -784,12 +786,12 @@ func parseDetachedReference(ctx context.Context, n *tree.Node, p Policy, process
 	return ref, nil
 }
 
-func parseDetachedReferenceSet(ctx context.Context, nodes []*tree.Node, policy Policy, processing reference.Options, expected map[string]bool) ([]parsedDetachedReference, error) {
+func parseDetachedReferenceSet(ctx context.Context, doc *document.Document, nodes []*tree.Node, policy Policy, processing reference.Options, expected map[string]bool) ([]parsedDetachedReference, error) {
 	refs := make([]parsedDetachedReference, 0, len(expected))
 	seen := make(map[string]bool, len(expected))
 
 	for i, n := range nodes {
-		ref, err := parseDetachedReference(ctx, n, policy, processing)
+		ref, err := parseDetachedReference(ctx, doc, n, policy, processing)
 		if err != nil {
 			return nil, &ReferenceError{i, ref.URI, nameTransform, err}
 		}

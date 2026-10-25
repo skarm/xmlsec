@@ -1,6 +1,7 @@
 package transform_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -460,5 +461,32 @@ func TestXSLTForwardsRecoveryKeepsStrictValidation(t *testing.T) {
 	source := strings.Replace(xslt10(`<xsl:template match="/"><out xsl:version="1.0"><xsl:text disable-output-escaping="future">text</xsl:text></out></xsl:template>`), `version="1.0"`, `version="1.1"`, 1)
 	if _, err := e.CompileXSLT(ctx, []byte(source), transform.XSLTOptions{}); err == nil {
 		t.Fatal("nested xsl:version=1.0 did not disable forwards recovery")
+	}
+}
+
+// XMLDSig hashes the serialized XSLT output. Reusing one compiled stylesheet
+// must not randomly reorder its literal element's namespace declarations.
+func TestXSLTLiteralNamespaceSerializationStable(t *testing.T) {
+	e := engine(t, transform.Config{})
+	s := stylesheet(t, e, `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:a="urn:a" xmlns:b="urn:b" xmlns:c="urn:c" version="1.0"><xsl:output omit-xml-declaration="yes"/><xsl:template match="/"><a:out><b:value c:id="x"/></a:out></xsl:template></xsl:stylesheet>`)
+
+	d, err := e.Parse(t.Context(), []byte(`<r/>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var first []byte
+
+	for i := 0; i < 100; i++ {
+		out, err := s.Transform(t.Context(), d, transform.XSLTContext{})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if i == 0 {
+			first = out.Primary
+		} else if !bytes.Equal(out.Primary, first) {
+			t.Fatalf("unstable XSLT bytes: %q != %q", out.Primary, first)
+		}
 	}
 }

@@ -128,6 +128,8 @@ func newV1Processor(e *Engine, programs []reference.Transform) (*v1Processor, er
 			continue
 		}
 
+		ctx := xpath.WithBudget(context.Background(), limits.MaxOperations, limits.MaxNodes, limits.MaxOutputBytes, limits.MaxDepth)
+
 		var expressions []compiled
 
 		for _, x := range t.XPath {
@@ -139,7 +141,7 @@ func newV1Processor(e *Engine, programs []reference.Transform) (*v1Processor, er
 			ns["xml"] = document.XMLNamespace
 			functions := map[string]xpath.Function{"here": hereFunction(document.Element{}, nil)}
 
-			expr, err := xpath.NewCompiler().Language(10, ns).Compile(x.Expression)
+			expr, err := xpath.NewCompiler().Context(ctx).Language(10, ns).Compile(x.Expression)
 			if err == nil {
 				err = expr.Validate(ns)
 			}

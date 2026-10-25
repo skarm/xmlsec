@@ -203,7 +203,8 @@ func execLiteralResultElementAttrs(ctx context.Context, inst *literalResultEleme
 }
 
 func execLiteralResultElementNamespaces(inst *literalResultElement, ec *execContext, elem *xdm.Element) error {
-	for prefix, uri := range inst.Namespaces {
+	for _, prefix := range inst.NamespacePrefixes {
+		uri := inst.Namespaces[prefix]
 		if prefix == "" {
 			continue // already handled above
 		}

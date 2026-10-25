@@ -1,10 +1,11 @@
-package xpath //nolint:testpackage // Tests private cache ownership and eviction.
+package xpath //nolint:testpackage // Tests private evaluator budgets, caches, and runtime semantics.
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"runtime"
 	"strings"
 	"sync"
@@ -323,6 +324,116 @@ func TestCollationCacheConcurrentEviction(t *testing.T) {
 	}
 }
 
+func TestNumericMagnitudeAccounting(t *testing.T) {
+	for _, nbits := range []int{0, 1, 7, 8, 9, 63, 64, 65, 511, 512, 513} {
+		t.Run(fmt.Sprint(nbits), func(t *testing.T) {
+			n := new(big.Int)
+			if nbits > 0 {
+				n.Lsh(big.NewInt(1), uint(nbits-1))
+			}
+
+			want := max(1, (nbits+7)/8)
+
+			for _, sign := range []int64{-1, 1} {
+				value := xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: new(big.Int).Mul(n, big.NewInt(sign))}
+				if got, ok := NumericSize(value); !ok || got != want {
+					t.Fatalf("size %d, want %d", got, want)
+				}
+			}
+
+			if n.Sign() != 0 {
+				value := xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: new(big.Rat).SetFrac(big.NewInt(1), n)}
+				if got, ok := NumericSize(value); !ok || got != want+1 {
+					t.Fatalf("rational size %d, want %d", got, want+1)
+				}
+			}
+		})
+	}
+}
+
+func TestNumericDigitCountBounds(t *testing.T) {
+	for _, digits := range []int64{1, 19, 100, 22000} {
+		t.Run(fmt.Sprint(digits), func(t *testing.T) {
+			power := new(big.Int).Exp(big.NewInt(10), big.NewInt(digits), nil)
+			if got := intDigitCount(power); got != int(digits)+1 {
+				t.Fatalf("digits=%d, want %d", got, digits+1)
+			}
+
+			power.Sub(power, big.NewInt(1))
+
+			if got := intDigitCount(power); got != int(digits) {
+				t.Fatalf("digits=%d, want %d", got, digits)
+			}
+		})
+	}
+}
+
+func TestNumericPreflightBudgets(t *testing.T) {
+	ctx := WithBudget(t.Context(), 1000, 100, 64, 64)
+
+	a := new(big.Int).Lsh(big.NewInt(1), 256)
+	if err := preflightInteger(ctx, TokenStar, a, a); !errors.Is(err, ErrBudget) {
+		t.Fatal(err)
+	}
+
+	if err := preflightNumeric(WithBudget(t.Context(), 10, 100, 1024, 64), 4096); !errors.Is(err, ErrBudget) {
+		t.Fatal(err)
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+
+	if err := preflightInteger(canceled, TokenStar, big.NewInt(2), big.NewInt(2)); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+}
+
+func TestNumericBudgetASTAndVM(t *testing.T) {
+	const source = `fold-left(1 to 12, 2, function($a,$b){$a*$a}) mod 2`
+
+	l, err := newVersionLexer(source, 31)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ast, err := parseWithLexer(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var evaluateAST exprEvaluator
+
+	evaluateAST = func(ctx context.Context, ec *evalContext, expr Expr) (xdm.Sequence, error) {
+		return evalWith(func(ctx context.Context, ec *evalContext, expr Expr) (xdm.Sequence, error) {
+			return dispatchExpr(evaluateAST, ctx, ec, expr)
+		}, ctx, ec, expr)
+	}
+
+	for _, mode := range []string{"AST", "VM"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := WithBudget(t.Context(), 100000, 1000, 64, 128)
+
+			if mode == "AST" {
+				ec := NewEvaluator(DefaultEvaluatorOptions).newEvalCtx(nil)
+				ec.version = 31
+				applyBudget(ctx, ec)
+				_, err = evaluateAST(ctx, ec, ast)
+			} else {
+				compiled, compileErr := NewCompiler().CompileExpr(ast)
+				if compileErr != nil {
+					t.Fatal(compileErr)
+				}
+
+				_, err = NewEvaluator(DefaultEvaluatorOptions).Evaluate(ctx, compiled, nil)
+			}
+
+			if !errors.Is(err, ErrBudget) {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestTreeBudgetMeasuresBorrowedContent(t *testing.T) {
 	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<r><x>ab</x><x>c</x><!--d--><?p e?></r>`))
 	if err != nil {
@@ -366,6 +477,30 @@ func TestTreeBudgetMeasuresBorrowedContent(t *testing.T) {
 	ctx := &budgetCancelContext{Context: t.Context(), remaining: 32}
 	if err := ChargeTree(WithBudget(ctx, 100000, 100000, 8<<20, 128), large); !errors.Is(err, context.Canceled) {
 		t.Fatal("tree measurement did not observe cancellation", err)
+	}
+}
+
+func TestSubsequenceBackwardsCompatibility(t *testing.T) {
+	ec := NewEvaluator(DefaultEvaluatorOptions).newEvalCtx(nil)
+	ec.xpath10Compat = true
+	ctx := ec.fnContext(t.Context())
+
+	source := xdm.ItemSlice{xdm.SingleInteger(1).Get(0), xdm.SingleInteger(2).Get(0), xdm.SingleInteger(3).Get(0)}
+	for _, tt := range []struct {
+		name string
+		args []xdm.Sequence
+		want int
+	}{
+		{"omitted", []xdm.Sequence{source, xdm.SingleInteger(2)}, 2},
+		{"empty", []xdm.Sequence{source, xdm.SingleInteger(2), nil}, 0},
+		{"first item", []xdm.Sequence{source, xdm.SingleInteger(2), xdm.ItemSlice{xdm.SingleInteger(1).Get(0), xdm.SingleInteger(3).Get(0)}}, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := fnSubsequence(ctx, tt.args)
+			if err != nil || xdm.SequenceLen(result) != tt.want {
+				t.Fatalf("length=%d error=%v", xdm.SequenceLen(result), err)
+			}
+		})
 	}
 }
 

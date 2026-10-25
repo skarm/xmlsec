@@ -102,6 +102,34 @@ Temporary strings and trees also consume budgets. Execution and serialization
 have separate invocation budgets. Individual limits do not specify a combined
 heap or RSS ceiling.
 
+Numeric intermediates also use `MaxOutputBytes`. An integer costs
+`max(1, ceil(bitlen(abs(value))/8))` bytes, independently of sign; zero costs one
+byte. An exact decimal costs the sum of that measure for its reduced `big.Rat`
+numerator and positive denominator, including the denominator one. IEEE float
+and double values cost four and eight bytes. Numeric admission never formats a
+decimal string just to measure its length. Serialized numeric text still obeys
+the serialization byte limit.
+
+Bindings (including map keys, map/array members and supplied context items) are
+counted together on entry. During evaluation, each singleton numeric expression
+result is charged, including repeated evaluation or forwarding of an existing
+value; exact conversions and aggregate/quotient temporaries are also charged.
+Built-in numeric results are charged on direct, function-item and higher-order
+calls, including each item in a returned numeric sequence.
+These charges share the invocation's cumulative byte budget with constructed
+strings and trees. They bound accounted data and work, rather than live storage.
+XPath AST, VM, reusable evaluation and calls from XSLT use the same budget.
+
+Before exact arithmetic, numeric parsing and rounding powers, conservative
+binary size bounds and work estimates are checked against the remaining byte
+and operation budgets. Decimal bounds include unreduced numerator/denominator
+products. Cancellation or a resource error propagates through `castable`.
+Cancellation, reduction or a small final result does not refund earlier charges;
+an operation may be rejected even when its reduced result would fit. Compilation
+checks numeric literals before parsing them; it does not fold arithmetic.
+Checks are cooperative: an individual `math/big` operation cannot necessarily be
+interrupted, and these limits do not promise an exact heap or RSS ceiling.
+
 The compiler enforces version-specific grammar and function arities. Schema
 awareness, W3C streamable execution and shadow version attributes are unsupported.
 Source schema-location hints do not trigger loading. Complete W3C conformance
@@ -143,3 +171,9 @@ No program is approved by default. Registration of standalone application functi
 does not enable them in XMLDSig transforms. `here()`, ID rules, node-set ownership
 and ordered Filter2 expansion follow XMLDSig semantics. Program approval and
 resource preflight apply before execution; received XML never grants approval.
+
+Signature builders preserve program parameters through XML serialization.
+Approval must include the complete namespace context of the parameter in the
+signature (for example, the signature's `ds` binding and Filter2's `xf` binding).
+Detached signing preflights all serialized recipes before resolving resources or
+generating SignatureValue. Building XML does not add programs to the allowlist.

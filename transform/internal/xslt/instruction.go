@@ -270,6 +270,7 @@ type literalResultElement struct {
 	LocalName         string
 	Attrs             []*literalAttribute
 	Namespaces        map[string]string // prefix -> URI declarations to copy
+	NamespacePrefixes []string          // sorted once at compilation for stable serialization
 	Body              []instruction
 	UseAttrSets       []string // xsl:use-attribute-sets (resolved QNames)
 	Validation        string   // xsl:validation="strict"|"lax"|"preserve"|"strip"

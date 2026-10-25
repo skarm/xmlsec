@@ -685,13 +685,17 @@ func parseCoreTransforms(ctx context.Context, n *tree.Node, opt reference.Option
 }
 
 func parseCoreTransform(ctx context.Context, tr *tree.Node, opt reference.Options) (reference.Transform, error) {
+	return parseTransform(ctx, tr, opt.Signature.Node().Document())
+}
+
+func parseTransform(ctx context.Context, tr *tree.Node, doc *document.Document) (reference.Transform, error) {
 	algorithm, err := requiredAttribute(tr, "Algorithm")
 	if err != nil {
 		return reference.Transform{}, err
 	}
 
 	if reference.IsExtension(algorithm) {
-		return parseProgramTransform(ctx, tr, opt.Signature.Node().Document())
+		return parseProgramTransform(ctx, tr, doc)
 	}
 
 	if canonicalAlgorithm(algorithm) {

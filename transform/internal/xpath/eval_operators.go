@@ -301,12 +301,12 @@ func evalRangeExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e
 	ea := eAtoms[0]
 	// Per spec, operands are converted using function coercion rules for xs:integer?.
 	// This allows untypedAtomic → integer, but rejects double/float/decimal → integer.
-	saInt, err := coerceToInteger(sa)
+	saInt, err := coerceToInteger(ctx, sa)
 	if err != nil {
 		return nil, err
 	}
 
-	eaInt, err := coerceToInteger(ea)
+	eaInt, err := coerceToInteger(ctx, ea)
 	if err != nil {
 		return nil, err
 	}

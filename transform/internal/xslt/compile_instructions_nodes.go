@@ -6,6 +6,7 @@ package xslt
 import (
 	"context"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -839,6 +840,7 @@ func (c *compiler) compileLiteralResultElement(ctx context.Context, elem *xdm.El
 	}
 
 	c.applyLiteralResultAliases(ctx, lre)
+	lre.NamespacePrefixes = slices.Sorted(maps.Keys(lre.Namespaces))
 
 	if err := c.compileLiteralResultOptions(ctx, elem, lre); err != nil {
 		return nil, err

@@ -291,7 +291,14 @@ func compareSingletonAgainstRange(evalFn exprEvaluator, ctx context.Context, ec 
 		return false, false, nil
 	}
 
-	singletonInt, err := coerceToInteger(singletonAtoms[0])
+	// An untyped singleton in a general comparison promotes to double, not
+	// integer. Leave it to the ordinary path, avoiding an unbounded integer
+	// parse merely to decide whether this optimization applies.
+	if !xdm.IsIntegerDerived(singletonAtoms[0].TypeName) {
+		return false, false, nil
+	}
+
+	singletonInt, err := coerceToInteger(ctx, singletonAtoms[0])
 	if err != nil {
 		return false, false, nil //nolint:nilerr // non-integer subscript means no match
 	}
@@ -342,12 +349,12 @@ func evalRangeBounds(evalFn exprEvaluator, ctx context.Context, ec *evalContext,
 		return nil, nil, false, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "range bounds must be singletons"}
 	}
 
-	startInt, err := coerceToInteger(startAtoms[0])
+	startInt, err := coerceToInteger(ctx, startAtoms[0])
 	if err != nil {
 		return nil, nil, false, err
 	}
 
-	endInt, err := coerceToInteger(endAtoms[0])
+	endInt, err := coerceToInteger(ctx, endAtoms[0])
 	if err != nil {
 		return nil, nil, false, err
 	}

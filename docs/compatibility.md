@@ -14,7 +14,8 @@ maps supported requirements to tests; [standards](standards.md) lists primary so
 - XMLDSig enveloped/enveloping/detached references, Objects, multiple signatures
   and bounded local Manifests. RSA/ECDSA SHA-2, RSA-PSS, Ed25519/Ed25519ph and
   separate HMAC profiles are supported. External Manifests, unrestricted KeyInfo
-  selection and RetrievalMethod transforms are unsupported.
+  selection and arbitrary RetrievalMethod transform chains are unsupported.
+  Retrieval of rawX509Certificate permits one optional Base64 transform.
 - XPath 1.0/2.0/3.0/3.1, XSLT 1.0 and Basic XSLT 2.0/3.0. Package/collection
   resolvers and application functions are explicit. XMLDSig XPath 1.0, Filter2
   and restricted XSLT 1.0 need approved programs. Schema awareness and W3C

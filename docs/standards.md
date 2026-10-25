@@ -52,3 +52,28 @@ tests; [compatibility](compatibility.md) records exclusions and oracle differenc
 - [RFC 3394](https://www.rfc-editor.org/rfc/rfc3394.html): AES Key Wrap
 
 The library does not perform XSD validation or download schemas.
+
+## Regression semantics checked on 21 October 2026
+
+`fn:subsequence` uses a required single `xs:double` for a supplied length in
+[F&O 2.0 Second Edition §15.1.10](https://www.w3.org/TR/2010/REC-xpath-functions-20101214/#func-subsequence)
+(14 December 2010), [F&O 3.0 §14.1.9](https://www.w3.org/TR/2014/REC-xpath-functions-30-20140408/#func-subsequence)
+(8 April 2014), and [F&O 3.1 §14.1.8](https://www.w3.org/TR/2017/REC-xpath-functions-31-20170321/#func-subsequence)
+(21 March 2017). The 2.0 Second Edition incorporates the earlier editorial
+subsequence erratum E2. The linked [3.0 errata](https://www.w3.org/XML/2014/qt-errata/xpath-functions-30-errata.html)
+and [3.1 draft errata](https://www.w3.org/XML/2017/qt-errata/xpath-functions-31-errata.html)
+do not change this signature. XPath 1.0 has no `fn:subsequence`; XSLT backwards
+compatibility retains its first-item/number conversion rules where applicable.
+
+Subtree import follows [Namespaces in XML 1.0 Third Edition §§6.1–6.2](https://www.w3.org/TR/2009/REC-xml-names-20091208/#scoping)
+(8 December 2009): default namespace scope affects unprefixed elements but not
+unprefixed attributes. The source's lexical prefixes and namespace bindings are
+retained, including an absent default namespace; QName-valued XPath/XSLT content
+is not rewritten. The [namespace errata](https://www.w3.org/XML/2009/xml-names-errata)
+list no corrections.
+
+Transform parameters follow [XML Signature 1.1 §4.4.3.4](https://www.w3.org/TR/2013/REC-xmldsig-core1-20130411/#sec-Transforms)
+and its XPath/XSLT processing sections (11 April 2013), plus the linked Filter2
+and Exclusive C14N specifications. The [XML Signature 1.1 errata](https://www.w3.org/2008/xmlsec/errata/xmldsig-core-11-errata.html)
+do not change the parameter requirements used by these regressions. Numeric
+resource accounting is an implementation policy, not a W3C memory guarantee.

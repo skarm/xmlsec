@@ -38,17 +38,7 @@ func parseProgramTransform(ctx context.Context, n *tree.Node, doc *document.Docu
 }
 
 func standaloneTransformXML(ctx context.Context, doc *document.Document, n *tree.Node) ([]byte, error) {
-	out := *n
-	out.Parent = nil
-	out.NS = nil
-
-	for _, ns := range tree.Wrap(doc, n).NamespaceNodes() {
-		if ns.Name().Local != "xml" {
-			out.NS = append(out.NS, tree.Namespace{Prefix: ns.Name().Local, URI: ns.Value()})
-		}
-	}
-
-	d := tree.FromNodes([]*tree.Node{&out}, tree.Policy(doc))
+	d := tree.FromNodes([]*tree.Node{tree.ImportSubtree(n)}, tree.Policy(doc))
 
 	var output bytes.Buffer
 	if _, err := d.WriteXML(ctx, &output, 1<<20); err != nil {
@@ -69,8 +59,7 @@ func appendProgramParameters(ctx context.Context, n *tree.Node, t reference.Tran
 			return err
 		}
 
-		root := *tree.Root(d)
-		add(n, &root)
+		add(n, tree.ImportSubtree(tree.Root(d)))
 
 		return nil
 	}

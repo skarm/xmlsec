@@ -103,7 +103,14 @@ func (e *Expression) EvaluateReuse(ctx context.Context, state *EvalState, node x
 	// Fast path for "." — skip eval entirely, reuse backing array
 	if e.program != nil && e.program.stream.isContextItem {
 		if ec.contextItem != nil {
+			if value, ok := ec.contextItem.(xdm.AtomicValue); ok {
+				if err := ChargeNumber(ctx, value); err != nil {
+					return Result{}, err
+				}
+			}
+
 			state.oneItem[0] = ec.contextItem
+
 			return Result{seq: xdm.ItemSlice(state.oneItem[:])}, nil
 		}
 

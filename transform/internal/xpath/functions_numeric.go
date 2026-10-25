@@ -129,7 +129,7 @@ func fnFormatNumber(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 		}
 	}
 
-	result, err := formatNumber(a, picture, df)
+	result, err := boundedFormatNumber(ctx, a, picture, df)
 	if err != nil {
 		return nil, err
 	}
@@ -249,13 +249,13 @@ func fnFloor(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 // arbitrary precision); callers pair it with the operand's scale via
 // resolveRoundScale so an astronomically large 10^|precision| is never
 // materialised for cases whose result is determined trivially.
-func roundPrecisionArg(arg xdm.Sequence) (*big.Int, error) {
+func roundPrecisionArg(ctx context.Context, arg xdm.Sequence) (*big.Int, error) {
 	pa, err := extractSingleAtomicArg(arg, nameRound)
 	if err != nil {
 		return nil, err
 	}
 
-	pa, err = coerceToInteger(pa)
+	pa, err = coerceToInteger(ctx, pa)
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +360,20 @@ func intDigitCount(n *big.Int) int {
 		return 1
 	}
 
-	return len(new(big.Int).Abs(n).Text(10))
+	// Estimate from BitLen, then compare magnitudes; do not allocate a decimal
+	// string just to count its digits. 30103/100000 bounds log10(2) above.
+	b := n.BitLen()
+	digits := b/100000*30103 + int(int64(b%100000)*30103/100000) + 1
+	power := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(digits-1)), nil)
+
+	abs := new(big.Int).Abs(n)
+	for digits > 1 && abs.Cmp(power) < 0 {
+		digits--
+
+		power.Quo(power, big.NewInt(10))
+	}
+
+	return digits
 }
 
 // ratIntDigitCount returns the number of base-10 digits in the integer part of
@@ -414,12 +427,12 @@ func ratFracDigitCount(r *big.Rat) int {
 	return b
 }
 
-func fnRound(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return roundImpl(args, false)
+func fnRound(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return roundImpl(ctx, args, false)
 }
 
-func fnRoundHalfToEven(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return roundImpl(args, true)
+func fnRoundHalfToEven(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return roundImpl(ctx, args, true)
 }
 
 // roundImpl is the shared core of fn:round (halfToEven == false, half towards
@@ -427,7 +440,7 @@ func fnRoundHalfToEven(_ context.Context, args []xdm.Sequence) (xdm.Sequence, er
 // argument is resolved scale-aware against each operand so an astronomically
 // large 10^|precision| is never materialised: cases whose result is determined
 // trivially (rounds to 0, or operand unchanged) short-circuit before any Exp.
-func roundImpl(args []xdm.Sequence, halfToEven bool) (xdm.Sequence, error) {
+func roundImpl(ctx context.Context, args []xdm.Sequence, halfToEven bool) (xdm.Sequence, error) {
 	// When the 2-arg form is used, $precision is a required "exactly one
 	// xs:integer" parameter and must be validated whether or not $arg is empty:
 	// the empty first argument does not excuse an absent or ill-typed precision.
@@ -436,7 +449,7 @@ func roundImpl(args []xdm.Sequence, halfToEven bool) (xdm.Sequence, error) {
 	precision := big.NewInt(0)
 
 	if len(args) > 1 {
-		p, err := roundPrecisionArg(args[1])
+		p, err := roundPrecisionArg(ctx, args[1])
 		if err != nil {
 			return nil, err
 		}
@@ -453,32 +466,17 @@ func roundImpl(args []xdm.Sequence, halfToEven bool) (xdm.Sequence, error) {
 		return nil, nil
 	}
 
-	if xdm.IsIntegerDerived(a.TypeName) {
-		scale, decision, err := resolveRoundScale(precision, intDigitCount(a.BigInt()), 0)
-		if err != nil {
+	if size, numeric := NumericSize(a); numeric {
+		if err := preflightNumeric(ctx, size*8); err != nil {
 			return nil, err
 		}
-
-		if decision == roundUnchanged {
-			if v, ok := a.Value.(int64); ok {
-				return xdm.SingleInteger(v), nil
-			}
-
-			return xdm.SingleIntegerBig(new(big.Int).Set(a.BigInt())), nil
-		}
-
-		if decision == roundTrivialZero {
-			return xdm.SingleInteger(0), nil
-		}
-
-		if halfToEven {
-			return xdm.SingleIntegerBig(roundIntegerHalfToEven(a.BigInt(), scale)), nil
-		}
-
-		return xdm.SingleIntegerBig(roundIntegerHalfUp(a.BigInt(), scale)), nil
 	}
 
-	if returned0, returned1, matchedBranch := roundImplTypeName(&a, precision, halfToEven); matchedBranch {
+	if xdm.IsIntegerDerived(a.TypeName) {
+		return roundIntegerValue(ctx, a, precision, halfToEven)
+	}
+
+	if returned0, returned1, matchedBranch := roundImplTypeName(ctx, &a, precision, halfToEven); matchedBranch {
 		return returned0, returned1
 	}
 
@@ -514,6 +512,10 @@ func roundImpl(args []xdm.Sequence, halfToEven bool) (xdm.Sequence, error) {
 		p = -scale
 	}
 
+	if err := preflightRound(ctx, a, scale); err != nil {
+		return nil, err
+	}
+
 	if halfToEven {
 		result := roundHalfToEvenFloat(n, p)
 		return xdm.SingleAtomic(makeFloatResult(a.TypeName, result)), nil
@@ -525,6 +527,35 @@ func roundImpl(args []xdm.Sequence, halfToEven bool) (xdm.Sequence, error) {
 	}
 
 	return xdm.SingleAtomic(makeFloatResult(a.TypeName, r)), nil
+}
+
+func roundIntegerValue(ctx context.Context, a xdm.AtomicValue, precision *big.Int, halfToEven bool) (xdm.Sequence, error) {
+	scale, decision, err := resolveRoundScale(precision, intDigitCount(a.BigInt()), 0)
+	if err != nil {
+		return nil, err
+	}
+
+	if decision == roundUnchanged {
+		if v, ok := a.Value.(int64); ok {
+			return xdm.SingleInteger(v), nil
+		}
+
+		return xdm.SingleIntegerBig(new(big.Int).Set(a.BigInt())), nil
+	}
+
+	if decision == roundTrivialZero {
+		return xdm.SingleInteger(0), nil
+	}
+
+	if err := preflightRound(ctx, a, scale); err != nil {
+		return nil, err
+	}
+
+	if halfToEven {
+		return xdm.SingleIntegerBig(roundIntegerHalfToEven(a.BigInt(), scale)), nil
+	}
+
+	return xdm.SingleIntegerBig(roundIntegerHalfUp(a.BigInt(), scale)), nil
 }
 
 // floatIntDigitCount returns the number of base-10 digits in the integer part
@@ -908,7 +939,7 @@ func roundIntegral(args []xdm.Sequence, roundRat func(*big.Rat) *big.Rat, roundF
 	return xdm.SingleAtomic(makeFloatResult(a.TypeName, roundFloat(f))), nil
 }
 
-func roundImplTypeName(a *xdm.AtomicValue, precision *big.Int, halfToEven bool) (returned0 xdm.Sequence, returned1 error, matchedBranch bool) {
+func roundImplTypeName(ctx context.Context, a *xdm.AtomicValue, precision *big.Int, halfToEven bool) (returned0 xdm.Sequence, returned1 error, matchedBranch bool) {
 	if a.TypeName == xdm.TypeDecimal {
 		r := a.BigRat()
 
@@ -928,6 +959,10 @@ func roundImplTypeName(a *xdm.AtomicValue, precision *big.Int, halfToEven bool) 
 		p := scale
 		if precision.Sign() < 0 {
 			p = -scale
+		}
+
+		if err := preflightRound(ctx, *a, scale); err != nil {
+			return nil, err, true
 		}
 
 		if halfToEven {

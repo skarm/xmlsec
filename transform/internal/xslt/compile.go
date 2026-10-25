@@ -210,6 +210,7 @@ func compilePrepared(ctx context.Context, doc *xdm.Document, cfg *compileConfig)
 	}
 
 	c := &compiler{
+		invocation: ctx,
 		stylesheet: &Stylesheet{
 			namedTemplates:   make(map[string]*template),
 			modeTemplates:    make(map[string][]*template),
@@ -325,6 +326,7 @@ const (
 )
 
 type compiler struct {
+	invocation              context.Context
 	resolver                URIResolver
 	packageResolver         PackageResolver
 	stylesheet              *Stylesheet
@@ -1066,7 +1068,7 @@ func (c *compiler) compileXPath(expr string, _ map[string]string) (*xpath.Expres
 		version = 10
 	}
 
-	compiled, err := xpath.NewCompiler().Language(version, c.nsBindings).Compile(expr)
+	compiled, err := xpath.NewCompiler().Context(c.invocation).Language(version, c.nsBindings).Compile(expr)
 	if err != nil {
 		if isBackwardsCompatible(c.stylesheet.version) && c.forwardsCompatible(c.effectiveVersion) {
 			return xpath.DeferredExpression(err, 10), nil
