@@ -2,7 +2,9 @@
 
 These primary sources define supported profiles. Listing a standard does not claim
 complete conformance. [conformance.json](conformance.json) pins editions and errata
-sources and separates capabilities from the partial normative clause inventory.
+sources, selected correction identifiers and their review date. Every declared
+profile has a document/role/mode matrix; assessed requirements and remaining clause
+regions keep the individual-clause inventory boundaries explicit.
 [Normative traceability](conformance.md) explains its states and acceptance rules;
 [compatibility](compatibility.md) records exclusions and oracle differences.
 
@@ -25,6 +27,9 @@ sources and separates capabilities from the partial normative clause inventory.
   [Filter2](https://www.w3.org/TR/xmldsig-filter2/) and [XSLT 1.0](https://www.w3.org/TR/xslt-10/)
 - [RFC 3986](https://www.rfc-editor.org/rfc/rfc3986.html),
   [RFC 2045](https://www.rfc-editor.org/rfc/rfc2045.html) and [RFC 9231](https://www.rfc-editor.org/rfc/rfc9231.html)
+- [XML Base, Second Edition](https://www.w3.org/TR/2009/REC-xmlbase-20090128/):
+  explicit URI resolution context; its LEIRI and complete processor obligations
+  exceed the selected XMLDSig URI profile
 
 ## Trust and evidence
 

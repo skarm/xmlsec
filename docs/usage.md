@@ -83,6 +83,48 @@ Preserving existing signatures requires trusted keys in `Preserve`. Local
 Manifest recursion is opt-in and bounded; authenticating Manifest XML alone
 does not verify its listed content.
 
+Set `ManifestPolicy.AllowTransformed` explicitly to recurse into a typed
+`Type=ManifestType` reference whose approved transforms produce standalone
+Manifest XML. This works with local Base64 objects and external Base64,
+XPath/Filter2/XSLT pipelines. The same processing pass captures the exact final
+digest input; only a matching incoming digest permits parsing and following its
+children. Derived scopes share graph, node and byte budgets and use the containing
+retrieval URI plus output digest as their identity. `ManifestResult.Transformed()`
+and report `transformed` identify these scopes. Their IDs refer to derived XML;
+original-node coverage is never inferred from a transformed Manifest. References
+that preserve complete original XML retain the existing provenance checks.
+
+For an external Manifest subresource such as `https://example.test/list.xml#part`,
+allowlist the complete URI. The resolver receives that complete string and must
+return the selected Manifest as standalone XML octets, including the context
+needed for its nested references. Returning the whole containing XML file while
+silently ignoring `#part` violates this adapter contract. The library does not
+fetch that file and guess its ID typing or fragment serialization.
+
+`ExternalReferences.BaseURI` explicitly enables relative URI resolution. Set it
+to the trusted absolute, hierarchical URI of the signature document and put
+resolved absolute URIs in `AllowedURIs`. References in an external Manifest use
+that resource's resolved URI as their retrieval base. Inherited `xml:base` on
+permitted application containers participates; empty `xml:base` inherits the
+current base. XMLDSig's existing attribute grammar is unchanged. No redirect or
+MIME metadata is inferred from a plain reader. An adapter that redirects or
+selects from another containing document must preserve the intended context in
+the supplied octets or use application-selected absolute nested references.
+
+`ReferenceResult.URI()` and report `uri` preserve the signed spelling;
+`ResourceURI()` and report `resource_uri` expose the actual authorized resolver
+URI. Replay uses that retained URI. `ExpectedURIs` still checks signed spelling.
+Empty and fragment-only references always address their containing document.
+These options apply to the general Signature API; the narrow detached API
+retains its literal-URI contract. KeyInfo has its own separately authorized
+`ExternalResources.BaseURI` option, described below.
+Core CLI signing and verification expose the same opt-in as `-base-uri`, together
+with the existing trusted `-resources` file.
+Approved extension transforms execute separately for each Reference, preserving
+their original expression context. Their resource bytes can be read again under
+the aggregate byte limit; a repeated URI does not bypass the processor's runtime
+checks. Built-in transform results can share processing evidence.
+
 Detached verification requires the exact expected URI set and a resolver.
 SignatureValue is authenticated before signed external resources are read.
 KeyInfo retrieval is authorized separately and may occur earlier.
@@ -115,15 +157,51 @@ collection limits apply across the operation. Writer variants are described in
 `keyinfo.Parse` returns untrusted candidates. `AllowedKeyData: nil` allows
 supported forms; an empty list denies all. Retrieval needs an exact URI allowlist
 and bounded resolver. rawX509Certificate retrieval accepts raw certificate bytes
-or one Base64 transform; other RetrievalMethod transform chains are unsupported.
+or one Base64 transform by default. Build additional descriptions with
+`Template.RetrievalMethods`; set `Options.RetrievalProcessing` explicitly to use
+the shared reference transform allowlist and budgets. XPath/Filter2/XSLT also
+require an exact approved program and a trusted extension processor. The complete
+chain is preflighted before resource access. Type describes its final result:
+one XML element/document, or DER octets for rawX509Certificate. Aggregate
+`MaxTransformBytes`/`MaxTransformNodes` bound intermediate work across links.
+Omitted DSAKeyValue P/Q/G can come from `Options.DSAParameters`; that context
+is copied before callbacks, requires the bounded 1024/160 profile, and supplies
+no trust or algorithm permission. Builders emit complete DSA descriptions.
 `VerifySignatureWithKeyInfo` requires an application trust selector;
 an embedded key or certificate is not trust.
+
+For external KeyInfoReference/RetrievalMethod links, authorize complete absolute
+URIs, including any fragment. The trusted resolver supplies the identified octets
+or standalone XML. `keyinfo.ExternalResources.BaseURI` explicitly enables relative
+URI and inherited `xml:base` resolution before the exact allowlist check. Nested
+links use the containing resource URI; empty and fragment-only links stay local.
+Base/allowlist options are copied before callbacks. Candidate `ResourceURI()` and
+`ExternalURIs()` retain the resolved identity. KeyInfo permissions never grant
+signed-data resource access, or the reverse. No automatic network or fragment
+selector is added.
+
+`keyinfo.Template.X509Data` builds separate groups of certificates, v2 CRLs,
+issuer/serial pairs, subject names, plain SKI values and certificate digests.
+`Template.Certificates` still supplies the first separate certificate group.
+Builders preserve original DER and caller-supplied XMLDSig/RFC 4514 DN spelling;
+issuer serial numbers use the parser's nonnegative decimal normalization.
+All group sources are budgeted before DER parsing and Base64 allocation.
+The builder checks representation syntax; certificate/selector matching, chain
+relationships and revocation remain application policy. A selector-only group
+contains no candidate and triggers no certificate lookup. Sign a reference to the
+KeyInfo when those metadata must be authenticated, and require that coverage when
+verifying. Authenticating a selector still requires an application trust decision.
 
 `pki.NewVerifier` snapshots explicit roots and policy; it never uses system roots.
 Verification requires an explicit time, application EKUs and chosen offline
 revocation policy. `KeyPin` checks SPKI identity, not lifetime or revocation.
 CMS `Parse` is unauthenticated; `SignedData.Verify` checks the required signers
 against supplied certificates. Compose PKIX separately when needed.
+For selected BER input, explicitly use `cms.ParseBER` or `cms.ParseBERReader`.
+They coalesce constructed content and normalize the permitted wrappers within
+byte/content/depth/value limits. They preserve signed-attribute bytes and reject
+non-DER attributes. `DER`, `Size` and `WriterTo` expose the normalized encoding;
+they do not replay the original BER. Parsing still establishes no authenticity.
 
 Timestamp verification binds a token to an expected imprint and a response to
 its original request. Configure TSA trust, allowed policies and revocation.
@@ -140,8 +218,12 @@ Element replacement changes the selected element; Content replacement changes
 its children. Both return a new snapshot and preserve unrelated content.
 Decryption does not authenticate a sender or establish signature coverage.
 
-`Options.OAEP` selects matching SHA-256/384/512 digest and MGF1 with an optional
-label. Decryption requires the caller-selected parameters. Direct-key variants
+`Options.OAEP` selects independent SHA-224/256/384/512 digest and MGF1 hashes
+with an optional label. A zero `MGFHash` uses `Hash` for `RSAOAEP` and SHA-1 for
+`RSAOAEP10`. SHA-1 and `RSAOAEP10` require explicit `AllowLegacy: true` and are
+disabled with crypto/fips140 enabled. XMLENC's omitted digest/MGF parameters
+mean SHA-1; they never select SHA-256 or expand the caller's accepted parameters.
+Decryption requires the caller-selected parameters. Direct-key variants
 require a matching AES key size and exact configured KeyName hint. Limit a data
 key to at most 2^32 encryptions with the randomly generated 96-bit nonces.
 

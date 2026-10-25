@@ -129,15 +129,19 @@ The API is **experimental**. The library implements specific profiles of the
 listed standards; full standards conformance and an independent security audit
 have not been established.
 
-For example, DTDs, external entities and XSD validation are unsupported. XSLT
-supports XSLT 1.0 and Basic XSLT 2.0/3.0, without schema awareness or W3C
-streamable execution. SAML support covers solicited WebSSO; it does not include
-SLO, Artifact/ECP or encrypted assertions.
+For example, DTDs, external entities and XSD validation are unsupported. The
+XPath/XSLT engine implements selected XPath 1.0/2.0/3.0/3.1 and XSLT
+1.0/2.0/3.0 features. Complete Basic XSLT conformance remains open;
+[suite results](docs/language-baseline.md) record the current failures. Schema
+awareness and W3C streamable execution are unsupported. SAML support covers
+solicited WebSSO; it does not include SLO, Artifact/ECP or encrypted assertions.
 
 Check [supported profiles and compatibility](docs/compatibility.md) for the full
 scope, exclusions and known interoperability differences. The
 [conformance register](docs/conformance.json) separates supported capabilities,
-normative obligations, policy and remaining gaps. Its clause inventory is partial;
+normative obligations, policy and remaining gaps. Each declared profile has a
+pinned document/role/mode matrix, selected correction IDs and explicit remaining
+clause regions. The individual-clause inventory is partial;
 see [normative traceability](docs/conformance.md) and the pinned
 [standards](docs/standards.md).
 

@@ -109,6 +109,52 @@ func TestCanonicalErrors(t *testing.T) {
 	}
 }
 
+func TestCanonicalPartialWriterErrors(t *testing.T) {
+	doc := parse(t, `<r a="é&amp;">😀&#xD;<c/></r>`)
+	want := `<r a="é&amp;">😀&#xD;<c></c></r>`
+	set := all(t, doc)
+	failure := errors.New("failure after an accepted prefix")
+
+	for _, algorithm := range []string{c14n.Canonical10, c14n.Canonical10WithComments, c14n.Canonical11, c14n.Canonical11WithComments, c14n.Exclusive, c14n.ExclusiveWithComments} {
+		options := c14n.Options{Algorithm: algorithm}
+
+		for _, write := range []func(io.Writer) error{
+			func(dst io.Writer) error { return c14n.WriteDocument(t.Context(), dst, doc, options) },
+			func(dst io.Writer) error { return c14n.WriteElement(t.Context(), dst, doc.Root(), options) },
+			func(dst io.Writer) error { return c14n.WriteNodeSet(t.Context(), dst, set, options) },
+		} {
+			for limit := range len(want) + 1 {
+				dst := &prefixFailureWriter{remaining: limit, err: failure}
+				if err := write(dst); !errors.Is(err, failure) {
+					t.Fatalf("%s/%d: writer error lost: %v", algorithm, limit, err)
+				}
+
+				if got := dst.data.String(); got != want[:limit] {
+					t.Fatalf("%s/%d: accepted prefix %q, want %q", algorithm, limit, got, want[:limit])
+				}
+			}
+		}
+	}
+}
+
+type prefixFailureWriter struct {
+	data      bytes.Buffer
+	remaining int
+	err       error
+}
+
+func (w *prefixFailureWriter) Write(data []byte) (int, error) {
+	n := min(w.remaining, len(data))
+	_, _ = w.data.Write(data[:n])
+	w.remaining -= n
+
+	if w.remaining == 0 {
+		return n, w.err
+	}
+
+	return n, nil
+}
+
 func TestNamespaceFramesStayLocalToSubtrees(t *testing.T) {
 	d, err := document.Parse(t.Context(), []byte(`<r xmlns:a="urn:one"><a:n xmlns:a="urn:two"><a:c/></a:n><a:n/><n xmlns="urn:def"><x xmlns=""/></n><a:n/></r>`), document.DefaultLimits())
 	if err != nil {

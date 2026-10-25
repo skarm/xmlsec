@@ -3,13 +3,221 @@ package c14n_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 )
+
+func TestNormativeCanonicalVectors(t *testing.T) {
+	raw, err := os.ReadFile("testdata/normative-vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var corpus struct {
+		FormatVersion int               `json:"format_version"`
+		Cases         []canonicalVector `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &corpus); err != nil {
+		t.Fatal(err)
+	}
+
+	if corpus.FormatVersion != 1 || len(corpus.Cases) != 138 {
+		t.Fatal("unexpected normative fixture inventory", corpus.FormatVersion, len(corpus.Cases))
+	}
+
+	for _, vector := range corpus.Cases {
+		t.Run(vector.Name, func(t *testing.T) { checkCanonicalVector(t, vector) })
+	}
+}
+
+func TestNormativeCanonicalRejections(t *testing.T) {
+	raw, err := os.ReadFile("testdata/normative-vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var corpus struct {
+		Rejected []struct {
+			Name, XML, At, Category, Algorithm string
+			Prefixes                           []string
+			MaxOutputBytes                     int `json:"max_output_bytes"`
+		} `json:"rejected"`
+	}
+	if err := json.Unmarshal(raw, &corpus); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(corpus.Rejected) != 24 {
+		t.Fatal("unexpected negative fixture inventory", len(corpus.Rejected))
+	}
+
+	for _, vector := range corpus.Rejected {
+		t.Run(vector.Name, func(t *testing.T) {
+			want := map[string]error{"malformed": document.ErrMalformed, "unsupported": document.ErrUnsupported, "limit": document.ErrLimit}[vector.Category]
+			if want == nil {
+				t.Fatal("unknown fixture error category", vector.Category)
+			}
+
+			for _, reader := range []bool{false, true} {
+				var (
+					doc *document.Document
+					err error
+				)
+				if reader {
+					doc, err = document.ParseReader(t.Context(), iotest.OneByteReader(strings.NewReader(vector.XML)), document.DefaultLimits())
+				} else {
+					doc, err = document.Parse(t.Context(), []byte(vector.XML), document.DefaultLimits())
+				}
+
+				if vector.At == "canonical" {
+					if err != nil {
+						t.Fatal("canonical rejection fixture did not parse", err)
+					}
+
+					err = c14n.WriteDocument(t.Context(), io.Discard, doc, c14n.Options{Algorithm: vector.Algorithm, InclusivePrefixes: vector.Prefixes, MaxOutputBytes: vector.MaxOutputBytes})
+				} else if vector.At != "parse" {
+					t.Fatal("unknown fixture rejection stage", vector.At)
+				}
+
+				if !errors.Is(err, want) {
+					t.Fatalf("reader=%v: got %v, want %v", reader, err, want)
+				}
+			}
+		})
+	}
+}
+
+type canonicalVector struct {
+	Name, XML, Scope, Algorithm, Expected string
+	Prefixes                              []string
+	Subtree                               []int
+	Select                                []canonicalVectorSelection
+}
+
+type canonicalVectorSelection struct {
+	Path                       []int
+	Kind, Local, Space, Prefix string
+}
+
+func checkCanonicalVector(t *testing.T, vector canonicalVector) {
+	t.Helper()
+	doc := parse(t, vector.XML)
+
+	original, err := doc.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	options := c14n.Options{Algorithm: vector.Algorithm, InclusivePrefixes: vector.Prefixes}
+
+	var (
+		direct bytes.Buffer
+		set    document.NodeSet
+	)
+
+	switch vector.Scope {
+	case "document":
+		err = c14n.WriteDocument(t.Context(), &direct, doc, options)
+		set = all(t, doc)
+	case "subtree":
+		selected, ok := canonicalVectorNode(t, doc, vector.Subtree).Element()
+		if !ok {
+			t.Fatal("subtree fixture does not select an element")
+		}
+
+		err = c14n.WriteElement(t.Context(), &direct, selected, options)
+		if err == nil {
+			set, err = selected.Subtree(t.Context())
+		}
+	case "node-set":
+		nodes := make([]document.Node, 0, len(vector.Select))
+		for _, selection := range vector.Select {
+			node := canonicalVectorSelected(t, doc, selection)
+			if node.Kind().String() != selection.Kind {
+				t.Fatal("fixture node kind changed", node.Kind(), selection.Kind)
+			}
+
+			nodes = append(nodes, node)
+		}
+
+		set, err = document.NewNodeSet(doc, nodes...)
+	default:
+		t.Fatal("unknown fixture scope", vector.Scope)
+	}
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if vector.Scope != "node-set" && direct.String() != vector.Expected {
+		t.Fatalf("direct bytes = %q, want %q", direct.String(), vector.Expected)
+	}
+
+	if got := canonSet(t, set, options); got != vector.Expected {
+		t.Fatalf("node-set bytes = %q, want %q", got, vector.Expected)
+	}
+
+	after, err := doc.XML(t.Context())
+	if err != nil || !bytes.Equal(after, original) {
+		t.Fatal("canonicalization changed the source snapshot", err)
+	}
+}
+
+func canonicalVectorSelected(t *testing.T, doc *document.Document, selection canonicalVectorSelection) document.Node {
+	t.Helper()
+
+	node := canonicalVectorNode(t, doc, selection.Path)
+	if selection.Kind != "attribute" && selection.Kind != "namespace" {
+		return node
+	}
+
+	owner, ok := node.Element()
+	if !ok {
+		t.Fatal("fixture attribute/namespace owner is not an element")
+	}
+
+	if selection.Kind == "attribute" {
+		for _, attribute := range owner.AttributeNodes() {
+			if attribute.Name().Local == selection.Local && attribute.Name().Space == selection.Space {
+				return attribute
+			}
+		}
+	} else {
+		for _, binding := range owner.NamespaceNodes() {
+			if binding.Name().Local == selection.Prefix {
+				return binding
+			}
+		}
+	}
+
+	t.Fatal("fixture attribute/namespace does not exist", selection)
+
+	return document.Node{}
+}
+
+func canonicalVectorNode(t *testing.T, doc *document.Document, path []int) document.Node {
+	t.Helper()
+
+	node := doc.Node()
+	for _, index := range path {
+		children := node.Children()
+		if index < 1 || index > len(children) {
+			t.Fatal("fixture path does not exist", path)
+		}
+
+		node = children[index-1]
+	}
+
+	return node
+}
 
 const (
 	xmlRXmlBaseABCCXml    = "<r xml:base=\"a//b/../c\"><c xml:base=\"..\"></c></r>"

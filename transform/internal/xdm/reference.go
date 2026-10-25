@@ -41,25 +41,11 @@ func PublishNode(n Node) {
 // ElementDocument copies one element into an independent document, including
 // namespace bindings inherited from ancestors outside the selected subtree.
 func ElementDocument(ctx context.Context, element *Element) (*Document, error) {
-	draft := tree.FromNodes([]*tree.Node{element.raw}, tree.DefaultLimits())
+	draft := tree.FromNodes([]*tree.Node{tree.ExtractSubtree(element.raw)}, tree.DefaultLimits())
 
 	cloned, err := tree.Clone(ctx, draft)
 	if err != nil {
 		return nil, err
-	}
-
-	root := tree.Root(cloned)
-
-	declared := make(map[string]bool, len(root.NS))
-	for _, ns := range root.NS {
-		declared[ns.Prefix] = true
-	}
-
-	for _, ns := range tree.Wrap(element.doc.native, element.raw).NamespaceNodes() {
-		prefix := ns.Name().Local
-		if ns.Value() != tree.XMLNamespace && !declared[prefix] {
-			root.NS = append(root.NS, tree.Namespace{Prefix: prefix, URI: ns.Value()})
-		}
 	}
 
 	doc, err := WrapDocument(ctx, cloned)

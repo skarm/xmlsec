@@ -5,11 +5,87 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
+
+func TestElementDocumentPreservesContextAndOwnership(t *testing.T) {
+	for _, input := range []string{
+		`<parent xmlns:p="urn:qname"><child type="p:T"><nested/></child></parent>`,
+		`<parent xmlns="urn:outer" xmlns:p="urn:qname"><child xmlns="" xml:id="own" xml:lang="ru" xml:space="preserve" xml:base="../base/" type="p:T"><nested/></child></parent>`,
+		`<parent xmlns="urn:outer" xmlns:p="urn:old"><p:child xmlns:p="urn:new" type="p:T"><nested xmlns=""/></p:child></parent>`,
+	} {
+		t.Run(input, func(t *testing.T) { checkElementDocument(t, input) })
+	}
+}
+
+func checkElementDocument(t *testing.T, input string) {
+	t.Helper()
+
+	source, err := (xdm.ParseOptions{BaseURI: "https://example.test/source.xml"}).Parse(t.Context(), []byte(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	selected := source.DocumentElement().FirstChild().(*xdm.Element)
+
+	extracted, err := xdm.ElementDocument(t.Context(), selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if extracted.URL() != source.URL() || extracted.DocumentElement().Reference().Document() == selected.Reference().Document() {
+		t.Fatal("extraction lost the document URI or shared source ownership")
+	}
+
+	if !strings.Contains(input, `xmlns=""`) {
+		for _, namespace := range extracted.DocumentElement().Namespaces() {
+			if namespace.Prefix() == "" && namespace.URI() == "" {
+				t.Fatal("standalone extraction added a synthetic default reset")
+			}
+		}
+	}
+
+	var before, after bytes.Buffer
+
+	_, raw := tree.UnwrapNode(selected.Reference())
+	if err := tree.Canonical(t.Context(), &before, source.Snapshot(), raw, nil, tree.CanonicalOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tree.Canonical(t.Context(), &after, extracted.Snapshot(), nil, nil, tree.CanonicalOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(before.Bytes(), after.Bytes()) {
+		t.Fatalf("extraction changed names, XML attributes or content: %q != %q", after.Bytes(), before.Bytes())
+	}
+
+	for _, binding := range tree.Wrap(source.Snapshot(), tree.Root(source.Snapshot()).Children[0]).NamespaceNodes() {
+		actual := xdm.LookupNSByPrefix(extracted.DocumentElement(), binding.Name().Local)
+		if actual == nil || actual.URI() != binding.Value() {
+			t.Fatal("extraction lost a QName namespace binding", binding.Name(), binding.Value())
+		}
+	}
+
+	if err := extracted.DocumentElement().SetAttribute("changed", "private"); err != nil {
+		t.Fatal(err)
+	}
+
+	if selected.HasAttribute("changed") {
+		t.Fatal("mutating the extracted document changed its source")
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if result, err := xdm.ElementDocument(ctx, selected); result != nil || !errors.Is(err, context.Canceled) {
+		t.Fatal("canceled extraction published a document", err)
+	}
+}
 
 func TestFragmentUsesProjectNodeIdentity(t *testing.T) {
 	ctx := context.Background()

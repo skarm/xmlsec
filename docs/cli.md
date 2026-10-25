@@ -67,6 +67,16 @@ checks the exact direct-reference multiset. `-require-root` / `-require-id`
 require coverage; core verification alone does not require a signed root.
 Manifest recursion needs `-manifests recursive`; preservation requires a trusted
 key for each existing signature through `-preserve INDEX=PUBLIC_KEY_FILE`.
+Typed external `ds:Manifest` roots additionally need
+`-manifests recursive-external -resources resources.json`. The resource file
+explicitly allows every URI in the reachable graph; there is no network fallback.
+The default external traversal accepts a complete Manifest with no transform or
+one C14N transform. Add `-manifest-transforms` to explicitly follow typed references
+whose allowed transforms produce standalone Manifest XML; this requires a recursive
+mode. Program transforms also need `-allowed-programs`. Reports distinguish the
+authenticated incoming reference from content validation, identify the resource URI
+and mark derived snapshots with `transformed: true`. Derived-node coverage does
+not establish original-node coverage.
 
 Objects contain one of `text`, `xml_file`, `binary_file`, `manifest` and optional
 `mime_type`. References/Manifests use the public template types' JSON fields.
@@ -75,6 +85,15 @@ PSS. A PSS template can set
 `"parameters":{"pss":{"hash":"sha384","mgf_hash":"sha384","salt_length":24}}`.
 HMAC requires `-policy hmac -secret-file secret.bin`; truncation additionally
 requires `-allow-hmac-truncation` and a permitted `hmac_output_bits` template value.
+
+`-base-uri https://example.test/signature.xml` explicitly enables relative URI
+resolution for core signing and verification and requires `-resources`. Resource
+entries then use complete resolved absolute URIs, including any fragment. Their
+paths identify the already selected subresource bytes: a `list.xml#part` entry
+must point to the standalone selected Manifest, not an unselected containing
+file. The CLI performs no network fetching or automatic external ID selection.
+The diagnostic `uri` retains signed spelling; `resource_uri` identifies the
+authorized resolver URI. Same-document references keep their scope.
 
 ## Detached resources and transforms
 
@@ -158,6 +177,12 @@ KDF options. PKCS#12 export also needs a certificate.
 `keyinfo build` / `inspect` handle untrusted key descriptions. `signature
 verify-keyinfo` requires an external key pin, coverage and separately authorized
 KeyInfo retrieval. Embedded material never expands that trust.
+`keyinfo inspect -base-uri` requires its own `-resources`; `signature
+verify-keyinfo -keyinfo-base-uri` requires `-keyinfo-resources`. Entries authorize
+complete resolved absolute URIs and point to the already identified octets.
+`-keyinfo-config`/`-config` can opt into `RetrievalProcessing`; approved retrieval
+programs then use the trusted `-allowed-programs` file. KeyInfo and signed-data
+resolver permissions remain separate.
 
 ## Trust, timestamps, XAdES and SAML
 

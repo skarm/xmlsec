@@ -17,6 +17,14 @@
 // including supplementary characters through U+EFFFF. This is not a complete
 // XML processor conformance claim.
 //
+// Nonempty namespace names must be absolute URIs. The parser normalizes XML
+// line endings and literal attribute whitespace, expands character references
+// and the five predefined entities, and preserves the resulting Unicode
+// sequence. It does not obtain DTD attribute defaults, declared attribute types
+// or replacement entities. No resource resolver is invoked while parsing.
+// A general XML processor mode would need those semantics and explicit bounded
+// external resolution; this API does not expose such a mode.
+//
 // # Node selections and output
 //
 // [NewNodeSet] selects individual nodes from one snapshot. Selecting an element

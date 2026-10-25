@@ -3,7 +3,9 @@
 The library implements bounded profiles. Full standards conformance and an
 independent security audit have not been established. The [conformance register](conformance.json)
 separates capabilities from a partial normative clause matrix, tracking implementation,
-policy and applicability independently. See [normative traceability](conformance.md)
+policy and applicability independently. Every declared profile has a pinned
+document/role/mode matrix with its assessed obligations and remaining clause
+regions; missing mandatory behavior remains applicable. See [normative traceability](conformance.md)
 for review rules and remaining gaps; [standards](standards.md) lists primary sources.
 
 ## Supported scope
@@ -14,17 +16,59 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
 - Exclusive C14N and Canonical XML 1.0/1.1, with or without comments, over full
   documents, subtrees and explicit node sets. Sparse sets may produce fragments.
 - XMLDSig enveloped/enveloping/detached references, Objects, multiple signatures
-  and bounded local Manifests. RSA/ECDSA SHA-2, RSA-PSS, Ed25519/Ed25519ph and
-  separate HMAC profiles are supported. External Manifests, unrestricted KeyInfo
-  selection and arbitrary RetrievalMethod transform chains are unsupported.
-  Retrieval of rawX509Certificate permits one optional Base64 transform.
-- XPath 1.0/2.0/3.0/3.1, XSLT 1.0 and Basic XSLT 2.0/3.0. Package/collection
-  resolvers and application functions are explicit. XMLDSig XPath 1.0, Filter2
+  and bounded Manifest graphs. Typed external Manifest roots require recursive
+  mode, `AllowExternal`, a resolver and exact URI allowlist. Their incoming digest
+  is authenticated before nested discovery. The resolver receives complete
+  allowlisted URIs, including fragments, and supplies the identified subresource
+  as octets; automatic ID selection from a fetched external XML document is not
+  provided. Explicit `ExternalReferences.BaseURI` enables relative URI resolution
+  against the signature document or external Manifest retrieval URI and inherited
+  `xml:base` on permitted containers. The allowlist must then contain resolved
+  absolute URIs. Same-document references keep their own document scope. Existing
+  XMLDSig attribute grammar and the URI character profile still apply; arbitrary
+  LEIRIs and redirect metadata remain outside this profile. `AllowTransformed`
+  separately follows explicitly typed, authenticated transform outputs as bounded
+  standalone Manifest snapshots. Their coverage concerns the derived XML;
+  `Transformed()` and report `transformed` distinguish it from original XML.
+  RSA/ECDSA SHA-2, RSA-PSS, Ed25519/Ed25519ph and
+  separate HMAC profiles are supported. `LegacyVerificationPolicy` additionally
+  permits SHA-1 reference digests and RSA-SHA1/1024-bit DSA-SHA1 verification;
+  legacy public-key signature generation is disabled. `LegacyHMACPolicy`
+  separately opts into HMAC-SHA1 with the existing secret/tag limits. Both
+  compatibility policies are disabled in FIPS mode. DSAKeyValue and DER key
+  descriptions remain untrusted until an application selects a trusted key.
+  Omitted DSA P/Q/G require an explicit 1024/160 application parameter context;
+  they are never inferred from another candidate. Retrieval of rawX509Certificate
+  permits one optional Base64 transform by default. Explicit
+  `keyinfo.Options.RetrievalProcessing` additionally permits allowlisted chains
+  of Base64, C14N, enveloped and approved XPath/Filter2/XSLT. Type is checked after
+  processing, external resources use one immutable source per URI, and shared
+  byte/node/depth limits and cycle detection apply. KeyInfo separately supports
+  exact complete fragment URIs and opt-in `ExternalResources.BaseURI`, using the
+  same URI-valued inherited `xml:base` rules. The resolver supplies the identified
+  octets; automatic external XML fragment selection is unsupported.
+  `Template.X509Data` constructs the same certificate/CRL and selector forms read
+  by the parser, with separate groups and preserved DER/DN spellings. CRLs use the
+  existing v2 parser profile. Selector-only groups are untrusted descriptions and
+  perform no lookup; grouping and selector/chain consistency remain the caller's
+  responsibility. Signing a KeyInfo reference authenticates its metadata without
+  establishing certificate or CRL trust.
+- Selected features of XPath 1.0/2.0/3.0/3.1 and XSLT 1.0/2.0/3.0. Complete
+  Basic XSLT conformance remains open; [suite results](language-baseline.md)
+  record the current failures. Package/collection resolvers and application
+  functions are explicit. XMLDSig XPath 1.0, Filter2
   and restricted XSLT 1.0 need approved programs. Schema awareness and W3C
   streamable modes are unsupported; independent-record processing is available.
+  XPath 3.0/3.1 resource limits preserve `transform.ErrLimit` and report
+  `XPDY0130` when no more specific standard code applies. Pinned
+  [suite diagnostics](language-suites.md) retain mandatory and harness failures.
   See [transforms](transforms.md) and [streaming](streaming.md).
 - PKIX with explicit roots/time, direct complete offline CRLs and restricted
-  OCSP; definite-length CMS SignedData and RFC 3161/5816 timestamps. There is no
+  OCSP; definite-length CMS SignedData and RFC 3161/5816 timestamps. Explicit
+  CMS `ParseBER`/`ParseBERReader` also accept indefinite envelope/SignedData/
+  encapsulated-content wrappers and constructed content OCTET STRINGs. Signed
+  attributes retain their original strict DER encoding. Other BER fields remain
+  restricted; timestamp APIs retain their existing input profile. There is no
   automatic network fetching, indirect/delta CRL processing or unrestricted BER.
 - Closed XAdES basic/T/LT/LTA current-time and separate with-time B-T profiles.
   A complete historical EN 319 102-1 evidence engine is unsupported.
@@ -41,10 +85,13 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
   Private DER versions/components are checked; EC scalar size, curve and optional
   public key must agree. Schema-dependent DER rules for custom attributes remain
   the application's responsibility.
-- XML Encryption AES-GCM 128/192/256 with direct keys, matching SHA-2 OAEP/MGF1
-  or AES Key Wrap and one inline EncryptedKey. Bytes, root, Element and Content
+- XML Encryption AES-GCM 128/192/256 with direct keys, independently selected
+  SHA-224/256/384/512 OAEP/MGF1 hashes or AES Key Wrap and one inline EncryptedKey.
+  Explicit `OAEPParameters.AllowLegacy` permits SHA-1 and `RSAOAEP10` with fixed
+  MGF1-SHA1; the exact application-selected parameters still have to match.
+  Default RSA-OAEP remains SHA-256/MGF1-SHA256. Bytes, root, Element and Content
   are supported. CipherReference permits one exact absolute URI with raw bytes
-  or one base64 transform. CBC, RSA PKCS#1 v1.5, mixed-hash OAEP, key agreement,
+  or one base64 transform. CBC, RSA PKCS#1 v1.5, key agreement,
   KDF/DerivedKey/ReferenceList and external EncryptedKey processing are unsupported.
 
 General key-manager persistence, HSM management, XMLDSig decryption transforms,
@@ -79,6 +126,17 @@ and assert these differences separately:
   `abc/` plus `../`. libxml2 differs in diagnostic cases; see
   [§2.4](https://www.w3.org/TR/xml-c14n11/#DocSubsets) and
   [errata](https://www.w3.org/2008/05/xml-c14n11-errata).
+- The fixed corpus also distinguishes JDK subtree inheritance from the nearest
+  omitted ancestor, selected attribute/namespace identity from DOM declaration
+  ownership, and empty node sets. libxml2 can reintroduce an omitted attribute's
+  namespace and retain a fragment during C14N 1.1 base joining. Per-case
+  diagnostic reasons cite the processing rule; such cases are excluded from
+  independent-engine agreement, while their normative bytes remain required.
+- xmlsec1's CLI validates the incoming external Manifest reference in the tested
+  fragment exchange, but does not recursively check its children. It also opens
+  the literal relative URI in the tested inherited `xml:base` case. Native/Go
+  signature exchanges use explicit native URI mappings; they do not establish
+  native recursive traversal or matching XML Base semantics.
 - xmlsec1 XML replacement rejects empty plaintext, while its `DecryptToBuffer`
   API authenticates empty GCM input and returns size zero. Empty Go byte/Content
   plaintext is supported. Empty native XML replacements are diagnostic cases,

@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	byteorder "encoding/binary"
 	"encoding/json"
@@ -21,6 +22,108 @@ import (
 	"time"
 	"unicode/utf16"
 )
+
+func TestCanonicalVectorsAgainstJDK(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "portable")
+	compileJava(t, fixture)
+
+	var corpus struct {
+		Producer struct {
+			OracleSHA256 string `json:"oracle_sha256"`
+		} `json:"producer"`
+		Cases []struct {
+			Name, Expected string
+			JDKDiagnostic  string `json:"jdk_diagnostic"`
+			JDKError       string `json:"jdk_error"`
+			canonicalRequest
+		} `json:"cases"`
+	}
+	decode(t, read(t, filepath.Join(fixture.root, "c14n/testdata/normative-vectors.json")), &corpus)
+
+	oracle := read(t, filepath.Join(fixture.root, "tests/interop/testdata/C14NOracle.java"))
+	if fmt.Sprintf("%x", sha256.Sum256(oracle)) != corpus.Producer.OracleSHA256 {
+		t.Fatal("fixture oracle source changed; review provenance and regenerate vectors")
+	}
+
+	params := append(javaExports(), "-cp", fixture.work, "C14NOracle")
+
+	session := canonicalSession{jdk: lines(t, fixture, "java", params...)}
+	matches, diagnostics := 0, 0
+
+	for _, vector := range corpus.Cases {
+		t.Run(vector.Name, func(t *testing.T) {
+			got, err := session.jdkResult(t, vector.canonicalRequest)
+
+			knownError := err != nil && vector.JDKError != "" && strings.Contains(err.Error(), vector.JDKError)
+			if vector.JDKDiagnostic != "" && (knownError || err == nil && string(got) != vector.Expected) {
+				diagnostics++
+
+				t.Logf("DIAGNOSTIC %s: JDK bytes=%q error=%v", vector.JDKDiagnostic, got, err)
+
+				return
+			}
+
+			if err != nil || string(got) != vector.Expected {
+				t.Fatalf("JDK bytes = %q, committed normative bytes = %q, error=%v", got, vector.Expected, err)
+			}
+
+			matches++
+		})
+	}
+
+	if t.Failed() {
+		return
+	}
+
+	t.Logf("fixed canonical vectors: JDK matches=%d diagnostics=%d (excluded from matches)", matches, diagnostics)
+}
+
+func TestCanonicalVectorsAgainstLibXML(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "portable")
+
+	var corpus struct {
+		Producer struct {
+			OracleSHA256 string `json:"libxml2_oracle_sha256"`
+		} `json:"producer"`
+		Cases []struct {
+			Name, Expected   string
+			LibXMLDiagnostic string `json:"libxml2_diagnostic"`
+			canonicalRequest
+		} `json:"cases"`
+	}
+	decode(t, read(t, filepath.Join(fixture.root, "c14n/testdata/normative-vectors.json")), &corpus)
+
+	oracle := read(t, filepath.Join(fixture.root, "tests/interop/testdata/c14n-oracle.c"))
+	if fmt.Sprintf("%x", sha256.Sum256(oracle)) != corpus.Producer.OracleSHA256 {
+		t.Fatal("fixture oracle source changed; review provenance and regenerate vectors")
+	}
+
+	session := canonicalSession{fixture: fixture, nativeProgram: cOracle(t, fixture)}
+	matches, diagnostics := 0, 0
+
+	for _, vector := range corpus.Cases {
+		t.Run(vector.Name, func(t *testing.T) {
+			got := session.native(t, vector.canonicalRequest)
+			if string(got) != vector.Expected && vector.LibXMLDiagnostic != "" {
+				diagnostics++
+
+				t.Logf("DIAGNOSTIC %s: libxml2 bytes=%q", vector.LibXMLDiagnostic, got)
+
+				return
+			}
+
+			if string(got) != vector.Expected {
+				t.Fatalf("libxml2 bytes = %q, committed normative bytes = %q", got, vector.Expected)
+			}
+
+			matches++
+		})
+	}
+
+	t.Logf("fixed canonical vectors: libxml2 matches=%d diagnostics=%d (excluded from matches)", matches, diagnostics)
+}
 
 func TestCanonicalization(t *testing.T) {
 	fixture := newInteropFixture(t)
@@ -204,6 +307,15 @@ func (session *canonicalSession) request(t *testing.T, r canonicalRequest) canon
 func (session *canonicalSession) native(t *testing.T, r canonicalRequest) []byte {
 	t.Helper()
 
+	if strings.HasSuffix(r.Algorithm, "WithComments") {
+		r.Algorithm = strings.TrimSuffix(strings.TrimSuffix(r.Algorithm, "WithComments"), "#")
+		if r.Algorithm == strings.TrimSuffix(exc, "#") {
+			r.Algorithm = exc
+		}
+
+		r.Comments = true
+	}
+
 	data := r.Input
 	if data == nil {
 		data = []byte(r.XML)
@@ -235,6 +347,17 @@ func boolInt(b bool) int {
 func (session *canonicalSession) jdkBytes(t *testing.T, r canonicalRequest) []byte {
 	t.Helper()
 
+	result, err := session.jdkResult(t, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return result
+}
+
+func (session *canonicalSession) jdkResult(t *testing.T, r canonicalRequest) ([]byte, error) {
+	t.Helper()
+
 	data := r.Input
 	if data == nil {
 		data = []byte(r.XML)
@@ -249,7 +372,15 @@ func (session *canonicalSession) jdkBytes(t *testing.T, r canonicalRequest) []by
 		}
 	}
 
-	fields := []string{base64.StdEncoding.EncodeToString(data), alg, base64.StdEncoding.EncodeToString([]byte(selectionXPath(r, false))), base64.StdEncoding.EncodeToString([]byte(strings.Join(r.Prefixes, " ")))}
+	selection := selectionXPath(r, false)
+	if r.Subtree != nil {
+		// DOM namespace-axis nodes may belong to omitted ancestors. Use the
+		// oracle's subtree API for a subtree request, rather than turning it
+		// into an arbitrary DOM node-set with different visibility semantics.
+		selection = "SUBTREE:" + nodeXPath(selector{Path: r.Subtree})
+	}
+
+	fields := []string{base64.StdEncoding.EncodeToString(data), alg, base64.StdEncoding.EncodeToString([]byte(selection)), base64.StdEncoding.EncodeToString([]byte(strings.Join(r.Prefixes, " ")))}
 
 	line := strings.SplitN(string(session.jdk.call(t, []byte(strings.Join(fields, "\t")))), "\t", 2)
 	if len(line) != 2 {
@@ -257,11 +388,15 @@ func (session *canonicalSession) jdkBytes(t *testing.T, r canonicalRequest) []by
 	}
 
 	result, err := base64.StdEncoding.DecodeString(line[1])
-	if err != nil || line[0] != "OK" {
-		t.Fatalf("JDK: %s: %v", result, err)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	return result
+	if line[0] != "OK" {
+		return nil, fmt.Errorf("JDK: %s", result)
+	}
+
+	return result, nil
 }
 
 func (session *canonicalSession) compareDocument(t *testing.T, xml string) {

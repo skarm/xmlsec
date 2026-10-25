@@ -1,8 +1,10 @@
 # XPath and XSLT
 
-`transform` provides XPath 1.0/2.0/3.0/3.1, XSLT 1.0 and Basic XSLT 2.0/3.0
-through one pure-Go engine. Compiled programs and published documents support
-concurrent reuse with independent invocation contexts and budgets.
+`transform` implements selected features of XPath 1.0/2.0/3.0/3.1 and XSLT
+1.0/2.0/3.0 through one pure-Go engine. Complete Basic XSLT conformance remains
+open; [suite results](language-baseline.md) record the current failures. Compiled
+programs and published documents support concurrent reuse with independent
+invocation contexts and budgets.
 
 ```go
 engine, err := transform.NewEngine(transform.Config{})
@@ -35,6 +37,14 @@ XPath 1.0 accepts only node context items and has no default element namespace.
 `XPathContext` supplies variables, focus and `DynamicContext`; `ContextItem`
 overrides the document argument. Context-free expressions need neither.
 
+External variable bindings are supplied at evaluation. XPath 2.0+ checks that
+every free variable has a binding before executing the expression, including
+references in unselected branches or empty iteration domains; a missing binding
+raises `XPST0008`. An explicitly bound empty sequence counts as a binding.
+Variable identity uses expanded names, and unprefixed variables have no namespace
+regardless of the default element namespace. Local bindings shadow outer bindings
+with the same expanded name.
+
 `CompileXSLT` checks the declared stylesheet version against any explicit version.
 XSLT 1.0/2.0/3.0 use XPath 1.0/2.0/3.1 respectively. Static parameters bind during
 compilation; `XSLTContext.Parameters` supplies globals during execution.
@@ -49,6 +59,17 @@ Both invocation contexts expose `Context DynamicContext` for stable current time
 implicit timezone, default language and trace output. The timezone is a fixed
 whole-minute offset within ±14 hours. Trace output is discarded unless configured.
 Namespace bindings, base URIs and default collations are static settings.
+
+XPath 3.1 `fn:transform` uses the same XSLT implementation as `CompileXSLT`.
+It accepts stylesheet text, nodes and explicitly resolved locations or packages.
+Global/static parameters, named entry points, raw/document/serialized results and
+post-processing use the shared implementation. Secondary results are returned in
+the result map. The call shares its invocation's deadline, operation, storage and
+resource-load budgets. It has no implicit network or filesystem access.
+Dynamic stylesheet sources are bounded by `MaxProgramBytes`; for node sources,
+the bound is measured by streaming XML serialization without retaining a buffer.
+The complete option, processor-version and language conformance inventory remains
+open; see [suite diagnostics](language-suites.md).
 
 ## XSLT results and XML identity
 
@@ -135,9 +156,11 @@ awareness, W3C streamable execution and shadow version attributes are unsupporte
 Source schema-location hints do not trigger loading. Complete W3C conformance
 has not been established; supported scope is in [compatibility](compatibility.md).
 
-`Error.Operation` identifies the operation; `Error.Code` preserves standard error
-codes where present. Use `errors.Is` for `ErrInput`, `ErrUnsupported`, `ErrLimit`
-and context cancellation, and `errors.As` for structured errors.
+`Error.Operation` identifies the operation; `Error.Code` contains the local name
+of an error code where present. Use `Error.CodeName()` for the expanded QName,
+including the namespace of application errors. Use `errors.Is` for `ErrInput`,
+`ErrUnsupported`, `ErrLimit` and context cancellation, and `errors.As` for
+structured errors.
 
 Pattern functions share an immutable bounded engine supporting Unicode classes,
 subtraction, captures and back-references. Work/storage limits and cancellation

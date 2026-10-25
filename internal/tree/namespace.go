@@ -8,6 +8,18 @@ import "slices"
 // XPath/XSLT. Descendants and attributes are borrowed read-only until Reparse;
 // callers may change only the returned header and its parent.
 func ImportSubtree(node *Node) *Node {
+	return copySubtreeContext(node, true)
+}
+
+// ExtractSubtree copies a header for an independent document. It preserves
+// explicit declarations and inherited bindings, but does not add an empty
+// default declaration merely to guard against a future destination parent.
+// Ownership and mutation rules are the same as for ImportSubtree.
+func ExtractSubtree(node *Node) *Node {
+	return copySubtreeContext(node, false)
+}
+
+func copySubtreeContext(node *Node, insertion bool) *Node {
 	if node == nil {
 		return nil
 	}
@@ -16,8 +28,13 @@ func ImportSubtree(node *Node) *Node {
 	out.Parent = nil
 
 	scope := namespaceScope(node)
-	if _, exists := scope[""]; !exists {
+	if _, exists := scope[""]; !exists && insertion {
 		scope[""] = ""
+	}
+	// The XPath namespace axis has no empty default node. Preserve an explicit
+	// local reset, while avoiding a synthetic reset on a standalone document.
+	if !insertion && scope[""] == "" && !slices.ContainsFunc(node.NS, func(ns Namespace) bool { return ns.Prefix == "" }) {
+		delete(scope, "")
 	}
 
 	prefixes := make([]string, 0, len(scope))

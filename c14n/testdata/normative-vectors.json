@@ -1,0 +1,3852 @@
+{
+  "format_version": 1,
+  "producer": {
+    "jdk": "openjdk version \"21.0.13-ea\" 2026-10-20\nOpenJDK Runtime Environment (build 21.0.13-ea+8-1-Debian)\nOpenJDK 64-Bit Server VM (build 21.0.13-ea+8-1-Debian, mixed mode, sharing)",
+    "libxml2": "21504",
+    "oracle": "tests/interop/testdata/C14NOracle.java",
+    "oracle_sha256": "41939fc4e57d351fb8f2d8cff8f9cd98db9935e020863989ca90c07cf61784e0",
+    "checked_on": "2026-10-22",
+    "libxml2_oracle": "tests/interop/testdata/c14n-oracle.c",
+    "libxml2_oracle_sha256": "c67454d8702fbc574b60cda20d9863dc847098b0592f759240b03c6783969487",
+    "verification": "Docker xmlsec-interop:local, network disabled; existing JDK/libxml2 adapters unchanged. Normative divergences have per-case reasons; they are diagnostics, not oracle agreement."
+  },
+  "input_model": "DTD-free parsed node model; sparse node-set results may be XML fragments.",
+  "cases": [
+    {
+      "name": "namespace-rebinding/exclusive",
+      "xml": "<?p before?><!--before--><r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><p:a q:z=\"2\" a=\"1\"/><c xmlns=\"\"><p:b xmlns:p=\"urn:other\"/></c></r><!--after--><?p after?>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<?p before?>\n<r xmlns=\"urn:r\"><p:a xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" a=\"1\" q:z=\"2\"></p:a><c xmlns=\"\"><p:b xmlns:p=\"urn:other\"></p:b></c></r>\n<?p after?>"
+    },
+    {
+      "name": "namespace-rebinding/exclusive/comments",
+      "xml": "<?p before?><!--before--><r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><p:a q:z=\"2\" a=\"1\"/><c xmlns=\"\"><p:b xmlns:p=\"urn:other\"/></c></r><!--after--><?p after?>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<?p before?>\n<!--before-->\n<r xmlns=\"urn:r\"><p:a xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" a=\"1\" q:z=\"2\"></p:a><c xmlns=\"\"><p:b xmlns:p=\"urn:other\"></p:b></c></r>\n<!--after-->\n<?p after?>"
+    },
+    {
+      "name": "namespace-rebinding/1.0",
+      "xml": "<?p before?><!--before--><r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><p:a q:z=\"2\" a=\"1\"/><c xmlns=\"\"><p:b xmlns:p=\"urn:other\"/></c></r><!--after--><?p after?>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<?p before?>\n<r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><p:a a=\"1\" q:z=\"2\"></p:a><c xmlns=\"\"><p:b xmlns:p=\"urn:other\"></p:b></c></r>\n<?p after?>"
+    },
+    {
+      "name": "namespace-rebinding/1.0/comments",
+      "xml": "<?p before?><!--before--><r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><p:a q:z=\"2\" a=\"1\"/><c xmlns=\"\"><p:b xmlns:p=\"urn:other\"/></c></r><!--after--><?p after?>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<?p before?>\n<!--before-->\n<r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><p:a a=\"1\" q:z=\"2\"></p:a><c xmlns=\"\"><p:b xmlns:p=\"urn:other\"></p:b></c></r>\n<!--after-->\n<?p after?>"
+    },
+    {
+      "name": "namespace-rebinding/1.1",
+      "xml": "<?p before?><!--before--><r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><p:a q:z=\"2\" a=\"1\"/><c xmlns=\"\"><p:b xmlns:p=\"urn:other\"/></c></r><!--after--><?p after?>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<?p before?>\n<r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><p:a a=\"1\" q:z=\"2\"></p:a><c xmlns=\"\"><p:b xmlns:p=\"urn:other\"></p:b></c></r>\n<?p after?>"
+    },
+    {
+      "name": "namespace-rebinding/1.1/comments",
+      "xml": "<?p before?><!--before--><r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><p:a q:z=\"2\" a=\"1\"/><c xmlns=\"\"><p:b xmlns:p=\"urn:other\"/></c></r><!--after--><?p after?>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<?p before?>\n<!--before-->\n<r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><p:a a=\"1\" q:z=\"2\"></p:a><c xmlns=\"\"><p:b xmlns:p=\"urn:other\"></p:b></c></r>\n<!--after-->\n<?p after?>"
+    },
+    {
+      "name": "normalized-characters/exclusive",
+      "xml": "<r z=\"é\" a=\"&#x9;&#xA;&#xD;&amp;&lt;&quot;\">x\r\ny\rz<![CDATA[<😀>]]>&#xD;</r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<r a=\"&#x9;&#xA;&#xD;&amp;&lt;&quot;\" z=\"é\">x\ny\nz&lt;😀&gt;&#xD;</r>"
+    },
+    {
+      "name": "normalized-characters/exclusive/comments",
+      "xml": "<r z=\"é\" a=\"&#x9;&#xA;&#xD;&amp;&lt;&quot;\">x\r\ny\rz<![CDATA[<😀>]]>&#xD;</r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<r a=\"&#x9;&#xA;&#xD;&amp;&lt;&quot;\" z=\"é\">x\ny\nz&lt;😀&gt;&#xD;</r>"
+    },
+    {
+      "name": "normalized-characters/1.0",
+      "xml": "<r z=\"é\" a=\"&#x9;&#xA;&#xD;&amp;&lt;&quot;\">x\r\ny\rz<![CDATA[<😀>]]>&#xD;</r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<r a=\"&#x9;&#xA;&#xD;&amp;&lt;&quot;\" z=\"é\">x\ny\nz&lt;😀&gt;&#xD;</r>"
+    },
+    {
+      "name": "normalized-characters/1.0/comments",
+      "xml": "<r z=\"é\" a=\"&#x9;&#xA;&#xD;&amp;&lt;&quot;\">x\r\ny\rz<![CDATA[<😀>]]>&#xD;</r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<r a=\"&#x9;&#xA;&#xD;&amp;&lt;&quot;\" z=\"é\">x\ny\nz&lt;😀&gt;&#xD;</r>"
+    },
+    {
+      "name": "normalized-characters/1.1",
+      "xml": "<r z=\"é\" a=\"&#x9;&#xA;&#xD;&amp;&lt;&quot;\">x\r\ny\rz<![CDATA[<😀>]]>&#xD;</r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<r a=\"&#x9;&#xA;&#xD;&amp;&lt;&quot;\" z=\"é\">x\ny\nz&lt;😀&gt;&#xD;</r>"
+    },
+    {
+      "name": "normalized-characters/1.1/comments",
+      "xml": "<r z=\"é\" a=\"&#x9;&#xA;&#xD;&amp;&lt;&quot;\">x\r\ny\rz<![CDATA[<😀>]]>&#xD;</r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<r a=\"&#x9;&#xA;&#xD;&amp;&lt;&quot;\" z=\"é\">x\ny\nz&lt;😀&gt;&#xD;</r>"
+    },
+    {
+      "name": "xml-attributes/exclusive",
+      "xml": "<r xml:id=\"root\" xml:lang=\"en\" xml:space=\"preserve\" xml:base=\"https://example.test/a/\"><c xml:lang=\"ru\" xml:base=\"b/\"/></r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<r xml:base=\"https://example.test/a/\" xml:id=\"root\" xml:lang=\"en\" xml:space=\"preserve\"><c xml:base=\"b/\" xml:lang=\"ru\"></c></r>"
+    },
+    {
+      "name": "xml-attributes/exclusive/comments",
+      "xml": "<r xml:id=\"root\" xml:lang=\"en\" xml:space=\"preserve\" xml:base=\"https://example.test/a/\"><c xml:lang=\"ru\" xml:base=\"b/\"/></r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<r xml:base=\"https://example.test/a/\" xml:id=\"root\" xml:lang=\"en\" xml:space=\"preserve\"><c xml:base=\"b/\" xml:lang=\"ru\"></c></r>"
+    },
+    {
+      "name": "xml-attributes/1.0",
+      "xml": "<r xml:id=\"root\" xml:lang=\"en\" xml:space=\"preserve\" xml:base=\"https://example.test/a/\"><c xml:lang=\"ru\" xml:base=\"b/\"/></r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<r xml:base=\"https://example.test/a/\" xml:id=\"root\" xml:lang=\"en\" xml:space=\"preserve\"><c xml:base=\"b/\" xml:lang=\"ru\"></c></r>"
+    },
+    {
+      "name": "xml-attributes/1.0/comments",
+      "xml": "<r xml:id=\"root\" xml:lang=\"en\" xml:space=\"preserve\" xml:base=\"https://example.test/a/\"><c xml:lang=\"ru\" xml:base=\"b/\"/></r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<r xml:base=\"https://example.test/a/\" xml:id=\"root\" xml:lang=\"en\" xml:space=\"preserve\"><c xml:base=\"b/\" xml:lang=\"ru\"></c></r>"
+    },
+    {
+      "name": "xml-attributes/1.1",
+      "xml": "<r xml:id=\"root\" xml:lang=\"en\" xml:space=\"preserve\" xml:base=\"https://example.test/a/\"><c xml:lang=\"ru\" xml:base=\"b/\"/></r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<r xml:base=\"https://example.test/a/\" xml:id=\"root\" xml:lang=\"en\" xml:space=\"preserve\"><c xml:base=\"b/\" xml:lang=\"ru\"></c></r>"
+    },
+    {
+      "name": "xml-attributes/1.1/comments",
+      "xml": "<r xml:id=\"root\" xml:lang=\"en\" xml:space=\"preserve\" xml:base=\"https://example.test/a/\"><c xml:lang=\"ru\" xml:base=\"b/\"/></r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "expected": "<r xml:base=\"https://example.test/a/\" xml:id=\"root\" xml:lang=\"en\" xml:space=\"preserve\"><c xml:base=\"b/\" xml:lang=\"ru\"></c></r>"
+    },
+    {
+      "name": "subtree-ancestor-context/exclusive",
+      "xml": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xml:lang=\"en\" xml:space=\"preserve\" xml:base=\"https://example.test/a/\"><c xml:base=\"b/\"><p:x/></c></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "xpath": "SUBTREE:/*[1]/*[1]",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "expected": "<c xmlns=\"urn:r\" xml:base=\"b/\"><p:x xmlns:p=\"urn:p\"></p:x></c>"
+    },
+    {
+      "name": "subtree-ancestor-context/exclusive/comments",
+      "xml": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xml:lang=\"en\" xml:space=\"preserve\" xml:base=\"https://example.test/a/\"><c xml:base=\"b/\"><p:x/></c></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "xpath": "SUBTREE:/*[1]/*[1]",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "expected": "<c xmlns=\"urn:r\" xml:base=\"b/\"><p:x xmlns:p=\"urn:p\"></p:x></c>"
+    },
+    {
+      "name": "subtree-ancestor-context/1.0",
+      "xml": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xml:lang=\"en\" xml:space=\"preserve\" xml:base=\"https://example.test/a/\"><c xml:base=\"b/\"><p:x/></c></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "xpath": "SUBTREE:/*[1]/*[1]",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "expected": "<c xmlns=\"urn:r\" xmlns:p=\"urn:p\" xml:base=\"b/\" xml:lang=\"en\" xml:space=\"preserve\"><p:x></p:x></c>"
+    },
+    {
+      "name": "subtree-ancestor-context/1.0/comments",
+      "xml": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xml:lang=\"en\" xml:space=\"preserve\" xml:base=\"https://example.test/a/\"><c xml:base=\"b/\"><p:x/></c></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "xpath": "SUBTREE:/*[1]/*[1]",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "expected": "<c xmlns=\"urn:r\" xmlns:p=\"urn:p\" xml:base=\"b/\" xml:lang=\"en\" xml:space=\"preserve\"><p:x></p:x></c>"
+    },
+    {
+      "name": "subtree-ancestor-context/1.1",
+      "xml": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xml:lang=\"en\" xml:space=\"preserve\" xml:base=\"https://example.test/a/\"><c xml:base=\"b/\"><p:x/></c></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "xpath": "SUBTREE:/*[1]/*[1]",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "expected": "<c xmlns=\"urn:r\" xmlns:p=\"urn:p\" xml:base=\"https://example.test/a/b/\" xml:lang=\"en\" xml:space=\"preserve\"><p:x></p:x></c>"
+    },
+    {
+      "name": "subtree-ancestor-context/1.1/comments",
+      "xml": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\" xml:lang=\"en\" xml:space=\"preserve\" xml:base=\"https://example.test/a/\"><c xml:base=\"b/\"><p:x/></c></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "xpath": "SUBTREE:/*[1]/*[1]",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "expected": "<c xmlns=\"urn:r\" xmlns:p=\"urn:p\" xml:base=\"https://example.test/a/b/\" xml:lang=\"en\" xml:space=\"preserve\"><p:x></p:x></c>"
+    },
+    {
+      "name": "subtree-xml-id/exclusive",
+      "xml": "<r xmlns:p=\"urn:unused\" xml:id=\"ancestor\"><c><d/></c></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "xpath": "SUBTREE:/*[1]/*[1]",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "expected": "<c><d></d></c>"
+    },
+    {
+      "name": "subtree-xml-id/exclusive/comments",
+      "xml": "<r xmlns:p=\"urn:unused\" xml:id=\"ancestor\"><c><d/></c></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "xpath": "SUBTREE:/*[1]/*[1]",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "expected": "<c><d></d></c>"
+    },
+    {
+      "name": "subtree-xml-id/1.0",
+      "xml": "<r xmlns:p=\"urn:unused\" xml:id=\"ancestor\"><c><d/></c></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "xpath": "SUBTREE:/*[1]/*[1]",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "expected": "<c xmlns:p=\"urn:unused\" xml:id=\"ancestor\"><d></d></c>"
+    },
+    {
+      "name": "subtree-xml-id/1.0/comments",
+      "xml": "<r xmlns:p=\"urn:unused\" xml:id=\"ancestor\"><c><d/></c></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "xpath": "SUBTREE:/*[1]/*[1]",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "expected": "<c xmlns:p=\"urn:unused\" xml:id=\"ancestor\"><d></d></c>"
+    },
+    {
+      "name": "subtree-xml-id/1.1",
+      "xml": "<r xmlns:p=\"urn:unused\" xml:id=\"ancestor\"><c><d/></c></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "xpath": "SUBTREE:/*[1]/*[1]",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "expected": "<c xmlns:p=\"urn:unused\"><d></d></c>"
+    },
+    {
+      "name": "subtree-xml-id/1.1/comments",
+      "xml": "<r xmlns:p=\"urn:unused\" xml:id=\"ancestor\"><c><d/></c></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "xpath": "SUBTREE:/*[1]/*[1]",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "expected": "<c xmlns:p=\"urn:unused\"><d></d></c>"
+    },
+    {
+      "name": "sparse-text/exclusive",
+      "xml": "<r><a>A&amp;B</a><b>ignored</b></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "xpath": "/*[1]/*[1]/text()",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "expected": "A&amp;B"
+    },
+    {
+      "name": "sparse-text/exclusive/comments",
+      "xml": "<r><a>A&amp;B</a><b>ignored</b></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "xpath": "/*[1]/*[1]/text()",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "expected": "A&amp;B"
+    },
+    {
+      "name": "sparse-text/1.0",
+      "xml": "<r><a>A&amp;B</a><b>ignored</b></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "xpath": "/*[1]/*[1]/text()",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "expected": "A&amp;B"
+    },
+    {
+      "name": "sparse-text/1.0/comments",
+      "xml": "<r><a>A&amp;B</a><b>ignored</b></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "xpath": "/*[1]/*[1]/text()",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "expected": "A&amp;B"
+    },
+    {
+      "name": "sparse-text/1.1",
+      "xml": "<r><a>A&amp;B</a><b>ignored</b></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "xpath": "/*[1]/*[1]/text()",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "expected": "A&amp;B"
+    },
+    {
+      "name": "sparse-text/1.1/comments",
+      "xml": "<r><a>A&amp;B</a><b>ignored</b></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "xpath": "/*[1]/*[1]/text()",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "expected": "A&amp;B"
+    },
+    {
+      "name": "sparse-forest/exclusive",
+      "xml": "<r><a>A</a><b>B</b></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "xpath": "/*[1]/*/descendant-or-self::node()",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "text"
+        },
+        {
+          "path": [
+            1,
+            2
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "expected": "<a>A</a><b>B</b>"
+    },
+    {
+      "name": "sparse-forest/exclusive/comments",
+      "xml": "<r><a>A</a><b>B</b></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "xpath": "/*[1]/*/descendant-or-self::node()",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "text"
+        },
+        {
+          "path": [
+            1,
+            2
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "expected": "<a>A</a><b>B</b>"
+    },
+    {
+      "name": "sparse-forest/1.0",
+      "xml": "<r><a>A</a><b>B</b></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "xpath": "/*[1]/*/descendant-or-self::node()",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "text"
+        },
+        {
+          "path": [
+            1,
+            2
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "expected": "<a>A</a><b>B</b>"
+    },
+    {
+      "name": "sparse-forest/1.0/comments",
+      "xml": "<r><a>A</a><b>B</b></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "xpath": "/*[1]/*/descendant-or-self::node()",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "text"
+        },
+        {
+          "path": [
+            1,
+            2
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "expected": "<a>A</a><b>B</b>"
+    },
+    {
+      "name": "sparse-forest/1.1",
+      "xml": "<r><a>A</a><b>B</b></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "xpath": "/*[1]/*/descendant-or-self::node()",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "text"
+        },
+        {
+          "path": [
+            1,
+            2
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "expected": "<a>A</a><b>B</b>"
+    },
+    {
+      "name": "sparse-forest/1.1/comments",
+      "xml": "<r><a>A</a><b>B</b></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "xpath": "/*[1]/*/descendant-or-self::node()",
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "text"
+        },
+        {
+          "path": [
+            1,
+            2
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "expected": "<a>A</a><b>B</b>"
+    },
+    {
+      "name": "prefix-list/#default",
+      "xml": "<p:r xmlns=\"urn:default\" xmlns:p=\"urn:p\"><p:c/></p:r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [
+        "#default"
+      ],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/2002/07/xml-exc-c14n-errata#E08"
+      ],
+      "expected": "<p:r xmlns=\"urn:default\" xmlns:p=\"urn:p\"><p:c></p:c></p:r>"
+    },
+    {
+      "name": "prefix-list/#default/comments",
+      "xml": "<p:r xmlns=\"urn:default\" xmlns:p=\"urn:p\"><p:c/></p:r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [
+        "#default"
+      ],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/2002/07/xml-exc-c14n-errata#E08"
+      ],
+      "expected": "<p:r xmlns=\"urn:default\" xmlns:p=\"urn:p\"><p:c></p:c></p:r>"
+    },
+    {
+      "name": "prefix-list/p",
+      "xml": "<p:r xmlns=\"urn:default\" xmlns:p=\"urn:p\"><p:c/></p:r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [
+        "p"
+      ],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/2002/07/xml-exc-c14n-errata#E08"
+      ],
+      "expected": "<p:r xmlns:p=\"urn:p\"><p:c></p:c></p:r>"
+    },
+    {
+      "name": "prefix-list/p/comments",
+      "xml": "<p:r xmlns=\"urn:default\" xmlns:p=\"urn:p\"><p:c/></p:r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [
+        "p"
+      ],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/2002/07/xml-exc-c14n-errata#E08"
+      ],
+      "expected": "<p:r xmlns:p=\"urn:p\"><p:c></p:c></p:r>"
+    },
+    {
+      "name": "prefix-list/missing",
+      "xml": "<p:r xmlns=\"urn:default\" xmlns:p=\"urn:p\"><p:c/></p:r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [
+        "missing"
+      ],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/2002/07/xml-exc-c14n-errata#E08"
+      ],
+      "expected": "<p:r xmlns:p=\"urn:p\"><p:c></p:c></p:r>"
+    },
+    {
+      "name": "prefix-list/missing/comments",
+      "xml": "<p:r xmlns=\"urn:default\" xmlns:p=\"urn:p\"><p:c/></p:r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [
+        "missing"
+      ],
+      "xpath": "-",
+      "norms": [
+        "https://www.w3.org/2002/07/xml-exc-c14n-errata#E08"
+      ],
+      "expected": "<p:r xmlns:p=\"urn:p\"><p:c></p:c></p:r>"
+    },
+    {
+      "name": "sibling-scope-restore/exclusive",
+      "xml": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\"><a xmlns=\"\" xmlns:p=\"urn:a\"><p:x/></a><p:y/><b xmlns:p=\"urn:b\"><p:z/></b><p:w/></r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "xpath": "-",
+      "expected": "<r xmlns=\"urn:r\"><a xmlns=\"\"><p:x xmlns:p=\"urn:a\"></p:x></a><p:y xmlns:p=\"urn:p\"></p:y><b><p:z xmlns:p=\"urn:b\"></p:z></b><p:w xmlns:p=\"urn:p\"></p:w></r>"
+    },
+    {
+      "name": "sibling-scope-restore/exclusive/comments",
+      "xml": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\"><a xmlns=\"\" xmlns:p=\"urn:a\"><p:x/></a><p:y/><b xmlns:p=\"urn:b\"><p:z/></b><p:w/></r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "xpath": "-",
+      "expected": "<r xmlns=\"urn:r\"><a xmlns=\"\"><p:x xmlns:p=\"urn:a\"></p:x></a><p:y xmlns:p=\"urn:p\"></p:y><b><p:z xmlns:p=\"urn:b\"></p:z></b><p:w xmlns:p=\"urn:p\"></p:w></r>"
+    },
+    {
+      "name": "sibling-scope-restore/1.0",
+      "xml": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\"><a xmlns=\"\" xmlns:p=\"urn:a\"><p:x/></a><p:y/><b xmlns:p=\"urn:b\"><p:z/></b><p:w/></r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "xpath": "-",
+      "expected": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\"><a xmlns=\"\" xmlns:p=\"urn:a\"><p:x></p:x></a><p:y></p:y><b xmlns:p=\"urn:b\"><p:z></p:z></b><p:w></p:w></r>"
+    },
+    {
+      "name": "sibling-scope-restore/1.0/comments",
+      "xml": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\"><a xmlns=\"\" xmlns:p=\"urn:a\"><p:x/></a><p:y/><b xmlns:p=\"urn:b\"><p:z/></b><p:w/></r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "xpath": "-",
+      "expected": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\"><a xmlns=\"\" xmlns:p=\"urn:a\"><p:x></p:x></a><p:y></p:y><b xmlns:p=\"urn:b\"><p:z></p:z></b><p:w></p:w></r>"
+    },
+    {
+      "name": "sibling-scope-restore/1.1",
+      "xml": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\"><a xmlns=\"\" xmlns:p=\"urn:a\"><p:x/></a><p:y/><b xmlns:p=\"urn:b\"><p:z/></b><p:w/></r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "xpath": "-",
+      "expected": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\"><a xmlns=\"\" xmlns:p=\"urn:a\"><p:x></p:x></a><p:y></p:y><b xmlns:p=\"urn:b\"><p:z></p:z></b><p:w></p:w></r>"
+    },
+    {
+      "name": "sibling-scope-restore/1.1/comments",
+      "xml": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\"><a xmlns=\"\" xmlns:p=\"urn:a\"><p:x/></a><p:y/><b xmlns:p=\"urn:b\"><p:z/></b><p:w/></r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "xpath": "-",
+      "expected": "<r xmlns=\"urn:r\" xmlns:p=\"urn:p\"><a xmlns=\"\" xmlns:p=\"urn:a\"><p:x></p:x></a><p:y></p:y><b xmlns:p=\"urn:b\"><p:z></p:z></b><p:w></p:w></r>"
+    },
+    {
+      "name": "unicode-lexical-order/exclusive",
+      "xml": "<r xmlns:é=\"urn:e\" xmlns:a=\"urn:a\" é:z=\"e\" a:é=\"a\" z=\"0\" é:a=\"a\" A=\"1\" é=\"2\" a=\"3\">e&#x301;é😀</r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "xpath": "-",
+      "expected": "<r xmlns:a=\"urn:a\" xmlns:é=\"urn:e\" A=\"1\" a=\"3\" z=\"0\" é=\"2\" a:é=\"a\" é:a=\"a\" é:z=\"e\">éé😀</r>"
+    },
+    {
+      "name": "unicode-lexical-order/exclusive/comments",
+      "xml": "<r xmlns:é=\"urn:e\" xmlns:a=\"urn:a\" é:z=\"e\" a:é=\"a\" z=\"0\" é:a=\"a\" A=\"1\" é=\"2\" a=\"3\">e&#x301;é😀</r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "xpath": "-",
+      "expected": "<r xmlns:a=\"urn:a\" xmlns:é=\"urn:e\" A=\"1\" a=\"3\" z=\"0\" é=\"2\" a:é=\"a\" é:a=\"a\" é:z=\"e\">éé😀</r>"
+    },
+    {
+      "name": "unicode-lexical-order/1.0",
+      "xml": "<r xmlns:é=\"urn:e\" xmlns:a=\"urn:a\" é:z=\"e\" a:é=\"a\" z=\"0\" é:a=\"a\" A=\"1\" é=\"2\" a=\"3\">e&#x301;é😀</r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "xpath": "-",
+      "expected": "<r xmlns:a=\"urn:a\" xmlns:é=\"urn:e\" A=\"1\" a=\"3\" z=\"0\" é=\"2\" a:é=\"a\" é:a=\"a\" é:z=\"e\">éé😀</r>"
+    },
+    {
+      "name": "unicode-lexical-order/1.0/comments",
+      "xml": "<r xmlns:é=\"urn:e\" xmlns:a=\"urn:a\" é:z=\"e\" a:é=\"a\" z=\"0\" é:a=\"a\" A=\"1\" é=\"2\" a=\"3\">e&#x301;é😀</r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "xpath": "-",
+      "expected": "<r xmlns:a=\"urn:a\" xmlns:é=\"urn:e\" A=\"1\" a=\"3\" z=\"0\" é=\"2\" a:é=\"a\" é:a=\"a\" é:z=\"e\">éé😀</r>"
+    },
+    {
+      "name": "unicode-lexical-order/1.1",
+      "xml": "<r xmlns:é=\"urn:e\" xmlns:a=\"urn:a\" é:z=\"e\" a:é=\"a\" z=\"0\" é:a=\"a\" A=\"1\" é=\"2\" a=\"3\">e&#x301;é😀</r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "xpath": "-",
+      "expected": "<r xmlns:a=\"urn:a\" xmlns:é=\"urn:e\" A=\"1\" a=\"3\" z=\"0\" é=\"2\" a:é=\"a\" é:a=\"a\" é:z=\"e\">éé😀</r>"
+    },
+    {
+      "name": "unicode-lexical-order/1.1/comments",
+      "xml": "<r xmlns:é=\"urn:e\" xmlns:a=\"urn:a\" é:z=\"e\" a:é=\"a\" z=\"0\" é:a=\"a\" A=\"1\" é=\"2\" a=\"3\">e&#x301;é😀</r>",
+      "scope": "document",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "xpath": "-",
+      "expected": "<r xmlns:a=\"urn:a\" xmlns:é=\"urn:e\" A=\"1\" a=\"3\" z=\"0\" é=\"2\" a:é=\"a\" é:a=\"a\" é:z=\"e\">éé😀</r>"
+    },
+    {
+      "name": "subtree-nearest-xml-context/exclusive",
+      "xml": "<r xmlns:p=\"urn:p\" xml:lang=\"en\" xml:space=\"preserve\" xml:id=\"outer\"><a xml:lang=\"\" xml:space=\"default\"><p:c xml:id=\"own\"/></a></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]/node()[1]",
+      "expected": "<p:c xmlns:p=\"urn:p\" xml:id=\"own\"></p:c>"
+    },
+    {
+      "name": "subtree-nearest-xml-context/exclusive/comments",
+      "xml": "<r xmlns:p=\"urn:p\" xml:lang=\"en\" xml:space=\"preserve\" xml:id=\"outer\"><a xml:lang=\"\" xml:space=\"default\"><p:c xml:id=\"own\"/></a></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]/node()[1]",
+      "expected": "<p:c xmlns:p=\"urn:p\" xml:id=\"own\"></p:c>"
+    },
+    {
+      "name": "subtree-nearest-xml-context/1.0",
+      "xml": "<r xmlns:p=\"urn:p\" xml:lang=\"en\" xml:space=\"preserve\" xml:id=\"outer\"><a xml:lang=\"\" xml:space=\"default\"><p:c xml:id=\"own\"/></a></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]/node()[1]",
+      "expected": "<p:c xmlns:p=\"urn:p\" xml:id=\"own\" xml:lang=\"\" xml:space=\"default\"></p:c>",
+      "jdk_diagnostic": "C14N 1.0/1.1 section 2.4 selects nearest omitted-ancestor xml:lang/xml:space; the JDK subtree path uses outer values."
+    },
+    {
+      "name": "subtree-nearest-xml-context/1.0/comments",
+      "xml": "<r xmlns:p=\"urn:p\" xml:lang=\"en\" xml:space=\"preserve\" xml:id=\"outer\"><a xml:lang=\"\" xml:space=\"default\"><p:c xml:id=\"own\"/></a></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]/node()[1]",
+      "expected": "<p:c xmlns:p=\"urn:p\" xml:id=\"own\" xml:lang=\"\" xml:space=\"default\"></p:c>",
+      "jdk_diagnostic": "C14N 1.0/1.1 section 2.4 selects nearest omitted-ancestor xml:lang/xml:space; the JDK subtree path uses outer values."
+    },
+    {
+      "name": "subtree-nearest-xml-context/1.1",
+      "xml": "<r xmlns:p=\"urn:p\" xml:lang=\"en\" xml:space=\"preserve\" xml:id=\"outer\"><a xml:lang=\"\" xml:space=\"default\"><p:c xml:id=\"own\"/></a></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]/node()[1]",
+      "expected": "<p:c xmlns:p=\"urn:p\" xml:id=\"own\" xml:lang=\"\" xml:space=\"default\"></p:c>",
+      "jdk_diagnostic": "C14N 1.0/1.1 section 2.4 selects nearest omitted-ancestor xml:lang/xml:space; the JDK subtree path uses outer values."
+    },
+    {
+      "name": "subtree-nearest-xml-context/1.1/comments",
+      "xml": "<r xmlns:p=\"urn:p\" xml:lang=\"en\" xml:space=\"preserve\" xml:id=\"outer\"><a xml:lang=\"\" xml:space=\"default\"><p:c xml:id=\"own\"/></a></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]/node()[1]",
+      "expected": "<p:c xmlns:p=\"urn:p\" xml:id=\"own\" xml:lang=\"\" xml:space=\"default\"></p:c>",
+      "jdk_diagnostic": "C14N 1.0/1.1 section 2.4 selects nearest omitted-ancestor xml:lang/xml:space; the JDK subtree path uses outer values."
+    },
+    {
+      "name": "subtree-base-chain/exclusive",
+      "xml": "<r xml:base=\"https://example.test/a/b/\" xml:lang=\"en\"><a xml:base=\"../c/\"><c xml:base=\"./d?query#fragment\"/></a></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]/node()[1]",
+      "expected": "<c xml:base=\"./d?query#fragment\"></c>"
+    },
+    {
+      "name": "subtree-base-chain/exclusive/comments",
+      "xml": "<r xml:base=\"https://example.test/a/b/\" xml:lang=\"en\"><a xml:base=\"../c/\"><c xml:base=\"./d?query#fragment\"/></a></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]/node()[1]",
+      "expected": "<c xml:base=\"./d?query#fragment\"></c>"
+    },
+    {
+      "name": "subtree-base-chain/1.0",
+      "xml": "<r xml:base=\"https://example.test/a/b/\" xml:lang=\"en\"><a xml:base=\"../c/\"><c xml:base=\"./d?query#fragment\"/></a></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]/node()[1]",
+      "expected": "<c xml:base=\"./d?query#fragment\" xml:lang=\"en\"></c>"
+    },
+    {
+      "name": "subtree-base-chain/1.0/comments",
+      "xml": "<r xml:base=\"https://example.test/a/b/\" xml:lang=\"en\"><a xml:base=\"../c/\"><c xml:base=\"./d?query#fragment\"/></a></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]/node()[1]",
+      "expected": "<c xml:base=\"./d?query#fragment\" xml:lang=\"en\"></c>"
+    },
+    {
+      "name": "subtree-base-chain/1.1",
+      "xml": "<r xml:base=\"https://example.test/a/b/\" xml:lang=\"en\"><a xml:base=\"../c/\"><c xml:base=\"./d?query#fragment\"/></a></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]/node()[1]",
+      "basis": "Direct transcription of C14N 1.1 section 2.4 join-URI-References: ../c/ then ./d?query#fragment gives /a/c/d?query; neither oracle implements every step in this input.",
+      "expected": "<c xml:base=\"https://example.test/a/c/d?query\" xml:lang=\"en\"></c>",
+      "jdk_diagnostic": "C14N 1.1 section 2.4 joins every omitted xml:base and removes the reference fragment; the JDK subtree path omits an intermediate base.",
+      "libxml2_diagnostic": "C14N 1.1 section 2.4 explicitly sets R.fragment to null; libxml2 retains the fragment in the joined xml:base."
+    },
+    {
+      "name": "subtree-base-chain/1.1/comments",
+      "xml": "<r xml:base=\"https://example.test/a/b/\" xml:lang=\"en\"><a xml:base=\"../c/\"><c xml:base=\"./d?query#fragment\"/></a></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]/node()[1]",
+      "basis": "Direct transcription of C14N 1.1 section 2.4 join-URI-References: ../c/ then ./d?query#fragment gives /a/c/d?query; neither oracle implements every step in this input.",
+      "expected": "<c xml:base=\"https://example.test/a/c/d?query\" xml:lang=\"en\"></c>",
+      "jdk_diagnostic": "C14N 1.1 section 2.4 joins every omitted xml:base and removes the reference fragment; the JDK subtree path omits an intermediate base.",
+      "libxml2_diagnostic": "C14N 1.1 section 2.4 explicitly sets R.fragment to null; libxml2 retains the fragment in the joined xml:base."
+    },
+    {
+      "name": "sparse-loose-attributes/exclusive",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" q:z=\"3\" z=\"1\" p:a=\"2\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z",
+          "space": "urn:q"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "a",
+          "space": "urn:p"
+        }
+      ],
+      "xpath": "/node()[1]/@*[local-name()='z' and namespace-uri()='urn:q'] | /node()[1]/@*[local-name()='z' and namespace-uri()=''] | /node()[1]/@*[local-name()='a' and namespace-uri()='urn:p']",
+      "expected": " z=\"1\" p:a=\"2\" q:z=\"3\"",
+      "jdk_diagnostic": "C14N section 2.3 visits selected attribute nodes even if their owning element is omitted; the JDK node-set path omits loose attributes."
+    },
+    {
+      "name": "sparse-loose-attributes/exclusive/comments",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" q:z=\"3\" z=\"1\" p:a=\"2\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z",
+          "space": "urn:q"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "a",
+          "space": "urn:p"
+        }
+      ],
+      "xpath": "/node()[1]/@*[local-name()='z' and namespace-uri()='urn:q'] | /node()[1]/@*[local-name()='z' and namespace-uri()=''] | /node()[1]/@*[local-name()='a' and namespace-uri()='urn:p']",
+      "expected": " z=\"1\" p:a=\"2\" q:z=\"3\"",
+      "jdk_diagnostic": "C14N section 2.3 visits selected attribute nodes even if their owning element is omitted; the JDK node-set path omits loose attributes."
+    },
+    {
+      "name": "sparse-loose-attributes/1.0",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" q:z=\"3\" z=\"1\" p:a=\"2\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z",
+          "space": "urn:q"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "a",
+          "space": "urn:p"
+        }
+      ],
+      "xpath": "/node()[1]/@*[local-name()='z' and namespace-uri()='urn:q'] | /node()[1]/@*[local-name()='z' and namespace-uri()=''] | /node()[1]/@*[local-name()='a' and namespace-uri()='urn:p']",
+      "expected": " z=\"1\" p:a=\"2\" q:z=\"3\"",
+      "jdk_diagnostic": "C14N section 2.3 visits selected attribute nodes even if their owning element is omitted; the JDK node-set path omits loose attributes."
+    },
+    {
+      "name": "sparse-loose-attributes/1.0/comments",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" q:z=\"3\" z=\"1\" p:a=\"2\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z",
+          "space": "urn:q"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "a",
+          "space": "urn:p"
+        }
+      ],
+      "xpath": "/node()[1]/@*[local-name()='z' and namespace-uri()='urn:q'] | /node()[1]/@*[local-name()='z' and namespace-uri()=''] | /node()[1]/@*[local-name()='a' and namespace-uri()='urn:p']",
+      "expected": " z=\"1\" p:a=\"2\" q:z=\"3\"",
+      "jdk_diagnostic": "C14N section 2.3 visits selected attribute nodes even if their owning element is omitted; the JDK node-set path omits loose attributes."
+    },
+    {
+      "name": "sparse-loose-attributes/1.1",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" q:z=\"3\" z=\"1\" p:a=\"2\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z",
+          "space": "urn:q"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "a",
+          "space": "urn:p"
+        }
+      ],
+      "xpath": "/node()[1]/@*[local-name()='z' and namespace-uri()='urn:q'] | /node()[1]/@*[local-name()='z' and namespace-uri()=''] | /node()[1]/@*[local-name()='a' and namespace-uri()='urn:p']",
+      "expected": " z=\"1\" p:a=\"2\" q:z=\"3\"",
+      "jdk_diagnostic": "C14N section 2.3 visits selected attribute nodes even if their owning element is omitted; the JDK node-set path omits loose attributes."
+    },
+    {
+      "name": "sparse-loose-attributes/1.1/comments",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" q:z=\"3\" z=\"1\" p:a=\"2\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z",
+          "space": "urn:q"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "a",
+          "space": "urn:p"
+        }
+      ],
+      "xpath": "/node()[1]/@*[local-name()='z' and namespace-uri()='urn:q'] | /node()[1]/@*[local-name()='z' and namespace-uri()=''] | /node()[1]/@*[local-name()='a' and namespace-uri()='urn:p']",
+      "expected": " z=\"1\" p:a=\"2\" q:z=\"3\"",
+      "jdk_diagnostic": "C14N section 2.3 visits selected attribute nodes even if their owning element is omitted; the JDK node-set path omits loose attributes."
+    },
+    {
+      "name": "sparse-selected-attribute/exclusive",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" p:a=\"omit\" q:z=\"selected\" plain=\"omit\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z",
+          "space": "urn:q"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "q"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[1]/@*[local-name()='z' and namespace-uri()='urn:q'] | /node()[1]/namespace::*[name()='q']",
+      "expected": "<r xmlns:q=\"urn:q\" q:z=\"selected\"></r>"
+    },
+    {
+      "name": "sparse-selected-attribute/exclusive/comments",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" p:a=\"omit\" q:z=\"selected\" plain=\"omit\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z",
+          "space": "urn:q"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "q"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[1]/@*[local-name()='z' and namespace-uri()='urn:q'] | /node()[1]/namespace::*[name()='q']",
+      "expected": "<r xmlns:q=\"urn:q\" q:z=\"selected\"></r>"
+    },
+    {
+      "name": "sparse-selected-attribute/1.0",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" p:a=\"omit\" q:z=\"selected\" plain=\"omit\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z",
+          "space": "urn:q"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "q"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[1]/@*[local-name()='z' and namespace-uri()='urn:q'] | /node()[1]/namespace::*[name()='q']",
+      "expected": "<r xmlns:q=\"urn:q\" q:z=\"selected\"></r>",
+      "jdk_diagnostic": "C14N section 2.3 processes only the selected attribute axis; the JDK inclusive node-set path includes unselected ordinary attributes."
+    },
+    {
+      "name": "sparse-selected-attribute/1.0/comments",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" p:a=\"omit\" q:z=\"selected\" plain=\"omit\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z",
+          "space": "urn:q"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "q"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[1]/@*[local-name()='z' and namespace-uri()='urn:q'] | /node()[1]/namespace::*[name()='q']",
+      "expected": "<r xmlns:q=\"urn:q\" q:z=\"selected\"></r>",
+      "jdk_diagnostic": "C14N section 2.3 processes only the selected attribute axis; the JDK inclusive node-set path includes unselected ordinary attributes."
+    },
+    {
+      "name": "sparse-selected-attribute/1.1",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" p:a=\"omit\" q:z=\"selected\" plain=\"omit\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z",
+          "space": "urn:q"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "q"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[1]/@*[local-name()='z' and namespace-uri()='urn:q'] | /node()[1]/namespace::*[name()='q']",
+      "expected": "<r xmlns:q=\"urn:q\" q:z=\"selected\"></r>",
+      "jdk_diagnostic": "C14N section 2.3 processes only the selected attribute axis; the JDK inclusive node-set path includes unselected ordinary attributes."
+    },
+    {
+      "name": "sparse-selected-attribute/1.1/comments",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\" p:a=\"omit\" q:z=\"selected\" plain=\"omit\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "z",
+          "space": "urn:q"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "q"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[1]/@*[local-name()='z' and namespace-uri()='urn:q'] | /node()[1]/namespace::*[name()='q']",
+      "expected": "<r xmlns:q=\"urn:q\" q:z=\"selected\"></r>",
+      "jdk_diagnostic": "C14N section 2.3 processes only the selected attribute axis; the JDK inclusive node-set path includes unselected ordinary attributes."
+    },
+    {
+      "name": "sparse-namespace-only/exclusive",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><c/></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "q"
+        },
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/node()[1]/namespace::*[name()='q'] | /node()[1]/node()[1]/namespace::*[name()='p']",
+      "expected": ""
+    },
+    {
+      "name": "sparse-namespace-only/exclusive/comments",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><c/></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "q"
+        },
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/node()[1]/namespace::*[name()='q'] | /node()[1]/node()[1]/namespace::*[name()='p']",
+      "expected": ""
+    },
+    {
+      "name": "sparse-namespace-only/1.0",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><c/></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "q"
+        },
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/node()[1]/namespace::*[name()='q'] | /node()[1]/node()[1]/namespace::*[name()='p']",
+      "expected": " xmlns:p=\"urn:p\" xmlns:q=\"urn:q\""
+    },
+    {
+      "name": "sparse-namespace-only/1.0/comments",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><c/></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "q"
+        },
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/node()[1]/namespace::*[name()='q'] | /node()[1]/node()[1]/namespace::*[name()='p']",
+      "expected": " xmlns:p=\"urn:p\" xmlns:q=\"urn:q\""
+    },
+    {
+      "name": "sparse-namespace-only/1.1",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><c/></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "q"
+        },
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/node()[1]/namespace::*[name()='q'] | /node()[1]/node()[1]/namespace::*[name()='p']",
+      "expected": " xmlns:p=\"urn:p\" xmlns:q=\"urn:q\""
+    },
+    {
+      "name": "sparse-namespace-only/1.1/comments",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:q\"><c/></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "q"
+        },
+        {
+          "path": [
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/node()[1]/namespace::*[name()='q'] | /node()[1]/node()[1]/namespace::*[name()='p']",
+      "expected": " xmlns:p=\"urn:p\" xmlns:q=\"urn:q\""
+    },
+    {
+      "name": "sparse-default-namespace-only/exclusive",
+      "xml": "<r xmlns=\"urn:r\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": ""
+        }
+      ],
+      "xpath": "/node()[1]/namespace::*[name()='']",
+      "expected": ""
+    },
+    {
+      "name": "sparse-default-namespace-only/exclusive/comments",
+      "xml": "<r xmlns=\"urn:r\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": ""
+        }
+      ],
+      "xpath": "/node()[1]/namespace::*[name()='']",
+      "expected": ""
+    },
+    {
+      "name": "sparse-default-namespace-only/1.0",
+      "xml": "<r xmlns=\"urn:r\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": ""
+        }
+      ],
+      "xpath": "/node()[1]/namespace::*[name()='']",
+      "expected": " xmlns=\"urn:r\""
+    },
+    {
+      "name": "sparse-default-namespace-only/1.0/comments",
+      "xml": "<r xmlns=\"urn:r\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": ""
+        }
+      ],
+      "xpath": "/node()[1]/namespace::*[name()='']",
+      "expected": " xmlns=\"urn:r\""
+    },
+    {
+      "name": "sparse-default-namespace-only/1.1",
+      "xml": "<r xmlns=\"urn:r\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": ""
+        }
+      ],
+      "xpath": "/node()[1]/namespace::*[name()='']",
+      "expected": " xmlns=\"urn:r\""
+    },
+    {
+      "name": "sparse-default-namespace-only/1.1/comments",
+      "xml": "<r xmlns=\"urn:r\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": ""
+        }
+      ],
+      "xpath": "/node()[1]/namespace::*[name()='']",
+      "expected": " xmlns=\"urn:r\""
+    },
+    {
+      "name": "sparse-prefix-without-binding/exclusive",
+      "xml": "<r xmlns:p=\"urn:p\" p:a=\"selected\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "a",
+          "space": "urn:p"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[1]/@*[local-name()='a' and namespace-uri()='urn:p']",
+      "expected": "<r p:a=\"selected\"></r>",
+      "libxml2_diagnostic": "Exclusive C14N section 3 does not select an omitted namespace node because an attribute uses its prefix; libxml2 reintroduces the binding."
+    },
+    {
+      "name": "sparse-prefix-without-binding/exclusive/comments",
+      "xml": "<r xmlns:p=\"urn:p\" p:a=\"selected\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "a",
+          "space": "urn:p"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[1]/@*[local-name()='a' and namespace-uri()='urn:p']",
+      "expected": "<r p:a=\"selected\"></r>",
+      "libxml2_diagnostic": "Exclusive C14N section 3 does not select an omitted namespace node because an attribute uses its prefix; libxml2 reintroduces the binding."
+    },
+    {
+      "name": "sparse-prefix-without-binding/1.0",
+      "xml": "<r xmlns:p=\"urn:p\" p:a=\"selected\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "a",
+          "space": "urn:p"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[1]/@*[local-name()='a' and namespace-uri()='urn:p']",
+      "expected": "<r p:a=\"selected\"></r>"
+    },
+    {
+      "name": "sparse-prefix-without-binding/1.0/comments",
+      "xml": "<r xmlns:p=\"urn:p\" p:a=\"selected\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "a",
+          "space": "urn:p"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[1]/@*[local-name()='a' and namespace-uri()='urn:p']",
+      "expected": "<r p:a=\"selected\"></r>"
+    },
+    {
+      "name": "sparse-prefix-without-binding/1.1",
+      "xml": "<r xmlns:p=\"urn:p\" p:a=\"selected\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "a",
+          "space": "urn:p"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[1]/@*[local-name()='a' and namespace-uri()='urn:p']",
+      "expected": "<r p:a=\"selected\"></r>"
+    },
+    {
+      "name": "sparse-prefix-without-binding/1.1/comments",
+      "xml": "<r xmlns:p=\"urn:p\" p:a=\"selected\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1
+          ],
+          "kind": "attribute",
+          "local": "a",
+          "space": "urn:p"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[1]/@*[local-name()='a' and namespace-uri()='urn:p']",
+      "expected": "<r p:a=\"selected\"></r>"
+    },
+    {
+      "name": "sparse-rebound-siblings/exclusive",
+      "xml": "<r xmlns:p=\"urn:outer\"><a xmlns:p=\"urn:first\"><p:x/></a><b xmlns:p=\"urn:second\"><p:y/></b><p:z/></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        },
+        {
+          "path": [
+            1,
+            3
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            3
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/node()[1]/node()[1] | /node()[1]/node()[1]/node()[1]/namespace::*[name()='p'] | /node()[1]/node()[2]/node()[1] | /node()[1]/node()[2]/node()[1]/namespace::*[name()='p'] | /node()[1]/node()[3] | /node()[1]/node()[3]/namespace::*[name()='p']",
+      "expected": "<p:x xmlns:p=\"urn:first\"></p:x><p:y xmlns:p=\"urn:second\"></p:y><p:z xmlns:p=\"urn:outer\"></p:z>"
+    },
+    {
+      "name": "sparse-rebound-siblings/exclusive/comments",
+      "xml": "<r xmlns:p=\"urn:outer\"><a xmlns:p=\"urn:first\"><p:x/></a><b xmlns:p=\"urn:second\"><p:y/></b><p:z/></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        },
+        {
+          "path": [
+            1,
+            3
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            3
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/node()[1]/node()[1] | /node()[1]/node()[1]/node()[1]/namespace::*[name()='p'] | /node()[1]/node()[2]/node()[1] | /node()[1]/node()[2]/node()[1]/namespace::*[name()='p'] | /node()[1]/node()[3] | /node()[1]/node()[3]/namespace::*[name()='p']",
+      "expected": "<p:x xmlns:p=\"urn:first\"></p:x><p:y xmlns:p=\"urn:second\"></p:y><p:z xmlns:p=\"urn:outer\"></p:z>"
+    },
+    {
+      "name": "sparse-rebound-siblings/1.0",
+      "xml": "<r xmlns:p=\"urn:outer\"><a xmlns:p=\"urn:first\"><p:x/></a><b xmlns:p=\"urn:second\"><p:y/></b><p:z/></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        },
+        {
+          "path": [
+            1,
+            3
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            3
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/node()[1]/node()[1] | /node()[1]/node()[1]/node()[1]/namespace::*[name()='p'] | /node()[1]/node()[2]/node()[1] | /node()[1]/node()[2]/node()[1]/namespace::*[name()='p'] | /node()[1]/node()[3] | /node()[1]/node()[3]/namespace::*[name()='p']",
+      "expected": "<p:x xmlns:p=\"urn:first\"></p:x><p:y xmlns:p=\"urn:second\"></p:y><p:z xmlns:p=\"urn:outer\"></p:z>",
+      "jdk_diagnostic": "C14N section 2.3 gives each element its own namespace-axis nodes; the JDK XPath/DOM namespace-axis selection retains declaration-owner identity."
+    },
+    {
+      "name": "sparse-rebound-siblings/1.0/comments",
+      "xml": "<r xmlns:p=\"urn:outer\"><a xmlns:p=\"urn:first\"><p:x/></a><b xmlns:p=\"urn:second\"><p:y/></b><p:z/></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        },
+        {
+          "path": [
+            1,
+            3
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            3
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/node()[1]/node()[1] | /node()[1]/node()[1]/node()[1]/namespace::*[name()='p'] | /node()[1]/node()[2]/node()[1] | /node()[1]/node()[2]/node()[1]/namespace::*[name()='p'] | /node()[1]/node()[3] | /node()[1]/node()[3]/namespace::*[name()='p']",
+      "expected": "<p:x xmlns:p=\"urn:first\"></p:x><p:y xmlns:p=\"urn:second\"></p:y><p:z xmlns:p=\"urn:outer\"></p:z>",
+      "jdk_diagnostic": "C14N section 2.3 gives each element its own namespace-axis nodes; the JDK XPath/DOM namespace-axis selection retains declaration-owner identity."
+    },
+    {
+      "name": "sparse-rebound-siblings/1.1",
+      "xml": "<r xmlns:p=\"urn:outer\"><a xmlns:p=\"urn:first\"><p:x/></a><b xmlns:p=\"urn:second\"><p:y/></b><p:z/></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        },
+        {
+          "path": [
+            1,
+            3
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            3
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/node()[1]/node()[1] | /node()[1]/node()[1]/node()[1]/namespace::*[name()='p'] | /node()[1]/node()[2]/node()[1] | /node()[1]/node()[2]/node()[1]/namespace::*[name()='p'] | /node()[1]/node()[3] | /node()[1]/node()[3]/namespace::*[name()='p']",
+      "expected": "<p:x xmlns:p=\"urn:first\"></p:x><p:y xmlns:p=\"urn:second\"></p:y><p:z xmlns:p=\"urn:outer\"></p:z>",
+      "jdk_diagnostic": "C14N section 2.3 gives each element its own namespace-axis nodes; the JDK XPath/DOM namespace-axis selection retains declaration-owner identity."
+    },
+    {
+      "name": "sparse-rebound-siblings/1.1/comments",
+      "xml": "<r xmlns:p=\"urn:outer\"><a xmlns:p=\"urn:first\"><p:x/></a><b xmlns:p=\"urn:second\"><p:y/></b><p:z/></r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            1,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        },
+        {
+          "path": [
+            1,
+            3
+          ],
+          "kind": "element"
+        },
+        {
+          "path": [
+            1,
+            3
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/node()[1]/node()[1] | /node()[1]/node()[1]/node()[1]/namespace::*[name()='p'] | /node()[1]/node()[2]/node()[1] | /node()[1]/node()[2]/node()[1]/namespace::*[name()='p'] | /node()[1]/node()[3] | /node()[1]/node()[3]/namespace::*[name()='p']",
+      "expected": "<p:x xmlns:p=\"urn:first\"></p:x><p:y xmlns:p=\"urn:second\"></p:y><p:z xmlns:p=\"urn:outer\"></p:z>",
+      "jdk_diagnostic": "C14N section 2.3 gives each element its own namespace-axis nodes; the JDK XPath/DOM namespace-axis selection retains declaration-owner identity."
+    },
+    {
+      "name": "sparse-document-only/exclusive",
+      "xml": "<?before?><r/><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [],
+          "kind": "document"
+        }
+      ],
+      "xpath": "/",
+      "expected": ""
+    },
+    {
+      "name": "sparse-document-only/exclusive/comments",
+      "xml": "<?before?><r/><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [],
+          "kind": "document"
+        }
+      ],
+      "xpath": "/",
+      "expected": ""
+    },
+    {
+      "name": "sparse-document-only/1.0",
+      "xml": "<?before?><r/><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [],
+          "kind": "document"
+        }
+      ],
+      "xpath": "/",
+      "expected": ""
+    },
+    {
+      "name": "sparse-document-only/1.0/comments",
+      "xml": "<?before?><r/><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [],
+          "kind": "document"
+        }
+      ],
+      "xpath": "/",
+      "expected": ""
+    },
+    {
+      "name": "sparse-document-only/1.1",
+      "xml": "<?before?><r/><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [],
+          "kind": "document"
+        }
+      ],
+      "xpath": "/",
+      "expected": ""
+    },
+    {
+      "name": "sparse-document-only/1.1/comments",
+      "xml": "<?before?><r/><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [],
+          "kind": "document"
+        }
+      ],
+      "xpath": "/",
+      "expected": ""
+    },
+    {
+      "name": "sparse-empty-selection/exclusive",
+      "xml": "<?before?><r/><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [],
+      "xpath": "/node()[false()]",
+      "expected": "",
+      "jdk_diagnostic": "C14N section 2.3 emits no bytes for an empty node-set; the bundled JDK path rejects an ownerless empty set.",
+      "jdk_error": "java.lang.NullPointerException"
+    },
+    {
+      "name": "sparse-empty-selection/exclusive/comments",
+      "xml": "<?before?><r/><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [],
+      "xpath": "/node()[false()]",
+      "expected": "",
+      "jdk_diagnostic": "C14N section 2.3 emits no bytes for an empty node-set; the bundled JDK path rejects an ownerless empty set.",
+      "jdk_error": "java.lang.NullPointerException"
+    },
+    {
+      "name": "sparse-empty-selection/1.0",
+      "xml": "<?before?><r/><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [],
+      "xpath": "/node()[false()]",
+      "expected": "",
+      "jdk_diagnostic": "C14N section 2.3 emits no bytes for an empty node-set; the bundled JDK path rejects an ownerless empty set.",
+      "jdk_error": "java.lang.NullPointerException"
+    },
+    {
+      "name": "sparse-empty-selection/1.0/comments",
+      "xml": "<?before?><r/><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [],
+      "xpath": "/node()[false()]",
+      "expected": "",
+      "jdk_diagnostic": "C14N section 2.3 emits no bytes for an empty node-set; the bundled JDK path rejects an ownerless empty set.",
+      "jdk_error": "java.lang.NullPointerException"
+    },
+    {
+      "name": "sparse-empty-selection/1.1",
+      "xml": "<?before?><r/><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [],
+      "xpath": "/node()[false()]",
+      "expected": "",
+      "jdk_diagnostic": "C14N section 2.3 emits no bytes for an empty node-set; the bundled JDK path rejects an ownerless empty set.",
+      "jdk_error": "java.lang.NullPointerException"
+    },
+    {
+      "name": "sparse-empty-selection/1.1/comments",
+      "xml": "<?before?><r/><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [],
+      "xpath": "/node()[false()]",
+      "expected": "",
+      "jdk_diagnostic": "C14N section 2.3 emits no bytes for an empty node-set; the bundled JDK path rejects an ownerless empty set.",
+      "jdk_error": "java.lang.NullPointerException"
+    },
+    {
+      "name": "sparse-comments-pi/exclusive",
+      "xml": "<!--before--><?a first?><r><!--inside--><?a middle?></r><?a last?><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "comment"
+        },
+        {
+          "path": [
+            2
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            3,
+            1
+          ],
+          "kind": "comment"
+        },
+        {
+          "path": [
+            3,
+            2
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            4
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            5
+          ],
+          "kind": "comment"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[2] | /node()[3]/node()[1] | /node()[3]/node()[2] | /node()[4] | /node()[5]",
+      "expected": "<?a first?>\n<?a middle?>\n<?a last?>",
+      "libxml2_diagnostic": "C14N section 2.3 bases comment/PI line breaks on original document order; libxml2 treats omitted element boundaries as document-level separators."
+    },
+    {
+      "name": "sparse-comments-pi/exclusive/comments",
+      "xml": "<!--before--><?a first?><r><!--inside--><?a middle?></r><?a last?><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "comment"
+        },
+        {
+          "path": [
+            2
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            3,
+            1
+          ],
+          "kind": "comment"
+        },
+        {
+          "path": [
+            3,
+            2
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            4
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            5
+          ],
+          "kind": "comment"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[2] | /node()[3]/node()[1] | /node()[3]/node()[2] | /node()[4] | /node()[5]",
+      "expected": "<!--before-->\n<?a first?>\n<!--inside--><?a middle?>\n<?a last?>\n<!--after-->",
+      "libxml2_diagnostic": "C14N section 2.3 bases comment/PI line breaks on original document order; libxml2 treats omitted element boundaries as document-level separators."
+    },
+    {
+      "name": "sparse-comments-pi/1.0",
+      "xml": "<!--before--><?a first?><r><!--inside--><?a middle?></r><?a last?><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "comment"
+        },
+        {
+          "path": [
+            2
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            3,
+            1
+          ],
+          "kind": "comment"
+        },
+        {
+          "path": [
+            3,
+            2
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            4
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            5
+          ],
+          "kind": "comment"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[2] | /node()[3]/node()[1] | /node()[3]/node()[2] | /node()[4] | /node()[5]",
+      "expected": "<?a first?>\n<?a middle?>\n<?a last?>",
+      "libxml2_diagnostic": "C14N section 2.3 bases comment/PI line breaks on original document order; libxml2 treats omitted element boundaries as document-level separators."
+    },
+    {
+      "name": "sparse-comments-pi/1.0/comments",
+      "xml": "<!--before--><?a first?><r><!--inside--><?a middle?></r><?a last?><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "comment"
+        },
+        {
+          "path": [
+            2
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            3,
+            1
+          ],
+          "kind": "comment"
+        },
+        {
+          "path": [
+            3,
+            2
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            4
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            5
+          ],
+          "kind": "comment"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[2] | /node()[3]/node()[1] | /node()[3]/node()[2] | /node()[4] | /node()[5]",
+      "expected": "<!--before-->\n<?a first?>\n<!--inside--><?a middle?>\n<?a last?>\n<!--after-->",
+      "libxml2_diagnostic": "C14N section 2.3 bases comment/PI line breaks on original document order; libxml2 treats omitted element boundaries as document-level separators."
+    },
+    {
+      "name": "sparse-comments-pi/1.1",
+      "xml": "<!--before--><?a first?><r><!--inside--><?a middle?></r><?a last?><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "comment"
+        },
+        {
+          "path": [
+            2
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            3,
+            1
+          ],
+          "kind": "comment"
+        },
+        {
+          "path": [
+            3,
+            2
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            4
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            5
+          ],
+          "kind": "comment"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[2] | /node()[3]/node()[1] | /node()[3]/node()[2] | /node()[4] | /node()[5]",
+      "expected": "<?a first?>\n<?a middle?>\n<?a last?>",
+      "libxml2_diagnostic": "C14N section 2.3 bases comment/PI line breaks on original document order; libxml2 treats omitted element boundaries as document-level separators."
+    },
+    {
+      "name": "sparse-comments-pi/1.1/comments",
+      "xml": "<!--before--><?a first?><r><!--inside--><?a middle?></r><?a last?><!--after-->",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "comment"
+        },
+        {
+          "path": [
+            2
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            3,
+            1
+          ],
+          "kind": "comment"
+        },
+        {
+          "path": [
+            3,
+            2
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            4
+          ],
+          "kind": "processing-instruction"
+        },
+        {
+          "path": [
+            5
+          ],
+          "kind": "comment"
+        }
+      ],
+      "xpath": "/node()[1] | /node()[2] | /node()[3]/node()[1] | /node()[3]/node()[2] | /node()[4] | /node()[5]",
+      "expected": "<!--before-->\n<?a first?>\n<!--inside--><?a middle?>\n<?a last?>\n<!--after-->",
+      "libxml2_diagnostic": "C14N section 2.3 bases comment/PI line breaks on original document order; libxml2 treats omitted element boundaries as document-level separators."
+    },
+    {
+      "name": "sparse-escaped-text/exclusive",
+      "xml": "<r>A<c>&lt;&amp;&gt;&#xD;😀</c>Z</r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "xpath": "/node()[1]/node()[2]/node()[1]",
+      "expected": "&lt;&amp;&gt;&#xD;😀"
+    },
+    {
+      "name": "sparse-escaped-text/exclusive/comments",
+      "xml": "<r>A<c>&lt;&amp;&gt;&#xD;😀</c>Z</r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "xpath": "/node()[1]/node()[2]/node()[1]",
+      "expected": "&lt;&amp;&gt;&#xD;😀"
+    },
+    {
+      "name": "sparse-escaped-text/1.0",
+      "xml": "<r>A<c>&lt;&amp;&gt;&#xD;😀</c>Z</r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "xpath": "/node()[1]/node()[2]/node()[1]",
+      "expected": "&lt;&amp;&gt;&#xD;😀"
+    },
+    {
+      "name": "sparse-escaped-text/1.0/comments",
+      "xml": "<r>A<c>&lt;&amp;&gt;&#xD;😀</c>Z</r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "xpath": "/node()[1]/node()[2]/node()[1]",
+      "expected": "&lt;&amp;&gt;&#xD;😀"
+    },
+    {
+      "name": "sparse-escaped-text/1.1",
+      "xml": "<r>A<c>&lt;&amp;&gt;&#xD;😀</c>Z</r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "xpath": "/node()[1]/node()[2]/node()[1]",
+      "expected": "&lt;&amp;&gt;&#xD;😀"
+    },
+    {
+      "name": "sparse-escaped-text/1.1/comments",
+      "xml": "<r>A<c>&lt;&amp;&gt;&#xD;😀</c>Z</r>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+      "prefixes": [],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1,
+            2,
+            1
+          ],
+          "kind": "text"
+        }
+      ],
+      "xpath": "/node()[1]/node()[2]/node()[1]",
+      "expected": "&lt;&amp;&gt;&#xD;😀"
+    },
+    {
+      "name": "prefix-list-retains-qname/exclusive",
+      "xml": "<r xmlns:p=\"urn:value\" xmlns:q=\"urn:q\"><c type=\"p:T\"/></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [
+        "p",
+        "missing"
+      ],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]",
+      "expected": "<c xmlns:p=\"urn:value\" type=\"p:T\"></c>"
+    },
+    {
+      "name": "prefix-list-retains-qname/exclusive/comments",
+      "xml": "<r xmlns:p=\"urn:value\" xmlns:q=\"urn:q\"><c type=\"p:T\"/></r>",
+      "scope": "subtree",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [
+        "p",
+        "missing"
+      ],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "subtree": [
+        1,
+        1
+      ],
+      "xpath": "SUBTREE:/node()[1]/node()[1]",
+      "expected": "<c xmlns:p=\"urn:value\" type=\"p:T\"></c>"
+    },
+    {
+      "name": "prefix-list-does-not-select/exclusive",
+      "xml": "<r xmlns:p=\"urn:p\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [
+        "p"
+      ],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        }
+      ],
+      "xpath": "/node()[1]",
+      "expected": "<r></r>"
+    },
+    {
+      "name": "prefix-list-does-not-select/exclusive/comments",
+      "xml": "<r xmlns:p=\"urn:p\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [
+        "p"
+      ],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "element"
+        }
+      ],
+      "xpath": "/node()[1]",
+      "expected": "<r></r>"
+    },
+    {
+      "name": "prefix-list-namespace-without-element/exclusive",
+      "xml": "<r xmlns:p=\"urn:p\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#",
+      "prefixes": [
+        "p"
+      ],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/namespace::*[name()='p']",
+      "expected": " xmlns:p=\"urn:p\""
+    },
+    {
+      "name": "prefix-list-namespace-without-element/exclusive/comments",
+      "xml": "<r xmlns:p=\"urn:p\"/>",
+      "scope": "node-set",
+      "algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+      "prefixes": [
+        "p"
+      ],
+      "norms": [
+        "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#ProcessingModel",
+        "https://www.w3.org/TR/xml-c14n11/#DocSubsets",
+        "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+      ],
+      "select": [
+        {
+          "path": [
+            1
+          ],
+          "kind": "namespace",
+          "prefix": "p"
+        }
+      ],
+      "xpath": "/node()[1]/namespace::*[name()='p']",
+      "expected": " xmlns:p=\"urn:p\""
+    }
+  ],
+  "rejected": [
+    {
+      "name": "unbound-element",
+      "xml": "<p:r/>",
+      "at": "parse",
+      "category": "malformed",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2009/REC-xml-names-20091208/"
+    },
+    {
+      "name": "unbound-attribute",
+      "xml": "<r p:a=\"v\"/>",
+      "at": "parse",
+      "category": "malformed",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2009/REC-xml-names-20091208/"
+    },
+    {
+      "name": "duplicate-namespace",
+      "xml": "<r xmlns:p=\"urn:a\" xmlns:p=\"urn:b\"/>",
+      "at": "parse",
+      "category": "malformed",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2009/REC-xml-names-20091208/"
+    },
+    {
+      "name": "prefix-undeclaration",
+      "xml": "<r xmlns:p=\"\"/>",
+      "at": "parse",
+      "category": "malformed",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2009/REC-xml-names-20091208/"
+    },
+    {
+      "name": "xml-rebound",
+      "xml": "<r xmlns:xml=\"urn:wrong\"/>",
+      "at": "parse",
+      "category": "malformed",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2009/REC-xml-names-20091208/"
+    },
+    {
+      "name": "xml-alias",
+      "xml": "<r xmlns:p=\"http://www.w3.org/XML/1998/namespace\"/>",
+      "at": "parse",
+      "category": "malformed",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2009/REC-xml-names-20091208/"
+    },
+    {
+      "name": "xmlns-namespace",
+      "xml": "<r xmlns:p=\"http://www.w3.org/2000/xmlns/\"/>",
+      "at": "parse",
+      "category": "malformed",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2009/REC-xml-names-20091208/"
+    },
+    {
+      "name": "duplicate-expanded-attribute",
+      "xml": "<r xmlns:p=\"urn:p\" xmlns:q=\"urn:p\" p:a=\"1\" q:a=\"2\"/>",
+      "at": "parse",
+      "category": "malformed",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2009/REC-xml-names-20091208/"
+    },
+    {
+      "name": "relative-namespace",
+      "xml": "<r xmlns=\"relative\"/>",
+      "at": "parse",
+      "category": "unsupported",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2001/REC-xml-c14n-20010315#DataModel"
+    },
+    {
+      "name": "namespace-whitespace",
+      "xml": "<r xmlns:p=\"urn: has-space\"/>",
+      "at": "parse",
+      "category": "unsupported",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2009/REC-xml-names-20091208/"
+    },
+    {
+      "name": "DTD-default-attribute",
+      "xml": "<!DOCTYPE r [<!ATTLIST r a CDATA \"default\">]><r/>",
+      "at": "parse",
+      "category": "unsupported",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2008/REC-xml-20081126/"
+    },
+    {
+      "name": "DTD-entity",
+      "xml": "<!DOCTYPE r [<!ENTITY e \"replacement\">]><r>&e;</r>",
+      "at": "parse",
+      "category": "unsupported",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2008/REC-xml-20081126/"
+    },
+    {
+      "name": "DTD-external",
+      "xml": "<!DOCTYPE r SYSTEM \"https://example.test/denied.dtd\"><r/>",
+      "at": "parse",
+      "category": "unsupported",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2008/REC-xml-20081126/"
+    },
+    {
+      "name": "XML-1.1",
+      "xml": "<?xml version=\"1.1\"?><r/>",
+      "at": "parse",
+      "category": "unsupported",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2008/REC-xml-20081126/"
+    },
+    {
+      "name": "unavailable-encoding",
+      "xml": "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><r/>",
+      "at": "parse",
+      "category": "unsupported",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2008/REC-xml-20081126/"
+    },
+    {
+      "name": "unknown-entity",
+      "xml": "<r>&unknown;</r>",
+      "at": "parse",
+      "category": "malformed",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2008/REC-xml-20081126/"
+    },
+    {
+      "name": "invalid-character-reference",
+      "xml": "<r>&#xD800;</r>",
+      "at": "parse",
+      "category": "malformed",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2008/REC-xml-20081126/"
+    },
+    {
+      "name": "invalid-comment",
+      "xml": "<r><!--a--b--></r>",
+      "at": "parse",
+      "category": "malformed",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/2008/REC-xml-20081126/"
+    },
+    {
+      "name": "unknown-canonical-algorithm",
+      "xml": "<r/>",
+      "at": "canonical",
+      "category": "unsupported",
+      "algorithm": "urn:unknown",
+      "prefixes": [],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/xml-c14n11/#ProcessingModel"
+    },
+    {
+      "name": "exclusive-prefixes-on-REC-xml-c14n-20010315",
+      "xml": "<r/>",
+      "at": "canonical",
+      "category": "unsupported",
+      "algorithm": "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "prefixes": [
+        "p"
+      ],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+    },
+    {
+      "name": "exclusive-prefixes-on-xml-c14n11",
+      "xml": "<r/>",
+      "at": "canonical",
+      "category": "unsupported",
+      "algorithm": "http://www.w3.org/2006/12/xml-c14n11",
+      "prefixes": [
+        "p"
+      ],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/xml-exc-c14n/#sec-Specification"
+    },
+    {
+      "name": "invalid-prefix-xmlns",
+      "xml": "<r/>",
+      "at": "canonical",
+      "category": "malformed",
+      "algorithm": "",
+      "prefixes": [
+        "xmlns"
+      ],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/xml-exc-c14n/#def-InclusiveNamespaces-PrefixList"
+    },
+    {
+      "name": "invalid-prefix-bad:prefix",
+      "xml": "<r/>",
+      "at": "canonical",
+      "category": "malformed",
+      "algorithm": "",
+      "prefixes": [
+        "bad:prefix"
+      ],
+      "max_output_bytes": 0,
+      "norm": "https://www.w3.org/TR/xml-exc-c14n/#def-InclusiveNamespaces-PrefixList"
+    },
+    {
+      "name": "negative-output-budget",
+      "xml": "<r/>",
+      "at": "canonical",
+      "category": "limit",
+      "algorithm": "",
+      "prefixes": [],
+      "max_output_bytes": -1,
+      "norm": "https://www.w3.org/TR/2008/REC-xml-20081126/"
+    }
+  ]
+}

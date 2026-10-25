@@ -13,6 +13,11 @@
 // An explicit node set can be sparse, so its canonical output may be an XML
 // fragment rather than a well-formed document. Inclusive algorithms apply their
 // respective inherited xml:* and xml:base rules to omitted ancestors.
+// Input is the parsed node model supplied by document, including its line-end
+// and attribute normalization. The DTD-free parser does not provide declared
+// entity replacement or DTD default attributes; the C14N writer does not add
+// this preprocessing. Those input-model limits are distinct from the byte
+// canonicalization rules and do not establish full XML processor conformance.
 //
 // # Algorithms and output
 //
