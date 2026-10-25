@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -16,7 +15,7 @@ import (
 
 // XHTMLIsElement recognizes XHTML elements and the HTML5 null-namespace form.
 func XHTMLIsElement(uri, local string, html5 bool) bool {
-	return uri == lexicon.NamespaceXHTML || html5 && uri == "" && html5ElementName(strings.ToLower(local))
+	return uri == lexicon.NamespaceXHTML || html5 && uri == "" && html5ElementName(LowerASCII(local))
 }
 
 func html5ElementName(local string) bool {
@@ -25,7 +24,7 @@ func html5ElementName(local string) bool {
 	}
 
 	switch local {
-	case "article", "aside", "audio", "bdi", "canvas", "command", elemData, "datalist", "details", "dialog", elemEmbed, "figcaption", "figure", "footer", "header", "hgroup", elemKeygen, "main", "mark", "math", "menuitem", "meter", "nav", "output", "picture", "progress", "rb", "rp", "rt", "rtc", "ruby", "section", "slot", elemSource, "summary", "svg", "template", "time", elemTrack, elemVideo, elemWbr:
+	case "article", "aside", elemAudio, "bdi", "canvas", "command", elemData, "datalist", "details", "dialog", elemEmbed, "figcaption", "figure", "footer", "header", "hgroup", elemKeygen, "main", "mark", "math", "menuitem", "meter", "nav", "output", "picture", "progress", "rb", "rp", "rt", "rtc", "ruby", "section", "slot", elemSource, "summary", "svg", "template", "time", elemTrack, elemVideo, elemWbr:
 		return true
 	}
 
@@ -38,7 +37,7 @@ func xhtmlInline(local string) bool {
 	}
 
 	switch local {
-	case "audio", "bdi", "canvas", elemData, "datalist", elemEmbed, elemKeygen, "mark", "math", "meter", "output", "picture", "progress", "rb", "rp", "rt", "rtc", "ruby", "svg", "template", "time", elemVideo, elemWbr:
+	case elemAudio, "bdi", "canvas", elemData, "datalist", elemEmbed, elemKeygen, "mark", "math", "meter", "output", "picture", "progress", "rb", "rp", "rt", "rtc", "ruby", "svg", "template", "time", elemVideo, elemWbr:
 		return true
 	}
 
@@ -47,9 +46,9 @@ func xhtmlInline(local string) bool {
 
 // ConfigureXHTML applies name-aware rules before markup generation. URI values
 // bypass maps and requested normalization; they always use NFC URI escaping.
-func ConfigureXHTML(options *tree.XMLWriteOptions, html5, escapeURI bool) {
+func ConfigureXHTML(options *tree.XMLWriteOptions, html5, escapeURI bool, serializationVersion int) {
 	options.EmptyElement = func(name tree.Name) tree.EmptyElementMode {
-		if XHTMLIsElement(name.Space, name.Local, html5) && xhtmlEmpty(strings.ToLower(name.Local), html5) {
+		if XHTMLIsElement(name.Space, name.Local, html5) && xhtmlEmpty(name.Local, html5, serializationVersion) {
 			return tree.EmptyElementSpaced
 		}
 
@@ -57,39 +56,42 @@ func ConfigureXHTML(options *tree.XMLWriteOptions, html5, escapeURI bool) {
 	}
 	if escapeURI {
 		options.AttributeWriter = func(ctx context.Context, out io.Writer, element tree.Name, attribute tree.Attribute) (bool, error) {
-			if attribute.Name.Space != "" || !XHTMLIsElement(element.Space, element.Local, html5) || !isURIAttr(strings.ToLower(attribute.Name.Local), strings.ToLower(element.Local)) {
+			if attribute.Name.Space != "" || !XHTMLIsElement(element.Space, element.Local, html5) || !isURIAttr(LowerASCII(attribute.Name.Local), LowerASCII(element.Local), serializationVersion) {
 				return false, nil
 			}
 
-			return true, writeURIAttribute(ctx, out, attribute.Value)
+			return true, writeURIAttribute(ctx, out, attribute.Value, false)
 		}
 	}
 
 	options.InlineElement = func(name tree.Name) bool {
-		return XHTMLIsElement(name.Space, name.Local, html5) && xhtmlInline(strings.ToLower(name.Local))
+		return XHTMLIsElement(name.Space, name.Local, html5) && xhtmlInline(LowerASCII(name.Local))
 	}
 	options.PreserveContent = func(name tree.Name) bool {
 		if !XHTMLIsElement(name.Space, name.Local, html5) {
 			return false
 		}
 
-		local := strings.ToLower(name.Local)
+		local := LowerASCII(name.Local)
 
-		return xhtmlInline(local) || local == "pre" || local == "script" || local == "style" || local == "title" || local == "textarea"
+		return xhtmlInline(local) || local == "pre" || local == nameScript || local == "style" || local == "title" || local == "textarea"
 	}
 }
 
-func xhtmlEmpty(local string, html5 bool) bool {
-	switch local {
-	case "area", "base", "br", "col", elemEmbed, "hr", "img", elemInput, "link", "meta", "param":
-		return true
-	case elemKeygen, elemSource, elemTrack, elemWbr:
-		return html5
-	case "basefont", "frame", "isindex":
-		return !html5
+func xhtmlEmpty(local string, html5 bool, edition int) bool {
+	// XHTML's EMPTY/void lists contain case-sensitive XML names. The separate
+	// HTML5 null-namespace recognition rule does not rename BR or Br to br.
+	if local != LowerASCII(local) {
+		return false
 	}
 
-	return false
+	// XHTML5's expected-empty rule does not include the three optional legacy
+	// HTML void elements. XHTML's XML well-formedness therefore keeps both tags.
+	if html5 && (local == elemBasefont || local == elemFrame || local == elemIsindex) {
+		return false
+	}
+
+	return SerializationVoidElement(local, html5, edition)
 }
 
 // PrepareXHTML mutates only an owned serialization copy. Metadata replacement
@@ -112,7 +114,7 @@ func PrepareXHTML(ctx context.Context, doc *xdm.Document, html5 bool, contentTyp
 			return err
 		}
 
-		if element, ok := node.(*xdm.Element); ok && XHTMLIsElement(element.URI(), element.LocalName(), html5) && strings.EqualFold(element.LocalName(), "head") {
+		if element, ok := node.(*xdm.Element); ok && XHTMLIsElement(element.URI(), element.LocalName(), html5) && EqualFoldASCII(element.LocalName(), "head") {
 			heads = append(heads, element)
 		}
 
@@ -144,7 +146,7 @@ func replaceXHTMLMetadata(doc *xdm.Document, head *xdm.Element, html5 bool, cont
 		xdm.UnlinkNode(mutable)
 
 		meta, ok := child.(*xdm.Element)
-		if !ok || !XHTMLIsElement(meta.URI(), meta.LocalName(), html5) || !strings.EqualFold(meta.LocalName(), "meta") || !isContentTypeMeta(meta) {
+		if !ok || !XHTMLIsElement(meta.URI(), meta.LocalName(), html5) || !EqualFoldASCII(meta.LocalName(), "meta") || !isContentTypeMeta(meta) {
 			children = append(children, child)
 		}
 

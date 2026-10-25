@@ -17,14 +17,16 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/packageversion"
 	"github.com/skarm/xmlsec/transform"
 )
 
 func suiteApplicability(options suiteOptions, item suiteCase) (string, string) {
 	var (
-		dependencies []*suiteNode
-		unresolved   []string
+		dependencies          []*suiteNode
+		unresolved            []string
+		compatibilityDeclared bool
 	)
 
 	for _, node := range []*suiteNode{item.setNode, item.node} {
@@ -41,6 +43,9 @@ func suiteApplicability(options suiteOptions, item suiteCase) (string, string) {
 		}
 
 		value := dependency.attr("value")
+		if kind == "feature" && value == "xpath-1.0-compatibility" {
+			compatibilityDeclared = true
+		}
 
 		matched, known := suiteDependency(options, kind, value)
 		if known && matched && kind == "combinations_for_numbering" && dependency.attr("range") != "" {
@@ -62,11 +67,114 @@ func suiteApplicability(options suiteOptions, item suiteCase) (string, string) {
 		}
 	}
 
+	// QT3 guide/running.html requires the default compatibility property to be
+	// false unless the test explicitly requests XPath 1.0 compatibility. A
+	// compatibility-only run must not reinterpret ordinary modern expressions.
+	if options.kind == suiteQT3 && options.xpath10Compatibility && !compatibilityDeclared {
+		return suiteNotApplicable, "QT3 tests without an xpath-1.0-compatibility dependency require the default false compatibility property (guide/running.html)"
+	}
+
+	if status, reason := suiteEnvironmentApplicability(item); status != "" {
+		return status, reason
+	}
+
 	if len(unresolved) != 0 {
 		return suiteFailed, "unresolved dependencies: " + strings.Join(unresolved, ", ") + "; unknown conditions are not silently skipped"
 	}
 
 	return "", ""
+}
+
+// These catalog source properties require optional preprocessing, independently
+// of explicit dependency elements. The pinned catalog schema requires XInclude
+// expansion when requested and excludes processors that do not support it.
+func suiteEnvironmentApplicability(item suiteCase) (string, string) {
+	if item.node == nil {
+		return "", ""
+	}
+
+	selected := item.node.child("environment")
+	if selected == nil {
+		return "", ""
+	}
+
+	ref, err := resolveSuiteEnvironment(item, suiteEnvironmentRef{node: selected, base: item.base}, make(map[*suiteNode]bool))
+	if err != nil {
+		return "", ""
+	} // Preparation retains its existing harness error.
+
+	// QT3's schema element explicitly implies a schema-awareness dependency
+	// (catalog-schema.xsd, schema documentation). Do not erase the requested
+	// annotations to run those cases as untyped Basic input. XSLT's catalog has
+	// a different declaration contract, so unused XSLT schemas stay applicable.
+	for _, schema := range ref.node.children("schema") {
+		if schema.XMLName.Space == "http://www.w3.org/2010/09/qt-fots-catalog" && !suiteBuiltinJSONSchema(schema) {
+			return suiteNotApplicable, "QT3 catalog schema declaration implies schema-awareness, which is outside the selected Basic profile (catalog-schema.xsd: schema)"
+		}
+	}
+
+	sources := ref.node.children("source")
+	for _, collection := range ref.node.children("collection") {
+		sources = append(sources, collection.children("source")...)
+	}
+
+	for _, source := range sources {
+		if status, reason := suiteSourceRequirements(source); status != "" {
+			return status, reason
+		}
+	}
+
+	return "", ""
+}
+
+func suiteSourceRequirements(source *suiteNode) (string, string) {
+	for _, name := range []string{"xinclude", "streaming", "defines-stylesheet"} {
+		value := strings.Trim(source.attr(name), " \t\r\n")
+		if value == "" || value == "false" || value == "0" {
+			continue
+		}
+
+		if value != "true" && value != "1" {
+			return suiteFailed, fmt.Sprintf("invalid source %s=%q", name, value)
+		}
+
+		if name == "xinclude" || source.attr("role") == "." {
+			return suiteNotApplicable, fmt.Sprintf("source %s=%q requires optional preprocessing outside the selected language profile", name, value)
+		}
+	}
+
+	if value := strings.Trim(source.attr("xml-version"), " \t\r\n"); value != "" {
+		version := suiteSourceXMLVersion(value)
+		if version == "" {
+			return suiteFailed, fmt.Sprintf("invalid source xml-version=%q", value)
+		}
+
+		if version == "1.1" {
+			return suiteNotApplicable, "source xml-version requires the optional XML 1.1 input profile"
+		}
+	}
+
+	return "", ""
+}
+
+// The catalog uses an xs:decimal enumeration. Compare its exact value without
+// rounding unsupported versions to 1.0 or 1.1 through a float conversion.
+func suiteSourceXMLVersion(value string) string {
+	value = strings.TrimPrefix(value, "+")
+
+	whole, fraction, _ := strings.Cut(value, ".")
+	if strings.IndexFunc(whole+fraction, func(r rune) bool { return r < '0' || r > '9' }) >= 0 || strings.TrimLeft(whole, "0") != "1" {
+		return ""
+	}
+
+	switch strings.TrimRight(fraction, "0") {
+	case "":
+		return "1.0"
+	case "1":
+		return "1.1"
+	default:
+		return ""
+	}
 }
 
 func suiteDependency(options suiteOptions, kind, value string) (bool, bool) {
@@ -278,6 +386,7 @@ type suitePackage struct {
 type suiteResourceResolver struct {
 	root           string
 	resources      map[string]string
+	unavailable    map[string]string // declared remote files; never fetched by this offline runner
 	collections    map[string]transform.Sequence
 	uriCollections map[string][]string
 	packages       []suitePackage
@@ -316,6 +425,10 @@ func (r *suiteResourceResolver) ResolvePackage(ctx context.Context, name, constr
 func (r *suiteResourceResolver) Resolve(ctx context.Context, uri string) (io.ReadCloser, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+
+	if remote, declared := r.unavailable[uri]; declared {
+		return nil, fmt.Errorf("declared resource %q is unavailable in the offline suite profile", remote)
 	}
 
 	path := r.resources[uri]
@@ -377,12 +490,18 @@ func (r *suiteResourceResolver) ResolveURICollection(ctx context.Context, uri st
 }
 
 func prepareSuiteEnvironment(ctx context.Context, options suiteOptions, item suiteCase) (*preparedSuiteEnvironment, error) {
+	return prepareSuiteEnvironmentWithLimits(ctx, options, item, suiteLimits(options))
+}
+
+// prepareSuiteEnvironmentWithLimits keeps fixture construction and all resource
+// policies identical when reproducing a case with explicit finite host budgets.
+func prepareSuiteEnvironmentWithLimits(ctx context.Context, options suiteOptions, item suiteCase, limits transform.Limits) (*preparedSuiteEnvironment, error) {
 	resources := &suiteResourceResolver{root: options.directory, resources: make(map[string]string), collections: make(map[string]transform.Sequence), uriCollections: make(map[string][]string)}
 	if options.limitsProfile == suiteLanguage {
-		resources.fileLimit = suiteLimits(options).MaxInputBytes
+		resources.fileLimit = limits.MaxInputBytes
 	}
 
-	engine, err := transform.NewEngine(transform.Config{Limits: suiteLimits(options), XMLSchemaVersion: suiteXSDVersion(options), EnableXSLTAssertions: options.xsltAssertions, AllowSingleByteEncodings: true, Resolver: resources, CollectionResolver: resources, PackageResolver: resources})
+	engine, err := transform.NewEngine(transform.Config{Limits: limits, XMLSchemaVersion: suiteXSDVersion(options), EnableXSLTAssertions: options.xsltAssertions, AllowSingleByteEncodings: true, Resolver: resources, CollectionResolver: resources, PackageResolver: resources})
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +592,7 @@ func applySuiteEnvironment(ctx context.Context, root, base string, resources *su
 		return loadSuiteDecimalFormat(environment, node)
 	case "source":
 		return loadSuiteSource(ctx, root, base, resources, environment, node)
-	case "resource":
+	case suiteResourceTag:
 		return loadSuiteResource(root, base, resources, environment, node)
 	case "collection":
 		return loadSuiteCollection(ctx, root, base, resources, environment, node)
@@ -493,7 +612,7 @@ func applySuiteEnvironment(ctx context.Context, root, base string, resources *su
 
 		value, err := environment.query(ctx, expression, nil)
 		if err != nil {
-			return suiteHarness("context item: %v", err)
+			return suiteHarness("context item: %w", err)
 		}
 
 		if value.Len() == 0 {
@@ -539,27 +658,48 @@ func loadSuiteModule(root, base string, environment *preparedSuiteEnvironment, n
 		return err
 	}
 
-	declaration, _, err := readSuiteNode(root, base, node.attr(suiteFile))
+	declaration, _, err := readSuiteReferencedNode(root, base, node)
 	if err != nil {
-		return suiteHarness("package metadata: %v", err)
+		return suiteHarness("package metadata: %w", err)
 	}
 
-	name, version := node.attr("name"), node.attr("package-version")
+	name, version := suitePackageIdentity(node, declaration)
+	environment.resources.packages = append(environment.resources.packages, suitePackage{name: name, version: version, uri: uri})
+
+	return nil
+}
+
+func suitePackageIdentity(catalog, declaration *suiteNode) (string, string) {
+	name, version := catalog.attr("name"), catalog.attr("package-version")
 	if name == "" {
-		name = declaration.attr("name")
+		name = catalog.attr("uri")
 	}
 
-	if version == "" {
-		version = declaration.attr("package-version")
+	if declaration.XMLName == (xml.Name{Space: lexicon.NamespaceXSLT, Local: suitePackageTag}) {
+		// The publisher runner registers sourceLocation, so the package's own
+		// declaration supplies its identity. Catalog metadata does not rewrite it.
+		// For computed shadow attributes, explicit catalog values remain discovery
+		// hints; the compiler alone evaluates and validates the effective identity.
+		shadowName, shadowVersion := false, false
+		for _, attribute := range declaration.Attributes {
+			shadowName = shadowName || attribute.Name == (xml.Name{Local: "_name"})
+			shadowVersion = shadowVersion || attribute.Name == (xml.Name{Local: "_package-version"})
+		}
+
+		if !shadowName && declaration.attr("name") != "" {
+			name = declaration.attr("name")
+		}
+
+		if !shadowVersion {
+			version = declaration.attr("package-version")
+		}
 	}
 
 	if version == "" {
 		version = "1"
 	}
 
-	environment.resources.packages = append(environment.resources.packages, suitePackage{name: name, version: version, uri: uri})
-
-	return nil
+	return name, version
 }
 
 // A package name or schema target namespace identifies its content, not the
@@ -573,6 +713,13 @@ func suiteRetrievalResource(node *suiteNode) *suiteNode {
 
 func loadSuiteSchema(root, base string, resources *suiteResourceResolver, environment *preparedSuiteEnvironment, node *suiteNode) error {
 	if node.XMLName.Space != suiteXSLTNamespace {
+		// QT3 imports the built-in functions namespace without a schema file
+		// for untyped json-to-xml. This supplies no schema validation;
+		// validate=true still reaches the evaluator's FOJS0004.
+		if suiteBuiltinJSONSchema(node) {
+			return nil
+		}
+
 		return suiteHarness("schema-bearing environment is not implemented by the Basic-profile harness")
 	}
 
@@ -589,10 +736,20 @@ func loadSuiteSchema(root, base string, resources *suiteResourceResolver, enviro
 	return err
 }
 
+func suiteBuiltinJSONSchema(node *suiteNode) bool {
+	return node.XMLName.Space == "http://www.w3.org/2010/09/qt-fots-catalog" && node.attr("role") == "import" && node.attr("uri") == lexicon.NamespaceFn && node.attr(suiteFile) == ""
+}
+
 func loadSuiteOutput(base string, environment *preparedSuiteEnvironment, node *suiteNode) error {
+	file, fileSpecified := "", false
+
 	for _, attribute := range node.Attributes {
 		if attribute.Name.Space == "" && !slices.Contains([]string{suiteFile, "serialize", "tree", "well-formed", "result-var"}, attribute.Name.Local) {
 			return suiteHarness("unknown output property %q", attribute.Name.Local)
+		}
+
+		if attribute.Name.Space == "" && attribute.Name.Local == suiteFile {
+			file, fileSpecified = attribute.Value, true
 		}
 	}
 
@@ -602,11 +759,16 @@ func loadSuiteOutput(base string, environment *preparedSuiteEnvironment, node *s
 		}
 	}
 
-	if file := node.attr(suiteFile); file != "" {
+	if fileSpecified {
 		if file == "#absent" {
 			environment.baseOutputURI = ""
 		} else {
-			uri, err := resolveSuiteURI(suiteFileURI(base)+"/", file)
+			location := node.baseURI
+			if location == "" {
+				location = suiteFileURI(base) + "/"
+			}
+
+			uri, err := resolveSuiteURI(location, file)
 			if err != nil {
 				return err
 			}
@@ -697,18 +859,25 @@ func suiteParameterValue(ctx context.Context, environment *preparedSuiteEnvironm
 
 	value, err := scoped.query(ctx, expression, bindings)
 	if err != nil {
-		return transform.Sequence{}, suiteHarness("parameter %s: %v", node.attr("name"), err)
+		return transform.Sequence{}, suiteHarness("parameter %s: %w", node.attr("name"), err)
 	}
 
 	return value, nil
 }
 
 func loadSuiteSource(ctx context.Context, root, base string, resources *suiteResourceResolver, environment *preparedSuiteEnvironment, node *suiteNode) error {
+	if status, reason := suiteSourceRequirements(node); status != "" {
+		return suiteHarness("%s", reason)
+	}
 	// Sources without a role only declare retrievable resources. Defer their
 	// XML parse to doc()/document(), where the test can assert loading errors.
 	if node.attr("role") == "" && node.attr(suiteFile) != "" && node.attr("validation") == "" {
 		_, err := registerSuiteResource(root, base, resources, environment.baseURI, node)
 		return err
+	}
+
+	if node.attr(suiteFile) == "" && node.child("content") == nil && node.attr("select") != "" {
+		return loadSuiteSelectedSource(ctx, environment, node)
 	}
 
 	doc, uri, err := readSuiteSource(ctx, root, base, resources, environment, node)
@@ -740,18 +909,18 @@ func loadSuiteSource(ctx context.Context, root, base string, resources *suiteRes
 
 			selected, err := scoped.query(ctx, expression, nil)
 			if err != nil {
-				return suiteHarness("source selection: %v", err)
+				return suiteHarness("source selection: %w", err)
 			}
 
 			environment.contextItem, err = selected.Single()
 			if err != nil {
-				return suiteHarness("source selection must be a singleton: %v", err)
+				return suiteHarness("source selection must be a singleton: %w", err)
 			}
 
 			environment.contextSpecified = true
 		}
 	} else if after, ok := strings.CutPrefix(role, "$"); ok {
-		name, err := suiteQName(after, environment.namespaces)
+		name, err := suiteQName(after, suiteScopedNamespaces(environment, node))
 		if err != nil {
 			return err
 		}
@@ -762,7 +931,47 @@ func loadSuiteSource(ctx context.Context, root, base string, resources *suiteRes
 	return nil
 }
 
+// loadSuiteSelectedSource evaluates a source constructor once, without an
+// implicit context document. Its selected node retains its owning document.
+func loadSuiteSelectedSource(ctx context.Context, environment *preparedSuiteEnvironment, node *suiteNode) error {
+	if node.attr("role") != "." {
+		return suiteHarness("a select-only source requires role=\".\"")
+	}
+
+	if validation := node.attr("validation"); validation != "" && validation != "skip" {
+		return suiteHarness("source validation=%q requires unimplemented harness schema processing", validation)
+	}
+
+	scoped := *environment
+	scoped.document = nil
+	scoped.contextItem = transform.Value{}
+	scoped.namespaces = suiteScopedNamespaces(environment, node)
+
+	selected, err := scoped.query(ctx, node.attr("select"), nil)
+	if err != nil {
+		return suiteHarness("source selection: %w", err)
+	}
+
+	value, err := selected.Single()
+	if err != nil {
+		return suiteHarness("source selection must be a singleton: %w", err)
+	}
+
+	environment.document = nil
+	if selectedNode, ok := value.Node(); ok {
+		environment.document = selectedNode.Document()
+	}
+
+	environment.contextItem, environment.contextSpecified = value, true
+
+	return nil
+}
+
 func readSuiteSource(ctx context.Context, root, base string, resources *suiteResourceResolver, environment *preparedSuiteEnvironment, node *suiteNode) (*transform.Document, string, error) {
+	if status, reason := suiteSourceRequirements(node); status != "" {
+		return nil, "", suiteHarness("%s", reason)
+	}
+
 	if validation := node.attr("validation"); validation != "" && validation != "skip" {
 		return nil, "", suiteHarness("source validation=%q requires unimplemented harness schema processing", validation)
 	}
@@ -791,7 +1000,7 @@ func readSuiteSource(ctx context.Context, root, base string, resources *suiteRes
 
 		result, err := environment.query(ctx, "doc($sourceURI)", transform.Bindings{{Local: "sourceURI"}: transform.Values(transform.String(uri))})
 		if err != nil {
-			return nil, "", suiteHarness("load source: %v", err)
+			return nil, "", suiteHarness("load source: %w", err)
 		}
 
 		doc, err = suiteParsedDocument(result)
@@ -812,7 +1021,7 @@ func readSuiteSource(ctx context.Context, root, base string, resources *suiteRes
 
 		result, err := scoped.query(ctx, "parse-xml($inlineSource)", transform.Bindings{{Local: "inlineSource"}: transform.Values(transform.String(content.Text))})
 		if err != nil {
-			return nil, "", suiteHarness("inline source: %v", err)
+			return nil, "", suiteHarness("inline source: %w", err)
 		}
 
 		doc, err = suiteParsedDocument(result)
@@ -829,7 +1038,7 @@ func readSuiteSource(ctx context.Context, root, base string, resources *suiteRes
 func suiteParsedDocument(result transform.Sequence) (*transform.Document, error) {
 	value, err := result.Single()
 	if err != nil {
-		return nil, suiteHarness("source must be a singleton document: %v", err)
+		return nil, suiteHarness("source must be a singleton document: %w", err)
 	}
 
 	native, ok := value.Node()
@@ -866,12 +1075,12 @@ func suiteSourceValue(ctx context.Context, environment *preparedSuiteEnvironment
 	// schemes are not silently replaced by the containing document.
 	selected, err := environment.query(ctx, "if (string(Q{http://www.w3.org/2001/XMLSchema}NCName($fragment)) eq $fragment) then id($fragment, $document) else ()", transform.Bindings{{Local: "fragment"}: transform.Values(transform.String(fragment)), {Local: "document"}: transform.Values(doc.Root())})
 	if err != nil {
-		return transform.Value{}, true, suiteHarness("source fragment %q: %v", fragment, err)
+		return transform.Value{}, true, suiteHarness("source fragment %q: %w", fragment, err)
 	}
 
 	value, err := selected.Single()
 	if err != nil {
-		return transform.Value{}, true, suiteHarness("source fragment %q must identify one element: %v", fragment, err)
+		return transform.Value{}, true, suiteHarness("source fragment %q must identify one element: %w", fragment, err)
 	}
 
 	return value, true, nil
@@ -879,11 +1088,15 @@ func suiteSourceValue(ctx context.Context, environment *preparedSuiteEnvironment
 
 func registerSuiteResource(root, base string, resources *suiteResourceResolver, staticBase string, node *suiteNode) (string, error) {
 	file, err := url.Parse(node.attr(suiteFile))
+	if err == nil && node.XMLName.Local == suiteResourceTag && (file.Scheme == "http" || file.Scheme == "https") && file.Host != "" && file.User == nil && file.Fragment == "" {
+		return registerSuiteRemoteResource(resources, staticBase, node, file.String())
+	}
+
 	if err != nil || file.IsAbs() || file.Host != "" || file.User != nil || file.RawQuery != "" || file.ForceQuery {
 		return "", suiteHarness("invalid local resource reference %q", node.attr(suiteFile))
 	}
 
-	path, err := localPath(root, base, filepath.FromSlash(file.Path))
+	path, err := suiteLocalReferencePath(root, base, node, file)
 	if err != nil {
 		return "", err
 	}
@@ -919,7 +1132,46 @@ func registerSuiteResource(root, base string, resources *suiteResourceResolver, 
 		return "", suiteHarness("conflicting resource URI %q", resolved)
 	}
 
+	if _, exists := resources.unavailable[retrieval]; exists {
+		return "", suiteHarness("conflicting resource URI %q", resolved)
+	}
+
 	resources.resources[retrieval] = path
+
+	return resolved, nil
+}
+
+// The catalog may declare shared remote resources that a test never reads.
+// Record their unavailability lazily; declarations do not authorize network I/O.
+func registerSuiteRemoteResource(resources *suiteResourceResolver, staticBase string, node *suiteNode, file string) (string, error) {
+	uri := node.attr("uri")
+	if uri == "" {
+		uri = file
+	}
+
+	resolved, err := resolveSuiteURI(staticBase, uri)
+	if err != nil {
+		return "", err
+	}
+
+	retrieval, _, err := suiteRetrievalURI(resolved)
+	if err != nil {
+		return "", err
+	}
+
+	if _, exists := resources.resources[retrieval]; exists {
+		return "", suiteHarness("conflicting resource URI %q", resolved)
+	}
+
+	if previous, exists := resources.unavailable[retrieval]; exists && previous != file {
+		return "", suiteHarness("conflicting resource URI %q", resolved)
+	}
+
+	if resources.unavailable == nil {
+		resources.unavailable = make(map[string]string)
+	}
+
+	resources.unavailable[retrieval] = file
 
 	return resolved, nil
 }
@@ -955,9 +1207,14 @@ func resolveSuiteURI(base, uri string) (string, error) {
 }
 
 func loadSuiteResource(root, base string, resources *suiteResourceResolver, environment *preparedSuiteEnvironment, node *suiteNode) error {
+	_, err := registerSuiteTextResource(root, base, resources, environment, node)
+	return err
+}
+
+func registerSuiteTextResource(root, base string, resources *suiteResourceResolver, environment *preparedSuiteEnvironment, node *suiteNode) (string, error) {
 	uri, err := registerSuiteResource(root, base, resources, environment.baseURI, node)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	contentType := node.attr("media-type")
@@ -968,7 +1225,7 @@ func loadSuiteResource(root, base string, resources *suiteResourceResolver, envi
 
 		mediaType, parameters, err := mime.ParseMediaType(contentType)
 		if err != nil {
-			return suiteHarness("resource media type: %v", err)
+			return "", suiteHarness("resource media type: %w", err)
 		}
 
 		parameters["charset"] = encoding
@@ -980,12 +1237,12 @@ func loadSuiteResource(root, base string, resources *suiteResourceResolver, envi
 	}
 
 	if previous, exists := resources.mediaTypes[uri]; exists && previous != contentType {
-		return suiteHarness("conflicting resource media type for %q", uri)
+		return "", suiteHarness("conflicting resource media type for %q", uri)
 	}
 
 	resources.mediaTypes[uri] = contentType
 
-	return nil
+	return uri, nil
 }
 
 func loadSuiteCollection(ctx context.Context, root, base string, resources *suiteResourceResolver, environment *preparedSuiteEnvironment, node *suiteNode) error {
@@ -1022,15 +1279,38 @@ func loadSuiteCollection(ctx context.Context, root, base string, resources *suit
 				uris = append(uris, memberURI)
 			}
 		case "query":
-			values, err := environment.query(ctx, child.Text, nil)
+			scoped := *environment
+			scoped.namespaces = suiteScopedNamespaces(environment, child)
+
+			values, err := scoped.query(ctx, child.Text, nil)
 			if err != nil {
-				return suiteHarness("collection query: %v", err)
+				return suiteHarness("collection query: %w", err)
 			}
 
 			for index := range values.Len() {
 				value, _ := values.At(index)
 				items = append(items, value)
 			}
+		case suiteResourceTag:
+			// Catalog resourceType describes a file read as text. Use the same
+			// typed reader, decoder and budgets as standalone unparsed-text().
+			memberURI, err := registerSuiteTextResource(root, base, resources, environment, child)
+			if err != nil {
+				return err
+			}
+
+			values, err := environment.query(ctx, "unparsed-text($collectionResource)", transform.Bindings{{Local: "collectionResource"}: transform.Values(transform.String(memberURI))})
+			if err != nil {
+				return suiteHarness("collection resource: %w", err)
+			}
+
+			value, err := values.Single()
+			if err != nil {
+				return suiteHarness("collection text resource must be a singleton: %w", err)
+			}
+
+			items = append(items, value)
+			uris = append(uris, memberURI)
 		default:
 			return suiteHarness("collection item %q is not implemented", child.XMLName.Local)
 		}
@@ -1054,7 +1334,7 @@ func suiteNamespaceDeclarations(node *suiteNode, namespaces map[string]string) {
 	maps.Copy(namespaces, node.namespaces)
 
 	for _, attribute := range node.Attributes {
-		if attribute.Name.Space == "xmlns" {
+		if attribute.Name.Space == lexicon.PrefixXMLNS {
 			namespaces[attribute.Name.Local] = attribute.Value
 		}
 	}

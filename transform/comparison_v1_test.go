@@ -8,24 +8,28 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/skarm/xmlsec/resource"
 	"github.com/skarm/xmlsec/transform"
 )
 
 func TestCompareSaxonLanguageSemantics(t *testing.T) {
 	classpath, binary := saxonRuntime(t)
-
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
 
 	e := engine(t, transform.Config{})
 	for expression, want := range map[string]string{
@@ -45,6 +49,9 @@ func TestCompareSaxonLanguageSemantics(t *testing.T) {
 		`for $v in 'local' return $v castable as xs:QName`:                    nameTrue,
 		`1 cast as xs:error`:                                                  errCodeFORG0001,
 		`'value' cast as xs:error`:                                            errCodeFORG0001,
+		`empty(xs:error(()))`:                                                 nameTrue,
+		`empty(() cast as xs:error?)`:                                         nameTrue,
+		`xs:error(1)`:                                                         errCodeFORG0001,
 		`xs:numeric(1) instance of xs:integer`:                                nameTrue,
 		`xs:numeric(2.5) instance of xs:decimal`:                              nameTrue,
 		`xs:numeric(xs:float('2')) instance of xs:float`:                      nameTrue,
@@ -167,6 +174,9 @@ func TestCompareSaxonLanguageSemantics(t *testing.T) {
 		`serialize('x', parse-xml('<serialization-parameters xmlns="http://www.w3.org/2010/xslt-xquery-serialization"><use-character-maps><character-map character="a" map-string="x"/><character-map character="a" map-string="y"/></use-character-maps></serialization-parameters>')/*)`: errCodeSEPM0018,
 	} {
 		t.Run(expression, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+
 			compareSaxonExpression(t, ctx, e, binary, classpath, expression, want)
 		})
 	}
@@ -256,6 +266,7 @@ func TestCompareSaxonRelativeNamespaceInput(t *testing.T) {
 
 func TestCompareSaxonDocumentFunctionContracts(t *testing.T) {
 	classpath, binary := saxonRuntime(t)
+	compareSaxonDocumentSnapshots(t, binary, classpath)
 	encodingFile := filepath.Join(t.TempDir(), "encoding.txt")
 	if err := os.WriteFile(encodingFile, []byte("1"), 0o600); err != nil {
 		t.Fatal(err)
@@ -276,6 +287,7 @@ func TestCompareSaxonDocumentFunctionContracts(t *testing.T) {
 	}
 	for _, test := range jsonResourceDecodingCases() {
 		t.Run("JSON encoding "+test.name, func(t *testing.T) {
+			publishedProofVector(t, test.want)
 			file := filepath.Join(t.TempDir(), "resource.json")
 			if err := os.WriteFile(file, test.data, 0o600); err != nil {
 				t.Fatal(err)
@@ -348,6 +360,47 @@ func TestCompareSaxonDocumentFunctionContracts(t *testing.T) {
 	}
 }
 
+func compareSaxonDocumentSnapshots(t *testing.T, binary, classpath string) {
+	t.Helper()
+	for _, test := range []struct {
+		name, expression, want string
+		missing, mutable       bool
+	}{
+		{"negative snapshot", `doc-available($uri) eq doc-available($uri)`, nameTrue, true, true},
+		{"negative snapshot named", `(doc-available#1)($uri) eq (doc-available#1)($uri)`, nameTrue, true, true},
+		{"available then doc", `if (doc-available($uri)) then string(doc($uri)/r) else 'unavailable'`, "first", false, true},
+		{"doc then available", `concat(doc($uri)/r,'|',doc-available($uri))`, "first|true", false, true},
+		{"unavailable remains unavailable", `if (doc-available($uri)) then exists(doc($uri)) else not(doc-available($uri))`, nameTrue, true, true},
+		{"permanently unavailable", `string-join(for $u in ($uri,$uri) return string(doc-available($u)), '|')`, "false|false", true, false},
+		{"permanently unavailable doc", `(doc-available($uri),doc($uri))`, "FODC0002", true, false},
+	} {
+		t.Run("document snapshot "+test.name, func(t *testing.T) {
+			var lock sync.Mutex
+			requests := make(map[string]int)
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				lock.Lock()
+				requests[request.UserAgent()]++
+				first := requests[request.UserAgent()] == 1
+				lock.Unlock()
+				if (first || !test.mutable) == test.missing {
+					http.Error(writer, "document unavailable", http.StatusNotFound)
+					return
+				}
+				writer.Header().Set("Content-Type", "application/xml")
+				_, _ = io.WriteString(writer, `<r>first</r>`)
+			}))
+			t.Cleanup(server.Close)
+			resolver, err := resource.NewHTTPResolver(resource.HTTPConfig{AllowedOrigins: []string{server.URL}, Client: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := engine(t, transform.Config{Resolver: resolver})
+			expression := strings.ReplaceAll(test.expression, "$uri", "'"+server.URL+"/value'")
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, test.want)
+		})
+	}
+}
+
 func TestCompareSaxonDocumentBaseURI(t *testing.T) {
 	classpath, binary := saxonRuntime(t)
 	for _, test := range documentBaseCases() {
@@ -396,6 +449,24 @@ func TestCompareSaxonDocumentBaseURI(t *testing.T) {
 func TestCompareSaxonFunctionTypes(t *testing.T) {
 	classpath, binary := saxonRuntime(t)
 	e := engine(t, transform.Config{})
+	for expression, want := range processingInstructionTypeCases() {
+		t.Run("PI type "+strconv.QuoteToASCII(expression), func(t *testing.T) {
+			expression = "let $d := parse-xml('" + processingInstructionTypeXML + "') return $d ! (" + expression + ")"
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want)
+		})
+	}
+	for expression, want := range processingInstructionFunctionTypeCases() {
+		t.Run("PI function type "+strconv.QuoteToASCII(expression), func(t *testing.T) {
+			expression = "let $d := parse-xml('" + processingInstructionTypeXML + "') return $d ! (" + expression + ")"
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want)
+		})
+	}
+	for expression, want := range namespaceNodeTypeCases() {
+		t.Run("node type namespace "+expression, func(t *testing.T) {
+			body := `<xsl:variable name="d">` + namespaceNodeTypeXML + `</xsl:variable><xsl:template name="start"><xsl:for-each select="$d" xmlns:p="urn:node" xmlns:t="http://www.w3.org/2001/XMLSchema" xpath-default-namespace="urn:node">` + valueOfExpression(expression) + `</xsl:for-each></xsl:template>`
+			compareSaxonStylesheet(t, t.Context(), e, binary, classpath, body, want)
+		})
+	}
 	for expression, want := range standardFunctionTypeCases() {
 		t.Run(expression, func(t *testing.T) {
 			oracle := want
@@ -424,12 +495,44 @@ func TestCompareSaxonFunctionTypes(t *testing.T) {
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want, oracle)
 		})
 	}
+	for expression, want := range mathFunctionContractCases() {
+		t.Run("math contract "+expression, func(t *testing.T) {
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want)
+		})
+	}
+	for expression, want := range sequenceConcatenationContractCases() {
+		t.Run("sequence contract "+expression, func(t *testing.T) {
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want)
+		})
+	}
+	for expression, want := range basicNodeAccessorCases() {
+		t.Run("node accessor "+expression, func(t *testing.T) {
+			expression = "let $d := parse-xml('" + basicAccessorXML + "') return " + expression
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want)
+		})
+	}
+	compareSaxonURICollections(t, binary, classpath)
+	for expression, want := range publishedFunctionArityCases(transform.XPath31) {
+		t.Run("published arity "+expression, func(t *testing.T) {
+			oracle := want
+			if expression == "fn:deep-equal((),(),(),())" {
+				// The pinned Saxon also exposes the later four-argument
+				// extension; the published FO31 library has only arities 2/3.
+				oracle = nameTrue
+			}
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want, oracle)
+		})
+	}
 	for expression, want := range sequenceSubtypeCases() {
 		t.Run(expression, func(t *testing.T) {
 			oracle := want
 			// REC 3.0/3.1 §2.5.6.1 explicitly makes xs:error and xs:error+
 			// bottom sequence types. The pinned Saxon misses these table cells.
 			switch expression {
+			case `(function() as array(*) {error()}) instance of function() as array(item()*)`:
+				// XP31 2.5.6.2 gives no inverse rule from array(*) to
+				// typed array(item()*), despite their matching value sets.
+				oracle = nameTrue
 			case `(function() as xs:error {error()}) instance of function() as empty-sequence()`,
 				`(function() as xs:error+ {error()}) instance of function() as empty-sequence()`,
 				`(function() as xs:error+ {error()}) instance of function() as node()`,
@@ -461,6 +564,15 @@ func TestCompareSaxonFunctionTypes(t *testing.T) {
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want, oracle)
 		})
 	}
+	for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+		for expression, want := range xpathLexicalCases(version) {
+			t.Run(fmt.Sprintf("lexical %d/%s", version, strconv.QuoteToASCII(expression)), func(t *testing.T) {
+				source := sheet(version30, `<xsl:template name="start" xmlns:p="urn:test"><xsl:for-each select="document('module.xsl')">`+valueOfExpression(expression)+`</xsl:for-each></xsl:template>`)
+				compareSaxonCompiler(t, binary, classpath, source, xpathLexicalXML, want, transform.XSLT30)
+			})
+		}
+	}
+
 	// Related typed sequence expressions cover key atomization, predicate
 	// numeric comparison, and the core XPath expression contracts.
 	for _, cases := range []map[string]string{mapKeyAtomizationCases(), predicateNumericCases(), xpathCoreClauseCases()} {
@@ -502,6 +614,67 @@ func TestCompareSaxonFunctionTypes(t *testing.T) {
 			}
 			compareSaxonStylesheet(t, t.Context(), e, binary, classpath, `<xsl:template name="start">`+valueOfExpression(expression)+`</xsl:template>`, want, oracle)
 		})
+	}
+}
+
+func compareSaxonURICollections(t *testing.T, binary, classpath string) {
+	t.Helper()
+	directory := t.TempDir()
+	for name, data := range map[string]string{
+		"one.xml": `<one/>`, "two.xml": `<two/>`,
+		"collection.cxn": `<collection stable="true"><doc href="one.xml"/><doc href="two.xml"/></collection>`,
+	} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	uri := "file://" + filepath.ToSlash(filepath.Join(directory, "collection.cxn"))
+	e := engine(t, transform.Config{CollectionResolver: collectionResolverFixture{uris: func(ctx context.Context, requested string) ([]string, error) {
+		if requested != uri {
+			return nil, transform.ErrResource
+		}
+		return []string{"file://" + filepath.ToSlash(filepath.Join(directory, "one.xml")), "file://" + filepath.ToSlash(filepath.Join(directory, "two.xml"))}, ctx.Err()
+	}}})
+	for name, test := range map[string]struct{ expression, want string }{
+		"members":     {`count(uri-collection($uri))`, "2"},
+		"atomic type": {`every $uri in uri-collection($uri) satisfies $uri instance of xs:anyURI`, nameTrue},
+		"stable view": {`deep-equal(uri-collection($uri),uri-collection($uri))`, nameTrue},
+	} {
+		t.Run("URI collection "+name, func(t *testing.T) {
+			expression := "let $uri := '" + uri + "' return " + test.expression
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, test.want)
+		})
+	}
+	for _, expression := range xpathSyntaxErrorSources() {
+		t.Run("XPath syntax "+expression, func(t *testing.T) {
+			source := sheet(version30, `<xsl:template name="start" xmlns:p="urn:syntax" xmlns:fn="http://www.w3.org/2005/xpath-functions">`+valueOfExpression(expression)+`</xsl:template>`)
+			compareSaxonCompiler(t, binary, classpath, source, sheet(version30, ""), errCodeXPST0003, transform.XSLT30)
+		})
+	}
+
+	for _, name := range xpathReservedNames(transform.XPath31) {
+		for _, prefixed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("reserved reference/%s/%t", name, prefixed), func(t *testing.T) {
+				want := errCodeXPST0003
+				if prefixed {
+					want = "registered"
+				}
+				source := strings.Replace(reservedNameProofStylesheet(version30, name, prefixed), name+"(1,2)", name+"#2(1,2)", 1)
+				compareSaxonCompiler(t, binary, classpath, source, sheet(version30, ""), want, transform.XSLT30)
+			})
+		}
+	}
+
+	for _, name := range xpathReservedNames(transform.XPath31) {
+		for _, prefixed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("reserved/%s/%t", name, prefixed), func(t *testing.T) {
+				want := errCodeXPST0003
+				if prefixed {
+					want = "registered"
+				}
+				compareSaxonCompiler(t, binary, classpath, reservedNameProofStylesheet(version30, name, prefixed), sheet(version30, ""), want, transform.XSLT30)
+			})
+		}
 	}
 }
 
@@ -792,10 +965,32 @@ func TestCompareSaxon20CompilerContracts(t *testing.T) {
 		source := sheet(version20, `<xsl:variable name="d">`+untypedNodeTypeXML+`</xsl:variable><xsl:template name="start"><xsl:for-each select="$d">`+valueOfExpression(expression)+`</xsl:for-each></xsl:template>`)
 		tests = append(tests, struct{ name, source, module, want string }{"untyped node " + expression, source, sheet(version20, ""), want})
 	}
+	for expression, want := range processingInstructionTypeCases() {
+		source := sheet(version20, `<xsl:template name="start"><xsl:for-each select="document('module.xsl')">`+valueOfExpression(expression)+`</xsl:for-each></xsl:template>`)
+		tests = append(tests, struct{ name, source, module, want string }{"PI type " + strconv.QuoteToASCII(expression), source, processingInstructionTypeXML, want})
+	}
+	for expression, want := range namespaceNodeTypeCases() {
+		source := sheet(version20, `<xsl:variable name="d">`+namespaceNodeTypeXML+`</xsl:variable><xsl:template name="start"><xsl:for-each select="$d" xmlns:p="urn:node" xmlns:t="http://www.w3.org/2001/XMLSchema" xpath-default-namespace="urn:node">`+valueOfExpression(expression)+`</xsl:for-each></xsl:template>`)
+		tests = append(tests, struct{ name, source, module, want string }{"node type namespace " + expression, source, sheet(version20, ""), want})
+	}
 
 	for expression, want := range qnameWhitespaceCases() {
 		source := sheet(version20, `<xsl:template name="start">`+valueOfExpression(expression)+`</xsl:template>`)
 		tests = append(tests, struct{ name, source, module, want string }{"QName whitespace " + expression, source, sheet(version20, ""), want})
+	}
+	for expression, want := range publishedFunctionArityCases(transform.XPath20) {
+		// The stylesheet's default function namespace supplies the same
+		// expanded names without requiring an explicit fn prefix binding.
+		source := sheet(version20, `<xsl:template name="start">`+valueOfExpression(strings.TrimPrefix(expression, "fn:"))+`</xsl:template>`)
+		tests = append(tests, struct{ name, source, module, want string }{"published arity " + expression, source, sheet(version20, ""), want})
+	}
+	for expression, want := range basicNodeAccessorCases() {
+		source := basicNodeAccessorSheet(version20, expression)
+		tests = append(tests, struct{ name, source, module, want string }{"node accessor " + expression, source, sheet(version20, ""), want})
+	}
+	for expression, want := range sequenceConcatenationContractCases() {
+		source := sheet(version20, `<xsl:template name="start">`+valueOfExpression(expression)+`</xsl:template>`)
+		tests = append(tests, struct{ name, source, module, want string }{"sequence contract " + expression, source, sheet(version20, ""), want})
 	}
 	for expression, want := range qnameLiteral20Cases() {
 		source := sheet(version20, `<xsl:template name="start">`+valueOfExpression(expression)+`</xsl:template>`)
@@ -817,6 +1012,13 @@ func TestCompareSaxon20CompilerContracts(t *testing.T) {
 		{"text invalid UTF8", `unparsed-text('module.xsl','UTF-8')`, "\xff", "XTDE1190"},
 		{"text availability invalid UTF8", `unparsed-text-available('module.xsl','UTF-8')`, "\xff", "false"},
 		{"text valid", `unparsed-text('module.xsl','UTF-8')`, "ok", "ok"},
+		{"text UTF16 BOM", `unparsed-text('module.xsl','UTF-16')`, "\xff\xfeA\x00", "A"},
+		{"text implicit invalid UTF8", `unparsed-text('module.xsl')`, "\xff", "XTDE1200"},
+		{"text implicit invalid XML character", `unparsed-text('module.xsl')`, "\x00", "XTDE1190"},
+		{"text detected UTF8 malformed", `unparsed-text('module.xsl')`, "\xef\xbb\xbf\xff", "XTDE1190"},
+		{"text explicit Latin1", `unparsed-text('module.xsl','ISO-8859-1')`, "\xff", "ÿ"},
+		{"text implicit cached failure", `if (unparsed-text-available('module.xsl')) then 'available' else unparsed-text('module.xsl')`, "\xff", "XTDE1200"},
+		{"text preserves line endings", `string-join(for $c in string-to-codepoints(unparsed-text('module.xsl','UTF-8')) return string($c),',')`, "a\r\nb\rc\n", "97,13,10,98,13,99,10"},
 		{"binary min singleton", `min(xs:hexBinary('01'))`, "", "FORG0006"},
 		{"binary min sequence", `min((xs:base64Binary('////'),xs:base64Binary('AAAA')))`, "", "FORG0006"},
 		{"binary max sequence", `max((xs:hexBinary('01'),xs:hexBinary('02')))`, "", "FORG0006"},
@@ -825,12 +1027,49 @@ func TestCompareSaxon20CompilerContracts(t *testing.T) {
 		tests = append(tests, struct{ name, source, module, want string }{test.name, source, test.module, test.want})
 	}
 
+	for expression, want := range xpathLexicalCases(transform.XPath20) {
+		source := sheet(version20, `<xsl:template name="start" xmlns:p="urn:test"><xsl:for-each select="document('module.xsl')">`+valueOfExpression(expression)+`</xsl:for-each></xsl:template>`)
+		tests = append(tests, struct{ name, source, module, want string }{"XPath lexical " + strconv.QuoteToASCII(expression), source, xpathLexicalXML, want})
+	}
+
+	for _, expression := range xpathSyntaxErrorSources() {
+		source := sheet(version20, `<xsl:template name="start" xmlns:p="urn:syntax" xmlns:fn="http://www.w3.org/2005/xpath-functions">`+valueOfExpression(expression)+`</xsl:template>`)
+		tests = append(tests, struct{ name, source, module, want string }{"XPath syntax " + expression, source, sheet(version20, ""), errCodeXPST0003})
+	}
+	for _, test := range hostFunctionCases() {
+		if test.name == "constructed attribute annotation" {
+			tests = append(tests, struct{ name, source, module, want string }{test.name, hostFunctionSheet(version20, test), sheet(version20, ""), test.want20})
+		}
+	}
+
+	for _, name := range xpathReservedNames(transform.XPath20) {
+		source := reservedNameProofStylesheet(version20, name, true)
+		tests = append(tests, struct{ name, source, module, want string }{"reserved prefix " + name, source, sheet(version20, ""), "registered"})
+		source = reservedNameProofStylesheet(version20, name, false)
+		tests = append(tests, struct{ name, source, module, want string }{"reserved bare " + name, source, sheet(version20, ""), errCodeXPST0003})
+	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			oracle := test.want
+			if test.name == "text implicit invalid XML character" || test.name == "text detected UTF8 malformed" {
+				// The old processor groups no-argument decoding failures under1200,
+				// including valid UTF-8 that contains a prohibited XML character.
+				// For in-band UTF-8 BOM plus malformed bytes, REC20's reference
+				// to external information leaves overlapping error descriptions.
+				// Native selects1190 after recognizing UTF-8; this is a declared
+				// interpretation, not a uniquely prescribed Saxon defect.
+				// Keep these two exact diagnostics outside agreement evidence.
+				oracle = "XTDE1200"
+			}
 			if test.name == "serialization20 XML escaping" {
 				oracle = strings.ReplaceAll(oracle, "&quot;", "&#34;")
 			}
+			if test.name == `XPath lexical "1<2<3"` {
+				// REC20 ComparisonExpr permits only one comparison. The pinned old
+				// processor parses a chain and reports its later boolean/integer mismatch.
+				oracle = errCodeXPTY0004
+			}
+
 			switch test.name {
 			case "static QName xs:QName('missing:x')", "static QName 'missing:x' cast as xs:QName":
 				// FO20 5.3 explicitly requires static FONS0004. The
@@ -865,6 +1104,15 @@ func TestCompareSaxon20CompilerContracts(t *testing.T) {
 			compareSaxonCompiler(t, binary, classpath, test.source, test.module, test.want, transform.XSLT20, oracle)
 		})
 	}
+}
+
+func reservedNameProofStylesheet(version, name string, prefixed bool) string {
+	function := `<xsl:function name="p:` + name + `" xmlns:p="urn:reserved-name-proof"><xsl:param name="a"/><xsl:param name="b"/><xsl:sequence select="'registered'"/></xsl:function>`
+	call := name + "(1,2)"
+	if prefixed {
+		call = "p:" + call
+	}
+	return sheet(version, function+`<xsl:template name="start" xmlns:p="urn:reserved-name-proof">`+valueOfExpression(call)+`</xsl:template>`)
 }
 
 func compareSaxonCompiler(t *testing.T, binary, classpath, source, module, want string, processor transform.XSLTVersion, oracle ...string) {
@@ -906,6 +1154,8 @@ func compareSaxonCompiler(t *testing.T, binary, classpath, source, module, want 
 	if got != want {
 		t.Fatal("native", processor, got, err, want)
 	}
+	publishedProofVector(t, want)
+	nativeWant := want
 	if len(oracle) > 0 {
 		want = oracle[0]
 	}
@@ -918,6 +1168,7 @@ func compareSaxonCompiler(t *testing.T, binary, classpath, source, module, want 
 			t.Fatal("independent compiler diagnostic", output, err, want)
 		}
 
+		saxonProofAgreement(t, binary, classpath, false)
 		t.Log("Independent engine diagnostic; excluded from exact agreements:", diagnostic)
 
 		return
@@ -934,6 +1185,7 @@ func compareSaxonCompiler(t *testing.T, binary, classpath, source, module, want 
 		}
 		t.Fatalf("Saxon: %q, %v; want %q", output, err, want)
 	}
+	saxonProofAgreement(t, binary, classpath, nativeWant == want)
 }
 
 func saxonCompilerArguments(classpath, main string, processor transform.XSLTVersion) []string {
@@ -942,6 +1194,48 @@ func saxonCompilerArguments(classpath, main string, processor transform.XSLTVers
 		args = append(args, "-xsltversion:2.0")
 	}
 	return append(args, "-xsl:"+main, "-it:start")
+}
+
+func TestCompareSaxonResidualEditionProofs(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	oldClasspath := os.Getenv("SAXON20_CLASSPATH")
+	if oldClasspath == "" {
+		t.Fatal("SAXON20_CLASSPATH is required for paired edition proofs")
+	}
+	for _, test := range residualEditionProofCases() {
+		for _, processor := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
+			t.Run(test.name+"/"+strconv.Itoa(int(processor)), func(t *testing.T) {
+				selectedClasspath, want := oldClasspath, test.want20
+				if processor == transform.XSLT30 {
+					selectedClasspath, want = classpath, test.want30
+				}
+				source := residualEditionProofSource(test)
+				oracle := want
+				if processor == transform.XSLT30 {
+					// Match the independently selected edition explicitly. The
+					// native paired check also verifies source 2.0 under 3.0.
+					source = strings.Replace(source, `version="2.0"`, `version="3.0"`, 1)
+					switch test.name {
+					case "error-0600a":
+						oracle = "XTTE0600"
+					case "error-1370a":
+						oracle = "XTDE1370"
+					case "error-1380a":
+						oracle = "XTDE1380"
+					}
+					if oracle != want {
+						t.Log("Pinned Saxon error vocabulary diagnostic; excluded from exact agreements")
+					}
+				} else if test.name == "result-document-0286" || test.name == "result-document-0287" {
+					// REC 20 assigns XTSE1570 to method, not name. Both engines
+					// reject the 3.0 EQName syntax, but their codes differ.
+					oracle = "XTSE1570"
+					t.Log("Invalid output name diagnostic; excluded from exact code agreements")
+				}
+				compareSaxonCompiler(t, binary, selectedClasspath, source, sheet(version20, ""), want, processor, oracle)
+			})
+		}
+	}
 }
 
 func TestCompareSaxonConditionalCompilation(t *testing.T) {
@@ -1230,14 +1524,42 @@ func TestCompareSaxonStaticParameterContracts(t *testing.T) {
 	}
 }
 
+func TestCompareSaxonPackageCollectionViews(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	for _, test := range packageCollectionViewCases() {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			for name, value := range map[string]string{
+				"main.xsl":       test.source,
+				"library.xsl":    test.library,
+				"input.xml":      `<doc><a> </a><b> </b></doc>`,
+				"collection.cxn": `<collection stable="true"><doc href="input.xml"/></collection>`,
+			} {
+				if err := os.WriteFile(filepath.Join(directory, name), []byte(value), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			output, err := exec.CommandContext(t.Context(), binary, "-cp", classpath, "net.sf.saxon.Transform", "-xsl:"+filepath.Join(directory, "main.xsl"), "-lib:"+filepath.Join(directory, "library.xsl"), "-it:start").Output()
+			if err != nil || string(output) != test.want {
+				var failure *exec.ExitError
+				if errors.As(err, &failure) {
+					t.Log(string(failure.Stderr))
+				}
+				t.Fatal(string(output), err, test.want)
+			}
+			saxonProofAgreement(t, binary, classpath, true)
+		})
+	}
+}
+
 func TestCompareSaxonPackageBindings(t *testing.T) {
 	classpath, binary := saxonRuntime(t)
 
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-
 	for _, test := range packageBindingCases() {
 		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+
 			dir := t.TempDir()
 
 			mainPath, libraryPath := filepath.Join(dir, "main.xsl"), filepath.Join(dir, "library.xsl")
@@ -1526,6 +1848,13 @@ func TestCompareSaxonMarkupSerializationContracts(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			check := markupSerializationCheck(test)
 			prefix := `let $s := transform(map{'stylesheet-text':'` + strings.ReplaceAll(markupSerializationSheet(test, false), "'", "''") + `','initial-template':QName('', 'start'),'delivery-format':'serialized'})?output return `
+			if test.name == "Sequence text coalesces before normalization" {
+				// SER section 2 coalesces text before the normalization phase.
+				// Saxon normalizes its chunks separately; check the exact
+				// decomposed result as a diagnostic, not an agreement.
+				compareSaxonExpression(t, t.Context(), e, binary, classpath, prefix+`$s`, "é", "e\u0301")
+				return
+			}
 			if oracle := serializationSequenceOracle(test.name, test.want); oracle != test.want {
 				compareSaxonExpression(t, t.Context(), e, binary, classpath, prefix+`$s`, test.want, oracle)
 				return
@@ -1597,18 +1926,31 @@ func htmlNamespaceOracleMismatch(name string) bool {
 
 func TestCompareSaxonContextualKeywordOperands(t *testing.T) {
 	classpath, binary := saxonRuntime(t)
-	var prolog strings.Builder
+	var namespaces strings.Builder
 	for _, keyword := range contextualOperatorKeywords() {
-		prolog.WriteString(`declare namespace ` + keyword + `="http://www.w3.org/2005/xpath-functions";`)
+		namespaces.WriteString(` xmlns:` + keyword + `="http://www.w3.org/2005/xpath-functions"`)
 	}
-	for _, test := range contextualKeywordOperandCases() {
-		t.Run(test.expression, func(t *testing.T) {
-			expression := prolog.String() + `parse-xml('` + contextualKeywordXML() + `')/r ! (` + test.expression + `)`
-			result, err := saxonQuery(t, t.Context(), binary, classpath, expression)
-			if err != nil || string(result) != test.want {
-				t.Fatalf("Saxon: %q, %v; want %q", result, err, test.want)
+	for _, version := range []string{version20, version30, "3.1"} {
+		selectedClasspath, processor := classpath, transform.XSLT30
+		if version == version20 {
+			selectedClasspath = os.Getenv("SAXON20_CLASSPATH")
+			processor = transform.XSLT20
+			if selectedClasspath == "" {
+				t.Fatal("SAXON20_CLASSPATH is required")
 			}
-		})
+		}
+		for _, test := range contextualKeywordOperandCases() {
+			t.Run(version+"/"+test.expression, func(t *testing.T) {
+				body := `<xsl:variable name="d">` + contextualKeywordXML() + `</xsl:variable><xsl:template name="start"><xsl:for-each select="$d/r"` + namespaces.String() + `>` + valueOfExpression(test.expression) + `</xsl:for-each></xsl:template>`
+				// XSLT 3.0 embeds the same lexical constructs in XPath 3.1; the raw
+				// selected 3.0/3.1 public engine controls use this exact shared input.
+				sourceVersion := version
+				if version == "3.1" {
+					sourceVersion = version30
+				}
+				compareSaxonCompiler(t, binary, selectedClasspath, sheet(sourceVersion, body), sheet(sourceVersion, ""), test.want, processor)
+			})
+		}
 	}
 }
 
@@ -1660,11 +2002,13 @@ func compareSaxonConfiguredExpression(t *testing.T, ctx context.Context, e *tran
 		t.Fatal(value, err, want)
 	}
 
+	publishedProofVector(t, want)
 	expected := want
 	if len(oracleWant) != 0 {
 		expected = oracleWant[0]
 	}
 	if expected != want {
+		saxonProofAgreement(t, binary, classpath, false)
 		t.Log("Independent diagnostic; excluded from exact agreements:", want, expected)
 	}
 
@@ -1713,6 +2057,9 @@ func compareSaxonConfiguredExpression(t *testing.T, ctx context.Context, e *tran
 
 		t.Fatalf("Saxon %s: %q, %v; want %q", expression, output, err, expected)
 	}
+	if expected == want {
+		saxonProofAgreement(t, binary, classpath, true)
+	}
 }
 
 // Unicode 7.0.0 UnicodeData.txt already maps U+037F to U+03F3 and back.
@@ -1759,6 +2106,43 @@ func TestCompareSaxonXMLDeclarationDiagnostic(t *testing.T) {
 	if err != nil || string(output) != nameTrue {
 		t.Fatalf("Saxon declaration diagnostic changed: %q, %v", output, err)
 	}
+}
+
+// Cache immutable subprocess identities across thousands of comparison cases.
+var saxonProofVersions sync.Map //nolint:gochecknoglobals // Repeating a JVM launch for each witness would dominate the verification run.
+
+func saxonProofOracle(t *testing.T, binary, classpath string) string {
+	t.Helper()
+	key := binary + "\x00" + classpath
+	if found, ok := saxonProofVersions.Load(key); ok {
+		return found.(string)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, binary, "-cp", classpath, "net.sf.saxon.Version").CombinedOutput()
+	if err != nil {
+		t.Fatal("independent processor identity", string(output), err)
+	}
+	oracle := ""
+	switch {
+	case strings.Contains(string(output), "SAXON-J-HE 12.10"):
+		oracle = "saxon-12.10"
+	case strings.Contains(string(output), "SAXON 9.4.0.9"):
+		oracle = "saxon-9.4"
+	default:
+		t.Fatal("unreviewed independent processor version", string(output))
+	}
+	saxonProofVersions.Store(key, oracle)
+	return oracle
+}
+
+func saxonProofAgreement(t *testing.T, binary, classpath string, agreement bool) {
+	t.Helper()
+	marker := "P3_ORACLE "
+	if !agreement {
+		marker = "P3_DIAGNOSTIC "
+	}
+	t.Log(marker + saxonProofOracle(t, binary, classpath))
 }
 
 func saxonRuntime(t *testing.T) (string, string) {
@@ -1874,7 +2258,9 @@ func TestCompareSaxonBasicProfile(t *testing.T) {
 		`<xsl:template name="start"><xsl:variable name="r" as="element()"><r xsl:version="1.0" value="{[1,2],3}"/></xsl:variable><xsl:value-of select="$r/@value"/></xsl:template>`: "1",
 		`<xsl:template name="start"><xsl:variable name="a" as="text()"><xsl:text>A</xsl:text></xsl:variable><xsl:variable name="b" as="text()"><xsl:text>B</xsl:text></xsl:variable><xsl:variable name="empty" as="text()"><xsl:text/></xsl:variable><xsl:value-of select="[$a, [], [$empty, $b], '', [1,2]]" separator="|"/></xsl:template>`: "A||B||1|2",
 	} {
-		compareSaxonStylesheet(t, ctx, e, binary, classpath, body, want)
+		t.Run(body, func(t *testing.T) {
+			compareSaxonStylesheet(t, ctx, e, binary, classpath, body, want)
+		})
 	}
 }
 
@@ -1902,6 +2288,8 @@ func compareSaxonStylesheet(t *testing.T, ctx context.Context, e *transform.Engi
 		t.Fatal(body, got, want)
 	}
 
+	publishedProofVector(t, want)
+
 	// The oracle runs XQuery, whose string literals decode entity references.
 	output, err := saxonQuery(t, ctx, binary, classpath, strings.ReplaceAll(expression, "&", "&amp;"))
 
@@ -1923,6 +2311,7 @@ func compareSaxonStylesheet(t *testing.T, ctx context.Context, e *transform.Engi
 
 		t.Fatalf("Saxon %s: %q, %v; want %q", body, output, err, expected)
 	}
+	saxonProofAgreement(t, binary, classpath, expected == want)
 }
 
 func TestCompareSaxonAttributeSetCycleDiagnostic(t *testing.T) {
@@ -2455,6 +2844,18 @@ func TestCompareSaxonMergeFocus(t *testing.T) {
 				return
 			}
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, test.want)
+		})
+	}
+	for _, test := range mergeSnapshotCases() {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name == "node snapshots true" {
+				// REC15.4 explicitly requires implicit snapshot semantics even
+				// without streaming support. Saxon12 skips that snapshot here;
+				// the explicit snapshot control below provides an agreement.
+				compareSaxonCompiler(t, binary, classpath, test.source, test.module, test.want, transform.XSLT30, "false:1:2:1:1:urn:p;false:1:2:2:2:urn:p;")
+				return
+			}
+			compareSaxonCompiler(t, binary, classpath, test.source, test.module, test.want, transform.XSLT30)
 		})
 	}
 }
@@ -3042,6 +3443,7 @@ func TestCompareSerializationParameterSchemas(t *testing.T) {
 				if valid != (want != "SEPM0017") {
 					t.Fatal("independent schema extraction validity", valid, "native code/value", want)
 				}
+				t.Log("P3_ORACLE published-schema")
 			})
 		}
 	}
@@ -3159,6 +3561,7 @@ func serializationSequenceOracle(name, want string) string {
 func TestCompareSaxonJSONCharacterExpansion(t *testing.T) {
 	classpath, binary := saxonRuntime(t)
 	e := engine(t, transform.Config{})
+	comparePublishedJSONSchema(t, e)
 	for _, test := range jsonCharacterExpansionCases() {
 		t.Run(test.name, func(t *testing.T) {
 			for _, output := range []string{
@@ -3201,6 +3604,153 @@ func TestCompareSaxonJSONCharacterExpansion(t *testing.T) {
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want)
 		})
 	}
+	compareSaxonTextResources(t, binary, classpath)
+}
+
+func comparePublishedJSONSchema(t *testing.T, e *transform.Engine) {
+	t.Helper()
+	schema := os.Getenv("JSON_SCHEMA_FILE")
+	if schema == "" {
+		if os.Getenv("XMLSEC_REQUIRE_P3_PROOFS") == "1" {
+			t.Fatal("JSON_SCHEMA_FILE is required for published JSON schema proofs")
+		}
+		t.Log("JSON_SCHEMA_FILE is not configured; published schema controls are not registered")
+		return
+	}
+	data, err := os.ReadFile(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest := sha256.Sum256(data); hex.EncodeToString(digest[:]) != "3ba9d28cc77ac0ba876a7e3dd88308381c4e32334ea412b17961968a37ba6f9d" {
+		t.Fatal("published XSLT30 Appendix B.1 JSON schema checksum mismatch")
+	}
+	binary, err := exec.LookPath("xmllint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// These are XSD structural properties. Document text, escaped-key
+	// normalization and JSON escape syntax have additional prose rules.
+	validity := map[string]bool{
+		"document": true, "document comments": true, "null comments": true,
+		"foreign attributes ignored": true, "array whitespace": true, "escaped string": true,
+		"array key": false, "array escaped key": false, "map escaped": false,
+		"number escaped": false, "null text": false, "missing key": false, "invalid key boolean": false,
+	}
+	for _, test := range xmlToJSONSchemaCases() {
+		valid, selected := validity[test.name]
+		if !selected {
+			continue
+		}
+		t.Run("published JSON schema "+test.name, func(t *testing.T) {
+			checkPublishedJSONSchemaCase(t, e, binary, schema, test.xml, test.want, valid)
+		})
+	}
+}
+
+func checkPublishedJSONSchemaCase(t *testing.T, e *transform.Engine, binary, schema, xml, want string, valid bool) {
+	t.Helper()
+	publishedProofVector(t, want)
+	command := exec.CommandContext(t.Context(), binary, "--nonet", "--noout", "--schema", schema, "-")
+	command.Stdin = strings.NewReader(xml)
+	output, err := command.CombinedOutput()
+	if !valid {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 3 {
+			t.Fatal("expected published XSD instance rejection", string(output), err)
+		}
+	} else if err != nil {
+		t.Fatal("expected published XSD instance acceptance", string(output), err)
+	}
+	program := query(t, e, `xml-to-json(parse-xml($xml))`, transform.XPath31)
+	result, err := program.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "xml"}: transform.Values(transform.String(xml))}})
+	if valid {
+		if err != nil || text(t, result) != want {
+			t.Fatal(result, err, want)
+		}
+	} else {
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != "FOJS0006" {
+			t.Fatal(result, err)
+		}
+	}
+	t.Log("P3_ORACLE published-schema")
+}
+
+// The HTTP response is shared by the native resolver and the independent
+// process, including MIME metadata. Mutable cases give each HTTP client one
+// valid representation followed by malformed data, rather than assuming a
+// particular number of resolver calls as part of the function's contract.
+const textUTF8MediaType = "text/plain; charset=UTF-8"
+
+func compareSaxonTextResources(t *testing.T, binary, classpath string) {
+	t.Helper()
+	config := filepath.Join(t.TempDir(), "stable-text.xml")
+	// Saxon documents unstable text as its default. Select its strict
+	// deterministic mode before comparing the published execution-scope rules.
+	if err := os.WriteFile(config, []byte(`<configuration xmlns="http://saxon.sf.net/ns/configuration" edition="HE"><global stableUnparsedText="true"/></configuration>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, mediaType, data, expression, want string
+		mutable                                 bool
+	}{
+		{"external charset before argument", "text/plain; charset=iso-8859-1", "\xe9", `unparsed-text($uri,'UTF-8') eq codepoints-to-string(233)`, nameTrue, false},
+		{"external UTF8 before argument", textUTF8MediaType, "é", `unparsed-text($uri,'ISO-8859-1') eq codepoints-to-string(233)`, nameTrue, false},
+		{"explicit encoding without charset", "text/plain", "\xe9", `unparsed-text($uri,'ISO-8859-1') eq codepoints-to-string(233)`, nameTrue, false},
+		{"XML declaration before argument", "application/xml", `<?xml version="1.0" encoding="ISO-8859-1"?>` + "\xe9", `ends-with(unparsed-text($uri,'UTF-8'),codepoints-to-string(233))`, nameTrue, false},
+		{"external charset before XML declaration", "application/xml; charset=UTF-8", `<?xml version="1.0" encoding="ISO-8859-1"?>é`, `ends-with(unparsed-text($uri),codepoints-to-string(233))`, nameTrue, false},
+		{"charset conflicts with BOM", textUTF8MediaType, "\xff\xfe1\x00", `unparsed-text($uri)`, "FOUT1190", false},
+		{"explicit UTF8 malformed", "text/plain", "\xff", `unparsed-text($uri,'UTF-8')`, "FOUT1190", false},
+		{"invalid XML character", textUTF8MediaType, "\x00", `unparsed-text($uri)`, "FOUT1190", false},
+		{"invalid text unavailable", textUTF8MediaType, "\x00", `unparsed-text-available($uri)`, nameFalse, false},
+		{"same argument text determinism", textUTF8MediaType, "1", `unparsed-text($uri) eq unparsed-text($uri)`, nameTrue, true},
+		{"same argument line determinism", textUTF8MediaType, "1", `unparsed-text-lines($uri)[1] eq unparsed-text-lines($uri)[1]`, nameTrue, true},
+		{"availability text consistency", textUTF8MediaType, "1", `if (unparsed-text-available($uri)) then exists(unparsed-text($uri)) else false()`, nameTrue, true},
+		{"lines text composition", textUTF8MediaType, "1", `string-join(unparsed-text-lines($uri),'') eq unparsed-text($uri)`, nameTrue, true},
+		{"JSON text composition", "application/json; charset=UTF-8", "1", `json-doc($uri) eq number(unparsed-text($uri))`, nameTrue, true},
+	} {
+		t.Run("text resource "+test.name, func(t *testing.T) {
+			publishedProofVector(t, test.want)
+			var lock sync.Mutex
+			requests := make(map[string]int)
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				lock.Lock()
+				requests[request.UserAgent()]++
+				repeated := requests[request.UserAgent()] > 1
+				lock.Unlock()
+				writer.Header().Set("Content-Type", test.mediaType)
+				data := test.data
+				if test.mutable && repeated {
+					data = "\xff"
+				}
+				_, _ = io.WriteString(writer, data)
+			}))
+			t.Cleanup(server.Close)
+			resolver, err := resource.NewHTTPResolver(resource.HTTPConfig{AllowedOrigins: []string{server.URL}, Client: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := engine(t, transform.Config{Resolver: resolver})
+			expression := strings.ReplaceAll(test.expression, "$uri", "'"+server.URL+"/value'")
+			oracle := test.want
+			switch test.name {
+			case "external charset before argument", "XML declaration before argument":
+				// FO31 14.6.5 gives external/XML media encoding priority;
+				// the pinned implementation instead uses the explicit argument.
+				oracle = "FOUT1190"
+			case "external UTF8 before argument":
+				oracle = nameFalse
+			case "charset conflicts with BOM", "JSON text composition":
+				// The first differs in encoding error classification. The second
+				// reopens JSON/text separately despite their published composition.
+				oracle = "FOUT1200"
+			}
+			compareSaxonConfiguredExpression(t, t.Context(), e, binary, classpath, expression, test.want, []string{"-config:" + config}, oracle)
+			if oracle == test.want {
+				t.Log("P3_ORACLE saxon-12.10")
+			}
+		})
+	}
 }
 
 func TestCompareSaxonAdaptiveSerialization(t *testing.T) {
@@ -3238,5 +3788,658 @@ func TestCompareSaxonAdaptiveSerialization(t *testing.T) {
 			source = strings.Replace(source, `<xsl:stylesheet `, `<xsl:stylesheet xmlns:xs="http://www.w3.org/2001/XMLSchema" exclude-result-prefixes="xs" `, 1)
 			compare(`transform(map{'stylesheet-text':'` + strings.ReplaceAll(source, "'", "''") + `','initial-template':QName('','start'),'delivery-format':'serialized'})?output`)
 		})
+	}
+}
+
+// XML1.1 source supplies U+0001 to the ready processor. The native host
+// supplies the identical character as an external value, without applying
+// parse-json's required replacement of non-XML characters.
+func TestCompareSerializationXMLCharacterErrors(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	for _, method := range []string{"xml", "xhtml", "text"} {
+		for _, version := range []string{"1.0", "1.1"} {
+			t.Run(method+"/XML"+version+"/U+0001", func(t *testing.T) {
+				vector := markupSerializationCase{name: "raw control", declarations: `<xsl:output method="` + method + `" version="` + version + `" omit-xml-declaration="yes"/>`}
+				native, nativeErr := selectedSerializationVector(t, "31", vector, transform.Values(transform.String("\x01")))
+				dir := t.TempDir()
+				input := filepath.Join(dir, "input.xml")
+				program := filepath.Join(dir, "program.xsl")
+				if err := os.WriteFile(input, []byte(`<?xml version="1.1"?><r>&#x1;</r>`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				source := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0">` + vector.declarations + `<xsl:template match="/"><xsl:sequence select="r/text()"/></xsl:template></xsl:stylesheet>`
+				if err := os.WriteFile(program, []byte(source), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				output, err := exec.CommandContext(t.Context(), binary, "-cp", classpath, "net.sf.saxon.Transform", "-xsl:"+program, "-s:"+input).Output()
+				if method != "text" && version == "1.0" {
+					var nativeDetail *transform.Error
+					var failure *exec.ExitError
+					if !errors.As(nativeErr, &nativeDetail) || nativeDetail.Code != "SERE0006" {
+						t.Fatal("native XML10 forbidden character", native, nativeErr)
+					}
+					// Saxon retains an XML1.1-only reference even with version1.0.
+					// SER 5.1.1 requires the native SERE0006 outcome instead.
+					if err == nil && string(output) == "&#x1;" {
+						saxonProofAgreement(t, binary, classpath, false)
+						return
+					}
+					if !errors.As(err, &failure) || !strings.Contains(string(failure.Stderr), "SERE0006") {
+						t.Fatal("XML10 forbidden character", native, nativeErr, string(output), err)
+					}
+				} else {
+					if nativeErr != nil || err != nil {
+						t.Fatal("valid character", nativeErr, err)
+					}
+					if method == "text" {
+						if native != "\x01" || string(output) != "\x01" {
+							t.Fatal("text preserves character", []byte(native), output)
+						}
+					} else {
+						pattern := regexp.MustCompile(`^&#(?:0*1|x0*1);$`)
+						if !pattern.MatchString(native) || !pattern.Match(output) {
+							t.Fatal("XML11 control reference", native, string(output))
+						}
+					}
+				}
+				saxonProofAgreement(t, binary, classpath, true)
+			})
+		}
+	}
+}
+
+func TestCompareSerializationXMLVersionProfiles(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, processor := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
+		selectedClasspath := classpath
+		if processor == transform.XSLT20 {
+			selectedClasspath = os.Getenv("SAXON20_CLASSPATH")
+			if selectedClasspath == "" {
+				t.Fatal("SAXON20_CLASSPATH is required")
+			}
+		}
+		for _, sourceVersion := range []string{"1.0", "2.0", "3.0"} {
+			if processor == transform.XSLT20 && sourceVersion == "3.0" {
+				continue
+			}
+			for _, method := range []string{"xml", "xhtml", "text"} {
+				t.Run(fmt.Sprintf("%d/%s/%s", processor, sourceVersion, method), func(t *testing.T) {
+					source := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="` + sourceVersion + `"><xsl:output method="` + method + `" version="1.2"/><xsl:template name="start"><r>text</r></xsl:template></xsl:stylesheet>`
+					compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: processor})
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+					if method == "text" {
+						if err != nil || string(result.Primary) != "text" {
+							t.Fatal("native ignored version", result, err)
+						}
+					} else {
+						var detail *transform.Error
+						if !errors.As(err, &detail) || detail.Code != "SESU0013" {
+							t.Fatal("native unsupported version", result, err)
+						}
+					}
+					file := filepath.Join(t.TempDir(), "version.xsl")
+					if err := os.WriteFile(file, []byte(source), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					output, err := exec.CommandContext(t.Context(), binary, "-cp", selectedClasspath, "net.sf.saxon.Transform", "-xsl:"+file, "-it:start").Output()
+					if method == "text" {
+						if err != nil || string(output) != "text" {
+							t.Fatal("independent ignored version", string(output), err)
+						}
+					} else {
+						var failure *exec.ExitError
+						if !errors.As(err, &failure) {
+							t.Fatal("independent unsupported version", string(output), err)
+						}
+						if processor == transform.XSLT20 && strings.Contains(string(failure.Stderr), "SESU0006") {
+							// This ready legacy processor still reports the withdrawn error code.
+							// Keep its rejection visible without claiming exact REC20 code agreement.
+							saxonProofAgreement(t, binary, selectedClasspath, false)
+							return
+						}
+						if !strings.Contains(string(failure.Stderr), "SESU0013") {
+							t.Fatal("independent unsupported version", string(failure.Stderr), err)
+						}
+					}
+					saxonProofAgreement(t, binary, selectedClasspath, true)
+				})
+			}
+		}
+	}
+}
+
+func TestCompareSerializationFullyNormalizedCharacterMaps(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	for _, processor := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
+		version, selectedClasspath := version30, classpath
+		if processor == transform.XSLT20 {
+			version, selectedClasspath = version20, os.Getenv("SAXON20_CLASSPATH")
+			if selectedClasspath == "" {
+				t.Fatal("SAXON20_CLASSPATH is required")
+			}
+		}
+		for _, test := range fullyNormalizedSerializationCases() {
+			t.Run(version+"/"+test.name, func(t *testing.T) {
+				want := test.want
+				if test.code != "" {
+					want = test.code
+				}
+				// Both pinned editions reject this optional normalization form.
+				// Native support is checked against the REC's literal condition;
+				// SESU0011 is a processor diagnostic, never exact agreement.
+				compareSaxonCompiler(t, binary, selectedClasspath, fullyNormalizedSerializationSource(version, test), "", want, processor, "diagnostic:Unknown normalization form fully-normalized")
+			})
+		}
+	}
+}
+
+func TestCompareSerializationRawHTMLDescendants(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, edition := range []string{"20", "30", "31"} {
+		selected, _ := strconv.Atoi(edition)
+		selectedClasspath := classpath
+		if edition == "20" {
+			selectedClasspath = os.Getenv("SAXON20_CLASSPATH")
+			if selectedClasspath == "" {
+				t.Fatal("SAXON20_CLASSPATH is required")
+			}
+		}
+		for _, test := range rawHTMLDescendantCases() {
+			if selected < test.minimum || selected > test.maximum {
+				continue
+			}
+			t.Run("SER"+edition+"/"+test.name, func(t *testing.T) {
+				vector := rawHTMLDescendantVector(test)
+				constructor := stylesheet(t, e, markupSerializationSheet(markupSerializationCase{body: vector.body}, false))
+				input, err := constructor.Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, ResultMode: transform.ResultRaw})
+				if err != nil {
+					t.Fatal(err)
+				}
+				actual, err := selectedSerializationVector(t, edition, vector, input.Primary())
+				if err != nil || actual != test.want {
+					t.Fatal("native", actual, err, test.want)
+				}
+				source := markupSerializationSheet(vector, false)
+				if edition == "20" {
+					source = strings.Replace(source, `version="3.0"`, `version="2.0"`, 1)
+				}
+				independent := serializationURIOracle(t, binary, selectedClasspath, source)
+				oracle := test.want
+				if test.name == "maps and NFC retained" {
+					// Saxon's character-map attribute emitter re-enables ampersand
+					// escaping inside raw script descendants; REC30/31 7.1 does not.
+					oracle = `<script><e a="éZ<&amp;">éZ<&</e></script>`
+				}
+				switch test.name {
+				case "Unicode long s script":
+					oracle = `<ſcript><e><&</e></ſcript>`
+				case "Unicode dotted I script":
+					oracle = `<SCRİPT><e><&</e></SCRİPT>`
+				case "Unicode long s boolean value":
+					oracle = `<option selected></option>`
+				}
+				if independent != oracle {
+					t.Fatal("independent", independent, oracle)
+				}
+				publishedProofVector(t, test.want)
+				saxonProofAgreement(t, binary, selectedClasspath, oracle == test.want)
+			})
+		}
+	}
+}
+
+func TestCompareSerializationVoidElementTables(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	for _, edition := range []string{"20", "30", "31"} {
+		selectedClasspath := classpath
+		if edition == "20" {
+			selectedClasspath = os.Getenv("SAXON20_CLASSPATH")
+			if selectedClasspath == "" {
+				t.Fatal("SAXON20_CLASSPATH is required")
+			}
+		}
+		for _, method := range []string{"html", "xhtml"} {
+			for _, htmlVersion := range []string{"4.01", "5"} {
+				if edition == "20" && htmlVersion == "5" {
+					continue
+				}
+				for _, name := range serializationVoidElementNames() {
+					for _, nullNamespace := range serializationVoidNamespaceCases(method, htmlVersion, name) {
+						t.Run("SER"+edition+"/"+method+"/HTML"+htmlVersion+"/"+serializationVoidLabel(name, nullNamespace), func(t *testing.T) {
+							vector := serializationVoidVector(edition, method, htmlVersion, name, nullNamespace)
+							source := markupSerializationSheet(vector, false)
+							if edition == "20" {
+								source = strings.Replace(source, `version="3.0"`, `version="2.0"`, 1)
+							}
+							output := serializationURIOracle(t, binary, selectedClasspath, source)
+							if !serializationVoidOutputValid(output, edition, method, htmlVersion, name) {
+								t.Fatal("independent published void table", output)
+							}
+							saxonProofAgreement(t, binary, selectedClasspath, true)
+						})
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestCompareSerializationBooleanAttributeTables(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	for _, edition := range []string{"20", "30", "31"} {
+		selectedClasspath := classpath
+		if edition == "20" {
+			selectedClasspath = os.Getenv("SAXON20_CLASSPATH")
+			if selectedClasspath == "" {
+				t.Fatal("SAXON20_CLASSPATH is required")
+			}
+		}
+		for _, htmlVersion := range []string{"4.01", "5"} {
+			if edition == "20" && htmlVersion == "5" {
+				continue
+			}
+			for _, cell := range publishedSerializationBooleanCells() {
+				t.Run("SER"+edition+"/HTML"+htmlVersion+"/"+cell.element+"/"+cell.attribute, func(t *testing.T) {
+					vector := serializationBooleanCellVector(htmlVersion, cell, strings.ToUpper(cell.attribute))
+					var body strings.Builder
+					body.WriteString(strings.TrimSuffix(strings.TrimPrefix(vector.body, "<r>"), "</r>"))
+					for _, value := range []string{"other", ""} {
+						variant := serializationBooleanCellVector(htmlVersion, cell, value)
+						body.WriteString(strings.TrimSuffix(strings.TrimPrefix(variant.body, "<r>"), "</r>"))
+					}
+					vector.body = "<r>" + body.String() + "</r>"
+					source := markupSerializationSheet(vector, false)
+					if edition == "20" {
+						source = strings.Replace(source, `version="3.0"`, `version="2.0"`, 1)
+					}
+					actual := serializationURIOracle(t, binary, selectedClasspath, source)
+					for _, value := range []string{strings.ToUpper(cell.attribute), "other", ""} {
+						minimize := (edition != "20" || cell.legacy) && strings.EqualFold(value, cell.attribute)
+						expected := ` ` + cell.attribute + `="` + value + `"`
+						if minimize {
+							expected = ` ` + cell.attribute + ` p:`
+						}
+						if !strings.Contains(actual, expected) || !strings.Contains(actual, ` p:`+cell.attribute+`="`+value+`"`) {
+							t.Fatal("independent boolean cell", actual, expected)
+						}
+						if cell.attribute != "hidden" && !strings.Contains(actual, `<wrong-parent `+cell.attribute+`="`+value+`"`) {
+							t.Fatal("independent boolean parent scope", actual)
+						}
+					}
+					saxonProofAgreement(t, binary, selectedClasspath, true)
+				})
+			}
+		}
+	}
+}
+
+func TestCompareSerializationContainerParameters(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, test := range serializationContainerParameterExpressions() {
+		t.Run(test.name, func(t *testing.T) {
+			if strings.HasSuffix(test.name, "byte BOM once") {
+				method := "json"
+				if strings.HasPrefix(test.name, "ADAPTIVE") {
+					method = "adaptive"
+				}
+				output := serializationURIOracle(t, binary, classpath, serializationContainerBOMStylesheet(method, true))
+				// The published JSON rule applies BOM=yes. The adaptive rule
+				// applies it once, excluding delegated node serialization. Saxon
+				// omits it for JSON and emits it twice for the two adaptive nodes.
+				if method == "json" && output != "[1,2]" || method == "adaptive" && (!strings.HasPrefix(output, "\uFEFF") || strings.Count(output, "\uFEFF") != 2) {
+					t.Fatal("unreviewed independent BOM diagnostic", []byte(output))
+				}
+				saxonProofAgreement(t, binary, classpath, false)
+				return
+			}
+			compareSaxonExpression(t, t.Context(), e, binary, classpath, test.expression, test.want)
+		})
+	}
+}
+
+func TestCompareSerializationSelectedEditions(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	for _, edition := range []string{"20", "30"} {
+		selectedClasspath := classpath
+		if edition == "20" {
+			selectedClasspath = os.Getenv("SAXON20_CLASSPATH")
+			if selectedClasspath == "" {
+				t.Fatal("SAXON20_CLASSPATH is required")
+			}
+		}
+		for _, test := range markupSerializationCases() {
+			if !serializationVectorAdmitted(edition, test) || !serializationSelectedOracleAdmitted(test) {
+				continue
+			}
+			t.Run("SER"+edition+"/"+test.name, func(t *testing.T) { compareSelectedSerializationVector(t, binary, selectedClasspath, edition, test) })
+		}
+	}
+}
+
+func serializationSelectedOracleAdmitted(test markupSerializationCase) bool {
+	for _, vector := range serializationParameterBoundaryCases() {
+		if vector.name == test.name {
+			return true
+		}
+	}
+	return slices.Contains([]string{"XML default omits prefix undeclarations", "XML 1.1 keeps requested prefix undeclarations", "XML doctype", "XML rootless", "XML qualified doctype", "XHTML doctype", "CDATA maps excluded", "CDATA namespace union", "CDATA no namespace stays exact", "XML xml space preserve indentation", "XML xml space default override", "NFC map matches original", "Namespace character expansion excluded", "Names and namespaces normalization excluded", "HTML version 4"}, test.name)
+}
+
+func compareSelectedSerializationVector(t *testing.T, binary, classpath, edition string, test markupSerializationCase) {
+	t.Helper()
+	e := engine(t, transform.Config{})
+	constructor := stylesheet(t, e, markupSerializationSheet(markupSerializationCase{body: test.body}, false))
+	input, err := constructor.Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, ResultMode: transform.ResultRaw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := selectedSerializationVector(t, edition, test, input.Primary())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := markupSerializationSheet(test, false)
+	if edition == "20" {
+		source = strings.Replace(source, `version="3.0"`, `version="2.0"`, 1)
+	}
+	output := serializationURIOracle(t, binary, classpath, source)
+	if edition == "30" {
+		output = strings.TrimPrefix(output, "\uFEFF")
+		test.want = strings.TrimPrefix(test.want, "\uFEFF")
+	}
+	check := markupSerializationCheck(test)
+	for role, value := range map[string]string{"native": actual, "independent": output} {
+		result, err := query(t, e, check, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "s"}: transform.Values(transform.String(value))}})
+		if err != nil {
+			t.Fatal(role, "control evaluation", err)
+		}
+		if text(t, result) == nameTrue {
+			continue
+		}
+		if role == "independent" && test.name == "Sequence text coalesces before normalization" && value == "e\u0301" {
+			saxonProofAgreement(t, binary, classpath, false)
+			t.Log("Independent chunk normalization diagnostic: U+0065 U+0301 instead of NFC U+00E9")
+			return
+		}
+		if role == "independent" && serializationReviewedOracleDiagnostic(test.name) {
+			t.Logf("P3_DIAGNOSTIC exact serialization vector %s: %q", test.name, value)
+			saxonProofAgreement(t, binary, classpath, false)
+			return
+		}
+		t.Fatal(role, "published serialization vector", value, test.want)
+	}
+	saxonProofAgreement(t, binary, classpath, true)
+}
+
+func serializationReviewedOracleDiagnostic(name string) bool {
+	if htmlNamespaceOracleMismatch(name) {
+		return true
+	}
+	switch name {
+	case "HTML empty explicit doctype", "HTML rootless explicit doctype", "HTML rootless fallback doctype", "HTML5 leading text", "XHTML5 leading text", "NFD text map immunity":
+		return true
+	}
+	return false
+}
+
+func TestCompareSerializationURIAttributeTables(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	oldClasspath := os.Getenv("SAXON20_CLASSPATH")
+	if oldClasspath == "" {
+		t.Fatal("SAXON20_CLASSPATH is required")
+	}
+	for _, edition := range []string{"20", "30", "31"} {
+		selectedClasspath := classpath
+		if edition == "20" {
+			selectedClasspath = oldClasspath
+		}
+		for _, method := range []string{"html", "xhtml"} {
+			for _, cell := range publishedSerializationURICells() {
+				t.Run("SER"+edition+"/"+method+"/"+cell.element+"/"+cell.attribute, func(t *testing.T) {
+					compareSerializationURICell(t, binary, selectedClasspath, edition, method, cell)
+				})
+			}
+		}
+	}
+}
+
+func serializationURIOracle(t *testing.T, binary, classpath, source string) string {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "uri.xsl")
+	if err := os.WriteFile(file, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.CommandContext(t.Context(), binary, "-cp", classpath, "net.sf.saxon.Transform", "-xsl:"+file, "-it:start").Output()
+	if err != nil {
+		var failure *exec.ExitError
+		if errors.As(err, &failure) {
+			t.Fatalf("independent URI table: %s: %v", failure.Stderr, err)
+		}
+		t.Fatal(err)
+	}
+	return string(output)
+}
+
+func compareSerializationURICell(t *testing.T, binary, classpath, edition, method string, cell serializationURICell) {
+	t.Helper()
+	e := engine(t, transform.Config{})
+	vector := serializationURICellVector(edition, method, cell.element, cell.attribute)
+	constructor := stylesheet(t, e, markupSerializationSheet(markupSerializationCase{body: vector.body}, false))
+	input, err := constructor.Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, ResultMode: transform.ResultRaw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := selectedSerializationVector(t, edition, vector, input.Primary())
+	if err != nil || !serializationURICellValid(actual, edition, cell.attribute, cell.legacy, true) {
+		t.Fatal("native URI table", actual, err)
+	}
+	source := markupSerializationSheet(vector, false)
+	if edition == "20" {
+		source = strings.Replace(source, `version="3.0"`, `version="2.0"`, 1)
+	}
+	output := serializationURIOracle(t, binary, classpath, source)
+	agreed := serializationURICellValid(output, edition, cell.attribute, cell.legacy, true)
+	if !agreed {
+		// Saxon12 retains the REC20 URI table for HTML5 and does not apply URI
+		// escaping in its XHTML5 emitter. These exact diagnostics retain the
+		// published REC30/31 expectation. They never constitute URI-cell agreement.
+		diagnostic := edition != "20" && (method == "xhtml" || !cell.legacy)
+		if !diagnostic || !serializationURICellValid(output, edition, cell.attribute, cell.legacy, false) {
+			t.Fatal("unreviewed independent URI diagnostic", output, "native", actual)
+		}
+	}
+	saxonProofAgreement(t, binary, classpath, agreed)
+	// Turning the parameter off is a distinct finite negative control. Both
+	// processors must preserve ordinary, qualified and URI-valued attributes.
+	source = strings.ReplaceAll(source, `escape-uri-attributes="yes"`, `escape-uri-attributes="no"`)
+	plain := serializationURIOracle(t, binary, classpath, source)
+	if !serializationURICellValid(plain, edition, cell.attribute, cell.legacy, false) {
+		t.Fatal("independent escaping=no", plain)
+	}
+	saxonProofAgreement(t, binary, classpath, true)
+}
+
+// XML 1.1 construction belongs to an external host. Saxon supplies its
+// normalized literal here; the selected XPath evaluator must consume that text
+// without silently applying another XML source normalization pass.
+func TestCompareSaxonXPathLineEndings(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	e := engine(t, transform.Config{})
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		selectedClasspath := classpath
+		if version == transform.XPath20 {
+			selectedClasspath = os.Getenv("SAXON20_CLASSPATH")
+			if selectedClasspath == "" {
+				t.Fatal("SAXON20_CLASSPATH is required")
+			}
+		}
+		for _, xmlVersion := range []string{"1.0", "1.1"} {
+			for _, test := range xpathLineEndingCases() {
+				t.Run(fmt.Sprintf("%d/XML%s/%s", version, xmlVersion, test.name), func(t *testing.T) {
+					dir := t.TempDir()
+					input := filepath.Join(dir, "input.xml")
+					program := filepath.Join(dir, "host.xsl")
+					if err := os.WriteFile(input, []byte(`<?xml version="`+xmlVersion+`"?><r literal="`+test.literal+`"/>`), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					host := sheet(version20, `<xsl:output method="text"/><xsl:template name="start"><xsl:value-of select="string-join(for $c in string-to-codepoints(string(/r/@literal)) return string($c),' ')"/></xsl:template>`)
+					if err := os.WriteFile(program, []byte(host), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					processor := transform.XSLT30
+					if version == transform.XPath20 {
+						processor = transform.XSLT20
+					}
+					args := append(saxonCompilerArguments(selectedClasspath, program, processor), "-s:"+input)
+					output, err := exec.CommandContext(t.Context(), binary, args...).CombinedOutput()
+					want := test.xml10
+					if xmlVersion == "1.1" {
+						want = test.xml11
+					}
+					if err != nil || string(output) != want {
+						t.Fatalf("independent XML host: %q, %v; want %q", output, err, want)
+					}
+					var literal strings.Builder
+					for _, codepoint := range strings.Fields(string(output)) {
+						point, err := strconv.ParseInt(codepoint, 10, 32)
+						if err != nil {
+							t.Fatal(err)
+						}
+						literal.WriteRune(rune(point))
+					}
+					got := text(t, evaluate(t, e, xpathLineEndingExpression(literal.String()), version))
+					if got != string(output) {
+						t.Fatal("XPath changed host-supplied normalized characters", got, string(output))
+					}
+					saxonProofAgreement(t, binary, selectedClasspath, true)
+				})
+			}
+		}
+	}
+}
+
+func TestCompareSaxonParameterDocumentContracts(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	for _, test := range parameterDocumentHostCases() {
+		for _, route := range []string{"output", "primary", "secondary", "dynamic"} {
+			t.Run(route+"/"+test.name, func(t *testing.T) {
+				directory := t.TempDir()
+				main := filepath.Join(directory, "main.xsl")
+				parameters := serializeParameterDocument(test.parameters)
+				source := parameterDocumentHostSheet(route, "module.xsl", test)
+				got, err := evaluateParameterDocumentHost(t, route, source, parameters)
+				want, code := test.want, ""
+				if comparisonErrorCode(want) {
+					want, code = "", want
+				}
+				assertSerializationResult(t, test.name, got, err, want, code)
+				publishedProofVector(t, test.want)
+				resultPath := filepath.Join(directory, "result.xml")
+				resultURI := (&url.URL{Scheme: "file", Path: filepath.ToSlash(resultPath)}).String()
+				source = strings.ReplaceAll(source, `href="urn:result"`, `href="`+resultURI+`"`)
+				for name, data := range map[string]string{main: source, filepath.Join(directory, "module.xsl"): parameters} {
+					if err := os.WriteFile(name, []byte(data), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+				defer cancel()
+				principalPath := filepath.Join(directory, "principal.xml")
+				arguments := append(saxonCompilerArguments(classpath, main, transform.XSLT30), "-o:"+principalPath)
+				_, oracleErr := exec.CommandContext(ctx, binary, arguments...).Output()
+				var output []byte
+				if oracleErr != nil {
+					got = saxonDiagnosticCode(oracleErr)
+				} else if route == "secondary" || route == "dynamic" {
+					output, oracleErr = os.ReadFile(resultPath)
+					if oracleErr != nil {
+						t.Fatal(oracleErr)
+					}
+					got = string(output)
+				} else {
+					output, oracleErr = os.ReadFile(principalPath)
+					if oracleErr != nil {
+						t.Fatal(oracleErr)
+					}
+					got = string(output)
+				}
+				expected := test.want
+				diagnostic := ""
+				switch test.name {
+				case "fully normalized stays byte host supported", "fully normalized leading combining":
+					// Fully-normalized is supported by this byte host; Saxon
+					// reports its permitted unsupported normalization choice.
+					expected = "SESU0011"
+				case "extension method rejected by host choice":
+					// Extension method behavior is selected by each XSLT host.
+					expected = "SXCH0004"
+				case "QName list union":
+					// REC26 requires union, while this Saxon replaces the list.
+					expected = `<r><p:a xmlns:p="urn:node"><![CDATA[x<y]]></p:a><b>x&lt;y</b></r>`
+				case "foreign character map ignored":
+					// SER3.1 extracts only output:character-map children.
+					expected = "BAD"
+				}
+				if oracleErr != nil && got == "" {
+					switch test.name {
+					case "fully normalized stays byte host supported", "fully normalized leading combining":
+						diagnostic = "Unknown normalization form fully-normalized"
+					case "extension method rejected by host choice":
+						diagnostic = "Cannot create user-supplied output method"
+					case "QName unknown prefix":
+						diagnostic = "Namespace prefix 'missing' has not been declared"
+					case "invalid boolean":
+						diagnostic = "Serialization parameter {indent} must have the value"
+					case "duplicate scalar":
+						diagnostic = "Duplicated serialization parameter method"
+					case "duplicate character":
+						diagnostic = "the character map contains two entries"
+					case "unknown attribute":
+						diagnostic = "attribute @extra must not appear on element method"
+					}
+				}
+				if diagnostic != "" {
+					var failure *exec.ExitError
+					if !errors.As(oracleErr, &failure) || !strings.Contains(string(failure.Stderr), diagnostic) {
+						t.Fatal(oracleErr, diagnostic)
+					}
+					saxonProofAgreement(t, binary, classpath, false)
+					t.Log("Saxon raw diagnostic has no standard error code:", diagnostic)
+					return
+				}
+				if got != expected {
+					var failure *exec.ExitError
+					if errors.As(oracleErr, &failure) {
+						t.Log(string(failure.Stderr))
+					}
+					t.Fatalf("Saxon %q, %v; want %q", got, oracleErr, test.want)
+				}
+				saxonProofAgreement(t, binary, classpath, expected == test.want)
+			})
+		}
+	}
+}
+
+func TestCompareSaxonNamedOutputCharacterMaps(t *testing.T) {
+	classpath, binary := saxonRuntime(t)
+	for _, version := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
+		selected := classpath
+		if version == transform.XSLT20 {
+			selected = os.Getenv("SAXON20_CLASSPATH")
+			if selected == "" {
+				t.Fatal("SAXON20_CLASSPATH is required")
+			}
+		}
+		for _, test := range namedOutputCharacterMapCases() {
+			t.Run(strconv.Itoa(int(version))+"/"+test.name, func(t *testing.T) {
+				source := namedOutputCharacterMapSheet(strconv.Itoa(int(version)/10)+".0", test.declarations, test.attributes)
+				compareSaxonCompiler(t, binary, selected, source, "", test.want, version)
+			})
+		}
 	}
 }

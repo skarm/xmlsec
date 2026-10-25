@@ -1416,6 +1416,7 @@ func hostFunctionCases() []hostFunctionCase {
 		{"temporary identities", `<xsl:function name="f:new" xmlns:f="urn:f" as="element()"><xsl:param name="n"/><e n="{$n}"/></xsl:function>`, `<xsl:value-of xmlns:f="urn:f" select="count(distinct-values(for $i in 1 to 1000 return generate-id(f:new($i))))"/>`, "1000", "1000"},
 		{"context node", nodes, `<xsl:for-each select="$d/r/n"><xsl:value-of select="generate-id() eq generate-id(.)"/></xsl:for-each>`, "truetrue", "truetrue"},
 		{"empty node", "", `<xsl:value-of select="generate-id(()) eq ''"/>`, nameTrue, nameTrue},
+		{"constructed attribute annotation", "", `<xsl:variable name="a" as="attribute()"><xsl:attribute name="a" select="1"/></xsl:variable><xsl:value-of select="data($a) instance of xs:untypedAtomic and not(data($a) instance of xs:integer)"/>`, nameTrue, nameTrue},
 		{"missing context", "", `<xsl:value-of select="generate-id()"/>`, "XPDY0002", "XPDY0002"},
 		{"atomic context", "", `<xsl:for-each select="42"><xsl:value-of select="generate-id()"/></xsl:for-each>`, errCodeXPTY0004, errCodeXPTY0004},
 		{"multiple nodes", nodes, `<xsl:value-of select="generate-id($d/r/n)"/>`, errCodeXPTY0004, errCodeXPTY0004},
@@ -1423,6 +1424,7 @@ func hostFunctionCases() []hostFunctionCase {
 		{"host availability", "", `<xsl:value-of select="function-available('generate-id',0) and function-available('generate-id',1) and not(function-available('generate-id',2))"/>`, nameTrue, nameTrue},
 		{"host does not change grammar", "", `<xsl:value-of select="generate-id(map{})"/>`, errCodeXPST0003, errCodeXPTY0004},
 		{"format precision", "", `<xsl:value-of select="format-number(xs:decimal('1234567890123456789.25'),'0.00')"/>`, "1234567890123456789.25", "1234567890123456789.25"},
+		{"empty decimal special strings", `<xsl:decimal-format NaN="" infinity=""/>`, `<xsl:value-of select="concat(format-number(xs:double('NaN'),'0'),'|',format-number(xs:double('INF'),'0'),'|',format-number(xs:double('-INF'),'0'))"/>`, "||-", "||-"},
 		{"invalid picture", "", `<xsl:value-of select="format-number(1,'000.##0')"/>`, "XTDE1310", "FODF1310"},
 		{"unknown format", "", `<xsl:value-of select="format-number(1,'0','missing')"/>`, "XTDE1280", "FODF1280"},
 		{"missing format prefix", "", `<xsl:value-of select="format-number(1,'0','missing:n')"/>`, "XTDE1280", "FODF1280"},
@@ -1444,6 +1446,7 @@ func hostFunctionCases() []hostFunctionCase {
 	cases = append(cases, sortMergeContractCases()...)
 	cases = append(cases, numberingContractCases()...)
 	cases = append(cases, numericPrecisionCases()...)
+	cases = append(cases, xsltAdditionalFunctionProofCases()...)
 	return append(cases, instructionContractCases()...)
 }
 
@@ -1922,6 +1925,78 @@ func instructionContractCases() []hostFunctionCase {
 	}
 }
 
+// Each row preserves the edition-sensitive construct behind a named publisher
+// residual. The pinned original is tested separately by the proof manifest;
+// these paired controls isolate the language-version cause.
+func residualEditionProofCases() []hostFunctionCase {
+	const initial = `<xsl:template name="xsl:initial-template"/>`
+	const chars = `<xsl:value-of select="string-to-codepoints('ab')!codepoints-to-string(.)" separator=""/>`
+	return []hostFunctionCase{
+		{"backwards-046", initial, "ok", "XTSE0080", "ok"},
+		{"choose-0202", initial, `<xsl:choose><xsl:when test="xs:untypedAtomic('3') = 3">ok</xsl:when></xsl:choose>`, "XTSE0080", "ok"},
+		{"doe-0409", initial, `<xsl:value-of select="'a' || 'b'"/>`, "XTSE0080", "ab"},
+		{"for-each-group-091", initial, `<xsl:for-each-group select="('a','a')" group-by="."><xsl:value-of select="count(current-group())"/></xsl:for-each-group>`, "XTSE0080", "2"},
+		{"collations-0128", "", `<xsl:evaluate xpath="'1 + 1'"/>`, "XTSE0010", "2"},
+		{"collection-005", `<xsl:mode name="m2" on-no-match="shallow-skip"/>`, "ok", "XTSE0010", "ok"},
+		{"for-each-group-084", "", `<xsl:for-each-group select="(1,1)" group-by="."><xsl:value-of select="current-group()!string(.)" separator=""/></xsl:for-each-group>`, "XPST0003", "11"},
+		{"function-0302", "", `<xsl:value-of select="element-available('xsl:' || 'value-of')"/>`, "XPST0003", "true"},
+		{"function-1902", "", `<xsl:message expand-text="yes">{1+1}</xsl:message>ok`, "XTSE0090", "ok"},
+		{"function-1902 library availability", "", `<xsl:value-of select="function-available('function-lookup',2)"/>`, "false", "true"},
+		{"id-041", "", `<xsl:value-of select="'a ' || 'b'"/>`, "XPST0003", "a b"},
+		{"match-248", "", chars, "XPST0003", "ab"},
+		{"match-254", "", chars, "XPST0003", "ab"},
+		{"number-1004", "", `<xsl:iterate select="1"><xsl:on-completion><xsl:number/></xsl:on-completion></xsl:iterate>`, "XTSE0010", "XTTE0990"},
+		{"output-0725", `<xsl:output html-version="5" suppress-indentation="p"/>`, "ok", "XTSE0090", "ok"},
+		{"output-0726", `<xsl:output html-version="5" suppress-indentation="p"/>`, "ok", "XTSE0090", "ok"},
+		{"result-document-0286", `<xsl:output name="Q{http://example.com}format2"/>`, "ok", "XTSE0020", "ok"},
+		{"result-document-0287", `<xsl:output name="Q{http://example.com/}format2"/>`, "ok", "XTSE0020", "ok"},
+		{"result-document-1006", "", `<xsl:value-of select="current-output-uri() instance of xs:anyURI?"/>`, "XPST0017", "true"},
+		{"sequence-0132", "", `<xsl:variable name="q" as="xs:date*"><xsl:sequence><xsl:value-of select="1"/></xsl:sequence></xsl:variable><xsl:value-of select="$q"/>`, "XTSE0010", "XTTE0570"},
+		{"system-property-022", "", `<xsl:evaluate xpath="'1 + 1'"/>`, "XTSE0010", "2"},
+		{"error-0600a", "", `<xsl:call-template name="p"/>`, "XTTE0600", "XTTE0590"},
+		{"error-1370a", "", `<xsl:value-of select="unparsed-entity-uri('x')"/>`, "XTDE1370", "XPDY0002"},
+		{"error-1380a", "", `<xsl:value-of select="unparsed-entity-public-id('x')"/>`, "XTDE1380", "XPDY0002"},
+	}
+}
+
+func residualEditionProofSource(test hostFunctionCase) string {
+	if test.name == "error-0600a" {
+		test.global = `<xsl:template name="p"><xsl:param name="p" as="xs:integer" select="3.5"/><xsl:value-of select="$p"/></xsl:template>`
+	}
+	return hostFunctionSheet(version20, test)
+}
+
+func TestXSLTResidualEditionProofs(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range residualEditionProofCases() {
+		for _, processor := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
+			t.Run(test.name+"/"+strconv.Itoa(int(processor)), func(t *testing.T) {
+				want := test.want20
+				if processor == transform.XSLT30 {
+					want = test.want30
+				}
+				compiled, err := e.CompileXSLT(t.Context(), []byte(residualEditionProofSource(test)), transform.XSLTOptions{ProcessorVersion: processor})
+				got := ""
+				if err == nil {
+					result, executeErr := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+					err = executeErr
+					if err == nil {
+						got = string(result.Primary)
+					}
+				}
+				if comparisonErrorCode(want) {
+					var detail *transform.Error
+					if !errors.As(err, &detail) || detail.Code != want {
+						t.Fatal(got, err, want)
+					}
+				} else if err != nil || got != want {
+					t.Fatal(got, err, want)
+				}
+			})
+		}
+	}
+}
+
 func TestXSLTHostFunctionContracts(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, test := range hostFunctionCases() {
@@ -2311,6 +2386,7 @@ func mergeFocusCases() []dynamicXPathCase {
 		{"node action focus", "", `<xsl:variable name="n"><r>node</r></xsl:variable><xsl:for-each select="99"><xsl:merge><xsl:merge-source select="$n/r"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="concat(.,':',current())"/></xsl:merge-action></xsl:merge><xsl:value-of select="."/></xsl:for-each>`, "node:node99"},
 		{"anchor focus", "", `<xsl:merge><xsl:merge-source for-each-item="(10,20,30)" select="concat(.,':',position(),':',last())"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="concat(.,';')"/></xsl:merge-action></xsl:merge>`, "10:1:3;20:2:3;30:3:3;"},
 		{"singleton key focus", "", `<xsl:for-each select="(10,20)"><xsl:merge><xsl:merge-source select="(1,2)"><xsl:merge-key select="position()+last()"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="concat(current-merge-key(),':',count(current-merge-group()),';')"/></xsl:merge-action></xsl:merge></xsl:for-each>`, "2:2;2:2;"},
+		{"composite current merge key", "", `<xsl:merge><xsl:merge-source select="(1,xs:float(1),2)"><xsl:merge-key select="'k'"/><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="concat(count(current-merge-key()),':',current-merge-key()[2] instance of xs:integer,':',string-join(current-merge-key() ! string(.),'|'),':',count(current-merge-group()),';')"/></xsl:merge-action></xsl:merge>`, "2:true:k|1:2;2:true:k|2:1;"},
 		{"nested action restores focus", "", `<xsl:merge><xsl:merge-source select="(1,2)"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/><xsl:merge><xsl:merge-source select="(8,9)"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/></xsl:merge-action></xsl:merge><xsl:value-of select="concat(.,':',position(),':',last(),';')"/></xsl:merge-action></xsl:merge>`, "1891:1:2;2892:2:2;"},
 		{"failed action restores focus", "", `<xsl:for-each select="99"><xsl:try><xsl:merge><xsl:merge-source select="1"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:sequence select="1 idiv 0"/></xsl:merge-action></xsl:merge><xsl:catch><xsl:value-of select="concat(.,':',position(),':',last())"/></xsl:catch></xsl:try></xsl:for-each>`, "99:1:1"},
 	}
@@ -2325,6 +2401,46 @@ func TestMergeFocusContracts(t *testing.T) {
 				if err != nil || got != test.want {
 					t.Fatal(nested, got, err, test.want)
 				}
+			}
+		})
+	}
+}
+
+func mergeSnapshotCases() []struct{ name, source, module, want string } {
+	module := `<r xmlns:p="urn:p"><header/><a><n k="1">A</n><n k="2">B</n></a><tail/></r>`
+	global := `<xsl:accumulator name="a" as="xs:integer" initial-value="0"><xsl:accumulator-rule match="n" select="$value+1"/></xsl:accumulator><xsl:variable name="original" select="doc('module.xsl')"/>`
+	action := `<xsl:value-of select="string-join((not(. is $original/r/a/n[@k=current()/@k]),count(root(.)/r/header),count(../n),accumulator-before('a'),accumulator-after('a'),namespace-uri-for-prefix('p',.)),':')"/><xsl:text>;</xsl:text>`
+	tests := make([]struct{ name, source, module, want string }, 0, 4)
+	for _, stream := range []bool{false, true} {
+		want := "false:1:2:1:1:urn:p;false:1:2:2:2:urn:p;"
+		if stream {
+			want = "true:0:1:1:1:urn:p;true:0:1:2:2:urn:p;"
+		}
+		body := `<xsl:merge><xsl:merge-source for-each-source="'module.xsl'" select="r/a/n" streamable="` + strconv.FormatBool(stream) + `" use-accumulators="a"><xsl:merge-key select="@k"/></xsl:merge-source><xsl:merge-action>` + action + `</xsl:merge-action></xsl:merge>`
+		tests = append(tests, struct{ name, source, module, want string }{"node snapshots " + strconv.FormatBool(stream), sheet(version30, global+`<xsl:template name="start">`+body+`</xsl:template>`), module, want})
+	}
+	implicit := tests[1]
+	tests = append(tests, struct{ name, source, module, want string }{"node explicit snapshots", strings.Replace(strings.Replace(implicit.source, `select="r/a/n"`, `select="snapshot(r/a/n)"`, 1), `streamable="true"`, `streamable="false"`, 1), module, implicit.want})
+	body := `<xsl:merge><xsl:merge-source for-each-source="'module.xsl'" select="(10,20)" streamable="yes"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select=". instance of xs:integer, current-merge-key(), current-merge-group()"/><xsl:text>;</xsl:text></xsl:merge-action></xsl:merge>`
+	return append(tests, struct{ name, source, module, want string }{"atomic snapshots", sheet(version30, `<xsl:template name="start">`+body+`</xsl:template>`), module, "true 10 10;true 20 20;"})
+}
+
+func TestMergeSnapshotSemantics(t *testing.T) {
+	for _, test := range mergeSnapshotCases() {
+		t.Run(test.name, func(t *testing.T) {
+			e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
+				if uri != "https://example.test/module.xsl" {
+					return nil, transform.ErrResource
+				}
+				return io.NopCloser(strings.NewReader(test.module)), ctx.Err()
+			})})
+			compiled, err := e.CompileXSLT(t.Context(), []byte(test.source), transform.XSLTOptions{ProcessorVersion: transform.XSLT30, BaseURI: "https://example.test/main.xsl"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+			if err != nil || string(result.Primary) != test.want {
+				t.Fatal(result, err, test.want)
 			}
 		})
 	}
@@ -4165,6 +4281,27 @@ func TestXSLTIntrospectionContexts(t *testing.T) {
 
 func mapInstructionCases() []struct{ name, body, check, want string } {
 	return []struct{ name, body, check, want string }{
+		{"map type host boundary", `<xsl:map-entry key="'a'" select="1"/>`, `$m instance of map(xs:string,xs:integer) and not($m instance of map(xs:integer,xs:integer))`, "true"},
+		{"map constructor host boundary", `<xsl:map/>`, `map:size(map{})=0 and deep-equal(map{'a':(1,2)}?a,(1,2)) and map:size(map{'a':()})=1`, "true"},
+		{"map constructor empty key", `<xsl:map/>`, `map:size(map{():1})`, "XPTY0004"},
+		{"map constructor duplicate key", `<xsl:map/>`, `map:size(map{1:1,1.0:2})`, "XQDY0137"},
+		{"unary lookup host boundary", `<xsl:map-entry key="'a'" select="(1,2)"/>`, `deep-equal(($m ! ?a),(1,2)) and empty($m ! ?missing) and deep-equal(($m ! ?*),(1,2))`, "true"},
+		{"unary lookup invalid context", `<xsl:map/>`, `1 ! ?a`, "XPTY0004"},
+		{"postfix lookup host boundary", `<xsl:map-entry key="'a'" select="(1,2)"/>`, `deep-equal($m?a,(1,2)) and deep-equal($m?('a','a'),(1,2,1,2)) and empty($m?missing) and [10,20]?1=10`, "true"},
+		{"postfix lookup invalid context", `<xsl:map/>`, `1?a`, "XPTY0004"},
+		{"map same key host boundary", `<xsl:map-entry key="xs:anyURI('a')" select="1"/>`, `map:contains($m,'a') and map:contains($m,xs:untypedAtomic('a')) and not(map:contains($m,'A'))`, "true"},
+		{"map merge host boundary", `<xsl:map-entry key="'a'" select="1"/>`, `let $n:=map:merge(($m,map{'a':2,'b':3}),map{'duplicates':'use-last'}) return $n?a=2 and $n?b=3 and $m?a=1`, "true"},
+		{"map size host boundary", `<xsl:map-entry key="'a'" select="()"/>`, `map:size($m)=1 and map:size(map{})=0`, "true"},
+		{"map keys host boundary", `<xsl:map><xsl:map-entry key="'b'" select="2"/><xsl:map-entry key="'a'" select="1"/></xsl:map>`, `deep-equal(sort(map:keys($m)),('a','b')) and empty(map:keys(map{}))`, "true"},
+		{"map contains host boundary", `<xsl:map-entry key="'a'" select="()"/>`, `map:contains($m,'a') and not(map:contains($m,'missing'))`, "true"},
+		{"map get host boundary", `<xsl:map-entry key="'a'" select="(1,2)"/>`, `deep-equal(map:get($m,'a'),(1,2)) and empty(map:get($m,'missing'))`, "true"},
+		{"map put host boundary", `<xsl:map-entry key="'a'" select="1"/>`, `let $n:=map:put($m,'a',()) return map:contains($n,'a') and empty($n?a) and $m?a=1`, "true"},
+		{"map entry host boundary", `<xsl:map/>`, `let $n:=map:entry('a',()) return map:size($n)=1 and map:contains($n,'a') and empty($n?a)`, "true"},
+		{"map remove host boundary", `<xsl:map-entry key="'a'" select="1"/>`, `map:size(map:remove($m,('a','missing')))=0 and map:contains($m,'a') and deep-equal(map:remove($m,()),$m)`, "true"},
+		{"map for each host boundary", `<xsl:map><xsl:map-entry key="'a'" select="1"/><xsl:map-entry key="'b'" select="2"/></xsl:map>`, `deep-equal(sort(map:for-each($m,function($k,$v){$v*2})),(2,4)) and empty(map:for-each(map{},function($k,$v){$v}))`, "true"},
+		{"map find host boundary", `<xsl:map-entry key="'a'" select="1"/>`, `let $r:=map:find(($m,[map{'a':(2,3)}]),'a') return Q{http://www.w3.org/2005/xpath-functions/array}size($r)=2 and deep-equal($r?1,1) and deep-equal($r?2,(2,3)) and empty(map:find($m,'missing')?*)`, "true"},
+		{"collation key host boundary", `<xsl:map/>`, `collation-key('A','http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive') eq collation-key('a','http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive') and not(collation-key('A') eq collation-key('a'))`, "true"},
+		{"deep equal maps host boundary", `<xsl:map-entry key="'a'" select="[1,map{'b':2}]"/>`, `deep-equal($m,map{'a':[1,map{'b':2}]}) and not(deep-equal($m,map{'a':[1,map{'b':3}]}))`, "true"},
 		{"empty map", `<xsl:map/>`, `map:size($m)`, "0"},
 		{"merge maps", `<xsl:map><xsl:sequence select="map{'a':(1,2)},map{'b':3}"/></xsl:map>`, `deep-equal($m?a,(1,2)) and $m?b eq 3`, "true"},
 		{"nested map", `<xsl:map><xsl:map><xsl:map-entry key="'a'" select="42"/></xsl:map></xsl:map>`, `$m?a`, "42"},

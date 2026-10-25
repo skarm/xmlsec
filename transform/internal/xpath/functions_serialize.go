@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -935,6 +936,78 @@ func parseSerializeOptionsNode(opts serializeOptions, n xdm.Node) (serializeOpti
 	return opts, nil
 }
 
+// SerializationParameters is a validated, presence-preserving view of a
+// parameter document. It contains no fn:serialize defaults or Unicode-output
+// overrides, so a byte serializer can apply its own host defaults afterwards.
+type SerializationParameters struct {
+	Strings       map[string]string
+	Booleans      map[string]bool
+	Names         map[string][]string
+	Characters    map[rune]string
+	CharactersSet bool
+}
+
+// ReadSerializationParameters applies the selected published parameter schema
+// and namespace-resolution rules without validating method-specific output
+// restrictions. Those restrictions depend on the receiving host's final method.
+func ReadSerializationParameters(ctx context.Context, root *xdm.Element, edition int) (SerializationParameters, error) {
+	var result SerializationParameters
+
+	opts, err := parseSerializeOptionsNode(serializeOptions{ctx: ctx, edition: edition}, root)
+	if err != nil {
+		return result, err
+	}
+
+	result.Strings = make(map[string]string)
+	result.Booleans = make(map[string]bool)
+	result.Names = make(map[string][]string)
+
+	for child := range xdm.Children(root) {
+		if err := Charge(ctx, 1); err != nil {
+			return result, err
+		}
+
+		param, ok := child.(*xdm.Element)
+		if !ok || param.URI() != lexicon.NamespaceSerialization || serializeParameterType(param.LocalName(), edition) == "" {
+			continue
+		}
+
+		name := param.LocalName()
+		if target, boolean := opts.booleanParam(name); boolean {
+			if target != nil {
+				result.Booleans[name] = *target
+			} else {
+				// fn:serialize ignores byte-order-mark for its string result,
+				// but the byte host must retain its validated explicit value.
+				value, err := readSerializeParamYesNo(param, edition)
+				if err != nil {
+					return result, err
+				}
+
+				result.Booleans[name] = value
+			}
+
+			continue
+		}
+
+		if target := opts.stringParam(name); target != nil {
+			result.Strings[name] = *target
+			continue
+		}
+
+		switch name {
+		case lexicon.SerializationCDATASectionElements:
+			result.Names[name] = slices.Sorted(maps.Keys(opts.cdataElements))
+		case lexicon.SerializationSuppressIndentation:
+			result.Names[name] = slices.Sorted(maps.Keys(opts.suppressIndent))
+		case lexicon.SerializationUseCharacterMaps:
+			result.Characters, result.CharactersSet = opts.charMap, true
+		}
+	}
+
+	return result, nil
+}
+
 func readSerializeOptionsRoot(n xdm.Node, edition int) (*xdm.Element, error) {
 	elem, ok := n.(*xdm.Element)
 	if !ok {
@@ -1156,12 +1229,12 @@ func validateSerializeLaxElement(opts serializeOptions, elem *xdm.Element) error
 			return err
 		}
 
-		if strings.HasPrefix(resolved, "{"+lexicon.NamespaceSerialization+"}") {
-			return validateSerializeNamedType(opts, elem, strings.TrimPrefix(resolved, "{"+lexicon.NamespaceSerialization+"}"))
+		if after, ok := strings.CutPrefix(resolved, "{"+lexicon.NamespaceSerialization+"}"); ok {
+			return validateSerializeNamedType(opts, elem, after)
 		}
 
-		if strings.HasPrefix(resolved, "{"+lexicon.NamespaceXSD+"}") {
-			return validateSerializeBuiltinType(opts, elem, strings.TrimPrefix(resolved, "{"+lexicon.NamespaceXSD+"}"))
+		if after, ok := strings.CutPrefix(resolved, "{"+lexicon.NamespaceXSD+"}"); ok {
+			return validateSerializeBuiltinType(opts, elem, after)
 		}
 
 		return serializeSchemaError("unknown serialization subtree xsi:type")
@@ -2625,6 +2698,7 @@ func (p *htmlSerializationProlog) before(item xdm.XMLItem) error {
 
 func serializeHTMLWriter(opts serializeOptions) htmlpkg.Writer {
 	return htmlpkg.NewWriter().DefaultDTD(false).Format(false).PreserveCase(true).
+		SerializationVersion(opts.edition).
 		EscapeURIAttributes(opts.escapeURIAttributes).CharacterMap(opts.charMap).
 		Repertoire(serializeRepertoire(opts.encoding)).CDATAElements(opts.cdataElements).
 		Normalization(opts.normalizationForm).EscapeControlChars(serializeHTMLIsVersion5(opts)).
@@ -2750,7 +2824,7 @@ func serializeXHTMLDocument(doc *xdm.Document, opts serializeOptions) (string, e
 		writer.OmitDoctype = false
 	}
 
-	htmlpkg.ConfigureXHTML(&writer.XMLWriteOptions, html5, opts.escapeURIAttributes)
+	htmlpkg.ConfigureXHTML(&writer.XMLWriteOptions, html5, opts.escapeURIAttributes, opts.edition)
 
 	var buf serializationBuffer
 

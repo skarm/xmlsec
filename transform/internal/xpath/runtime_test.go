@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/big"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1091,5 +1092,174 @@ func TestNumericPredicateASTAndVM(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// The rows below are the literal boolean cells of XPath 3.0/3.1 §2.5.6.1,
+// not values derived from this implementation. Integer/integer instantiates
+// subtype-itemtype(Ai,Bi)=true; integer/string instantiates it as false.
+func TestSequenceSubtypePublishedTable(t *testing.T) {
+	for _, pair := range []struct {
+		name, target string
+		same         bool
+	}{
+		{"same item type", "xs:integer", true},
+		{"disjoint item types", "xs:string", false},
+	} {
+		columns := []string{"empty-sequence()", pair.target + "?", pair.target + "*", pair.target, pair.target + "+", "xs:error"}
+		rows := []struct {
+			source string
+			cells  [6]bool
+		}{
+			{"empty-sequence()", [6]bool{true, true, true, false, false, false}},
+			{"xs:integer?", [6]bool{false, pair.same, pair.same, false, false, false}},
+			{"xs:integer*", [6]bool{false, false, pair.same, false, false, false}},
+			{"xs:integer", [6]bool{false, pair.same, pair.same, pair.same, pair.same, false}},
+			{"xs:integer+", [6]bool{false, false, pair.same, false, pair.same, false}},
+			{"xs:error", [6]bool{true, true, true, true, true, true}},
+			// The prose directly below the table specifies these aliases.
+			{"xs:error+", [6]bool{true, true, true, true, true, true}},
+			{"xs:error?", [6]bool{true, true, true, false, false, false}},
+			{"xs:error*", [6]bool{true, true, true, false, false, false}},
+		}
+		for _, version := range []int{30, 31} {
+			for _, row := range rows {
+				for column, target := range columns {
+					t.Run(fmt.Sprintf("%d/%s/%s to %s", version, pair.name, row.source, target), func(t *testing.T) {
+						t.Logf("P3_VECTOR %q", strconv.FormatBool(row.cells[column]))
+						sourceType, err := ParseSequenceType(row.source)
+						if err != nil {
+							t.Fatal(err)
+						}
+						targetType, err := ParseSequenceType(target)
+						if err != nil {
+							t.Fatal(err)
+						}
+						got := isSequenceSubtype(sourceType, targetType, &evalContext{version: version})
+						if got != row.cells[column] {
+							t.Fatalf("published subtype(%s,%s) = %t; got %t", row.source, target, row.cells[column], got)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestProcessingInstructionTargetParsers(t *testing.T) {
+	for _, version := range []int{10, 20, 30, 31} {
+		for _, target := range []string{`p`, `' p '`, "'\t p\r\n '", `if`, `'é'`, "'\u1680p'", `''`, `'bad name'`, `'p:q'`, "'\u00a0p'", "'\u0085p'", "'\u2003p'"} {
+			for _, direct := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%d/%t/%s", version, direct, target), func(t *testing.T) {
+					lexer, err := newVersionLexer("processing-instruction("+target+")", version)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if direct {
+						_, _, _, err = tryCompileDirectFromLexer(lexer)
+					} else {
+						_, err = parseWithLexer(lexer)
+					}
+					invalid := target == `''` || target == `'bad name'` || target == `'p:q'` || strings.ContainsAny(target, "\u00a0\u0085\u2003")
+					var detail *xdm.Error
+					if version != 10 && invalid {
+						if !errors.As(err, &detail) || detail.Code != lexicon.ErrXPTY0004 {
+							t.Fatalf("%v, want XPTY0004", err)
+						}
+					} else if err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+		}
+	}
+	for _, target := range []string{" p ", "\t p\r\n ", "é", "\u1680p", "", "bad name", "p:q", "\u00a0p", "\u0085p", "\u2003p"} {
+		t.Run("bound/"+target, func(t *testing.T) {
+			parsed, parseErr := ParseSequenceType("function(processing-instruction('" + target + "')) as processing-instruction('" + target + "')")
+			raw := xdm.SequenceType{ItemTest: xdm.PITest{Target: target, HasTarget: true}}
+			bound, bindErr := BindSequenceType(t.Context(), raw, nil, "")
+			want := collapseXMLWhitespace(target)
+			if !ValidNCName(want) {
+				for _, err := range []error{parseErr, bindErr} {
+					var detail *xdm.Error
+					if !errors.As(err, &detail) || detail.Code != lexicon.ErrXPTY0004 {
+						t.Fatalf("%v, want XPTY0004", err)
+					}
+				}
+				return
+			}
+			if parseErr != nil || bindErr != nil {
+				t.Fatal(parseErr, bindErr)
+			}
+			fn := parsed.ItemTest.(xdm.FunctionTest)
+			if fn.ParamTypes[0].ItemTest.(xdm.PITest).Target != want || fn.ReturnType.ItemTest.(xdm.PITest).Target != want || bound.ItemTest.(xdm.PITest).Target != want {
+				t.Fatal("inconsistent normalized targets", parsed, bound)
+			}
+			if !isSequenceSubtype(raw, bound, &evalContext{version: 31}) {
+				t.Fatal("PI signature subtyping did not normalize its target")
+			}
+		})
+	}
+}
+
+func TestProcessingInstructionTargetsASTAndVM(t *testing.T) {
+	for source, want := range map[string]string{
+		`count(parse-xml('<r><?p a?><?if b?></r>')/r/processing-instruction(' p '))`:                                  "1",
+		`count(parse-xml('<r><?p a?><?if b?></r>')/r/processing-instruction(if))`:                                     "1",
+		`(function() as processing-instruction(' p ') {error()}) instance of function() as processing-instruction(p)`: "true",
+		`(function() as processing-instruction(p) {error()}) instance of function() as processing-instruction(' q ')`: "false",
+	} {
+		ast, err := Parse(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, mode := range []string{runtimeASTMode, "VM"} {
+			t.Run(mode+"/"+source, func(t *testing.T) {
+				var result xdm.Sequence
+				var err error
+				if mode == runtimeASTMode {
+					ec := NewEvaluator(DefaultEvaluatorOptions).newEvalCtx(nil)
+					ec.version = 31
+					result, err = evaluateRuntimeAST(t.Context(), ec, ast)
+				} else {
+					compiled, compileErr := NewCompiler().Language(31, nil).CompileExpr(ast)
+					if compileErr != nil {
+						t.Fatal(compileErr)
+					}
+					var value *Result
+					value, err = NewEvaluator(DefaultEvaluatorOptions).Evaluate(t.Context(), compiled, nil)
+					if err == nil {
+						result = value.Sequence()
+					}
+				}
+				if err != nil || xdm.SequenceLen(result) != 1 || fmt.Sprint(result.Get(0).(xdm.AtomicValue).Value) != want {
+					t.Fatalf("%v, %v; want %s", result, err, want)
+				}
+			})
+		}
+	}
+}
+
+func TestDocumentSnapshotControlAndPolicyFailures(t *testing.T) {
+	for _, failure := range []error{ErrBudget, ErrNodeSetLimit, context.Canceled, context.DeadlineExceeded, &xdm.ResourceAccessError{Cause: errors.New("read policy")}} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			ctx := WithInvocationScope(t.Context())
+			scope := new(byte)
+			loads := 0
+			doc := xdm.NewDocument("1.0", "UTF-8", 0)
+			load := func() (*xdm.Document, error) {
+				loads++
+				if loads == 1 {
+					return nil, failure
+				}
+				return doc, nil
+			}
+			if result, err := DocumentLoadSnapshot(ctx, scope, "urn:snapshot", load); result != nil || !errors.Is(err, failure) {
+				t.Fatal(result, err)
+			}
+			if result, err := DocumentLoadSnapshot(ctx, scope, "urn:snapshot", load); result != doc || err != nil || loads != 2 {
+				t.Fatal("control/policy failure was retained", result, err, loads)
+			}
+		})
 	}
 }

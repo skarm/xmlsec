@@ -2401,6 +2401,12 @@ type executionCollectionResolver struct {
 	ec   *execContext
 }
 
+// CollectionCacheScope keeps XPath's invocation cache from reusing another
+// package's already-preprocessed collection result (XSLT 3.0 section 4.4.2).
+func (r executionCollectionResolver) CollectionCacheScope() any {
+	return r.ec.effectiveStylesheet()
+}
+
 func (r executionCollectionResolver) ResolveCollection(ctx context.Context, uri string) (xdm.Sequence, error) {
 	key := r.ec.docCacheKey(uri)
 	if seq, found := r.ec.collectionCache[key]; found {

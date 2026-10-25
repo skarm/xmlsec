@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"maps"
 	"slices"
 	"strconv"
@@ -279,15 +280,16 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 	}
 
 	outDef := &OutputDef{
-		Name:           name,
-		Method:         methodStr,
-		MethodExplicit: methodStr != "",
-		Encoding:       getAttr(elem, lexicon.SerializationEncoding),
-		Version:        getAttr(elem, lexicon.SerializationVersion),
-		ImportPrec:     c.importPrec,
-		MethodRaw:      getAttr(elem, lexicon.SerializationMethod),
-		EncodingRaw:    getAttr(elem, lexicon.SerializationEncoding),
-		VersionRaw:     getAttr(elem, lexicon.SerializationVersion),
+		serializationVersion: c.stylesheet.processorLanguage(),
+		Name:                 name,
+		Method:               methodStr,
+		MethodExplicit:       methodStr != "",
+		Encoding:             getAttr(elem, lexicon.SerializationEncoding),
+		Version:              getAttr(elem, lexicon.SerializationVersion),
+		ImportPrec:           c.importPrec,
+		MethodRaw:            getAttr(elem, lexicon.SerializationMethod),
+		EncodingRaw:          getAttr(elem, lexicon.SerializationEncoding),
+		VersionRaw:           getAttr(elem, lexicon.SerializationVersion),
 	}
 
 	if outDef.Method == "" {
@@ -318,17 +320,8 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 		return err
 	}
 
-	if v := getAttr(elem, lexicon.SerializationParameterDocument); v != "" {
-		outDef.ParameterDocument = v
-		baseURI := stylesheetBaseURI(elem, c.baseURI, c.moduleRoot)
-
-		var err error
-		// This applies the parameter-document directly onto the xsl:output's
-		// OutputDef (not a delta to be folded later), so the boolean presence
-		// flags are not needed here and are discarded.
-		if adnExplicit, _, err = c.loadParameterDocument(ctx, outDef, baseURI, v, adnExplicit); err != nil {
-			return err
-		}
+	if href, present := elem.GetAttribute(lexicon.SerializationParameterDocument); present {
+		outDef.ParameterDocument = parameterDocumentURI(stylesheetBaseURI(elem, c.baseURI, c.moduleRoot), href)
 	}
 
 	if existing, ok := c.stylesheet.outputs[name]; ok {
@@ -343,6 +336,13 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 		if !adnExplicit {
 			outDef.AllowDuplicateNames = existing.AllowDuplicateNames
 			adnExplicit = c.outputAllowDupExplicit[name]
+		}
+	}
+
+	if outDef.ParameterDocument != "" {
+		adnExplicit, _, err = c.loadParameterDocument(ctx, outDef, "", outDef.ParameterDocument, adnExplicit)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -455,6 +455,10 @@ func checkOutputConflicts(existing *OutputDef, elem *xdm.Element) error {
 
 // mergeOutputDefinition inherits settings omitted by a later declaration.
 func mergeOutputDefinition(out, existing *OutputDef, elem *xdm.Element) {
+	if !elem.HasAttribute(lexicon.SerializationParameterDocument) {
+		out.ParameterDocument = existing.ParameterDocument
+	}
+
 	if len(existing.UseCharacterMaps) > 0 {
 		out.UseCharacterMaps = append(existing.UseCharacterMaps, out.UseCharacterMaps...)
 	}
@@ -617,12 +621,9 @@ func (c *compiler) compileOutputSequenceParameters(elem *xdm.Element, out *Outpu
 	return explicit, nil
 }
 
-// loadParameterDocument loads a serialization parameter document (XSLT 3.0 §9.2)
-// and applies its settings to the given OutputDef. Parameters explicitly set on
-// the xsl:output element take precedence; the parameter document provides defaults.
-// adnExplicit carries the allow-duplicate-names explicitness in and out so the
-// parameter document does not override a value already set on xsl:output and the
-// caller can fold the result into its compile-time merge bookkeeping.
+// loadParameterDocument applies the effective external parameter values after
+// direct output declarations have been merged (XSLT3.0 §26). Scalars override;
+// cdata-section-elements and suppress-indentation are unions.
 func (c *compiler) loadParameterDocument(ctx context.Context, outDef *OutputDef, baseURI, href string, adnExplicit bool) (bool, paramDocPresence, error) {
 	// Compile-time loading is opt-in: a URIResolver must be configured via
 	// Compiler.URIResolver. There is no implicit filesystem access.
@@ -637,30 +638,12 @@ func (c *compiler) loadParameterDocument(ctx context.Context, outDef *OutputDef,
 	return loadParameterDocumentFromFile(ctx, c.parseOptions, outDef, baseURI, href, openResource, false, adnExplicit, c.maxResourceBytes)
 }
 
-// loadParameterDocumentFromFile loads a serialization parameter document and
-// applies its settings to the given OutputDef. This standalone version can be
-// called at both compile-time and runtime; the openResource callback performs the
-// actual retrieval so each caller supplies its own (opt-in) loader.
-//
-// runtime selects the error taxonomy: at compile time (runtime=false) a load or
-// parse failure is a static error (XTSE0090); at runtime (runtime=true, e.g. an
-// xsl:result-document parameter-document AVT) it is a dynamic error (FODC0002).
-// A runtime failure must NOT also satisfy errors.Is(err, ErrStaticError), so the
-// runtime path never applies the static wrapper. A distinguishable cause such as
-// [ErrResourceTooLarge] survives either way via errors.Join.
-//
-// adnExplicit (allow-duplicate-names explicitness) is threaded in and out rather
-// than stored on the public OutputDef: when already true on input the parameter
-// document must not override the value, and the returned value reports whether
-// the parameter document supplied it so the caller can fold it into its own
-// compile-time merge bookkeeping.
-//
-// The returned paramDocPresence reports which plain-boolean serialization
-// parameters this parameter-document explicitly supplied. These presence flags
-// are kept off the public OutputDef (a plain bool cannot distinguish "omitted"
-// from "explicit false") and travel alongside the resulting delta so
-// foldParamDocOverrides leaves an inherited xsl:output default intact for any
-// boolean the parameter-document omits.
+// loadParameterDocumentFromFile shares validated parameter extraction between
+// compile-time and runtime callers. Present false/empty values remain explicit;
+// malformed/schema-invalid documents retain their serialization error codes.
+// Ordinary missing resources are ignored, while authorization, cancellation,
+// exhausted budgets and non-missing retrieval failures preserve their causes.
+// adnExplicit is the existing allow-duplicate-names merge bookkeeping.
 func loadParameterDocumentFromFile(ctx context.Context, injected *xdm.ParseOptions, outDef *OutputDef, baseURI, href string, openResource func(context.Context, string) (io.ReadCloser, error), runtime bool, adnExplicit bool, resourceLimit int64) (bool, paramDocPresence, error) {
 	values := parameterDocumentValues{output: outDef, explicit: adnExplicit}
 
@@ -669,14 +652,16 @@ func loadParameterDocumentFromFile(ctx context.Context, injected *xdm.ParseOptio
 		return values.explicit, values.presence, err
 	}
 
-	for child := range xdm.Children(root) {
-		elem, ok := child.(*xdm.Element)
-		if !ok || elem.URI() != lexicon.NamespaceSerialization {
-			continue
-		}
-
-		values.apply(elem)
+	if root == nil {
+		return values.explicit, nil, nil
 	}
+
+	parameters, err := xpath.ReadSerializationParameters(ctx, root, 31)
+	if err != nil {
+		return values.explicit, nil, err
+	}
+
+	values.applyValidated(parameters)
 
 	return values.explicit, values.presence, nil
 }
@@ -697,6 +682,10 @@ func loadParameterDocumentRoot(ctx context.Context, injected *xdm.ParseOptions, 
 			return nil, failure
 		}
 
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+
 		return nil, parameterDocumentLoadError(err, href, runtime)
 	}
 	// Parameter documents use the fixed W3C schema and no external entities.
@@ -707,20 +696,12 @@ func loadParameterDocumentRoot(ctx context.Context, injected *xdm.ParseOptions, 
 			return nil, failure
 		}
 
-		if runtime {
-			return nil, dynamicErrorCause(lexicon.ErrFODC0002, err, "cannot parse parameter-document %q: %v", href, err)
-		}
-
-		return nil, staticErrorCause(errCodeXTSE0090, err, "cannot parse parameter-document %q: %v", href, err)
+		return nil, &xdm.Error{Code: "SEPM0017", Message: "ill-formed serialization parameter document", Cause: err}
 	}
 
 	root := doc.DocumentElement()
 	if root == nil || root.LocalName() != "serialization-parameters" || root.URI() != lexicon.NamespaceSerialization {
-		if runtime {
-			return nil, dynamicError(lexicon.ErrFODC0002, "parameter-document %q: root element must be {%s}serialization-parameters", href, lexicon.NamespaceSerialization)
-		}
-
-		return nil, staticError(errCodeXTSE0090, "parameter-document %q: root element must be {%s}serialization-parameters", href, lexicon.NamespaceSerialization)
+		return nil, &xdm.Error{Code: "SEPM0017", Message: "serialization parameter document requires output:serialization-parameters"}
 	}
 
 	return root, nil
@@ -1507,165 +1488,96 @@ type parameterDocumentValues struct {
 	presence paramDocPresence
 }
 
-func (p *parameterDocumentValues) apply(elem *xdm.Element) {
-	name := elem.LocalName()
-	value := getAttr(elem, "value")
-
-	switch name {
-	case lexicon.SerializationIndent, lexicon.SerializationOmitXMLDeclaration, lexicon.SerializationUndeclarePrefixes,
-		lexicon.SerializationAllowDuplicateNames, lexicon.SerializationByteOrderMark, lexicon.SerializationEscapeURIAttributes,
-		lexicon.SerializationIncludeContentType, lexicon.SerializationBuildTree:
+func (p *parameterDocumentValues) applyValidated(parameters xpath.SerializationParameters) {
+	p.presence = make(paramDocPresence)
+	for name, value := range parameters.Booleans {
+		p.presence[name] = true
 		p.applyBoolean(name, value)
-	case lexicon.SerializationMethod, lexicon.SerializationEncoding, lexicon.SerializationStandalone, lexicon.SerializationVersion:
-		p.applyIdentity(name, value)
-	case lexicon.SerializationUseCharacterMaps:
-		p.applyCharacterMaps(elem)
-	default:
-		p.applyPresentation(name, value)
+	}
+
+	for name, value := range parameters.Strings {
+		p.presence[name] = true
+		p.applyString(name, value)
+	}
+
+	for name, values := range parameters.Names {
+		p.presence[name] = true
+		switch name {
+		case lexicon.SerializationCDATASectionElements:
+			p.output.CDATASections = unionOutputNames(p.output.CDATASections, values)
+		case lexicon.SerializationSuppressIndentation:
+			p.output.SuppressIndentation = unionOutputNames(p.output.SuppressIndentation, values)
+		}
+	}
+
+	if parameters.CharactersSet {
+		p.presence[lexicon.SerializationUseCharacterMaps] = true
+		p.output.UseCharacterMaps = nil
+		p.output.ResolvedCharMap = make(map[rune]string, len(parameters.Characters))
+		maps.Copy(p.output.ResolvedCharMap, parameters.Characters)
 	}
 }
 
-func (p *parameterDocumentValues) applyBoolean(name, value string) {
-	if value == "" {
-		return
-	}
-
-	boolean, ok := parseXSDBool(value)
-	if !ok {
-		return
-	}
-
+func (p *parameterDocumentValues) applyBoolean(name string, value bool) {
 	switch name {
 	case lexicon.SerializationIndent:
-		if p.output.IndentRaw == "" {
-			p.output.Indent = boolean
-			p.presence.indent = true
-		}
+		p.output.Indent = value
 	case lexicon.SerializationOmitXMLDeclaration:
-		if !p.output.OmitDeclarationExplicit {
-			p.output.OmitDeclaration = boolean
-			p.output.OmitDeclarationExplicit = true
-		}
+		p.output.OmitDeclaration, p.output.OmitDeclarationExplicit = value, true
 	case lexicon.SerializationUndeclarePrefixes:
-		p.output.UndeclarePrefixes = boolean
-		p.presence.undeclarePrefixes = true
+		p.output.UndeclarePrefixes = value
 	case lexicon.SerializationAllowDuplicateNames:
-		if !p.explicit {
-			p.output.AllowDuplicateNames = boolean
-			p.presence.allowDuplicateNames = true
-			p.explicit = true
-		}
+		p.output.AllowDuplicateNames, p.explicit = value, true
 	case lexicon.SerializationByteOrderMark:
-		p.output.ByteOrderMark = boolean
-		p.presence.byteOrderMark = true
+		p.output.ByteOrderMark = value
 	case lexicon.SerializationEscapeURIAttributes:
-		if p.output.EscapeURIAttributes == nil {
-			p.output.EscapeURIAttributes = &boolean
-		}
+		p.output.EscapeURIAttributes = &value
 	case lexicon.SerializationIncludeContentType:
-		if p.output.IncludeContentType == nil {
-			p.output.IncludeContentType = &boolean
-		}
-	case lexicon.SerializationBuildTree:
-		if p.output.BuildTree == nil {
-			p.output.BuildTree = &boolean
-		}
+		p.output.IncludeContentType = &value
 	}
 }
 
-func (p *parameterDocumentValues) applyIdentity(name, value string) {
-	if value == "" {
-		return
-	}
-
+func (p *parameterDocumentValues) applyString(name, value string) {
 	switch name {
 	case lexicon.SerializationMethod:
-		if p.output.MethodRaw == "" {
-			p.output.Method = strings.ToLower(strings.TrimSpace(value))
-			p.output.MethodExplicit = true
-		}
+		p.output.Method, p.output.MethodExplicit = value, true
 	case lexicon.SerializationEncoding:
-		if p.output.EncodingRaw == "" {
-			p.output.Encoding = strings.TrimSpace(value)
-		}
+		p.output.Encoding = value
 	case lexicon.SerializationVersion:
-		if p.output.VersionRaw == "" {
-			p.output.Version = strings.TrimSpace(value)
-		}
+		p.output.Version = value
 	case lexicon.SerializationStandalone:
-		if p.output.StandaloneRaw == "" {
-			value = strings.TrimSpace(value)
-			switch value {
-			case lexicon.ValueYes, lexicon.ValueNo, lexicon.ValueOmit:
-				p.output.Standalone = value
+		p.output.Standalone = value
+	case lexicon.SerializationDoctypePublic:
+		p.output.DoctypePublic = value
+	case lexicon.SerializationDoctypeSystem:
+		p.output.DoctypeSystem = value
+	case lexicon.SerializationMediaType:
+		p.output.MediaType = value
+	case lexicon.SerializationItemSeparator:
+		p.output.ItemSeparator, p.output.ItemSeparatorAbsent = &value, false
+	case lexicon.SerializationNormalizationForm:
+		p.output.NormalizationForm = strings.ToUpper(value)
+	case lexicon.SerializationHTMLVersion:
+		p.output.HTMLVersion = value
+	case lexicon.SerializationJSONNodeOutputMethod:
+		p.output.JSONNodeOutputMethod = value
+	}
+}
+
+func unionOutputNames(left, right []string) []string {
+	seen := make(map[string]bool, len(left)+len(right))
+	result := make([]string, 0, len(left)+len(right))
+
+	for _, names := range [][]string{left, right} {
+		for _, name := range names {
+			if !seen[name] {
+				seen[name] = true
+				result = append(result, name)
 			}
 		}
 	}
-}
 
-func (p *parameterDocumentValues) applyPresentation(name, value string) {
-	if value == "" {
-		return
-	}
-
-	switch name {
-	case lexicon.SerializationCDATASectionElements:
-		if len(p.output.CDATASections) == 0 {
-			p.output.CDATASections = strings.Fields(value)
-		}
-	case lexicon.SerializationDoctypePublic:
-		if p.output.DoctypePublic == "" {
-			p.output.DoctypePublic = value
-		}
-	case lexicon.SerializationDoctypeSystem:
-		if p.output.DoctypeSystem == "" {
-			p.output.DoctypeSystem = value
-		}
-	case lexicon.SerializationMediaType:
-		if p.output.MediaType == "" {
-			p.output.MediaType = value
-		}
-	case lexicon.SerializationItemSeparator:
-		if p.output.ItemSeparator == nil {
-			p.output.ItemSeparator = &value
-		}
-	case lexicon.SerializationNormalizationForm:
-		if p.output.NormalizationForm == "" {
-			p.output.NormalizationForm = strings.ToUpper(strings.TrimSpace(value))
-		}
-	case lexicon.SerializationSuppressIndentation:
-		if len(p.output.SuppressIndentation) == 0 {
-			p.output.SuppressIndentation = strings.Fields(value)
-		}
-	case lexicon.SerializationHTMLVersion:
-		if p.output.HTMLVersion == "" {
-			p.output.HTMLVersion = strings.TrimSpace(value)
-		}
-	case lexicon.SerializationJSONNodeOutputMethod:
-		if p.output.JSONNodeOutputMethod == "" {
-			p.output.JSONNodeOutputMethod = strings.TrimSpace(value)
-		}
-	}
-}
-
-func (p *parameterDocumentValues) applyCharacterMaps(elem *xdm.Element) {
-	if p.output.ResolvedCharMap == nil {
-		p.output.ResolvedCharMap = make(map[rune]string)
-	}
-
-	for child := range xdm.Children(elem) {
-		mapping, ok := child.(*xdm.Element)
-		if !ok || mapping.LocalName() != "character-map" {
-			continue
-		}
-
-		characters := []rune(getAttr(mapping, "character"))
-		if len(characters) != 1 {
-			continue
-		}
-
-		p.output.ResolvedCharMap[characters[0]] = getAttr(mapping, "map-string")
-	}
+	return result
 }
 
 // checkAttributeSetCycles detects cyclic use-attribute-sets references (XTSE0720).

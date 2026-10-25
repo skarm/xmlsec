@@ -66,6 +66,7 @@ func htmlResultWriter(definition *OutputDef) htmlpkg.Writer {
 	}
 
 	writer := htmlpkg.NewWriter().DefaultDTD(false).Format(false).PreserveCase(true).
+		SerializationVersion(definition.serializationVersion).
 		EscapeControlChars(effectiveHTMLVersion5(definition)).
 		NullNamespaceHTMLOnly(!effectiveHTMLVersion5(definition)).
 		ForeignNamespaces(effectiveHTMLVersion5(definition)).

@@ -1025,7 +1025,7 @@ func (c *compiler) compileResultDocumentOutputAVTs(elem *xdm.Element, inst *resu
 }
 
 func (c *compiler) compileResultDocumentParameters(ctx context.Context, elem *xdm.Element, inst *resultDocumentInst) error {
-	if pd := getAttr(elem, lexicon.SerializationParameterDocument); pd != "" {
+	if pd, present := elem.GetAttribute(lexicon.SerializationParameterDocument); present {
 		if strings.ContainsAny(pd, "{}") {
 			avt, err := c.compileAVT(pd, c.nsBindings)
 			if err != nil {

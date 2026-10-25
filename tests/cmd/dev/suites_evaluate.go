@@ -54,9 +54,9 @@ func evaluateQT3(ctx context.Context, options suiteOptions, item suiteCase, envi
 
 	expression := test.Text
 	if test.attr(suiteFile) != "" {
-		raw, _, err := readSuiteFile(options.directory, item.base, test.attr(suiteFile))
+		raw, _, err := readSuiteReferencedFile(options.directory, item.base, test)
 		if err != nil {
-			return transform.Sequence{}, suiteHarness("query file: %v", err)
+			return transform.Sequence{}, suiteHarness("query file: %w", err)
 		}
 
 		expression = string(raw)
@@ -94,6 +94,19 @@ func evaluateXSLTSuite(ctx context.Context, options suiteOptions, item suiteCase
 	if err != nil {
 		return nil, err
 	}
+
+	return evaluateCompiledXSLTSuite(ctx, item, environment, compiled)
+}
+
+// evaluateCompiledXSLTSuite applies the catalog invocation to an already compiled
+// stylesheet, keeping compilation and invocation independently reproducible.
+func evaluateCompiledXSLTSuite(ctx context.Context, item suiteCase, environment *preparedSuiteEnvironment, compiled *transform.Stylesheet) (*transform.Result, error) {
+	test := item.node.child("test")
+	if test == nil {
+		return nil, suiteHarness("test invocation is missing")
+	}
+
+	var err error
 
 	environment.executionVersion = fmt.Sprintf("%d.%d", compiled.Version()/10, compiled.Version()%10)
 
@@ -147,7 +160,7 @@ func evaluateXSLTSuite(ctx context.Context, options suiteOptions, item suiteCase
 
 			selection, err := selectionContext.query(ctx, selectExpression, nil)
 			if err != nil {
-				return nil, suiteHarness("initial selection: %v", err)
+				return nil, suiteHarness("initial selection: %w", err)
 			}
 
 			return compiled.ApplyTemplates(ctx, environment.document, selection, invocation)
@@ -250,7 +263,7 @@ func prepareSuiteInvocation(ctx context.Context, options suiteOptions, item suit
 		}
 	}
 
-	if entries > 1 {
+	if entries > 1 && (entries != 2 || test.child("initial-template") == nil || test.child("initial-mode") == nil) {
 		return suiteHarness("an invocation cannot select multiple initial entry points")
 	}
 
@@ -258,22 +271,32 @@ func prepareSuiteInvocation(ctx context.Context, options suiteOptions, item suit
 }
 
 func compileSuiteStylesheet(ctx context.Context, options suiteOptions, environment *preparedSuiteEnvironment) (*transform.Stylesheet, error) {
+	raw, compileOptions, err := suiteStylesheetSource(options, environment)
+	if err != nil {
+		return nil, err
+	}
+
+	return environment.engine.CompileXSLT(ctx, raw, compileOptions)
+}
+
+// suiteStylesheetSource resolves the publisher module and its compilation context.
+func suiteStylesheetSource(options suiteOptions, environment *preparedSuiteEnvironment) ([]byte, transform.XSLTOptions, error) {
 	stylesheet, base := environment.stylesheet.node, environment.stylesheet.base
 
 	if stylesheet == nil || stylesheet.attr(suiteFile) == "" {
-		return nil, suiteHarness("a stylesheet file in the test invocation is required by this harness")
+		return nil, transform.XSLTOptions{}, suiteHarness("a stylesheet file in the test invocation is required by this harness")
 	}
 
-	raw, path, err := readSuiteFile(options.directory, base, stylesheet.attr(suiteFile))
+	raw, path, err := readSuiteReferencedFile(options.directory, base, stylesheet)
 	if err != nil {
-		return nil, suiteHarness("stylesheet: %v", err)
+		return nil, transform.XSLTOptions{}, suiteHarness("stylesheet: %w", err)
 	}
 
 	baseURI := suiteFileURI(path)
 	if stylesheet.attr("uri") != "" {
 		baseURI, err = resolveSuiteURI(environment.baseURI, stylesheet.attr("uri"))
 		if err != nil {
-			return nil, err
+			return nil, transform.XSLTOptions{}, err
 		}
 	}
 
@@ -282,7 +305,7 @@ func compileSuiteStylesheet(ctx context.Context, options suiteOptions, environme
 		processor = transform.XSLT20
 	}
 
-	return environment.engine.CompileXSLT(ctx, raw, transform.XSLTOptions{ProcessorVersion: processor, BaseURI: baseURI, StaticParameters: environment.staticParameters})
+	return raw, transform.XSLTOptions{ProcessorVersion: processor, BaseURI: baseURI, StaticParameters: environment.staticParameters}, nil
 }
 
 func (e *suiteEvaluation) serialized(ctx context.Context) ([]byte, error) {
@@ -335,7 +358,7 @@ func (e *suiteEvaluation) assertionValue(ctx context.Context, expression string,
 
 	result, err := assertionContext.query(ctx, expression, bindings)
 	if err != nil {
-		return transform.Sequence{}, suiteHarness("assertion evaluation: %v", err)
+		return transform.Sequence{}, suiteHarness("assertion evaluation: %w", err)
 	}
 
 	return result, nil
@@ -349,12 +372,12 @@ func (e *suiteEvaluation) assertionTrue(ctx context.Context, expression string, 
 
 	value, err := result.Single()
 	if err != nil {
-		return suiteHarness("assertion did not return one item: %v", err)
+		return suiteHarness("assertion did not return one item: %w", err)
 	}
 
 	matched, err := value.Boolean()
 	if err != nil {
-		return suiteHarness("assertion did not return a boolean: %v", err)
+		return suiteHarness("assertion did not return a boolean: %w", err)
 	}
 
 	if !matched {

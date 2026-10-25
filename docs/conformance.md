@@ -100,6 +100,23 @@ internal round trip alone does not qualify. `pending` remains a gap even when
 unit tests pass; `not-applicable` needs a reason. Pass rates are not normative
 coverage percentages.
 
+Language records additionally carry `evidence`: each obligation names exact
+positive/negative subtests, an independent processor or pinned publisher case,
+and a source. Published vectors include a literal expected value and its basis.
+Publisher bundles contain explicit case names and selected language/XSD editions;
+their original complete assertions are replayed. The fixture pin identifies
+external material without copying it into the repository. `evidence_from`
+requires every structural child, or direct composition controls with a normative
+basis; a nearby function's passing test cannot close an unrelated clause.
+Informative passages retain their own non-applicable reference role.
+
+`residual_evidence` records each original full-catalog failure's disposition,
+cause and exact causal checks. The [executable language gate](language-suites.md#executable-clause-and-failure-evidence)
+checks current source/register identities, actual passing events and independent
+oracle/vector markers, then joins every failure from all thirteen reports to
+these controls. A stale report, skipped witness, unclassified new failure or
+processor disagreement recorded as an agreement fails this gate.
+
 ## Current boundaries
 
 The profile records are the maintained backlog. In particular:
@@ -131,8 +148,8 @@ The profile records are the maintained backlog. In particular:
 - Each XPath version and Basic XSLT have clause/function and pinned suite
   inventories. The P3 audit distinguishes repaired language defects from visible
   resource, input-model, optional-feature and permitted/invalid-fixture outcomes.
-  Complete independent clause evidence remains open. Schema awareness and W3C
-  streamability are separate roles.
+  Independent case evidence and causal controls are executed separately from the
+  catalog pass-rate report. Schema awareness and W3C streamability are separate roles.
 - SAML role duties include encrypted counterparts of plaintext elements handled
   by a mode, including applicable IDs and attributes. Approved Errata 05 is
   selected and linked per base document and role. Mandatory Artifact/SOAP, ECP,

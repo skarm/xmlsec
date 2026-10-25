@@ -15,6 +15,7 @@ import (
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
+	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
@@ -432,7 +433,7 @@ func (ec *execContext) loadDocument(ctx context.Context, uri string, baseDir str
 
 	resolvedURI := ec.resolveDocumentURI(cleanURI, baseDir)
 	if err := ec.CheckRead(ctx, resolvedURI); err != nil {
-		return nil, err
+		return nil, &xdm.ResourceAccessError{Cause: err}
 	}
 
 	// If the resolved URI matches the source document, return it directly
@@ -461,17 +462,10 @@ func (ec *execContext) loadDocument(ctx context.Context, uri string, baseDir str
 		return ec.cachedDocumentRead(ctx, resolvedURI, module)
 	}
 
-	reader, err := ec.retrieveDocumentReader(ctx, resolvedURI)
+	doc, err := ec.loadDocumentResource(ctx, uri, resolvedURI, cacheKey)
 	if err != nil {
-		return nil, documentRetrievalError(uri, err)
+		return nil, err
 	}
-
-	doc, err := parseXMLResource(ctx, ec.inputParseOptions(), reader, resolvedURI, ec.resourceLimit())
-	if err != nil {
-		return nil, documentParsingError(uri, err)
-	}
-
-	doc.SetURL(resolvedURI)
 
 	// Retain the original tree for packages with different preprocessing rules.
 	doc, err = ec.existingDocumentRead(ctx, doc)
@@ -491,6 +485,58 @@ func (ec *execContext) loadDocument(ctx context.Context, uri string, baseDir str
 	if err := loadDocumentEffectiveAccumulators(ctx, ec, doc); err != nil {
 		return nil, err
 	}
+
+	return doc, nil
+}
+
+type documentSnapshotError struct {
+	err     error
+	parsing bool
+}
+
+func (e *documentSnapshotError) Error() string { return e.err.Error() }
+
+func (e *documentSnapshotError) Unwrap() error { return e.err }
+
+func documentSnapshotFailure(ctx context.Context, err error, parsing bool) error {
+	if failure := preserveControlFailure(ctx, err); failure != nil {
+		return &xdm.ResourceAccessError{Cause: failure}
+	}
+
+	if errors.Is(err, tree.ErrLimit) {
+		return &xdm.ResourceAccessError{Cause: err}
+	}
+
+	return &documentSnapshotError{err: err, parsing: parsing}
+}
+
+func (ec *execContext) loadDocumentResource(ctx context.Context, uri, resolved, cacheKey string) (*xdm.Document, error) {
+	doc, err := xpath.DocumentLoadSnapshot(ctx, ec, cacheKey, func() (*xdm.Document, error) {
+		return ec.retrieveDocumentSnapshot(ctx, resolved)
+	})
+	if failure, ok := errors.AsType[*documentSnapshotError](err); ok {
+		if failure.parsing {
+			return nil, documentParsingError(uri, failure.err)
+		}
+
+		return nil, documentRetrievalError(uri, failure.err)
+	}
+
+	return doc, err
+}
+
+func (ec *execContext) retrieveDocumentSnapshot(ctx context.Context, uri string) (*xdm.Document, error) {
+	reader, err := ec.retrieveDocumentReader(ctx, uri)
+	if err != nil {
+		return nil, documentSnapshotFailure(ctx, err, false)
+	}
+
+	doc, err := parseXMLResource(ctx, ec.inputParseOptions(), reader, uri, ec.resourceLimit())
+	if err != nil {
+		return nil, documentSnapshotFailure(ctx, err, true)
+	}
+
+	doc.SetURL(uri)
 
 	return doc, nil
 }
@@ -570,7 +616,7 @@ func (ec *execContext) existingDocumentRead(ctx context.Context, doc *xdm.Docume
 
 	if doc != nil && !doc.HasProperty(xdm.DocInternal) {
 		if err := ec.RecordRead(ctx, doc.URL()); err != nil {
-			return nil, err
+			return nil, &xdm.ResourceAccessError{Cause: err}
 		}
 	}
 
@@ -579,7 +625,7 @@ func (ec *execContext) existingDocumentRead(ctx context.Context, doc *xdm.Docume
 
 func (ec *execContext) cachedDocumentRead(ctx context.Context, uri string, doc *xdm.Document) (*xdm.Document, error) {
 	if err := ec.RecordRead(ctx, uri); err != nil {
-		return nil, err
+		return nil, &xdm.ResourceAccessError{Cause: err}
 	}
 
 	return ec.existingDocumentRead(ctx, doc)

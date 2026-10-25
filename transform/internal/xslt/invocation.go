@@ -465,7 +465,7 @@ func (inv Invocation) WriteTo(ctx context.Context, w io.Writer) error {
 		return SerializeItems(ctx, w, tcfg.primaryItems, resultDoc, outDef)
 	}
 
-	return SerializeResult(w, resultDoc, tcfg.resolvedOutputDef)
+	return serializeResult(ctx, w, resultDoc, tcfg.resolvedOutputDef)
 }
 
 func (inv Invocation) clone() Invocation {

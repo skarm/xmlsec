@@ -284,3 +284,76 @@ For each confirmed implementation defect, add a small regression to the
 existing component tests before fixing it. Retain the original suite pin and
 record remaining failures by cause; the report is a backlog, not a percentage
 of normative completeness.
+
+## Executable clause and failure evidence
+
+`conformance.json` names exact publisher cases and finite independent controls.
+A parent closes only through every applicable immediate child, or through its
+own tested composition with an explicit normative basis. A processor diagnostic
+is recorded separately from an agreement. Published table vectors carry literal
+expected values; Appendix D publication checks carry the exact host-choice item.
+These are finite evidence claims for the declared profile, not proofs over all
+possible expressions or a broader standards certification.
+
+Run the configured native and `-tags=interop` tests with `go test -json -count=1`.
+Set both Saxon classpaths, `SERIALIZATION_SCHEMA_DIR`, `JSON_SCHEMA_FILE`,
+`XMLSEC_QT3_DIR` and `XMLSEC_XSLT_DIR`; use `XMLSEC_REQUIRE_P3_PROOFS=1` for
+`TestQT3ResidualCauses`, `TestXSLTResidualCauses` and the JSON schema comparison.
+Missing inputs then fail instead of silently omitting these external checks.
+The JSON schema is the published [XSLT 3.0 Appendix B.1 schema](https://www.w3.org/TR/2017/REC-xslt-30-20170608/#schema-for-json), SHA-256
+`3ba9d28cc77ac0ba876a7e3dd88308381c4e32334ea412b17961968a37ba6f9d`.
+Keep checkouts, jars, schemas, JSON event streams and reports outside the repository.
+When using Docker, mount the repository checkout with its Git metadata read-only,
+alongside the external suites and engine/schema inputs. The image includes Git
+for checkout-pin and source-digest validation.
+
+Keep the sources and register fixed while producing the thirteen full-catalog
+baseline runs and captured test streams. The repository runner records the actual
+source/register hashes before and after each Go process, its exit status, and its
+complete package events. The merger checks each capture individually; it never
+restamps old event files using a newer report. Failed, interrupted, malformed or
+mixed-revision captures cannot close evidence.
+
+Capture the configured native, independent and causal runs (the paths below are
+external output files, not committed fixtures). Exclude the two final gates until
+their input artifact has been merged, and run the causal tests once separately:
+
+```sh
+XMLSEC_REQUIRE_P3_PROOFS=1 go run ./tests/cmd/dev proof capture \
+  -out /tmp/native.proof.json -- -timeout=10m \
+  -skip='^Test(Language(NormativeEvidence|ResidualCoverage)|(QT3|XSLT)ResidualCauses)$' ./...
+XMLSEC_REQUIRE_P3_PROOFS=1 go run ./tests/cmd/dev proof capture \
+  -out /tmp/interop.proof.json -- -tags=interop -timeout=20m \
+  -run='^TestCompare' ./transform
+XMLSEC_REQUIRE_P3_PROOFS=1 go run ./tests/cmd/dev proof capture \
+  -out /tmp/residuals.proof.json -- -timeout=10m \
+  -run='^Test(QT3|XSLT)ResidualCauses$' ./tests/cmd/dev
+go run ./tests/cmd/dev proof merge -out /tmp/proof-events.json \
+  /tmp/native.proof.json /tmp/interop.proof.json /tmp/residuals.proof.json
+XMLSEC_REQUIRE_P3_PROOFS=1 XMLSEC_P3_TEST_EVENTS=/tmp/proof-events.json \
+  XMLSEC_P3_SUITE_REPORTS='/tmp/qt20.json:/tmp/qt30.json:/tmp/qt31.json:...' \
+  go test -count=1 -timeout=20m ./tests/cmd/dev \
+  -run '^TestLanguage(NormativeEvidence|ResidualCoverage)$'
+```
+
+Capture shards with the same command when splitting independent runs. Supply every
+capture to `proof merge`; the final gate checks the union of exact witnesses.
+Capture files retain their own identities inside the merged artifact. Ordinary
+`go test -json` streams and the former manually stamped envelope are not accepted.
+A failed capture or merge invalidates its selected output rather than leaving a
+previous successful file there. The runner prevents accidental reuse; it is not
+an authentication mechanism for artifacts intentionally edited by their owner.
+
+Supply all thirteen reports listed in the baseline, with the platform path-list
+separator (`:` on Unix). The final gate validates settings, pins, complete catalog
+inventories and totals; replays each cited publisher input with its original full
+assertion; checks exact passing subtests and oracle/vector markers; and requires a
+passing causal check for every remaining failed case. Each retained failure also
+names its exact language/XSD/limits/assertion/compatibility profile, failure kind,
+standard error-code alternatives and typed cause. A new profile failure, panic,
+harness cause or error code requires a new review; another failure of the same
+publisher case cannot inherit its old explanation. It rejects stale source or
+register digests, changed sources/checkouts, skipped witnesses, obsolete failure
+classifications and new unclassified failures. Original failures are replayed
+before any bounded input, feature or fixture counterfactual; the intervention and
+its assertion are retained in the existing component/development tests.

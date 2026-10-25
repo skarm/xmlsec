@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"strconv"
 	"strings"
@@ -146,7 +148,7 @@ func suiteMessageAssertion(ctx context.Context, evaluation *suiteEvaluation, ass
 	for _, message := range messages {
 		value, err := evaluation.environment.query(ctx, "parse-xml-fragment($message)", transform.Bindings{{Local: "message"}: transform.Values(transform.String(message.Text))})
 		if err != nil {
-			return suiteHarness("message XML: %v", err)
+			return suiteHarness("message XML: %w", err)
 		}
 
 		candidate := *evaluation
@@ -225,7 +227,7 @@ func checkSuiteValueAssertion(ctx context.Context, e *suiteEvaluation, a *suiteN
 	case "assert-count":
 		count, err := strconv.Atoi(strings.TrimSpace(a.Text))
 		if err != nil {
-			return suiteHarness("invalid count assertion: %v", err)
+			return suiteHarness("invalid count assertion: %w", err)
 		}
 
 		if e.sequence.Len() != count {
@@ -322,9 +324,9 @@ func suitePermutationAssertion(ctx context.Context, evaluation *suiteEvaluation,
 
 func suiteExpectedBytes(e *suiteEvaluation, assertion *suiteNode) ([]byte, error) {
 	if file := assertion.attr("file"); file != "" {
-		raw, _, err := readSuiteFile(e.options.directory, e.item.base, file)
+		raw, _, err := readSuiteReferencedFile(e.options.directory, e.item.base, assertion)
 		if err != nil {
-			return nil, suiteHarness("expected result file: %v", err)
+			return nil, suiteHarness("expected result file: %w", err)
 		}
 
 		return raw, nil
@@ -349,22 +351,209 @@ func suiteXMLAssertion(ctx context.Context, e *suiteEvaluation, assertion *suite
 
 	actual, err := serialized.Text()
 	if err != nil {
-		return suiteHarness("result serialization: %v", err)
+		return suiteHarness("result serialization: %w", err)
 	}
 
-	left, err := parseSuiteXMLFragment(ctx, e.environment, []byte(actual))
-	if err != nil {
-		return fmt.Errorf("actual result is not an XML fragment: %w", err)
+	left, leftErr := parseSuiteXMLFragment(ctx, e.environment, []byte(actual))
+
+	right, rightErr := parseSuiteXMLFragment(ctx, e.environment, expected)
+	if (leftErr != nil || rightErr != nil) && !errors.Is(leftErr, transform.ErrLimit) && !errors.Is(rightErr, transform.ErrLimit) && ctx.Err() == nil {
+		// XDM namespace names can be xs:anyURI strings that the XML input
+		// profile rejects. Preserve exact namespace identity with one injective
+		// table for both sides, then let the ordinary parser check everything
+		// else. This fallback does not relax the production XML parser.
+		aliases := make(map[string]string)
+		maximum := suiteLimits(e.options).MaxInputBytes
+		mappedActual, actualErr := rewriteSuiteNamespaceNames(ctx, []byte(actual), aliases, maximum)
+
+		mappedExpected, expectedErr := rewriteSuiteNamespaceNames(ctx, expected, aliases, maximum)
+		if errors.Is(actualErr, transform.ErrLimit) || errors.Is(expectedErr, transform.ErrLimit) {
+			return fmt.Errorf("namespace comparison limit: %w", errors.Join(actualErr, expectedErr))
+		}
+
+		if actualErr == nil && expectedErr == nil {
+			left, leftErr = parseSuiteXMLFragment(ctx, e.environment, mappedActual)
+			right, rightErr = parseSuiteXMLFragment(ctx, e.environment, mappedExpected)
+		}
 	}
 
-	right, err := parseSuiteXMLFragment(ctx, e.environment, expected)
-	if err != nil {
-		return suiteHarness("expected XML fragment: %v", err)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if leftErr != nil {
+		return fmt.Errorf("actual result is not an XML fragment: %w", leftErr)
+	}
+
+	if rightErr != nil {
+		return suiteHarness("expected XML fragment: %w", rightErr)
 	}
 
 	ignorePrefixes := assertion.attr("ignore-prefixes") == suiteTrue || assertion.attr("ignore-prefixes") == "1"
 
 	return compareSuiteXMLNodes(ctx, left, right, ignorePrefixes)
+}
+
+// Rewrite only namespace declaration values; every other original byte stays
+// intact, including literal attribute whitespace versus character references.
+// All nonreserved, nonempty URIs share one mapping, so a publisher URI that
+// already resembles an alias cannot collide with another namespace name.
+func rewriteSuiteNamespaceNames(ctx context.Context, data []byte, aliases map[string]string, maximum int) ([]byte, error) {
+	if len(data) > maximum {
+		return nil, transform.ErrLimit
+	}
+
+	if !utf8.Valid(data) {
+		return nil, errors.New("namespace comparison fallback requires UTF-8 XML")
+	}
+
+	data = bytes.TrimPrefix(data, []byte("\uFEFF"))
+	if bytes.HasPrefix(data, []byte("<?xml ")) {
+		_, tail, ok := bytes.Cut(data, []byte("?>"))
+		if !ok {
+			return nil, errors.New("invalid XML declaration")
+		}
+
+		data = tail
+	}
+
+	decoder := xml.NewDecoder(bytes.NewReader(data)) // #nosec G709 -- Local comparison bytes; RawToken never resolves external entities.
+
+	var output bytes.Buffer
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		start := decoder.InputOffset()
+
+		token, err := decoder.RawToken()
+		if errors.Is(err, io.EOF) {
+			return output.Bytes(), nil
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		span := data[start:decoder.InputOffset()]
+
+		if _, directive := token.(xml.Directive); directive {
+			return nil, errors.New("XML directives are outside the namespace comparison fallback")
+		}
+
+		if element, ok := token.(xml.StartElement); ok {
+			span, err = rewriteSuiteNamespaceStartTag(ctx, span, element.Attr, aliases, maximum)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		if len(span) > maximum-output.Len() {
+			return nil, transform.ErrLimit
+		}
+
+		output.Write(span)
+	}
+}
+
+func rewriteSuiteNamespaceStartTag(ctx context.Context, tag []byte, attributes []xml.Attr, aliases map[string]string, maximum int) ([]byte, error) {
+	var output bytes.Buffer
+
+	written, position := 0, 0
+
+	for _, attribute := range attributes {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		// RawToken validated attribute names and quoting. Attribute order is
+		// retained, so each next quoted span is the corresponding raw value.
+		quoteOffset := bytes.IndexAny(tag[position:], "\"'")
+		if quoteOffset < 0 {
+			return nil, errors.New("missing attribute quote")
+		}
+
+		valueStart := position + quoteOffset + 1
+
+		valueEnd := bytes.IndexByte(tag[valueStart:], tag[valueStart-1])
+		if valueEnd < 0 {
+			return nil, errors.New("unclosed attribute")
+		}
+
+		valueEnd += valueStart
+		position = valueEnd + 1
+
+		if attribute.Name.Space != lexicon.PrefixXMLNS && (attribute.Name.Space != "" || attribute.Name.Local != lexicon.PrefixXMLNS) {
+			continue
+		}
+
+		value := attribute.Value
+
+		if bytes.ContainsAny(tag[valueStart:valueEnd], "\t\r\n") {
+			var err error
+
+			value, err = suiteNamespaceAttributeValue(tag[valueStart:valueEnd])
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		if value == "" || value == lexicon.NamespaceXML || value == lexicon.NamespaceXMLNS {
+			continue
+		}
+
+		alias := aliases[value]
+		if alias == "" {
+			alias = "urn:" + strconv.Itoa(len(aliases))
+			aliases[value] = alias
+		}
+
+		if output.Len()+valueStart-written+len(alias) > maximum {
+			return nil, transform.ErrLimit
+		}
+
+		output.Write(tag[written:valueStart])
+		output.WriteString(alias)
+
+		written = valueEnd
+	}
+
+	if len(tag)-written > maximum-output.Len() {
+		return nil, transform.ErrLimit
+	}
+
+	output.Write(tag[written:])
+
+	return output.Bytes(), nil
+}
+
+func suiteNamespaceAttributeValue(raw []byte) (string, error) {
+	// Normalize literal XML whitespace before expanding character references.
+	value := bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+	value = bytes.Map(func(r rune) rune {
+		if r == '\t' || r == '\r' || r == '\n' {
+			return ' '
+		}
+
+		return r
+	}, value)
+	value = bytes.ReplaceAll(value, []byte("\""), []byte("&quot;"))
+	data := append([]byte(`<n a="`), value...)
+	data = append(data, []byte(`"/>`)...)
+	decoder := xml.NewDecoder(bytes.NewReader(data)) // #nosec G709 -- A single local attribute; no external entities or directives.
+
+	token, err := decoder.RawToken()
+	if err != nil {
+		return "", err
+	}
+
+	element, ok := token.(xml.StartElement)
+	if !ok || len(element.Attr) != 1 {
+		return "", errors.New("invalid namespace attribute")
+	}
+
+	return element.Attr[0].Value, nil
 }
 
 func parseSuiteXMLFragment(ctx context.Context, environment *preparedSuiteEnvironment, data []byte) (document.Node, error) {
@@ -472,13 +661,13 @@ func suiteSerializationAssertion(ctx context.Context, e *suiteEvaluation, assert
 		if e.result != nil {
 			encoding, err = e.result.OutputEncoding(e.secondaryURI)
 			if err != nil {
-				return suiteHarness("serialized encoding: %v", err)
+				return suiteHarness("serialized encoding: %w", err)
 			}
 		}
 
 		text, err := suiteSerializedText(actual, encoding)
 		if err != nil {
-			return suiteHarness("serialized text: %v", err)
+			return suiteHarness("serialized text: %w", err)
 		}
 
 		return e.assertionTrue(ctx, "matches($serialized, $pattern, $flags)", transform.Bindings{{Local: "serialized"}: transform.Values(transform.String(text)), {Local: "pattern"}: transform.Values(transform.String(string(expected))), {Local: "flags"}: transform.Values(transform.String(assertion.attr("flags")))})

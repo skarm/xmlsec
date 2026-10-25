@@ -6,11 +6,11 @@ package xslt
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/xmloutput"
@@ -18,6 +18,7 @@ import (
 	htmlpkg "github.com/skarm/xmlsec/transform/internal/xdm/html"
 
 	"golang.org/x/text/encoding/htmlindex"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	stream "github.com/skarm/xmlsec/transform/internal/xdm/xmlwriter"
@@ -41,6 +42,15 @@ func SerializeItems(ctx context.Context, w io.Writer, items xdm.Sequence, doc *x
 	case lexicon.MethodJSON:
 		return serializeJSONItems(ctx, w, items, doc, outDef)
 	case lexicon.MethodAdaptive:
+		// The XSLT byte host emits one UTF-8 BOM before the entire adaptive
+		// sequence. Delegated XML/text serializers must not emit another.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if err := serializeResultByteOrderMark(outDef, false, w); err != nil {
+			return err
+		}
 		// Adaptive serialization uses its version serialization parameter for every
 		// XML fallback and embedded element/document/comment/PI writer. An absent
 		// version uses the XML 1.0 default; html-style versions never reach here.
@@ -50,7 +60,7 @@ func SerializeItems(ctx context.Context, w io.Writer, items xdm.Sequence, doc *x
 			return serializeItemsWithSeparator(w, items, doc, outDef)
 		}
 
-		return SerializeResult(w, doc, outDef)
+		return serializeResult(ctx, w, doc, outDef)
 	}
 }
 
@@ -151,12 +161,7 @@ func writeSeparatedNodeContent(buf *bytes.Buffer, node xdm.Node) {
 // definition alone decides the document type declaration. doc itself is left
 // unchanged.
 func SerializeResult(w io.Writer, doc *xdm.Document, outDef *OutputDef) error {
-	var charMap map[rune]string
-	if outDef != nil {
-		charMap = outDef.ResolvedCharMap
-	}
-
-	return serializeResult(w, doc, outDef, charMap)
+	return serializeResult(context.Background(), w, doc, outDef)
 }
 
 // withoutDoctype copies a document before dropping serialization metadata.
@@ -175,7 +180,7 @@ func withoutDoctype(doc *xdm.Document) (*xdm.Document, error) {
 	return cp, nil
 }
 
-func serializeResult(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMaps ...map[rune]string) error {
+func serializeResult(ctx context.Context, w io.Writer, doc *xdm.Document, outDef *OutputDef) error {
 	doc, docErr := withoutDoctype(doc)
 	if docErr != nil {
 		return docErr
@@ -195,14 +200,11 @@ func serializeResult(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMaps
 	detectOutputMethod(outDef, doc, autoHTML)
 
 	// Validate serialization parameters before proceeding.
-	if err := validateSerializationParams(context.Background(), outDef, doc); err != nil {
+	if err := validateSerializationParams(ctx, outDef, doc); err != nil {
 		return err
 	}
 
-	var charMap map[rune]string
-	if len(charMaps) > 0 {
-		charMap = charMaps[0]
-	}
+	charMap := outDef.ResolvedCharMap
 
 	if outDef.Method == lexicon.MethodHTML {
 		return serializeEncodedHTML(w, doc, outDef, charMap)
@@ -363,6 +365,18 @@ func serializeText(w io.Writer, doc *xdm.Document, charMap map[rune]string, norm
 // per the XSLT 3.0 serialization spec.
 func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xdm.Document) error {
 	method := outDef.Method
+	// XSLT leaves namespaced extension methods to the implementation. This
+	// byte host has no extension serializer callback, so it rejects them rather
+	// than silently serializing the requested method as XML.
+	switch method {
+	case "", lexicon.MethodXML, lexicon.MethodHTML, lexicon.MethodXHTML, lexicon.MethodText, lexicon.MethodJSON, lexicon.MethodAdaptive:
+	default:
+		return dynamicError(lexicon.ErrSEPM0016, "unsupported output method %q", method)
+	}
+
+	if err := validateXMLOutputVersion(method, outDef.Version); err != nil {
+		return err
+	}
 
 	// SEPM0004: standalone != "omit" with multiple element children of root
 	if err := validateSerializationParamsStandalone(outDef, method, doc); err != nil {
@@ -417,7 +431,7 @@ func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xd
 
 	// SERE0012: fully-normalized and result begins with combining character
 	if doc != nil && outDef.NormalizationForm == lexicon.NormFullyNormalized {
-		if err := checkFullyNormalized(doc); err != nil {
+		if err := checkFullyNormalized(ctx, doc, outDef); err != nil {
 			return err
 		}
 	}
@@ -448,33 +462,545 @@ func countRootElements(doc *xdm.Document) int {
 // '.', '/', ':', '=', '?', ';', '!', '*', '#', '@', '$', '_', '%'
 func isValidPublicID(s string) bool { return xmloutput.ValidPublicID(s) }
 
-// checkFullyNormalized checks if the result tree violates fully-normalized
-// constraints (e.g., starts with a combining character).
-func checkFullyNormalized(doc *xdm.Document) error {
-	var firstErr error
+// Validate the actual Unicode stream before octet encoding. This shares the
+// serializer's namespace fixup, CDATA and markup decisions, including markup
+// injected by a character map across any number of source nodes.
+func checkFullyNormalized(ctx context.Context, doc *xdm.Document, definition *OutputDef) error {
+	preview := cloneOutputDef(definition)
 
-	werr := xdm.Walk(doc, xdm.NodeWalkerFunc(func(n xdm.Node) error {
-		if n.Type() == xdm.TextNode || n.Type() == xdm.CDATASectionNode {
-			content := xdm.CharacterData(n)
-			if len(content) > 0 {
-				r, _ := utf8.DecodeRuneInString(content)
-				if unicode.In(r, unicode.Mn, unicode.Mc, unicode.Me) {
-					firstErr = dynamicError(errCodeSERE0012,
-						"fully-normalized output begins with combining character U+%04X", r)
+	preview.NormalizationForm = normalizationFormNFC
+	if len(preview.ResolvedCharMap) != 0 {
+		preview.ResolvedCharMap = make(map[rune]string, len(definition.ResolvedCharMap))
+		for character, replacement := range definition.ResolvedCharMap {
+			if err := xpath.Charge(ctx, 1+len(replacement)/64); err != nil {
+				return err
+			}
+			// Map-generated references are deliberately opaque (SER 5.1.9).
+			// Replacing their ampersands preserves lexical boundaries and repertoire
+			// without changing the character map used for the real output.
+			preview.ResolvedCharMap[character] = strings.ReplaceAll(replacement, "&", "_")
+		}
+	}
 
-					return firstErr
+	_, finish, err := encodedOutput(ctx, io.Discard, preview)
+	if err != nil {
+		return err
+	}
+
+	writer := fullyNormalizedWriter{ctx: ctx, state: fullyNormalizedText{plain: definition.Method == lexicon.MethodText || definition.Method == lexicon.MethodJSON || definition.Method == lexicon.MethodAdaptive, html: definition.Method == lexicon.MethodHTML, html5: effectiveHTMLVersion5(definition), edition: definition.serializationVersion}}
+
+	err = serializeResultContent(&writer, doc, preview, preview.ResolvedCharMap)
+	if err == nil {
+		err = writer.finish()
+	}
+
+	return errors.Join(err, finish())
+}
+
+type fullyNormalizedWriter struct {
+	ctx       context.Context
+	state     fullyNormalizedText
+	reference fullyNormalizedReference
+	pending   [utf8.UTFMax]byte
+	used      int
+	checked   int
+}
+
+func (writer *fullyNormalizedWriter) finish() error {
+	if writer.used != 0 {
+		return dynamicError(lexicon.ErrSERE0006, "invalid UTF-8 in serialization")
+	}
+
+	return writer.ctx.Err()
+}
+
+func (writer *fullyNormalizedWriter) Write(p []byte) (int, error) {
+	if err := xpath.Charge(writer.ctx, 1+len(p)/64); err != nil {
+		return 0, err
+	}
+
+	for at, b := range p {
+		if err := writer.consumeByte(b); err != nil {
+			return at, err
+		}
+	}
+
+	return len(p), nil
+}
+
+func (writer *fullyNormalizedWriter) WriteString(s string) (int, error) {
+	if err := xpath.Charge(writer.ctx, 1+len(s)/64); err != nil {
+		return 0, err
+	}
+
+	for at := range len(s) {
+		if err := writer.consumeByte(s[at]); err != nil {
+			return at, err
+		}
+	}
+
+	return len(s), nil
+}
+
+func (writer *fullyNormalizedWriter) consumeByte(b byte) error {
+	if writer.checked%4096 == 0 {
+		if err := writer.ctx.Err(); err != nil {
+			return err
+		}
+	}
+
+	writer.checked++
+	if writer.used == 0 && b < utf8.RuneSelf {
+		return writer.consumeRune(rune(b))
+	}
+
+	writer.pending[writer.used] = b
+
+	writer.used++
+	if !utf8.FullRune(writer.pending[:writer.used]) {
+		return nil
+	}
+
+	r, size := utf8.DecodeRune(writer.pending[:writer.used])
+	if r == utf8.RuneError && size == 1 {
+		return dynamicError(lexicon.ErrSERE0006, "invalid UTF-8 in serialization")
+	}
+
+	writer.used = 0
+
+	return writer.consumeRune(r)
+}
+
+func (writer *fullyNormalizedWriter) consumeRune(r rune) error {
+	if writer.reference.active {
+		if r == ';' {
+			decoded := writer.reference.value()
+			writer.reference = fullyNormalizedReference{}
+			// An expanded reference is character data, never a new markup token.
+			return writer.state.data(decoded)
+		}
+
+		writer.reference.add(r)
+
+		return nil
+	}
+
+	if r == '&' && writer.state.mode == 0 && !writer.state.plain {
+		writer.reference.active = true
+		return nil
+	}
+
+	if err := writer.state.consume(r); err != nil {
+		return err
+	}
+
+	if len(writer.state.htmlNamespaces) > xpath.DepthLimit(writer.ctx, maxRecursionDepth) {
+		return xpath.ErrRecursionLimit
+	}
+
+	return nil
+}
+
+// References emitted by the normal serializer must be expanded for the start
+// condition, even when the selected repertoire requires numeric references.
+// Storage is bounded independently of reference length (including leading zeros).
+type fullyNormalizedReference struct {
+	active      bool
+	phase       byte
+	hexadecimal bool
+	digits      int
+	number      uint32
+	name        string
+	invalid     bool
+}
+
+func (reference *fullyNormalizedReference) add(r rune) {
+	switch reference.phase {
+	case 0:
+		if r == '#' {
+			reference.phase = '#'
+			return
+		}
+
+		reference.phase = 'n'
+	case '#':
+		if r == 'x' {
+			reference.hexadecimal = true
+			reference.phase = 'd'
+
+			return
+		}
+
+		reference.phase = 'd'
+	}
+
+	if reference.phase == 'n' {
+		if len(reference.name) < 4 {
+			reference.name += string(r)
+		} else {
+			reference.invalid = true
+		}
+
+		return
+	}
+
+	base := uint32(10)
+	if reference.hexadecimal {
+		base = 16
+	}
+
+	digit, err := strconv.ParseUint(string(r), int(base), 8)
+	if err != nil || reference.number > (utf8.MaxRune-uint32(digit))/base {
+		reference.invalid = true
+		return
+	}
+
+	reference.number = reference.number*base + uint32(digit)
+	reference.digits++
+}
+
+func (reference *fullyNormalizedReference) value() rune {
+	if !reference.invalid && reference.phase == 'd' && reference.digits != 0 {
+		return rune(reference.number)
+	}
+
+	if !reference.invalid {
+		switch reference.name {
+		case "lt":
+			return '<'
+		case "gt":
+			return '>'
+		case "quot":
+			return '"'
+		case "apos":
+			return '\''
+		}
+	}
+	// Unknown/external entities are not read or validated by this check.
+	return '&'
+}
+
+func fullyNormalizedName(name string) error {
+	if name != "" && !norm.NFC.PropertiesString(name).BoundaryBefore() {
+		return dynamicError(errCodeSERE0012, "fully-normalized output name %q begins with a composing character", name)
+	}
+
+	return nil
+}
+
+// This bounded state machine tracks the actual Unicode output's lexical
+// boundaries without validating XML or retaining complete tags/text. Ordinary
+// references are expanded separately; mapped references remain opaque.
+type fullyNormalizedText struct {
+	mode            byte
+	quote           rune
+	prefix          string
+	tail            int
+	depth           int
+	started         bool
+	nameStart       bool
+	plain           bool
+	html            bool
+	html5           bool
+	edition         int
+	htmlNamespaces  []byte
+	htmlNamespace   byte
+	htmlName        string
+	htmlToken       string
+	htmlHadName     bool
+	htmlAttributeNS bool
+	htmlURI         string
+	htmlSelfClosing bool
+	htmlClosing     bool
+	htmlRaw         string
+	htmlRawMatched  int
+}
+
+func (state *fullyNormalizedText) data(r rune) error {
+	if !state.started && !norm.NFC.PropertiesString(string(r)).BoundaryBefore() {
+		return dynamicError(errCodeSERE0012, "fully-normalized output begins with composing character U+%04X", r)
+	}
+
+	state.started = true
+
+	return nil
+}
+
+func (state *fullyNormalizedText) consume(r rune) error {
+	if state.plain {
+		return state.data(r)
+	}
+
+	switch state.mode {
+	case 0:
+		if r == '<' {
+			state.mode = '<'
+			return nil
+		}
+
+		return state.data(r)
+	case '<':
+		return state.markupStart(r)
+	case '!':
+		state.prefix += string(r)
+		switch state.prefix {
+		case "--":
+			state.mode, state.tail = 'c', 0
+		case "[CDATA[":
+			state.mode, state.tail, state.started = 'd', 0, false
+		default:
+			if !strings.HasPrefix("--", state.prefix) && !strings.HasPrefix("[CDATA[", state.prefix) {
+				state.mode = 'v'
+				state.declaration(r)
+			}
+		}
+	case 't':
+		return state.tag(r)
+	case 'c', 'p', 'd':
+		return state.delimited(r)
+	case 'v':
+		state.declaration(r)
+	case 'r':
+		return state.htmlRawRune(r)
+	}
+
+	return nil
+}
+
+func (state *fullyNormalizedText) markupStart(r rune) error {
+	switch r {
+	case '!':
+		state.mode, state.prefix = '!', ""
+	case '?':
+		state.mode, state.tail, state.nameStart = 'p', 0, true
+	case '/':
+		state.mode, state.nameStart = 't', true
+		state.beginHTMLTag(true)
+	default:
+		state.mode, state.nameStart = 't', true
+		state.beginHTMLTag(false)
+
+		return state.tag(r)
+	}
+
+	return nil
+}
+
+func (state *fullyNormalizedText) tag(r rune) error {
+	if state.quote != 0 {
+		if state.html && state.htmlAttributeNS {
+			if r == state.quote {
+				switch state.htmlURI {
+				case "":
+					state.htmlNamespace = 0
+				case lexicon.NamespaceXHTML:
+					state.htmlNamespace = 1
+				default:
+					state.htmlNamespace = 2
 				}
+
+				state.htmlAttributeNS = false
+			} else if len(state.htmlURI) <= len(lexicon.NamespaceXHTML) {
+				state.htmlURI += string(r)
 			}
 		}
 
+		if r == state.quote {
+			state.quote = 0
+		}
+
 		return nil
-	}))
-	if firstErr == nil {
-		// Surfaces a tree cycle (ErrWalkCycle); nil in the normal case.
-		firstErr = werr
 	}
 
-	return firstErr
+	switch r {
+	case '\'', '"':
+		state.finishHTMLToken()
+		state.quote = r
+	case '>':
+		state.finishHTMLToken()
+		state.mode, state.started, state.nameStart = 0, false, false
+		state.finishHTMLTag()
+	case ' ', '\t', '\n', '\r':
+		state.finishHTMLToken()
+		state.nameStart = true
+	case '=':
+		state.finishHTMLToken()
+		state.nameStart = false
+	case '/':
+		state.finishHTMLToken()
+		state.htmlSelfClosing = true
+		state.nameStart = false
+	default:
+		if state.html && len(state.htmlToken) < 9 {
+			state.htmlToken += string(r)
+		}
+
+		if state.nameStart {
+			state.nameStart = false
+			return fullyNormalizedName(string(r))
+		}
+	}
+
+	return nil
+}
+
+func (state *fullyNormalizedText) beginHTMLTag(closing bool) {
+	if !state.html {
+		return
+	}
+
+	state.htmlClosing = closing
+	state.htmlName, state.htmlToken, state.htmlURI = "", "", ""
+	state.htmlHadName, state.htmlAttributeNS, state.htmlSelfClosing = false, false, false
+
+	state.htmlNamespace = 0
+	if len(state.htmlNamespaces) > 0 {
+		state.htmlNamespace = state.htmlNamespaces[len(state.htmlNamespaces)-1]
+	}
+}
+
+func (state *fullyNormalizedText) finishHTMLToken() {
+	if !state.html || state.htmlToken == "" {
+		return
+	}
+
+	if !state.htmlHadName {
+		state.htmlName = htmlpkg.LowerASCII(state.htmlToken)
+		state.htmlHadName = true
+	} else {
+		state.htmlAttributeNS = state.htmlToken == "xmlns"
+		state.htmlURI = ""
+	}
+
+	state.htmlToken = ""
+}
+
+func (state *fullyNormalizedText) finishHTMLTag() {
+	if !state.html {
+		return
+	}
+
+	if state.htmlClosing {
+		state.popHTMLNamespace()
+		return
+	}
+
+	isHTML := state.htmlNamespace == 0 || state.html5 && state.htmlNamespace == 1
+	if state.htmlSelfClosing || isHTML && htmlpkg.SerializationVoidElement(state.htmlName, state.html5, state.edition) {
+		return
+	}
+
+	state.htmlNamespaces = append(state.htmlNamespaces, state.htmlNamespace)
+	if isHTML && (state.htmlName == "script" || state.htmlName == "style") {
+		state.mode = 'r'
+		state.htmlRaw = "</" + state.htmlName
+		state.htmlRawMatched = 0
+	}
+}
+
+func (state *fullyNormalizedText) popHTMLNamespace() {
+	if len(state.htmlNamespaces) > 0 {
+		state.htmlNamespaces = state.htmlNamespaces[:len(state.htmlNamespaces)-1]
+	}
+}
+
+func (state *fullyNormalizedText) htmlRawRune(r rune) error {
+	if err := state.data(r); err != nil {
+		return err
+	}
+
+	if state.htmlRawMatched == len(state.htmlRaw) {
+		switch r {
+		case '>':
+			state.mode, state.started = 0, false
+			state.popHTMLNamespace()
+
+			return nil
+		case ' ', '\t', '\n', '\r', '/':
+			state.mode = 't'
+			state.htmlClosing = true
+			state.htmlHadName = true
+			state.htmlToken = ""
+
+			return nil
+		}
+	}
+
+	lower := r
+	if lower >= 'A' && lower <= 'Z' {
+		lower += 'a' - 'A'
+	}
+
+	if state.htmlRawMatched < len(state.htmlRaw) && lower == rune(state.htmlRaw[state.htmlRawMatched]) {
+		state.htmlRawMatched++
+	} else if r == '<' {
+		state.htmlRawMatched = 1
+	} else {
+		state.htmlRawMatched = 0
+	}
+
+	return nil
+}
+
+func (state *fullyNormalizedText) delimited(r rune) error {
+	if state.mode == 'p' && state.nameStart {
+		state.nameStart = false
+
+		if err := fullyNormalizedName(string(r)); err != nil {
+			return err
+		}
+	}
+
+	delimiter, needed := '-', 2
+
+	switch state.mode {
+	case 'p':
+		delimiter, needed = '?', 1
+	case 'd':
+		delimiter = ']'
+	}
+
+	if r == '>' && state.tail >= needed {
+		state.mode, state.tail, state.started = 0, 0, false
+		return nil
+	}
+
+	if r == delimiter {
+		state.tail++
+	} else {
+		state.tail = 0
+	}
+
+	if state.mode == 'd' {
+		return state.data(r)
+	}
+
+	return nil
+}
+
+func (state *fullyNormalizedText) declaration(r rune) {
+	if state.quote != 0 {
+		if r == state.quote {
+			state.quote = 0
+		}
+
+		return
+	}
+
+	switch r {
+	case '\'', '"':
+		state.quote = r
+	case '[':
+		state.depth++
+	case ']':
+		if state.depth > 0 {
+			state.depth--
+		}
+	case '>':
+		if state.depth == 0 {
+			state.mode, state.started = 0, false
+		}
+	}
 }
 
 // requestedHTMLVersion applies html-version precedence, then version, then
@@ -516,6 +1042,20 @@ func detectOutputMethod(outDef *OutputDef, doc *xdm.Document, autoHTML bool) {
 			}
 		}
 	}
+}
+
+// A stylesheet's backwards-compatible expression mode does not change the
+// selected host's supported XML serialization versions (XSLT20 20 / XSLT30 26).
+func validateXMLOutputVersion(method, version string) error {
+	if method != lexicon.MethodXML && method != lexicon.MethodXHTML {
+		return nil
+	}
+
+	if version == "" || version == lexicon.XMLVersion10 || version == lexicon.XMLVersion11 {
+		return nil
+	}
+
+	return dynamicError(lexicon.ErrSESU0013, "XML output version %q is not supported", version)
 }
 
 func validateSerializationParamsLanguageVersion(outDef *OutputDef, method string) error {

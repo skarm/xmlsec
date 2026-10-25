@@ -7,6 +7,8 @@ import (
 	"encoding/xml"
 	"errors"
 	"io"
+	"io/fs"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -3393,6 +3395,64 @@ func TestXSLTCollectionTreePreprocessing(t *testing.T) {
 	}
 }
 
+type packageCollectionViewCase struct {
+	name, library, source, want string
+}
+
+func packageCollectionViewCases() []packageCollectionViewCase {
+	cases := make([]packageCollectionViewCase, 0, 6)
+	for _, call := range []struct{ name, binding, expression string }{
+		{"direct", "", `collection('collection.cxn')`},
+		{"named", `<xsl:variable name="read" select="collection#1"/>`, `$read('collection.cxn')`},
+		{"lookup", `<xsl:variable name="read" select="function-lookup(QName('http://www.w3.org/2005/xpath-functions','collection'),1)"/>`, `$read('collection.cxn')`},
+	} {
+		read := call.binding + `<xsl:value-of select="string-length(` + call.expression + `/doc/a)"/>`
+		library := packageSheet(`name="urn:collection-view"`, `<xsl:strip-space elements="*"/><xsl:template name="p:read" visibility="public">`+read+`</xsl:template>`)
+		for _, libraryFirst := range []bool{false, true} {
+			first, second, want := read, `<xsl:call-template xmlns:p="urn:components" name="p:read"/>`, "1|0|1|0"
+			if libraryFirst {
+				first, second, want = second, first, "0|1|0|1"
+			}
+			// A separate local scope for each read also permits named function
+			// controls to bind the same variable in both repetitions.
+			body := `<xsl:for-each select="1">` + first + `</xsl:for-each>|<xsl:for-each select="1">` + second + `</xsl:for-each>|<xsl:for-each select="1">` + first + `</xsl:for-each>|<xsl:for-each select="1">` + second + `</xsl:for-each>`
+			source := sheet(version30, `<xsl:use-package name="urn:collection-view"/><xsl:preserve-space elements="*"/><xsl:template name="start">`+body+`</xsl:template>`)
+			cases = append(cases, packageCollectionViewCase{call.name + "/" + strconv.FormatBool(libraryFirst), library, source, want})
+		}
+	}
+	return cases
+}
+
+func TestXSLTPackageCollectionViews(t *testing.T) {
+	const original = `<doc><a> </a><b> </b></doc>`
+	loader := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(ctx context.Context, _ string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(original)), ctx.Err()
+	})})
+	members := evaluate(t, loader, `doc('mem://views/input.xml')`, transform.XPath31)
+	for _, test := range packageCollectionViewCases() {
+		t.Run(test.name, func(t *testing.T) {
+			e := engine(t, transform.Config{CollectionResolver: collectionResolverFixture{collection: func(ctx context.Context, _ string) (transform.Sequence, error) {
+				return members, ctx.Err()
+			}}, PackageResolver: transform.PackageResolverFunc(func(ctx context.Context, _, _ string) (transform.PackageResource, error) {
+				return transform.PackageResource{BaseURI: "mem://views/library.xsl", Reader: io.NopCloser(strings.NewReader(test.library))}, ctx.Err()
+			})})
+			compiled, err := e.CompileXSLT(t.Context(), []byte(test.source), transform.XSLTOptions{BaseURI: "mem://views/main.xsl"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				result, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+				if err != nil || string(result.Primary) != test.want {
+					t.Fatal(string(result.Primary), err, test.want)
+				}
+			}
+		})
+	}
+	if got := text(t, evaluate(t, loader, `string(doc('mem://views/input.xml')/doc/a)`, transform.XPath31)); got != " " {
+		t.Fatal("package-specific collection view mutated the supplied tree", got)
+	}
+}
+
 func TestXSLTPreparedInputFunctionContext(t *testing.T) {
 	loads := 0
 	e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(ctx context.Context, _ string) (io.ReadCloser, error) {
@@ -4121,5 +4181,499 @@ func TestXSLTGroupingAndCopyBudgets(t *testing.T) {
 				t.Fatal("budget became a language error", err)
 			}
 		})
+	}
+}
+
+func TestXPathDocumentAvailabilitySnapshots(t *testing.T) {
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for _, stage := range []string{"open", "read", "parse", "close"} {
+			t.Run(strconv.Itoa(int(version))+"/"+stage, func(t *testing.T) {
+				loads := 0
+				failure := errors.New("document snapshot failure")
+				e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+					loads++
+					if loads != 1 {
+						return io.NopCloser(strings.NewReader(`<r>second</r>`)), nil
+					}
+					if stage == "open" {
+						return nil, failure
+					}
+					reader := &dtdFailureReader{Reader: strings.NewReader(`<r>first</r>`)}
+					switch stage {
+					case "read":
+						reader.readError = failure
+					case "parse":
+						reader.Reader = strings.NewReader(`<r>`)
+					case "close":
+						reader.closeError = failure
+					}
+					return reader, nil
+				})})
+				compiled := query(t, e, `string-join(for $uri in ('urn:snapshot','urn:snapshot') return string(doc-available($uri)), '|')`, version)
+				for invocation, want := range []string{"false|false", "true|true"} {
+					publishedProofVector(t, want)
+					result, err := compiled.Evaluate(t.Context(), nil, transform.XPathContext{})
+					if err != nil || text(t, result) != want || loads != invocation+1 {
+						t.Fatal(invocation, result, err, loads, want)
+					}
+				}
+			})
+		}
+		t.Run(strconv.Itoa(int(version))+"/availability then doc", func(t *testing.T) {
+			publishedProofVector(t, "FODC0002")
+			loads := 0
+			e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				loads++
+				if loads == 1 {
+					return nil, errors.New("document unavailable")
+				}
+				return io.NopCloser(strings.NewReader(`<r/>`)), nil
+			})})
+			_, err := query(t, e, `(doc-available('urn:snapshot'), doc('urn:snapshot'))`, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != "FODC0002" || loads != 1 {
+				t.Fatal(err, loads)
+			}
+		})
+	}
+}
+
+func TestXSLTDocumentAvailabilitySnapshots(t *testing.T) {
+	for _, version := range []string{version20, version30} {
+		for _, test := range []struct {
+			name, body, want string
+			missing          bool
+		}{
+			{"repeated unavailable", `<xsl:value-of select="doc-available('urn:snapshot')"/><xsl:text>|</xsl:text><xsl:value-of select="doc-available('urn:snapshot')"/>`, "false|false", true},
+			{"unavailable then doc", `<xsl:value-of select="doc-available('urn:snapshot')"/><xsl:value-of select="doc('urn:snapshot')/r"/>`, "FODC0002", true},
+			{"available then doc", `<xsl:value-of select="doc-available('urn:snapshot')"/><xsl:text>|</xsl:text><xsl:value-of select="doc('urn:snapshot')/r"/>`, "true|first", false},
+			{"doc then available", `<xsl:value-of select="doc('urn:snapshot')/r"/><xsl:text>|</xsl:text><xsl:value-of select="doc-available('urn:snapshot')"/>`, "first|true", false},
+		} {
+			for _, nested := range []bool{false, true} {
+				t.Run(version+"/"+test.name+"/nested="+strconv.FormatBool(nested), func(t *testing.T) {
+					loads := 0
+					e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+						loads++
+						if (loads == 1) == test.missing {
+							return nil, errors.New("document unavailable")
+						}
+						return io.NopCloser(strings.NewReader(`<r>first</r>`)), nil
+					})})
+					source := sheet(version, `<xsl:template name="start">`+test.body+`</xsl:template>`)
+					var got string
+					var err error
+					if nested {
+						got, err = resourceStylesheetResult(t, e, source, true)
+					} else {
+						processor := transform.XSLT30
+						if version == version20 {
+							processor = transform.XSLT20
+						}
+						var compiled *transform.Stylesheet
+						compiled, err = e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: processor})
+						if err == nil {
+							var result *transform.Output
+							result, err = compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+							if err == nil {
+								got = string(result.Primary)
+							}
+						}
+					}
+					if comparisonErrorCode(test.want) {
+						var detail *transform.Error
+						if !errors.As(err, &detail) || detail.Code != test.want {
+							t.Fatal(got, err, test.want)
+						}
+					} else if err != nil || got != test.want {
+						t.Fatal(got, err, test.want)
+					}
+					if loads != 1 {
+						t.Fatal("document pool was reloaded", loads)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestDocumentAvailabilityControls(t *testing.T) {
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for _, cause := range []error{transform.ErrLimit, context.Canceled, context.DeadlineExceeded} {
+			t.Run(strconv.Itoa(int(version))+"/"+cause.Error(), func(t *testing.T) {
+				e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+					return nil, cause
+				})})
+				result, err := query(t, e, `doc-available('urn:snapshot')`, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+				var detail *transform.Error
+				wantCode := ""
+				if errors.Is(cause, transform.ErrLimit) && version != transform.XPath20 {
+					wantCode = "XPDY0130"
+				}
+				if !errors.Is(err, cause) || result.Len() != 0 || !errors.As(err, &detail) || detail.Code != wantCode {
+					t.Fatal(result, err, cause, wantCode)
+				}
+			})
+		}
+		t.Run(strconv.Itoa(int(version))+"/parser byte limit", func(t *testing.T) {
+			e := engine(t, transform.Config{Limits: transform.Limits{MaxResourceBytes: 8}, Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader(`<r>too large</r>`)), nil
+			})})
+			result, err := query(t, e, `doc-available('urn:snapshot')`, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+			var detail *transform.Error
+			wantCode := ""
+			if version != transform.XPath20 {
+				wantCode = "XPDY0130"
+			}
+			if !errors.Is(err, transform.ErrLimit) || result.Len() != 0 || !errors.As(err, &detail) || detail.Code != wantCode {
+				t.Fatal(result, err, wantCode)
+			}
+		})
+	}
+}
+
+func TestDocumentSnapshotCanonicalURIsAndFunctions(t *testing.T) {
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		calls := []string{"doc-available($u)"}
+		if version != transform.XPath20 {
+			calls = append(calls, "(doc-available#1)($u)", "function-lookup(xs:QName('fn:doc-available'),1)($u)", "(function(){doc-available($u)})()")
+		}
+		for _, call := range calls {
+			t.Run(strconv.Itoa(int(version))+"/"+call, func(t *testing.T) {
+				loads := 0
+				e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+					loads++
+					if loads == 1 {
+						return nil, errors.New("document unavailable")
+					}
+					return io.NopCloser(strings.NewReader(`<r/>`)), nil
+				})})
+				compiled, err := e.CompileXPath(t.Context(), `string-join(for $u in ('missing.xml','./missing.xml') return string(`+call+`), '|')`, transform.XPathOptions{Version: version, BaseURI: "https://example.test/docs/main.xml"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := compiled.Evaluate(t.Context(), nil, transform.XPathContext{})
+				if err != nil || text(t, result) != "false|false" || loads != 1 {
+					t.Fatal(result, err, loads)
+				}
+			})
+		}
+	}
+}
+
+func TestXSLTDocumentSnapshotInvocationScope(t *testing.T) {
+	for _, processor := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
+		t.Run(strconv.Itoa(int(processor)), func(t *testing.T) {
+			loads := 0
+			e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				loads++
+				if loads == 1 {
+					return nil, errors.New("document unavailable")
+				}
+				return io.NopCloser(strings.NewReader(`<r/>`)), nil
+			})})
+			source := sheet(version20, `<xsl:template name="start"><xsl:value-of select="doc-available('urn:snapshot')"/><xsl:text>|</xsl:text><xsl:value-of select="doc-available('urn:snapshot')"/></xsl:template>`)
+			compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: processor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for invocation, want := range []string{"false|false", "true|true"} {
+				result, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+				if err != nil || string(result.Primary) != want || loads != invocation+1 {
+					t.Fatal(invocation, result, err, loads, want)
+				}
+			}
+		})
+	}
+}
+
+func TestDocumentSnapshotLiveReadPolicy(t *testing.T) {
+	for _, nested := range []bool{false, true} {
+		t.Run(strconv.FormatBool(nested), func(t *testing.T) {
+			loads := 0
+			e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				loads++
+				return nil, errors.New("document unavailable")
+			})})
+			body := `<xsl:template name="start"><xsl:value-of select="doc-available('urn:snapshot')"/><xsl:result-document href="urn:snapshot"><r/></xsl:result-document><xsl:value-of select="doc-available('urn:snapshot')"/></xsl:template>`
+			got, err := resourceStylesheetResult(t, e, sheet(version30, body), nested)
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != "XTDE1500" || got != "" || loads != 1 {
+				t.Fatal(got, err, loads)
+			}
+		})
+	}
+}
+
+type parameterDocumentHostCase struct {
+	name, parameters, attributes, declarations, body, want string
+}
+
+func parameterDocumentHostCases() []parameterDocumentHostCase {
+	const xmlOutput = `method="xml" omit-xml-declaration="yes"`
+	const root = `<r><a/></r>`
+	return []parameterDocumentHostCase{
+		{"XHTML method retained", `<method value="xhtml"/><omit-xml-declaration value="yes"/>`, `method="text"`, "", `<r/>`, `<r></r>`},
+		{"URI escaping false overrides true", `<method value="html"/><escape-uri-attributes value="false"/>`, `escape-uri-attributes="yes"`, "", `<a href="café">x</a>`, `<a href="café">x</a>`},
+		{"absent URI escaping inherits true", `<method value="html"/>`, `escape-uri-attributes="yes"`, "", `<a href="café">x</a>`, `<a href="caf%C3%A9">x</a>`},
+		{"normalization none overrides NFC", `<method value="text"/><normalization-form value="none"/>`, `normalization-form="NFC"`, "", "e\u0301", "e\u0301"},
+		{"fully normalized stays byte host supported", `<method value="text"/><normalization-form value="fully-normalized"/>`, "", "", "e\u0301", "é"},
+		{"fully normalized leading combining", `<method value="text"/><normalization-form value="fully-normalized"/>`, "", "", `<xsl:sequence select="codepoints-to-string(769)"/>`, "SERE0012"},
+		{"extension method rejected by host choice", `<method value="Q{urn:unsupported}method"/>`, `omit-xml-declaration="yes"`, "", `x`, errCodeSEPM0016},
+		{"method beats direct attribute", `<method value="text"/>`, xmlOutput, "", `<r>x</r>`, "x"},
+		{"false beats true", `<indent value="false"/>`, xmlOutput + ` indent="yes"`, "", root, root},
+		{"BOM survives byte host", `<method value="text"/><byte-order-mark value="true"/>`, `byte-order-mark="no"`, "", `x`, "\ufeffx"},
+		{"empty separator beats attribute", `<method value="text"/><item-separator value=""/>`, `item-separator="|"`, "", `<xsl:sequence select="(1,2)"/>`, "12"},
+		{"separator beats absent", `<method value="text"/><item-separator value="-"/>`, `item-separator="#absent"`, "", `<xsl:sequence select="(1,2)"/>`, "1-2"},
+		{"empty doctype removes inherited", `<doctype-system value=""/>`, xmlOutput + ` doctype-system="old.dtd"`, "", `<r/>`, `<r/>`},
+		{"QName list union", `<cdata-section-elements xmlns:p="urn:node" value="p:a"/>`, xmlOutput + ` cdata-section-elements="b"`, "", `<r><p:a xmlns:p="urn:node">x&lt;y</p:a><b>x&lt;y</b></r>`, `<r><p:a xmlns:p="urn:node"><![CDATA[x<y]]></p:a><b><![CDATA[x<y]]></b></r>`},
+		{"parameter namespace default", `<cdata-section-elements value="a"/>`, xmlOutput, "", `<a>x&lt;y</a>`, `<a>x&lt;y</a>`},
+		{"QName parameter binding", `<cdata-section-elements xmlns:p="urn:node" value="p:a"/>`, xmlOutput, "", `<r><p:a xmlns:p="urn:node">x&lt;y</p:a><b>x&lt;y</b></r>`, `<r><p:a xmlns:p="urn:node"><![CDATA[x<y]]></p:a><b>x&lt;y</b></r>`},
+		{"QName list absent preserves local", `<indent value="no"/>`, xmlOutput + ` cdata-section-elements="b"`, "", `<r><p:a xmlns:p="urn:node">x&lt;y</p:a><b>x&lt;y</b></r>`, `<r><p:a xmlns:p="urn:node">x&lt;y</p:a><b><![CDATA[x<y]]></b></r>`},
+		{"foreign character map ignored", `<method value="text"/><use-character-maps><e:character-map xmlns:e="urn:foreign" character="x" map-string="BAD"/></use-character-maps>`, "", "", `x`, "x"},
+		{"QName unknown prefix", `<cdata-section-elements value="missing:a"/>`, xmlOutput, "", root, errCodeSEPM0017},
+		{"character map namespace and precedence", `<use-character-maps><character-map character="x" map-string="P"/></use-character-maps>`, `method="text" use-character-maps="m"`, `<xsl:character-map name="m"><xsl:output-character character="x" string="D"/></xsl:character-map>`, `x`, "P"},
+		{"empty character map clears direct", `<use-character-maps/>`, `method="text" use-character-maps="m"`, `<xsl:character-map name="m"><xsl:output-character character="x" string="D"/></xsl:character-map>`, `x`, "x"},
+		{"invalid boolean", `<indent value="perhaps"/>`, `method="text"`, "", `x`, errCodeSEPM0017},
+		{"duplicate scalar", `<method value="text"/><method value="xml"/>`, "", "", `x`, errCodeSEPM0019},
+		{"duplicate character", `<method value="text"/><use-character-maps><character-map character="x" map-string="a"/><character-map character="x" map-string="b"/></use-character-maps>`, "", "", `x`, errCodeSEPM0018},
+		{"unknown attribute", `<method value="text" extra="invalid"/>`, "", "", `x`, errCodeSEPM0017},
+		{"inherited output method", `<method value="text"/>`, `omit-xml-declaration="yes"`, `<xsl:output method="xml"/>`, `<r>x</r>`, "x"},
+		{"default host XML declaration", `<method value="xml"/>`, "", "", `<r/>`, `<?xml version="1.0" encoding="UTF-8"?><r/>`},
+	}
+}
+
+func parameterDocumentHostSheet(route, href string, test parameterDocumentHostCase) string {
+	output := `<xsl:output ` + test.attributes + ` parameter-document="` + href + `"/>`
+	body := test.body
+	if route != "output" {
+		output = `<xsl:output omit-xml-declaration="yes"/>`
+		if test.name == "default host XML declaration" {
+			output = `<xsl:output/>`
+		}
+		attribute := href
+		if route == "dynamic" {
+			attribute = `{$parameterURI}`
+		}
+		resultURI := ""
+		if route == "secondary" || route == "dynamic" {
+			resultURI = ` href="urn:result"`
+		}
+		body = `<xsl:result-document` + resultURI + ` ` + test.attributes + ` parameter-document="` + attribute + `">` + body + `</xsl:result-document>`
+	}
+	return sheetStart + version30 + `" exclude-result-prefixes="xs"><xsl:param name="parameterURI" select="'` + href + `'"/>` + test.declarations + output + `<xsl:template name="start">` + body + `</xsl:template></xsl:stylesheet>`
+}
+
+func evaluateParameterDocumentHost(t *testing.T, route, source, parameters string) (string, error) {
+	t.Helper()
+	e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(ctx context.Context, _ string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(parameters)), ctx.Err()
+	})})
+	compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: transform.XSLT30})
+	if err != nil {
+		return "", err
+	}
+	result, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+	if err != nil {
+		return "", err
+	}
+	if route == "secondary" || route == "dynamic" {
+		return string(result.Secondary["urn:result"]), nil
+	}
+	return string(result.Primary), nil
+}
+
+func TestXSLTParameterDocumentContracts(t *testing.T) {
+	for _, test := range parameterDocumentHostCases() {
+		for _, route := range []string{"output", "primary", "secondary", "dynamic"} {
+			t.Run(route+"/"+test.name, func(t *testing.T) {
+				publishedProofVector(t, test.want)
+				source := parameterDocumentHostSheet(route, "urn:params", test)
+				got, err := evaluateParameterDocumentHost(t, route, source, serializeParameterDocument(test.parameters))
+				want, code := test.want, ""
+				if comparisonErrorCode(want) {
+					want, code = "", want
+				}
+				assertSerializationResult(t, test.name, got, err, want, code)
+			})
+		}
+	}
+}
+
+func TestXSLTParameterDocumentSchemaBridge(t *testing.T) {
+	for _, test := range serializeEditionCases() {
+		for _, route := range []string{"output", "primary", "secondary", "dynamic"} {
+			t.Run(route+"/"+test.name, func(t *testing.T) {
+				want, code := test.want31, ""
+				if comparisonErrorCode(want) {
+					want, code = "", want
+				}
+				publishedProofVector(t, test.want31)
+				fixture := parameterDocumentHostCase{attributes: `omit-xml-declaration="yes"`, body: `<xsl:sequence select="'x'"/>`}
+				source := parameterDocumentHostSheet(route, "urn:params", fixture)
+				got, err := evaluateParameterDocumentHost(t, route, source, serializeParameterDocument(test.parameters))
+				assertSerializationResult(t, test.name, got, err, want, code)
+			})
+		}
+	}
+}
+
+func TestXSLTDocumentAvailabilityControls(t *testing.T) {
+	for _, processor := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
+		for _, cause := range []error{transform.ErrLimit, context.Canceled, context.DeadlineExceeded} {
+			t.Run(strconv.Itoa(int(processor))+"/"+cause.Error(), func(t *testing.T) {
+				e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return nil, cause })})
+				source := sheet(version20, `<xsl:template name="start"><xsl:value-of select="doc-available('urn:snapshot')"/></xsl:template>`)
+				compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: processor})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+				var detail *transform.Error
+				if !errors.Is(err, cause) || result != nil || !errors.As(err, &detail) || detail.Code != "" {
+					t.Fatal(result, err, cause)
+				}
+			})
+		}
+	}
+}
+
+func TestXSLTParameterDocumentResources(t *testing.T) {
+	for _, route := range []string{"output", "primary", "secondary", "dynamic"} {
+		for _, kind := range []string{"missing", "permission", "cancelled", "malformed", "wrong root", "budget"} {
+			t.Run(route+"/"+kind, func(t *testing.T) {
+				var cause error
+				var code string
+				parameters := serializeParameterDocument(`<method value="text"/>`)
+				switch kind {
+				case "missing":
+					cause = fs.ErrNotExist
+				case "permission":
+					cause = fs.ErrPermission
+				case "cancelled":
+					cause = context.Canceled
+				case "malformed":
+					parameters, code = `<broken>`, errCodeSEPM0017
+				case "wrong root":
+					parameters, code = `<wrong/>`, errCodeSEPM0017
+				case "budget":
+					parameters += strings.Repeat(" ", 1000)
+				}
+				expected := code
+				if expected == "" {
+					switch kind {
+					case "missing":
+						expected = "x"
+					case "permission", "cancelled":
+						expected = cause.Error()
+					case "budget":
+						expected = "ErrLimit"
+					}
+				}
+				publishedProofVector(t, expected)
+				config := transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+					if cause != nil {
+						return nil, cause
+					}
+					return io.NopCloser(strings.NewReader(parameters)), nil
+				})}
+				if kind == "budget" {
+					config.Limits.MaxResourceBytes = 256
+				}
+				e := engine(t, config)
+				fixture := parameterDocumentHostCase{attributes: `method="text"`, body: `x`}
+				source := parameterDocumentHostSheet(route, "urn:params", fixture)
+				compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: transform.XSLT30})
+				var output *transform.Output
+				if err == nil {
+					output, err = compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+				}
+				switch kind {
+				case "missing":
+					if err != nil {
+						t.Fatal(err)
+					}
+					got := string(output.Primary)
+					if route == "secondary" || route == "dynamic" {
+						got = string(output.Secondary["urn:result"])
+					}
+					if got != "x" {
+						t.Fatal(got)
+					}
+				case "permission", "cancelled":
+					if !errors.Is(err, cause) {
+						t.Fatal(err, cause)
+					}
+				case "budget":
+					if !errors.Is(err, transform.ErrLimit) {
+						t.Fatal(err)
+					}
+				default:
+					var detail *transform.Error
+					if !errors.As(err, &detail) || detail.Code != code {
+						t.Fatal(err, code)
+					}
+				}
+			})
+		}
+	}
+}
+
+func xsltAdditionalFunctionProofCases() []hostFunctionCase {
+	return []hostFunctionCase{
+		{"property inventory invariants", "", `<xsl:variable name="p" select="available-system-properties()"/><xsl:value-of select="(every $n in $p satisfies $n instance of xs:QName) and count($p)=count(distinct-values($p)) and deep-equal($p,available-system-properties())"/>`, errCodeXPST0017, nameTrue},
+		{"property namespace inventory", "", `<xsl:variable name="p" select="available-system-properties()"/><xsl:value-of select="empty($p[namespace-uri-from-QName(.)='http://www.w3.org/1999/XSL/Transform' and not(local-name-from-QName(.)=('version','vendor','vendor-url','product-name','product-version','is-schema-aware','supports-serialization','supports-backwards-compatibility','supports-namespace-axis','supports-streaming','supports-dynamic-evaluation','supports-higher-order-functions','xpath-version','xsd-version'))])"/>`, errCodeXPST0017, nameTrue},
+		{"identifier alphabet", `<xsl:variable name="d"><r a="v">text</r></xsl:variable>`, `<xsl:value-of select="every $n in ($d,$d/r,$d/r/@a,$d/r/text(),$d/r/namespace::xml) satisfies matches(generate-id($n),'^[A-Za-z][A-Za-z0-9]*$')"/>`, nameTrue, nameTrue},
+		{"missing entity values and types", `<xsl:variable name="d"><r/></xsl:variable>`, `<xsl:for-each select="$d"><xsl:value-of select="unparsed-entity-uri('missing') eq '' and unparsed-entity-uri('missing') instance of xs:anyURI and unparsed-entity-public-id('missing') eq '' and unparsed-entity-public-id('missing') instance of xs:string"/></xsl:for-each>`, nameTrue, nameTrue},
+		{"negative and unmatched captured groups", "", `<xsl:analyze-string select="'a'" regex="(a)(b)?"><xsl:matching-substring><xsl:value-of select="regex-group(0)='a' and regex-group(1)='a' and regex-group(2)='' and regex-group(3)='' and regex-group(-1)=''"/></xsl:matching-substring></xsl:analyze-string>`, nameTrue, nameTrue},
+		{"current outer item and predicate focus", "", `<xsl:for-each select="(10,20)"><xsl:value-of select="string-join(for $n in (1,2)[. lt current()] return string($n),'')"/></xsl:for-each>`, "1212", "1212"},
+	}
+}
+
+func TestXSLTImplicitTextEncodingErrors(t *testing.T) {
+	for _, test := range []struct {
+		name, data, mediaType, encoding, code20 string
+	}{
+		{"implicit UTF8", "\xff", "", "", "XTDE1200"},
+		{"explicit UTF8", "\xff", "", "UTF-8", "XTDE1190"},
+		{"invalid XML character", "\x00", "", "", "XTDE1190"},
+		{"UTF8 BOM", "\xef\xbb\xbf\xff", "", "", "XTDE1190"},
+		{"external charset", "\xff", "text/plain; charset=UTF-8", "", "XTDE1190"},
+		{"XML media type", "\xff", "application/xml", "", "XTDE1190"},
+		{"XML declaration", `<?xml version="1.0" encoding="UTF-8"?>` + "\xff", "", "", "XTDE1190"},
+	} {
+		for _, processor := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
+			for _, cached := range []bool{false, true} {
+				t.Run(test.name+"/"+strconv.Itoa(int(processor))+"/cached="+strconv.FormatBool(cached), func(t *testing.T) {
+					loads := 0
+					e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+						loads++
+						return &typedTextReader{Reader: strings.NewReader(test.data), mediaType: test.mediaType}, nil
+					})})
+					arguments := `'urn:text'`
+					if test.encoding != "" {
+						arguments += `,'` + test.encoding + `'`
+					}
+					expression := `unparsed-text(` + arguments + `)`
+					if cached {
+						expression = `if (unparsed-text-available(` + arguments + `)) then 'unexpected availability' else ` + expression
+					}
+					source := sheet(version20, `<xsl:template name="start">`+valueOfExpression(expression)+`</xsl:template>`)
+					compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: processor})
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+					code := test.code20
+					if processor == transform.XSLT30 {
+						code = textEncodingError
+					}
+					publishedProofVector(t, code)
+					var detail *transform.Error
+					if result != nil || !errors.As(err, &detail) || detail.Code != code || loads != 1 {
+						t.Fatal(result, err, code, loads)
+					}
+				})
+			}
+		}
 	}
 }

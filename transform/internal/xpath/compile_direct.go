@@ -313,6 +313,11 @@ func (p *parseOptions) tryParseDirectNodeTest(axis AxisType) (xdm.NodeTest, bool
 		}
 	}
 
+	if tok.Value == lexicon.KindPI && p.lexer.PeekAt(1).Type == TokenLParen {
+		p.lexer.Next()
+		return p.parseKindTest(tok.Value)
+	}
+
 	if returned0, returned1, matchedBranch := tryParseDirectNodeTestType(p, &tok); matchedBranch {
 		return returned0, returned1, nil
 	}
@@ -402,25 +407,6 @@ func tryParseDirectNodeTestType(p *parseOptions, tok *Token) (returned0 xdm.Node
 			p.lexer.Next()
 
 			return xdm.TypeTest{Kind: xdm.NodeKindComment}, true, true
-		case lexicon.KindPI:
-			p.lexer.Next()
-			p.lexer.Next()
-
-			target := ""
-
-			hasTarget := false
-			if p.lexer.Peek().Type == TokenString || isNameLikeToken(p.lexer.Peek().Type) {
-				hasTarget = true
-				target = p.lexer.Next().Value
-			}
-
-			if p.lexer.Peek().Type != TokenRParen {
-				return nil, false, true
-			}
-
-			p.lexer.Next()
-
-			return xdm.PITest{Target: target, HasTarget: hasTarget}, true, true
 		}
 
 		return nil, false, true

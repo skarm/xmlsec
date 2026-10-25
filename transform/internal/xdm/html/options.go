@@ -42,8 +42,9 @@ type Writer struct {
 }
 
 type dumpConfig struct {
-	canEncode     func(rune) bool
-	cdataElements map[string]struct{}
+	serializationVersion int
+	canEncode            func(rune) bool
+	cdataElements        map[string]struct{}
 	// charMap substitutes a mapped rune in text and attribute-value content with
 	// its literal replacement string (Serialization 3.1 character maps).
 	// Empty/nil disables the feature.
@@ -95,6 +96,13 @@ func (w Writer) PreserveCase(v bool) Writer {
 // are percent-encoded.
 func (w Writer) EscapeURIAttributes(v bool) Writer {
 	w.noEscapeURIAttributes = !v
+	return w
+}
+
+// SerializationVersion selects the URI-attribute table independently of the
+// HTML document version. Zero uses the current Serialization 3.1 table.
+func (w Writer) SerializationVersion(version int) Writer {
+	w.serializationVersion = version
 	return w
 }
 

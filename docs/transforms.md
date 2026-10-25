@@ -155,6 +155,13 @@ do not reserve a read URI. Escaped functions use the live caller's resource stat
 while nested transformations have separate state. Physical URI aliases are not
 exhaustively identified. Dynamic `parameter-document` AVTs are evaluated on each
 execution, with parsed parameters cached by resolved URI and scoped across recursion.
+Parameter documents use the selected serialization schema/extraction rules.
+Their supplied scalar values override declarations, retaining explicit false and
+empty values; QName lists resolve in the parameter document and merge with the
+corresponding declared lists. Missing resources reported as `fs.ErrNotExist` are
+ignored; policy, control and other resolver errors propagate. This byte host has
+no extension-method callback and rejects an unsupported namespaced method with
+`SEPM0016`; XSLT leaves that extension behavior to the implementation.
 `Config.EnableXSLTAssertions` enables assertion checking for direct invocations.
 Nested `fn:transform` uses its `enable-assertions` option. Assertions default to disabled. A failed assertion (including a
 dynamic error in its test) follows message processing with `XTMM9001` as the
@@ -506,6 +513,16 @@ unrelated ancestors or siblings.
   available only through explicitly configured adapters. XML resources obey parser
   limits; `Config.Environment` exposes only explicitly supplied bindings.
 
+Document availability and ordinary retrieval/parse failures share an invocation
+snapshot with `doc`; another invocation can reload the resource. Every access
+still checks live policy and limits, and cancellation/resource-control failures
+are propagated rather than cached as unavailable. For selected XSLT 2.0,
+malformed default-fallback UTF-8 with no supplied/inferred encoding uses
+`XTDE1200`; explicit or metadata-selected decoding and invalid XML characters
+use `XTDE1190`. A UTF-8 BOM selects the latter decoder path; the old Saxon's
+`XTDE1200` choice for a malformed BOM-marked resource is recorded as an edition
+interpretation difference, not an exact agreement.
+
 For `unparsed-text`, `unparsed-text-lines` and `unparsed-text-available`, an
 optional `resource.TypedReader` supplies the MIME type and external charset.
 External encoding information takes precedence; XML media types use XML encoding
@@ -557,6 +574,14 @@ collection results have static types `document-node()?` and `item()*`.
 `BaseURI` is absent by default; callers supplying one must use an absolute IRI.
 Static typing is not enabled: mandatory syntax, name and declared-type checks
 run during compilation, while general value types are checked during execution.
+Non-XML input comes from caller-built document trees and public `Value`/`Sequence`
+constructors; it uses the same unvalidated XDM projection. Application functions
+have their registered arity and generic `item()*` argument/result types.
+
+Known collation URI families are Unicode codepoint, HTML ASCII case-insensitive,
+W3C UCA and the QT3 `caseblind` alias for HTML ASCII case-insensitive comparison.
+UCA uses the `x/text` collator; unsupported options may use its approximation
+unless `fallback=no` requests `FOCH0002`. Unknown collation URIs raise `FOCH0002`.
 
 The initial focus is absent. Position and size default to 1; explicitly supplied
 nonzero values must be positive, and position must not exceed size. The default clock is sampled once in UTC per public call;

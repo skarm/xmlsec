@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"io"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -24,6 +25,10 @@ const (
 	conformanceComplete = "complete"
 	normNotApplicable   = "not-applicable"
 	normImplemented     = "implemented"
+	normPublisher       = "publisher"
+	normXPath20         = "XP20"
+	normXPath30         = "XP30"
+	normXPath31         = "XP31"
 )
 
 type conformanceRegister struct {
@@ -36,6 +41,25 @@ type conformanceRegister struct {
 	Profiles      []conformanceProfile   `json:"profiles"`
 	Requirements  []scopeRequirement     `json:"requirements"`
 	Normative     []normativeRequirement `json:"normative_requirements"`
+	Residual      []residualEvidence     `json:"residual_evidence,omitempty"`
+}
+
+type residualEvidence struct {
+	Suite       string                     `json:"suite"`
+	File        string                     `json:"file"`
+	Name        string                     `json:"name"`
+	Disposition string                     `json:"disposition"`
+	Reason      string                     `json:"reason"`
+	Checks      []conformanceTest          `json:"checks"`
+	Failures    []residualFailureCondition `json:"failures,omitempty"`
+}
+
+type residualFailureCondition struct {
+	Profile    string   `json:"profile"`
+	Kind       string   `json:"kind"`
+	ErrorCodes []string `json:"error_codes"`
+	Cause      string   `json:"cause"`
+	Signature  string   `json:"signature,omitempty"`
 }
 
 type standardDocument struct {
@@ -103,6 +127,58 @@ type scopeRequirement struct {
 type conformanceTest struct {
 	File string `json:"file"`
 	Name string `json:"name"`
+	Case string `json:"case,omitempty"`
+}
+
+// normativeEvidence records executable witnesses for one finite obligation.
+// A publisher assertion and a processor agreement remain different oracles.
+type normativeEvidence struct {
+	Obligation string           `json:"obligation"`
+	Positive   []normativeProof `json:"positive"`
+	Negative   []normativeProof `json:"negative"`
+}
+
+type normativeProof struct {
+	Check    conformanceTest `json:"check,omitzero"`
+	Oracle   string          `json:"oracle,omitempty"`
+	Source   string          `json:"source,omitempty"`
+	Expected *string         `json:"expected,omitempty"`
+	Basis    string          `json:"basis,omitempty"`
+	Catalog  *catalogProof   `json:"catalog,omitempty"`
+}
+
+type catalogProof struct {
+	Suite      string   `json:"suite"`
+	File       string   `json:"file"`
+	Name       string   `json:"name,omitempty"`
+	Names      []string `json:"names,omitempty"`
+	Version    string   `json:"version"`
+	XSDVersion string   `json:"xsd_version"`
+}
+
+// Bundles store exact publisher identities once per file/edition. Expansion
+// preserves separate full-assertion executions, never a name-pattern selection.
+func expandNormativeProof(id string, proof normativeProof) []normativeProof {
+	if proof.Catalog == nil || len(proof.Catalog.Names) == 0 {
+		return []normativeProof{proof}
+	}
+
+	proofs := make([]normativeProof, 0, len(proof.Catalog.Names))
+	for _, name := range proof.Catalog.Names {
+		item := proof
+		catalog := *proof.Catalog
+		catalog.Name, catalog.Names = name, nil
+		item.Catalog = &catalog
+		item.Oracle = normPublisher
+		item.Check = conformanceTest{File: "tests/cmd/dev/main_test.go", Name: "TestLanguageNormativeEvidence", Case: id + "/" + name}
+		proofs = append(proofs, item)
+	}
+
+	return proofs
+}
+
+func catalogProofIdentity(p catalogProof) string {
+	return strings.Join([]string{p.Suite, p.File, p.Name, p.Version, p.XSDVersion}, "\x00")
 }
 
 type normativeRequirement struct {
@@ -143,8 +219,11 @@ type normativeRequirement struct {
 		Default       policyPermission `json:"default"`
 		Compatibility policyPermission `json:"compatibility"`
 	} `json:"policy"`
-	Gap     string `json:"gap"`
-	Closure string `json:"closure"`
+	Gap                 string              `json:"gap"`
+	Closure             string              `json:"closure"`
+	Evidence            []normativeEvidence `json:"evidence,omitempty"`
+	EvidenceFrom        []string            `json:"evidence_from,omitempty"`
+	EvidenceComposition string              `json:"evidence_composition,omitempty"`
 }
 
 type policyPermission struct {
@@ -153,12 +232,13 @@ type policyPermission struct {
 }
 
 type conformanceCheck struct {
-	root      string
-	problems  []error
-	documents map[string]standardDocument
-	profiles  map[string]conformanceProfile
-	scopes    map[string]bool
-	symbols   map[string]map[string]bool
+	root            string
+	problems        []error
+	documents       map[string]standardDocument
+	profiles        map[string]conformanceProfile
+	scopes          map[string]bool
+	symbols         map[string]map[string]bool
+	evidenceChecked map[string]bool
 }
 
 func checkConformanceRegister(root string, data []byte) (int, []error, error) {
@@ -225,7 +305,275 @@ func checkConformanceRegister(root string, data []byte) (int, []error, error) {
 		}
 	}
 
+	for _, requirement := range register.Normative {
+		c.normativeEvidence(requirement, ids, make(map[string]bool))
+	}
+
+	residuals := make(map[string]bool)
+
+	for _, residual := range register.Residual {
+		id := residual.Suite + "/" + residual.File + "/" + residual.Name
+		if residuals[id] {
+			c.problem(id, "duplicate residual evidence")
+		}
+
+		residuals[id] = true
+		c.choice(id, residual.Suite, "qt3", "xslt30")
+		c.choice(id, residual.Disposition, "fixed", "resource-limit", "fixture", "optional-feature", "permitted-outcome")
+		c.text(id, residual.File, residual.Name, residual.Reason)
+
+		if len(residual.Checks) == 0 {
+			c.problem(id, "residual cause requires executable checks")
+		}
+
+		for _, check := range residual.Checks {
+			c.test(id, check)
+			c.text(id, check.Case)
+		}
+
+		c.residualConditions(id, residual)
+	}
+
 	return len(register.Requirements), c.problems, nil
+}
+
+func (c *conformanceCheck) residualConditions(id string, residual residualEvidence) {
+	if residual.Disposition == "fixed" && len(residual.Failures) != 0 || residual.Disposition != "fixed" && len(residual.Failures) == 0 {
+		c.problem(id, "retained failures require exact profile and typed cause conditions; fixed cases require none")
+	}
+
+	seen := make(map[string]bool)
+	for _, failure := range residual.Failures {
+		if seen[failure.Profile] || !slices.Contains(languageProofProfileKeys(), failure.Profile) {
+			c.problem(id, "unknown or duplicate residual failure profile")
+		}
+
+		seen[failure.Profile] = true
+		c.choice(id, failure.Kind, "assertion", suiteResourceLimit, suiteHarnessFailure)
+		c.choice(id, failure.Cause, "assertion-mismatch", "execution-error", "assertion-error", "unsupported-warning", "harness-error", "resource-bound")
+
+		if len(failure.ErrorCodes) == 0 || failure.Kind == suiteResourceLimit && failure.Cause != "resource-bound" {
+			c.problem(id, "residual condition requires explicit error-code alternatives and a matching typed resource cause")
+		}
+
+		if failure.Kind != suiteResourceLimit && failure.Signature == "" || failure.Kind == suiteResourceLimit && failure.Signature != "" {
+			c.problem(id, "non-resource failures require a stable diagnostic signature; timing-dependent resource text must be excluded")
+		}
+
+		codes := make(map[string]bool)
+		for _, code := range failure.ErrorCodes {
+			if codes[code] {
+				c.problem(id, "duplicate residual error-code alternative")
+			}
+
+			codes[code] = true
+		}
+	}
+}
+
+func languageVerificationDocument(id string) bool {
+	return slices.Contains([]string{normXPath20, normXPath30, normXPath31, "FO20", "FO30", "FO31", "XSLT20", "XSLT30", "SER20", "SER30", "SER31"}, id)
+}
+
+func (c *conformanceCheck) normativeEvidence(r normativeRequirement, ids map[string]normativeRequirement, visiting map[string]bool) {
+	if visiting[r.ID] {
+		c.problem(r.ID, "cyclic normative evidence inheritance")
+		return
+	}
+
+	if c.evidenceChecked[r.ID] {
+		return
+	}
+
+	if c.evidenceChecked == nil {
+		c.evidenceChecked = make(map[string]bool)
+	}
+
+	visiting[r.ID] = true
+	defer func() { delete(visiting, r.ID); c.evidenceChecked[r.ID] = true }()
+
+	if languageVerificationDocument(r.Norm.Document) && r.Applies.Status != normNotApplicable && (r.Tests.Status != conformanceCovered || r.Interop.Status != conformanceCovered || len(r.Evidence)+len(r.EvidenceFrom) == 0) {
+		c.problem(r.ID, "language verification requires closed case-level local and independent evidence")
+	}
+
+	if r.Applies.Status == normNotApplicable && len(r.Evidence)+len(r.EvidenceFrom) != 0 {
+		c.problem(r.ID, "non-applicable requirement cannot claim executable witnesses")
+	}
+
+	c.evidenceInheritance(r, ids, visiting)
+	c.caseEvidence(r)
+}
+
+func (c *conformanceCheck) evidenceInheritance(r normativeRequirement, ids map[string]normativeRequirement, visiting map[string]bool) {
+	c.unique(r.ID, r.EvidenceFrom)
+
+	children := normativeEvidenceChildren(r, ids)
+	if len(r.EvidenceFrom) > 0 || languageVerificationDocument(r.Norm.Document) && r.Applies.Status != normNotApplicable && len(children) > 0 {
+		for _, id := range children {
+			if !slices.Contains(r.EvidenceFrom, id) {
+				c.problem(r.ID, "inheritance omits structural child: "+id)
+			}
+		}
+
+		structural := len(children) > 0
+		for _, id := range children {
+			structural = structural && slices.Contains(r.EvidenceFrom, id)
+		}
+
+		for _, id := range r.EvidenceFrom {
+			structural = structural && slices.Contains(children, id)
+		}
+
+		if !structural && (len(r.Evidence) == 0 || strings.TrimSpace(r.EvidenceComposition) == "") {
+			c.problem(r.ID, "inheritance requires every structural child or directly tested composition with a normative basis")
+		}
+	}
+
+	for _, id := range r.EvidenceFrom {
+		child, ok := ids[id]
+		if !ok || child.Applies.Status == normNotApplicable || child.Applies.Profile != r.Applies.Profile || child.Applies.Role != r.Applies.Role {
+			c.problem(r.ID, "missing or mismatched inherited evidence: "+id)
+			continue
+		}
+
+		if len(child.Evidence)+len(child.EvidenceFrom) == 0 || child.Tests.Status != conformanceCovered || child.Interop.Status != conformanceCovered {
+			c.problem(r.ID, "inherited evidence is not closed: "+id)
+		}
+
+		c.normativeEvidence(child, ids, visiting)
+	}
+}
+
+func (c *conformanceCheck) caseEvidence(r normativeRequirement) {
+	seen := make(map[string]bool)
+
+	for _, evidence := range r.Evidence {
+		c.text(r.ID, evidence.Obligation)
+
+		if seen[evidence.Obligation] || len(evidence.Positive) == 0 || len(evidence.Negative) == 0 {
+			c.problem(r.ID, "evidence needs distinct obligations and positive/negative witnesses")
+		}
+
+		seen[evidence.Obligation] = true
+		for _, proofs := range [][]normativeProof{evidence.Positive, evidence.Negative} {
+			for _, proof := range proofs {
+				c.evidenceProof(r, proof)
+			}
+		}
+	}
+}
+
+func (c *conformanceCheck) evidenceProof(r normativeRequirement, proof normativeProof) {
+	if proof.Catalog != nil && len(proof.Catalog.Names) > 0 {
+		c.unique(r.ID, proof.Catalog.Names)
+
+		if proof.Catalog.Name != "" || proof.Check != (conformanceTest{}) || proof.Oracle != "" && proof.Oracle != normPublisher {
+			c.problem(r.ID, "ambiguous publisher proof bundle")
+		}
+	}
+
+	for _, item := range expandNormativeProof(r.ID, proof) {
+		c.proof(r, item)
+	}
+}
+
+func normativeAggregate(id string) bool {
+	return slices.Contains([]string{
+		"N-XSLT20-BASIC", "N-XSLT30-BASIC", "N-XSLT20-COMPILATION", "N-XSLT30-COMPILATION",
+		"N-XP20-CONTEXT", "N-XP30-CONTEXT", "N-XP31-CONTEXT", "N-FO20-FUNCTION-FAMILIES", "N-FO30-FUNCTION-FAMILIES", "N-FO31-FUNCTION-FAMILIES",
+		"N-XPATH30-SERIALIZATION", "N-XPATH31-SERIALIZATION", "N-XSLT20-SERIALIZATION", "N-XSLT30-SERIALIZATION",
+		"N-XP20-CLAUSE-F", "N-XP20-CLAUSE-G", "N-XP30-CLAUSE-F", "N-XP30-CLAUSE-G", "N-XP31-CLAUSE-4", "N-XP31-CLAUSE-F",
+	}, id)
+}
+
+// Structural inheritance means the complete recorded subtree. Other relations
+// require their own executable composition witnesses and a published basis.
+func normativeEvidenceChildren(r normativeRequirement, ids map[string]normativeRequirement) []string {
+	var children []string
+
+	aggregate := normativeAggregate(r.ID)
+	profileAggregate := slices.Contains([]string{"N-XP20-CLAUSE-F", "N-XP30-CLAUSE-F", "N-XP31-CLAUSE-4"}, r.ID)
+
+	canonical := strings.Contains(r.ID, "-CLAUSE-") || strings.Contains(r.ID, "-CONTRACT-")
+	for id, child := range ids {
+		if id == r.ID || !profileAggregate && child.Norm.Document != r.Norm.Document || child.Applies.Profile != r.Applies.Profile || child.Applies.Status == normNotApplicable || normativeAggregate(id) {
+			continue
+		}
+
+		if aggregate {
+			children = append(children, id)
+		} else if canonical && (strings.Contains(id, "-CLAUSE-") || strings.Contains(id, "-CONTRACT-")) && strings.HasPrefix(child.Norm.Clause, r.Norm.Clause+".") {
+			immediate := true
+
+			for _, between := range ids {
+				if between.Applies.Profile == r.Applies.Profile && between.Norm.Document == r.Norm.Document && between.Applies.Status != normNotApplicable &&
+					(strings.Contains(between.ID, "-CLAUSE-") || strings.Contains(between.ID, "-CONTRACT-")) &&
+					strings.HasPrefix(between.Norm.Clause, r.Norm.Clause+".") && strings.HasPrefix(child.Norm.Clause, between.Norm.Clause+".") {
+					immediate = false
+					break
+				}
+			}
+
+			if immediate {
+				children = append(children, id)
+			}
+		}
+	}
+
+	slices.Sort(children)
+
+	return children
+}
+
+func (c *conformanceCheck) proof(r normativeRequirement, proof normativeProof) {
+	c.test(r.ID, proof.Check)
+	c.text(r.ID, proof.Check.Case)
+
+	if proof.Source != "" || proof.Oracle != normPublisher {
+		c.webURL(r.ID, proof.Source)
+	}
+
+	c.choice(r.ID, proof.Oracle, normPublisher, "saxon-9.4", "saxon-12.10", "libxml2", "libxslt", "published-schema", "published-vector", "published-inventory")
+
+	if proof.Oracle == "published-vector" || proof.Oracle == "published-inventory" {
+		c.text(r.ID, proof.Basis)
+
+		if proof.Expected == nil {
+			c.problem(r.ID, "missing required description: published expected value")
+		}
+	}
+
+	if proof.Oracle == "published-inventory" && (!slices.Contains([]string{normXPath20, normXPath30, normXPath31}, r.Norm.Document) || r.Norm.Clause != "D") {
+		c.problem(r.ID, "published-inventory is limited to the Appendix D documentation duty")
+	}
+
+	if proof.Oracle == normPublisher {
+		if proof.Catalog == nil {
+			c.problem(r.ID, "publisher evidence requires an exact catalog case")
+			return
+		}
+
+		p := proof.Catalog
+
+		c.choice(r.ID, p.Suite, "qt3", "xslt30")
+		c.choice(r.ID, p.Version, "2.0", "3.0", "3.1")
+		c.choice(r.ID, p.XSDVersion, "1.0", "1.1")
+		c.text(r.ID, p.Name, p.File)
+
+		if filepath.IsAbs(p.File) || strings.Contains(p.File, "\\") || filepath.Clean(p.File) != p.File || strings.HasPrefix(p.File, "../") {
+			c.problem(r.ID, "catalog evidence requires a portable relative file")
+		}
+
+		if p.Suite == "xslt30" && p.Version == "3.1" {
+			c.problem(r.ID, "XSLT has no 3.1 processor edition")
+		}
+
+		if proof.Check.File != "tests/cmd/dev/main_test.go" || proof.Check.Name != "TestLanguageNormativeEvidence" || proof.Check.Case != r.ID+"/"+p.Name {
+			c.problem(r.ID, "publisher witness must name its exact executing subtest")
+		}
+	} else if proof.Catalog != nil {
+		c.problem(r.ID, "processor or published-vector evidence cannot masquerade as a publisher case")
+	}
 }
 
 func (c *conformanceCheck) document(document standardDocument) {
@@ -413,7 +761,7 @@ func (c *conformanceCheck) unique(id string, values []string) {
 
 func (c *conformanceCheck) requirement(r normativeRequirement) {
 	c.text(r.ID, r.Statement, r.Norm.Document, r.Norm.Clause, r.Applies.Role, r.Applies.Mode, r.Applies.Reason)
-	c.choice(r.ID, r.Norm.Level, "MUST", "MUST NOT", "SHOULD", "SHOULD NOT", "MAY", "REQUIRED", "RECOMMENDED", "OPTIONAL", "normative")
+	c.choice(r.ID, r.Norm.Level, "MUST", "MUST NOT", "SHOULD", "SHOULD NOT", "MAY", "REQUIRED", "RECOMMENDED", "OPTIONAL", "normative", "informative")
 	c.choice(r.ID, r.Applies.Status, "applicable", normNotApplicable)
 	c.choice(r.ID, r.Implementation.Status, normImplemented, "limited", "unimplemented", normNotApplicable)
 	c.choice(r.ID, r.Interop.Status, conformanceCovered, conformancePending, normNotApplicable)
@@ -429,14 +777,7 @@ func (c *conformanceCheck) requirement(r normativeRequirement) {
 	}
 
 	c.normativeSource(r)
-
-	if r.Applies.Status == normNotApplicable {
-		if r.Implementation.Status != normNotApplicable || r.Applies.Role == profile.Role {
-			c.problem(r.ID, "non-applicability requires a different standard role, not missing code or a policy prohibition")
-		}
-	} else if r.Implementation.Status == normNotApplicable || r.Applies.Role != profile.Role {
-		c.problem(r.ID, "applicable requirement must match the selected role")
-	}
+	c.requirementRole(r, profile)
 
 	if r.Implementation.Status == normImplemented || r.Implementation.Status == "limited" {
 		if len(r.Implementation.APIs) == 0 || len(r.Implementation.Code) == 0 {
@@ -460,6 +801,73 @@ func (c *conformanceCheck) requirement(r normativeRequirement) {
 	}
 
 	c.requirementEvidence(r)
+}
+
+func (c *conformanceCheck) requirementRole(r normativeRequirement, profile conformanceProfile) {
+	if r.Norm.Level == "informative" && (r.Applies.Status != normNotApplicable || r.Applies.Role != "informative-reference") || r.Applies.Role == "informative-reference" && r.Norm.Level != "informative" {
+		c.problem(r.ID, "informative material must remain a distinct non-applicable reference role")
+	}
+
+	if slices.Contains([]string{normXPath20, normXPath30, normXPath31}, r.Norm.Document) && r.Norm.Clause == "D" {
+		data, err := os.ReadFile(filepath.Join(c.root, "docs", "transforms.md"))
+		if err == nil {
+			err = checkXPathHostChoiceDocumentation(string(data), strings.TrimPrefix(r.Norm.Document, "XP"))
+		}
+
+		if err != nil {
+			c.problem(r.ID, "published host-choice inventory: "+err.Error())
+		}
+	}
+
+	if r.Applies.Status == normNotApplicable {
+		if r.Implementation.Status != normNotApplicable || r.Applies.Role == profile.Role {
+			c.problem(r.ID, "non-applicability requires a different standard role, not missing code or a policy prohibition")
+		}
+	} else if r.Implementation.Status == normNotApplicable || r.Applies.Role != profile.Role {
+		c.problem(r.ID, "applicable requirement must match the selected role")
+	}
+}
+
+// These declarations account for the finite Appendix D publication duty, not
+// portable defaults that another host is required to choose identically.
+func xpathHostChoiceDeclarations(version string) map[string]string {
+	choices := map[string]string{
+		"unicode-version":    "Unicode properties use Unicode 17.0",
+		"known-collations":   "Known collation URI families are Unicode codepoint",
+		"implicit-timezone":  "explicit implicit timezones use whole minutes within ±14 hours",
+		"warnings":           "Warnings are not emitted",
+		"error-transport":    "Errors are returned as `transform.Error`",
+		"xml-names-editions": "Names use XML 1.0 Fifth Edition and Namespaces 1.0 Third Edition",
+		"namespace-axis":     "The namespace axis is supported",
+		"static-typing":      "Static typing is not enabled",
+	}
+
+	if version != "20" {
+		for key, value := range map[string]string{
+			"non-infoset-construction": "Non-XML input comes from caller-built document trees and public `Value`/`Sequence`",
+			"schema-type-system":       "`XMLSchemaVersion` selects 1.0 or 1.1 datatype",
+			"extension-signatures":     "have their registered arity and generic `item()*` argument/result types",
+			"environment-variables":    "come only from the copied `Config.Environment` map",
+			"serialization-parameters": "Serialization occurs through explicit",
+			"external-result-mismatch": "invalid external-function results retain their type error",
+		} {
+			choices[key] = value
+		}
+	}
+
+	return choices
+}
+
+func checkXPathHostChoiceDocumentation(text, version string) error {
+	var missing []error
+
+	for item, declaration := range xpathHostChoiceDeclarations(version) {
+		if !strings.Contains(text, declaration) {
+			missing = append(missing, fmt.Errorf("%s is not documented", item))
+		}
+	}
+
+	return errors.Join(missing...)
 }
 
 func (c *conformanceCheck) localEvidence(r normativeRequirement) {

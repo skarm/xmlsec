@@ -53,6 +53,7 @@ type evalContext struct {
 	defaultDecimalFormat *DecimalFormat
 	decimalFormats       map[QualifiedName]DecimalFormat
 	docCache             map[string]xdm.Node
+	documentSnapshots    *documentSnapshotStore
 	// httpClient is intentionally stored here (not only in Context) so that
 	// built-in functions can access it through getFnContext without an extra
 	// indirection. It is pointer-sized and nil when unused, so copies via

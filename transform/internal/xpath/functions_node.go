@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
@@ -1243,7 +1244,7 @@ func fnCollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 		return nil, &xdm.Error{Code: lexicon.ErrFODC0002, Message: "fn:collection: no collection resolver configured"}
 	}
 
-	cache := InvocationState(ctx, collectionCacheKey{}, func() any { return make(map[string]xdm.Sequence) }).(map[string]xdm.Sequence) //nolint:forcetypeassert
+	cache := InvocationState(ctx, collectionInvocationCacheKey(ec.collectionResolver, false), func() any { return make(map[string]xdm.Sequence) }).(map[string]xdm.Sequence) //nolint:forcetypeassert
 	if seq, found := cache[uri]; found {
 		if ec.resourceReads != nil {
 			if err := registerCollectionDocuments(ctx, ec, seq); err != nil {
@@ -1282,7 +1283,22 @@ func fnCollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 	return seq, nil
 }
 
-type collectionCacheKey struct{ uris bool }
+type collectionCacheKey struct {
+	uris  bool
+	scope any
+}
+
+// A host may expose different views of a collection in separate lexical scopes
+// while sharing one invocation. The opaque scope must be comparable; XSLT uses
+// its immutable compiled package identity for package-local whitespace views.
+func collectionInvocationCacheKey(resolver CollectionResolver, uris bool) collectionCacheKey {
+	key := collectionCacheKey{uris: uris}
+	if scoped, ok := resolver.(interface{ CollectionCacheScope() any }); ok {
+		key.scope = scoped.CollectionCacheScope()
+	}
+
+	return key
+}
 
 // Collection documents with a document URI are also available to fn:doc.
 // Reject inconsistent identities instead of silently substituting different data.
@@ -1339,7 +1355,7 @@ func fnURICollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 		return nil, &xdm.Error{Code: lexicon.ErrFODC0002, Message: "fn:uri-collection: no collection resolver configured"}
 	}
 
-	cache := InvocationState(ctx, collectionCacheKey{uris: true}, func() any { return make(map[string]xdm.Sequence) }).(map[string]xdm.Sequence) //nolint:forcetypeassert
+	cache := InvocationState(ctx, collectionInvocationCacheKey(ec.collectionResolver, true), func() any { return make(map[string]xdm.Sequence) }).(map[string]xdm.Sequence) //nolint:forcetypeassert
 	if seq, found := cache[uri]; found {
 		return seq, nil
 	}
@@ -1392,7 +1408,12 @@ func fnDocAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 		return xdm.SingleBoolean(false), nil
 	}
 
-	_, err = loadDoc(ctx, uri)
+	_, err = availableDocument(ctx, uri)
+
+	if failure := documentControlFailure(ctx, err); failure != nil {
+		return nil, failure
+	}
+
 	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
 		return nil, err
 	}
@@ -1404,6 +1425,89 @@ func fnDocAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 	}
 
 	return xdm.SingleBoolean(err == nil), nil
+}
+
+func availableDocument(ctx context.Context, uri string) (xdm.Sequence, error) {
+	if ec := getFnContext(ctx); ec != nil {
+		// A host's fn:doc supplies its available-documents component, including
+		// package-specific whitespace views. Availability must use that same pool.
+		if fn := ec.fnsNS[QualifiedName{URI: NSFn, Name: "doc"}]; fn != nil {
+			return fn.Call(ctx, []xdm.Sequence{xdm.SingleString(uri)})
+		}
+	}
+
+	doc, err := loadDoc(ctx, uri)
+	if err != nil {
+		return nil, err
+	}
+
+	return xdm.SingleNode(doc), nil
+}
+
+type documentSnapshot struct {
+	doc *xdm.Document
+	err error
+}
+
+type documentSnapshotStore struct {
+	values map[string]documentSnapshot
+}
+
+type documentSnapshotKey struct{ scope any }
+
+// DocumentLoadSnapshot retains an available-document outcome in one host
+// invocation. scope identifies the host's document pool; key includes its
+// package/preprocessing view. Callers must check live read policy before this
+// function, including on a hit. Controls and policy failures are never retained.
+func DocumentLoadSnapshot(ctx context.Context, scope any, key string, load func() (*xdm.Document, error)) (*xdm.Document, error) {
+	store, _ := InvocationState(ctx, documentSnapshotKey{scope: scope}, func() any {
+		return &documentSnapshotStore{}
+	}).(*documentSnapshotStore)
+
+	return loadDocumentSnapshot(ctx, store, key, load)
+}
+
+func loadDocumentSnapshot(ctx context.Context, store *documentSnapshotStore, key string, load func() (*xdm.Document, error)) (*xdm.Document, error) {
+	if err := Charge(ctx, 1); err != nil {
+		return nil, err
+	}
+
+	if snapshot, ok := store.values[key]; ok {
+		return snapshot.doc, snapshot.err
+	}
+
+	if len(store.values) >= NodeLimit(ctx, fnMaxNodes(getFnContext(ctx))) {
+		return nil, ErrNodeSetLimit
+	}
+
+	doc, err := load()
+	if failure := documentControlFailure(ctx, err); failure != nil {
+		return nil, failure
+	}
+
+	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+		return nil, err
+	}
+
+	if store.values == nil {
+		store.values = make(map[string]documentSnapshot)
+	}
+
+	store.values[key] = documentSnapshot{doc: doc, err: err}
+
+	return doc, err
+}
+
+func documentControlFailure(ctx context.Context, err error) error {
+	if failure := ControlFailure(ctx, err); failure != nil {
+		return failure
+	}
+
+	if errors.Is(err, tree.ErrLimit) {
+		return err
+	}
+
+	return nil
 }
 
 func loadDoc(ctx context.Context, uri string) (xdm.Node, error) {
@@ -1440,6 +1544,7 @@ func loadResolvedDoc(ctx context.Context, resolved string) (xdm.Node, error) {
 	ec := getFnContext(ctx)
 
 	options := xdm.ParseOptions{}
+
 	if ec != nil {
 		options = ec.xmlParseOptions().WithByteLimit(ec.maxResourceBytes)
 		if ec.resourceReads != nil {
@@ -1459,8 +1564,33 @@ func loadResolvedDoc(ctx context.Context, resolved string) (xdm.Node, error) {
 		}
 	}
 
+	store := &documentSnapshotStore{}
+
+	if ec != nil {
+		if ec.documentSnapshots == nil {
+			ec.documentSnapshots = &documentSnapshotStore{}
+		}
+
+		store = ec.documentSnapshots
+	}
+
+	return loadDocumentSnapshot(ctx, store, resolved, func() (*xdm.Document, error) {
+		doc, err := retrieveDocument(ctx, resolved, options)
+		if err == nil && ec != nil {
+			ec.docCache[resolved] = doc
+		}
+
+		return doc, err
+	})
+}
+
+func retrieveDocument(ctx context.Context, resolved string, options xdm.ParseOptions) (*xdm.Document, error) {
 	reader, err := unparsedtext.OpenURI(ctx, unparsedTextConfig(ctx), resolved)
 	if err != nil {
+		if failure := documentControlFailure(ctx, err); failure != nil {
+			return nil, failure
+		}
+
 		if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
 			return nil, err
 		}
@@ -1472,6 +1602,10 @@ func loadResolvedDoc(ctx context.Context, resolved string) (xdm.Node, error) {
 
 	doc, parseErr := options.ParseReader(ctx, reader)
 	if err := errors.Join(parseErr, reader.Close()); err != nil {
+		if failure := documentControlFailure(ctx, err); failure != nil {
+			return nil, failure
+		}
+
 		if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
 			return nil, err
 		}
@@ -1480,10 +1614,6 @@ func loadResolvedDoc(ctx context.Context, resolved string) (xdm.Node, error) {
 	}
 
 	doc.SetURL(resolved)
-
-	if ec != nil {
-		ec.docCache[resolved] = doc
-	}
 
 	return doc, nil
 }

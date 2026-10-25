@@ -208,7 +208,9 @@ func (ec *execContext) xsltFunctionsNS() map[xpath.QualifiedName]xpath.Function 
 
 	// Dynamic lookup sees declarations in the calling package, excluding
 	// abstract declarations and components accepted from other packages.
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: "function-lookup"}] = &xsltFunc{min: 2, max: 2, fn: ec.fnFunctionLookupPackage}
+	if ec.stylesheet.processorLanguage() >= 30 {
+		ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: "function-lookup"}] = &xsltFunc{min: 2, max: 2, fn: ec.fnFunctionLookupPackage}
+	}
 
 	if ec.currentPackage != nil {
 		// Per-package function scope: all functions from the current

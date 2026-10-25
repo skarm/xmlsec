@@ -47,7 +47,7 @@ func SerializeValue(ctx context.Context, w io.Writer, result ValueResult) error 
 		return err
 	}
 
-	return SerializeResult(w, doc, definition)
+	return serializeResult(ctx, w, doc, definition)
 }
 
 // streamValue reports handled=false only before writing anything. This is an

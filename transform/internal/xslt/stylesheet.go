@@ -398,7 +398,16 @@ func (ss *Stylesheet) DefaultOutputDef() *OutputDef {
 		return nil
 	}
 
-	return cloneOutputDef(ss.outputs[""])
+	out := cloneOutputDef(ss.outputs[""])
+	if out == nil && ss.processorLanguage() <= 20 {
+		out = defaultOutputDef()
+	}
+
+	if out != nil {
+		out.serializationVersion = ss.processorLanguage()
+	}
+
+	return out
 }
 
 // Transform creates an Invocation that applies templates to the source
@@ -461,12 +470,15 @@ func (ss *Stylesheet) defaultItemSeparator() *string {
 // populated at runtime by a terminal method; treat snapshots returned from
 // Invocation.ResolvedOutputDef as read-only.
 type OutputDef struct {
-	canEncode           func(rune) bool // invocation-local repertoire check for character content
-	IncludeContentType  *bool           // include-content-type: nil=default(yes), true/false
-	ItemSeparator       *string         // item-separator serialization parameter; nil = not set
-	EscapeURIAttributes *bool           // escape-uri-attributes: nil=default(true), true/false
-	ResolvedCharMap     map[rune]string // resolved character map (populated at runtime)
-	BuildTree           *bool           // build-tree: nil=default(true), true/false
+	// serializationVersion is the selected processor contract, independent of
+	// source backwards-compatibility and the serialized HTML version.
+	serializationVersion int
+	canEncode            func(rune) bool // invocation-local repertoire check for character content
+	IncludeContentType   *bool           // include-content-type: nil=default(yes), true/false
+	ItemSeparator        *string         // item-separator serialization parameter; nil = not set
+	EscapeURIAttributes  *bool           // escape-uri-attributes: nil=default(true), true/false
+	ResolvedCharMap      map[rune]string // resolved character map (populated at runtime)
+	BuildTree            *bool           // build-tree: nil=default(true), true/false
 	// Name is the expanded QName of the output definition (empty for the
 	// unnamed primary definition).
 	Name string

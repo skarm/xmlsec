@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -56,6 +57,7 @@ const (
 	suiteFile               = "file"
 	suiteNamespace          = "namespace"
 	suitePackageTag         = "package"
+	suiteResourceTag        = "resource"
 	suiteOutput             = "output"
 	suiteParam              = "param"
 	suiteYes                = "yes"
@@ -92,6 +94,9 @@ type suiteOutcome struct {
 	Status           string `json:"status"`
 	Kind             string `json:"kind,omitempty"`
 	Reason           string `json:"reason,omitempty"`
+	ErrorCode        string `json:"error_code,omitempty"`
+	FailureCause     string `json:"failure_cause,omitempty"`
+	FailureSignature string `json:"failure_signature,omitempty"`
 	ExecutionVersion string `json:"execution_version,omitempty"`
 }
 
@@ -377,7 +382,7 @@ func parseSuiteOptions(args []string, stderr io.Writer) (suiteOptions, error) {
 
 func suiteGit(ctx context.Context, directory string, args ...string) (string, error) {
 	arguments := append([]string{"-C", directory}, args...)
-	command := exec.CommandContext(ctx, "git", arguments...) // #nosec G204 -- Fixed Git subcommands, explicit argv and no shell.
+	command := exec.CommandContext(ctx, "git", arguments...) // #nosec G204,G702 -- Callers supply fixed read-only Git subcommands; directory is a separate argv value, never shell text.
 
 	data, err := command.Output()
 	if err != nil {
@@ -413,6 +418,51 @@ func readSuiteFile(root, base, name string) ([]byte, string, error) {
 	return readSuiteFileLimit(root, base, name, suiteMaxFileBytes)
 }
 
+func readSuiteReferencedFile(root, base string, node *suiteNode) ([]byte, string, error) {
+	reference, err := url.Parse(node.attr(suiteFile))
+	if err != nil || reference.IsAbs() || reference.Host != "" || reference.User != nil || reference.RawQuery != "" || reference.ForceQuery || reference.Fragment != "" {
+		return nil, "", suiteHarness("invalid local file reference %q", node.attr(suiteFile))
+	}
+
+	path, err := suiteLocalReferencePath(root, base, node, reference)
+	if err != nil {
+		return nil, "", err
+	}
+
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return readSuiteFile(root, root, relative)
+}
+
+// @file is a URI reference. Its catalog XML base controls the retrieval path;
+// a separately declared @uri still controls the language's resource identity.
+func suiteLocalReferencePath(root, base string, node *suiteNode, reference *url.URL) (string, error) {
+	location := node.baseURI
+	if location == "" {
+		location = suiteFileURI(base) + "/"
+	}
+
+	baseURI, err := url.Parse(location)
+	if err != nil {
+		return "", err
+	}
+
+	resolved := baseURI.ResolveReference(reference)
+	if resolved.Scheme != suiteFile || resolved.Host != "" || resolved.User != nil || resolved.RawQuery != "" || resolved.ForceQuery {
+		return "", suiteHarness("file reference requires a local catalog base URI")
+	}
+
+	relative, err := filepath.Rel(root, filepath.FromSlash(resolved.Path))
+	if err != nil {
+		return "", err
+	}
+
+	return localPath(root, root, relative)
+}
+
 func readSuiteFileLimit(root, base, name string, maximum int) ([]byte, string, error) {
 	path, err := localPath(root, base, filepath.FromSlash(name))
 	if err != nil {
@@ -442,6 +492,19 @@ func readSuiteNode(root, base, name string) (*suiteNode, string, error) {
 		return nil, "", err
 	}
 
+	return decodeSuiteNode(data, path)
+}
+
+func readSuiteReferencedNode(root, base string, node *suiteNode) (*suiteNode, string, error) {
+	data, path, err := readSuiteReferencedFile(root, base, node)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return decodeSuiteNode(data, path)
+}
+
+func decodeSuiteNode(data []byte, path string) (*suiteNode, string, error) {
 	var node suiteNode
 
 	decoder := xml.NewDecoder(bytes.NewReader(data)) // #nosec G709 -- Bounded local catalog; encoding/xml does not resolve external entities or execute type constructors.
@@ -494,7 +557,7 @@ func bindSuiteStaticContext(node *suiteNode, inherited map[string]string, baseUR
 
 	node.namespaces = inherited
 	for _, attribute := range node.Attributes {
-		if attribute.Name.Space == "xmlns" {
+		if attribute.Name.Space == lexicon.PrefixXMLNS {
 			node.namespaces = make(map[string]string, len(inherited)+1)
 			maps.Copy(node.namespaces, inherited)
 			suiteNamespaceDeclarations(node, node.namespaces)
@@ -578,7 +641,7 @@ func executeSuite(ctx context.Context, options suiteOptions, pin suitePin) (*sui
 	selected := 0
 
 	for _, entry := range catalog.children("test-set") {
-		set, path, err := readSuiteNode(options.directory, options.directory, entry.attr(suiteFile))
+		set, path, err := readSuiteReferencedNode(options.directory, options.directory, entry)
 		if err != nil {
 			return nil, err
 		}
@@ -629,9 +692,17 @@ func suiteEnvironments(node *suiteNode, base string, previous map[string]suiteEn
 func executeSuiteCase(parent context.Context, options suiteOptions, item suiteCase, outcome suiteOutcome) (result suiteOutcome) {
 	result = outcome
 
+	var executionErr, assertionErr error
+
 	defer func() {
 		if value := recover(); value != nil {
 			result.Status, result.Kind, result.Reason = suiteFailed, "panic", fmt.Sprint(value)
+		}
+
+		recordSuiteFailure(&result, executionErr, assertionErr)
+
+		if result.Status == suiteFailed && result.Kind != suiteResourceLimit {
+			result.FailureSignature = normalizeSuiteFailureReason(result.Reason, options.directory)
 		}
 	}()
 
@@ -650,6 +721,8 @@ func executeSuiteCase(parent context.Context, options suiteOptions, item suiteCa
 
 	environment, err := prepareSuiteEnvironment(ctx, options, item)
 	if err != nil {
+		executionErr = err
+
 		result.Status, result.Kind, result.Reason = suiteFailed, suiteHarnessFailure, err.Error()
 		if suiteBudgetFailure(ctx, err) != nil {
 			result.Kind = suiteResourceLimit
@@ -659,26 +732,32 @@ func executeSuiteCase(parent context.Context, options suiteOptions, item suiteCa
 	}
 
 	evaluation := evaluateSuiteCase(ctx, options, item, environment)
+	executionErr = evaluation.err
 
 	result.ExecutionVersion = environment.executionVersion
+
 	if failure := suiteDeadlineFailure(ctx, evaluation.err); failure != nil {
+		executionErr = failure
 		result.Status, result.Kind, result.Reason = suiteFailed, suiteResourceLimit, failure.Error()
+
 		return result
 	}
 
-	assertionErr := checkSuiteAssertion(ctx, evaluation, item.node.child(suiteResultVariable))
+	assertionErr = checkSuiteAssertion(ctx, evaluation, item.node.child(suiteResultVariable))
 	if failure := suiteDeadlineFailure(ctx, assertionErr); failure != nil {
+		assertionErr = failure
 		result.Status, result.Kind, result.Reason = suiteFailed, suiteResourceLimit, failure.Error()
+
 		return result
 	}
 
 	if err := assertionErr; err != nil {
 		result.Status, result.Kind, result.Reason = suiteFailed, "assertion", err.Error()
 
-		if _, ok := errors.AsType[*suiteHarnessError](err); ok {
-			result.Kind = suiteHarnessFailure
-		} else if errors.Is(evaluation.err, transform.ErrLimit) || errors.Is(err, transform.ErrLimit) {
+		if errors.Is(evaluation.err, transform.ErrLimit) || errors.Is(err, transform.ErrLimit) {
 			result.Kind = suiteResourceLimit
+		} else if _, ok := errors.AsType[*suiteHarnessError](err); ok {
+			result.Kind = suiteHarnessFailure
 		} else if errors.Is(evaluation.err, transform.ErrUnsupported) {
 			result.Kind = "unsupported-profile"
 		}
@@ -687,6 +766,60 @@ func executeSuiteCase(parent context.Context, options suiteOptions, item suiteCa
 	}
 
 	return result
+}
+
+func normalizeSuiteFailureReason(reason, directory string) string {
+	if directory == "" {
+		return reason
+	}
+	// Keep argument-dependent diagnostics, but remove the machine's checkout
+	// location from URI and filesystem spellings of the same publisher input.
+	lines := strings.Split(reason, "\n")
+	lines = slices.DeleteFunc(lines, func(line string) bool {
+		return strings.Contains(line, directory) && (strings.HasPrefix(line, "lstat ") || strings.HasPrefix(line, "stat ") || strings.HasPrefix(line, "open ") || strings.HasPrefix(line, "CreateFile "))
+	})
+	reason = strings.Join(lines, "\n")
+	reason = strings.ReplaceAll(reason, suiteFileURI(directory), "suite:")
+	reason = strings.ReplaceAll(reason, directory, "suite-root")
+
+	return strings.ReplaceAll(reason, filepath.ToSlash(directory), "suite-root")
+}
+
+// Failure identity is independent of diagnostic spelling and timeout timing.
+// It is recorded from typed errors while those original causes are available.
+func recordSuiteFailure(result *suiteOutcome, executionErr, assertionErr error) {
+	if result.Status != suiteFailed {
+		return
+	}
+
+	for _, err := range []error{executionErr, assertionErr} {
+		if detail, ok := errors.AsType[*transform.Error](err); ok && detail.Code != "" {
+			result.ErrorCode = detail.Code
+			break
+		}
+	}
+
+	switch {
+	case result.Kind == suiteResourceLimit:
+		for _, err := range []error{executionErr, assertionErr} {
+			if errors.Is(err, transform.ErrLimit) || errors.Is(err, context.DeadlineExceeded) {
+				result.FailureCause = "resource-bound"
+				return
+			}
+		}
+
+		result.FailureCause = "untyped-resource-failure"
+	case result.Kind == suiteHarnessFailure && strings.Contains(result.Reason, `assertion "assert-warning" is not implemented`):
+		result.FailureCause = "unsupported-warning"
+	case result.Kind == suiteHarnessFailure && assertionErr != nil:
+		result.FailureCause = "assertion-error"
+	case result.Kind == suiteHarnessFailure:
+		result.FailureCause = "harness-error"
+	case executionErr != nil:
+		result.FailureCause = "execution-error"
+	default:
+		result.FailureCause = "assertion-mismatch"
+	}
 }
 
 // Deadline expiry is a runner failure, even if an error assertion would match
@@ -712,10 +845,12 @@ func suiteBudgetFailure(ctx context.Context, err error) error {
 	return suiteDeadlineFailure(ctx, err)
 }
 
-type suiteHarnessError struct{ message string }
+type suiteHarnessError struct{ cause error }
 
-func (e *suiteHarnessError) Error() string { return "harness: " + e.message }
+func (e *suiteHarnessError) Error() string { return "harness: " + e.cause.Error() }
+
+func (e *suiteHarnessError) Unwrap() error { return e.cause }
 
 func suiteHarness(format string, args ...any) error {
-	return &suiteHarnessError{message: fmt.Sprintf(format, args...)}
+	return &suiteHarnessError{cause: fmt.Errorf(format, args...)}
 }

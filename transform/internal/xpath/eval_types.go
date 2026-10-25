@@ -81,6 +81,8 @@ func BindSequenceType(ctx context.Context, st xdm.SequenceType, namespaces map[s
 		return BindSequenceType(ctx, t, namespaces, defaultNS)
 	}
 	switch t := st.ItemTest.(type) {
+	case xdm.PITest:
+		return bindPITestSequenceType(st, t)
 	case xdm.AtomicOrUnionType:
 		t.Prefix, t.Name = "", name(joinQName(t.Prefix, t.Name), defaultNS)
 		st.ItemTest = t
@@ -159,6 +161,17 @@ func BindSequenceType(ctx context.Context, st xdm.SequenceType, namespaces map[s
 		t.MemberType = member
 		st.ItemTest = t
 	}
+
+	return st, nil
+}
+
+func bindPITestSequenceType(st xdm.SequenceType, test xdm.PITest) (xdm.SequenceType, error) {
+	bound, err := normalizePITest(test)
+	if err != nil {
+		return st, err
+	}
+
+	st.ItemTest = bound
 
 	return st, nil
 }
@@ -1461,6 +1474,14 @@ func isItemTypeSubtype(a, b xdm.NodeTest, ec *evalContext) bool {
 			return true // xs:error is below every generalized atomic type.
 		}
 
+		if aType == xdm.TypeNumeric {
+			// XP 3.1 §2.5.6.2 applies the pure-union rule to every
+			// member, independently of XML Schema's derivation tree.
+			return xdm.IsSubtypeOf(xdm.TypeDouble, bType) &&
+				xdm.IsSubtypeOf(xdm.TypeFloat, bType) &&
+				xdm.IsSubtypeOf(xdm.TypeDecimal, bType)
+		}
+
 		return xdm.IsSubtypeOf(aType, bType)
 	case xdm.MapTest:
 		return isMapTestSubtype(a, bt, ec)
@@ -1492,8 +1513,7 @@ func isItemTypeSubtype(a, b xdm.NodeTest, ec *evalContext) bool {
 	case xdm.AttributeTest:
 		return isAttributeTestSubtype(a, bt, ec)
 	case xdm.PITest:
-		at, ok := a.(xdm.PITest)
-		return ok && (!bt.HasTarget || at.HasTarget && at.Target == bt.Target)
+		return isPITestSubtype(a, bt)
 	case xdm.NamespaceNodeTest:
 		_, ok := a.(xdm.NamespaceNodeTest)
 		return ok
@@ -1502,6 +1522,18 @@ func isItemTypeSubtype(a, b xdm.NodeTest, ec *evalContext) bool {
 	}
 
 	return false
+}
+
+func isPITestSubtype(a xdm.NodeTest, bt xdm.PITest) bool {
+	at, ok := a.(xdm.PITest)
+	if !ok {
+		return false
+	}
+
+	at, aErr := normalizePITest(at)
+	bt, bErr := normalizePITest(bt)
+
+	return aErr == nil && bErr == nil && (!bt.HasTarget || at.HasTarget && at.Target == bt.Target)
 }
 
 func isMapTestSubtype(a xdm.NodeTest, bt xdm.MapTest, ec *evalContext) bool {

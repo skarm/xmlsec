@@ -104,7 +104,7 @@ func serializeXHTML(w io.Writer, doc *xdm.Document, definition *OutputDef, charM
 	options := streamXMLWriteOptions(definition, strings.ToLower(definition.Encoding))
 	options.CharacterMap, options.DOEMarkers = charMap, true
 	escapeURI := definition.EscapeURIAttributes == nil || *definition.EscapeURIAttributes
-	htmlpkg.ConfigureXHTML(&options, html5, escapeURI)
+	htmlpkg.ConfigureXHTML(&options, html5, escapeURI, definition.serializationVersion)
 
 	writer := xdm.XMLSerialization{XMLWriteOptions: options, Encoding: definition.Encoding, OmitDeclaration: definition.OmitDeclaration, CompactDeclaration: true}
 	if definition.Standalone == lexicon.ValueYes || definition.Standalone == lexicon.ValueNo {

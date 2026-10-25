@@ -15,19 +15,9 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
-// paramDocPresence records which plain-boolean serialization parameters a
-// parameter-document explicitly supplied. These flags are deliberately kept off
-// the public OutputDef: a plain bool cannot distinguish "omitted" from "explicit
-// false", and foldParamDocOverrides consults them so an omitted parameter-document
-// value leaves an inherited xsl:output default intact instead of clobbering it
-// with the Go zero value. They travel alongside the parameter-document delta
-// OutputDef (on the compiled instruction or the per-invocation cache).
-type paramDocPresence struct {
-	indent              bool
-	byteOrderMark       bool
-	allowDuplicateNames bool
-	undeclarePrefixes   bool
-}
+// paramDocPresence records every explicitly supplied canonical parameter,
+// including false booleans, empty strings/lists and an empty character map.
+type paramDocPresence map[string]bool
 
 type parameterDocumentResult struct {
 	output   *OutputDef
@@ -211,6 +201,9 @@ func (ec *execContext) resolveResultDocFormat(ctx context.Context, inst *resultD
 // instruction, considering the method avt, compile-time method, named format, and
 // default output definition.
 func (ec *execContext) resolveResultDocMethod(ctx context.Context, inst *resultDocumentInst) string {
+	if parameters := ec.getParamDocOutputDef(inst); parameters != nil && ec.getParamDocPresence(inst)[lexicon.SerializationMethod] {
+		return parameters.Method
+	}
 	// Runtime avt takes priority.
 	if inst.MethodAVT != nil {
 		v, err := inst.MethodAVT.evaluate(ctx, ec.contextNode)
@@ -251,40 +244,18 @@ func (ec *execContext) resolveResultDocMethod(ctx context.Context, inst *resultD
 // serialization AVTs and character maps declared on a primary result-document
 // take effect regardless of which validation/type/build-tree branch handled it.
 func (ec *execContext) commitPrimaryOutputState(inst *resultDocumentInst, effectiveFormat string, primaryOverrides *OutputDef) {
-	// Propagate character map names to the primary output frame.
-	// Include maps from the named format (xsl:output) first, then
-	// maps from xsl:result-document itself (higher priority).
-	var allMaps []string
-
-	if fmtDef, ok := ec.effectiveOutputs()[effectiveFormat]; ok {
-		allMaps = append(allMaps, fmtDef.UseCharacterMaps...)
-		// Also propagate resolved character maps from parameter-document.
-		// Clone the compiled map so the later maps.Copy merge below never
-		// mutates the compiled format's ResolvedCharMap.
-		if len(fmtDef.ResolvedCharMap) > 0 {
-			ec.primaryResolvedCharMap = maps.Clone(fmtDef.ResolvedCharMap)
-		}
-	}
-
-	allMaps = append(allMaps, inst.UseCharacterMaps...)
-	if len(allMaps) > 0 {
-		ec.primaryCharacterMaps = allMaps
-		// Resolve character maps now while currentPackage is correct
-		// (package-scoped isolation). Merge into primaryResolvedCharMap.
-		resolved := resolveCharacterMaps(ec.effectiveStylesheet(), allMaps)
-		if len(resolved) > 0 {
-			if ec.primaryResolvedCharMap == nil {
-				ec.primaryResolvedCharMap = resolved
-			} else {
-				maps.Copy(ec.primaryResolvedCharMap, resolved)
-			}
-		}
-	}
+	ec.primaryCharacterMaps = nil
+	ec.primaryResolvedCharMap = ec.resultDocumentCharacterMap(inst, effectiveFormat)
 	// Capture serialization parameter overrides from xsl:result-document.
 	// These were already evaluated up front (before any primary output was
 	// emitted) so that an AVT error releases the URI reservation without
 	// leaving partial primary output behind.
 	if primaryOverrides != nil {
+		// Overrides describe the complete selected definition, including its
+		// package-resolved maps. Carry an explicit empty map too: the unnamed
+		// output definition must not leak its maps into a different format.
+		primaryOverrides.ResolvedCharMap = make(map[rune]string, len(ec.primaryResolvedCharMap))
+		maps.Copy(primaryOverrides.ResolvedCharMap, ec.primaryResolvedCharMap)
 		ec.primaryOutputOverrides = primaryOverrides
 	}
 }
@@ -623,10 +594,6 @@ func (ec *execContext) resolveResultParameterDocument(ctx context.Context, inst 
 		return err
 	}
 
-	if href == "" {
-		return nil
-	}
-
 	baseURI := ec.effectiveStaticBaseURI()
 	key := parameterDocumentURI(baseURI, href)
 
@@ -636,7 +603,7 @@ func (ec *execContext) resolveResultParameterDocument(ctx context.Context, inst 
 			return err
 		}
 	} else {
-		value.output = &OutputDef{}
+		value.output = &OutputDef{serializationVersion: ec.stylesheet.processorLanguage()}
 
 		_, value.presence, err = loadParameterDocumentFromFile(ctx, ec.inputParseOptions(), value.output, baseURI, href, ec.retrieveDocumentReader, true, false, ec.resourceLimit())
 		if err != nil {
@@ -664,6 +631,9 @@ func (ec *execContext) resolveResultParameterDocument(ctx context.Context, inst 
 }
 
 func (ec *execContext) resolveResultItemSeparator(ctx context.Context, inst *resultDocumentInst, effectiveFormat string) (*string, error) {
+	if parameters := ec.getParamDocOutputDef(inst); parameters != nil && ec.getParamDocPresence(inst)[lexicon.SerializationItemSeparator] {
+		return parameters.ItemSeparator, nil
+	}
 	// Resolve effective item-separator: xsl:result-document attribute takes
 	// priority (including #absent which blocks format inheritance),
 	// then the named xsl:output (format), then nil (default).
@@ -1056,7 +1026,7 @@ func (ec *execContext) evalResultDocOutputDef(ctx context.Context, inst *resultD
 		return nil, nil //nolint:nilnil
 	}
 
-	base := ec.resultDocOutputBase(inst, effectiveFormat)
+	base := ec.resultDocOutputBase(effectiveFormat)
 	if err := ec.evalResultDocDeclarationParams(ctx, inst, &base); err != nil {
 		return nil, err
 	}
@@ -1069,15 +1039,20 @@ func (ec *execContext) evalResultDocOutputDef(ctx context.Context, inst *resultD
 		return nil, err
 	}
 
+	if parameters := ec.getParamDocOutputDef(inst); parameters != nil {
+		foldParamDocOverrides(&base, parameters, ec.getParamDocPresence(inst))
+	}
+
+	base.serializationVersion = ec.stylesheet.processorLanguage()
+
 	return &base, nil
 }
 
-// resultDocOutputBase folds the named/default output and then only parameters
-// explicitly provided by a parameter-document, preserving inherited booleans.
-func (ec *execContext) resultDocOutputBase(inst *resultDocumentInst, effectiveFormat string) OutputDef {
+// resultDocOutputBase obtains the selected output definition before local
+// result-document attributes and the higher-priority parameter document.
+func (ec *execContext) resultDocOutputBase(effectiveFormat string) OutputDef {
 	var base OutputDef
 
-	paramDocOD := ec.getParamDocOutputDef(inst)
 	if effectiveFormat != "" {
 		if fmtDef, ok := ec.effectiveOutputs()[effectiveFormat]; ok {
 			base = *cloneOutputDef(fmtDef)
@@ -1086,69 +1061,60 @@ func (ec *execContext) resultDocOutputBase(inst *resultDocumentInst, effectiveFo
 		base = *cloneOutputDef(defDef)
 	}
 
-	if paramDocOD != nil {
-		foldParamDocOverrides(&base, paramDocOD, ec.getParamDocPresence(inst))
-	}
-
 	return base
 }
 
-// foldParamDocOverrides overlays the serialization parameters supplied by a
-// result-document's parameter-document (pd, loaded as a delta from an empty
-// OutputDef) onto base, which already holds the inherited named-format or
-// unnamed-default xsl:output values. A parameter-document outranks the format it
-// layers on, so any value it specifies wins; values it OMITS leave base intact.
-// String/pointer/slice fields are absent when zero/nil/empty; the plain-boolean
-// parameters rely on the companion paramDocPresence flags because a false bool
-// cannot otherwise be distinguished from an omitted one.
+// foldParamDocOverrides applies the highest-priority parameter document after
+// output-definition and local instruction values. The two element-name lists
+// are unions; every other present parameter replaces its prior value.
 func foldParamDocOverrides(base, pd *OutputDef, pres paramDocPresence) {
-	if pd.Method != "" {
+	if pres["method"] {
 		base.Method = pd.Method
 		base.MethodExplicit = pd.MethodExplicit
 	}
 
-	if pd.Encoding != "" {
+	if pres["encoding"] {
 		base.Encoding = pd.Encoding
 	}
 
-	if pd.Standalone != "" {
+	if pres["standalone"] {
 		base.Standalone = pd.Standalone
 	}
 
 	if len(pd.CDATASections) > 0 {
-		base.CDATASections = append([]string(nil), pd.CDATASections...)
+		base.CDATASections = unionOutputNames(base.CDATASections, pd.CDATASections)
 	}
 
-	if pd.DoctypePublic != "" {
+	if pres["doctype-public"] {
 		base.DoctypePublic = pd.DoctypePublic
 	}
 
-	if pd.DoctypeSystem != "" {
+	if pres["doctype-system"] {
 		base.DoctypeSystem = pd.DoctypeSystem
 	}
 
-	if pd.MediaType != "" {
+	if pres["media-type"] {
 		base.MediaType = pd.MediaType
 	}
 
-	if pd.Version != "" {
+	if pres["version"] {
 		base.Version = pd.Version
 	}
 
-	if pd.NormalizationForm != "" {
+	if pres["normalization-form"] {
 		base.NormalizationForm = pd.NormalizationForm
 	}
 
-	if pd.HTMLVersion != "" {
+	if pres["html-version"] {
 		base.HTMLVersion = pd.HTMLVersion
 	}
 
-	if pd.JSONNodeOutputMethod != "" {
+	if pres["json-node-output-method"] {
 		base.JSONNodeOutputMethod = pd.JSONNodeOutputMethod
 	}
 
 	if len(pd.SuppressIndentation) > 0 {
-		base.SuppressIndentation = append([]string(nil), pd.SuppressIndentation...)
+		base.SuppressIndentation = unionOutputNames(base.SuppressIndentation, pd.SuppressIndentation)
 	}
 
 	if pd.IncludeContentType != nil {
@@ -1168,10 +1134,11 @@ func foldParamDocOverrides(base, pd *OutputDef, pres paramDocPresence) {
 
 	if pd.ItemSeparator != nil {
 		v := *pd.ItemSeparator
-		base.ItemSeparator = &v
+		base.ItemSeparator, base.ItemSeparatorAbsent = &v, false
 	}
 
-	if len(pd.ResolvedCharMap) > 0 {
+	if pres[lexicon.SerializationUseCharacterMaps] {
+		base.UseCharacterMaps = nil
 		base.ResolvedCharMap = make(map[rune]string, len(pd.ResolvedCharMap))
 		maps.Copy(base.ResolvedCharMap, pd.ResolvedCharMap)
 	}
@@ -1181,19 +1148,19 @@ func foldParamDocOverrides(base, pd *OutputDef, pres paramDocPresence) {
 		base.OmitDeclarationExplicit = true
 	}
 
-	if pres.indent {
+	if pres["indent"] {
 		base.Indent = pd.Indent
 	}
 
-	if pres.byteOrderMark {
+	if pres["byte-order-mark"] {
 		base.ByteOrderMark = pd.ByteOrderMark
 	}
 
-	if pres.allowDuplicateNames {
+	if pres["allow-duplicate-names"] {
 		base.AllowDuplicateNames = pd.AllowDuplicateNames
 	}
 
-	if pres.undeclarePrefixes {
+	if pres["undeclare-prefixes"] {
 		base.UndeclarePrefixes = pd.UndeclarePrefixes
 	}
 }
@@ -1429,19 +1396,9 @@ func (ec *execContext) evalResultDocItemParams(ctx context.Context, inst *result
 // buildEffectiveOutputDef builds the effective output definition for a secondary
 // result document, combining the named format with result-document overrides.
 func (ec *execContext) buildEffectiveOutputDef(ctx context.Context, inst *resultDocumentInst, formatName, method string) (*OutputDef, error) {
-	// Build the base in priority order (low -> high): named format (or the
-	// unnamed default xsl:output when no format), then the parameter-document.
-	// This mirrors evalResultDocOutputDef's default-folding; without the default
-	// fold a secondary result-document with no local serialization attributes
-	// would not inherit stylesheet defaults (e.g. method="json"
-	// allow-duplicate-names="yes"), and the SERE0022 dup-key check below would see
-	// a hard-false allow-duplicate-names and wrongly reject duplicate JSON keys
-	// the default output permits. When evalResultDocOutputDef returns a non-nil
-	// overrides def (hasAny or a named format), it already folded the default and
-	// the parameter-document in and base is replaced below; this construction only
-	// matters when overrides is nil (no serialization params and no
-	// parameter-document, hence paramDocOD is nil here too).
-	base := ec.resultDocOutputBase(inst, formatName)
+	// evalResultDocOutputDef applies the output definition, local AVTs and
+	// parameter document in increasing precedence.
+	base := ec.resultDocOutputBase(formatName)
 
 	if base.Method == "" && method != "" {
 		base.Method = method
@@ -1459,19 +1416,41 @@ func (ec *execContext) buildEffectiveOutputDef(ctx context.Context, inst *result
 	if overrides != nil {
 		base = *cloneOutputDef(overrides)
 	}
-	// Resolve character maps from the format and instruction.
-	var allMaps []string
 
-	if fmtDef, ok := ec.effectiveOutputs()[formatName]; ok {
-		allMaps = append(allMaps, fmtDef.UseCharacterMaps...)
-	}
+	base.ResolvedCharMap = ec.resultDocumentCharacterMap(inst, formatName)
 
-	allMaps = append(allMaps, inst.UseCharacterMaps...)
-	if len(allMaps) > 0 {
-		base.ResolvedCharMap = resolveCharacterMaps(ec.effectiveStylesheet(), allMaps)
-	}
+	base.serializationVersion = ec.stylesheet.processorLanguage()
 
 	return &base, nil
+}
+
+// resultDocumentCharacterMap resolves package-local named maps before the
+// parameter-document's complete value, in the same precedence order as scalars.
+func (ec *execContext) resultDocumentCharacterMap(inst *resultDocumentInst, formatName string) map[rune]string {
+	if parameters := ec.getParamDocOutputDef(inst); parameters != nil && ec.getParamDocPresence(inst)[lexicon.SerializationUseCharacterMaps] {
+		return maps.Clone(parameters.ResolvedCharMap)
+	}
+
+	var result map[rune]string
+
+	if format, ok := ec.effectiveOutputs()[formatName]; ok {
+		if format.ResolvedCharMap != nil {
+			result = maps.Clone(format.ResolvedCharMap)
+		} else {
+			result = resolveCharacterMaps(ec.effectiveStylesheet(), format.UseCharacterMaps)
+		}
+	}
+
+	local := resolveCharacterMaps(ec.effectiveStylesheet(), inst.UseCharacterMaps)
+	if len(local) != 0 {
+		if result == nil {
+			result = make(map[rune]string)
+		}
+
+		maps.Copy(result, local)
+	}
+
+	return result
 }
 
 // validateDocumentStructure checks that a document node has exactly one element

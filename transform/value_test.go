@@ -21,6 +21,24 @@ func TestTypedValues(t *testing.T) {
 		t.Fatal(value)
 	}
 
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for source, want := range map[string]int{"(1,2)": 2, "()": 0} {
+			t.Run(strconv.Itoa(int(version))+"/sequence/"+source, func(t *testing.T) {
+				publishedProofVector(t, strconv.Itoa(want))
+				e := engine(t, transform.Config{})
+				result, err := query(t, e, source, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+				if err != nil || result.Len() != want {
+					t.Fatal(result.Len(), err, want)
+				}
+				// Text is a singleton convenience conversion; evaluation exposes the XDM
+				// sequence and does not silently serialize an empty or plural result.
+				if _, err := result.Text(); !errors.Is(err, transform.ErrInput) {
+					t.Fatal("implicit serialization", err)
+				}
+			})
+		}
+	}
+
 	m, err := transform.Map(transform.MapEntry{Key: transform.String("a"), Value: transform.Values(transform.Integer(1))})
 	if err != nil {
 		t.Fatal(err)

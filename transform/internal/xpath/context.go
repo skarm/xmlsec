@@ -132,11 +132,21 @@ func NewDocOrderCache() *DocOrderCache {
 // Returned function items must not retain the store that produced them.
 func InvocationState(ctx context.Context, key any, create func() any) any {
 	ec := getFnContext(ctx)
-	if ec == nil || ec.invocation == nil {
+
+	var state *invocationState
+
+	if ec != nil {
+		state = ec.invocation
+	}
+
+	if state == nil {
+		state, _ = ctx.Value(invocationScopeKey{}).(*invocationState)
+	}
+
+	if state == nil {
 		return create()
 	}
 
-	state := ec.invocation
 	if value, ok := state.values[key]; ok {
 		return value
 	}

@@ -662,14 +662,15 @@ func (e Evaluator) newEvalCtx(node xdm.Node) *evalContext {
 	}
 
 	ec := &evalContext{
-		node:       node,
-		runtime:    cfg.runtime,
-		invocation: &invocationState{},
-		position:   1,
-		size:       1,
-		opCount:    &opCount,
-		maxNodes:   maxNodes,
-		docCache:   make(map[string]xdm.Node),
+		node:              node,
+		runtime:           cfg.runtime,
+		invocation:        &invocationState{},
+		position:          1,
+		size:              1,
+		opCount:           &opCount,
+		maxNodes:          maxNodes,
+		docCache:          make(map[string]xdm.Node),
+		documentSnapshots: &documentSnapshotStore{},
 	}
 
 	if ec.runtime == nil {

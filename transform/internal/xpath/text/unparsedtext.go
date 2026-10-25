@@ -63,6 +63,11 @@ const (
 
 var errLineLimit = errors.New("text line limit exceeded")
 
+// ErrImplicitUTF8 identifies malformed octets after selecting the default UTF-8
+// fallback, without an explicit encoding, BOM, XML media type or charset hint.
+// Legacy XSLT hosts distinguish this failure from a specified-encoding failure.
+var ErrImplicitUTF8 = errors.New("text is not UTF-8 and no encoding was inferred")
+
 // URIResolver resolves a URI to a readable stream.
 type URIResolver = xdm.URIResolver
 
@@ -964,8 +969,15 @@ func decodedReader(src io.Reader, specified, contentType string) (io.Reader, err
 		return nil, &Error{Code: ErrCodeEncoding, Message: fmt.Sprintf("specified encoding %s conflicts with BOM (%s)", specified, detected)}
 	}
 
-	return encodingReader(reader, effective)
+	decoded, err := encodingReader(reader, effective)
+	if err == nil && specified == "" && detected == "" && !xmlMediaType {
+		decoded = &implicitUTF8Reader{Reader: decoded}
+	}
+
+	return decoded, err
 }
+
+type implicitUTF8Reader struct{ io.Reader }
 
 func encodingReader(src io.Reader, name string) (io.Reader, error) {
 	if normalizeEncodingName(name) == "utf8" || name == "" {
@@ -1006,8 +1018,8 @@ func readDecodedText(ctx context.Context, reader io.Reader, maximum int64, xmlOn
 			}
 
 			r, size := utf8.DecodeRune(buffer[valid:end])
-			if r == utf8.RuneError && size == 1 || xmlOnly && !IsValidXMLChar(r) {
-				return &Error{Code: ErrCodeEncoding, Message: "invalid UTF-8 or XML character in text resource"}
+			if failure := decodedRuneError(reader, r, size, xmlOnly); failure != nil {
+				return failure
 			}
 
 			valid += size
@@ -1038,6 +1050,23 @@ func readDecodedText(ctx context.Context, reader io.Reader, maximum int64, xmlOn
 
 		pending = copy(buffer[:], buffer[valid:end])
 	}
+}
+
+func decodedRuneError(reader io.Reader, r rune, size int, xmlOnly bool) error {
+	if r == utf8.RuneError && size == 1 {
+		var cause error
+		if _, implicit := reader.(*implicitUTF8Reader); implicit {
+			cause = ErrImplicitUTF8
+		}
+
+		return &Error{Code: ErrCodeEncoding, Message: "invalid UTF-8 in text resource", Cause: cause}
+	}
+
+	if xmlOnly && !IsValidXMLChar(r) {
+		return &Error{Code: ErrCodeEncoding, Message: "invalid UTF-8 or XML character in text resource"}
+	}
+
+	return nil
 }
 
 type lineCollector struct {

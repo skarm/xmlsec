@@ -5,16 +5,72 @@ package html
 
 import "strings"
 
+// LowerASCII folds HTML names without changing non-ASCII code points. Unicode
+// lowercasing would turn U+0130 into i and falsely recognize an HTML element.
+func LowerASCII(value string) string {
+	first := strings.IndexFunc(value, func(r rune) bool { return r >= 'A' && r <= 'Z' })
+	if first < 0 {
+		return value
+	}
+
+	var result strings.Builder
+	result.Grow(len(value))
+	result.WriteString(value[:first])
+
+	for i := first; i < len(value); i++ {
+		c := value[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+
+		result.WriteByte(c)
+	}
+
+	return result.String()
+}
+
+// EqualFoldASCII compares HTML names/keywords using only ASCII case aliases.
+// Unicode SimpleFold would incorrectly recognize U+017F as the s in script.
+func EqualFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := range len(a) {
+		x, y := a[i], b[i]
+		if x >= 'A' && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+
+		if y >= 'A' && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+
+		if x != y {
+			return false
+		}
+	}
+
+	return true
+}
+
 // HTML element name constants used throughout the html package.
 // Extracted to satisfy the goconst linter; these names appear many times
 // in the element tables and parseOptions logic below.
 const (
+	elemBasefont = "basefont"
+	elemIsindex  = "isindex"
+	elemArea     = "area"
+	elemFrame    = "frame"
+	elemImg      = "img"
+	elemObject   = "object"
 	elemData     = "data"
 	elemEmbed    = "embed"
 	elemInput    = "input"
 	elemKeygen   = "keygen"
 	elemSource   = "source"
 	elemTrack    = "track"
+	elemAudio    = "audio"
 	elemVideo    = "video"
 	elemWbr      = "wbr"
 	elemAddress  = "address"
@@ -70,7 +126,7 @@ type htmlElemDesc struct {
 // Elements with the same libxml2 HTML 4.0 parsing behavior share a case; the
 // returned descriptor belongs to the caller rather than mutable package state.
 func lookupElement(name string) *htmlElemDesc {
-	name = strings.ToLower(name)
+	name = LowerASCII(name)
 	switch name {
 	case "a", "abbr", "acronym", "bdo", "cite", "code", "dfn", "kbd", "label", "q", "samp", "select", nameSpan, "var":
 		return &htmlElemDesc{empty: false, inline: 1, dataMode: dataNormal}
@@ -78,19 +134,19 @@ func lookupElement(name string) *htmlElemDesc {
 		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
 	case "applet":
 		return &htmlElemDesc{empty: false, inline: 2, dataMode: dataNormal}
-	case "area", "base", elemCol, "hr", nameLink, "meta", "param":
+	case elemArea, "base", elemCol, "hr", nameLink, "meta", "param":
 		return &htmlElemDesc{empty: true, inline: 0, dataMode: dataNormal}
 	case "b", nameBig, "em", "i", "nobr", nameSmall, "strong", nameSub, "sup", "tt":
 		return &htmlElemDesc{empty: false, inline: 1, dataMode: dataNormal}
-	case "basefont":
+	case elemBasefont:
 		return &htmlElemDesc{empty: true, inline: 1, dataMode: dataNormal}
 	case "bgsound", elemKeygen, elemSource, elemTrack, elemWbr:
 		return &htmlElemDesc{empty: true, inline: 0, dataMode: dataNormal}
 	case elemBody, elemHead, elemHTML:
 		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
-	case "br", "img", elemInput:
+	case "br", elemImg, elemInput:
 		return &htmlElemDesc{empty: true, inline: 1, dataMode: dataNormal}
-	case "button", "del", "ins", "map", "object":
+	case "button", "del", "ins", "map", elemObject:
 		return &htmlElemDesc{empty: false, inline: 2, dataMode: dataNormal}
 	case elemCenter:
 		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
@@ -102,13 +158,13 @@ func lookupElement(name string) *htmlElemDesc {
 		return &htmlElemDesc{empty: true, inline: 1, dataMode: dataNormal}
 	case elemFont, "s", nameStrike, "u":
 		return &htmlElemDesc{empty: false, inline: 1, dataMode: dataNormal}
-	case "frame":
+	case elemFrame:
 		return &htmlElemDesc{empty: true, inline: 0, dataMode: dataNormal}
 	case elemFrameset:
 		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
 	case "iframe":
 		return &htmlElemDesc{empty: false, inline: 2, dataMode: dataRawText}
-	case "isindex":
+	case elemIsindex:
 		return &htmlElemDesc{empty: true, inline: 0, dataMode: dataNormal}
 	case "li":
 		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
@@ -130,5 +186,21 @@ func lookupElement(name string) *htmlElemDesc {
 		return &htmlElemDesc{empty: false, inline: 1, dataMode: dataRawText}
 	default:
 		return nil
+	}
+}
+
+// SerializationVoidElement applies the pinned serializer's HTML empty-element
+// tables independently of the broader parser descriptors. For HTML5 this host
+// retains basefont, frame and isindex, an explicitly permitted choice.
+func SerializationVoidElement(name string, html5 bool, edition int) bool {
+	switch LowerASCII(name) {
+	case elemArea, "base", "br", elemCol, "hr", elemImg, elemInput, nameLink, "meta", "param", elemBasefont, elemFrame, elemIsindex:
+		return true
+	case elemEmbed:
+		return html5 || edition != 20
+	case elemKeygen, elemSource, elemTrack, elemWbr:
+		return html5
+	default:
+		return false
 	}
 }

@@ -327,6 +327,7 @@ func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionR
 	// context.Context at invocation time for cancellation propagation.
 	capturedECValue := *ec
 	capturedECValue.invocation = nil
+	capturedECValue.documentSnapshots = nil
 	capturedEC := &capturedECValue
 	// Populate type signature. The built-in signature registry is consulted only
 	// when the resolved function is the built-in itself; a user override of a
@@ -414,6 +415,7 @@ func evalInlineFunctionExpr(evalFn exprEvaluator, ctx context.Context, ec *evalC
 	captured := *ec
 
 	captured.invocation = nil
+	captured.documentSnapshots = nil
 
 	if provider, ok := ec.variableResolver.(VariableResolverSnapshotProvider); ok {
 		// XPath 3.1 §3.1.7 captures nonlocal values at the definition site.
@@ -533,6 +535,7 @@ func partialApply(ctx context.Context, ec *evalContext, e FunctionCall, fixedArg
 
 	captured := *ec
 	captured.invocation = nil
+	captured.documentSnapshots = nil
 
 	// Per XPath 3.1, partial applications are anonymous functions
 	partialTypes := partialParameterTypes(paramTypes, repeated, placeholderIndices)
@@ -737,6 +740,7 @@ func calleeContext(ctx context.Context, captured *evalContext) *evalContext {
 		local.depth, local.maxRecursionDepth = caller.depth, caller.maxRecursionDepth
 		local.maxNodes = caller.maxNodes
 		local.docOrder, local.docCache = caller.docOrder, caller.docCache
+		local.documentSnapshots = caller.documentSnapshots
 		local.invocation = caller.invocation
 		local.uriResolver, local.collectionResolver = caller.uriResolver, caller.collectionResolver
 		local.resourceReads = caller.resourceReads
@@ -747,6 +751,7 @@ func calleeContext(ctx context.Context, captured *evalContext) *evalContext {
 		count := 0
 		local.opCount = &count
 		local.docCache = make(map[string]xdm.Node)
+		local.documentSnapshots = &documentSnapshotStore{}
 		local.invocation = &invocationState{}
 	}
 

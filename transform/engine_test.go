@@ -351,6 +351,11 @@ func TestNumericIntermediateBudget(t *testing.T) {
 func TestXPathImplementationLimitCodes(t *testing.T) {
 	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			publishedProofVector(t, "4")
+			if version >= transform.XPath30 {
+				publishedProofVector(t, "XPDY0130")
+			}
+			publishedProofVector(t, "FOAR0001")
 			e := engine(t, transform.Config{Limits: transform.Limits{MaxNodes: 8}})
 
 			q := query(t, e, `count(1 to 100)`, version)

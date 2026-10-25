@@ -123,6 +123,7 @@ func lookupFunctionItem(ctx context.Context, qv xdm.QNameValue, arity int) (xdm.
 	if ec := getFnContext(ctx); ec != nil {
 		capturedECValue := *ec
 		capturedECValue.invocation = nil
+		capturedECValue.documentSnapshots = nil
 		capturedEC = &capturedECValue
 	}
 

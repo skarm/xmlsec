@@ -96,6 +96,7 @@ func (w Writer) dumper() htmlDumper {
 	cfg := w.dumpConfig
 
 	return htmlDumper{
+		serializationVersion:  cfg.serializationVersion,
 		ctx:                   context.Background(),
 		canEncode:             cfg.canEncode,
 		cdataElements:         cfg.cdataElements,
@@ -116,8 +117,9 @@ func (w Writer) dumper() htmlDumper {
 }
 
 type htmlDumper struct {
-	ctx           context.Context
-	cdataElements map[string]struct{}
+	serializationVersion int
+	ctx                  context.Context
+	cdataElements        map[string]struct{}
 	// err is a sticky serialization error. Once set, all checked write
 	// helpers become no-ops and terminal methods return it. This mirrors
 	// the writeSession sticky-error pattern in writer.go so that a writer
@@ -150,6 +152,7 @@ type htmlDumper struct {
 	nullNamespaceHTMLOnly bool
 	doeMarkers            bool
 	doeActive             bool
+	rawTextScope          bool
 	// normalize / normForm request Unicode normalization of text-node and
 	// attribute-value character content (Serialization 3.1 §4), scoped to text and
 	// attribute nodes. false keeps output byte-identical.
@@ -516,7 +519,7 @@ func (d *htmlDumper) normalizedContent(s string, emit func(string, bool) error) 
 // dumpText outputs text content, escaping &, <, > unless inside a raw text element.
 func (d *htmlDumper) dumpText(out io.Writer, n xdm.Node) error {
 	content := xdm.CharacterData(n)
-	rawText := d.doeActive
+	rawText := d.doeActive || d.rawTextScope
 
 	parent := n.Parent()
 	if element, ok := parent.(*xdm.Element); ok && !d.isHTMLElement(element) && !rawText {
@@ -529,7 +532,7 @@ func (d *htmlDumper) dumpText(out io.Writer, n xdm.Node) error {
 	}
 
 	if element, ok := parent.(*xdm.Element); ok && d.isHTMLElement(element) {
-		parentName := strings.ToLower(element.LocalName())
+		parentName := LowerASCII(element.LocalName())
 		if desc := lookupElement(parentName); desc != nil && desc.dataMode >= dataRawText {
 			rawText = true
 		}
@@ -639,26 +642,44 @@ func (d *htmlDumper) writeNormalizedText(out io.Writer, content string, rawText 
 // writeNormalizedAttrValue normalizes ordinary content before URI or XML
 // escaping; character-map replacements remain literal.
 func (d *htmlDumper) writeNormalizedAttrValue(out io.Writer, val string, isURI bool) {
+	pendingAmp := false
+
 	d.check(d.normalizedContent(val, func(part string, mapped bool) error {
 		if d.err != nil {
 			return d.err
 		}
 
 		if mapped {
+			if pendingAmp {
+				d.writeString(out, htmlAttrEscAmp)
+
+				pendingAmp = false
+			}
+
 			d.writeString(out, part)
+
 			return d.err
 		}
 
-		return d.htmlEscapeAttrValue(out, part, isURI, d.preserveCase, nil)
+		return d.htmlEscapeAttrValue(out, part, isURI, d.preserveCase, nil, &pendingAmp)
 	}))
+
+	if pendingAmp {
+		d.writeString(out, htmlAttrEscAmp)
+	}
 }
 
 // htmlEscapeAttrValue escapes attribute values for HTML output.
-// For non-URI attributes: escapes &, ", <, >.
+// XSLT HTML syntax preserves < and the &{ pair; XML islands use a separate
+// XML writer. The generic HTML dump retains its legacy entity policy.
 // For URI attributes: escapes only & and " (matching libxml2's htmlAttrDumpOutput).
 // Non-ASCII characters with named HTML4 entities are output as &name;
 // unless noEntityEnc is true (used by XSLT HTML output which emits UTF-8 directly).
-func (d *htmlDumper) htmlEscapeAttrValue(w io.Writer, s string, isURI bool, noEntityEnc bool, charMap map[rune]string) error {
+func (d *htmlDumper) htmlEscapeAttrValue(w io.Writer, s string, isURI bool, noEntityEnc bool, charMap map[rune]string, pendingAmp *bool) error {
+	if err := flushHTMLAttributeAmp(w, s, pendingAmp); err != nil {
+		return err
+	}
+
 	last := 0
 
 	for i := 0; i < len(s); {
@@ -668,6 +689,18 @@ func (d *htmlDumper) htmlEscapeAttrValue(w io.Writer, s string, isURI bool, noEn
 		entity := false
 
 		if !mapped {
+			if d.preserveCase && r == '&' && i+width == len(s) && pendingAmp != nil {
+				*pendingAmp = true
+				_, err := io.WriteString(w, s[last:i])
+
+				return err
+			}
+
+			if d.preserveCase && (r == '<' || r == '&' && i+width < len(s) && s[i+width] == '{') {
+				i += width
+				continue
+			}
+
 			replacement, entity = d.attributeRuneEscape(r, isURI, noEntityEnc)
 			if replacement == "" {
 				i += width
@@ -685,6 +718,26 @@ func (d *htmlDumper) htmlEscapeAttrValue(w io.Writer, s string, isURI bool, noEn
 	}
 
 	_, err := io.WriteString(w, s[last:])
+
+	return err
+}
+
+func flushHTMLAttributeAmp(w io.Writer, next string, pending *bool) error {
+	if pending == nil || !*pending || next == "" {
+		return nil
+	}
+
+	*pending = false
+
+	replacement := htmlAttrEscAmp
+	if next[0] == '{' {
+		replacement = "&"
+	}
+
+	written, err := io.WriteString(w, replacement)
+	if err == nil && written != len(replacement) {
+		return io.ErrShortWrite
+	}
 
 	return err
 }
@@ -740,11 +793,11 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 		name = e.LocalName()
 	}
 
-	nameLower := strings.ToLower(name)
+	nameLower := LowerASCII(name)
 
 	var info *htmlElemDesc
 	if d.isHTMLElement(e) {
-		info = lookupElement(strings.ToLower(e.LocalName()))
+		info = lookupElement(LowerASCII(e.LocalName()))
 	}
 
 	if !d.preserveCase {
@@ -775,7 +828,9 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 	// (nullNamespaceHTMLOnly), an element in a non-null namespace is not an
 	// HTML element and is serialized with an explicit end tag instead.
 	isVoid := info != nil && info.empty
-	if d.nullNamespaceHTMLOnly && e.URI() != "" {
+	if d.preserveCase {
+		isVoid = d.isHTMLElement(e) && SerializationVoidElement(e.LocalName(), !d.nullNamespaceHTMLOnly, d.serializationVersion)
+	} else if d.nullNamespaceHTMLOnly && e.URI() != "" {
 		isVoid = false
 	}
 
@@ -801,15 +856,17 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 	// Children
 	if d.metadataHead(e) {
 		d.writeString(out, `<meta http-equiv="Content-Type" content="`)
-		d.check(d.htmlEscapeAttrValue(out, d.contentType, false, true, d.charMap))
+		d.check(d.htmlEscapeAttrValue(out, d.contentType, false, true, d.charMap, nil))
 		d.writeString(out, `">`)
 	}
 
 	savedDOE := d.doeActive
+	savedRawText := d.rawTextScope
+	d.rawTextScope = savedRawText || d.rawTextElement(e)
 
 	d.doeActive = false
 	for child := range xdm.Children(e) {
-		if meta, ok := child.(*xdm.Element); ok && d.metadataHead(e) && d.isHTMLElement(meta) && strings.EqualFold(meta.LocalName(), "meta") && isContentTypeMeta(meta) {
+		if meta, ok := child.(*xdm.Element); ok && d.metadataHead(e) && d.isHTMLElement(meta) && EqualFoldASCII(meta.LocalName(), "meta") && isContentTypeMeta(meta) {
 			continue
 		}
 
@@ -819,6 +876,7 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 	}
 
 	d.doeActive = savedDOE
+	d.rawTextScope = savedRawText
 
 	// Restore namespace scope
 	if d.preserveCase {
@@ -842,6 +900,10 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 	return d.err
 }
 
+func (d *htmlDumper) rawTextElement(element *xdm.Element) bool {
+	return d.isHTMLElement(element) && (EqualFoldASCII(element.LocalName(), nameScript) || EqualFoldASCII(element.LocalName(), "style"))
+}
+
 // Format newline helper functions matching libxml2's HTMLtree.c:968-1108.
 
 func parentNameStartsWithP(n xdm.Node) bool {
@@ -850,7 +912,7 @@ func parentNameStartsWithP(n xdm.Node) bool {
 		return false
 	}
 
-	name := strings.ToLower(parent.Name())
+	name := LowerASCII(parent.Name())
 
 	return len(name) > 0 && name[0] == 'p'
 }
@@ -883,7 +945,7 @@ func shouldNewlineAfterOpen(e *xdm.Element, info *htmlElemDesc) bool {
 		return false
 	}
 
-	name := strings.ToLower(e.Name())
+	name := LowerASCII(e.Name())
 	if len(name) > 0 && name[0] == 'p' {
 		return false
 	}
@@ -930,7 +992,7 @@ func shouldNewlineBeforeClose(e *xdm.Element, info *htmlElemDesc) bool {
 		return false
 	}
 
-	name := strings.ToLower(e.Name())
+	name := LowerASCII(e.Name())
 	if len(name) > 0 && name[0] == 'p' {
 		return false
 	}
@@ -1000,7 +1062,7 @@ func (d *htmlDumper) metadataHead(e *xdm.Element) bool {
 
 func (d *htmlDumper) metadataHeadElement(n xdm.Node) bool {
 	e, ok := n.(*xdm.Element)
-	return ok && d.isHTMLElement(e) && strings.EqualFold(e.LocalName(), "head")
+	return ok && d.isHTMLElement(e) && EqualFoldASCII(e.LocalName(), "head")
 }
 
 // Namespace suppression and scope tracking share the same HTML5 rules.
@@ -1082,7 +1144,7 @@ func copyMap(src map[string]string) map[string]string {
 
 func (d *htmlDumper) dumpAttributes(out io.Writer, e *xdm.Element) error {
 	for _, attr := range e.Attributes() {
-		attrNameLower := strings.ToLower(attr.Name())
+		attrNameLower := LowerASCII(attr.Name())
 
 		attrName := attrNameLower
 		if d.preserveCase {
@@ -1100,16 +1162,16 @@ func (d *htmlDumper) dumpAttributes(out io.Writer, e *xdm.Element) error {
 
 		// HTML boolean attributes: minimize when value equals the
 		// attribute name (case-insensitive), per XSLT serialization spec.
-		if d.isHTMLElement(e) && attr.URI() == "" && isHTMLBooleanAttribute(attrNameLower) {
+		if d.isHTMLElement(e) && attr.URI() == "" && isHTMLBooleanAttribute(attrNameLower, LowerASCII(e.LocalName()), d.serializationVersion) {
 			val := attr.Value()
-			if strings.EqualFold(val, attrNameLower) {
+			if EqualFoldASCII(val, attrNameLower) {
 				continue
 			}
 		}
 
 		val := attr.Value()
-		elemName := strings.ToLower(e.LocalName())
-		isURI := d.isHTMLElement(e) && attr.URI() == "" && isURIAttr(attrNameLower, elemName)
+		elemName := LowerASCII(e.LocalName())
+		isURI := d.isHTMLElement(e) && attr.URI() == "" && isURIAttr(attrNameLower, elemName, d.serializationVersion)
 
 		uriEscaped := isURI && !d.noEscapeURIAttributes
 
@@ -1125,14 +1187,22 @@ func (d *htmlDumper) dumpAttributes(out io.Writer, e *xdm.Element) error {
 			// URI-escaped value is already ASCII (percent-encoded), so normalization
 			// is a no-op there and character mapping is skipped.
 			switch {
+			case d.rawTextScope && d.serializationVersion != 20 && uriEscaped:
+				// URI percent encoding still precedes the HTML character
+				// expansion exception for descendants of script/style.
+				d.check(writeURIAttributeMode(d.ctx, out, val, true, true))
+			case d.rawTextScope && d.serializationVersion != 20:
+				// REC30/31 7.1 extends the raw-text exception to attributes
+				// of descendant elements; REC20 only specifies their text.
+				d.check(d.dumpTextContent(out, val, true))
 			case !d.isHTMLElement(e) || attr.URI() != "":
 				d.check(d.dumpXMLCharacters(out, val, tree.XMLAttributeValue))
 			case uriEscaped:
-				d.check(writeURIAttribute(d.ctx, out, val))
+				d.check(writeURIAttribute(d.ctx, out, val, true))
 			case d.normalize:
 				d.writeNormalizedAttrValue(out, val, isURI)
 			default:
-				d.check(d.htmlEscapeAttrValue(out, val, isURI, d.preserveCase, d.charMap))
+				d.check(d.htmlEscapeAttrValue(out, val, isURI, d.preserveCase, d.charMap, nil))
 			}
 		}
 
@@ -1146,14 +1216,29 @@ func (d *htmlDumper) dumpAttributes(out io.Writer, e *xdm.Element) error {
 // Serialization 3.1 Appendix D defines URI attributes by both element and
 // attribute name. Unknown elements and namespace-qualified names are excluded
 // by the caller (section 7.1).
-func isURIAttr(attribute, element string) bool {
+func isURIAttr(attribute, element string, version int) bool {
+	// Serialization 2.0 Appendix C has 37 element/attribute cells. The eleven
+	// additions in Serialization 3.0/3.1 Appendix D are not URI-valued under
+	// the earlier contract, even when a host chooses an HTML version later.
+	if version > 0 && version <= 20 {
+		switch attribute {
+		case "formaction", "icon", "manifest", "poster", "value":
+			return false
+		case "src":
+			switch element {
+			case elemAudio, elemEmbed, elemSource, elemTrack, elemVideo:
+				return false
+			}
+		}
+	}
+
 	var elements string
 
 	switch attribute {
 	case "action":
 		elements = "form"
 	case "archive", "classid", elemData:
-		elements = "object"
+		elements = elemObject
 	case "background":
 		elements = "body"
 	case "cite":
@@ -1163,7 +1248,7 @@ func isURIAttr(attribute, element string) bool {
 	case "datasrc":
 		elements = "button div input object select span table textarea"
 	case "for":
-		elements = "script"
+		elements = nameScript
 	case "formaction":
 		elements = "button input"
 	case "href":
@@ -1199,20 +1284,110 @@ func isURIAttr(attribute, element string) bool {
 
 // isHTMLBooleanAttribute reports attributes minimized when their value matches
 // their name (XSLT/XQuery Serialization 3.1, HTML boolean attributes).
-func isHTMLBooleanAttribute(name string) bool {
-	switch name {
-	case "checked", "compact", "declare", "defer", "disabled", "ismap",
-		"multiple", "nohref", "noresize", "noshade", "nowrap", "readonly", "selected":
+func stringsContainsWord(words, word string) bool {
+	for candidate := range strings.FieldsSeq(words) {
+		if candidate == word {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isHTMLBooleanAttribute(attribute, element string, version int) bool {
+	if stringsContainsWord(legacyBooleanAttributeElements(attribute), element) {
 		return true
-	default:
+	}
+
+	if version > 0 && version <= 20 {
 		return false
+	}
+
+	elements := modernBooleanAttributeElements(attribute)
+
+	return elements == "*" || stringsContainsWord(elements, element)
+}
+
+func legacyBooleanAttributeElements(attribute string) string {
+	switch attribute {
+	case "checked":
+		return "input"
+	case "compact":
+		return "dir dl menu ol ul"
+	case "declare":
+		return elemObject
+	case "defer":
+		return nameScript
+	case "disabled":
+		return "button input optgroup option select textarea"
+	case "ismap":
+		return elemImg
+	case "multiple":
+		return "select"
+	case "nohref":
+		return elemArea
+	case "noresize":
+		return elemFrame
+	case "noshade":
+		return "hr"
+	case "nowrap":
+		return "td th"
+	case "readonly":
+		return "input textarea"
+	case "selected":
+		return "option"
+	default:
+		return ""
+	}
+}
+
+// SER30 7.2 adds the published HTML5 element/attribute table to the HTML4
+// one-value DTD attributes. These cells do not change the SER20 contract.
+func modernBooleanAttributeElements(attribute string) string {
+	switch attribute {
+	case "async", "defer":
+		return nameScript
+	case "autofocus":
+		return "button input keygen select textarea"
+	case "autoplay", "controls", "loop", "muted":
+		return "audio video"
+	case "default":
+		return "track"
+	case "disabled":
+		return "button fieldset input keygen optgroup option select textarea"
+	case "formnovalidate":
+		return "button input"
+	case "hidden":
+		return "*"
+	case "multiple":
+		return "input select"
+	case "novalidate":
+		return "form"
+	case "open":
+		return "details dialog"
+	case "required":
+		return "input select textarea"
+	case "reversed":
+		return "ol"
+	case "scoped":
+		return "style"
+	case "seamless":
+		return "iframe"
+	case "typemustmatch":
+		return elemObject
+	default:
+		return ""
 	}
 }
 
 // writeURIAttribute normalizes an IRI to NFC and emits percent-encoded bytes,
 // escaping ampersands for the surrounding HTML attribute. Working storage does
 // not depend on the length of the attribute.
-func writeURIAttribute(ctx context.Context, out io.Writer, s string) error {
+func writeURIAttribute(ctx context.Context, out io.Writer, s string, htmlAttribute bool) error {
+	return writeURIAttributeMode(ctx, out, s, htmlAttribute, false)
+}
+
+func writeURIAttributeMode(ctx context.Context, out io.Writer, s string, htmlAttribute, raw bool) error {
 	const hex = "0123456789ABCDEF"
 
 	var buffer [4096]byte
@@ -1229,20 +1404,38 @@ func writeURIAttribute(ctx context.Context, out io.Writer, s string) error {
 		return err
 	}
 
+	pendingAmp := false
+
 	if err := norm.NFC.EachBytes(ctx, s, func(part []byte) error {
 		for _, c := range part {
-			if n+6 > len(buffer) {
+			if n+12 > len(buffer) {
 				if err := flush(); err != nil {
 					return err
 				}
 			}
 
+			if pendingAmp {
+				if c == '{' {
+					buffer[n] = '&'
+					n++
+				} else {
+					n += copy(buffer[n:], htmlAttrEscAmp)
+				}
+
+				pendingAmp = false
+			}
+
 			switch {
+			case raw && c >= 0x20 && c <= 0x7e:
+				buffer[n] = c
+				n++
+			case c == '&' && htmlAttribute:
+				pendingAmp = true
 			case c == '&':
 				n += copy(buffer[n:], htmlAttrEscAmp)
 			case c == '"':
 				n += copy(buffer[n:], htmlAttrEscQuot)
-			case c == '<':
+			case c == '<' && !htmlAttribute:
 				n += copy(buffer[n:], htmlAttrEscLt)
 			case c >= 0x20 && c <= 0x7e:
 				buffer[n] = c
@@ -1256,6 +1449,10 @@ func writeURIAttribute(ctx context.Context, out io.Writer, s string) error {
 		return nil
 	}); err != nil {
 		return err
+	}
+
+	if pendingAmp {
+		n += copy(buffer[n:], htmlAttrEscAmp)
 	}
 
 	if n > 0 {
@@ -1407,7 +1604,7 @@ func htmlEscapeString(w io.Writer, s string, escCtrl bool, charMap map[rune]stri
 
 func isContentTypeMeta(e *xdm.Element) bool {
 	for _, a := range e.Attributes() {
-		if a.URI() == "" && strings.EqualFold(a.Name(), "http-equiv") && strings.EqualFold(strings.Trim(a.Value(), " \t\r\n"), "Content-Type") {
+		if a.URI() == "" && EqualFoldASCII(a.Name(), "http-equiv") && EqualFoldASCII(strings.Trim(a.Value(), " \t\r\n"), "Content-Type") {
 			return true
 		}
 	}

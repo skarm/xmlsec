@@ -10,6 +10,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
+	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
 const fnNameUnparsedTextAvailable = "unparsed-text-available"
@@ -53,6 +54,9 @@ func (f *legacyTextFunction) Call(ctx context.Context, args []xdm.Sequence) (xdm
 			code = "XTDE1170"
 		case "FOUT1190":
 			code = "XTDE1190"
+			if errors.Is(err, unparsedtext.ErrImplicitUTF8) {
+				code = "XTDE1200"
+			}
 		case "FOUT1200":
 			code = "XTDE1200"
 		}

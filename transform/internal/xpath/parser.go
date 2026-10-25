@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
@@ -1404,7 +1405,7 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 		target := ""
 
 		hasTarget := false
-		if p.lexer.Peek().Type == TokenString || p.lexer.Peek().Type == TokenName {
+		if p.lexer.Peek().Type == TokenString || tokenAsNCName(p.lexer.Peek()) != "" {
 			hasTarget = true
 			target = p.lexer.Next().Value
 		}
@@ -1413,7 +1414,18 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 			return nil, true, err
 		}
 
-		return xdm.PITest{Target: target, HasTarget: hasTarget}, true, nil
+		test := xdm.PITest{Target: target, HasTarget: hasTarget}
+
+		if p.version != 10 {
+			var err error
+
+			test, err = normalizePITest(test)
+			if err != nil {
+				return nil, true, err
+			}
+		}
+
+		return test, true, nil
 	case lexicon.KindElement:
 		return p.parseElementOrAttributeTest(true)
 	case lexicon.KindAttribute:
@@ -1443,6 +1455,22 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 	}
 
 	return nil, false, nil
+}
+
+// XPath 2.0 erratum XP.E19 and 3.x kind tests compare normalized PI targets.
+// An explicitly empty or otherwise invalid NCName is XPTY0004, not a syntax
+// error; an absent target continues to match every processing instruction.
+func normalizePITest(test xdm.PITest) (xdm.PITest, error) {
+	if !test.HasTarget {
+		return test, nil
+	}
+
+	test.Target = collapseXMLWhitespace(test.Target)
+	if !xmlchar.IsValidNCName(test.Target) {
+		return test, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "processing-instruction target must be an NCName"}
+	}
+
+	return test, nil
 }
 
 // parseElementOrAttributeTest parses element(name?, type?) or attribute(name?, type?).

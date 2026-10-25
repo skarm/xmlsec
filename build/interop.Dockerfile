@@ -11,6 +11,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
+        git \
         libssl-dev \
         libxml2-dev \
         libxml2-utils \

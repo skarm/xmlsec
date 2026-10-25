@@ -793,7 +793,7 @@ func (ec *execContext) resolvePrimaryOutputDef() *OutputDef {
 			// isolation: character maps are scoped per-package).
 			if len(ec.primaryResolvedCharMap) > 0 {
 				outDef.ResolvedCharMap = ec.primaryResolvedCharMap
-			} else {
+			} else if outDef.ResolvedCharMap == nil {
 				outDef.ResolvedCharMap = resolveCharacterMaps(ss, allMapNames)
 			}
 		}
@@ -818,6 +818,14 @@ func (ec *execContext) resolvePrimaryOutputDef() *OutputDef {
 
 			outDef.implicitXMLMethod = true
 		}
+	}
+
+	if outDef == nil && ss.processorLanguage() <= 20 {
+		outDef = defaultOutputDef()
+	}
+
+	if outDef != nil {
+		outDef.serializationVersion = ss.processorLanguage()
 	}
 
 	return outDef
@@ -863,17 +871,11 @@ func (ec *execContext) applyPrimaryOutputOverrides(outDef *OutputDef) *OutputDef
 	// serializer respects an explicit value, defaulting it to no
 	// "yes" (output_html.go keys on OmitDeclarationExplicit).
 	outDef.OmitDeclarationExplicit = ov.OmitDeclarationExplicit
-	if ov.DoctypeSystem != "" {
-		outDef.DoctypeSystem = ov.DoctypeSystem
-	}
+	outDef.DoctypeSystem = ov.DoctypeSystem
 
-	if ov.DoctypePublic != "" {
-		outDef.DoctypePublic = ov.DoctypePublic
-	}
+	outDef.DoctypePublic = ov.DoctypePublic
 
-	if ov.MediaType != "" {
-		outDef.MediaType = ov.MediaType
-	}
+	outDef.MediaType = ov.MediaType
 
 	if ov.HTMLVersion != "" {
 		outDef.HTMLVersion = ov.HTMLVersion
@@ -900,7 +902,7 @@ func (ec *execContext) applyPrimaryOutputOverrides(outDef *OutputDef) *OutputDef
 		outDef.SuppressIndentation = ov.SuppressIndentation
 	}
 
-	if len(ov.ResolvedCharMap) > 0 {
+	if ov.ResolvedCharMap != nil {
 		outDef.ResolvedCharMap = ov.ResolvedCharMap
 	}
 
