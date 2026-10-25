@@ -55,61 +55,55 @@ func NewCompiler() Compiler {
 // ProcessorVersion selects a processor independently of the principal module.
 // Zero derives it from that module's declaration.
 func (c Compiler) ProcessorVersion(version int) Compiler {
-	c = c.clone()
-	c.cfg.processorVersion = version
+	out := c.clone()
+	out.cfg.processorVersion = version
 
-	return c
+	return out
 }
 
 // BaseURI sets the base URI for resolving relative URIs in xsl:import
 // and xsl:include.
 func (c Compiler) BaseURI(uri string) Compiler {
-	c = c.clone()
-	c.cfg.baseURI = uri
+	out := c.clone()
+	out.cfg.baseURI = uri
 
-	return c
+	return out
 }
 
 // URIResolver sets a custom URI resolver for loading external
 // stylesheets during compilation.
 func (c Compiler) URIResolver(r URIResolver) Compiler {
-	c = c.clone()
-	c.cfg.uriResolver = r
+	out := c.clone()
+	out.cfg.uriResolver = r
 
-	return c
+	return out
 }
 
 // PackageResolver sets a package resolver for xsl:use-package references.
 func (c Compiler) PackageResolver(r PackageResolver) Compiler {
-	c = c.clone()
-	c.cfg.packageResolver = r
+	out := c.clone()
+	out.cfg.packageResolver = r
 
-	return c
+	return out
 }
 
 // StaticParameters sets the static parameters for compilation.
 // The Parameters collection is cloned.
 func (c Compiler) StaticParameters(p *Parameters) Compiler {
-	c = c.clone()
-	c.cfg.staticParams = p.Clone()
+	out := c.clone()
+	out.cfg.staticParams = p.Clone()
 
-	return c
+	return out
 }
 
 // SetStaticParameter sets a single static parameter value.
 // Clone-on-write: the existing parameters are cloned before mutation
 // if shared with another Compiler value.
 func (c Compiler) SetStaticParameter(name string, value xdm.Sequence) Compiler {
-	c = c.clone()
-	if c.cfg.staticParams == nil {
-		c.cfg.staticParams = NewParameters()
-	} else {
-		c.cfg.staticParams = c.cfg.staticParams.Clone()
-	}
+	out := c.clone()
+	out.cfg.staticParams = out.cfg.staticParams.with(name, value)
 
-	c.cfg.staticParams.Set(name, value)
-
-	return c
+	return out
 }
 
 // MaxResourceBytes sets the maximum number of bytes read from a single
@@ -136,28 +130,28 @@ func (c Compiler) SetStaticParameter(name string, value xdm.Sequence) Compiler {
 // (fn:unparsed-text-available returns false), and an over-cap fn:json-doc read
 // surfaces FODC0002.
 func (c Compiler) MaxResourceBytes(n int64) Compiler {
-	c = c.clone()
-	c.cfg.maxResourceBytes = n
+	out := c.clone()
+	out.cfg.maxResourceBytes = n
 
-	return c
+	return out
 }
 
 // ParseOptions sets XML limits and base URI for stylesheet modules, parameter
 // documents and nested XPath evaluation. Invocations inherit these options.
 // Resource retrieval is configured separately through URIResolver.
 func (c Compiler) ParseOptions(p xdm.ParseOptions) Compiler {
-	c = c.clone()
-	c.cfg.parseOptions = &p
+	out := c.clone()
+	out.cfg.parseOptions = &p
 
-	return c
+	return out
 }
 
 // ClearStaticParameters removes all static parameter bindings.
 func (c Compiler) ClearStaticParameters() Compiler {
-	c = c.clone()
-	c.cfg.staticParams = nil
+	out := c.clone()
+	out.cfg.staticParams = nil
 
-	return c
+	return out
 }
 
 // Compile compiles a parsed XSLT stylesheet document into a reusable

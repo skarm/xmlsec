@@ -163,27 +163,13 @@ func axisFollowing(ctx context.Context, node Node, maxNodes int) ([]Node, error)
 		return axisFollowingEntries(ctx, node, maxNodes)
 	}
 
-	var result []Node
+	return appendFollowing(ctx, nil, node, maxNodes)
+}
 
-	for s := node.NextSibling(); s != nil; s = s.NextSibling() {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		if !IsXDMChild(s) {
-			continue
-		}
-
-		if err := appendAxisNode(&result, s, maxNodes); err != nil {
-			return nil, err
-		}
-
-		if err := collectDescendants(ctx, s, &result, maxNodes); err != nil {
-			return nil, err
-		}
-	}
-
-	for p := node.Parent(); p != nil; p = p.Parent() {
+// appendFollowing continues the following axis while retaining the node limit
+// across descendants already collected for an attribute or namespace context.
+func appendFollowing(ctx context.Context, result []Node, node Node, maxNodes int) ([]Node, error) {
+	for p := node; p != nil; p = p.Parent() {
 		for s := p.NextSibling(); s != nil; s = s.NextSibling() {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -220,25 +206,7 @@ func axisPreceding(ctx context.Context, node Node, maxNodes int) ([]Node, error)
 
 	var result []Node
 
-	for s := node.PrevSibling(); s != nil; s = s.PrevSibling() {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		if !IsXDMChild(s) {
-			continue
-		}
-
-		if err := collectDescendantsReverse(ctx, s, &result, maxNodes); err != nil {
-			return nil, err
-		}
-
-		if err := appendAxisNode(&result, s, maxNodes); err != nil {
-			return nil, err
-		}
-	}
-
-	for p := node.Parent(); p != nil; p = p.Parent() {
+	for p := node; p != nil; p = p.Parent() {
 		for s := p.PrevSibling(); s != nil; s = s.PrevSibling() {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -324,27 +292,7 @@ func axisFollowingEntries(ctx context.Context, node Node, maxNodes int) ([]Node,
 	}
 	// Then the parent's following siblings + their descendants, and up
 	// through ancestors — same as the normal following axis from the parent.
-	for p := parent; p != nil; p = p.Parent() {
-		for s := p.NextSibling(); s != nil; s = s.NextSibling() {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-
-			if !IsXDMChild(s) {
-				continue
-			}
-
-			if err := appendAxisNode(&result, s, maxNodes); err != nil {
-				return nil, err
-			}
-
-			if err := collectDescendants(ctx, s, &result, maxNodes); err != nil {
-				return nil, err
-			}
-		}
-	}
-
-	return result, nil
+	return appendFollowing(ctx, result, parent, maxNodes)
 }
 
 func axisPrecedingEntries(ctx context.Context, node Node, maxNodes int) ([]Node, error) {
@@ -353,47 +301,7 @@ func axisPrecedingEntries(ctx context.Context, node Node, maxNodes int) ([]Node,
 		return nil, nil
 	}
 
-	var result []Node
-
-	for s := parent.PrevSibling(); s != nil; s = s.PrevSibling() {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		if !IsXDMChild(s) {
-			continue
-		}
-
-		if err := collectDescendantsReverse(ctx, s, &result, maxNodes); err != nil {
-			return nil, err
-		}
-
-		if err := appendAxisNode(&result, s, maxNodes); err != nil {
-			return nil, err
-		}
-	}
-
-	for p := parent.Parent(); p != nil; p = p.Parent() {
-		for s := p.PrevSibling(); s != nil; s = s.PrevSibling() {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-
-			if !IsXDMChild(s) {
-				continue
-			}
-
-			if err := collectDescendantsReverse(ctx, s, &result, maxNodes); err != nil {
-				return nil, err
-			}
-
-			if err := appendAxisNode(&result, s, maxNodes); err != nil {
-				return nil, err
-			}
-		}
-	}
-
-	return result, nil
+	return axisPreceding(ctx, parent, maxNodes)
 }
 
 // AppendAxis appends the nodes along axis from node to dst, in the order

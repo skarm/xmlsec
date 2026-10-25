@@ -8,6 +8,7 @@ import (
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/xmldsig"
 )
@@ -191,7 +192,7 @@ func VerifyResponse(ctx context.Context, d *document.Document, keys []crypto.Pub
 }
 
 func validateResponseOptions(ctx context.Context, d *document.Document, o ResponseOptions) error {
-	if ctx == nil || d == nil || o.At.IsZero() || !xmlutil.URI(o.Issuer) || !xmlutil.URI(o.Audience) || !xmlutil.Endpoint(o.Destination, true) || !xmlutil.ID(o.ExpectedRequestID) || len(o.AllowedNameIDFormats) > 16 || len(o.ExpectedAuthnContexts) > 16 || o.ForceAuthn && o.RequestIssueInstant.IsZero() {
+	if ctx == nil || d == nil || o.At.IsZero() || !profile.URI(o.Issuer) || !profile.URI(o.Audience) || !profile.Endpoint(o.Destination, true) || !profile.ID(o.ExpectedRequestID) || len(o.AllowedNameIDFormats) > 16 || len(o.ExpectedAuthnContexts) > 16 || o.ForceAuthn && o.RequestIssueInstant.IsZero() {
 		return ErrProfile
 	}
 
@@ -209,7 +210,7 @@ func parseResponseStatus(status document.Element) (string, error) {
 	}
 
 	code := xmlutil.Attr(sc[0], "Value")
-	if !xmlutil.URI(code) {
+	if !profile.URI(code) {
 		return "", ErrProfile
 	}
 
@@ -217,11 +218,11 @@ func parseResponseStatus(status document.Element) (string, error) {
 }
 
 func parseAssertion(a document.Element, o ResponseOptions, l Limits) (*VerifiedAssertion, error) {
-	if xmlutil.Attrs(a, []string{"ID", nameVersion, nameIssueInstant}, nil) != nil || xmlutil.Attr(a, nameVersion) != version20 || !xmlutil.ID(xmlutil.Attr(a, "ID")) {
+	if xmlutil.Attrs(a, []string{"ID", nameVersion, nameIssueInstant}, nil) != nil || xmlutil.Attr(a, nameVersion) != version20 || !profile.ID(xmlutil.Attr(a, "ID")) {
 		return nil, ErrProfile
 	}
 
-	instant, e := xmlutil.ParseTime(xmlutil.Attr(a, nameIssueInstant))
+	instant, e := profile.ParseTime(xmlutil.Attr(a, nameIssueInstant))
 	if e != nil || instant.After(o.At.Add(l.ClockSkew)) || instant.Before(o.At.Add(-l.MaxMessageAge-l.ClockSkew)) {
 		return nil, ErrConditions
 	}
@@ -294,7 +295,7 @@ func parseSubjectNameID(id document.Element, o ResponseOptions, l Limits, r *Ver
 		r.nameIDFormat = NameIDUnspecified
 	}
 
-	if !xmlutil.URI(r.nameIDFormat) || len(o.AllowedNameIDFormats) > 0 && !allowed(r.nameIDFormat, o.AllowedNameIDFormats) {
+	if !profile.URI(r.nameIDFormat) || len(o.AllowedNameIDFormats) > 0 && !allowed(r.nameIDFormat, o.AllowedNameIDFormats) {
 		return ErrProfile
 	}
 
@@ -329,7 +330,7 @@ func parseBearerConfirmation(c document.Element, o ResponseOptions, l Limits, r 
 		return ErrCorrelation
 	}
 
-	end, e := xmlutil.ParseTime(xmlutil.Attr(data, "NotOnOrAfter"))
+	end, e := profile.ParseTime(xmlutil.Attr(data, "NotOnOrAfter"))
 	if e != nil || !o.At.Add(-l.ClockSkew).Before(end) || end.After(o.At.Add(l.MaxAssertionLifetime+l.ClockSkew)) {
 		return ErrConditions
 	}
@@ -353,12 +354,12 @@ func parseConditions(c document.Element, o ResponseOptions, l Limits) (time.Time
 		return time.Time{}, ErrProfile
 	}
 
-	start, e := xmlutil.ParseTime(xmlutil.Attr(c, "NotBefore"))
+	start, e := profile.ParseTime(xmlutil.Attr(c, "NotBefore"))
 	if e != nil {
 		return time.Time{}, ErrConditions
 	}
 
-	end, e := xmlutil.ParseTime(xmlutil.Attr(c, "NotOnOrAfter"))
+	end, e := profile.ParseTime(xmlutil.Attr(c, "NotOnOrAfter"))
 	if e != nil || timeWindow(start, end, o.At, l) != nil {
 		return time.Time{}, ErrConditions
 	}
@@ -415,7 +416,7 @@ func validateAudienceRestriction(child document.Element, expected string) error 
 		}
 
 		s, e := xmlutil.Simple(a, 2048)
-		if e != nil || !xmlutil.URI(s) {
+		if e != nil || !profile.URI(s) {
 			return ErrProfile
 		}
 
@@ -436,7 +437,7 @@ func parseAuthn(a document.Element, o ResponseOptions, l Limits, r *VerifiedAsse
 		return ErrProfile
 	}
 
-	t, e := xmlutil.ParseTime(xmlutil.Attr(a, "AuthnInstant"))
+	t, e := profile.ParseTime(xmlutil.Attr(a, "AuthnInstant"))
 	if e != nil || t.After(o.At.Add(l.ClockSkew)) || t.After(r.instant.Add(l.ClockSkew)) {
 		return ErrConditions
 	}
@@ -453,7 +454,7 @@ func parseAuthn(a document.Element, o ResponseOptions, l Limits, r *VerifiedAsse
 	}
 
 	if s, ok := a.Attribute(document.Name{Local: "SessionNotOnOrAfter"}); ok {
-		end, e := xmlutil.ParseTime(s)
+		end, e := profile.ParseTime(s)
 		if e != nil || !t.Before(end) || !o.At.Add(-l.ClockSkew).Before(end) {
 			return ErrConditions
 		}
@@ -473,7 +474,7 @@ func parseAuthn(a document.Element, o ResponseOptions, l Limits, r *VerifiedAsse
 	}
 
 	class, e := xmlutil.Simple(ac[0], 2048)
-	if e != nil || !xmlutil.URI(class) || len(o.ExpectedAuthnContexts) > 0 && !allowed(class, o.ExpectedAuthnContexts) {
+	if e != nil || !profile.URI(class) || len(o.ExpectedAuthnContexts) > 0 && !allowed(class, o.ExpectedAuthnContexts) {
 		return ErrConditions
 	}
 
@@ -485,7 +486,7 @@ func parseAuthn(a document.Element, o ResponseOptions, l Limits, r *VerifiedAsse
 		}
 
 		s, e := xmlutil.Simple(x, 2048)
-		if e != nil || !xmlutil.URI(s) {
+		if e != nil || !profile.URI(s) {
 			return ErrProfile
 		}
 	}
@@ -531,7 +532,7 @@ func parseAttribute(c document.Element, l Limits, seen map[[2]string]struct{}) (
 	}
 
 	friendly := xmlutil.Attr(c, "FriendlyName")
-	if _, exists := seen[[2]string{name, format}]; len(name) == 0 || len(name) > 1024 || !xmlutil.URI(format) || len(friendly) > 1024 || exists {
+	if _, exists := seen[[2]string{name, format}]; len(name) == 0 || len(name) > 1024 || !profile.URI(format) || len(friendly) > 1024 || exists {
 		return Attribute{}, ErrProfile
 	}
 

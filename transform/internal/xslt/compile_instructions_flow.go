@@ -157,37 +157,12 @@ func (c *compiler) compileCallTemplate(ctx context.Context, elem *xdm.Element) (
 	inst := &callTemplateInst{Name: resolveQName(name, namespaces), Compat: c.backwardsCompatible()}
 	c.pendingTemplateCalls = append(c.pendingTemplateCalls, templateCallReference{Name: inst.Name, LegacyForwards: c.stylesheet.processorLanguage() == 10 && c.forwardsCompatible(c.effectiveVersion)})
 
-	for child := range xdm.Children(elem) {
-		childElem, ok := child.(*xdm.Element)
-		if !ok {
-			if isStylesheetTextNode(child) {
-				return nil, staticError(errCodeXTSE0010, "text is not allowed as a child of xsl:call-template")
-			}
-
-			continue
-		}
-
-		if childElem.URI() != lexicon.NamespaceXSLT {
-			return nil, staticError(errCodeXTSE0010, "non-XSLT element %q is not allowed as a child of xsl:call-template", childElem.Name())
-		}
-
-		if childElem.LocalName() != lexicon.XSLTElementWithParam {
-			return nil, staticError(errCodeXTSE0010, "xsl:%s is not allowed as a child of xsl:call-template", childElem.LocalName())
-		}
-
-		wp, err := c.compileWithParam(ctx, childElem)
-		if err != nil {
-			return nil, err
-		}
-
-		if wp != nil {
-			if err := checkDuplicateWithParam(inst.Params, wp); err != nil {
-				return nil, err
-			}
-
-			inst.Params = append(inst.Params, wp)
-		}
+	params, err := c.compileWithParams(ctx, elem)
+	if err != nil {
+		return nil, err
 	}
+
+	inst.Params = params
 
 	return inst, nil
 }
@@ -640,27 +615,13 @@ func (c *compiler) compileWithParam(ctx context.Context, elem *xdm.Element) (*wi
 
 	wp.Tunnel = xsdBoolTrue(getAttr(elem, nameTunnel))
 
-	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
-	if hasSelect {
-		// XTSE0620: select and non-empty content are mutually exclusive.
-		if err := c.validateEmptyElement(ctx, elem, "xsl:with-param"); err != nil {
-			return nil, staticError(errCodeXTSE0620, "xsl:with-param %q has both @select and content", name)
-		}
-
-		expr, err := c.compileXPath(selectAttr, c.nsBindings)
-		if err != nil {
-			return nil, err
-		}
-
-		wp.Select = expr
-	} else {
-		body, err := c.compileChildren(ctx, elem)
-		if err != nil {
-			return nil, err
-		}
-
-		wp.Body = body
+	selectExpr, body, err := c.compileBindingValue(ctx, elem, "xsl:with-param", name)
+	if err != nil {
+		return nil, err
 	}
+
+	wp.Select = selectExpr
+	wp.Body = body
 
 	return wp, nil
 }
@@ -805,37 +766,12 @@ func (c *compiler) compileApplyImports(ctx context.Context, elem *xdm.Element) (
 
 	inst := &applyImportsInst{}
 
-	for child := range xdm.Children(elem) {
-		childElem, ok := child.(*xdm.Element)
-		if !ok {
-			if isStylesheetTextNode(child) {
-				return nil, staticError(errCodeXTSE0010, "text is not allowed as a child of xsl:apply-imports")
-			}
-
-			continue
-		}
-
-		if childElem.URI() != lexicon.NamespaceXSLT {
-			return nil, staticError(errCodeXTSE0010, "non-XSLT element %q is not allowed as a child of xsl:apply-imports", childElem.Name())
-		}
-
-		if childElem.LocalName() != lexicon.XSLTElementWithParam {
-			return nil, staticError(errCodeXTSE0010, "xsl:%s is not allowed as a child of xsl:apply-imports", childElem.LocalName())
-		}
-
-		wp, err := c.compileWithParam(ctx, childElem)
-		if err != nil {
-			return nil, err
-		}
-
-		if wp != nil {
-			if err := checkDuplicateWithParam(inst.Params, wp); err != nil {
-				return nil, err
-			}
-
-			inst.Params = append(inst.Params, wp)
-		}
+	params, err := c.compileWithParams(ctx, elem)
+	if err != nil {
+		return nil, err
 	}
+
+	inst.Params = params
 
 	return inst, nil
 }
@@ -1392,4 +1328,45 @@ func checkDuplicateWithParam(params []*withParam, wp *withParam) error {
 	}
 
 	return nil
+}
+
+// compileWithParams compiles a child list containing only xsl:with-param.
+func (c *compiler) compileWithParams(ctx context.Context, elem *xdm.Element) ([]*withParam, error) {
+	owner := "xsl:" + elem.LocalName()
+
+	var params []*withParam
+
+	for child := range xdm.Children(elem) {
+		childElem, ok := child.(*xdm.Element)
+		if !ok {
+			if isStylesheetTextNode(child) {
+				return nil, staticError(errCodeXTSE0010, "text is not allowed as a child of %s", owner)
+			}
+
+			continue
+		}
+
+		if childElem.URI() != lexicon.NamespaceXSLT {
+			return nil, staticError(errCodeXTSE0010, "non-XSLT element %q is not allowed as a child of %s", childElem.Name(), owner)
+		}
+
+		if childElem.LocalName() != lexicon.XSLTElementWithParam {
+			return nil, staticError(errCodeXTSE0010, "xsl:%s is not allowed as a child of %s", childElem.LocalName(), owner)
+		}
+
+		wp, err := c.compileWithParam(ctx, childElem)
+		if err != nil {
+			return nil, err
+		}
+
+		if wp != nil {
+			if err := checkDuplicateWithParam(params, wp); err != nil {
+				return nil, err
+			}
+
+			params = append(params, wp)
+		}
+	}
+
+	return params, nil
 }

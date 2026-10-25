@@ -84,6 +84,18 @@ func (p *Parameters) Clone() *Parameters {
 	return cloned
 }
 
+// with returns an owned collection with one binding replaced.
+func (p *Parameters) with(name string, value xdm.Sequence) *Parameters {
+	owned := p.Clone()
+	if owned == nil {
+		owned = NewParameters()
+	}
+
+	owned.Set(name, value)
+
+	return owned
+}
+
 func (p *Parameters) toMap() map[string]xdm.Sequence {
 	if p == nil {
 		return nil

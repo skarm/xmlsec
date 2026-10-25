@@ -662,17 +662,28 @@ func TestNormalizationPeakHeap(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				writes := 0
-				// Collect periodically to distinguish live working storage from dead
-				// chunk allocations. Fixture/result storage is excluded from the baseline.
-				sink := &streamingSink{afterWrite: func() {
-					writes++
-					if writes%64 == 0 {
+				// Collect by output volume: normalization may emit a two-byte segment
+				// per write. Counting writes would turn this memory probe into thousands
+				// of full collections charged to the engine's unchanged deadline.
+				// Less frequent collection retains more dead chunks in the measured
+				// peak; it does not reduce the observed working-storage requirement.
+				collectedAt := 0
+				sink := &streamingSink{}
+				sink.afterWrite = func() {
+					if sink.bytes-collectedAt >= 64<<10 {
 						runtime.GC()
+						collectedAt = sink.bytes
 					}
-				}}
+				}
 				peak := peakHeapDuring(t, func() error { _, err := result.WriterTo(t.Context()).WriteTo(sink); return err })
 				peaks = append(peaks, peak)
+				wantBytes := 2 * size // NFC encodes each e + combining acute as é.
+				if method != "text" {
+					wantBytes += len("<r></r>")
+				}
+				if sink.bytes != wantBytes {
+					t.Fatalf("normalization emitted %d bytes, want %d", sink.bytes, wantBytes)
+				}
 				runtime.KeepAlive(result)
 			}
 			t.Logf("observed peak heap, small/large: %v", peaks)

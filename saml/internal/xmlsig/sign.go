@@ -14,6 +14,7 @@ import (
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/reference"
+	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/xmldsig"
 )
@@ -69,7 +70,7 @@ func CloneKeys(keys []crypto.PublicKey) ([]crypto.PublicKey, error) {
 // Verify verifies the closed SAML signature shape and exact target coverage using an
 // explicitly supplied trusted key.
 func Verify(ctx context.Context, d *document.Document, target document.Element, keys []crypto.PublicKey, p xmldsig.Policy) (*xmldsig.SignatureResult, error) {
-	if ctx == nil || d == nil || !target.Valid() || !xmlutil.ID(xmlutil.Attr(target, "ID")) || len(keys) == 0 || len(keys) > 16 {
+	if ctx == nil || d == nil || !target.Valid() || !profile.ID(xmlutil.Attr(target, "ID")) || len(keys) == 0 || len(keys) > 16 {
 		return nil, ErrSignature
 	}
 
@@ -124,7 +125,7 @@ func Verify(ctx context.Context, d *document.Document, target document.Element, 
 // Sign signs a copied SAML target and places its signature at the schema-required
 // position.
 func Sign(ctx context.Context, d *document.Document, target document.Element, k SigningKey, afterIssuer bool) (*document.Document, error) {
-	if ctx == nil || d == nil || !target.Valid() || nilcheck.IsNil(k.Key) || !xmlutil.ID(xmlutil.Attr(target, "ID")) {
+	if ctx == nil || d == nil || !target.Valid() || nilcheck.IsNil(k.Key) || !profile.ID(xmlutil.Attr(target, "ID")) {
 		return nil, ErrSignature
 	}
 
@@ -139,7 +140,7 @@ func Sign(ctx context.Context, d *document.Document, target document.Element, k 
 		}
 	}
 
-	id, e := xmlutil.NewID()
+	id, e := profile.NewID()
 	if e != nil {
 		return nil, e
 	}
@@ -180,7 +181,7 @@ func Sign(ctx context.Context, d *document.Document, target document.Element, k 
 		}
 
 		if !found {
-			return nil, xmlutil.ErrSchema
+			return nil, profile.ErrSchema
 		}
 	}
 

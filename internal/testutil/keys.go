@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"crypto/x509"
 	"encoding/pem"
+	"os"
 	"testing"
 )
 
@@ -29,4 +30,26 @@ func WritePublicKey(t testing.TB, dir, name string, key crypto.PublicKey) string
 	}
 
 	return WriteFile(t, dir, name, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+}
+
+// ReadPublicKey reads a PKIX public key from a PEM fixture.
+func ReadPublicKey(t testing.TB, path string) crypto.PublicKey {
+	t.Helper()
+
+	raw, err := os.ReadFile(path) // #nosec G304 -- The test supplies its fixture path.
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		t.Fatalf("public key fixture %s: invalid PEM", path)
+	}
+
+	key, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		t.Fatalf("public key fixture %s: %v", path, err)
+	}
+
+	return key
 }

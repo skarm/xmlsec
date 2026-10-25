@@ -136,156 +136,132 @@ func newInvocation(ss *Stylesheet, kind invocationKind) Invocation {
 // This is needed for CallTemplate/CallFunction when the transform
 // requires a source document for fn:doc("") or similar.
 func (inv Invocation) SourceDocument(doc *xdm.Document) Invocation {
-	inv = inv.clone()
-	inv.cfg.source = doc
+	out := inv.clone()
+	out.cfg.source = doc
 
-	return inv
+	return out
 }
 
 // Mode sets the initial mode for template matching.
 func (inv Invocation) Mode(name string) Invocation {
-	inv = inv.clone()
-	inv.cfg.mode = name
+	out := inv.clone()
+	out.cfg.mode = name
 
-	return inv
+	return out
 }
 
 // Selection sets the initial match selection.
 // Only valid for ApplyTemplates invocations; rejected at validation
 // time for Transform, CallTemplate, and CallFunction.
 func (inv Invocation) Selection(seq xdm.Sequence) Invocation {
-	inv = inv.clone()
-	inv.cfg.matchSelection = seq
+	out := inv.clone()
+	out.cfg.matchSelection = seq
 
-	return inv
+	return out
 }
 
 // GlobalParameters sets the global stylesheet parameters.
 // The Parameters collection is cloned.
 func (inv Invocation) GlobalParameters(p *Parameters) Invocation {
-	inv = inv.clone()
-	inv.cfg.parameters = p.Clone()
+	out := inv.clone()
+	out.cfg.parameters = p.Clone()
 
-	return inv
+	return out
 }
 
 // TunnelParameters sets the tunnel parameters.
 // The Parameters collection is cloned.
 func (inv Invocation) TunnelParameters(p *Parameters) Invocation {
-	inv = inv.clone()
-	inv.cfg.tunnelParameters = p.Clone()
+	out := inv.clone()
+	out.cfg.tunnelParameters = p.Clone()
 
-	return inv
+	return out
 }
 
 // SetParameter sets a single global parameter value.
 func (inv Invocation) SetParameter(name string, value xdm.Sequence) Invocation {
-	inv = inv.clone()
-	if inv.cfg.parameters == nil {
-		inv.cfg.parameters = NewParameters()
-	} else {
-		inv.cfg.parameters = inv.cfg.parameters.Clone()
-	}
+	out := inv.clone()
+	out.cfg.parameters = out.cfg.parameters.with(name, value)
 
-	inv.cfg.parameters.Set(name, value)
-
-	return inv
+	return out
 }
 
 // SetTunnelParameter sets a single tunnel parameter value.
 func (inv Invocation) SetTunnelParameter(name string, value xdm.Sequence) Invocation {
-	inv = inv.clone()
-	if inv.cfg.tunnelParameters == nil {
-		inv.cfg.tunnelParameters = NewParameters()
-	} else {
-		inv.cfg.tunnelParameters = inv.cfg.tunnelParameters.Clone()
-	}
+	out := inv.clone()
+	out.cfg.tunnelParameters = out.cfg.tunnelParameters.with(name, value)
 
-	inv.cfg.tunnelParameters.Set(name, value)
-
-	return inv
+	return out
 }
 
 // SetInitialTemplateParameter sets a non-tunnel xsl:with-param for the
 // initial template call (CallTemplate entry).
 func (inv Invocation) SetInitialTemplateParameter(name string, value xdm.Sequence) Invocation {
-	inv = inv.clone()
-	if inv.cfg.initialTemplateParams == nil {
-		inv.cfg.initialTemplateParams = NewParameters()
-	} else {
-		inv.cfg.initialTemplateParams = inv.cfg.initialTemplateParams.Clone()
-	}
+	out := inv.clone()
+	out.cfg.initialTemplateParams = out.cfg.initialTemplateParams.with(name, value)
 
-	inv.cfg.initialTemplateParams.Set(name, value)
-
-	return inv
+	return out
 }
 
 // SetInitialModeParameter sets a non-tunnel xsl:with-param for the
 // initial mode invocation (Transform / ApplyTemplates entry).
 func (inv Invocation) SetInitialModeParameter(name string, value xdm.Sequence) Invocation {
-	inv = inv.clone()
-	if inv.cfg.initialModeParams == nil {
-		inv.cfg.initialModeParams = NewParameters()
-	} else {
-		inv.cfg.initialModeParams = inv.cfg.initialModeParams.Clone()
-	}
+	out := inv.clone()
+	out.cfg.initialModeParams = out.cfg.initialModeParams.with(name, value)
 
-	inv.cfg.initialModeParams.Set(name, value)
-
-	return inv
+	return out
 }
 
 // MessageHandler sets the handler for xsl:message output.
 func (inv Invocation) MessageHandler(r MessageHandler) Invocation {
-	inv = inv.clone()
-	inv.cfg.msgHandler = r
+	out := inv.clone()
+	out.cfg.msgHandler = r
 
-	return inv
+	return out
 }
 
 // ResultDocumentHandler sets the handler for secondary result documents
 // produced by xsl:result-document.
 func (inv Invocation) ResultDocumentHandler(r ResultDocumentHandler) Invocation {
-	inv = inv.clone()
-	inv.cfg.resultDocHandler = r
+	out := inv.clone()
+	out.cfg.resultDocHandler = r
 
-	return inv
+	return out
 }
 
 // RawResultHandler sets the handler that receives the raw XDM result
 // sequence from the primary output before serialization.
 func (inv Invocation) RawResultHandler(r RawResultHandler) Invocation {
-	inv = inv.clone()
-	inv.cfg.rawResultHandler = r
+	out := inv.clone()
+	out.cfg.rawResultHandler = r
 
-	return inv
+	return out
 }
 
 // PrimaryItemsHandler sets the handler that receives non-node items
 // captured from the primary output (needed for json/adaptive serialization).
 func (inv Invocation) PrimaryItemsHandler(r PrimaryItemsHandler) Invocation {
-	inv = inv.clone()
-	inv.cfg.primaryItemsHandler = r
+	out := inv.clone()
+	out.cfg.primaryItemsHandler = r
 
-	return inv
+	return out
 }
 
 // AnnotationHandler sets the handler that receives type annotations and
 // schema declarations from schema-aware transformations.
 func (inv Invocation) AnnotationHandler(r AnnotationHandler) Invocation {
-	inv = inv.clone()
-	inv.cfg.annotationHandler = r
+	out := inv.clone()
+	out.cfg.annotationHandler = r
 
-	return inv
+	return out
 }
 
 // CollectionResolver sets a custom resolver for fn:collection.
 func (inv Invocation) CollectionResolver(r xpath.CollectionResolver) Invocation {
-	inv = inv.clone()
-	inv.cfg.collectionResolver = r
+	out := inv.clone()
+	out.cfg.collectionResolver = r
 
-	return inv
+	return out
 }
 
 // URIResolver sets a custom URI resolver used by fn:doc, fn:unparsed-text,
@@ -294,46 +270,46 @@ func (inv Invocation) CollectionResolver(r xpath.CollectionResolver) Invocation 
 // fails. Explicit adapters own filesystem and network policy; the processor
 // owns decoding, operation-local resource accounting and cancellation checks.
 func (inv Invocation) URIResolver(r xpath.URIResolver) Invocation {
-	inv = inv.clone()
-	inv.cfg.uriResolver = r
+	out := inv.clone()
+	out.cfg.uriResolver = r
 
-	return inv
+	return out
 }
 
 // ParseOptions overrides XML parsing policy for this invocation and nested transforms,
 // including limits, base URI, permitted encodings and DTD handling. External DTD
 // access requires an explicit resolver in the options.
 func (inv Invocation) ParseOptions(p xdm.ParseOptions) Invocation {
-	inv = inv.clone()
-	inv.cfg.parseOptions = &p
+	out := inv.clone()
+	out.cfg.parseOptions = &p
 
-	return inv
+	return out
 }
 
 // BaseOutputURI sets the base output URI for current-output-uri().
 func (inv Invocation) BaseOutputURI(uri string) Invocation {
-	inv = inv.clone()
-	inv.cfg.baseOutputURI = uri
+	out := inv.clone()
+	out.cfg.baseOutputURI = uri
 
-	return inv
+	return out
 }
 
 // OnMultipleMatch sets the on-multiple-match behavior.
 func (inv Invocation) OnMultipleMatch(mode OnMultipleMatchMode) Invocation {
-	inv = inv.clone()
-	inv.cfg.onMultipleMatch = mode
+	out := inv.clone()
+	out.cfg.onMultipleMatch = mode
 
-	return inv
+	return out
 }
 
 // TraceWriter sets the destination for fn:trace output during transformation. Nil
 // discards trace output. A writer shared between invocations must be safe for
 // concurrent use.
 func (inv Invocation) TraceWriter(w io.Writer) Invocation {
-	inv = inv.clone()
-	inv.cfg.traceWriter = w
+	out := inv.clone()
+	out.cfg.traceWriter = w
 
-	return inv
+	return out
 }
 
 // GlobalContextSelect sets an XPath expression whose result (evaluated
@@ -342,19 +318,19 @@ func (inv Invocation) TraceWriter(w io.Writer) Invocation {
 // the global context item is absent and global variables referencing "."
 // will raise XPDY0002.
 func (inv Invocation) GlobalContextSelect(expr string) Invocation {
-	inv = inv.clone()
-	inv.cfg.globalContextSelect = expr
+	out := inv.clone()
+	out.cfg.globalContextSelect = expr
 
-	return inv
+	return out
 }
 
 // GlobalContextItem supplies a typed global context independently of the match
 // selection. A nil item explicitly selects an absent global context.
 func (inv Invocation) GlobalContextItem(item xdm.Item) Invocation {
-	inv = inv.clone()
-	inv.cfg.globalContextItem, inv.cfg.globalContextAbsent = item, item == nil
+	out := inv.clone()
+	out.cfg.globalContextItem, out.cfg.globalContextAbsent = item, item == nil
 
-	return inv
+	return out
 }
 
 // MaxResourceBytes sets the maximum number of bytes read from a single
@@ -379,11 +355,11 @@ func (inv Invocation) GlobalContextItem(item xdm.Item) Invocation {
 // (fn:unparsed-text-available returns false), and an over-cap fn:json-doc read
 // surfaces FODC0002.
 func (inv Invocation) MaxResourceBytes(n int64) Invocation {
-	inv = inv.clone()
-	inv.cfg.maxResourceBytes = n
-	inv.cfg.maxResourceBytesSet = true
+	out := inv.clone()
+	out.cfg.maxResourceBytes = n
+	out.cfg.maxResourceBytesSet = true
 
-	return inv
+	return out
 }
 
 // Do executes the transformation and returns the principal result document.

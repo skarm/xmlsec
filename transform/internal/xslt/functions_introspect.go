@@ -238,6 +238,18 @@ func (ec *execContext) fnCurrentMergeKey(_ context.Context, _ []xdm.Sequence) (x
 	return xdm.EmptySequence(), nil
 }
 
+func (ec *execContext) fnAccumulatorBefore(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return ec.accumulatorLookup(ctx, args, nameAccumulatorBefore, func() (map[xdm.Node]map[string]xdm.Sequence, map[xdm.Node]map[string]error) {
+		return ec.accumulatorBeforeByNode, ec.accumulatorBeforeErrorByNode
+	})
+}
+
+func (ec *execContext) fnAccumulatorAfter(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return ec.accumulatorLookup(ctx, args, nameAccumulatorAfter, func() (map[xdm.Node]map[string]xdm.Sequence, map[xdm.Node]map[string]error) {
+		return ec.accumulatorAfterByNode, ec.accumulatorAfterErrorByNode
+	})
+}
+
 // accumulatorLookup implements both accumulator-before() and accumulator-after().
 // The caller passes an accessor that returns the per-node value and error maps
 // for the appropriate phase. An accessor is used, in place of passing the maps

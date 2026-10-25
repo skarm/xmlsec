@@ -13,7 +13,7 @@ import (
 	"unicode"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	number "github.com/skarm/xmlsec/transform/internal/xpath/number"
+	"github.com/skarm/xmlsec/transform/internal/xpath/number"
 )
 
 // DecimalFormat aliases the shared decimal-picture symbol and formatting

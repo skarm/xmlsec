@@ -569,31 +569,14 @@ func lookupFunctionInvoker(capturedEC *evalContext, paramTypes []xdm.SequenceTyp
 		if len(callArgs) != arity {
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("fn:%s requires %d arguments, got %d", qv.Local, arity, len(callArgs))}
 		}
-		// Enforce the recorded parameter types, mirroring the named
-		// function-reference path in eval_funcall.go. Coercion may convert an
-		// argument (e.g. xs:untypedAtomic -> xs:integer); the coerced value must
-		// be what the function observes, so store it back into a copy of the
-		// argument slice, discarding nothing and invoking with no original.
+
 		if paramTypes != nil && !unavailableModuleFunction(fn) {
-			coerced := make([]xdm.Sequence, len(callArgs))
-			copy(coerced, callArgs)
+			var err error
 
-			for i, arg := range callArgs {
-				if parameter, declared := xdm.FunctionParameterType(paramTypes, repeated, i); declared {
-					// coerceFuncallArg surfaces a real typed error (FOTY0012 from
-					// atomizing an element-only node, FOTY0013, FORG0001, …) and maps
-					// only a plain mismatch to XPTY0004 — the boolean
-					// coerceToSequenceType would collapse FOTY0012 into XPTY0004.
-					c, err := coerceFuncallArg(ctx, arg, parameter, qv.Local, i, callEC)
-					if err != nil {
-						return nil, err
-					}
-
-					coerced[i] = c
-				}
+			callArgs, err = coerceFunctionArgs(ctx, callArgs, paramTypes, repeated, qv.Local, callEC)
+			if err != nil {
+				return nil, err
 			}
-
-			callArgs = coerced
 		}
 
 		return fn.Call(ctx, callArgs)

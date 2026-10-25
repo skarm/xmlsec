@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/saml/internal/expiry"
-	"github.com/skarm/xmlsec/saml/internal/xmlutil"
+	"github.com/skarm/xmlsec/saml/internal/profile"
 )
 
 var (
@@ -60,19 +60,19 @@ func (p Pending) Clone() Pending {
 // own detaches strings before persistence; callers may supply short substrings
 // backed by a much larger request. Read-only snapshots can share these strings.
 func (p Pending) own() Pending {
-	p = p.Clone()
-	p.SP = strings.Clone(p.SP)
-	p.IDP = strings.Clone(p.IDP)
-	p.RequestID = strings.Clone(p.RequestID)
-	p.RelayState = strings.Clone(p.RelayState)
-	p.ACS = strings.Clone(p.ACS)
+	out := p.Clone()
+	out.SP = strings.Clone(out.SP)
+	out.IDP = strings.Clone(out.IDP)
+	out.RequestID = strings.Clone(out.RequestID)
+	out.RelayState = strings.Clone(out.RelayState)
+	out.ACS = strings.Clone(out.ACS)
+	out.NameIDFormat = strings.Clone(out.NameIDFormat)
 
-	p.NameIDFormat = strings.Clone(p.NameIDFormat)
-	for i, value := range p.RequestedContexts {
-		p.RequestedContexts[i] = strings.Clone(value)
+	for i, value := range out.RequestedContexts {
+		out.RequestedContexts[i] = strings.Clone(value)
 	}
 
-	return p
+	return out
 }
 
 // Store retains pending requests. Put inserts without replacing an unexpired
@@ -173,12 +173,12 @@ func (m *MemoryStore) Put(ctx context.Context, p Pending, at time.Time) error {
 }
 
 func valid(p Pending, at time.Time, maxTTL time.Duration) bool {
-	if !xmlutil.URI(p.SP) || !xmlutil.URI(p.IDP) || !xmlutil.ID(p.RequestID) || len(p.RelayState) < 16 || len(p.RelayState) > 80 || !xmlutil.Endpoint(p.ACS, true) || p.IssuedAt.IsZero() || p.IssuedAt.After(at) || !p.ExpiresAt.After(at) || p.ExpiresAt.Sub(p.IssuedAt) > maxTTL || len(p.RequestedContexts) > 8 || p.NameIDFormat != "" && !xmlutil.URI(p.NameIDFormat) {
+	if !profile.URI(p.SP) || !profile.URI(p.IDP) || !profile.ID(p.RequestID) || len(p.RelayState) < 16 || len(p.RelayState) > 80 || !profile.Endpoint(p.ACS, true) || p.IssuedAt.IsZero() || p.IssuedAt.After(at) || !p.ExpiresAt.After(at) || p.ExpiresAt.Sub(p.IssuedAt) > maxTTL || len(p.RequestedContexts) > 8 || p.NameIDFormat != "" && !profile.URI(p.NameIDFormat) {
 		return false
 	}
 
 	for _, uri := range p.RequestedContexts {
-		if !xmlutil.URI(uri) {
+		if !profile.URI(uri) {
 			return false
 		}
 	}

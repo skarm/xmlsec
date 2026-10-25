@@ -1,6 +1,7 @@
 package ecdsakey_test
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -74,5 +75,32 @@ func TestBytesRejectMalformedKeys(t *testing.T) {
 		if raw, err := ecdsakey.PrivateBytes(key); raw != nil || err == nil {
 			t.Fatalf("malformed private key accepted: %x, %v", raw, err)
 		}
+	}
+}
+
+// Private encodings are caller-owned secrets and may be cleared after use.
+func TestPrivateBytesOwnStorage(t *testing.T) {
+	for _, curve := range []elliptic.Curve{elliptic.P224(), elliptic.P256(), elliptic.P384(), elliptic.P521()} {
+		t.Run(curve.Params().Name, func(t *testing.T) {
+			key, err := ecdsa.GenerateKey(curve, rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, err := ecdsakey.PrivateBytes(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := ecdsakey.PrivateBytes(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer clear(second)
+			want := bytes.Clone(second)
+			defer clear(want)
+			clear(first)
+			if !bytes.Equal(second, want) {
+				t.Fatal("clearing one private encoding changed another caller's encoding")
+			}
+		})
 	}
 }

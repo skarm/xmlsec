@@ -13,6 +13,7 @@ import (
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
+	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 )
 
@@ -132,7 +133,7 @@ func RenderPOSTForm(ctx context.Context, endpoint string, doc *document.Document
 // hidden field, without intermediate XML or encoded-message buffers. It leaves
 // dst open; errors may leave partial output which must be discarded.
 func WritePOSTForm(ctx context.Context, dst io.Writer, endpoint string, doc *document.Document, p Parameter, relay *string, limits POSTLimits) (int64, error) {
-	if !xmlutil.Endpoint(endpoint, false) {
+	if !profile.Endpoint(endpoint, false) {
 		return 0, ErrBinding
 	}
 

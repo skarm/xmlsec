@@ -13,16 +13,14 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/skarm/xmlsec/transform/internal/xdm"
-
-	norm "github.com/skarm/xmlsec/internal/normalization"
-
 	"github.com/skarm/xmlsec/internal/lexicon"
+	norm "github.com/skarm/xmlsec/internal/normalization"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/internal/xmloutput"
+	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/encoding"
-	htmlpkg "github.com/skarm/xmlsec/transform/internal/xdm/html"
-	lexical "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
+	"github.com/skarm/xmlsec/transform/internal/xdm/html"
+	"github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 )
 
 const (
@@ -272,8 +270,8 @@ func (opts serializeOptions) validate() error {
 	}
 
 	if opts.method == lexicon.MethodHTML {
-		version := htmlpkg.RequestedVersion(opts.htmlVersion, opts.xmlVersion)
-		if !htmlpkg.SupportedVersion(version) {
+		version := html.RequestedVersion(opts.htmlVersion, opts.xmlVersion)
+		if !html.SupportedVersion(version) {
 			return &xdm.Error{Code: lexicon.ErrSESU0013, Message: fmt.Sprintf("HTML output version %q is not supported", version)}
 		}
 	}
@@ -2694,7 +2692,7 @@ func (p *htmlSerializationProlog) before(item xdm.XMLItem) error {
 	}
 
 	p.seenElement = true
-	if p.explicit() || p.automatic && strings.EqualFold(element.LocalName(), "html") && htmlpkg.IsHTMLNamespace(element.URI(), true) {
+	if p.explicit() || p.automatic && strings.EqualFold(element.LocalName(), "html") && html.IsHTMLNamespace(element.URI(), true) {
 		_, err := p.buf.WriteString(htmlDoctype(p.opts))
 		p.emitted = err == nil
 
@@ -2704,8 +2702,8 @@ func (p *htmlSerializationProlog) before(item xdm.XMLItem) error {
 	return nil
 }
 
-func serializeHTMLWriter(opts serializeOptions) htmlpkg.Writer {
-	return htmlpkg.NewWriter().DefaultDTD(false).Format(false).PreserveCase(true).
+func serializeHTMLWriter(opts serializeOptions) html.Writer {
+	return html.NewWriter().DefaultDTD(false).Format(false).PreserveCase(true).
 		SerializationVersion(opts.edition).
 		EscapeURIAttributes(opts.escapeURIAttributes).CharacterMap(opts.charMap).
 		Repertoire(serializeRepertoire(opts.encoding)).CDATAElements(opts.cdataElements).
@@ -2788,7 +2786,7 @@ func writeDoctypeSystemLiteral(b *strings.Builder, sys string) {
 // HTML5 serialization (version ≥ 5). The default (unspecified) html-version is
 // 5.0. Parameter validation rejects unsupported values.
 func serializeHTMLIsVersion5(opts serializeOptions) bool {
-	version := htmlpkg.RequestedVersion(opts.htmlVersion, opts.xmlVersion)
+	version := html.RequestedVersion(opts.htmlVersion, opts.xmlVersion)
 	value, err := strconv.ParseFloat(version, 64)
 
 	return err == nil && value >= 5
@@ -2815,7 +2813,7 @@ func serializeXHTMLDocument(doc *xdm.Document, opts serializeOptions) (string, e
 		contentType = media + "; charset=" + name
 	}
 
-	if err := htmlpkg.PrepareXHTML(ctx, doc, html5, contentType); err != nil {
+	if err := html.PrepareXHTML(ctx, doc, html5, contentType); err != nil {
 		return "", err
 	}
 
@@ -2827,7 +2825,7 @@ func serializeXHTMLDocument(doc *xdm.Document, opts serializeOptions) (string, e
 		writer.OmitDoctype = false
 	}
 
-	htmlpkg.ConfigureXHTML(&writer.XMLWriteOptions, html5, opts.escapeURIAttributes, opts.edition)
+	html.ConfigureXHTML(&writer.XMLWriteOptions, html5, opts.escapeURIAttributes, opts.edition)
 
 	var buf serializationBuffer
 
@@ -2847,7 +2845,7 @@ func isSerializeXHTML5(opts serializeOptions) bool {
 func xhtmlAutomaticDoctype(doc *xdm.Document) bool {
 	for child := range xdm.Children(doc) {
 		if element, ok := child.(*xdm.Element); ok {
-			return htmlpkg.XHTMLIsElement(element.URI(), element.LocalName(), true) && strings.EqualFold(element.LocalName(), "html")
+			return html.XHTMLIsElement(element.URI(), element.LocalName(), true) && strings.EqualFold(element.LocalName(), "html")
 		}
 
 		if child.Type() == xdm.TextNode && strings.Trim(xdm.CharacterData(child), " \t\r\n") != "" {
@@ -3104,7 +3102,7 @@ func htmlXMLIslandNode(node xdm.Node, html5 bool) bool {
 		element, ok = node.Parent().(*xdm.Element)
 	}
 
-	return ok && !htmlpkg.IsHTMLNamespace(element.URI(), html5)
+	return ok && !html.IsHTMLNamespace(element.URI(), html5)
 }
 
 func checkHTMLCharacters(ctx context.Context, value string, html5 bool) error {

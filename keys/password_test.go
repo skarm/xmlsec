@@ -17,6 +17,7 @@ import (
 	"encoding/asn1"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"sync"
 	"testing"
@@ -87,6 +88,8 @@ func pkcs12FormBags(t *testing.T, key crypto.Signer, certificate *x509.Certifica
 }
 
 func TestPKCS12ExplicitIdentitiesAndSelection(t *testing.T) {
+	t.Parallel()
+
 	a, b := testcert.New(t), testcert.New(t)
 	bags := bytes.Join([][]byte{pkcs12FormBags(t, a.LeafKey, a.Leaf, false), pkcs12FormBags(t, b.LeafKey, b.Leaf, false)}, nil)
 	authenticated := der.Seq(pkcs12FormData(der.Seq(bags)))
@@ -120,6 +123,8 @@ func TestPKCS12ExplicitIdentitiesAndSelection(t *testing.T) {
 }
 
 func TestPKCS12BERAndNestedSafeContents(t *testing.T) {
+	t.Parallel()
+
 	c := testcert.New(t)
 	contents := der.Seq(pkcs12FormBags(t, c.LeafKey, c.Leaf, false))
 	bags := privateFields(t, contents)
@@ -161,6 +166,8 @@ func TestPKCS12BERAndNestedSafeContents(t *testing.T) {
 }
 
 func TestPKCS12MultipleIdentityWorkAndFailures(t *testing.T) {
+	t.Parallel()
+
 	a, b := testcert.New(t), testcert.New(t)
 	bags := bytes.Join([][]byte{pkcs12FormBags(t, a.LeafKey, a.Leaf, true), pkcs12FormBags(t, b.LeafKey, b.Leaf, true)}, nil)
 	authenticated := der.Seq(pkcs12FormData(der.Seq(bags)))
@@ -180,6 +187,8 @@ func TestPKCS12MultipleIdentityWorkAndFailures(t *testing.T) {
 }
 
 func TestPKCS12BEREncryptedContentAndStrictOpaqueFields(t *testing.T) {
+	t.Parallel()
+
 	c := testcert.New(t)
 	raw, err := keys.MarshalPKCS12(t.Context(), keys.PKCS12Identity{PrivateKey: c.LeafKey, Certificate: c.Leaf}, []byte("forms password"), keys.PKCS12Options{Encryption: protection(crypto.SHA256, 256)}, keys.Limits{})
 	if err != nil {
@@ -226,6 +235,8 @@ func TestPKCS12BEREncryptedContentAndStrictOpaqueFields(t *testing.T) {
 }
 
 func TestPrivateExportOwnership(t *testing.T) {
+	t.Parallel()
+
 	r, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -268,6 +279,8 @@ func TestPrivateExportOwnership(t *testing.T) {
 }
 
 func TestEncryptedPrivateKey(t *testing.T) {
+	t.Parallel()
+
 	c := testcert.New(t)
 
 	r, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -284,16 +297,21 @@ func TestEncryptedPrivateKey(t *testing.T) {
 	password := []byte("explicit\x00binary password")
 	beforePassword := bytes.Clone(password)
 
-	for _, key := range []crypto.Signer{r, c.LeafKey, ed} {
+	t.Cleanup(func() {
+		if !bytes.Equal(password, beforePassword) {
+			t.Fatal("password changed")
+		}
+	})
+
+	for name, key := range map[string]crypto.Signer{"rsa": r, "ec": c.LeafKey, "ed25519": ed} {
 		for _, hash := range []crypto.Hash{crypto.SHA256, crypto.SHA384, crypto.SHA512} {
 			for _, bits := range []int{128, 192, 256} {
-				checkEncryptedPrivateKeyCase(t, ctx, key, password, hash, bits)
+				t.Run(fmt.Sprintf("%s/%s/AES-%d", name, hash, bits), func(t *testing.T) {
+					t.Parallel()
+					checkEncryptedPrivateKeyCase(t, ctx, key, password, hash, bits)
+				})
 			}
 		}
-	}
-
-	if !bytes.Equal(password, beforePassword) {
-		t.Fatal("password changed")
 	}
 }
 
@@ -344,6 +362,8 @@ func checkEncryptedPrivateKeyCase(t *testing.T, ctx context.Context, key crypto.
 }
 
 func TestPKCS12Identity(t *testing.T) {
+	t.Parallel()
+
 	c := testcert.New(t)
 	identity := keys.PKCS12Identity{PrivateKey: c.LeafKey, Certificate: c.Leaf, ExtraCertificates: []*x509.Certificate{c.Root}}
 	ctx := context.Background()
@@ -351,7 +371,10 @@ func TestPKCS12Identity(t *testing.T) {
 	for _, classic := range []bool{false, true} {
 		for _, hash := range []crypto.Hash{crypto.SHA256, crypto.SHA384, crypto.SHA512} {
 			for _, bits := range []int{128, 192, 256} {
-				checkPKCS12IdentityCase(t, ctx, identity, classic, hash, bits)
+				t.Run(fmt.Sprintf("classic=%t/%s/AES-%d", classic, hash, bits), func(t *testing.T) {
+					t.Parallel()
+					checkPKCS12IdentityCase(t, ctx, identity, classic, hash, bits)
+				})
 			}
 		}
 	}
@@ -414,6 +437,8 @@ func checkPKCS12IdentityCase(t *testing.T, ctx context.Context, identity keys.PK
 }
 
 func TestPasswordProtectionPolicy(t *testing.T) {
+	t.Parallel()
+
 	c := testcert.New(t)
 	ctx := context.Background()
 	password := []byte("public test password")

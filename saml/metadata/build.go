@@ -12,6 +12,7 @@ import (
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -82,13 +83,13 @@ func Build(ctx context.Context, s EntityDescriptor, at time.Time, o Options) (*d
 	if id == "" {
 		var e error
 
-		id, e = xmlutil.NewID()
+		id, e = profile.NewID()
 		if e != nil {
 			return nil, e
 		}
 	}
 
-	if !xmlutil.ID(id) {
+	if !profile.ID(id) {
 		return nil, ErrMetadata
 	}
 
@@ -96,7 +97,7 @@ func Build(ctx context.Context, s EntityDescriptor, at time.Time, o Options) (*d
 	root.NS = []tree.Namespace{{Prefix: "md", URI: Namespace}, {Prefix: "ds", URI: xmlutil.DS}}
 	xmlutil.Set(root, "ID", id)
 	xmlutil.Set(root, "entityID", s.EntityID)
-	xmlutil.Set(root, nameValidUntil, xmlutil.Time(s.ValidUntil))
+	xmlutil.Set(root, nameValidUntil, profile.Time(s.ValidUntil))
 
 	if returned1Value, matchedBranch := buildCacheDuration(&s, root); matchedBranch {
 		return nil, returned1Value
@@ -168,7 +169,7 @@ func buildOrder(order []string, r *struct {
 }
 
 func buildIsZero(ctx context.Context, at *time.Time, s *EntityDescriptor) (returned1 error, matched bool) {
-	if ctx == nil || at.IsZero() || s.ValidUntil.IsZero() || !s.ValidUntil.After(*at) || s.SP == nil && s.IDP == nil || !xmlutil.URI(s.EntityID) {
+	if ctx == nil || at.IsZero() || s.ValidUntil.IsZero() || !s.ValidUntil.After(*at) || s.SP == nil && s.IDP == nil || !profile.URI(s.EntityID) {
 		return ErrMetadata, true
 	}
 
@@ -212,7 +213,7 @@ func buildEntries(ctx context.Context, s *EntityDescriptor, root *tree.Node, max
 		xmlutil.Set(n, "protocolSupportEnumeration", Protocol)
 
 		if !r.spec.ValidUntil.IsZero() {
-			xmlutil.Set(n, nameValidUntil, xmlutil.Time(r.spec.ValidUntil))
+			xmlutil.Set(n, nameValidUntil, profile.Time(r.spec.ValidUntil))
 		}
 
 		if r.kind == IdentityProvider {

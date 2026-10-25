@@ -3,6 +3,7 @@
 package ecdsakey
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"errors"
 )
@@ -28,8 +29,9 @@ func PublicBytes(key *ecdsa.PublicKey) (raw []byte, err error) {
 	return key.Bytes()
 }
 
-// PrivateBytes returns the raw scalar encoding of key, or an error for an
-// invalid key, including a nil key or missing coordinates or scalar.
+// PrivateBytes returns an owned raw scalar encoding of key, or an error for an
+// invalid key, including a nil key or missing coordinates or scalar. The caller
+// may clear the encoding without changing the key or another caller's encoding.
 func PrivateBytes(key *ecdsa.PrivateKey) (raw []byte, err error) {
 	if key == nil {
 		return nil, ErrInvalid
@@ -43,5 +45,9 @@ func PrivateBytes(key *ecdsa.PrivateKey) (raw []byte, err error) {
 		}
 	}()
 
-	return key.Bytes()
+	// Go 1.27 may return the internal cached encoding. Callers clear secret
+	// snapshots, so never return that borrowed storage.
+	encoded, err := key.Bytes()
+
+	return bytes.Clone(encoded), err
 }

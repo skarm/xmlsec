@@ -58,14 +58,7 @@ func (o ParseOptions) ParseText(ctx context.Context, text string) (*Document, er
 		return nil, err
 	}
 
-	view, err := WrapDocument(ctx, d)
-	if err != nil {
-		return nil, err
-	}
-
-	view.url = o.BaseURI
-
-	return view, nil
+	return o.wrapDocument(ctx, d)
 }
 
 // ParseReader incrementally constructs XDM nodes without buffering source XML.
@@ -75,14 +68,7 @@ func (o ParseOptions) ParseReader(ctx context.Context, r io.Reader) (*Document, 
 		return nil, err
 	}
 
-	view, err := WrapDocument(ctx, d)
-	if err != nil {
-		return nil, err
-	}
-
-	view.url = o.BaseURI
-
-	return view, nil
+	return o.wrapDocument(ctx, d)
 }
 
 // CheckXMLProlog checks bytes through the first complete element start tag.
@@ -97,7 +83,11 @@ func (o ParseOptions) ParseFragment(ctx context.Context, fragment string) (*Docu
 		return nil, err
 	}
 
-	view, err := WrapDocument(ctx, d)
+	return o.wrapDocument(ctx, d)
+}
+
+func (o ParseOptions) wrapDocument(ctx context.Context, doc *tree.Document) (*Document, error) {
+	view, err := WrapDocument(ctx, doc)
 	if err != nil {
 		return nil, err
 	}

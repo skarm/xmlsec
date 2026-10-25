@@ -1252,6 +1252,24 @@ func (c *compiler) compileLiteralText(text string) (*literalTextInst, error) {
 	return inst, nil
 }
 
+// compileBindingValue enforces the shared select/body rules for local variables
+// and with-param bindings, before compiling either representation.
+func (c *compiler) compileBindingValue(ctx context.Context, elem *xdm.Element, kind, name string) (*xpath.Expression, []instruction, error) {
+	if selectAttr, present := elem.GetAttribute(xslAttrSelect); present {
+		if err := c.validateEmptyElement(ctx, elem, kind); err != nil {
+			return nil, nil, staticError(errCodeXTSE0620, "%s %q has both @select and content", kind, name)
+		}
+
+		expr, err := c.compileXPath(selectAttr, c.nsBindings)
+
+		return expr, nil, err
+	}
+
+	body, err := c.compileChildren(ctx, elem)
+
+	return nil, body, err
+}
+
 func (c *compiler) compileLocalVariable(ctx context.Context, elem *xdm.Element) (*variableInst, error) {
 	name := getAttr(elem, xslAttrName)
 	if name == "" {
@@ -1278,27 +1296,13 @@ func (c *compiler) compileLocalVariable(ctx context.Context, elem *xdm.Element) 
 		inst.StaticBaseURI = effectiveBase
 	}
 
-	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
-	if hasSelect {
-		// XTSE0620: select and non-empty content are mutually exclusive.
-		if err := c.validateEmptyElement(ctx, elem, "xsl:variable"); err != nil {
-			return nil, staticError(errCodeXTSE0620, "xsl:variable %q has both @select and content", name)
-		}
-
-		expr, err := c.compileXPath(selectAttr, c.nsBindings)
-		if err != nil {
-			return nil, err
-		}
-
-		inst.Select = expr
-	} else {
-		body, err := c.compileChildren(ctx, elem)
-		if err != nil {
-			return nil, err
-		}
-
-		inst.Body = body
+	selectExpr, body, err := c.compileBindingValue(ctx, elem, "xsl:variable", name)
+	if err != nil {
+		return nil, err
 	}
+
+	inst.Select = selectExpr
+	inst.Body = body
 
 	return inst, nil
 }

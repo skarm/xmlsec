@@ -107,6 +107,12 @@ existing `_test.go` files; split by responsibility when useful. Use external
 state, and `example_test.go` for executable GoDoc examples. Build/platform
 constraints may require separate files.
 
+Tests that measure process-wide heap/allocation counters or change GC settings
+must remain sequential. Independent functional tests can use `t.Parallel`;
+Go runs those after sequential tests, keeping memory measurements isolated.
+Use `t.Cleanup` for fixture ownership assertions that must run after every
+parallel subtest has finished.
+
 Cross-package workflows live in `tests/integration`. `TestExternalConsumer` copies
 the separate module in `tests/testdata/consumer` outside the repository and runs
 it with a local module replacement, `GOWORK=off` and `-mod=readonly`. Ordinary

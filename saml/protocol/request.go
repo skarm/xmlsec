@@ -10,6 +10,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/saml/binding"
+	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/saml/metadata"
@@ -220,7 +221,7 @@ func verifyRequest(ctx context.Context, d *document.Document, keys []crypto.Publ
 }
 
 func validateRequestInputs(ctx context.Context, d *document.Document, options RequestOptions) error {
-	if ctx == nil || d == nil || options.At.IsZero() || !xmlutil.URI(options.Issuer) || !xmlutil.Endpoint(options.Destination, true) || len(options.ACS) == 0 || len(options.ACS) > 128 {
+	if ctx == nil || d == nil || options.At.IsZero() || !profile.URI(options.Issuer) || !profile.Endpoint(options.Destination, true) || len(options.ACS) == 0 || len(options.ACS) > 128 {
 		return ErrProfile
 	}
 
@@ -311,7 +312,7 @@ func selectRequestACS(root document.Element, authorized []metadata.Endpoint) (st
 		return "", ErrProfile
 	}
 
-	if !xmlutil.Endpoint(chosen.Location, true) {
+	if !profile.Endpoint(chosen.Location, true) {
 		return "", ErrProfile
 	}
 
@@ -321,12 +322,12 @@ func selectRequestACS(root document.Element, authorized []metadata.Endpoint) (st
 func readAuthnRequestFlags(root document.Element, request *VerifiedRequest) error {
 	var err error
 
-	request.force, err = xmlutil.Bool(xmlutil.Attr(root, "ForceAuthn"))
+	request.force, err = profile.Bool(xmlutil.Attr(root, "ForceAuthn"))
 	if err != nil {
 		return err
 	}
 
-	request.passive, err = xmlutil.Bool(xmlutil.Attr(root, "IsPassive"))
+	request.passive, err = profile.Bool(xmlutil.Attr(root, "IsPassive"))
 	if err != nil || request.force && request.passive {
 		return ErrProfile
 	}
@@ -364,7 +365,7 @@ func readRequestNameIDPolicy(policy document.Element, expectedIssuer string, req
 	}
 
 	if format := xmlutil.Attr(policy, "Format"); format != "" {
-		if !xmlutil.URI(format) {
+		if !profile.URI(format) {
 			return ErrProfile
 		}
 
@@ -378,7 +379,7 @@ func readRequestNameIDPolicy(policy document.Element, expectedIssuer string, req
 
 	var err error
 
-	request.allowCreate, err = xmlutil.Bool(xmlutil.Attr(policy, "AllowCreate"))
+	request.allowCreate, err = profile.Bool(xmlutil.Attr(policy, "AllowCreate"))
 
 	return err
 }
@@ -403,7 +404,7 @@ func appendRequestContexts(contexts []document.Element, request *VerifiedRequest
 		}
 
 		value, err := xmlutil.Simple(element, 2048)
-		if err != nil || !xmlutil.URI(value) {
+		if err != nil || !profile.URI(value) {
 			return ErrProfile
 		}
 
@@ -440,27 +441,27 @@ type AuthnRequest struct {
 
 // BuildAuthnRequest builds an unsigned AuthnRequest in the supported solicited profile.
 func BuildAuthnRequest(ctx context.Context, s AuthnRequest) (*document.Document, error) {
-	if ctx == nil || s.IssueInstant.IsZero() || !xmlutil.URI(s.Issuer) || !xmlutil.Endpoint(s.Destination, true) || !xmlutil.Endpoint(s.ACS, true) || s.ForceAuthn && s.IsPassive {
+	if ctx == nil || s.IssueInstant.IsZero() || !profile.URI(s.Issuer) || !profile.Endpoint(s.Destination, true) || !profile.Endpoint(s.ACS, true) || s.ForceAuthn && s.IsPassive {
 		return nil, ErrProfile
 	}
 
 	if s.ID == "" {
 		var e error
 
-		s.ID, e = xmlutil.NewID()
+		s.ID, e = profile.NewID()
 		if e != nil {
 			return nil, e
 		}
 	}
 
-	if !xmlutil.ID(s.ID) {
+	if !profile.ID(s.ID) {
 		return nil, ErrProfile
 	}
 
 	n := xmlutil.Node("samlp", ProtocolNamespace, "AuthnRequest")
 
 	n.NS = []tree.Namespace{{Prefix: "samlp", URI: ProtocolNamespace}, {Prefix: "saml", URI: AssertionNamespace}, {Prefix: "ds", URI: xmlutil.DS}}
-	for _, a := range [][2]string{{"ID", s.ID}, {nameVersion, version20}, {nameIssueInstant, xmlutil.Time(s.IssueInstant)}, {nameDestination, s.Destination}, {"AssertionConsumerServiceURL", s.ACS}, {"ProtocolBinding", metadata.HTTPPost}, {"ForceAuthn", strconv.FormatBool(s.ForceAuthn)}, {"IsPassive", strconv.FormatBool(s.IsPassive)}} {
+	for _, a := range [][2]string{{"ID", s.ID}, {nameVersion, version20}, {nameIssueInstant, profile.Time(s.IssueInstant)}, {nameDestination, s.Destination}, {"AssertionConsumerServiceURL", s.ACS}, {"ProtocolBinding", metadata.HTTPPost}, {"ForceAuthn", strconv.FormatBool(s.ForceAuthn)}, {"IsPassive", strconv.FormatBool(s.IsPassive)}} {
 		xmlutil.Set(n, a[0], a[1])
 	}
 
@@ -469,7 +470,7 @@ func BuildAuthnRequest(ctx context.Context, s AuthnRequest) (*document.Document,
 	xmlutil.Add(n, iss)
 
 	if s.NameIDFormat != "" || s.AllowCreateNameID {
-		if s.NameIDFormat != "" && !xmlutil.URI(s.NameIDFormat) {
+		if s.NameIDFormat != "" && !profile.URI(s.NameIDFormat) {
 			return nil, ErrProfile
 		}
 
@@ -491,7 +492,7 @@ func BuildAuthnRequest(ctx context.Context, s AuthnRequest) (*document.Document,
 		xmlutil.Set(p, "Comparison", "exact")
 
 		for _, s := range s.RequestedContexts {
-			if !xmlutil.URI(s) {
+			if !profile.URI(s) {
 				return nil, ErrProfile
 			}
 

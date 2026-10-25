@@ -17,6 +17,7 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/x509cert"
+	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -499,7 +500,7 @@ func expiry(e document.Element, at, parent time.Time) (time.Time, error) {
 	out := parent
 
 	if s := xmlutil.Attr(e, nameValidUntil); s != "" {
-		t, er := xmlutil.ParseTime(s)
+		t, er := profile.ParseTime(s)
 		if er != nil {
 			return time.Time{}, er
 		}
@@ -510,7 +511,7 @@ func expiry(e document.Element, at, parent time.Time) (time.Time, error) {
 	}
 
 	if s := xmlutil.Attr(e, nameCacheDuration); s != "" {
-		d, er := xmlutil.Duration(s)
+		d, er := profile.Duration(s)
 		if er != nil {
 			return time.Time{}, er
 		}
@@ -579,7 +580,7 @@ func (p *metadataParser) visitGroup(element document.Element, expires time.Time,
 		return ErrMetadata
 	}
 
-	if id := xmlutil.Attr(element, "ID"); id != "" && !xmlutil.ID(id) {
+	if id := xmlutil.Attr(element, "ID"); id != "" && !profile.ID(id) {
 		return ErrMetadata
 	}
 
@@ -618,11 +619,11 @@ func (p *metadataParser) visitEntity(element document.Element, expires time.Time
 	}
 
 	id := xmlutil.Attr(element, "entityID")
-	if !xmlutil.URI(id) || p.snapshot.entities[id] != nil || len(p.snapshot.entities) >= p.options.MaxEntities {
+	if !profile.URI(id) || p.snapshot.entities[id] != nil || len(p.snapshot.entities) >= p.options.MaxEntities {
 		return ErrMetadata
 	}
 
-	if xmlID := xmlutil.Attr(element, "ID"); xmlID != "" && !xmlutil.ID(xmlID) {
+	if xmlID := xmlutil.Attr(element, "ID"); xmlID != "" && !profile.ID(xmlID) {
 		return ErrMetadata
 	}
 
@@ -726,17 +727,17 @@ func roleSupportsProtocol(element document.Element) bool {
 func readRoleSigningFlags(element document.Element, role *Role) error {
 	var err error
 
-	role.authnSigned, err = xmlutil.Bool(xmlutil.Attr(element, "AuthnRequestsSigned"))
+	role.authnSigned, err = profile.Bool(xmlutil.Attr(element, "AuthnRequestsSigned"))
 	if err != nil {
 		return err
 	}
 
-	role.wantAuthnSigned, err = xmlutil.Bool(xmlutil.Attr(element, "WantAuthnRequestsSigned"))
+	role.wantAuthnSigned, err = profile.Bool(xmlutil.Attr(element, "WantAuthnRequestsSigned"))
 	if err != nil {
 		return err
 	}
 
-	role.wantAssertionsSigned, err = xmlutil.Bool(xmlutil.Attr(element, "WantAssertionsSigned"))
+	role.wantAssertionsSigned, err = profile.Bool(xmlutil.Attr(element, "WantAssertionsSigned"))
 
 	return err
 }
@@ -804,7 +805,7 @@ func appendRoleKeys(ctx context.Context, role *Role, descriptor document.Element
 
 func appendRoleNameIDFormat(role *Role, element document.Element) error {
 	format, err := xmlutil.Simple(element, 2048)
-	if err != nil || !xmlutil.URI(format) {
+	if err != nil || !profile.URI(format) {
 		return ErrMetadata
 	}
 
@@ -831,7 +832,7 @@ func parseEndpoint(c document.Element, o Options) (Endpoint, error) {
 	}
 
 	e := Endpoint{Binding: xmlutil.Attr(c, "Binding"), Location: xmlutil.Attr(c, "Location"), ResponseLocation: xmlutil.Attr(c, "ResponseLocation"), Indexed: indexed}
-	if !xmlutil.URI(e.Binding) || !xmlutil.Endpoint(e.Location, o.AllowHTTP) || e.ResponseLocation != "" && !xmlutil.Endpoint(e.ResponseLocation, o.AllowHTTP) {
+	if !profile.URI(e.Binding) || !profile.Endpoint(e.Location, o.AllowHTTP) || e.ResponseLocation != "" && !profile.Endpoint(e.ResponseLocation, o.AllowHTTP) {
 		return Endpoint{}, ErrMetadata
 	}
 
@@ -844,7 +845,7 @@ func parseEndpoint(c document.Element, o Options) (Endpoint, error) {
 		e.Index = uint16(n)
 		_, e.DefaultSet = c.Attribute(document.Name{Local: "isDefault"})
 
-		e.Default, err = xmlutil.Bool(xmlutil.Attr(c, "isDefault"))
+		e.Default, err = profile.Bool(xmlutil.Attr(c, "isDefault"))
 		if err != nil {
 			return Endpoint{}, err
 		}

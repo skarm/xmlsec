@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/testutil"
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
@@ -53,23 +54,7 @@ func TestCoreIndependentFixtures(t *testing.T) {
 
 func coreFixtureKey(t testing.TB, name string) crypto.PublicKey {
 	t.Helper()
-
-	raw, e := os.ReadFile(filepath.Join("..", "..", "..", "testdata", "core", name))
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		t.Fatal("fixture PEM")
-	}
-
-	key, e := x509.ParsePKIXPublicKey(block.Bytes)
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return key
+	return testutil.ReadPublicKey(t, filepath.Join("..", "..", "..", "testdata", "core", name))
 }
 
 func testCoreIndependentFixturesCase(t *testing.T, tc *coreFixtureCase, dir *string) {
@@ -215,23 +200,7 @@ func loadDetachedResources(t testing.TB) ([]string, xmldsig.Resolver) {
 
 func loadDetachedKey(t testing.TB, name string) crypto.PublicKey {
 	t.Helper()
-
-	data, err := os.ReadFile(filepath.Join("..", "..", "..", "testdata", "detached", name))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	block, _ := pem.Decode(data)
-	if block == nil {
-		t.Fatal("bad fixture PEM")
-	}
-
-	key, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return key
+	return testutil.ReadPublicKey(t, filepath.Join("..", "..", "..", "testdata", "detached", name))
 }
 
 // TestIndependentFixtures verifies signatures produced by lxml/libxml2 and

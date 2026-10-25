@@ -22,8 +22,10 @@ configuration. The [API guide](usage.md) describes how to compose these packages
 ## XML and transforms
 
 `document` exposes immutable XML snapshots and node handles backed by
-`internal/tree`. A handle belongs to one snapshot. Signing, decryption and
-replacement return new snapshots; callers use the returned handles to read the
+`internal/tree`. Internal metadata operations are package functions in
+`internal/tree/metadata.go`, keeping draft mutation out of the aliased public
+`document.Document` method set. A handle belongs to one snapshot. Signing,
+decryption and replacement return new snapshots; callers use the returned handles to read the
 result. `c14n` writes canonical XML from documents, subtrees or explicit node sets.
 
 `reference` executes bounded transform chains. It supports built-in transforms
@@ -71,6 +73,11 @@ The SAML packages separate wire encoding, protocol checks and application flow:
 Both memory stores use `saml/internal/expiry` for expiration. They coordinate one
 process; multiple application instances need shared atomic storage. User
 authentication, HTTP handlers, cookies and application sessions belong to callers.
+
+`saml/internal/profile` owns bounded scalar rules for IDs, URIs, endpoints,
+booleans and time values, plus ID generation. Both XML adapters and request state
+use those rules directly. `saml/internal/xmlutil` handles XML structure and draft
+construction; request storage does not depend on it or the document tree.
 
 ## Resources and ownership
 

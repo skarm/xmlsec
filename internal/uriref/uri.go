@@ -10,7 +10,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
@@ -107,7 +106,7 @@ func Resolve(value string, base *url.URL, resource string, source *tree.Node) (s
 
 	for _, n := range slices.Backward(ancestors) {
 		for _, attr := range n.Attrs {
-			if attr.Name != (document.Name{Space: document.XMLNamespace, Local: "base"}) {
+			if attr.Name != (tree.Name{Space: tree.XMLNamespace, Local: "base"}) {
 				continue
 			}
 

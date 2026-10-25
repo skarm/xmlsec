@@ -48,28 +48,20 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 	ec.cachedFnsPackage = ec.effectiveStylesheet()
 
 	ec.cachedFns = map[string]xpath.Function{
-		fnNameCurrent:              &xsltFunc{min: 0, max: 0, fn: ec.fnCurrent, noDynRef: true, dynRefError: errCodeXTDE1360},
-		fnNameDocument:             &xsltFunc{min: 1, max: 2, fn: ec.fnDocument},
-		nameKey2:                   &keyFunction{ec: ec, scope: ec.effectiveStylesheet()},
-		lexicon.FnGenerateID:       xpath.HostBuiltin(ec.stylesheet.xpathVersion(), lexicon.FnGenerateID),
-		funcSystemProperty:         newIntrospectionFunc(funcSystemProperty, ec.fnSystemProperty),
-		nameUnparsedEntityURI:      &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityURI},
-		nameUnparsedEntityPublicID: &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityPublicID},
-		fnNameElementAvailable:     newIntrospectionFunc(fnNameElementAvailable, ec.fnElementAvailable),
-		fnNameFunctionAvailable:    newIntrospectionFunc(fnNameFunctionAvailable, ec.fnFunctionAvailable),
-		fnNameTypeAvailable:        newIntrospectionFunc(fnNameTypeAvailable, ec.fnTypeAvailable),
-		fnNameCurrentGroup:         &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentGroup, noDynRef: true, dynRefError: errCodeXTDE1061},
-		fnNameCurrentGroupingKey:   &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentGroupingKey, noDynRef: true, dynRefError: errCodeXTDE1071},
-		nameAccumulatorBefore: &xsltFunc{min: 1, max: 1, fn: func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-			return ec.accumulatorLookup(ctx, args, nameAccumulatorBefore, func() (map[xdm.Node]map[string]xdm.Sequence, map[xdm.Node]map[string]error) {
-				return ec.accumulatorBeforeByNode, ec.accumulatorBeforeErrorByNode
-			})
-		}},
-		nameAccumulatorAfter: &xsltFunc{min: 1, max: 1, fn: func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-			return ec.accumulatorLookup(ctx, args, nameAccumulatorAfter, func() (map[xdm.Node]map[string]xdm.Sequence, map[xdm.Node]map[string]error) {
-				return ec.accumulatorAfterByNode, ec.accumulatorAfterErrorByNode
-			})
-		}},
+		fnNameCurrent:                 &xsltFunc{min: 0, max: 0, fn: ec.fnCurrent, noDynRef: true, dynRefError: errCodeXTDE1360},
+		fnNameDocument:                &xsltFunc{min: 1, max: 2, fn: ec.fnDocument},
+		nameKey2:                      &keyFunction{ec: ec, scope: ec.effectiveStylesheet()},
+		lexicon.FnGenerateID:          xpath.HostBuiltin(ec.stylesheet.xpathVersion(), lexicon.FnGenerateID),
+		funcSystemProperty:            newIntrospectionFunc(funcSystemProperty, ec.fnSystemProperty),
+		nameUnparsedEntityURI:         &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityURI},
+		nameUnparsedEntityPublicID:    &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityPublicID},
+		fnNameElementAvailable:        newIntrospectionFunc(fnNameElementAvailable, ec.fnElementAvailable),
+		fnNameFunctionAvailable:       newIntrospectionFunc(fnNameFunctionAvailable, ec.fnFunctionAvailable),
+		fnNameTypeAvailable:           newIntrospectionFunc(fnNameTypeAvailable, ec.fnTypeAvailable),
+		fnNameCurrentGroup:            &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentGroup, noDynRef: true, dynRefError: errCodeXTDE1061},
+		fnNameCurrentGroupingKey:      &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentGroupingKey, noDynRef: true, dynRefError: errCodeXTDE1071},
+		nameAccumulatorBefore:         &xsltFunc{min: 1, max: 1, fn: ec.fnAccumulatorBefore},
+		nameAccumulatorAfter:          &xsltFunc{min: 1, max: 1, fn: ec.fnAccumulatorAfter},
 		fnNameCopyOf:                  &xsltFunc{min: 0, max: 1, fn: ec.fnCopyOf},
 		funcSnapshot:                  &xsltFunc{min: 0, max: 1, fn: ec.fnSnapshot},
 		nameRegexGroup:                &xsltFunc{min: 1, max: 1, fn: ec.fnRegexGroup},

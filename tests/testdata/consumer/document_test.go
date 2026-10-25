@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -15,6 +17,21 @@ import (
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 )
+
+// TestDocumentPublicMethods guards the immutable API against internal methods
+// leaking through the document.Document alias. New public methods must be
+// deliberately added here after reviewing their ownership contract.
+func TestDocumentPublicMethods(t *testing.T) {
+	want := []string{"AllNodes", "Node", "Root", "WriteXML", "XML"}
+	typ := reflect.TypeFor[*document.Document]()
+	got := make([]string, typ.NumMethod())
+	for i := range got {
+		got[i] = typ.Method(i).Name
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Document method set exposes unreviewed operations: got %v, want %v", got, want)
+	}
+}
 
 func TestRecordsEmitBeforeReadingRemainder(t *testing.T) {
 	emitted := 0

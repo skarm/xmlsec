@@ -9,11 +9,9 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +24,7 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/testutil"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/transform"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -789,23 +788,7 @@ func loadDetachedResources(t testing.TB) ([]string, xmldsig.Resolver) {
 
 func loadDetachedKey(t testing.TB, name string) crypto.PublicKey {
 	t.Helper()
-
-	data, err := os.ReadFile(filepath.Join("..", "testdata", "detached", name))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	block, _ := pem.Decode(data)
-	if block == nil {
-		t.Fatal("bad fixture PEM")
-	}
-
-	key, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return key
+	return testutil.ReadPublicKey(t, filepath.Join("..", "testdata", "detached", name))
 }
 
 func sourceMap(resources map[string][]byte) xmldsig.Resolver {

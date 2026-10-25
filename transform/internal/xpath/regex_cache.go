@@ -75,8 +75,7 @@ func (c *regexLRUCache) LoadOrStore(key xpathRegexCacheKey, value *compiledXPath
 		return value, false
 	}
 
-	for c.ll.Len() >= c.cap || weight > xpathRegexCacheBytes-c.bytes {
-		oldest := c.ll.Back()
+	for oldest := c.ll.Back(); oldest != nil && (c.ll.Len() >= c.cap || weight > xpathRegexCacheBytes-c.bytes); oldest = c.ll.Back() {
 		entry := oldest.Value.(*regexLRUEntry) //nolint:forcetypeassert // Only regexLRUEntry values are inserted.
 		c.ll.Remove(oldest)
 		delete(c.items, entry.key)

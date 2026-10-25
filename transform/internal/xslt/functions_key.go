@@ -112,8 +112,8 @@ func (ec *execContext) fnKey(ctx context.Context, args []xdm.Sequence) (xdm.Sequ
 }
 
 func documentRoot(node xdm.Node) xdm.Node {
-	for node.Parent() != nil {
-		node = node.Parent()
+	for parent := node.Parent(); parent != nil; parent = node.Parent() {
+		node = parent
 	}
 
 	return node

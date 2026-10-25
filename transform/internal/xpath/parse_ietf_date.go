@@ -147,29 +147,7 @@ func (p *ietfDateParser) parseRFC() (time.Time, error) {
 		return time.Time{}, err
 	}
 
-	p.skipWS()
-
-	if p.pos < len(p.input) {
-		return time.Time{}, fmt.Errorf("unexpected trailing content: %q", p.input[p.pos:])
-	}
-
-	if err := validateIETFDate(year, month, day, hour, minute, sec); err != nil {
-		return time.Time{}, err
-	}
-
-	ns := int(frac * 1e9)
-
-	if hour == 24 {
-		hour = 0
-		// advance to next day
-		t := time.Date(year, time.Month(month), day+1, hour, minute, sec, ns, loc)
-
-		return t, nil
-	}
-
-	t := time.Date(year, time.Month(month), day, hour, minute, sec, ns, loc)
-
-	return t, nil
+	return p.finishDate(year, month, day, hour, minute, sec, frac, loc)
 }
 
 // parseAsctime parses: month day time year [timezone]
@@ -234,6 +212,10 @@ func (p *ietfDateParser) parseAsctime() (time.Time, error) {
 		loc = time.UTC
 	}
 
+	return p.finishDate(year, month, day, hour, minute, sec, frac, loc)
+}
+
+func (p *ietfDateParser) finishDate(year, month, day, hour, minute, sec int, frac float64, loc *time.Location) (time.Time, error) {
 	p.skipWS()
 
 	if p.pos < len(p.input) {
@@ -248,6 +230,7 @@ func (p *ietfDateParser) parseAsctime() (time.Time, error) {
 
 	if hour == 24 {
 		hour = 0
+		// advance to next day
 		t := time.Date(year, time.Month(month), day+1, hour, minute, sec, ns, loc)
 
 		return t, nil

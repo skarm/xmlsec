@@ -186,6 +186,8 @@ type UnparsedEntity struct {
 
 // Document is an immutable, namespace-aware XML 1.0 snapshot.
 // It owns its data and may be read concurrently.
+// This type is aliased by the public document package. Internal draft operations
+// must be package functions so they cannot enter the public method set.
 type Document struct {
 	children         []*Node
 	root             *Node
@@ -195,60 +197,6 @@ type Document struct {
 	nodeBases        map[*Node]string
 	dtdTypes         map[dtdAttributeKey]DTDAttributeType
 	views            sync.Map
-}
-
-// NodeBase returns the retained retrieval base for a private node, or empty when none is
-// recorded.
-func (d *Document) NodeBase(node *Node) string { return d.nodeBases[node] }
-
-// CopyUnparsedEntities retains immutable declaration metadata on document copies.
-func (d *Document) CopyUnparsedEntities(source *Document) {
-	d.unparsedEntities = source.unparsedEntities
-}
-
-// SetNodeBase changes retrieval metadata on an internal draft. An empty base removes the
-// entry. Callers must not mutate published snapshots.
-func (d *Document) SetNodeBase(node *Node, base string) {
-	if base == "" {
-		delete(d.nodeBases, node)
-		return
-	}
-
-	if d.nodeBases == nil {
-		d.nodeBases = make(map[*Node]string)
-	}
-
-	d.nodeBases[node] = base
-}
-
-// AttributeDTDType returns the retained DTD ID or IDREF classification, or DTDNoType
-// when absent.
-func (d *Document) AttributeDTDType(node *Node, name Name) DTDAttributeType {
-	return d.dtdTypes[dtdAttributeKey{node, name}]
-}
-
-// SetAttributeDTDType changes DTD metadata on an internal draft. DTDNoType removes the
-// entry. Callers must not mutate published snapshots.
-func (d *Document) SetAttributeDTDType(node *Node, name Name, kind DTDAttributeType) {
-	key := dtdAttributeKey{node, name}
-
-	if kind == DTDNoType {
-		delete(d.dtdTypes, key)
-		return
-	}
-
-	if d.dtdTypes == nil {
-		d.dtdTypes = make(map[dtdAttributeKey]DTDAttributeType)
-	}
-
-	d.dtdTypes[key] = kind
-}
-
-// UnparsedEntity returns a retained unparsed entity declaration and reports whether it
-// exists. It performs no resource retrieval.
-func (d *Document) UnparsedEntity(name string) (UnparsedEntity, bool) {
-	entity, ok := d.unparsedEntities[name]
-	return entity, ok
 }
 
 // Unwrap returns the private snapshot and node represented by an immutable handle.
@@ -303,8 +251,8 @@ func Clone(ctx context.Context, d *Document) (*Document, error) {
 		}
 
 		for _, attribute := range n.Attrs {
-			if kind := d.AttributeDTDType(n, attribute.Name); kind != DTDNoType {
-				out.SetAttributeDTDType(x, attribute.Name, kind)
+			if kind := AttributeDTDType(d, n, attribute.Name); kind != DTDNoType {
+				SetAttributeDTDType(out, x, attribute.Name, kind)
 			}
 		}
 

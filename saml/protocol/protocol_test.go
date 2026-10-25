@@ -15,6 +15,7 @@ import (
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/saml/binding"
+	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/saml/metadata"
@@ -131,15 +132,15 @@ func TestCryptographicallyValidSemanticFailures(t *testing.T) {
 		{"signed other recipient", func(n *tree.Node) { set(find(n, "SubjectConfirmationData"), "Recipient", "https://evil.test") }},
 		{"signed wrong confirmation request", func(n *tree.Node) { set(find(n, "SubjectConfirmationData"), "InResponseTo", "_other") }},
 		{"forbidden bearer NotBefore", func(n *tree.Node) {
-			set(find(n, "SubjectConfirmationData"), "NotBefore", xmlutil.Time(testcert.Now().Add(-time.Minute)))
+			set(find(n, "SubjectConfirmationData"), "NotBefore", profile.Time(testcert.Now().Add(-time.Minute)))
 		}},
 		{"unknown confirmation method", func(n *tree.Node) { set(find(n, "SubjectConfirmation"), "Method", "urn:unsupported") }},
 		{"address without trusted client input", func(n *tree.Node) { set(find(n, "SubjectConfirmationData"), "Address", "192.0.2.1") }},
 		{"expired confirmation", func(n *tree.Node) {
-			set(find(n, "SubjectConfirmationData"), "NotOnOrAfter", xmlutil.Time(testcert.Now()))
+			set(find(n, "SubjectConfirmationData"), "NotOnOrAfter", profile.Time(testcert.Now()))
 		}},
 		{"future conditions", func(n *tree.Node) {
-			set(find(n, "Conditions"), "NotBefore", xmlutil.Time(testcert.Now().Add(time.Minute)))
+			set(find(n, "Conditions"), "NotBefore", profile.Time(testcert.Now().Add(time.Minute)))
 		}},
 		{"bad qualifier", func(n *tree.Node) { set(find(n, "NameID"), "NameQualifier", "https://other.test") }},
 		{"duplicate attribute", func(n *tree.Node) {

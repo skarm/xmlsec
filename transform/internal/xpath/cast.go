@@ -16,7 +16,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	lexical "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
+	"github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 )
 
 func validateVersionedCast(ctx context.Context, source xdm.AtomicValue, target string) error {

@@ -3981,7 +3981,7 @@ func runXSLTResidualNumberProfiles(t *testing.T, directory string) {
 		}
 		rawInput, sourcePath := xsltResidualInputBytes(t, options, item)
 		oracle, _ := xsltResidualSaxonOriginal(t, options, item, original.Environment, rawInput, sourcePath)
-		actualText, oracleText := string([]byte(residualSequenceText(t, actual))), string(oracle)
+		actualText, oracleText := residualSequenceText(t, actual), string(oracle)
 		withoutGreek := func(raw string) []string {
 			tokens := xsltResidualXMLTokens(t, []byte(raw), false, true)
 			for i, token := range tokens {

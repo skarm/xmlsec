@@ -28,11 +28,8 @@ func lookupXSLTElementInfo(name string) (xsltElementInfo, bool) {
 
 func lookupRootElementInfo(name string) (xsltElementInfo, bool) {
 	switch name {
-	case lexicon.XSLTElementStylesheet:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementRoot, implemented: true,
-		}, true
-	case lexicon.XSLTElementTransform:
+	case lexicon.XSLTElementStylesheet,
+		lexicon.XSLTElementTransform:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion10, context: elementRoot, implemented: true,
 		}, true
@@ -47,19 +44,13 @@ func lookupRootElementInfo(name string) (xsltElementInfo, bool) {
 
 func lookupPackageElementInfo(name string) (xsltElementInfo, bool) {
 	switch name {
-	case lexicon.XSLTElementExpose:
+	case lexicon.XSLTElementExpose,
+		lexicon.XSLTElementUsePackage:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion30, context: elementTopLevel, implemented: true,
 		}, true
-	case lexicon.XSLTElementUsePackage:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementTopLevel, implemented: true,
-		}, true
-	case lexicon.XSLTElementAccept:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementChildOnly, implemented: true,
-		}, true
-	case lexicon.XSLTElementOverride:
+	case lexicon.XSLTElementAccept,
+		lexicon.XSLTElementOverride:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion30, context: elementChildOnly, implemented: true,
 		}, true
@@ -70,15 +61,15 @@ func lookupPackageElementInfo(name string) (xsltElementInfo, bool) {
 
 func lookupDeclarationElementInfo(name string) (xsltElementInfo, bool) {
 	switch name {
-	case lexicon.XSLTElementImport:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementTopLevel, implemented: true,
-		}, true
-	case lexicon.XSLTElementInclude:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementTopLevel, implemented: true,
-		}, true
-	case lexicon.XSLTElementTemplate:
+	case lexicon.XSLTElementImport,
+		lexicon.XSLTElementInclude,
+		lexicon.XSLTElementTemplate,
+		lexicon.XSLTElementKey,
+		lexicon.XSLTElementStripSpace,
+		lexicon.XSLTElementPreserveSpace,
+		lexicon.XSLTElementDecimalFormat,
+		lexicon.XSLTElementAttributeSet,
+		lexicon.XSLTElementNamespaceAlias:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion10, context: elementTopLevel, implemented: true,
 		}, true
@@ -90,55 +81,19 @@ func lookupDeclarationElementInfo(name string) (xsltElementInfo, bool) {
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion10, context: elementTopLevel | elementChildOnly, implemented: true,
 		}, true
-	case lexicon.XSLTElementKey:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementTopLevel, implemented: true,
-		}, true
-	case lexicon.XSLTElementStripSpace:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementTopLevel, implemented: true,
-		}, true
-	case lexicon.XSLTElementPreserveSpace:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementTopLevel, implemented: true,
-		}, true
-	case lexicon.XSLTElementFunction:
+	case lexicon.XSLTElementFunction,
+		lexicon.XSLTElementImportSchema:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion20, context: elementTopLevel, implemented: true,
 		}, true
-	case lexicon.XSLTElementDecimalFormat:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementTopLevel, implemented: true,
-		}, true
-	case lexicon.XSLTElementMode:
+	case lexicon.XSLTElementMode,
+		lexicon.XSLTElementAccumulator,
+		lexicon.XSLTElementGlobalContextItem:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion30, context: elementTopLevel, implemented: true,
 		}, true
-	case lexicon.XSLTElementImportSchema:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion20, context: elementTopLevel, implemented: true,
-		}, true
-	case lexicon.XSLTElementAccumulator:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementTopLevel, implemented: true,
-		}, true
-	case lexicon.XSLTElementAttributeSet:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementTopLevel, implemented: true,
-		}, true
-	case lexicon.XSLTElementNamespaceAlias:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementTopLevel, implemented: true,
-		}, true
-	case lexicon.XSLTElementGlobalContextItem:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementTopLevel, implemented: true,
-		}, true
-	case lexicon.XSLTElementAccumulatorRule:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementChildOnly, implemented: true,
-		}, true
-	case lexicon.XSLTElementContextItem:
+	case lexicon.XSLTElementAccumulatorRule,
+		lexicon.XSLTElementContextItem:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion30, context: elementChildOnly, implemented: true,
 		}, true
@@ -154,63 +109,27 @@ func lookupDeclarationElementInfo(name string) (xsltElementInfo, bool) {
 
 func lookupConstructorElementInfo(name string) (xsltElementInfo, bool) {
 	switch name {
-	case lexicon.XSLTElementValueOf:
+	case lexicon.XSLTElementValueOf,
+		lexicon.XSLTElementText,
+		lexicon.XSLTElementElement,
+		lexicon.XSLTElementAttribute,
+		lexicon.XSLTElementComment,
+		lexicon.XSLTElementProcessingInstruction,
+		lexicon.XSLTElementCopy,
+		lexicon.XSLTElementCopyOf,
+		lexicon.XSLTElementNumber:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
 		}, true
-	case lexicon.XSLTElementText:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementElement:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementAttribute:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementComment:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementProcessingInstruction:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementCopy:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementCopyOf:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementNumber:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementNamespace:
+	case lexicon.XSLTElementNamespace,
+		lexicon.XSLTElementSequence,
+		lexicon.XSLTElementDocument:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion20, context: elementInstruction, implemented: true,
 		}, true
-	case lexicon.XSLTElementSequence:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion20, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementDocument:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion20, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementMap:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementMapEntry:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementArray:
+	case lexicon.XSLTElementMap,
+		lexicon.XSLTElementMapEntry,
+		lexicon.XSLTElementArray:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
 		}, true
@@ -221,23 +140,12 @@ func lookupConstructorElementInfo(name string) (xsltElementInfo, bool) {
 
 func lookupTemplateControlElementInfo(name string) (xsltElementInfo, bool) {
 	switch name {
-	case lexicon.XSLTElementApplyTemplates:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementCallTemplate:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementIf:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementChoose:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementForEach:
+	case lexicon.XSLTElementApplyTemplates,
+		lexicon.XSLTElementCallTemplate,
+		lexicon.XSLTElementIf,
+		lexicon.XSLTElementChoose,
+		lexicon.XSLTElementForEach,
+		lexicon.XSLTElementApplyImports:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
 		}, true
@@ -245,19 +153,9 @@ func lookupTemplateControlElementInfo(name string) (xsltElementInfo, bool) {
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion20, context: elementInstruction, implemented: true,
 		}, true
-	case lexicon.XSLTElementApplyImports:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementWhen:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementChildOnly, implemented: true,
-		}, true
-	case lexicon.XSLTElementOtherwise:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion10, context: elementChildOnly, implemented: true,
-		}, true
-	case lexicon.XSLTElementWithParam:
+	case lexicon.XSLTElementWhen,
+		lexicon.XSLTElementOtherwise,
+		lexicon.XSLTElementWithParam:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion10, context: elementChildOnly, implemented: true,
 		}, true
@@ -268,39 +166,18 @@ func lookupTemplateControlElementInfo(name string) (xsltElementInfo, bool) {
 
 func lookupSequenceControlElementInfo(name string) (xsltElementInfo, bool) {
 	switch name {
-	case lexicon.XSLTElementPerformSort:
+	case lexicon.XSLTElementPerformSort,
+		lexicon.XSLTElementForEachGroup,
+		lexicon.XSLTElementAnalyzeString:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion20, context: elementInstruction, implemented: true,
 		}, true
-	case lexicon.XSLTElementWherePopulated:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementOnEmpty:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementOnNonEmpty:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementForEachGroup:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion20, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementAnalyzeString:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion20, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementIterate:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementFork:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementMerge:
+	case lexicon.XSLTElementWherePopulated,
+		lexicon.XSLTElementOnEmpty,
+		lexicon.XSLTElementOnNonEmpty,
+		lexicon.XSLTElementIterate,
+		lexicon.XSLTElementFork,
+		lexicon.XSLTElementMerge:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
 		}, true
@@ -308,35 +185,17 @@ func lookupSequenceControlElementInfo(name string) (xsltElementInfo, bool) {
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion10, context: elementChildOnly, implemented: true,
 		}, true
-	case lexicon.XSLTElementMatchingSubstring:
+	case lexicon.XSLTElementMatchingSubstring,
+		lexicon.XSLTElementNonMatchingSubstring:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion20, context: elementChildOnly, implemented: true,
 		}, true
-	case lexicon.XSLTElementNonMatchingSubstring:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion20, context: elementChildOnly, implemented: true,
-		}, true
-	case lexicon.XSLTElementOnCompletion:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementChildOnly, implemented: true,
-		}, true
-	case lexicon.XSLTElementMergeSource:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementChildOnly, implemented: true,
-		}, true
-	case lexicon.XSLTElementMergeAction:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementChildOnly, implemented: true,
-		}, true
-	case lexicon.XSLTElementMergeKey:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementChildOnly, implemented: true,
-		}, true
-	case lexicon.XSLTElementBreak:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementChildOnly, implemented: true,
-		}, true
-	case lexicon.XSLTElementNextIteration:
+	case lexicon.XSLTElementOnCompletion,
+		lexicon.XSLTElementMergeSource,
+		lexicon.XSLTElementMergeAction,
+		lexicon.XSLTElementMergeKey,
+		lexicon.XSLTElementBreak,
+		lexicon.XSLTElementNextIteration:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion30, context: elementChildOnly, implemented: true,
 		}, true
@@ -351,19 +210,10 @@ func lookupDynamicElementInfo(name string) (xsltElementInfo, bool) {
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion10, context: elementInstruction, implemented: true,
 		}, true
-	case lexicon.XSLTElementTry:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementAssert:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementEvaluate:
-		return xsltElementInfo{
-			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
-		}, true
-	case lexicon.XSLTElementSourceDocument:
+	case lexicon.XSLTElementTry,
+		lexicon.XSLTElementAssert,
+		lexicon.XSLTElementEvaluate,
+		lexicon.XSLTElementSourceDocument:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
 		}, true

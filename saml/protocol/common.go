@@ -12,7 +12,8 @@ import (
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
-	cryptosig "github.com/skarm/xmlsec/internal/signature"
+	"github.com/skarm/xmlsec/internal/signature"
+	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -111,11 +112,11 @@ func normalize(l Limits) (Limits, error) {
 }
 
 func header(e document.Element, local string, at time.Time, l Limits) (string, time.Time, error) {
-	if e.Name() != xmlutil.Name(ProtocolNamespace, local) || xmlutil.Attr(e, nameVersion) != version20 || !xmlutil.ID(xmlutil.Attr(e, "ID")) {
+	if e.Name() != xmlutil.Name(ProtocolNamespace, local) || xmlutil.Attr(e, nameVersion) != version20 || !profile.ID(xmlutil.Attr(e, "ID")) {
 		return "", time.Time{}, ErrProfile
 	}
 
-	t, err := xmlutil.ParseTime(xmlutil.Attr(e, nameIssueInstant))
+	t, err := profile.ParseTime(xmlutil.Attr(e, nameIssueInstant))
 	if err != nil || t.After(at.Add(l.ClockSkew)) || t.Before(at.Add(-l.MaxMessageAge-l.ClockSkew)) {
 		return "", time.Time{}, ErrConditions
 	}
@@ -169,7 +170,7 @@ func signing(k SigningKey) (xmlsig.SigningKey, error) {
 		return xmlsig.SigningKey{}, ErrSignature
 	}
 
-	if e := cryptosig.Key(k.Key.Public()); e != nil {
+	if e := signature.Key(k.Key.Public()); e != nil {
 		return xmlsig.SigningKey{}, e
 	}
 

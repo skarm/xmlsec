@@ -747,50 +747,54 @@ func TestPKCS8ExplicitBERForms(t *testing.T) {
 	defer clear(inner)
 	password := []byte("public password")
 	for name, source := range map[string][]byte{"DER payload": plain, "BER payload": inner} {
-		protected := protectedPKCS8Fixture(t, source, password, crypto.SHA256, 256, false)
-		defer clear(protected)
-		for _, outerBER := range []bool{false, true} {
-			for _, framing := range []bool{false, true} {
-				t.Run(name+"/"+map[bool]string{false: "DER", true: "BER"}[outerBER]+"/"+map[bool]string{false: "raw", true: "PEM"}[framing], func(t *testing.T) {
-					raw := protected
-					if outerBER {
-						raw = pkcs8BERWrapper(t, raw, true)
-						defer clear(raw)
-					}
-					if framing {
-						raw = pem.EncodeToMemory(&pem.Block{Type: "ENCRYPTED PRIVATE KEY", Bytes: raw})
-						defer clear(raw)
-					}
-					snapshot := bytes.Clone(raw)
-					if key, err := ParseEncryptedPrivateWithOptions(t.Context(), raw, password, EncryptedPrivateParseOptions{AllowBER: true}, Limits{}); key == nil || err != nil {
-						t.Fatal(key, err)
-					}
-					if !bytes.Equal(raw, snapshot) {
-						t.Fatal("input mutated")
-					}
-					if key, err := ParseEncryptedPrivate(t.Context(), raw, password, Limits{}); outerBER || name == "BER payload" {
-						if key != nil || err == nil {
-							t.Fatal("default parser silently accepted BER")
+		t.Run(name, func(t *testing.T) {
+			protected := protectedPKCS8Fixture(t, source, password, crypto.SHA256, 256, false)
+			defer clear(protected)
+			for _, outerBER := range []bool{false, true} {
+				for _, framing := range []bool{false, true} {
+					t.Run(map[bool]string{false: "DER", true: "BER"}[outerBER]+"/"+map[bool]string{false: "raw", true: "PEM"}[framing], func(t *testing.T) {
+						raw := protected
+						if outerBER {
+							raw = pkcs8BERWrapper(t, raw, true)
+							defer clear(raw)
 						}
-					} else if key == nil || err != nil {
-						t.Fatal(key, err)
-					}
-				})
+						if framing {
+							raw = pem.EncodeToMemory(&pem.Block{Type: "ENCRYPTED PRIVATE KEY", Bytes: raw})
+							defer clear(raw)
+						}
+						snapshot := bytes.Clone(raw)
+						if key, err := ParseEncryptedPrivateWithOptions(t.Context(), raw, password, EncryptedPrivateParseOptions{AllowBER: true}, Limits{}); key == nil || err != nil {
+							t.Fatal(key, err)
+						}
+						if !bytes.Equal(raw, snapshot) {
+							t.Fatal("input mutated")
+						}
+						if key, err := ParseEncryptedPrivate(t.Context(), raw, password, Limits{}); outerBER || name == "BER payload" {
+							if key != nil || err == nil {
+								t.Fatal("default parser silently accepted BER")
+							}
+						} else if key == nil || err != nil {
+							t.Fatal(key, err)
+						}
+					})
+				}
 			}
-		}
+		})
 	}
 	for _, framing := range []bool{false, true} {
-		raw := inner
-		if framing {
-			raw = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: inner})
-			defer clear(raw)
-		}
-		if key, err := ParsePrivateWithOptions(t.Context(), raw, PrivateParseOptions{AllowBER: true}, Limits{}); key == nil || err != nil {
-			t.Fatal(key, err)
-		}
-		if key, err := ParsePrivate(raw, Limits{}); key != nil || err == nil {
-			t.Fatal("default parser accepted BER", err)
-		}
+		t.Run("private/"+map[bool]string{false: "raw", true: "PEM"}[framing], func(t *testing.T) {
+			raw := inner
+			if framing {
+				raw = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: inner})
+				defer clear(raw)
+			}
+			if key, err := ParsePrivateWithOptions(t.Context(), raw, PrivateParseOptions{AllowBER: true}, Limits{}); key == nil || err != nil {
+				t.Fatal(key, err)
+			}
+			if key, err := ParsePrivate(raw, Limits{}); key != nil || err == nil {
+				t.Fatal("default parser accepted BER", err)
+			}
+		})
 	}
 	checkPKCS8BERFailures(t, plain, inner)
 }

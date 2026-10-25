@@ -687,7 +687,7 @@ func (m *dtdMetadata) visit(node *Node) error {
 					kind = DTDIDRefs
 				}
 
-				m.doc.SetAttributeDTDType(node, attribute.Name, kind)
+				SetAttributeDTDType(m.doc, node, attribute.Name, kind)
 			}
 		}
 	case CommentNode, PINode:
@@ -696,7 +696,7 @@ func (m *dtdMetadata) visit(node *Node) error {
 		}
 
 		node.Data = strings.Clone(m.output.fixes[m.fixIndex].value)
-		m.doc.SetNodeBase(node, m.output.fixes[m.fixIndex].base)
+		SetNodeBase(m.doc, node, m.output.fixes[m.fixIndex].base)
 		m.fixIndex++
 	}
 

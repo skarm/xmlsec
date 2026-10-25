@@ -10177,14 +10177,14 @@
       "id": "XML-SCHEMA-UTC-TIME",
       "implementation": [
         "internal/xmltime/time.go",
-        "saml/internal/xmlutil/xml.go",
+        "saml/internal/profile/values.go",
         "xades/basic.go"
       ],
       "notes": "Strict UTC dateTime lexical form, four-digit positive years, up to nine fractional digits, midnight normalization. SAML cache durations use exact nanoseconds, positive day/time subset up to 365 days. Higher precision is explicitly unsupported; signer time is not trusted time.",
       "source": "https://www.w3.org/TR/xmlschema-2/",
       "status": "implemented-restricted",
       "tests": [
-        "saml/internal/xmlutil/xml_test.go",
+        "saml/internal/profile/values_test.go",
         "saml/protocol/protocol_test.go",
         "xades/basic_test.go"
       ],
@@ -33978,7 +33978,7 @@
           "saml/idp.IdentityProvider"
         ],
         "code": [
-          "saml/internal/xmlutil/xml.go"
+          "saml/internal/profile/values.go"
         ]
       },
       "tests": {
@@ -34338,7 +34338,7 @@
           "saml/idp.IdentityProvider"
         ],
         "code": [
-          "saml/internal/xmlutil/xml.go"
+          "saml/internal/profile/values.go"
         ]
       },
       "tests": {

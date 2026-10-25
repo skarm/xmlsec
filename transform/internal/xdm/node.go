@@ -301,7 +301,7 @@ func copyIDProperties(source, destination Node) {
 // Language copies into new parents apply their own inheritance rules separately.
 func copyDocumentBases(source, destination Node) {
 	destination.view().baseURI = source.view().baseURI
-	destination.OwnerDocument().native.SetNodeBase(destination.view().raw, source.view().baseURI)
+	tree.SetNodeBase(destination.OwnerDocument().native, destination.view().raw, source.view().baseURI)
 
 	first, second := source.FirstChild(), destination.FirstChild()
 	for first != nil && second != nil {
@@ -507,7 +507,7 @@ func (d *Document) RegisterID(id string, e *Element) { d.ids[id] = e }
 // UnparsedEntity returns retained unparsed entity identifiers without retrieving the
 // resource.
 func (d *Document) UnparsedEntity(name string) (tree.UnparsedEntity, bool) {
-	return d.native.UnparsedEntity(name)
+	return tree.LookupUnparsedEntity(d.native, name)
 }
 
 // GetElementByID returns the indexed element, or nil when no ID mapping exists.
@@ -540,14 +540,14 @@ func (d *Document) wrap(ctx context.Context, r *tree.Node, slot int) error {
 		return tree.ErrUnsupported
 	}
 
-	*n.view() = nodeView{raw: r, doc: d, slot: slot, line: int(r.SourceLine), baseURI: d.native.NodeBase(r), kind: kind, self: n}
+	*n.view() = nodeView{raw: r, doc: d, slot: slot, line: int(r.SourceLine), baseURI: tree.NodeBase(d.native, r), kind: kind, self: n}
 
 	d.nodes[r] = n
 	if e, ok := n.(*Element); ok {
 		for i, a := range r.Attrs {
 			d.attribute(e, a.Name, i)
 
-			if d.native.AttributeDTDType(r, a.Name) == tree.DTDID || a.Name == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
+			if tree.AttributeDTDType(d.native, r, a.Name) == tree.DTDID || a.Name == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
 				d.ids[d.attrs[attrKey{r, a.Name}].Value()] = e
 			}
 		}
@@ -570,7 +570,7 @@ func (d *Document) sync() {
 
 func (d *Document) adopt(n Node) {
 	old := n.OwnerDocument()
-	d.native.SetNodeBase(n.view().raw, n.view().baseURI)
+	tree.SetNodeBase(d.native, n.view().raw, n.view().baseURI)
 	n.view().doc = d
 
 	d.nodes[n.view().raw] = n
@@ -909,7 +909,7 @@ func (e *Element) RemoveAttributeNS(local, uri string) bool {
 				view.attributeIndex = -1
 			}
 
-			e.doc.native.SetAttributeDTDType(e.raw, a.Name, tree.DTDNoType)
+			tree.SetAttributeDTDType(e.doc.native, e.raw, a.Name, tree.DTDNoType)
 			delete(e.doc.attrs, attrKey{e.raw, a.Name})
 
 			return true
@@ -1036,7 +1036,7 @@ func (a *Attribute) IDType() AttributeIDType {
 		return a.atype
 	}
 
-	switch a.doc.native.AttributeDTDType(a.owner.raw, a.key) {
+	switch tree.AttributeDTDType(a.doc.native, a.owner.raw, a.key) {
 	case tree.DTDID:
 		return IDAttribute
 	case tree.DTDIDRef:
@@ -1067,7 +1067,7 @@ func (a *Attribute) SetIDType(t AttributeIDType) {
 		kind = tree.DTDIDRefs
 	}
 
-	a.doc.native.SetAttributeDTDType(a.owner.raw, a.key, kind)
+	tree.SetAttributeDTDType(a.doc.native, a.owner.raw, a.key, kind)
 
 	if t == IDAttribute {
 		a.doc.RegisterID(a.Value(), a.owner)

@@ -400,6 +400,10 @@ func numericTypeWidth(typeName string) int {
 }
 
 func fnMax(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return maxMin(ctx, args, true)
+}
+
+func maxMin(ctx context.Context, args []xdm.Sequence, isMax bool) (xdm.Sequence, error) {
 	atoms, err := AtomizeSequence(args[0])
 	if err != nil {
 		return nil, err
@@ -418,29 +422,11 @@ func fnMax(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		coll = nil
 	}
 
-	return maxMinCommon(ctx, atoms, true, coll)
+	return maxMinCommon(ctx, atoms, isMax, coll)
 }
 
 func fnMin(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	atoms, err := AtomizeSequence(args[0])
-	if err != nil {
-		return nil, err
-	}
-
-	if len(atoms) == 0 {
-		return nil, nil
-	}
-
-	coll, err := getCollation(ctx, args, 1)
-	if err != nil {
-		return nil, err
-	}
-
-	if coll.isCodepoint() {
-		coll = nil
-	}
-
-	return maxMinCommon(ctx, atoms, false, coll)
+	return maxMin(ctx, args, false)
 }
 
 func maxMinCommon(ctx context.Context, atoms []xdm.AtomicValue, isMax bool, coll *collationImpl) (xdm.Sequence, error) {

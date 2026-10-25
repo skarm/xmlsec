@@ -186,16 +186,8 @@ func (ec *execContext) xsltFunctionsNS() map[xpath.QualifiedName]xpath.Function 
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameCurrentMergeGroup}] = &xsltFunc{min: 0, max: 1, fn: ec.fnCurrentMergeGroup}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameCurrentMergeKey}] = &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentMergeKey}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameRegexGroup}] = &xsltFunc{min: 1, max: 1, fn: ec.fnRegexGroup}
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameAccumulatorBefore}] = &xsltFunc{min: 1, max: 1, fn: func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-		return ec.accumulatorLookup(ctx, args, nameAccumulatorBefore, func() (map[xdm.Node]map[string]xdm.Sequence, map[xdm.Node]map[string]error) {
-			return ec.accumulatorBeforeByNode, ec.accumulatorBeforeErrorByNode
-		})
-	}}
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameAccumulatorAfter}] = &xsltFunc{min: 1, max: 1, fn: func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-		return ec.accumulatorLookup(ctx, args, nameAccumulatorAfter, func() (map[xdm.Node]map[string]xdm.Sequence, map[xdm.Node]map[string]error) {
-			return ec.accumulatorAfterByNode, ec.accumulatorAfterErrorByNode
-		})
-	}}
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameAccumulatorBefore}] = &xsltFunc{min: 1, max: 1, fn: ec.fnAccumulatorBefore}
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameAccumulatorAfter}] = &xsltFunc{min: 1, max: 1, fn: ec.fnAccumulatorAfter}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameCopyOf}] = &xsltFunc{min: 0, max: 1, fn: ec.fnCopyOf}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: funcSnapshot}] = &xsltFunc{min: 0, max: 1, fn: ec.fnSnapshot}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameTransform}] = &xsltFunc{min: 1, max: 1, fn: ec.fnTransform}

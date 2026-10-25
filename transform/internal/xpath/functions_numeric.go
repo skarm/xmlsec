@@ -11,7 +11,7 @@ import (
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	number "github.com/skarm/xmlsec/transform/internal/xpath/number"
+	"github.com/skarm/xmlsec/transform/internal/xpath/number"
 )
 
 // roundMaxComputeScale bounds the positive (fine) compute scale handed to Exp for
@@ -639,37 +639,7 @@ func roundHalfToEvenFloat(n float64, precision int) float64 {
 		scale := bigPow10(precision)
 		scaled := new(big.Float).SetPrec(256).Mul(bf, scale)
 
-		// Determine floor and the fractional part
-		intPart, _ := scaled.Int(nil) // truncates towards zero
-		if scaled.Sign() < 0 {
-			// For negative numbers, Int truncates towards zero (ceiling);
-			// we want the floor.
-			frac := new(big.Float).SetPrec(256).Sub(scaled, new(big.Float).SetPrec(256).SetInt(intPart))
-			if frac.Sign() != 0 {
-				intPart.Sub(intPart, big.NewInt(1))
-			}
-		}
-
-		floor := new(big.Float).SetPrec(256).SetInt(intPart)
-		frac := new(big.Float).SetPrec(256).Sub(scaled, floor)
-		half := new(big.Float).SetPrec(256).SetFloat64(0.5)
-
-		var rounded *big.Int
-
-		cmp := frac.Cmp(half)
-		if cmp < 0 {
-			rounded = new(big.Int).Set(intPart)
-		} else if cmp > 0 {
-			rounded = new(big.Int).Add(intPart, big.NewInt(1))
-		} else {
-			// Exactly 0.5: round to even
-			rem := new(big.Int).Mod(new(big.Int).Abs(intPart), big.NewInt(2))
-			if rem.Sign() == 0 {
-				rounded = new(big.Int).Set(intPart) // already even
-			} else {
-				rounded = new(big.Int).Add(intPart, big.NewInt(1))
-			}
-		}
+		rounded := roundScaledHalfToEven(scaled)
 
 		result := new(big.Float).SetPrec(256).SetInt(rounded)
 		result.Quo(result, scale)
@@ -686,9 +656,26 @@ func roundHalfToEvenFloat(n float64, precision int) float64 {
 	bf := new(big.Float).SetPrec(256).SetFloat64(n)
 	divisor := bigPow10(-precision)
 	scaled := new(big.Float).SetPrec(256).Quo(bf, divisor)
+	rounded := roundScaledHalfToEven(scaled)
+	result := new(big.Float).SetPrec(256).SetInt(rounded)
 
-	intPart, _ := scaled.Int(nil)
+	result.Mul(result, divisor)
+
+	f, _ := result.Float64()
+	// Preserve negative zero per IEEE 754
+	if f == 0 && math.Signbit(n) {
+		return math.Copysign(0, -1)
+	}
+
+	return f
+}
+
+func roundScaledHalfToEven(scaled *big.Float) *big.Int {
+	// Determine floor and the fractional part
+	intPart, _ := scaled.Int(nil) // truncates towards zero
 	if scaled.Sign() < 0 {
+		// For negative numbers, Int truncates towards zero (ceiling);
+		// we want the floor.
 		frac := new(big.Float).SetPrec(256).Sub(scaled, new(big.Float).SetPrec(256).SetInt(intPart))
 		if frac.Sign() != 0 {
 			intPart.Sub(intPart, big.NewInt(1))
@@ -707,23 +694,16 @@ func roundHalfToEvenFloat(n float64, precision int) float64 {
 	} else if cmp > 0 {
 		rounded = new(big.Int).Add(intPart, big.NewInt(1))
 	} else {
+		// Exactly 0.5: round to even
 		rem := new(big.Int).Mod(new(big.Int).Abs(intPart), big.NewInt(2))
 		if rem.Sign() == 0 {
-			rounded = new(big.Int).Set(intPart)
+			rounded = new(big.Int).Set(intPart) // already even
 		} else {
 			rounded = new(big.Int).Add(intPart, big.NewInt(1))
 		}
 	}
 
-	result := new(big.Float).SetPrec(256).SetInt(rounded)
-	result.Mul(result, divisor)
-	f, _ := result.Float64()
-	// Preserve negative zero per IEEE 754
-	if f == 0 && math.Signbit(n) {
-		return math.Copysign(0, -1)
-	}
-
-	return f
+	return rounded
 }
 
 // --- Rat rounding helpers ---

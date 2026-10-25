@@ -11,6 +11,7 @@ import (
 	"io"
 	"math/big"
 	"runtime"
+	"runtime/metrics"
 	"strings"
 	"testing"
 	"time"
@@ -139,31 +140,35 @@ func retainedHeapDuring(t *testing.T, run func() any) int64 {
 	return int64(after.HeapAlloc) - int64(before.HeapAlloc)
 }
 
-// peakHeapDuring samples HeapAlloc while run executes, including a final sample.
-// It measures observed Go heap growth, not RSS or an exact live-object maximum.
-// Use serial tests and fixtures large enough to dominate sampling/runtime noise.
+// peakHeapDuring samples the same live-and-unswept object bytes as HeapAlloc,
+// including a final sample. runtime/metrics avoids ReadMemStats's stop-the-world
+// pause on every sample. It measures observed Go heap growth, not RSS or an
+// exact live-object maximum. Keep memory tests sequential: parallel tests run
+// only after them so unrelated allocations cannot contaminate the measurements.
 func peakHeapDuring(t *testing.T, run func() error) uint64 {
 	t.Helper()
+	samples := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	// Initialize the runtime metric before establishing the fixture baseline.
+	metrics.Read(samples)
 	runtime.GC()
 	runtime.GC()
-	var before runtime.MemStats
-	runtime.ReadMemStats(&before)
+	metrics.Read(samples)
+	before := samples[0].Value.Uint64()
 	ready, stop := make(chan struct{}), make(chan struct{})
 	done := make(chan uint64, 1)
 	go func() {
 		ticker := time.NewTicker(100 * time.Microsecond)
 		defer ticker.Stop()
-		peak := before.HeapAlloc
+		peak := before
 		close(ready)
 		for {
-			var sample runtime.MemStats
-			runtime.ReadMemStats(&sample)
-			peak = max(peak, sample.HeapAlloc)
+			metrics.Read(samples)
+			peak = max(peak, samples[0].Value.Uint64())
 			select {
 			case <-stop:
-				runtime.ReadMemStats(&sample)
-				peak = max(peak, sample.HeapAlloc)
-				done <- peak - before.HeapAlloc
+				metrics.Read(samples)
+				peak = max(peak, samples[0].Value.Uint64())
+				done <- peak - before
 				return
 			case <-ticker.C:
 			}
@@ -177,6 +182,21 @@ func peakHeapDuring(t *testing.T, run func() error) uint64 {
 		t.Fatal(err)
 	}
 	return peak
+}
+
+// TestPeakHeapDetectsScratch is a positive control for the memory probe: a
+// full-size live temporary must remain visible through the final sample.
+func TestPeakHeapDetectsScratch(t *testing.T) {
+	const size = 8 << 20
+	var scratch []byte
+	peak := peakHeapDuring(t, func() error {
+		scratch = make([]byte, size)
+		return nil
+	})
+	runtime.KeepAlive(scratch)
+	if peak < size/2 {
+		t.Fatalf("memory probe missed an 8 MiB temporary: observed %d bytes", peak)
+	}
 }
 
 // repeatedInput generates a long message without allocating it as a fixture.

@@ -593,7 +593,7 @@ func TestReadObservation(t *testing.T) {
 	if got, err := evidence.ReadObservation(nil, evidence.CRL, reader, evidence.Provenance{}, 1); got != nil || !errors.Is(err, evidence.ErrInput) {
 		t.Fatal(got, err)
 	}
-	if got, err := evidence.ReadObservation(t.Context(), evidence.Kind("invalid"), reader, evidence.Provenance{}, 1); got != nil || !errors.Is(err, evidence.ErrInput) {
+	if got, err := evidence.ReadObservation(t.Context(), "invalid", reader, evidence.Provenance{}, 1); got != nil || !errors.Is(err, evidence.ErrInput) {
 		t.Fatal(got, err)
 	}
 }

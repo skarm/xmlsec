@@ -374,33 +374,16 @@ func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionR
 			if len(args) < minArity {
 				return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("fn:%s requires at least %d arguments, got %d", e.Name, minArity, len(args))}
 			}
-			// Type-check arguments against declared parameter types. Coercion may
-			// convert an argument (e.g. xs:integer -> xs:double); the coerced value
-			// must be what the function observes, so store it back into a copy of the
-			// argument slice, discarding nothing and invoking with no original
-			// — mirroring the direct call path and fn:function-lookup.
+
 			if paramTypes != nil && !unavailableModuleFunction(fn) {
-				coerced := make([]xdm.Sequence, len(args))
-				copy(coerced, args)
+				var err error
 
-				for i, arg := range args {
-					if parameter, declared := xdm.FunctionParameterType(paramTypes, repeated, i); declared {
-						// coerceFuncallArg propagates a real typed error (FOTY0012 from
-						// atomizing an element-only node, FOTY0013, FORG0001, …) and
-						// maps only a plain mismatch to XPTY0004 — the boolean
-						// coerceToSequenceType would flatten FOTY0012 into a generic
-						// XPTY0004.
-						c, err := coerceFuncallArg(ctx, arg, parameter, e.Name, i, callEC)
-						if err != nil {
-							return nil, err
-						}
-
-						coerced[i] = c
-					}
+				args, err = coerceFunctionArgs(ctx, args, paramTypes, repeated, e.Name, callEC)
+				if err != nil {
+					return nil, err
 				}
-
-				args = coerced
 			}
+
 			// Use caller's ctx for cancellation, captured ec for focus/eval state
 			return fn.Call(withFnContext(ctx, callEC), args)
 		},
@@ -594,6 +577,26 @@ func partialApply(ctx context.Context, ec *evalContext, e FunctionCall, fixedArg
 	}
 
 	return xdm.ItemSlice{fi}, nil
+}
+
+// coerceFunctionArgs applies declared parameter types to a copy, preserving
+// the caller's argument slice and typed atomization/cast errors.
+func coerceFunctionArgs(ctx context.Context, args []xdm.Sequence, paramTypes []xdm.SequenceType, repeated bool, name string, ec *evalContext) ([]xdm.Sequence, error) {
+	coerced := make([]xdm.Sequence, len(args))
+	copy(coerced, args)
+
+	for i, arg := range args {
+		if parameter, declared := xdm.FunctionParameterType(paramTypes, repeated, i); declared {
+			value, err := coerceFuncallArg(ctx, arg, parameter, name, i, ec)
+			if err != nil {
+				return nil, err
+			}
+
+			coerced[i] = value
+		}
+	}
+
+	return coerced, nil
 }
 
 // coerceFuncallArg coerces one argument against its declared parameter type,

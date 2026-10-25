@@ -608,18 +608,7 @@ func formatExponentFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
 	mantissaPP := adjustMantissaPP(pp, m)
 	mantissaStr := FormatFloat(abs, mantissaPP, df)
 
-	// Strip trailing decimal separator when there are no fractional digits
-	mantissaStr = strings.TrimSuffix(mantissaStr, string(df.DecimalSeparator))
-
-	// Format the exponent
-	expStr := formatExponentDigits(exp, pp.MinExpDigits, df)
-
-	expSep := df.ExponentSeparator
-	if expSep == 0 {
-		expSep = 'e'
-	}
-
-	return mantissaStr + string(expSep) + expStr
+	return joinExponent(mantissaStr, exp, pp, df)
 }
 
 func formatExponentPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) string {
@@ -681,35 +670,25 @@ func formatExponentPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) strin
 	mantissaPP := adjustMantissaPP(pp, m)
 	mantissaStr := FormatDecimalPrecise(abs, mantissaPP, df)
 
-	// Strip trailing decimal separator when there are no fractional digits
-	mantissaStr = strings.TrimSuffix(mantissaStr, string(df.DecimalSeparator))
-
-	// Format the exponent
-	expStr := formatExponentDigits(exp, pp.MinExpDigits, df)
-
-	expSep := df.ExponentSeparator
-	if expSep == 0 {
-		expSep = 'e'
-	}
-
-	return mantissaStr + string(expSep) + expStr
+	return joinExponent(mantissaStr, exp, pp, df)
 }
 
 func formatExponentZero(pp ParsedPicture, df DecimalFormat) string {
 	mantissaPP := adjustMantissaPP(pp, exponentScalingFactor(pp))
 	mantissaStr := FormatFloat(0, mantissaPP, df)
 
-	// Strip trailing decimal separator
-	mantissaStr = strings.TrimSuffix(mantissaStr, string(df.DecimalSeparator))
+	return joinExponent(mantissaStr, 0, pp, df)
+}
 
-	expStr := formatExponentDigits(0, pp.MinExpDigits, df)
+func joinExponent(mantissa string, exp int, pp ParsedPicture, df DecimalFormat) string {
+	mantissa = strings.TrimSuffix(mantissa, string(df.DecimalSeparator))
 
 	expSep := df.ExponentSeparator
 	if expSep == 0 {
 		expSep = 'e'
 	}
 
-	return mantissaStr + string(expSep) + expStr
+	return mantissa + string(expSep) + formatExponentDigits(exp, pp.MinExpDigits, df)
 }
 
 func formatExponentDigits(exp, minDigits int, df DecimalFormat) string {

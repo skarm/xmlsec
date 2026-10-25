@@ -486,6 +486,10 @@ func evalStepWithPredicates(evalFn exprEvaluator, ctx context.Context, ec *evalC
 }
 
 func evalStepNoPredicates(ctx context.Context, ec *evalContext, nodes []xdm.Node, step Step) ([]xdm.Node, error) {
+	return evalAxisStep(ctx, ec, nodes, step.Axis, step.NodeTest)
+}
+
+func evalAxisStep(ctx context.Context, ec *evalContext, nodes []xdm.Node, axis AxisType, nodeTest xdm.NodeTest) ([]xdm.Node, error) {
 	next := make([]xdm.Node, 0, len(nodes))
 	for _, n := range nodes {
 		var (
@@ -493,7 +497,7 @@ func evalStepNoPredicates(ctx context.Context, ec *evalContext, nodes []xdm.Node
 			err       error
 		)
 
-		next, traversed, err = appendAxisNodeMatches(ctx, next, ec, n, step.Axis, step.NodeTest)
+		next, traversed, err = appendAxisNodeMatches(ctx, next, ec, n, axis, nodeTest)
 		if err != nil {
 			return nil, err
 		}
@@ -503,7 +507,7 @@ func evalStepNoPredicates(ctx context.Context, ec *evalContext, nodes []xdm.Node
 		}
 	}
 
-	return xdm.OrderStepResult(next, nodes, step.Axis, ec.docOrder, ec.maxNodes)
+	return xdm.OrderStepResult(next, nodes, axis, ec.docOrder, ec.maxNodes)
 }
 
 func evalVMStepWithPredicates(evalFn exprEvaluator, ctx context.Context, ec *evalContext, nodes []xdm.Node, step vmLocationStep) ([]xdm.Node, error) {
@@ -689,24 +693,7 @@ func nodeHasMatchingAttribute(ctx context.Context, ec *evalContext, node xdm.Nod
 }
 
 func evalVMStepNoPredicates(ctx context.Context, ec *evalContext, nodes []xdm.Node, step vmLocationStep) ([]xdm.Node, error) {
-	next := make([]xdm.Node, 0, len(nodes))
-	for _, n := range nodes {
-		var (
-			traversed int
-			err       error
-		)
-
-		next, traversed, err = appendAxisNodeMatches(ctx, next, ec, n, step.Axis, step.NodeTest)
-		if err != nil {
-			return nil, err
-		}
-
-		if err := ec.countOps(ctx, traversed); err != nil {
-			return nil, err
-		}
-	}
-
-	return xdm.OrderStepResult(next, nodes, step.Axis, ec.docOrder, ec.maxNodes)
+	return evalAxisStep(ctx, ec, nodes, step.Axis, step.NodeTest)
 }
 
 func appendAxisNodeMatches(ctx context.Context, dst []xdm.Node, ec *evalContext, node xdm.Node, axis AxisType, nodeTest xdm.NodeTest) ([]xdm.Node, int, error) {

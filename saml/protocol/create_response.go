@@ -7,6 +7,7 @@ import (
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 )
@@ -66,14 +67,14 @@ func SignResponse(ctx context.Context, s Response, key SigningKey) (*document.Do
 		return nil, e
 	}
 
-	if ctx == nil || !xmlutil.ID(s.ID) || !xmlutil.ID(s.Assertion.ID) || s.ID == s.Assertion.ID || !xmlutil.ID(s.InResponseTo) || !xmlutil.URI(s.Issuer) || !xmlutil.URI(s.Audience) || !xmlutil.Endpoint(s.Destination, true) || s.IssueInstant.IsZero() {
+	if ctx == nil || !profile.ID(s.ID) || !profile.ID(s.Assertion.ID) || s.ID == s.Assertion.ID || !profile.ID(s.InResponseTo) || !profile.URI(s.Issuer) || !profile.URI(s.Audience) || !profile.Endpoint(s.Destination, true) || s.IssueInstant.IsZero() {
 		return nil, ErrProfile
 	}
 
 	root := xmlutil.Node("samlp", ProtocolNamespace, "Response")
 
 	root.NS = []tree.Namespace{{Prefix: "samlp", URI: ProtocolNamespace}, {Prefix: "saml", URI: AssertionNamespace}, {Prefix: "ds", URI: xmlutil.DS}}
-	for _, v := range [][2]string{{"ID", s.ID}, {nameVersion, version20}, {nameIssueInstant, xmlutil.Time(s.IssueInstant)}, {nameDestination, s.Destination}, {nameInResponseTo, s.InResponseTo}} {
+	for _, v := range [][2]string{{"ID", s.ID}, {nameVersion, version20}, {nameIssueInstant, profile.Time(s.IssueInstant)}, {nameDestination, s.Destination}, {nameInResponseTo, s.InResponseTo}} {
 		xmlutil.Set(root, v[0], v[1])
 	}
 
@@ -130,7 +131,7 @@ func assertionNode(s Response) (*tree.Node, error) {
 		return nil, err
 	}
 
-	if len(a.NameID) == 0 || len(a.NameID) > l.MaxValueBytes || a.NotBefore.IsZero() || a.NotOnOrAfter.IsZero() || a.AuthnInstant.IsZero() || !xmlutil.URI(a.AuthnContext) || timeWindow(a.NotBefore, a.NotOnOrAfter, s.IssueInstant, l) != nil || len(a.Attributes) > l.MaxAttributes {
+	if len(a.NameID) == 0 || len(a.NameID) > l.MaxValueBytes || a.NotBefore.IsZero() || a.NotOnOrAfter.IsZero() || a.AuthnInstant.IsZero() || !profile.URI(a.AuthnContext) || timeWindow(a.NotBefore, a.NotOnOrAfter, s.IssueInstant, l) != nil || len(a.Attributes) > l.MaxAttributes {
 		return nil, ErrProfile
 	}
 
@@ -138,14 +139,14 @@ func assertionNode(s Response) (*tree.Node, error) {
 		a.NameIDFormat = NameIDUnspecified
 	}
 
-	if !xmlutil.URI(a.NameIDFormat) {
+	if !profile.URI(a.NameIDFormat) {
 		return nil, ErrProfile
 	}
 
 	node := xmlutil.Node("saml", AssertionNamespace, "Assertion")
 	xmlutil.Set(node, "ID", a.ID)
 	xmlutil.Set(node, nameVersion, version20)
-	xmlutil.Set(node, nameIssueInstant, xmlutil.Time(s.IssueInstant))
+	xmlutil.Set(node, nameIssueInstant, profile.Time(s.IssueInstant))
 
 	issuer := xmlutil.Node("saml", AssertionNamespace, "Issuer")
 	xmlutil.Text(issuer, s.Issuer)
@@ -163,14 +164,14 @@ func assertionNode(s Response) (*tree.Node, error) {
 	data := xmlutil.Node("saml", AssertionNamespace, "SubjectConfirmationData")
 	xmlutil.Set(data, "Recipient", s.Destination)
 	xmlutil.Set(data, nameInResponseTo, s.InResponseTo)
-	xmlutil.Set(data, "NotOnOrAfter", xmlutil.Time(a.NotOnOrAfter))
+	xmlutil.Set(data, "NotOnOrAfter", profile.Time(a.NotOnOrAfter))
 	xmlutil.Add(conf, data)
 	xmlutil.Add(subject, conf)
 	xmlutil.Add(node, subject)
 
 	conditions := xmlutil.Node("saml", AssertionNamespace, "Conditions")
-	xmlutil.Set(conditions, "NotBefore", xmlutil.Time(a.NotBefore))
-	xmlutil.Set(conditions, "NotOnOrAfter", xmlutil.Time(a.NotOnOrAfter))
+	xmlutil.Set(conditions, "NotBefore", profile.Time(a.NotBefore))
+	xmlutil.Set(conditions, "NotOnOrAfter", profile.Time(a.NotOnOrAfter))
 
 	restriction := xmlutil.Node("saml", AssertionNamespace, "AudienceRestriction")
 	audience := xmlutil.Node("saml", AssertionNamespace, "Audience")
@@ -180,14 +181,14 @@ func assertionNode(s Response) (*tree.Node, error) {
 	xmlutil.Add(node, conditions)
 
 	auth := xmlutil.Node("saml", AssertionNamespace, "AuthnStatement")
-	xmlutil.Set(auth, "AuthnInstant", xmlutil.Time(a.AuthnInstant))
+	xmlutil.Set(auth, "AuthnInstant", profile.Time(a.AuthnInstant))
 
 	if a.SessionIndex != "" {
 		xmlutil.Set(auth, "SessionIndex", a.SessionIndex)
 	}
 
 	if !a.SessionNotOnOrAfter.IsZero() {
-		xmlutil.Set(auth, "SessionNotOnOrAfter", xmlutil.Time(a.SessionNotOnOrAfter))
+		xmlutil.Set(auth, "SessionNotOnOrAfter", profile.Time(a.SessionNotOnOrAfter))
 	}
 
 	ac := xmlutil.Node("saml", AssertionNamespace, "AuthnContext")
@@ -207,7 +208,7 @@ func assertionNode(s Response) (*tree.Node, error) {
 				format = AttributeUnspecified
 			}
 
-			if _, exists := seen[[2]string{v.Name, format}]; v.Name == "" || len(v.Name) > 1024 || !xmlutil.URI(format) || len(v.FriendlyName) > 1024 || len(v.Values) < 1 || len(v.Values) > l.MaxValuesPerAttribute || exists {
+			if _, exists := seen[[2]string{v.Name, format}]; v.Name == "" || len(v.Name) > 1024 || !profile.URI(format) || len(v.FriendlyName) > 1024 || len(v.Values) < 1 || len(v.Values) > l.MaxValuesPerAttribute || exists {
 				return nil, ErrProfile
 			}
 

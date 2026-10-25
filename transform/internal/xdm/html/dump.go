@@ -834,7 +834,7 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 	if isVoid {
 		d.writeString(out, ">")
 
-		if d.format && shouldNewlineAfterVoid(e, info) {
+		if d.format && shouldNewlineAfterElement(e, info) {
 			d.writeString(out, "\n")
 		}
 
@@ -843,7 +843,7 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 
 	d.writeString(out, ">")
 
-	if d.format && shouldNewlineAfterOpen(e, info) {
+	if d.format && shouldNewlineInside(e, info, e.FirstChild()) {
 		d.writeString(out, "\n")
 	}
 
@@ -881,7 +881,7 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 		d.nsAvailable = savedAvailable
 	}
 
-	if d.format && shouldNewlineBeforeClose(e, info) {
+	if d.format && shouldNewlineInside(e, info, e.LastChild()) {
 		d.writeString(out, "\n")
 	}
 
@@ -890,7 +890,7 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 	d.writeString(out, name)
 	d.writeString(out, ">")
 
-	if d.format && shouldNewlineAfterClose(e, info) {
+	if d.format && shouldNewlineAfterElement(e, info) {
 		d.writeString(out, "\n")
 	}
 
@@ -924,17 +924,16 @@ func isTextOrEntityRef(n xdm.Node) bool {
 	return t == xdm.TextNode
 }
 
-func shouldNewlineAfterOpen(e *xdm.Element, info *htmlElemDesc) bool {
+func shouldNewlineInside(e *xdm.Element, info *htmlElemDesc, boundary xdm.Node) bool {
 	if info != nil && info.inline != 0 {
 		return false
 	}
 
-	first := e.FirstChild()
-	if first == nil {
+	if boundary == nil {
 		return false
 	}
 
-	if isTextOrEntityRef(first) {
+	if isTextOrEntityRef(boundary) {
 		return false
 	}
 
@@ -950,54 +949,7 @@ func shouldNewlineAfterOpen(e *xdm.Element, info *htmlElemDesc) bool {
 	return true
 }
 
-func shouldNewlineAfterVoid(e *xdm.Element, info *htmlElemDesc) bool {
-	if info != nil && info.inline != 0 {
-		return false
-	}
-
-	next := e.NextSibling()
-	if next == nil {
-		return false
-	}
-
-	if isTextOrEntityRef(next) {
-		return false
-	}
-
-	if parentNameStartsWithP(e) {
-		return false
-	}
-
-	return true
-}
-
-func shouldNewlineBeforeClose(e *xdm.Element, info *htmlElemDesc) bool {
-	if info != nil && info.inline != 0 {
-		return false
-	}
-
-	last := e.LastChild()
-	if last == nil {
-		return false
-	}
-
-	if isTextOrEntityRef(last) {
-		return false
-	}
-
-	if e.FirstChild() == e.LastChild() {
-		return false
-	}
-
-	name := LowerASCII(e.Name())
-	if len(name) > 0 && name[0] == 'p' {
-		return false
-	}
-
-	return true
-}
-
-func shouldNewlineAfterClose(e *xdm.Element, info *htmlElemDesc) bool {
+func shouldNewlineAfterElement(e *xdm.Element, info *htmlElemDesc) bool {
 	if info != nil && info.inline != 0 {
 		return false
 	}

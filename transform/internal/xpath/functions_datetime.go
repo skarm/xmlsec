@@ -311,31 +311,7 @@ func fnSecondsFromDateTime(_ context.Context, args []xdm.Sequence) (xdm.Sequence
 }
 
 func fnTimezoneFromDateTime(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	t, ok, err := extractTime(args[0], xdm.TypeDateTime)
-	if err != nil {
-		return nil, err
-	}
-
-	if !ok {
-		return nil, nil
-	}
-
-	if !xdm.HasTimezone(t) {
-		return nil, nil
-	}
-
-	_, offset := t.Zone()
-	neg := offset < 0
-
-	absOffset := offset
-	if neg {
-		absOffset = -absOffset
-	}
-	// Carry the exact integer-second magnitude in SecRat so the timezone-duration
-	// path is exact by construction (sign lives in Negative).
-	d := xdm.Duration{Seconds: float64(absOffset), SecRat: big.NewRat(int64(absOffset), 1), Negative: neg}
-
-	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeDayTimeDuration, Value: d}), nil
+	return timezoneFromTemporal(args[0], xdm.TypeDateTime)
 }
 
 // --- date accessors ---
@@ -380,31 +356,7 @@ func fnDayFromDate(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 }
 
 func fnTimezoneFromDate(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	t, ok, err := extractTime(args[0], xdm.TypeDate)
-	if err != nil {
-		return nil, err
-	}
-
-	if !ok {
-		return nil, nil
-	}
-
-	if !xdm.HasTimezone(t) {
-		return nil, nil
-	}
-
-	_, offset := t.Zone()
-	neg := offset < 0
-
-	absOffset := offset
-	if neg {
-		absOffset = -absOffset
-	}
-	// Carry the exact integer-second magnitude in SecRat so the timezone-duration
-	// path is exact by construction (sign lives in Negative).
-	d := xdm.Duration{Seconds: float64(absOffset), SecRat: big.NewRat(int64(absOffset), 1), Negative: neg}
-
-	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeDayTimeDuration, Value: d}), nil
+	return timezoneFromTemporal(args[0], xdm.TypeDate)
 }
 
 // --- time accessors ---
@@ -461,7 +413,11 @@ func secondsToRat(t time.Time) *big.Rat {
 }
 
 func fnTimezoneFromTime(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	t, ok, err := extractTime(args[0], xdm.TypeTime)
+	return timezoneFromTemporal(args[0], xdm.TypeTime)
+}
+
+func timezoneFromTemporal(arg xdm.Sequence, typeName string) (xdm.Sequence, error) {
+	t, ok, err := extractTime(arg, typeName)
 	if err != nil {
 		return nil, err
 	}

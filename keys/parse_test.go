@@ -397,6 +397,8 @@ func BenchmarkPasswordProtection(b *testing.B) {
 }
 
 func TestLargeCRLResourceLimits(t *testing.T) {
+	t.Parallel()
+
 	c := testcert.New(t)
 
 	const entries = 60000

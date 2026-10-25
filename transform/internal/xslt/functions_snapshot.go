@@ -370,47 +370,9 @@ func (ec *execContext) snapshotNamespaceNode(node xdm.Node) (xdm.Node, error) {
 	prefix := node.Name()
 	uri := xdm.CharacterData(node)
 
-	// Build the ancestor chain from the namespace node's parent element.
-	var ancestors []*xdm.Element
-
-	for p := node.Parent(); p != nil; p = p.Parent() {
-		if elem, ok := p.(*xdm.Element); ok {
-			ancestors = append(ancestors, elem)
-		}
-	}
-
-	snapDoc := xdm.NewDefaultDocument()
-
-	// The innermost shell is the parent element of the namespace.
-	// Build it first, then wrap with outer ancestors.
-	var (
-		innermostShell *xdm.Element
-		current        xdm.Node
-	)
-
-	for i, anc := range ancestors {
-		shell, err := shallowCopyElement(anc, snapDoc)
-		if err != nil {
-			return nil, err
-		}
-
-		if i == 0 {
-			innermostShell = shell
-		}
-
-		if current != nil {
-			if err := shell.AddChild(current); err != nil {
-				return nil, err
-			}
-		}
-
-		current = shell
-	}
-
-	if current != nil {
-		if err := snapDoc.AddChild(current); err != nil {
-			return nil, err
-		}
+	_, innermostShell, err := snapshotAncestorShells(node)
+	if err != nil {
+		return nil, err
 	}
 
 	// Ensure the namespace is declared on the innermost element.
@@ -436,45 +398,9 @@ func (ec *execContext) snapshotAttributeNode(node xdm.Node) (xdm.Node, error) {
 		return nil, fmt.Errorf("unexpected AttributeNode type %T", node)
 	}
 
-	// Build the ancestor chain: the attribute's parent element, then its ancestors.
-	var ancestors []*xdm.Element
-
-	for p := node.Parent(); p != nil; p = p.Parent() {
-		if elem, ok := p.(*xdm.Element); ok {
-			ancestors = append(ancestors, elem)
-		}
-	}
-
-	snapDoc := xdm.NewDefaultDocument()
-
-	var (
-		innermostShell *xdm.Element
-		current        xdm.Node
-	)
-
-	for i, anc := range ancestors {
-		shell, err := shallowCopyElement(anc, snapDoc)
-		if err != nil {
-			return nil, err
-		}
-
-		if i == 0 {
-			innermostShell = shell
-		}
-
-		if current != nil {
-			if err := shell.AddChild(current); err != nil {
-				return nil, err
-			}
-		}
-
-		current = shell
-	}
-
-	if current != nil {
-		if err := snapDoc.AddChild(current); err != nil {
-			return nil, err
-		}
+	snapDoc, innermostShell, err := snapshotAncestorShells(node)
+	if err != nil {
+		return nil, err
 	}
 
 	if innermostShell != nil {
@@ -494,6 +420,52 @@ func (ec *execContext) snapshotAttributeNode(node xdm.Node) (xdm.Node, error) {
 	}
 
 	return copied, nil
+}
+
+// snapshotAncestorShells copies the parent element and its ancestor chain.
+func snapshotAncestorShells(node xdm.Node) (*xdm.Document, *xdm.Element, error) {
+	var ancestors []*xdm.Element
+
+	for p := node.Parent(); p != nil; p = p.Parent() {
+		if elem, ok := p.(*xdm.Element); ok {
+			ancestors = append(ancestors, elem)
+		}
+	}
+
+	snapDoc := xdm.NewDefaultDocument()
+
+	// Build the innermost shell first, then wrap it with outer ancestors.
+	var (
+		innermostShell *xdm.Element
+		current        xdm.Node
+	)
+
+	for i, anc := range ancestors {
+		shell, err := shallowCopyElement(anc, snapDoc)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if i == 0 {
+			innermostShell = shell
+		}
+
+		if current != nil {
+			if err := shell.AddChild(current); err != nil {
+				return nil, nil, err
+			}
+		}
+
+		current = shell
+	}
+
+	if current != nil {
+		if err := snapDoc.AddChild(current); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return snapDoc, innermostShell, nil
 }
 
 // regex-group(n) returns the nth captured group from the current regex match.

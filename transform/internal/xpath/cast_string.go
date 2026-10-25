@@ -17,7 +17,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	lexical "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
+	"github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 )
 
 // AtomicToString returns the canonical string representation of an atomic value.
@@ -235,34 +235,7 @@ func formatXPathDouble(f float64) string {
 		return strconv.FormatFloat(f, 'f', -1, 64)
 	}
 
-	s := strconv.FormatFloat(f, 'E', -1, 64)
-	if idx := strings.Index(s, "E"); idx >= 0 {
-		mantissa := s[:idx]
-		expPart := s[idx+1:]
-
-		if !strings.Contains(mantissa, ".") {
-			mantissa += ".0"
-		}
-
-		expPart = strings.TrimPrefix(expPart, "+")
-		if strings.HasPrefix(expPart, "-") {
-			inner := strings.TrimLeft(expPart[1:], "0")
-			if inner == "" {
-				inner = "0"
-			}
-
-			expPart = "-" + inner
-		} else {
-			expPart = strings.TrimLeft(expPart, "0")
-			if expPart == "" {
-				expPart = "0"
-			}
-		}
-
-		s = mantissa + "E" + expPart
-	}
-
-	return s
+	return canonicalScientificFloat(strconv.FormatFloat(f, 'E', -1, 64))
 }
 
 // formatXPathFloat formats a float64 (representing an xs:float) using
@@ -294,7 +267,12 @@ func formatXPathFloat(f float64) string {
 		return strconv.FormatFloat(float64(f32), 'f', -1, 32)
 	}
 
-	s := strconv.FormatFloat(float64(f32), 'E', -1, 32)
+	return canonicalScientificFloat(strconv.FormatFloat(float64(f32), 'E', -1, 32))
+}
+
+// canonicalScientificFloat normalizes the exponent and requires a decimal point
+// in the mantissa of the scientific form produced by strconv.FormatFloat.
+func canonicalScientificFloat(s string) string {
 	if idx := strings.Index(s, "E"); idx >= 0 {
 		mantissa := s[:idx]
 		expPart := s[idx+1:]

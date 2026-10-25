@@ -1,5 +1,7 @@
 package xdm
 
+import "github.com/skarm/xmlsec/internal/tree"
+
 // Doctype is an explicit output declaration. It is not an XDM node and cannot
 // introduce input DTDs, entity declarations, or children into a document.
 type Doctype struct {
@@ -23,7 +25,7 @@ func CopyDoctype(src, dst *Document) {
 // CopyUnparsedEntities copies the XDM document property without retrieving
 // entities or adding a serialized output declaration.
 func CopyUnparsedEntities(src, dst *Document) {
-	dst.native.CopyUnparsedEntities(src.native)
+	tree.CopyUnparsedEntities(dst.native, src.native)
 }
 
 // SetDoctype records output metadata without changing the XML tree.

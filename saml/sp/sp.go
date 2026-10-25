@@ -22,8 +22,8 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/saml/binding"
+	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
-	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/saml/metadata"
 	"github.com/skarm/xmlsec/saml/protocol"
 	"github.com/skarm/xmlsec/saml/replay"
@@ -77,7 +77,7 @@ type ServiceProvider struct{ c Config }
 
 // NewServiceProvider validates and snapshots ServiceProvider policy and required trusted adapters.
 func NewServiceProvider(c Config) (*ServiceProvider, error) {
-	if !xmlutil.URI(c.EntityID) || nilcheck.IsNil(c.Metadata) || nilcheck.IsNil(c.Requests) || nilcheck.IsNil(c.Replay) || nilcheck.IsNil(c.Signing.Key) || protocol.ValidatePolicy(c.Limits) != nil {
+	if !profile.URI(c.EntityID) || nilcheck.IsNil(c.Metadata) || nilcheck.IsNil(c.Requests) || nilcheck.IsNil(c.Replay) || nilcheck.IsNil(c.Signing.Key) || protocol.ValidatePolicy(c.Limits) != nil {
 		return nil, ErrPolicy
 	}
 
@@ -115,7 +115,7 @@ func NewServiceProvider(c Config) (*ServiceProvider, error) {
 // Begin creates a signed solicited request and records its browser-bound pending state
 // before returning transport data.
 func (s *ServiceProvider) Begin(ctx context.Context, o BeginOptions) (*Outbound, error) {
-	if s == nil || ctx == nil || o.At.IsZero() || !xmlutil.URI(o.IDP) {
+	if s == nil || ctx == nil || o.At.IsZero() || !profile.URI(o.IDP) {
 		return nil, ErrPolicy
 	}
 
@@ -180,7 +180,7 @@ func (s *ServiceProvider) Begin(ctx context.Context, o BeginOptions) (*Outbound,
 		}
 	}
 
-	requestID, e := xmlutil.NewID()
+	requestID, e := profile.NewID()
 	if e != nil {
 		return nil, e
 	}

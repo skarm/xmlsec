@@ -129,23 +129,23 @@ func NewEvaluator(flags EvaluatorOption) Evaluator {
 // Namespaces binds namespace prefixes to URIs for the evaluation.
 // The map is cloned unless EvalBorrowing is set.
 func (e Evaluator) Namespaces(ns map[string]string) Evaluator {
-	e = e.clone()
-	if e.borrowing() {
-		e.cfg.namespaces = ns
+	out := e.clone()
+	if out.borrowing() {
+		out.cfg.namespaces = ns
 	} else {
-		e.cfg.namespaces = maps.Clone(ns)
+		out.cfg.namespaces = maps.Clone(ns)
 	}
 
-	return e
+	return out
 }
 
 // DefaultXMLNamespace supplies the XML default for host expressions without a
 // bound namespace context. Bound expressions retain their declaration context.
 func (e Evaluator) DefaultXMLNamespace(uri string) Evaluator {
-	e = e.clone()
-	e.cfg.defaultXMLNamespace = uri
+	out := e.clone()
+	out.cfg.defaultXMLNamespace = uri
 
-	return e
+	return out
 }
 
 // Variables sets the variable bindings for the evaluation, keyed by
@@ -153,18 +153,18 @@ func (e Evaluator) DefaultXMLNamespace(uri string) Evaluator {
 // EvalBorrowing is set, in which case the caller must not mutate it for the
 // lifetime of derived evaluators.
 func (e Evaluator) Variables(vars map[string]xdm.Sequence) Evaluator {
-	e = e.clone()
-	if e.borrowing() {
-		e.cfg.variables = vars
+	out := e.clone()
+	if out.borrowing() {
+		out.cfg.variables = vars
 	} else {
-		e.cfg.variables = cloneVariableMap(vars)
+		out.cfg.variables = cloneVariableMap(vars)
 	}
 	// Build the root variable scope once here instead of per evaluation. A
 	// variableScope is never mutated after construction (evaluation only links
 	// new child scopes to it), so every evaluation can share it.
-	e.cfg.varScope = newVariableScope(e.cfg.variables)
+	out.cfg.varScope = newVariableScope(out.cfg.variables)
 
-	return e
+	return out
 }
 
 // cloneVariableMap deep-copies a variable binding map, copying each Sequence
@@ -186,137 +186,137 @@ func cloneVariableMap(vars map[string]xdm.Sequence) map[string]xdm.Sequence {
 // consulted for unqualified calls, byQName for namespaced calls. Both maps are
 // cloned unless EvalBorrowing is set.
 func (e Evaluator) Functions(byLocal map[string]Function, byQName map[QualifiedName]Function) Evaluator {
-	e = e.clone()
-	if e.borrowing() {
-		e.cfg.functions = byLocal
-		e.cfg.functionsNS = byQName
+	out := e.clone()
+	if out.borrowing() {
+		out.cfg.functions = byLocal
+		out.cfg.functionsNS = byQName
 	} else {
-		e.cfg.functions = maps.Clone(byLocal)
-		e.cfg.functionsNS = maps.Clone(byQName)
+		out.cfg.functions = maps.Clone(byLocal)
+		out.cfg.functionsNS = maps.Clone(byQName)
 	}
 
-	return e
+	return out
 }
 
 // VariableResolver sets a callback for lazy variable resolution.
 func (e Evaluator) VariableResolver(r VariableResolver) Evaluator {
-	e = e.clone()
-	e.cfg.variableResolver = r
+	out := e.clone()
+	out.cfg.variableResolver = r
 
-	return e
+	return out
 }
 
 // FunctionResolver sets a callback for lazy function resolution.
 func (e Evaluator) FunctionResolver(r FunctionResolver) Evaluator {
-	e = e.clone()
-	e.cfg.functionResolver = r
+	out := e.clone()
+	out.cfg.functionResolver = r
 
-	return e
+	return out
 }
 
 // OpLimit sets the maximum number of operations before evaluation aborts.
 func (e Evaluator) OpLimit(limit int) Evaluator {
-	e = e.clone()
-	e.cfg.opLimit = limit
+	out := e.clone()
+	out.cfg.opLimit = limit
 
-	return e
+	return out
 }
 
 // CurrentTime sets the dynamic current time for fn:current-dateTime etc.
 func (e Evaluator) CurrentTime(now time.Time) Evaluator {
-	e = e.clone()
+	out := e.clone()
 	t := now
-	e.cfg.currentTime = &t
+	out.cfg.currentTime = &t
 
-	return e
+	return out
 }
 
 // ImplicitTimezone sets the implicit timezone for the dynamic context.
 func (e Evaluator) ImplicitTimezone(loc *time.Location) Evaluator {
-	e = e.clone()
-	e.cfg.implicitTimezone = loc
+	out := e.clone()
+	out.cfg.implicitTimezone = loc
 
-	return e
+	return out
 }
 
 // DefaultLanguage sets the default language for fn:default-language.
 func (e Evaluator) DefaultLanguage(lang string) Evaluator {
-	e = e.clone()
-	e.cfg.defaultLanguage = lang
+	out := e.clone()
+	out.cfg.defaultLanguage = lang
 
-	return e
+	return out
 }
 
 // DefaultCollation sets the default collation URI.
 func (e Evaluator) DefaultCollation(uri string) Evaluator {
-	e = e.clone()
-	e.cfg.defaultCollation = uri
+	out := e.clone()
+	out.cfg.defaultCollation = uri
 
-	return e
+	return out
 }
 
 // DefaultDecimalFormat sets the unnamed decimal format.
 func (e Evaluator) DefaultDecimalFormat(df DecimalFormat) Evaluator {
-	e = e.clone()
+	out := e.clone()
 	cp := df
-	e.cfg.defaultDecimal = &cp
+	out.cfg.defaultDecimal = &cp
 
-	return e
+	return out
 }
 
 // NamedDecimalFormats sets named decimal formats.
 // The map is cloned unless EvalBorrowing is set.
 func (e Evaluator) NamedDecimalFormats(dfs map[QualifiedName]DecimalFormat) Evaluator {
-	e = e.clone()
-	if e.borrowing() {
-		e.cfg.decimalFormats = dfs
+	out := e.clone()
+	if out.borrowing() {
+		out.cfg.decimalFormats = dfs
 	} else {
-		e.cfg.decimalFormats = maps.Clone(dfs)
+		out.cfg.decimalFormats = maps.Clone(dfs)
 	}
 
-	return e
+	return out
 }
 
 // BaseURI sets the static base URI for resolving relative URIs.
 func (e Evaluator) BaseURI(uri string) Evaluator {
-	e = e.clone()
-	e.cfg.baseURI = uri
+	out := e.clone()
+	out.cfg.baseURI = uri
 
-	return e
+	return out
 }
 
 // ParseOptions selects XML limits, base URI, permitted encodings and DTD policy for
 // parse-xml, parse-xml-fragment and doc. External DTD retrieval requires an explicit
 // opener in the options.
 func (e Evaluator) ParseOptions(p xdm.ParseOptions) Evaluator {
-	e = e.clone()
-	e.cfg.parseOptions = &p
+	out := e.clone()
+	out.cfg.parseOptions = &p
 
-	return e
+	return out
 }
 
 // URIResolver sets a custom URI resolver for fn:unparsed-text, fn:doc, etc.
 func (e Evaluator) URIResolver(r URIResolver) Evaluator {
-	e = e.clone()
-	e.cfg.uriResolver = r
+	out := e.clone()
+	out.cfg.uriResolver = r
 
-	return e
+	return out
 }
 
 // ResourceReads installs the current host invocation's read/write guard.
 func (e Evaluator) ResourceReads(policy xdm.ResourceReadPolicy) Evaluator {
-	e = e.clone()
-	e.cfg.resourceReads = policy
+	out := e.clone()
+	out.cfg.resourceReads = policy
 
-	return e
+	return out
 }
 
 // CollectionResolver sets a custom resolver for fn:collection.
 func (e Evaluator) CollectionResolver(r CollectionResolver) Evaluator {
-	e = e.clone()
-	e.cfg.collectionResolver = r
+	out := e.clone()
+	out.cfg.collectionResolver = r
 
-	return e
+	return out
 }
 
 // MaxResourceBytes sets the maximum number of bytes read from a single
@@ -329,34 +329,34 @@ func (e Evaluator) CollectionResolver(r CollectionResolver) Evaluator {
 // false); fn:doc and fn:json-doc surface it as a retrieval error (FODC0002),
 // and fn:doc-available returns false.
 func (e Evaluator) MaxResourceBytes(n int64) Evaluator {
-	e = e.clone()
-	e.cfg.maxResourceBytes = n
+	out := e.clone()
+	out.cfg.maxResourceBytes = n
 
-	return e
+	return out
 }
 
 // Position sets the initial context position.
 func (e Evaluator) Position(pos int) Evaluator {
-	e = e.clone()
-	e.cfg.position = pos
+	out := e.clone()
+	out.cfg.position = pos
 
-	return e
+	return out
 }
 
 // Size sets the initial context size.
 func (e Evaluator) Size(size int) Evaluator {
-	e = e.clone()
-	e.cfg.size = size
+	out := e.clone()
+	out.cfg.size = size
 
-	return e
+	return out
 }
 
 // ContextItem sets the context item to an atomic value instead of a node.
 func (e Evaluator) ContextItem(item xdm.Item) Evaluator {
-	e = e.clone()
-	e.cfg.contextItem = item
+	out := e.clone()
+	out.cfg.contextItem = item
 
-	return e
+	return out
 }
 
 // Focus sets the whole dynamic focus — context item, context position, and
@@ -367,25 +367,25 @@ func (e Evaluator) ContextItem(item xdm.Item) Evaluator {
 // Evaluate, a nonpositive position and zero size select the default of 1. A negative size
 // represents an absent context size (for a streamable XSLT merge action).
 func (e Evaluator) Focus(item xdm.Item, position, size int) Evaluator {
-	e = e.clone()
-	e.cfg.contextItem = item
-	e.cfg.position = position
-	e.cfg.size = size
+	out := e.clone()
+	out.cfg.contextItem = item
+	out.cfg.position = position
+	out.cfg.size = size
 
-	return e
+	return out
 }
 
 // TypeAnnotations sets the type annotation map for schema-aware evaluation.
 // The map is cloned unless EvalBorrowing is set.
 func (e Evaluator) TypeAnnotations(annotations map[xdm.Node]string) Evaluator {
-	e = e.clone()
-	if e.borrowing() {
-		e.cfg.typeAnnotations = annotations
+	out := e.clone()
+	if out.borrowing() {
+		out.cfg.typeAnnotations = annotations
 	} else {
-		e.cfg.typeAnnotations = maps.Clone(annotations)
+		out.cfg.typeAnnotations = maps.Clone(annotations)
 	}
 
-	return e
+	return out
 }
 
 // NilledElements sets the set of element nodes whose xsi:nil="true" was
@@ -397,14 +397,14 @@ func (e Evaluator) TypeAnnotations(annotations map[xdm.Node]string) Evaluator {
 // cloned unless EvalBorrowing is set. Non-schema-aware evaluation leaves it nil
 // and behavior is unchanged.
 func (e Evaluator) NilledElements(nodes map[xdm.Node]struct{}) Evaluator {
-	e = e.clone()
-	if e.borrowing() {
-		e.cfg.nilledElements = nodes
+	out := e.clone()
+	if out.borrowing() {
+		out.cfg.nilledElements = nodes
 	} else {
-		e.cfg.nilledElements = maps.Clone(nodes)
+		out.cfg.nilledElements = maps.Clone(nodes)
 	}
 
-	return e
+	return out
 }
 
 // PreservedIDAnnotations sets the preserved ID/IDREF annotations map for use
@@ -412,14 +412,14 @@ func (e Evaluator) NilledElements(nodes map[xdm.Node]struct{}) Evaluator {
 // regular type annotations. The is-id and is-idref properties are preserved
 // per the XSLT spec even when type annotations are stripped.
 func (e Evaluator) PreservedIDAnnotations(annotations map[xdm.Node]string) Evaluator {
-	e = e.clone()
-	if e.borrowing() {
-		e.cfg.preservedIDAnnotations = annotations
+	out := e.clone()
+	if out.borrowing() {
+		out.cfg.preservedIDAnnotations = annotations
 	} else {
-		e.cfg.preservedIDAnnotations = maps.Clone(annotations)
+		out.cfg.preservedIDAnnotations = maps.Clone(annotations)
 	}
 
-	return e
+	return out
 }
 
 // IDNodes sets the PSVI is-id node set for schema-aware fn:id / fn:element-with-id.
@@ -429,30 +429,30 @@ func (e Evaluator) PreservedIDAnnotations(annotations map[xdm.Node]string) Evalu
 // selects an xs:ID-derived member (neither of which is a name-level subtype of
 // xs:ID) is recognized. The map is cloned unless EvalBorrowing is set.
 func (e Evaluator) IDNodes(ids map[xdm.Node]struct{}) Evaluator {
-	e = e.clone()
-	if e.borrowing() {
-		e.cfg.idNodes = ids
+	out := e.clone()
+	if out.borrowing() {
+		out.cfg.idNodes = ids
 	} else {
-		e.cfg.idNodes = maps.Clone(ids)
+		out.cfg.idNodes = maps.Clone(ids)
 	}
 
-	return e
+	return out
 }
 
 // SchemaDeclarations sets the schema declarations provider.
 func (e Evaluator) SchemaDeclarations(d SchemaDeclarations) Evaluator {
-	e = e.clone()
-	e.cfg.schemaDeclarations = d
+	out := e.clone()
+	out.cfg.schemaDeclarations = d
 
-	return e
+	return out
 }
 
 // StrictPrefixes disables the default prefix→namespace fallback.
 func (e Evaluator) StrictPrefixes() Evaluator {
-	e = e.clone()
-	e.cfg.strictPrefixes = true
+	out := e.clone()
+	out.cfg.strictPrefixes = true
 
-	return e
+	return out
 }
 
 // QNameValueNoDefaultNamespace makes the atomization of a QName/NOTATION-typed
@@ -463,18 +463,18 @@ func (e Evaluator) StrictPrefixes() Evaluator {
 // atomization keep resolving an unprefixed QName value against the default
 // namespace.
 func (e Evaluator) QNameValueNoDefaultNamespace() Evaluator {
-	e = e.clone()
-	e.cfg.qnameValueNoDefaultNS = true
+	out := e.clone()
+	out.cfg.qnameValueNoDefaultNS = true
 
-	return e
+	return out
 }
 
 // AllowXML11Chars enables XML 1.1 restricted characters.
 func (e Evaluator) AllowXML11Chars() Evaluator {
-	e = e.clone()
-	e.cfg.allowXML11Chars = true
+	out := e.clone()
+	out.cfg.allowXML11Chars = true
 
-	return e
+	return out
 }
 
 // XPath10Compat enables XPath 1.0 compatibility mode, the evaluation semantics
@@ -487,57 +487,34 @@ func (e Evaluator) AllowXML11Chars() Evaluator {
 // comparisons apply the 1.0 boolean/numeric/string conversion rules. Off by
 // default, so ordinary XPath 3.1 / XSLT 3.0 / XSD evaluation is unchanged.
 func (e Evaluator) XPath10Compat() Evaluator {
-	e = e.clone()
-	e.cfg.xpath10Compat = true
+	out := e.clone()
+	out.cfg.xpath10Compat = true
 
-	return e
+	return out
 }
 
 // DocOrderCache attaches a shared document-order cache.
 func (e Evaluator) DocOrderCache(cache *DocOrderCache) Evaluator {
-	e = e.clone()
-	e.cfg.docOrder = cache
+	out := e.clone()
+	out.cfg.docOrder = cache
 
-	return e
+	return out
 }
 
 // TraceWriter sets the destination for fn:trace output. Nil discards trace output. A
 // writer shared by concurrent evaluations must be safe for concurrent use.
 func (e Evaluator) TraceWriter(w io.Writer) Evaluator {
-	e = e.clone()
-	e.cfg.traceWriter = w
+	out := e.clone()
+	out.cfg.traceWriter = w
 
-	return e
+	return out
 }
 
 // Evaluate evaluates the compiled expression against the given context node.
 // ctx is used for cancellation/deadlines only, not for configuration.
 func (e Evaluator) Evaluate(ctx context.Context, expr *Expression, node xdm.Node) (*Result, error) {
-	if err := expr.requireCompiledProgram(); err != nil {
-		return nil, err
-	}
-
-	ec := e.newEvalCtx(node)
-	bindInvocationScope(ctx, ec)
-
-	ec.version = expr.version
-
-	if expr.staticCollation != "" {
-		ec.defaultCollation = expr.staticCollation
-	}
-
-	if expr.staticNamespaces != nil {
-		ec.defaultXMLNamespace = expr.defaultXMLNamespace
-		ec.namespaces = expr.staticNamespaces
-	}
-
-	if expr.version == 10 {
-		ec.xpath10Compat = true
-	}
-
-	applyBudget(ctx, ec)
-
-	if err := expr.prefixPlan.Validate(ec.namespaces, expr.staticNamespaces != nil || ec.strictPrefixes || ec.version == 10, ec.schemaDeclarations, ec.version); err != nil {
+	ec, err := e.prepareEvaluation(ctx, expr, node)
+	if err != nil {
 		return nil, err
 	}
 
@@ -630,8 +607,17 @@ func (e Evaluator) ValidateExpression(ctx context.Context, expr *Expression) err
 // (XPath 3.1 §2.3.4) of the nodes it did not reach do not fire. A node
 // result never builds node items, with or without type annotations.
 func (e Evaluator) EvaluateEBV(ctx context.Context, expr *Expression, node xdm.Node) (bool, error) {
-	if err := expr.requireCompiledProgram(); err != nil {
+	ec, err := e.prepareEvaluation(ctx, expr, node)
+	if err != nil {
 		return false, err
+	}
+
+	return expr.program.executeEBV(ctx, ec)
+}
+
+func (e Evaluator) prepareEvaluation(ctx context.Context, expr *Expression, node xdm.Node) (*evalContext, error) {
+	if err := expr.requireCompiledProgram(); err != nil {
+		return nil, err
 	}
 
 	ec := e.newEvalCtx(node)
@@ -655,10 +641,10 @@ func (e Evaluator) EvaluateEBV(ctx context.Context, expr *Expression, node xdm.N
 	applyBudget(ctx, ec)
 
 	if err := expr.prefixPlan.Validate(ec.namespaces, expr.staticNamespaces != nil || ec.strictPrefixes || ec.version == 10, ec.schemaDeclarations, ec.version); err != nil {
-		return false, err
+		return nil, err
 	}
 
-	return expr.program.executeEBV(ctx, ec)
+	return ec, nil
 }
 
 func (e Evaluator) borrowing() bool {

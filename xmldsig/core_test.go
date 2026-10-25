@@ -12,10 +12,8 @@ import (
 	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
@@ -27,6 +25,7 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/testutil"
 	"github.com/skarm/xmlsec/keyinfo"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -797,23 +796,7 @@ func FuzzVerifySignature(f *testing.F) {
 
 func coreFixtureKey(t testing.TB, name string) crypto.PublicKey {
 	t.Helper()
-
-	raw, e := os.ReadFile(filepath.Join("..", "testdata", "core", name))
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		t.Fatal("fixture PEM")
-	}
-
-	key, e := x509.ParsePKIXPublicKey(block.Bytes)
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return key
+	return testutil.ReadPublicKey(t, filepath.Join("..", "testdata", "core", name))
 }
 
 func FuzzSignTemplate(f *testing.F) {

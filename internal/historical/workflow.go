@@ -117,8 +117,8 @@ type validationWorkflow struct {
 	material       signedMaterial
 }
 
-func validate(ctx context.Context, c Config, input Input, now time.Time, signerEvidence, tsaEvidence pki.Evidence) (report *Report, resultError error) {
-	report = &Report{At: now, Best: now}
+func validate(ctx context.Context, c Config, input Input, now time.Time, signerEvidence, tsaEvidence pki.Evidence) (_ *Report, resultError error) {
+	report := &Report{At: now, Best: now}
 
 	defer func() {
 		if resultError != nil {

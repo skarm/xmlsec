@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	number "github.com/skarm/xmlsec/transform/internal/xpath/number"
+	"github.com/skarm/xmlsec/transform/internal/xpath/number"
 )
 
 func TestFormatNumber(t *testing.T) {

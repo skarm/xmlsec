@@ -13,7 +13,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	lexical "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
+	"github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -814,38 +814,9 @@ func (ec *execContext) withV2TempOutput(fn func() error) error {
 }
 
 func (ec *execContext) execComment(ctx context.Context, inst *commentInst) error {
-	var value string
-
-	if inst.Select != nil {
-		result, err := ec.evalXPath(ctx, inst.Select, ec.contextNode)
-		if err != nil {
-			return err
-		}
-
-		value, err = stringifyResult(ctx, result)
-		if err != nil {
-			return err
-		}
-	} else if len(inst.Body) > 0 {
-		// XSLT 2.0: comment body is temporary output state (XTDE1480).
-		// XSLT 3.0 relaxes this restriction.
-		var val xdm.Sequence
-
-		err := ec.withV2TempOutput(func() error {
-			var err error
-
-			val, err = ec.evaluateBodyAsSequence(ctx, inst.Body)
-
-			return err
-		})
-		if err != nil {
-			return err
-		}
-
-		value, err = stringifySimpleContent(ctx, val, " ")
-		if err != nil {
-			return err
-		}
+	value, err := ec.commentOrPIContent(ctx, inst.Select, inst.Body)
+	if err != nil {
+		return err
 	}
 
 	// Sanitize comment content per XSLT 3.0 spec §11.1:
@@ -856,6 +827,34 @@ func (ec *execContext) execComment(ctx context.Context, inst *commentInst) error
 	comment := ec.resultDoc.CreateComment(value)
 
 	return ec.addNode(comment)
+}
+
+// commentOrPIContent applies simple-content construction and the XSLT 2.0
+// temporary-output restriction shared by comments and processing instructions.
+func (ec *execContext) commentOrPIContent(ctx context.Context, selectExpr *xpath.Expression, body []instruction) (string, error) {
+	if selectExpr != nil {
+		result, err := ec.evalXPath(ctx, selectExpr, ec.contextNode)
+		if err != nil {
+			return "", err
+		}
+
+		return stringifyResult(ctx, result)
+	}
+
+	if len(body) == 0 {
+		return "", nil
+	}
+
+	var value xdm.Sequence
+
+	if err := ec.withV2TempOutput(func() (e error) {
+		value, e = ec.evaluateBodyAsSequence(ctx, body)
+		return e
+	}); err != nil {
+		return "", err
+	}
+
+	return stringifySimpleContent(ctx, value, " ")
 }
 
 // sanitizeComment replaces "--" sequences with "- -" and ensures the
@@ -896,38 +895,9 @@ func (ec *execContext) execPI(ctx context.Context, inst *piInst) error {
 		return err
 	}
 
-	var value string
-
-	if inst.Select != nil {
-		result, err := ec.evalXPath(ctx, inst.Select, ec.contextNode)
-		if err != nil {
-			return err
-		}
-
-		value, err = stringifyResult(ctx, result)
-		if err != nil {
-			return err
-		}
-	} else if len(inst.Body) > 0 {
-		// XSLT 2.0: PI body is temporary output state (XTDE1480).
-		// XSLT 3.0 relaxes this restriction.
-		var val xdm.Sequence
-
-		err := ec.withV2TempOutput(func() error {
-			var err error
-
-			val, err = ec.evaluateBodyAsSequence(ctx, inst.Body)
-
-			return err
-		})
-		if err != nil {
-			return err
-		}
-
-		value, err = stringifySimpleContent(ctx, val, " ")
-		if err != nil {
-			return err
-		}
+	value, err := ec.commentOrPIContent(ctx, inst.Select, inst.Body)
+	if err != nil {
+		return err
 	}
 
 	// XTDE0890: name must be a valid NCName and PITarget

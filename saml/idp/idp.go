@@ -16,8 +16,8 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/saml/binding"
+	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
-	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/saml/metadata"
 	"github.com/skarm/xmlsec/saml/protocol"
 	"github.com/skarm/xmlsec/saml/replay"
@@ -60,7 +60,7 @@ type IdentityProvider struct{ c Config }
 
 // NewIdentityProvider validates and snapshots IdentityProvider policy and required trusted adapters.
 func NewIdentityProvider(c Config) (*IdentityProvider, error) {
-	if !xmlutil.URI(c.EntityID) || nilcheck.IsNil(c.Metadata) || nilcheck.IsNil(c.Signing.Key) || nilcheck.IsNil(c.Replay) || protocol.ValidatePolicy(c.Limits) != nil {
+	if !profile.URI(c.EntityID) || nilcheck.IsNil(c.Metadata) || nilcheck.IsNil(c.Signing.Key) || nilcheck.IsNil(c.Replay) || protocol.ValidatePolicy(c.Limits) != nil {
 		return nil, ErrPolicy
 	}
 
@@ -182,12 +182,12 @@ func (i *IdentityProvider) Issue(ctx context.Context, request *Request, a Authen
 		return nil, ErrPolicy
 	}
 
-	assertionID, e := xmlutil.NewID()
+	assertionID, e := profile.NewID()
 	if e != nil {
 		return nil, e
 	}
 
-	responseID, e := xmlutil.NewID()
+	responseID, e := profile.NewID()
 	if e != nil {
 		return nil, e
 	}
@@ -254,7 +254,7 @@ func contains(a []string, s string) bool {
 }
 
 func authenticationAllowed(a Authentication, at time.Time, skew time.Duration, r *protocol.VerifiedRequest) bool {
-	return !(a.AuthnInstant.IsZero() || a.AuthnInstant.After(at.Add(skew)) || !xmlutil.URI(a.AuthnContext) || r.ForceAuthn() && (!a.FreshAuthentication || a.AuthnInstant.Before(r.IssueInstant().Add(-skew))) || r.IsPassive() && a.InteractionUsed || !r.AllowCreateNameID() && a.CreatedNameID)
+	return !(a.AuthnInstant.IsZero() || a.AuthnInstant.After(at.Add(skew)) || !profile.URI(a.AuthnContext) || r.ForceAuthn() && (!a.FreshAuthentication || a.AuthnInstant.Before(r.IssueInstant().Add(-skew))) || r.IsPassive() && a.InteractionUsed || !r.AllowCreateNameID() && a.CreatedNameID)
 }
 
 func (i *IdentityProvider) roles(ctx context.Context, sp string, at time.Time) (*metadata.Role, *metadata.Role, error) {
@@ -279,7 +279,7 @@ func (i *IdentityProvider) roles(ctx context.Context, sp string, at time.Time) (
 }
 
 func (i *IdentityProvider) requestPolicy(ctx context.Context, sp, destination, bindingURI string, at time.Time) (protocol.RequestOptions, *metadata.Role, error) {
-	if i == nil || ctx == nil || at.IsZero() || !xmlutil.URI(sp) {
+	if i == nil || ctx == nil || at.IsZero() || !profile.URI(sp) {
 		return protocol.RequestOptions{}, nil, ErrPolicy
 	}
 
