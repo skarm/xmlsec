@@ -14,12 +14,26 @@ import (
 )
 
 // referenceSource can reopen explicitly authorized application resources for
-// WriteDigestInput. Verification keeps digests and reports, never resource bytes.
+// WriteDigestInput. Ordinary verification retains only digests and reports.
+// Explicit external Manifest traversal also retains its bounded original bytes
+// until they can be authenticated and parsed in their own document scope.
 type referenceSource struct {
-	resolver  Resolver
-	uri       string
-	limits    ResourceLimits
-	rawDigest []byte
+	resolver        Resolver
+	uri             string
+	limits          ResourceLimits
+	rawDigest       []byte
+	captureManifest bool
+	rawManifest     []byte
+}
+
+func manifestOutputWriter(dst io.Writer, capture bool) (io.Writer, *bytes.Buffer) {
+	if !capture {
+		return dst, nil
+	}
+
+	output := new(bytes.Buffer)
+
+	return io.MultiWriter(dst, output), output
 }
 
 func (s *referenceSource) write(ctx context.Context, dst io.Writer, ts []reference.Transform, opt reference.Options, remaining, resources *int) (out *reference.Report, resultErr error) {
@@ -61,7 +75,16 @@ func (s *referenceSource) write(ctx context.Context, dst io.Writer, ts []referen
 	}
 
 	rawHash := sha256.New()
-	out, err = reference.WriteReader(ctx, dst, io.TeeReader(bounded, rawHash), ts, opt)
+
+	var (
+		captured  bytes.Buffer
+		rawWriter io.Writer = rawHash
+	)
+	if s.captureManifest && s.rawManifest == nil {
+		rawWriter = io.MultiWriter(rawHash, &captured)
+	}
+
+	out, err = reference.WriteReader(ctx, dst, io.TeeReader(bounded, rawWriter), ts, opt)
 	*resources -= int(bounded.ReadBytes)
 
 	if err != nil {
@@ -78,6 +101,10 @@ func (s *referenceSource) write(ctx context.Context, dst io.Writer, ts []referen
 
 	if s.rawDigest == nil {
 		s.rawDigest = rawHash.Sum(nil)
+	}
+
+	if s.captureManifest && s.rawManifest == nil {
+		s.rawManifest = bytes.Clone(captured.Bytes())
 	}
 
 	*remaining -= out.ProducedBytes()

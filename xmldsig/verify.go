@@ -6,7 +6,6 @@ import (
 	"crypto"
 	"crypto/sha256"
 	"crypto/subtle"
-	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -18,7 +17,9 @@ import (
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
+	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/streamio"
+	"github.com/skarm/xmlsec/internal/transformxml"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/reference"
 )
@@ -171,7 +172,7 @@ func Verify(ctx context.Context, d *document.Document, key crypto.PublicKey, opt
 		return nil, err
 	}
 
-	spki, err := x509.MarshalPKIXPublicKey(key)
+	spki, err := signature.MarshalPublicKey(key)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrKey, err)
 	}
@@ -328,63 +329,8 @@ func parseCanonicalization(n *tree.Node, local string) ([]string, error) {
 }
 
 func parseCanonicalTransform(n *tree.Node, local string) (reference.Transform, error) {
-	children, err := structure(n, local, "Algorithm")
-	if err != nil {
-		return reference.Transform{}, err
-	}
-
-	uri, err := requiredAttribute(n, "Algorithm")
-	if err != nil {
-		return reference.Transform{}, err
-	}
-
-	if !canonicalAlgorithm(uri) {
-		return reference.Transform{}, fmt.Errorf("%w: canonicalization method", ErrAlgorithm)
-	}
-
-	if len(children) == 0 {
-		return reference.Transform{Algorithm: uri}, nil
-	}
-
-	if uri != c14n.Exclusive && uri != c14n.ExclusiveWithComments {
-		return reference.Transform{}, fmt.Errorf("%w: canonicalization parameters", ErrStructure)
-	}
-
-	if len(children) != 1 || children[0].Name != (document.Name{Space: c14n.Exclusive, Local: "InclusiveNamespaces"}) {
-		return reference.Transform{}, fmt.Errorf("%w: canonicalization parameters", ErrStructure)
-	}
-
-	child := children[0]
-	if err := attributes(child, "PrefixList"); err != nil {
-		return reference.Transform{}, err
-	}
-
-	nested, err := elementChildren(child)
-	if err != nil {
-		return reference.Transform{}, err
-	}
-
-	if len(nested) != 0 {
-		return reference.Transform{}, fmt.Errorf("%w: InclusiveNamespaces must be empty", ErrStructure)
-	}
-
-	list, err := requiredAttribute(child, "PrefixList")
-	if err != nil {
-		return reference.Transform{}, err
-	}
-
-	prefixes := strings.FieldsFunc(list, func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' })
-	if len(prefixes) > 128 {
-		return reference.Transform{}, fmt.Errorf("%w: too many inclusive prefixes", ErrPolicy)
-	}
-
-	for _, p := range prefixes {
-		if p != "#default" && (!tree.NCName(p) || p == "xmlns") {
-			return reference.Transform{}, fmt.Errorf("%w: inclusive prefix", ErrStructure)
-		}
-	}
-
-	return reference.Transform{Algorithm: uri, InclusivePrefixes: prefixes}, nil
+	t, err := transformxml.ParseCanonical(n, local)
+	return t, transformXMLError(err)
 }
 
 func base64Value(ctx context.Context, n *tree.Node, local string, maxBytes int, allowed ...string) ([]byte, error) {
@@ -621,8 +567,9 @@ func (r *Result) CoversElement(e document.Element) bool {
 }
 
 // ReferenceResult keeps an authenticated digest and processing trace. Canonical
-// bytes and original external resources are not retained. Target
-// is valid for a same-document element reference, not a whole-document or external resource.
+// bytes are not retained. Explicit Manifest traversal additionally retains its
+// bounded original subresource bytes. Target is valid for a same-document
+// element reference, not a whole-document or external octet resource.
 type ReferenceResult struct {
 	uri, digestMethod             string
 	typeURI                       string
@@ -632,6 +579,7 @@ type ReferenceResult struct {
 	external                      *referenceSource
 	processing                    reference.Options
 	digest                        []byte
+	manifestInput                 []byte
 	transforms                    []reference.Transform
 	coverageDoc                   *document.Document
 	coverageRoot, coverageExclude *tree.Node
@@ -653,6 +601,17 @@ func (r ReferenceResult) Type() string { return r.typeURI }
 
 // URI returns the reference URI.
 func (r ReferenceResult) URI() string { return r.uri }
+
+// ResourceURI returns the exact URI supplied to the external resolver, including
+// any fragment. It is empty for a same-document reference. URI preserves the
+// original signed spelling, which can differ when BaseURI resolution is enabled.
+func (r ReferenceResult) ResourceURI() string {
+	if r.external == nil {
+		return ""
+	}
+
+	return r.external.uri
+}
 
 // DigestMethod returns the reference digest algorithm URI.
 func (r ReferenceResult) DigestMethod() string { return r.digestMethod }

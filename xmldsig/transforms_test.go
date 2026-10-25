@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -14,8 +16,78 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const (
+	filterIntersect = "intersect"
+	prefixXML       = "xml"
+)
+
+func TestExternalExtensionContextIsNotReused(t *testing.T) {
+	program := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "true()", Namespaces: map[string]string{"ds": xmldsig.Namespace, prefixXML: document.XMLNamespace}}}}
+
+	engine, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{program}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, alias := range []bool{false, true} {
+		t.Run(strconv.FormatBool(alias), func(t *testing.T) {
+			uri, second, resolved, base := uriUrnPayload, uriUrnPayload, uriUrnPayload, ""
+			if alias {
+				uri, second, resolved, base = "payload.xml", "./payload.xml", "https://example.test/messages/payload.xml", uriSignatureBase
+			}
+
+			transforms := []reference.Transform{program, {Algorithm: c14n.Exclusive}}
+
+			draft, selected, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: uri, Transforms: transforms}, {URI: second, Transforms: transforms}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			opt := xmldsig.SignatureOptions{Processing: reference.DefaultOptions(), External: &xmldsig.ExternalReferences{BaseURI: base, AllowedURIs: []string{resolved}, Resolver: xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader(`<payload>context-sensitive execution</payload>`)), nil
+			})}}
+			opt.Processing.Extension = engine
+			opt.Processing.AllowedTransforms = append(opt.Processing.AllowedTransforms, reference.XPath)
+			key := coreEC(t)
+
+			signed, err := xmldsig.SignTemplate(t.Context(), draft, selected, key, xmldsig.TemplateSignOptions{Validation: opt})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// The trusted processor rejects execution at the second original
+			// expression element. Identical program fingerprints and resource
+			// identity must not bypass its context-specific runtime decision.
+			blocked := signed.Root().Children()[0].Children()[3].Children()[0].Children()[0].Children()[0]
+			opt.Processing.Extension = scopedExtension{base: engine, blocked: blocked}
+
+			result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, signed.Root(), key.Public(), opt)
+			if !errors.Is(err, reference.ErrPolicy) || result != nil || report.SignatureValue != xmldsig.Valid || report.References[0].Status != xmldsig.Valid || report.References[1].Status != xmldsig.Disallowed {
+				t.Fatalf("cached extension bypassed context: result=%t signature=%s references=%v error=%v", result != nil, report.SignatureValue, report.References, err)
+			}
+		})
+	}
+}
+
+type scopedExtension struct {
+	base    reference.ExtensionProcessor
+	blocked document.Element
+}
+
+func (p scopedExtension) Validate(ctx context.Context, tr reference.Transform) error {
+	return p.base.Validate(ctx, tr)
+}
+
+func (p scopedExtension) Apply(ctx context.Context, tr reference.Transform, data reference.Data, scope reference.ExtensionContext) (reference.Data, error) {
+	if len(tr.XPath) != 0 && tr.XPath[0].Here.Same(p.blocked) {
+		return reference.Data{}, reference.ErrPolicy
+	}
+
+	return p.base.Apply(ctx, tr, data, scope)
+}
+
 func TestTransformXMLDSig(t *testing.T) {
-	ns := map[string]string{"ds": xmldsig.Namespace, "xml": document.XMLNamespace}
+	ns := map[string]string{"ds": xmldsig.Namespace, prefixXML: document.XMLNamespace}
 
 	xslt := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:ds="` + xmldsig.Namespace + `" version="1.0"><xsl:output method="text"/><xsl:template match="/"><xsl:value-of select="//fixed"/></xsl:template></xsl:stylesheet>`
 	for _, tt := range []struct {
@@ -23,7 +95,7 @@ func TestTransformXMLDSig(t *testing.T) {
 		tr   reference.Transform
 	}{
 		{"XPath", reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: `not(ancestor-or-self::volatile)`, Namespaces: ns}}}},
-		{"Filter2", reference.Transform{Algorithm: reference.XPathFilter2, XPath: []reference.XPathExpression{{Expression: `//volatile`, Filter: "subtract", Namespaces: map[string]string{"ds": xmldsig.Namespace, "xf": reference.XPathFilter2, "xml": document.XMLNamespace}}}}},
+		{"Filter2", reference.Transform{Algorithm: reference.XPathFilter2, XPath: []reference.XPathExpression{{Expression: `//volatile`, Filter: "subtract", Namespaces: map[string]string{"ds": xmldsig.Namespace, "xf": reference.XPathFilter2, prefixXML: document.XMLNamespace}}}}},
 		{"XSLT", reference.Transform{Algorithm: reference.XSLT, Stylesheet: []byte(xslt)}},
 	} {
 		t.Run(tt.name, func(t *testing.T) { testTransformXMLDSigCase(t, &tt) })
@@ -109,7 +181,7 @@ func TestV1TransformURIsRequireV1Processor(t *testing.T) {
 				tr.XPath = []reference.XPathExpression{{Expression: programTrueXPath}}
 				if algorithm == reference.XPathFilter2 {
 					tr.XPath[0].Expression = "/"
-					tr.XPath[0].Filter = "intersect"
+					tr.XPath[0].Filter = filterIntersect
 				}
 			}
 
@@ -129,6 +201,24 @@ func TestV1TransformURIsRequireV1Processor(t *testing.T) {
 	}
 }
 
+func TestTransformBuilderRejectsReservedPrefixRebinding(t *testing.T) {
+	for _, test := range []struct{ algorithm, prefix string }{{reference.XPath, "ds"}, {reference.XPathFilter2, "xf"}} {
+		t.Run(test.prefix, func(t *testing.T) {
+			parameter := reference.XPathExpression{Expression: "true()", Namespaces: map[string]string{test.prefix: "urn:wrong-transform-namespace"}}
+			if test.algorithm == reference.XPathFilter2 {
+				parameter.Filter = filterIntersect
+			}
+
+			doc := coreParse(t, `<root><payload ID="payload">value</payload></root>`)
+
+			template, _, err := xmldsig.BuildTemplate(t.Context(), doc, doc.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: namePayload, Transforms: []reference.Transform{{Algorithm: test.algorithm, XPath: []reference.XPathExpression{parameter}}}}}})
+			if template != nil || !errors.Is(err, xmldsig.ErrPolicy) {
+				t.Fatal("reserved transform prefix changed meaning", err)
+			}
+		})
+	}
+}
+
 func TestTemplateStylesheetNamespaceImport(t *testing.T) {
 	for _, literal := range []string{
 		`<payload><value>123</value></payload>`,
@@ -141,7 +231,7 @@ func TestTemplateStylesheetNamespaceImport(t *testing.T) {
 			host := coreParse(t, `<host xmlns="urn:host" xmlns:p="urn:conflict" ID="host"><data ID="data"/></host>`)
 
 			built, selected, err := xmldsig.BuildTemplate(t.Context(), host, host.Root(), xmldsig.SignatureTemplate{
-				SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: "#data", Transforms: []reference.Transform{program}}},
+				SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: nameData, Transforms: []reference.Transform{program}}},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -158,7 +248,7 @@ func TestTemplateStylesheetNamespaceImport(t *testing.T) {
 			processing := reference.DefaultOptions()
 			processing.Extension = e
 			processing.AllowedTransforms = append(processing.AllowedTransforms, reference.XSLT)
-			options := xmldsig.SignatureOptions{ExpectedURIs: []string{"#data"}, Processing: processing}
+			options := xmldsig.SignatureOptions{ExpectedURIs: []string{nameData}, Processing: processing}
 			key := coreEC(t)
 
 			signed, err := xmldsig.SignTemplate(t.Context(), built, selected, key, xmldsig.TemplateSignOptions{Validation: options})

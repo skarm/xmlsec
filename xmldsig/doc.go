@@ -20,7 +20,27 @@
 //
 // [BuildTemplate], [SignTemplate] and [VerifySignature] support explicit
 // signature selection, Object content, mixed references and multiple
-// signatures. Local Manifest recursion is opt-in. Preserving existing nonempty
+// signatures. Manifest recursion is opt-in. Typed external ds:Manifest roots
+// additionally require [ManifestPolicy.AllowExternal] and an explicit resource
+// allowlist. Their original bytes share the aggregate resource limit; node scopes,
+// cycles, depth and total references are bounded. Incoming digests authenticate
+// a Manifest before its children are discovered. [ManifestPolicy.AllowTransformed]
+// separately permits typed references whose approved transforms produce standalone
+// Manifest XML. The final digest input is captured during the authenticated
+// processing pass, then parsed into a separate bounded ID scope. It does not prove
+// coverage of the original nodes. [ManifestResult.Transformed] distinguishes this
+// scope, and scopes are keyed by retrieval URI plus exact output digest.
+// [ManifestResult.ResourceURI]
+// and diagnostic reports identify each external scope; a valid Manifest byte
+// reference does not by itself validate that Manifest's contents.
+// [ExternalReferences.BaseURI] explicitly enables relative URI and inherited
+// xml:base resolution through permitted containers. The complete resolved URI
+// must be allowlisted. A fragment is passed to the resolver unchanged; the
+// adapter supplies its identified subresource as standalone octets. The library
+// does not select an ID from a fetched external document. [ReferenceResult.URI]
+// preserves signed spelling; [ReferenceResult.ResourceURI] identifies the
+// resolver input used by verification and later digest-input replay.
+// Preserving existing nonempty
 // signatures while signing a template requires separate trusted keys in
 // [TemplateSignOptions.Preserve].
 //
@@ -45,7 +65,14 @@
 // [DefaultPolicy] permits RSA/ECDSA with SHA-2. [ModernPolicy] adds fixed
 // RSA-PSS and [Ed25519]/[Ed25519ph]; [ParameterizedPolicy] enables generic PSS.
 // HMAC uses separate secret-based APIs and [HMACPolicy]; every secret holder
-// can produce the same MAC. Approved XPath/Filter2/XSLT transforms use
+// can produce the same MAC. [LegacyVerificationPolicy] explicitly enables SHA-1
+// reference digests and RSA-SHA1/DSA-SHA1 verification, with complete 1024/160
+// DSA public parameters and fixed-width r || s signature values. SHA-1 reference
+// generation is available under that policy, but RSA-SHA1/DSA-SHA1 signature
+// generation is always rejected before calling a private signer.
+// [LegacyHMACPolicy] separately opts into HMAC-SHA1 with the existing key/tag
+// bounds. Both legacy policies are disabled in FIPS mode; defaults remain SHA-2.
+// Approved XPath/Filter2/XSLT transforms use
 // github.com/skarm/xmlsec/transform. There is no implicit HTTP/file lookup or
 // full XMLDSig conformance claim.
 //

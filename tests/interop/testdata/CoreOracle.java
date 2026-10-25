@@ -2,7 +2,9 @@
 // Reuses the hardened XML parser/PEM loader from DetachedOracle. It never falls
 // back to external URI fetching; this helper is TEST tooling, not library code.
 import java.nio.file.*;
+import java.security.*;
 import java.util.*;
+import javax.crypto.spec.SecretKeySpec;
 import javax.xml.XMLConstants;
 import javax.xml.crypto.*;
 import javax.xml.crypto.dom.*;
@@ -42,16 +44,55 @@ public class CoreOracle {
         DigestMethod dm=f.newDigestMethod(SHA256,null);
         return bad?f.newReference(uri,dm,ts,null,null,new byte[32]):f.newReference(uri,dm,ts,null,null);
     }
+    static void legacyFixture(XMLSignatureFactory f,String method,Path publicFile,Path output) throws Exception {
+        // Dedicated compatibility fixture mode. Ordinary oracle modes retain
+        // JSR 105 secure validation. No legacy private key is written to disk.
+        String sha1=DS+"sha1";
+        Key signingKey; PublicKey publicKey=null;
+        if(method.equals(DS+"hmac-sha1")){
+            byte[] secret=new byte[80];Arrays.fill(secret,(byte)0xaa);
+            signingKey=new SecretKeySpec(secret,"HmacSHA1");
+        }else{
+            String algorithm=method.equals(DS+"dsa-sha1")?"DSA":method.equals(DS+"rsa-sha1")?"RSA":null;
+            if(algorithm==null)throw new IllegalArgumentException("legacy method");
+            KeyPairGenerator generator=KeyPairGenerator.getInstance(algorithm);generator.initialize(algorithm.equals("DSA")?1024:2048);
+            KeyPair pair=generator.generateKeyPair();signingKey=pair.getPrivate();publicKey=pair.getPublic();
+            Files.writeString(publicFile,"-----BEGIN PUBLIC KEY-----\n"+Base64.getMimeEncoder(64,new byte[]{10}).encodeToString(publicKey.getEncoded())+"\n-----END PUBLIC KEY-----\n");
+        }
+        Document d=DetachedOracle.builder().newDocument();Element root=d.createElement("root");root.setAttribute("ID","root");d.appendChild(root);
+        root.appendChild(item(d,"data","legacy fixture"));ids(root);
+        DigestMethod digest=f.newDigestMethod(sha1,null);
+        List<Reference> refs=List.of(
+            f.newReference("#root",digest,List.of(f.newTransform(Transform.ENVELOPED,(TransformParameterSpec)null),f.newTransform(EXC,(TransformParameterSpec)null)),null,null),
+            f.newReference("#data",digest,List.of(f.newTransform(EXC,(TransformParameterSpec)null)),null,null));
+        SignedInfo si=f.newSignedInfo(f.newCanonicalizationMethod(EXC,(C14NMethodParameterSpec)null),f.newSignatureMethod(method,null),refs);
+        javax.xml.crypto.dsig.keyinfo.KeyInfo ki=publicKey==null?null:f.getKeyInfoFactory().newKeyInfo(List.of(f.getKeyInfoFactory().newKeyValue(publicKey)));
+        DOMSignContext ctx=new DOMSignContext(signingKey,root);ctx.setDefaultNamespacePrefix("ds");ctx.setProperty("org.jcp.xml.dsig.secureValidation",Boolean.FALSE);ctx.setURIDereferencer(resolver(f));
+        f.newXMLSignature(si,ki).sign(ctx);
+        DOMValidateContext check=new DOMValidateContext(publicKey==null?signingKey:publicKey,d.getElementsByTagNameNS(DS,"Signature").item(0));
+        check.setProperty("org.jcp.xml.dsig.secureValidation",Boolean.FALSE);check.setURIDereferencer(resolver(f));
+        if(!f.unmarshalXMLSignature(check).validate(check))throw new GeneralSecurityException("legacy fixture self verification");
+        TransformerFactory tf=TransformerFactory.newInstance();tf.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD,"");tf.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET,"");
+        Transformer t=tf.newTransformer();t.setOutputProperty(OutputKeys.INDENT,"no");t.transform(new DOMSource(d),new StreamResult(output.toFile()));
+        System.out.println("legacy fixture signed and independently verified");
+    }
     public static void main(String[] args) throws Exception {
         XMLSignatureFactory f=XMLSignatureFactory.getInstance("DOM");
         String mode=args[0];
-        if(mode.equals("verify")){
+        if(mode.equals("legacy-fixture")){
+            legacyFixture(f,args[1],Path.of(args[2]),Path.of(args[3]));return;
+        }
+        if(mode.equals("verify")||mode.equals("verify-legacy")||mode.equals("verify-legacy-hmac")){
             // verify public.pem input.xml signature-index
             Document d=DetachedOracle.builder().parse(Path.of(args[2]).toFile());ids(d.getDocumentElement());
             NodeList signatures=d.getElementsByTagNameNS(DS,"Signature");int index=Integer.parseInt(args[3]);
             if(index<0||index>=signatures.getLength())throw new IllegalArgumentException("index");
-            DOMValidateContext ctx=new DOMValidateContext(DetachedOracle.key(Path.of(args[1]),false),signatures.item(index));
-            ctx.setProperty("org.jcp.xml.dsig.secureValidation",Boolean.TRUE);ctx.setURIDereferencer(resolver(f));
+            Key key;
+            if(mode.equals("verify-legacy-hmac")){
+                byte[] secret=new byte[80];Arrays.fill(secret,(byte)0xaa);key=new SecretKeySpec(secret,"HmacSHA1");
+            }else key=DetachedOracle.key(Path.of(args[1]),false);
+            DOMValidateContext ctx=new DOMValidateContext(key,signatures.item(index));
+            ctx.setProperty("org.jcp.xml.dsig.secureValidation",mode.equals("verify"));ctx.setURIDereferencer(resolver(f));
             XMLSignature s=f.unmarshalXMLSignature(ctx);
             boolean sv=s.getSignatureValue().validate(ctx);
             List<Boolean> refs=new ArrayList<>();for(Reference r:s.getSignedInfo().getReferences())refs.add(r.validate(ctx));

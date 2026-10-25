@@ -4,15 +4,21 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+
+	// #nosec G406 -- Explicit bounded legacy compatibility only.
+	"crypto/dsa" //nolint:staticcheck // XMLDSig 1.1 requires legacy DSA verification; generation is disabled.
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,11 +27,234 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/keyinfo"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
 const ds4 = xmldsig.Namespace
+
+func TestLegacyXMLDSigFixtures(t *testing.T) {
+	if fips140.Enabled() {
+		t.Skip("legacy compatibility is disabled in FIPS mode")
+	}
+
+	for _, test := range []struct{ name, method string }{{"dsa", xmldsig.DSASHA1}, {"rsa", xmldsig.RSASHA1}} {
+		t.Run(test.name, func(t *testing.T) { testLegacyXMLDSigFixture(t, test.name, test.method) })
+	}
+}
+
+func testLegacyXMLDSigFixture(t *testing.T, name, method string) {
+	t.Helper()
+
+	raw, err := os.ReadFile(filepath.Join("..", "testdata", "legacy-dsig", name+"-sha1.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key := coreFixtureKey(t, filepath.Join("..", "legacy-dsig", name+"-public.pem"))
+	d := coreParse(t, string(raw))
+
+	selected := xmldsig.Signatures(d)[0]
+	if _, err := xmldsig.VerifySignature(t.Context(), d, selected, key, xmldsig.SignatureOptions{}); !errors.Is(err, xmldsig.ErrPolicy) {
+		t.Fatal("default accepted legacy", err)
+	}
+
+	opt := xmldsig.SignatureOptions{Policy: xmldsig.LegacyVerificationPolicy(), ExpectedURIs: []string{"#root", nameData}, RequiredElements: []document.Element{d.Root(), d.Root().Children()[0]}}
+
+	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), d, selected, key, opt)
+	if err != nil || result == nil || report == nil {
+		t.Fatal(result, report, err)
+	}
+
+	if len(result.References()) != 2 || result.SignatureMethod() != method || len(result.KeyFingerprintSHA256()) != 64 || !result.CoversElement(d.Root()) {
+		t.Fatal("incomplete authenticated result")
+	}
+
+	if _, err := xmldsig.Verify(t.Context(), d, key, xmldsig.VerifyOptions{Policy: opt.Policy}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = xmldsig.VerifySignatureWithKeyInfo(t.Context(), d, selected, xmldsig.KeyInfoVerifyOptions{
+		Signature: opt, SelectTrustedKey: func(_ context.Context, info *keyinfo.Result) (int, error) {
+			candidates := info.Candidates()
+			if len(candidates) != 1 || candidates[0].FingerprintSHA256() != result.KeyFingerprintSHA256() {
+				return 0, xmldsig.ErrKeyInfoTrust
+			}
+
+			return 0, nil
+		},
+	})
+	if err != nil {
+		t.Fatal("pinned KeyInfo", err)
+	}
+
+	if dsaKey, ok := key.(*dsa.PublicKey); ok {
+		testLegacyDSAContextSignature(t, d, dsaKey, result.KeyFingerprintSHA256(), opt)
+	}
+
+	changed := coreParse(t, strings.Replace(string(raw), "legacy fixture", "changed fixture", 1))
+	if _, err := xmldsig.VerifySignature(t.Context(), changed, xmldsig.Signatures(changed)[0], key, xmldsig.SignatureOptions{Policy: opt.Policy}); !errors.Is(err, xmldsig.ErrDigest) {
+		t.Fatal("changed data", err)
+	}
+
+	testLegacyMessageEncoding(t, selected, key, method, opt.Policy)
+	testLegacyGenerationBlocked(t, key, method, opt.Policy)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, err := xmldsig.VerifySignature(ctx, d, selected, key, opt); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+}
+
+func testLegacyDSAContextSignature(t *testing.T, doc *document.Document, key *dsa.PublicKey, pin string, validation xmldsig.SignatureOptions) {
+	t.Helper()
+
+	xml := coreXML(t, doc)
+	for _, field := range []string{"P", "Q", "G"} {
+		start := strings.Index(xml, "<ds:"+field+">")
+
+		end := strings.Index(xml, "</ds:"+field+">") + len("</ds:"+field+">")
+		if start < 0 || end <= start {
+			t.Fatal("missing independent fixture parameter", field)
+		}
+
+		xml = xml[:start] + xml[end:]
+	}
+
+	abbreviated := coreParse(t, xml)
+	selected := xmldsig.Signatures(abbreviated)[0]
+
+	validation.RequiredElements = []document.Element{abbreviated.Root()}
+
+	options := xmldsig.KeyInfoVerifyOptions{Signature: validation, KeyInfo: keyinfo.Options{DSAParameters: &key.Parameters}, SelectTrustedKey: func(_ context.Context, info *keyinfo.Result) (int, error) {
+		if len(info.Candidates()) != 1 || info.Candidates()[0].FingerprintSHA256() != pin {
+			return -1, xmldsig.ErrKeyInfoTrust
+		}
+
+		return 0, nil
+	}}
+	if result, err := xmldsig.VerifySignatureWithKeyInfo(t.Context(), abbreviated, selected, options); err != nil || !result.CoversElement(abbreviated.Root()) {
+		t.Fatal("independent signature with application parameter context", err)
+	}
+
+	options.KeyInfo.DSAParameters = nil
+	if result, err := xmldsig.VerifySignatureWithKeyInfo(t.Context(), abbreviated, selected, options); result != nil || !errors.Is(err, keyinfo.ErrUnsupported) {
+		t.Fatal("missing parameter context was guessed", err)
+	}
+
+	options.KeyInfo.DSAParameters = &key.Parameters
+
+	options.Signature.Policy = xmldsig.DefaultPolicy()
+	if result, err := xmldsig.VerifySignatureWithKeyInfo(t.Context(), abbreviated, selected, options); result != nil || !errors.Is(err, xmldsig.ErrPolicy) {
+		t.Fatal("parameter context enabled legacy acceptance", err)
+	}
+}
+
+func testLegacyMessageEncoding(t *testing.T, selected document.Element, key crypto.PublicKey, method string, policy xmldsig.Policy) {
+	t.Helper()
+
+	var message bytes.Buffer
+	if err := c14n.WriteElement(t.Context(), &message, selected.Children()[0], c14n.Options{Algorithm: c14n.Exclusive}); err != nil {
+		t.Fatal(err)
+	}
+
+	sig, err := base64.StdEncoding.DecodeString(selected.Children()[1].Text())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := xmldsig.VerifyMessage(t.Context(), message.Bytes(), sig, key, method, policy); err != nil {
+		t.Fatal("message API", err)
+	}
+
+	for _, value := range [][]byte{sig[:len(sig)-1], bytes.Repeat([]byte{0}, len(sig)), append(bytes.Clone(sig), 0)} {
+		if err := xmldsig.VerifyMessage(t.Context(), message.Bytes(), value, key, method, policy); !errors.Is(err, xmldsig.ErrSignature) {
+			t.Fatal("malformed signature", err)
+		}
+	}
+
+	if method == xmldsig.DSASHA1 {
+		derSig, err := asn1.Marshal(struct{ R, S *big.Int }{new(big.Int).SetBytes(sig[:20]), new(big.Int).SetBytes(sig[20:])})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := xmldsig.VerifyMessage(t.Context(), message.Bytes(), derSig, key, method, policy); !errors.Is(err, xmldsig.ErrSignature) {
+			t.Fatal("DER instead of r||s", err)
+		}
+	}
+
+	limited := policy
+
+	limited.MaxCanonicalBytes = message.Len() - 1
+	if err := xmldsig.VerifyMessage(t.Context(), message.Bytes(), sig, key, method, limited); !errors.Is(err, xmldsig.ErrPolicy) {
+		t.Fatal("message limit", err)
+	}
+}
+
+func testLegacyGenerationBlocked(t *testing.T, key crypto.PublicKey, method string, policy xmldsig.Policy) {
+	t.Helper()
+
+	probe := &legacySigningProbe{key: key}
+	if _, err := xmldsig.SignMessage(t.Context(), []byte("message"), probe, method, policy); !errors.Is(err, xmldsig.ErrPolicy) {
+		t.Fatal("legacy message generation", err)
+	}
+
+	if _, err := xmldsig.SignEnveloped(t.Context(), coreParse(t, `<root ID="root"/>`), probe, xmldsig.SignOptions{Policy: policy, SignatureMethod: method}); !errors.Is(err, xmldsig.ErrPolicy) {
+		t.Fatal("legacy XML generation", err)
+	}
+
+	template, selected := paramTemplate(t, method, xmldsig.SignatureParameters{})
+	if _, err := xmldsig.SignTemplate(t.Context(), template, selected, probe, xmldsig.TemplateSignOptions{Validation: xmldsig.SignatureOptions{Policy: policy}}); !errors.Is(err, xmldsig.ErrPolicy) {
+		t.Fatal("legacy template generation", err)
+	}
+
+	if probe.calls != 0 {
+		t.Fatal("legacy generation reached private signer")
+	}
+}
+
+func TestLegacyDSAKeyValidation(t *testing.T) {
+	if fips140.Enabled() {
+		t.Skip("legacy compatibility is disabled in FIPS mode")
+	}
+
+	key := coreFixtureKey(t, filepath.Join("..", "legacy-dsig", "dsa-public.pem")).(*dsa.PublicKey)
+	for _, mutate := range []func(*dsa.PublicKey){
+		func(k *dsa.PublicKey) { k.P = nil }, func(k *dsa.PublicKey) { k.Q = nil },
+		func(k *dsa.PublicKey) { k.G = big.NewInt(1) }, func(k *dsa.PublicKey) { k.Y = new(big.Int).Set(k.P) },
+		func(k *dsa.PublicKey) { k.P = new(big.Int).Lsh(big.NewInt(1), 16384) },
+		func(k *dsa.PublicKey) { k.Q = new(big.Int).Sub(k.Q, big.NewInt(1)) },
+		func(k *dsa.PublicKey) { k.Y = new(big.Int).Sub(k.P, big.NewInt(1)) },
+	} {
+		bad := *key
+		mutate(&bad)
+
+		if err := xmldsig.VerifyMessage(t.Context(), nil, make([]byte, 40), &bad, xmldsig.DSASHA1, xmldsig.LegacyVerificationPolicy()); !errors.Is(err, xmldsig.ErrKey) {
+			t.Fatal(err)
+		}
+	}
+
+	if err := xmldsig.VerifyMessage(t.Context(), nil, make([]byte, 40), (*dsa.PublicKey)(nil), xmldsig.DSASHA1, xmldsig.LegacyVerificationPolicy()); !errors.Is(err, xmldsig.ErrKey) {
+		t.Fatal(err)
+	}
+}
+
+func TestLegacyMethodsFIPS(t *testing.T) {
+	if !fips140.Enabled() {
+		t.Skip("run with GODEBUG=fips140=only")
+	}
+
+	if err := xmldsig.VerifyMessage(t.Context(), nil, nil, nil, xmldsig.DSASHA1, xmldsig.LegacyVerificationPolicy()); !errors.Is(err, xmldsig.ErrPolicy) {
+		t.Fatal(err)
+	}
+
+	if _, err := xmldsig.ComputeHMAC(t.Context(), nil, bytes.Repeat([]byte{1}, 80), xmldsig.HMACSHA1, 0, xmldsig.LegacyHMACPolicy()); !errors.Is(err, xmldsig.ErrPolicy) {
+		t.Fatal(err)
+	}
+}
 
 func TestCoreForms(t *testing.T) {
 	key := coreEC(t)

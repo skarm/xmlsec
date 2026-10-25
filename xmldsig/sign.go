@@ -270,6 +270,10 @@ func normalizeEnvelopedAlgorithms(pub crypto.PublicKey, opt SignOptions, p Polic
 		opt.DigestMethod = SHA256
 	}
 
+	if opt.SignatureMethod == DSASHA1 || opt.SignatureMethod == RSASHA1 {
+		return opt, fmt.Errorf("%w: legacy signature generation is disabled", ErrPolicy)
+	}
+
 	if !permits(p.AllowedSignatureMethods, opt.SignatureMethod) || !permits(p.AllowedDigestMethods, opt.DigestMethod) {
 		return opt, fmt.Errorf("%w: signing algorithm", ErrPolicy)
 	}

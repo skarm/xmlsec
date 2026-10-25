@@ -14,6 +14,7 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/uriref"
 	"github.com/skarm/xmlsec/reference"
 )
 
@@ -36,6 +37,18 @@ func (p *parser) configureExternal() error {
 	copied.AllowedURIs = append([]string(nil), e.AllowedURIs...)
 
 	p.options.External = &copied
+
+	var err error
+
+	p.baseURI, err = uriref.Base(copied.BaseURI)
+	if err != nil {
+		return fmt.Errorf("%w: external BaseURI: %w", ErrPolicy, err)
+	}
+
+	if len(copied.BaseURI) > 8192 || (p.baseURI != nil && p.baseURI.User != nil) {
+		return fmt.Errorf("%w: external BaseURI", ErrPolicy)
+	}
+
 	for _, u := range copied.AllowedURIs {
 		if !validExternalURI(u) || p.allow[u] {
 			return fmt.Errorf("%w: external URI allowlist", ErrPolicy)
@@ -48,13 +61,58 @@ func (p *parser) configureExternal() error {
 }
 
 func validExternalURI(uri string) bool {
-	if len(uri) > 8192 || strings.TrimSpace(uri) != uri || strings.ContainsAny(uri, "\r\n\t") {
+	if len(uri) > 8192 || uriref.Validate(uri) != nil {
 		return false
 	}
 
 	u, e := url.Parse(uri)
 
-	return e == nil && u.IsAbs() && u.Fragment == "" && !strings.Contains(uri, "#") && u.User == nil
+	return e == nil && u.IsAbs() && u.User == nil
+}
+
+func validKeyURI(uri string) bool {
+	if len(uri) > 8192 || uriref.Validate(uri) != nil {
+		return false
+	}
+
+	u, err := url.Parse(uri)
+
+	return err == nil && u.User == nil
+}
+
+func (p *parser) resourceURI(s *scope, n *tree.Node, uri string) (string, error) {
+	if len(uri) > 8192 {
+		return "", ErrLimit
+	}
+
+	if !externalURI(uri) {
+		return uri, nil
+	}
+
+	resolved, err := uriref.Resolve(uri, p.baseURI, s.resource, n)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInput, err)
+	}
+
+	if !validExternalURI(resolved) || !p.allow[resolved] {
+		return "", fmt.Errorf("%w: resolved external URI not allowed", ErrPolicy)
+	}
+
+	return resolved, nil
+}
+
+func (p *parser) keyInfoReferenceURI(s *scope, n *tree.Node) (string, error) {
+	children, err := structure(n, Namespace11, nameKeyInfoReference, "Id", "URI")
+	if err != nil {
+		return "", err
+	}
+
+	uri, present := attr(n, "URI")
+	if len(children) != 0 || !present {
+		return "", fmt.Errorf("%w: KeyInfoReference URI/structure", ErrInput)
+	}
+
+	return p.resourceURI(s, n, uri)
 }
 
 func (p *parser) consumeResource(uri string, consume func(io.Reader) error) error {
@@ -66,9 +124,11 @@ func (p *parser) consumeResource(uri string, consume func(io.Reader) error) erro
 		return fmt.Errorf("%w: external URI not allowed", ErrPolicy)
 	}
 
-	if len(p.resources)+len(p.parsedResources) >= p.limits.MaxExternalResources {
+	if p.externalReads >= p.limits.MaxExternalResources {
 		return ErrLimit
 	}
+
+	p.externalReads++
 
 	reader, err := p.options.External.Resolver.Resolve(p.ctx, uri)
 	if err != nil {
@@ -84,7 +144,13 @@ func (p *parser) consumeResource(uri string, consume func(io.Reader) error) erro
 	}
 
 	remaining := p.limits.MaxExternalBytes - p.externalBytes
-	source := &streamio.Reader{Context: p.ctx, Source: reader, Limit: int64(min(p.limits.MaxBlobBytes*2, remaining)), LimitError: ErrLimit}
+
+	maximum := min(p.limits.MaxBlobBytes*2, remaining)
+	if p.options.RetrievalProcessing != nil {
+		maximum = min(maximum, p.options.RetrievalProcessing.MaxInputBytes)
+	}
+
+	source := &streamio.Reader{Context: p.ctx, Source: reader, Limit: int64(maximum), LimitError: ErrLimit}
 	readErr := consume(source)
 
 	closeErr := reader.Close()
@@ -173,6 +239,22 @@ func (p *parser) resolveXML(s *scope, uri string) (*tree.Node, *scope, error) {
 		return tree.Root(cached.doc), cached, nil
 	}
 
+	if p.options.RetrievalProcessing != nil {
+		data, err := p.readRawResource(uri)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		next, err := p.retrievalScope(data, uri)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		p.parsedResources[uri] = next
+
+		return tree.Root(next.doc), next, nil
+	}
+
 	if _, ok := p.resources[uri]; ok {
 		return nil, nil, fmt.Errorf("%w: certificate resource used as XML", ErrInput)
 	}
@@ -210,56 +292,28 @@ func (p *parser) retrieve(s *scope, n *tree.Node, depth int) error {
 		return ErrLimit
 	}
 
-	c, err := structure(n, Namespace, "RetrievalMethod", "URI", "Type")
+	plan, err := p.prepareRetrieval(s, n)
 	if err != nil {
 		return err
 	}
 
-	uri, ok := attr(n, "URI")
-	if !ok {
-		return fmt.Errorf("%w: RetrievalMethod URI is required", ErrInput)
+	if p.options.RetrievalProcessing != nil && (len(plan.transforms) != 0 || plan.typ == RawX509Certificate) {
+		return p.processRetrieval(s, n, depth, plan)
 	}
 
-	typ, _ := attr(n, "Type")
-	// A declared target representation is known before any resource callback.
-	// Untyped links still enforce their target policy after bounded resolution.
-	var representation document.Name
-
-	switch typ {
-	case RawX509Certificate, Namespace + nameX509Data:
-		representation = document.Name{Space: Namespace, Local: nameX509Data}
-	case Namespace + nameRSAKeyValue:
-		representation = document.Name{Space: Namespace, Local: nameRSAKeyValue}
-	case Namespace11 + nameECKeyValue:
-		representation = document.Name{Space: Namespace11, Local: nameECKeyValue}
-	case Namespace11 + nameDEREncodedKeyValue:
-		representation = document.Name{Space: Namespace11, Local: nameDEREncodedKeyValue}
+	if plan.typ == RawX509Certificate {
+		return p.retrieveRawCertificate(s, n, plan.uri, depth, plan.base64)
 	}
 
-	if representation.Local != "" {
-		if err := p.requireKeyData(representation); err != nil {
-			return err
-		}
-	}
-	// Validate the entire supported transform shape before obtaining a resource.
-	base64Transform, err := retrievalTransform(c, typ)
+	target, scope, err := p.resolveXML(s, plan.uri)
 	if err != nil {
 		return err
 	}
 
-	if typ == RawX509Certificate {
-		return p.retrieveRawCertificate(s, n, uri, depth, base64Transform)
-	}
+	return p.acceptRetrievalTarget(target, scope, plan.typ, depth)
+}
 
-	if typ != "" && typ != Namespace+nameRSAKeyValue && typ != Namespace+nameX509Data && typ != Namespace11+nameECKeyValue && typ != Namespace11+nameDEREncodedKeyValue {
-		return fmt.Errorf("%w: RetrievalMethod Type", ErrUnsupported)
-	}
-
-	target, scope, err := p.resolveXML(s, uri)
-	if err != nil {
-		return err
-	}
-
+func (p *parser) acceptRetrievalTarget(target *tree.Node, scope *scope, typ string, depth int) error {
 	if typ != "" && typ != target.Name.Space+target.Name.Local {
 		return fmt.Errorf("%w: RetrievalMethod Type does not match target", ErrInput)
 	}
@@ -268,7 +322,7 @@ func (p *parser) retrieve(s *scope, n *tree.Node, depth int) error {
 		return p.keyInfo(scope, target, depth+1)
 	}
 
-	if is(target, Namespace, nameRSAKeyValue) || is(target, Namespace11, nameECKeyValue) {
+	if is(target, Namespace, nameRSAKeyValue) || is(target, Namespace, nameDSAKeyValue) || is(target, Namespace11, nameECKeyValue) {
 		leave, err := p.enter(scope, target, depth+1)
 		if err != nil {
 			return err

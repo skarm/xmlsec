@@ -74,6 +74,29 @@ func HMACPolicy() Policy {
 	return p
 }
 
+// LegacyVerificationPolicy opts into SHA-1 reference digests and RSA-SHA1/DSA-SHA1
+// verification. DSA is limited to the 1024/160 profile. Legacy signature
+// generation remains disabled; modern defaults and RSA size limits are retained.
+// This policy does not enable HMAC. Legacy policies are disabled in FIPS mode.
+func LegacyVerificationPolicy() Policy {
+	p := ModernPolicy()
+	p.AllowedSignatureMethods = append(p.AllowedSignatureMethods, RSASHA1, DSASHA1)
+	p.AllowedDigestMethods = append(p.AllowedDigestMethods, SHA1)
+
+	return p
+}
+
+// LegacyHMACPolicy explicitly permits HMAC-SHA1 and SHA-1 reference digests in
+// the shared-secret APIs, alongside HMAC SHA-2. It retains key/tag bounds and
+// does not enable truncation or public-key methods. It is disabled in FIPS mode.
+func LegacyHMACPolicy() Policy {
+	p := HMACPolicy()
+	p.AllowedSignatureMethods = append(p.AllowedSignatureMethods, HMACSHA1)
+	p.AllowedDigestMethods = append(p.AllowedDigestMethods, SHA1)
+
+	return p
+}
+
 func normalizePolicy(p Policy) (Policy, error) {
 	d := DefaultPolicy()
 	if len(p.AllowedSignatureMethods) == 0 {

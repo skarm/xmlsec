@@ -5,26 +5,25 @@ import (
 	"crypto"
 	"crypto/sha256"
 	"crypto/subtle"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
+	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/uriref"
 	"github.com/skarm/xmlsec/reference"
 )
 
 // Resolver provides the ORIGINAL octets identified by an explicitly permitted
-// URI. No automatic HTTP/file fetching, URI rewriting, or fragment resolution
-// occurs in this library. The returned stream is closed on every path.
+// URI. No automatic HTTP/file fetching or XML fragment selection occurs in this
+// library. ExternalReferences.BaseURI can explicitly resolve relative URI spelling
+// in the general Signature API. The returned stream is closed on every path.
 // Resolve and the returned reader must honor ctx themselves if blocking: the
 // library cannot interrupt an arbitrary blocking Read without leaking a worker.
 type Resolver interface {
@@ -152,7 +151,7 @@ func VerifyDetached(ctx context.Context, doc *document.Document, key crypto.Publ
 		return nil, err
 	}
 
-	spki, err := x509.MarshalPKIXPublicKey(key)
+	spki, err := signature.MarshalPublicKey(key)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrKey, err)
 	}
@@ -586,18 +585,24 @@ func normalizeResourceLimits(l ResourceLimits) (ResourceLimits, error) {
 }
 
 func validExternalURI(uri string) error {
-	if uri == "" || strings.ContainsAny(uri, "#\\") || !utf8.ValidString(uri) {
+	if strings.Contains(uri, "#") {
 		return fmt.Errorf("%w: nonempty external URI without fragment required", ErrReference)
 	}
 
-	for _, r := range uri {
-		if unicode.IsSpace(r) || unicode.IsControl(r) {
-			return fmt.Errorf("%w: unescaped URI whitespace/control", ErrReference)
-		}
+	return validExternalReferenceURI(uri)
+}
+
+func validExternalReferenceURI(uri string) error {
+	if !externalURI(uri) {
+		return fmt.Errorf("%w: nonempty external URI required", ErrReference)
 	}
 
-	if _, err := url.Parse(uri); err != nil {
-		return fmt.Errorf("%w: malformed URI: %w", ErrReference, err)
+	return validateURIReference(uri)
+}
+
+func validateURIReference(uri string) error {
+	if err := uriref.Validate(uri); err != nil {
+		return fmt.Errorf("%w: %w", ErrReference, err)
 	}
 
 	return nil

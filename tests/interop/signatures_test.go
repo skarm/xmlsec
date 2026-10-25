@@ -4,19 +4,269 @@ package interop_test
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"crypto/sha512"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/skarm/xmlsec/c14n"
+	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/keyinfo"
+	"github.com/skarm/xmlsec/reference"
+	"github.com/skarm/xmlsec/transform"
+	"github.com/skarm/xmlsec/xmldsig"
 )
 
 const (
-	nameEnveloping = "enveloping"
-	nameMulti      = "multi"
+	flagInsecure   = "--insecure"
+	stage4Manifest = "manifest"
+	stage4Payload  = "payload"
 )
+
+func TestXMLSecX509DataGroups(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	key, crl := x509DataIdentity(t, fixture)
+	digest256, digest384, digest512 := sha256.Sum256(key.cert.Raw), sha512.Sum384(key.cert.Raw), sha512.Sum512(key.cert.Raw)
+	issuer := keyinfo.IssuerSerial{Issuer: key.cert.Issuer.String(), Serial: key.cert.SerialNumber.String()}
+
+	all := keyinfo.X509Data{
+		Certificates: [][]byte{key.cert.Raw}, CRLs: [][]byte{crl},
+		IssuerSerials: []keyinfo.IssuerSerial{issuer}, SubjectNames: []string{key.cert.Subject.String()},
+		SubjectKeyIdentifiers: [][]byte{key.cert.SubjectKeyId},
+		CertificateDigests:    []keyinfo.CertificateDigest{{Algorithm: xmldsig.SHA256, Value: digest256[:]}},
+	}
+	for _, test := range []struct {
+		name   string
+		groups []keyinfo.X509Data
+	}{
+		{"certificate", []keyinfo.X509Data{{Certificates: all.Certificates}}},
+		{"issuer-serial", []keyinfo.X509Data{{IssuerSerials: all.IssuerSerials}}},
+		{"subject", []keyinfo.X509Data{{SubjectNames: all.SubjectNames}}},
+		{"SKI", []keyinfo.X509Data{{SubjectKeyIdentifiers: all.SubjectKeyIdentifiers}}},
+		{"digest-SHA256", []keyinfo.X509Data{{CertificateDigests: all.CertificateDigests}}},
+		{"digest-SHA384", []keyinfo.X509Data{{CertificateDigests: []keyinfo.CertificateDigest{{Algorithm: xmldsig.SHA384, Value: digest384[:]}}}}},
+		{"digest-SHA512", []keyinfo.X509Data{{CertificateDigests: []keyinfo.CertificateDigest{{Algorithm: xmldsig.SHA512, Value: digest512[:]}}}}},
+		{"certificate-CRL", []keyinfo.X509Data{{Certificates: all.Certificates, CRLs: all.CRLs}}},
+		{"combined", []keyinfo.X509Data{all}},
+	} {
+		t.Run(test.name, func(t *testing.T) { x509DataExchange(t, fixture, key, test.groups) })
+	}
+
+	t.Run("native-generation", func(t *testing.T) { x509DataNativeGeneration(t, fixture, key, all) })
+}
+
+// OpenSSL supplies the original certificate, SKI and CRL bytes, independently
+// of the Go XML builder. Scratch CA files and generated XML stay in TempDir.
+func x509DataIdentity(t *testing.T, fixture *interopFixture) (testKey, []byte) {
+	t.Helper()
+	key := generateKey(t, fixture.work, nameRsaSha256)
+	dir := t.TempDir()
+	certificate := filepath.Join(dir, "certificate.pem")
+	command(t, fixture, true, nil, "openssl", "req", "-new", "-x509", "-key", key.private, "-out", certificate, "-subj", "/CN=X509Data interop", "-days", "1", "-set_serial", "123456789012345678901234567890", "-addext", "subjectKeyIdentifier=hash", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,digitalSignature,keyCertSign,cRLSign")
+
+	block, _ := pem.Decode(read(t, certificate))
+	if block == nil {
+		t.Fatal("OpenSSL certificate missing")
+	}
+
+	var err error
+
+	key.cert, err = x509.ParseCertificate(block.Bytes)
+	if err != nil || len(key.cert.SubjectKeyId) == 0 {
+		t.Fatal("OpenSSL certificate/SKI", err)
+	}
+
+	key.certificate = certificate
+	index := write(t, filepath.Join(dir, "index"), nil)
+	number := write(t, filepath.Join(dir, "crlnumber"), []byte("01\n"))
+	config := write(t, filepath.Join(dir, "ca.cnf"), []byte("[ca]\ndefault_ca=CA\n[CA]\ndatabase="+index+"\ncrlnumber="+number+"\ncertificate="+certificate+"\nprivate_key="+key.private+"\ndefault_md=sha256\ndefault_crl_days=1\n"))
+	crlPath := filepath.Join(dir, "crl.pem")
+	command(t, fixture, true, nil, "openssl", "ca", "-gencrl", "-batch", "-config", config, "-out", crlPath)
+
+	block, _ = pem.Decode(read(t, crlPath))
+	if block == nil {
+		t.Fatal("OpenSSL CRL missing")
+	}
+
+	return key, block.Bytes
+}
+
+func x509DataExchange(t *testing.T, fixture *interopFixture, key testKey, groups []keyinfo.X509Data) {
+	t.Helper()
+	dir := t.TempDir()
+
+	info, err := keyinfo.Build(t.Context(), keyinfo.Template{ID: "x509-info", Names: []string{"signer"}, X509Data: groups})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	input := xmlDoc(t, []byte(`<root><payload ID="payload">X509Data payload</payload></root>`))
+
+	draft, selected, err := xmldsig.BuildTemplate(t.Context(), input, input.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.RSASHA256, KeyInfo: info, References: []xmldsig.ReferenceTemplate{
+		{URI: uriSignedPayload, Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}},
+		{URI: "#x509-info", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	signed, err := xmldsig.SignTemplate(t.Context(), draft, selected, key.signer, xmldsig.TemplateSignOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ours := xmlBytes(t, signed)
+	source := write(t, filepath.Join(dir, "template.xml"), xmlBytes(t, draft))
+	oursPath := write(t, filepath.Join(dir, "go.xml"), ours)
+
+	args := append([]string{flagInsecure, "--untrusted-pem", key.certificate, flagMixedCaseIDAttribute, ds + ":KeyInfo"}, idArgs()...)
+	// Strict key discovery uses X509Data and the explicit certificate store. No
+	// lax key search or separately supplied public-key fallback is enabled.
+	verify := func(path string, success bool) {
+		all := append([]string{nameVerify}, args...)
+		command(t, fixture, success, nil, xmlsecExecutable(), append(all, path)...)
+	}
+	verify(oursPath, true)
+
+	theirPath := filepath.Join(dir, "native.xml")
+	native(t, fixture, true, nameSign, append(args, "--privkey-pem:signer", key.private+","+key.certificate, "--output", theirPath, source)...)
+
+	options := xmldsig.SignatureOptions{ExpectedURIs: []string{uriSignedPayload, "#x509-info"}}
+
+	for _, raw := range [][]byte{ours, read(t, theirPath)} {
+		doc := xmlDoc(t, raw)
+
+		result, err := xmldsig.VerifySignature(t.Context(), doc, xmldsig.Signatures(doc)[0], key.signer.Public(), options)
+		if err != nil || !result.CoversElement(tree.Wrap(doc, one(t, tree.Root(doc), ds, "KeyInfo"))) {
+			t.Fatal("signature did not authenticate X509Data", err)
+		}
+
+		bad := xmlDoc(t, bytes.Replace(raw, []byte("X509Data payload"), []byte("changed payload"), 1))
+		if result, err := xmldsig.VerifySignature(t.Context(), bad, xmldsig.Signatures(bad)[0], key.signer.Public(), options); result != nil || err == nil {
+			t.Fatal("changed content accepted", err)
+		}
+	}
+
+	changed := bytes.Replace(ours, []byte("</ds:X509Data>"), []byte("<ds:X509SubjectName>CN=changed</ds:X509SubjectName></ds:X509Data>"), 1)
+
+	bad := xmlDoc(t, changed)
+	if result, err := xmldsig.VerifySignature(t.Context(), bad, xmldsig.Signatures(bad)[0], key.signer.Public(), options); result != nil || err == nil {
+		t.Fatal("changed authenticated selectors accepted", err)
+	}
+
+	verify(write(t, filepath.Join(dir, "changed.xml"), changed), false)
+	verify(write(t, filepath.Join(dir, "changed-payload.xml"), bytes.Replace(ours, []byte("X509Data payload"), []byte("changed payload"), 1)), false)
+}
+
+func x509DataNativeGeneration(t *testing.T, fixture *interopFixture, key testKey, expected keyinfo.X509Data) {
+	t.Helper()
+	dir := t.TempDir()
+	// xmlsec1 itself populates the selectors and base64 certificate. No Go
+	// builder or adapter determines the independent expected XML values.
+	raw := `<root><payload ID="payload">native X509Data</payload><ds:Signature xmlns:ds="` + ds + `" xmlns:dsig11="` + keyinfo.Namespace11 + `"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="` + c14n.Exclusive + `"/><ds:SignatureMethod Algorithm="` + xmldsig.RSASHA256 + `"/><ds:Reference URI="#payload"><ds:Transforms><ds:Transform Algorithm="` + c14n.Exclusive + `"/></ds:Transforms><ds:DigestMethod Algorithm="` + xmldsig.SHA256 + `"/><ds:DigestValue/></ds:Reference></ds:SignedInfo><ds:SignatureValue/><ds:KeyInfo><ds:X509Data><ds:X509IssuerSerial/><ds:X509SubjectName/><ds:X509SKI/><ds:X509Certificate/><dsig11:X509Digest Algorithm="` + xmldsig.SHA256 + `"/></ds:X509Data></ds:KeyInfo></ds:Signature></root>`
+	input := write(t, filepath.Join(dir, "native-template.xml"), []byte(raw))
+	output := filepath.Join(dir, "native-generated.xml")
+	native(t, fixture, true, nameSign, append(idArgs(), "--privkey-pem", key.private+","+key.certificate, "--output", output, input)...)
+	doc := xmlDoc(t, read(t, output))
+
+	info, err := keyinfo.Parse(t.Context(), doc, tree.Wrap(doc, one(t, tree.Root(doc), ds, "KeyInfo")), keyinfo.Options{})
+	if err != nil || len(info.X509Groups()) != 1 || len(info.Candidates()) != 1 || !bytes.Equal(info.Candidates()[0].SPKI(), key.cert.RawSubjectPublicKeyInfo) {
+		t.Fatal("native X509Data did not preserve original key", err)
+	}
+
+	group := info.X509Groups()[0]
+	if !slices.Equal(group.IssuerSerials(), expected.IssuerSerials) || !slices.Equal(group.SubjectNames(), expected.SubjectNames) || !bytes.Equal(group.SubjectKeyIdentifiers()[0], key.cert.SubjectKeyId) || !bytes.Equal(group.CertificatesDER()[0], key.cert.Raw) || !bytes.Equal(group.CertificateDigests()[0].Value, expected.CertificateDigests[0].Value) {
+		t.Fatal("native selectors/certificate differ from OpenSSL identity")
+	}
+
+	options := xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{uriSignedPayload}}, SelectTrustedKey: func(_ context.Context, info *keyinfo.Result) (int, error) {
+		if len(info.Candidates()) != 1 || !bytes.Equal(info.Candidates()[0].SPKI(), key.cert.RawSubjectPublicKeyInfo) {
+			return -1, errors.New("unexpected native certificate")
+		}
+
+		return 0, nil
+	}}
+	if _, err := xmldsig.VerifySignatureWithKeyInfo(t.Context(), doc, xmldsig.Signatures(doc)[0], options); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const (
+	uriSignedPayload         = "#payload"
+	uriSharedKeyInfo         = "#shared"
+	nameEnveloping           = "enveloping"
+	nameMulti                = "multi"
+	uriRetrievalKey          = "urn:key"
+	flagMixedCaseIDAttribute = "--id-attr:Id"
+)
+
+func TestLegacySignatureFixtures(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "portable")
+
+	dir := filepath.Join(fixture.root, "testdata", "legacy-dsig")
+	for _, kind := range []string{"dsa", "rsa"} {
+		verifyJava(t, java(t, fixture, "CoreOracle", "verify-legacy", filepath.Join(dir, kind+"-public.pem"), filepath.Join(dir, kind+"-sha1.xml"), "0"), true)
+	}
+
+	hmacPath := filepath.Join(dir, "hmac-sha1.xml")
+	verifyJava(t, java(t, fixture, "CoreOracle", "verify-legacy-hmac", "-", hmacPath, "0"), true)
+	// Use the JDK-created structure as a template with empty placeholders.
+	placeholders := regexp.MustCompile(`(<ds:(?:DigestValue|SignatureValue)>)[^<]*(</ds:(?:DigestValue|SignatureValue)>)`)
+	raw := placeholders.ReplaceAll(read(t, hmacPath), []byte("${1}${2}"))
+
+	d, err := document.Parse(t.Context(), raw, document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	signed, err := xmldsig.SignHMACTemplate(t.Context(), d, xmldsig.Signatures(d)[0], bytes.Repeat([]byte{0xaa}, 80), xmldsig.TemplateSignOptions{Validation: xmldsig.SignatureOptions{Policy: xmldsig.LegacyHMACPolicy()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := signed.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ours := write(t, filepath.Join(fixture.work, "go-hmac-sha1.xml"), output)
+	verifyJava(t, java(t, fixture, "CoreOracle", "verify-legacy-hmac", "-", ours, "0"), true)
+	bad := write(t, filepath.Join(fixture.work, "changed-hmac-sha1.xml"), bytes.Replace(output, []byte("legacy fixture"), []byte("changed fixture"), 1))
+	verifyJava(t, java(t, fixture, "CoreOracle", "verify-legacy-hmac", "-", bad, "0"), false)
+	key := generateKey(t, fixture.work, nameRsaSha256)
+
+	input, err := document.Parse(t.Context(), []byte(`<root ID="root">SHA-1 reference</root>`), document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	publicSigned, err := xmldsig.SignEnveloped(t.Context(), input, key.signer, xmldsig.SignOptions{DigestMethod: xmldsig.SHA1, Policy: xmldsig.LegacyVerificationPolicy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output, err = publicSigned.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ours = write(t, filepath.Join(fixture.work, "go-sha1-reference.xml"), output)
+	verifyJava(t, java(t, fixture, "CoreOracle", "verify-legacy", key.public, ours, "0"), true)
+}
 
 func TestCoreSignatures(t *testing.T) {
 	fixture := newInteropFixture(t)
@@ -43,6 +293,327 @@ func checkXMLSec(t *testing.T, fixture *interopFixture) {
 			t.Fatalf("xmlsec1 lacks %s", name)
 		}
 	}
+}
+
+type retrievalRecipe struct {
+	name, uri, typ string
+	resource       []byte
+	chain          []reference.Transform
+}
+
+type stage4InteropCase struct {
+	Name, Kind, XML, Template string
+	Resources                 map[string][]byte
+	NativeResources           map[string][]byte `json:"native_resources"`
+	Programs                  []reference.Transform
+	DigestInputs              [][]byte `json:"digest_inputs"`
+}
+
+func TestXMLSecStage4Vectors(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+
+	var corpus struct {
+		PublicKey   string `json:"public_key_pem"`
+		Certificate []byte `json:"certificate_der"`
+		Cases       []stage4InteropCase
+		Contexts    []struct {
+			Name, XML, Relative, Resolved string
+			ExpectedBase                  string `json:"expected_base"`
+		} `json:"uri_contexts"`
+	}
+	decode(t, read(t, filepath.Join(fixture.root, "testdata", "next", "dsig-stage4-vectors.json")), &corpus)
+	public := write(t, filepath.Join(fixture.work, "stage4-public.pem"), []byte(corpus.PublicKey))
+
+	key := generateKey(t, fixture.work, nameRsaSha256)
+	for _, test := range corpus.Cases {
+		t.Run(test.Name, func(t *testing.T) { stage4InteropExchange(t, fixture, test, public, key, corpus.Certificate) })
+	}
+
+	for _, test := range corpus.Contexts {
+		t.Run("xml-base/"+test.Name, func(t *testing.T) {
+			path := write(t, filepath.Join(t.TempDir(), "context.xml"), []byte(test.XML))
+
+			out, _ := command(t, fixture, true, []byte("cd /root/inner/item\nbase\nbye\n"), "xmllint", "--shell", path)
+			if !bytes.Contains(out, []byte(test.ExpectedBase+"\n")) {
+				t.Fatal("libxml2 base changed", string(out))
+			}
+		})
+	}
+}
+
+func stage4NativeResources(t *testing.T, resources map[string][]byte) []string {
+	t.Helper()
+	dir := t.TempDir()
+
+	args := make([]string, 0, 2*len(resources))
+	for uri, data := range resources {
+		path := write(t, filepath.Join(dir, strconv.Itoa(len(args))+".bin"), data)
+		args = append(args, "--url-map:"+uri, path)
+	}
+
+	return args
+}
+
+func stage4InteropExchange(t *testing.T, fixture *interopFixture, test stage4InteropCase, public string, key testKey, originalCertificate []byte) {
+	t.Helper()
+	dir := t.TempDir()
+
+	nativeResources := test.Resources
+	if test.NativeResources != nil {
+		nativeResources = test.NativeResources
+	}
+
+	args := append([]string{nameVerify, flagInsecure, "--verbose", "--print-debug", "--store-references", flagIDAttrID, stage4Payload, flagMixedCaseIDAttribute, ds + ":KeyInfo"}, stage4NativeResources(t, nativeResources)...)
+	if test.Kind == stage4Manifest {
+		args = append(args, "--lax-key-search", flagPubkeyPem, public)
+	}
+
+	path := write(t, filepath.Join(dir, "independent.xml"), []byte(test.XML))
+	out, stderr := command(t, fixture, true, nil, xmlsecExecutable(), append(args, path)...)
+
+	buffers := regexp.MustCompile(`(?s)== PreDigest data - start buffer:\n(.*?)\n== PreDigest data - end buffer`).FindAllSubmatch(append(out, stderr...), -1)
+	if len(buffers) != 1 || !bytes.Equal(buffers[0][1], test.DigestInputs[0]) {
+		t.Fatal("fixed independent digest bytes changed")
+	}
+
+	// Re-sign the stored template with a fresh Go identity. Replace only the
+	// unsigned certificate hints/resources, retaining all transform parameters.
+	oldCert, newCert := []byte(base64String(originalCertificate)), []byte(base64String(key.cert.Raw))
+	for uri, data := range test.Resources {
+		test.Resources[uri] = bytes.ReplaceAll(data, oldCert, newCert)
+	}
+
+	if test.NativeResources != nil {
+		for uri, data := range test.NativeResources {
+			test.NativeResources[uri] = bytes.ReplaceAll(data, oldCert, newCert)
+		}
+	}
+
+	input := xmlDoc(t, bytes.ReplaceAll([]byte(test.Template), oldCert, newCert))
+
+	options := xmldsig.SignatureOptions{ExpectedURIs: []string{uriSignedPayload}, Processing: reference.DefaultOptions()}
+	if test.Kind == stage4Manifest {
+		options.ExpectedURIs = []string{uriManifest}
+		options.Manifests = xmldsig.ManifestPolicy{Mode: xmldsig.ManifestRecursive, AllowExternal: true, AllowTransformed: true}
+	}
+
+	if len(test.Programs) != 0 {
+		engine, err := transform.NewEngine(transform.Config{AllowedPrograms: test.Programs})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		options.Processing.Extension = engine
+		for _, program := range test.Programs {
+			options.Processing.AllowedTransforms = append(options.Processing.AllowedTransforms, program.Algorithm)
+		}
+	}
+
+	if len(test.Resources) != 0 {
+		options.External = &xmldsig.ExternalReferences{Resolver: xmldsig.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
+			data, ok := test.Resources[uri]
+			if !ok {
+				return nil, xmldsig.ErrPolicy
+			}
+
+			return io.NopCloser(bytes.NewReader(data)), ctx.Err()
+		})}
+		for uri := range test.Resources {
+			options.External.AllowedURIs = append(options.External.AllowedURIs, uri)
+		}
+	}
+
+	signed, err := xmldsig.SignTemplate(t.Context(), input, xmldsig.Signatures(input)[0], key.signer, xmldsig.TemplateSignOptions{Validation: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ours := xmlBytes(t, signed)
+	goPath := write(t, filepath.Join(dir, "go.xml"), ours)
+
+	nativeResources = test.Resources
+	if test.NativeResources != nil {
+		nativeResources = test.NativeResources
+	}
+
+	verify := append([]string{nameVerify, flagInsecure, flagIDAttrID, stage4Payload, flagMixedCaseIDAttribute, ds + ":KeyInfo"}, stage4NativeResources(t, nativeResources)...)
+	if test.Kind == stage4Manifest {
+		verify = append(verify, "--lax-key-search", flagPubkeyPem, key.public)
+	}
+
+	command(t, fixture, true, nil, xmlsecExecutable(), append(verify, goPath)...)
+	bad := write(t, filepath.Join(dir, "changed-context.xml"), bytes.Replace(ours, []byte("urn:stage4:context"), []byte("urn:changed-context"), 1))
+	command(t, fixture, false, nil, xmlsecExecutable(), append(verify, bad)...)
+
+	if test.Kind != stage4Manifest {
+		bad = write(t, filepath.Join(dir, "changed-content.xml"), bytes.Replace(ours, []byte("independent signed payload"), []byte("changed signed payload"), 1))
+		command(t, fixture, false, nil, xmlsecExecutable(), append(verify, bad)...)
+	}
+}
+
+func TestXMLSecRetrievalMethods(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	key := generateKey(t, fixture.work, nameRsaSha256)
+
+	publicInfo, err := keyinfo.Build(t.Context(), keyinfo.Template{ID: "shared", Certificates: [][]byte{key.cert.Raw}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bare := tree.ImportSubtree(tree.Root(publicInfo).Children[0])
+	bareDoc := tree.FromNodes([]*tree.Node{bare}, document.DefaultLimits())
+	bareXML := xmlBytes(t, bareDoc)
+	namespaces := map[string]string{"ds": ds, "dsig11": keyinfo.Namespace11}
+	xpath := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: `ancestor-or-self::ds:X509Data`, Namespaces: namespaces}}}
+	filter := reference.Transform{Algorithm: reference.XPathFilter2, XPath: []reference.XPathExpression{{Expression: `//ds:X509Data`, Filter: "intersect", Namespaces: map[string]string{"ds": ds, "dsig11": keyinfo.Namespace11, "xf": reference.XPathFilter2}}}}
+	xslt := reference.Transform{Algorithm: reference.XSLT, Stylesheet: []byte(`<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:ds="` + ds + `" xmlns:dsig11="` + keyinfo.Namespace11 + `" version="1.0"><xsl:template match="/"><xsl:copy-of select="//ds:X509Data"/></xsl:template></xsl:stylesheet>`)}
+
+	recipes := make([]retrievalRecipe, 0, 15)
+	for i, algorithm := range canonicalizations() {
+		recipes = append(recipes, retrievalRecipe{"canonical-" + strconv.Itoa(i), uriRetrievalKey, ds + "X509Data", bareXML, []reference.Transform{{Algorithm: algorithm}}})
+	}
+
+	recipes = append(recipes,
+		retrievalRecipe{"base64-XML", uriRetrievalKey, ds + "X509Data", []byte(base64String(bareXML)), []reference.Transform{{Algorithm: reference.Base64}, {Algorithm: c14n.Exclusive}}},
+		retrievalRecipe{"XPath", uriSharedKeyInfo, ds + "X509Data", nil, []reference.Transform{xpath, {Algorithm: c14n.Exclusive}}},
+		retrievalRecipe{"enveloped-XPath", uriSharedKeyInfo, ds + "X509Data", nil, []reference.Transform{{Algorithm: reference.EnvelopedSignature}, xpath, {Algorithm: c14n.Exclusive}}},
+		retrievalRecipe{"Filter2", uriSharedKeyInfo, ds + "X509Data", nil, []reference.Transform{filter, {Algorithm: c14n.Exclusive}}},
+		retrievalRecipe{"XSLT", uriRetrievalKey, ds + "X509Data", xmlBytes(t, publicInfo), []reference.Transform{xslt, {Algorithm: c14n.Exclusive}}},
+		retrievalRecipe{"raw-certificate", uriRetrievalKey, keyinfo.RawX509Certificate, key.cert.Raw, nil},
+		retrievalRecipe{"two-base64-certificate", uriRetrievalKey, keyinfo.RawX509Certificate, []byte(base64String([]byte(base64String(key.cert.Raw)))), []reference.Transform{{Algorithm: reference.Base64}, {Algorithm: reference.Base64}}},
+	)
+	for _, format := range []keyinfo.KeyFormat{keyinfo.XMLKeyValue, keyinfo.DERKeyValue} {
+		recipes = append(recipes, keyRetrievalRecipe(t, key, "RSA-", format))
+	}
+
+	for _, test := range recipes {
+		t.Run(test.name, func(t *testing.T) { retrievalExchange{fixture, key, publicInfo, test}.run(t) })
+	}
+
+	ecKey := generateKey(t, fixture.work, nameEcdsaSha256)
+	for _, format := range []keyinfo.KeyFormat{keyinfo.XMLKeyValue, keyinfo.DERKeyValue} {
+		test := keyRetrievalRecipe(t, ecKey, "EC-", format)
+		t.Run(test.name, func(t *testing.T) { retrievalExchange{fixture, ecKey, publicInfo, test}.run(t) })
+	}
+
+	t.Logf("%d native RetrievalMethod exchanges and four native key-form boundary controls", len(recipes)-2)
+}
+
+func keyRetrievalRecipe(t *testing.T, key testKey, name string, format keyinfo.KeyFormat) retrievalRecipe {
+	t.Helper()
+
+	description, err := keyinfo.Build(t.Context(), keyinfo.Template{Keys: []keyinfo.PublicKeyValue{{Key: key.signer.Public(), Format: format}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node := tree.Root(description).Children[0]
+	if format == keyinfo.XMLKeyValue {
+		node = node.Children[0]
+	}
+
+	resource := tree.FromNodes([]*tree.Node{tree.ImportSubtree(node)}, document.DefaultLimits())
+
+	return retrievalRecipe{name + string(format), uriRetrievalKey, node.Name.Space + node.Name.Local, xmlBytes(t, resource), nil}
+}
+
+type retrievalExchange struct {
+	fixture    *interopFixture
+	key        testKey
+	publicInfo *document.Document
+	recipe     retrievalRecipe
+}
+
+func (exchange retrievalExchange) run(t *testing.T) {
+	t.Helper()
+
+	fixture, key, publicInfo, test := exchange.fixture, exchange.key, exchange.publicInfo, exchange.recipe
+	dir := t.TempDir()
+
+	info, err := keyinfo.Build(t.Context(), keyinfo.Template{Names: []string{"signer"}, RetrievalMethods: []keyinfo.RetrievalMethod{{URI: test.uri, Type: test.typ, Transforms: test.chain}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	input := xmlDoc(t, []byte(`<root><payload ID="payload">retrieved key</payload>`+string(xmlBytes(t, publicInfo))+`</root>`))
+
+	draft, selected, err := xmldsig.BuildTemplate(t.Context(), input, input.Root(), xmldsig.SignatureTemplate{SignatureMethod: key.method, KeyInfo: info, References: []xmldsig.ReferenceTemplate{{URI: uriSignedPayload, Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ours, err := xmldsig.SignTemplate(t.Context(), draft, selected, key.signer, xmldsig.TemplateSignOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source := write(t, filepath.Join(dir, "template.xml"), xmlBytes(t, draft))
+	goPath := write(t, filepath.Join(dir, "go.xml"), xmlBytes(t, ours))
+	resource := write(t, filepath.Join(dir, "resource.bin"), test.resource)
+	args := append([]string{"--verbose", "--enabled-retrieval-method-uris", "same-doc,remote", "--url-map:urn:key", resource, flagInsecure, flagMixedCaseIDAttribute, ds + ":KeyInfo"}, idArgs()...)
+	// This xmlsec1 CLI retrieves X509Data/raw certificates, but does not
+	// discover the selected bare KeyValue/DER key roots. Record the boundary,
+	// then verify core cryptography with an explicit key; Go checks retrieval.
+	if test.typ != ds+"X509Data" && test.typ != keyinfo.RawX509Certificate {
+		native(t, fixture, false, nameVerify, append(append([]string(nil), args...), goPath)...)
+		args = append(args, flagPubkeyPem, key.public)
+	}
+
+	native(t, fixture, true, nameVerify, append(append([]string(nil), args...), goPath)...)
+
+	theirPath := filepath.Join(dir, "xmlsec.xml")
+	signArgs := append(append([]string(nil), args...), "--privkey-pem:signer", key.private, "--output", theirPath, source)
+	native(t, fixture, true, nameSign, signArgs...)
+
+	processing := reference.DefaultOptions()
+
+	var programs []reference.Transform
+
+	for _, step := range test.chain {
+		if reference.IsExtension(step.Algorithm) {
+			programs = append(programs, step)
+			processing.AllowedTransforms = append(processing.AllowedTransforms, step.Algorithm)
+		}
+	}
+
+	if len(programs) != 0 {
+		processing.Extension, err = transform.NewEngine(transform.Config{AllowedPrograms: programs})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pin := sha256.Sum256(key.cert.RawSubjectPublicKeyInfo)
+	options := xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{uriSignedPayload}}, KeyInfo: keyinfo.Options{RetrievalProcessing: &processing, External: &keyinfo.ExternalResources{AllowedURIs: []string{uriRetrievalKey}, Resolver: xmldsig.ResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+		if uri != uriRetrievalKey {
+			t.Fatal("unexpected resource", uri)
+		}
+
+		return io.NopCloser(bytes.NewReader(test.resource)), nil
+	})}}, SelectTrustedKey: func(_ context.Context, result *keyinfo.Result) (int, error) {
+		if len(result.Candidates()) != 1 || sha256.Sum256(result.Candidates()[0].SPKI()) != pin {
+			return -1, errors.New("unexpected retrieved key")
+		}
+
+		return 0, nil
+	}}
+
+	for _, raw := range [][]byte{xmlBytes(t, ours), read(t, theirPath)} {
+		doc := xmlDoc(t, raw)
+		if _, err := xmldsig.VerifySignatureWithKeyInfo(t.Context(), doc, xmldsig.Signatures(doc)[0], options); err != nil {
+			t.Fatal(err)
+		}
+
+		bad := xmlDoc(t, bytes.Replace(raw, []byte("retrieved key"), []byte("changed key"), 1))
+		if result, err := xmldsig.VerifySignatureWithKeyInfo(t.Context(), bad, xmldsig.Signatures(bad)[0], options); result != nil || err == nil {
+			t.Fatal("changed signed data accepted", err)
+		}
+	}
+
+	badPath := write(t, filepath.Join(dir, "bad.xml"), bytes.Replace(xmlBytes(t, ours), []byte("retrieved key"), []byte("changed key"), 1))
+	native(t, fixture, false, nameVerify, append(append([]string(nil), args...), badPath)...)
 }
 
 func TestDetachedSignatures(t *testing.T) {
@@ -463,7 +1034,7 @@ func badSecond(t *testing.T, r verification) {
 }
 
 func idArgs() []string {
-	return []string{flagIDAttrID, nameRoot, flagIDAttrID, "item", flagIDAttrID, "payload", "--id-attr:Id", ds + ":Object", "--id-attr:Id", ds + ":Signature"}
+	return []string{flagIDAttrID, nameRoot, flagIDAttrID, "item", flagIDAttrID, "payload", flagMixedCaseIDAttribute, ds + ":Object", flagMixedCaseIDAttribute, ds + ":Signature"}
 }
 
 func native(t *testing.T, fixture *interopFixture, success bool, mode string, args ...string) []byte {

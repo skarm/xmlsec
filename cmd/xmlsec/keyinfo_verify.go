@@ -13,7 +13,11 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
-func verifyWithKeyInfoCLI(ctx context.Context, doc *document.Document, selected document.Element, key crypto.PublicKey, opt xmldsig.SignatureOptions, configFile, resourcesFile, output string, stdout io.Writer) error {
+func verifyWithKeyInfoCLI(ctx context.Context, doc *document.Document, selected document.Element, key crypto.PublicKey, opt xmldsig.SignatureOptions, configFile, resourcesFile, baseURI, output string, stdout io.Writer) error {
+	if baseURI != "" && resourcesFile == "" {
+		return usageError("-keyinfo-base-uri requires -keyinfo-resources")
+	}
+
 	pin, err := x509.MarshalPKIXPublicKey(key)
 	if err != nil {
 		return err
@@ -40,7 +44,13 @@ func verifyWithKeyInfoCLI(ctx context.Context, doc *document.Document, selected 
 			return err
 		}
 
-		keyOptions.External = &keyinfo.ExternalResources{Resolver: resolver, AllowedURIs: detachedResourceURIs(entries)}
+		keyOptions.External = &keyinfo.ExternalResources{Resolver: resolver, AllowedURIs: detachedResourceURIs(entries), BaseURI: baseURI}
+	}
+
+	if keyOptions.RetrievalProcessing != nil {
+		// Retrieval remains a separate explicit opt-in and transform allowlist.
+		// Approved programs come only from the trusted global CLI configuration.
+		keyOptions.RetrievalProcessing.Extension = opt.Processing.Extension
 	}
 
 	selector := func(ctx context.Context, result *keyinfo.Result) (int, error) {

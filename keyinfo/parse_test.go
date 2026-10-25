@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+
+	// #nosec G406 -- Explicit bounded legacy compatibility only.
+	"crypto/dsa" //nolint:staticcheck // XMLDSig 1.1 requires legacy DSA verification; generation is disabled.
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -14,15 +17,20 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"io"
 	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/keyinfo"
 	"github.com/skarm/xmlsec/reference"
 )
@@ -36,6 +44,131 @@ const (
 	uriUrnFirst  = "urn:first"
 	uriUrnRemote = "urn:remote"
 )
+
+func TestLegacyDSAKeyInfo(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "testdata", "legacy-dsig", "dsa-public.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		t.Fatal("DSA public fixture")
+	}
+
+	key, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, format := range []keyinfo.KeyFormat{keyinfo.XMLKeyValue, keyinfo.DERKeyValue} {
+		d, err := keyinfo.Build(t.Context(), keyinfo.Template{Keys: []keyinfo.PublicKeyValue{{Key: key, Format: format}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := keyinfo.Parse(t.Context(), d, d.Root(), keyinfo.Options{})
+		if err != nil || len(result.Candidates()) != 1 {
+			t.Fatal(result, err)
+		}
+
+		candidate := result.Candidates()[0]
+		if !bytes.Equal(candidate.SPKI(), block.Bytes) {
+			t.Fatal("SPKI differs from independent JDK key")
+		}
+
+		copyKey, err := candidate.PublicKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		copyKey.(*dsa.PublicKey).Y.SetInt64(0)
+
+		fresh, err := candidate.PublicKey()
+		if err != nil || fresh.(*dsa.PublicKey).Y.Cmp(key.(*dsa.PublicKey).Y) != 0 {
+			t.Fatal("candidate key changed", err)
+		}
+
+		if _, err := keyinfo.Parse(t.Context(), d, d.Root(), keyinfo.Options{AllowedKeyData: []document.Name{{Space: ns, Local: "RSAKeyValue"}}}); !errors.Is(err, keyinfo.ErrPolicy) {
+			t.Fatal("DSA allowlist bypass", err)
+		}
+
+		if format == keyinfo.XMLKeyValue {
+			testLegacyDSAKeyInfoMutations(t, d, key.(*dsa.PublicKey))
+			testLegacyDSAParameterContext(t, d, key.(*dsa.PublicKey))
+		}
+	}
+}
+
+func testLegacyDSAParameterContext(t *testing.T, full *document.Document, key *dsa.PublicKey) {
+	t.Helper()
+	expected := parseInfo(t, asXML(t, full)).Candidates()[0].SPKI()
+
+	for _, fields := range [][]string{{"P", "Q"}, {"G"}, {"P", "Q", "G"}} {
+		xml := asXML(t, full)
+
+		for _, name := range fields {
+			value := map[string]*big.Int{"P": key.P, "Q": key.Q, "G": key.G}[name]
+			xml = strings.Replace(xml, "<ds:"+name+">"+enc(value.Bytes())+"</ds:"+name+">", "", 1)
+		}
+
+		doc := parseXML(t, xml)
+
+		result, err := keyinfo.Parse(t.Context(), doc, doc.Root(), keyinfo.Options{DSAParameters: &key.Parameters})
+		if err != nil || len(result.Candidates()) != 1 || !bytes.Equal(result.Candidates()[0].SPKI(), expected) {
+			t.Fatal("parameter context did not reconstruct the independent key", err)
+		}
+
+		requireErr(t, xml, keyinfo.Options{}, keyinfo.ErrUnsupported)
+	}
+
+	missingQ := strings.Replace(asXML(t, full), "<ds:Q>"+enc(key.Q.Bytes())+"</ds:Q>", "", 1)
+	requireErr(t, missingQ, keyinfo.Options{DSAParameters: &key.Parameters}, keyinfo.ErrInput)
+	requireErr(t, asXML(t, full), keyinfo.Options{DSAParameters: &dsa.Parameters{P: big.NewInt(1), Q: key.Q, G: key.G}}, keyinfo.ErrPolicy)
+	// An external callback cannot mutate the supplied context after Parse starts.
+	contextParameters := dsa.Parameters{P: new(big.Int).Set(key.P), Q: new(big.Int).Set(key.Q), G: new(big.Int).Set(key.G)}
+	remote := wrap(`<ds:KeyValue><ds:DSAKeyValue><ds:Y>` + enc(key.Y.Bytes()) + `</ds:Y></ds:DSAKeyValue></ds:KeyValue>`)
+	root := parseXML(t, wrap(`<k:KeyInfoReference URI="urn:key"/>`))
+	options := keyinfo.Options{DSAParameters: &contextParameters, External: &keyinfo.ExternalResources{AllowedURIs: []string{uriUrnKey}, Resolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+		contextParameters.P.SetInt64(0)
+		contextParameters.G.SetInt64(0)
+
+		return io.NopCloser(strings.NewReader(remote)), nil
+	})}}
+
+	result, err := keyinfo.Parse(t.Context(), root, root.Root(), options)
+	if err != nil || len(result.Candidates()) != 1 || !bytes.Equal(result.Candidates()[0].SPKI(), expected) {
+		t.Fatal("mutable parameter context escaped its snapshot", err)
+	}
+}
+
+func testLegacyDSAKeyInfoMutations(t *testing.T, d *document.Document, k *dsa.PublicKey) {
+	t.Helper()
+	source := asXML(t, d)
+	p := base64.StdEncoding.EncodeToString(k.P.Bytes())
+	j := base64.StdEncoding.EncodeToString(new(big.Int).Div(new(big.Int).Sub(k.P, big.NewInt(1)), k.Q).Bytes())
+	withJ := strings.Replace(source, "</ds:DSAKeyValue>", "<ds:J>"+j+"</ds:J></ds:DSAKeyValue>", 1)
+
+	jdoc := parseXML(t, withJ)
+	if _, err := keyinfo.Parse(t.Context(), jdoc, jdoc.Root(), keyinfo.Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		xml  string
+		want error
+	}{
+		{strings.Replace(source, p, base64.StdEncoding.EncodeToString(append([]byte{0}, k.P.Bytes()...)), 1), keyinfo.ErrInput},
+		{strings.Replace(source, base64.StdEncoding.EncodeToString(k.G.Bytes()), "AQ==", 1), keyinfo.ErrKey},
+		{strings.Replace(withJ, j, "AQ==", 1), keyinfo.ErrKey},
+		{strings.Replace(source, "</ds:DSAKeyValue>", "<ds:Seed>AQ==</ds:Seed></ds:DSAKeyValue>", 1), keyinfo.ErrInput},
+	} {
+		bad := parseXML(t, test.xml)
+		if _, err := keyinfo.Parse(t.Context(), bad, bad.Root(), keyinfo.Options{}); !errors.Is(err, test.want) {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestBuildParsePublicKeys(t *testing.T) {
 	r, e := rsa.GenerateKey(rand.Reader, 2048)
@@ -188,10 +321,10 @@ func TestNamesAndCertificateSelectors(t *testing.T) {
 
 	g.CertificateDigests()[0].Value[0] ^= 255
 	g.SubjectKeyIdentifiers()[0][0] = 99
-	g.SubjectNames()[0] = "changed"
+	g.SubjectNames()[0] = nameChanged
 
-	g.IssuerSerials()[0].Issuer = "changed"
-	if !bytes.Equal(g.CertificateDigests()[0].Value, digest[:]) || g.SubjectKeyIdentifiers()[0][0] != 1 || g.SubjectNames()[0] != "CN=keyinfo-test" || g.IssuerSerials()[0].Issuer != "CN=issuer" {
+	g.IssuerSerials()[0].Issuer = nameChanged
+	if !bytes.Equal(g.CertificateDigests()[0].Value, digest[:]) || g.SubjectKeyIdentifiers()[0][0] != 1 || g.SubjectNames()[0] != "CN=keyinfo-test" || g.IssuerSerials()[0].Issuer != subjectIssuer {
 		t.Fatal("selector copies")
 	}
 	// Hints may name a cert not embedded in this XML. Parsing does not trust them.
@@ -210,7 +343,7 @@ func TestRejectMalformedOrUnsupportedKeyInfo(t *testing.T) {
 		name, body string
 		err        error
 	}{
-		{"empty", "", keyinfo.ErrInput},
+		{nameEmpty, "", keyinfo.ErrInput},
 		{"unknown", `<surprise xmlns="urn:other"/>`, keyinfo.ErrUnsupported},
 		{"unqualified", `<KeyValue/>`, keyinfo.ErrUnsupported},
 		{"wrong-order", `<ds:KeyValue><ds:RSAKeyValue><ds:Exponent>Aw==</ds:Exponent><ds:Modulus>Cw==</ds:Modulus></ds:RSAKeyValue></ds:KeyValue>`, keyinfo.ErrInput},
@@ -220,7 +353,7 @@ func TestRejectMalformedOrUnsupportedKeyInfo(t *testing.T) {
 		{"huge-exponent", `<ds:KeyValue><ds:RSAKeyValue><ds:Modulus>////////</ds:Modulus><ds:Exponent>AQAAAAAAAAA=</ds:Exponent></ds:RSAKeyValue></ds:KeyValue>`, keyinfo.ErrKey},
 		{"extra-key", `<ds:KeyValue>` + derXML(t, &k.PublicKey) + derXML(t, &k.PublicKey) + `</ds:KeyValue>`, keyinfo.ErrInput},
 		{"DER-in-KeyValue", `<ds:KeyValue>` + derXML(t, &k.PublicKey) + `</ds:KeyValue>`, keyinfo.ErrUnsupported},
-		{"DSA", `<ds:KeyValue><ds:DSAKeyValue/></ds:KeyValue>`, keyinfo.ErrUnsupported},
+		{"empty-DSA", `<ds:KeyValue><ds:DSAKeyValue/></ds:KeyValue>`, keyinfo.ErrInput},
 		{"bad-base64", `<k:DEREncodedKeyValue>AB==</k:DEREncodedKeyValue>`, keyinfo.ErrInput},
 		{"nested-name", `<ds:KeyName><ds:KeyName>x</ds:KeyName></ds:KeyName>`, keyinfo.ErrInput},
 		{"nested-der", `<k:DEREncodedKeyValue><ds:KeyName>x</ds:KeyName></k:DEREncodedKeyValue>`, keyinfo.ErrInput},
@@ -444,7 +577,7 @@ func TestCancellationBadPolicyAndForeignSnapshot(t *testing.T) {
 		requireErr(t, asXML(t, d), keyinfo.Options{Limits: limit}, keyinfo.ErrPolicy)
 	}
 
-	for _, uri := range []string{"relative", "https://user:pw@example.org/key", "https://example.org/key#ki", "urn:bad\nuri"} {
+	for _, uri := range []string{"relative", "https://user:pw@example.org/key", "https://example.org/key#ki#second", "urn:bad\nuri"} {
 		requireErr(t, asXML(t, d), keyinfo.Options{External: &keyinfo.ExternalResources{AllowedURIs: []string{uri}, Resolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) { t.Fatal("unexpected I/O"); return nil, nil })}}, keyinfo.ErrPolicy)
 	}
 }
@@ -481,6 +614,21 @@ func FuzzParseKeyInfo(f *testing.F) {
 		f.Add([]byte(s))
 	}
 
+	f.Add([]byte(wrap(`<ds:RetrievalMethod URI=""><ds:Transforms><ds:Transform Algorithm="` + reference.Base64 + `"/></ds:Transforms></ds:RetrievalMethod>`)))
+	f.Add([]byte(`<ds:KeyInfo xmlns:ds="` + ns + `" Id="x"><ds:RetrievalMethod URI="#x"><ds:Transforms><ds:Transform Algorithm="` + c14n.Exclusive + `"/></ds:Transforms></ds:RetrievalMethod></ds:KeyInfo>`))
+	chain := testcert.New(f)
+
+	x509Doc, err := keyinfo.Build(f.Context(), keyinfo.Template{X509Data: []keyinfo.X509Data{{
+		Certificates: [][]byte{chain.Leaf.Raw}, CRLs: [][]byte{testcert.CRL(f, chain)},
+		SubjectNames: []string{chain.Leaf.Subject.String()}, SubjectKeyIdentifiers: [][]byte{chain.Leaf.SubjectKeyId},
+		IssuerSerials: []keyinfo.IssuerSerial{{Issuer: chain.Leaf.Issuer.String(), Serial: chain.Leaf.SerialNumber.String()}},
+	}}})
+	if err != nil {
+		f.Fatal(err)
+	}
+
+	f.Add([]byte(asXML(f, x509Doc)))
+
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if len(b) > 65536 {
 			return
@@ -491,20 +639,58 @@ func FuzzParseKeyInfo(f *testing.F) {
 			return
 		}
 
-		r, e := keyinfo.Parse(context.Background(), d, d.Root(), keyinfo.Options{Limits: keyinfo.Limits{MaxBlobBytes: 8192, MaxTotalBytes: 16384, MaxElements: 128}})
-		if e != nil && r != nil {
-			t.Fatal("partial result")
-		}
+		processing := reference.DefaultOptions()
+		for _, opt := range []keyinfo.Options{{}, {RetrievalProcessing: &processing}} {
+			opt.Limits = keyinfo.Limits{MaxBlobBytes: 8192, MaxTotalBytes: 16384, MaxElements: 128, MaxTransformBytes: 32768, MaxTransformNodes: 4096}
 
-		if e == nil {
-			for _, c := range r.Candidates() {
-				k, e := c.PublicKey()
-				if e != nil || k == nil {
-					t.Fatal("invalid key in result")
+			r, e := keyinfo.Parse(t.Context(), d, d.Root(), opt)
+			if e != nil && r != nil {
+				t.Fatal("partial result")
+			}
+
+			if e == nil {
+				for _, c := range r.Candidates() {
+					key, err := c.PublicKey()
+					if err != nil || key == nil {
+						t.Fatal("invalid key in result")
+					}
 				}
+
+				fuzzRebuildX509Groups(t, r)
 			}
 		}
 	})
+}
+
+func fuzzRebuildX509Groups(t *testing.T, result *keyinfo.Result) {
+	t.Helper()
+
+	groups := result.X509Groups()
+	if len(groups) == 0 {
+		return
+	}
+
+	template := keyinfo.Template{}
+	for _, group := range groups {
+		template.X509Data = append(template.X509Data, keyinfo.X509Data{
+			Certificates: group.CertificatesDER(), CRLs: group.CRLsDER(), IssuerSerials: group.IssuerSerials(),
+			SubjectNames: group.SubjectNames(), SubjectKeyIdentifiers: group.SubjectKeyIdentifiers(), CertificateDigests: group.CertificateDigests(),
+		})
+	}
+
+	doc, err := keyinfo.Build(t.Context(), template)
+	if errors.Is(err, keyinfo.ErrLimit) {
+		return // The builder bounds group/entry counts separately from Parse.
+	}
+
+	if err != nil {
+		t.Fatal("cannot rebuild parsed X509Data", err)
+	}
+
+	parsed, err := keyinfo.Parse(t.Context(), doc, doc.Root(), keyinfo.Options{})
+	if err != nil || len(parsed.X509Groups()) != len(groups) {
+		t.Fatal("rebuilt X509Data did not parse", err)
+	}
 }
 
 func parseXML(t testing.TB, s string) *document.Document {

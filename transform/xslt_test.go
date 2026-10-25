@@ -477,7 +477,7 @@ func TestXSLTLiteralNamespaceSerializationStable(t *testing.T) {
 
 	var first []byte
 
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		out, err := s.Transform(t.Context(), d, transform.XSLTContext{})
 		if err != nil {
 			t.Fatal(err)

@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+
+	// #nosec G406 -- Public parameter context for explicitly selected legacy verification.
+	"crypto/dsa" //nolint:staticcheck // XMLDSig 1.1 DSA verification has a separate compatibility policy.
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -62,6 +65,14 @@ type Limits struct {
 	// MaxExternalBytes bounds aggregate external bytes read; default 4 MiB, maximum 64
 	// MiB.
 	MaxExternalBytes int
+	// MaxTransformBytes bounds aggregate intermediate and final retrieval output
+	// when RetrievalProcessing is enabled;
+	// default 32 MiB, maximum 64 MiB. Raw external input has its separate budget.
+	MaxTransformBytes int
+	// MaxTransformNodes bounds reference-processor visits and result-parsing work
+	// when RetrievalProcessing is enabled;
+	// default 2,000,000, maximum 16,000,000.
+	MaxTransformNodes int
 	// MaxRSABits bounds RSA modulus size; default 8192, maximum 16384. Minimum key
 	// strength belongs to the trust policy.
 	MaxRSABits int
@@ -71,8 +82,10 @@ type Limits struct {
 // called BEFORE SignatureValue can be verified. Never use an unrestricted HTTP
 // or filesystem resolver for attacker-controlled KeyInfo.
 type ResourceResolver interface {
-	// Resolve opens the original resource bytes for an authorized URI. It and the returned
-	// reader must honor cancellation.
+	// Resolve receives the complete authorized URI, including a fragment, and
+	// returns the identified subresource as octets. XML subresources must be
+	// standalone documents; fragment interpretation belongs to this adapter.
+	// It and the returned reader must honor cancellation.
 	Resolve(context.Context, string) (io.ReadCloser, error)
 }
 
@@ -82,10 +95,16 @@ type ExternalResources struct {
 	// Resolver is the trusted application adapter used to read explicitly authorized
 	// resources.
 	Resolver ResourceResolver
-	// AllowedURIs lists exact absolute URI strings without fragments or userinfo. A cached
-	// resource is read once per Parse. Redirects, relative URL resolution and URI
-	// rewriting belong to the application resolver.
+	// AllowedURIs lists exact absolute URI strings without userinfo. Fragments
+	// identify distinct resources and are passed unchanged to Resolver. A cached
+	// resource is read once per Parse.
 	AllowedURIs []string
+	// BaseURI opts into relative URI resolution, inherited xml:base on permitted
+	// containing elements and retrieval context for nested resources. It must be
+	// absolute, hierarchical and fragment-free. Authorization uses the resolved
+	// absolute URI. Empty keeps literal URI handling; empty/#fragment references
+	// always address their containing document. Redirect metadata is not inferred.
+	BaseURI string
 }
 
 // Options controls bounded KeyInfo parsing and authorized key representations. Parsing
@@ -95,7 +114,7 @@ type Options struct {
 	// AdditionalIDRules adds explicit ID attributes to the default KeyInfo resolution rules.
 	AdditionalIDRules []reference.IDAttributeRule
 	// AllowedKeyData restricts representations by expanded QName: KeyName,
-	// RSAKeyValue, ECKeyValue, DEREncodedKeyValue, X509Data, RetrievalMethod,
+	// RSAKeyValue, DSAKeyValue, ECKeyValue, DEREncodedKeyValue, X509Data, RetrievalMethod,
 	// KeyInfoReference. Nil preserves all supported forms; empty denies all.
 	// KeyValue is a wrapper, not a representation. Raw certificate retrieval
 	// requires both RetrievalMethod and X509Data. This controls parsing, not trust.
@@ -103,6 +122,18 @@ type Options struct {
 	// External authorizes external KeyInfo resources. Nil denies all such resources; this
 	// policy is separate from signed-data URIs.
 	External *ExternalResources
+	// RetrievalProcessing explicitly permits additional RetrievalMethod chains.
+	// Nil preserves raw-certificate retrieval with at most one Base64 step.
+	// The shared reference processor enforces the supplied transform allowlist
+	// and approves XPath/Filter2/XSLT only through an explicit Extension processor.
+	// Signature and IDRules are supplied by KeyInfo parsing and must be zero here.
+	// Numeric limits are capped by Limits and shared across the entire Parse.
+	RetrievalProcessing *reference.Options
+	// DSAParameters supplies application-known P/Q/G when DSAKeyValue omits
+	// some of those fields (XMLDSig 1.1 section 4.5.2.1). Nil requires complete
+	// parameters in XML. The bounded 1024/160 context is copied before callbacks;
+	// it neither authenticates the key nor enables DSA signature verification.
+	DSAParameters *dsa.Parameters
 }
 
 // Candidate is an immutable, untrusted key description. All mutable key, DER and
@@ -300,6 +331,8 @@ func normalizeLimits(l Limits) (Limits, error) {
 		{&l.MaxTotalBytes, 4 << 20, 64 << 20},
 		{&l.MaxExternalResources, 8, 64},
 		{&l.MaxExternalBytes, 4 << 20, 64 << 20},
+		{&l.MaxTransformBytes, 32 << 20, 64 << 20},
+		{&l.MaxTransformNodes, 2_000_000, 16_000_000},
 		{&l.MaxRSABits, 8192, 16384},
 	}
 	for _, f := range fields {

@@ -8,38 +8,56 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/url"
 	"strings"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/uriref"
 	"github.com/skarm/xmlsec/reference"
 )
 
 // ExternalReferences enables explicitly allowlisted external octet streams in
-// the general Signature API. It does not enable network access or XML base URI
-// resolution. URI spelling is exact; relative URI interpretation is the caller's
-// responsibility. KeyInfo and remote Manifest discovery never invoke Resolver.
+// the general Signature API. It does not enable network access. URI spelling is
+// exact unless BaseURI explicitly enables relative URI resolution. KeyInfo
+// discovery never invokes this Resolver. Explicit external Manifest traversal
+// shares this allowlist and its limits.
 // AllowedURIs is an allowlist, not an exact set requirement (use ExpectedURIs for
 // the direct SignedInfo references). All reader and resolver methods must honor
 // context themselves if they can block.
 type ExternalReferences struct {
 	// Resolver is the required trusted application adapter for authorized resources.
+	// It receives the complete authorized URI, including any fragment, and must
+	// return the identified subresource as octets. Fragment interpretation and
+	// standalone XML serialization belong to this adapter, not to a hidden XML
+	// selector or an HTTP request with its fragment silently discarded.
 	Resolver Resolver
 	// AllowedURIs is a required allowlist of exact URI strings. It does not
 	// require every URI to be referenced; use SignatureOptions.ExpectedURIs for that.
 	AllowedURIs []string
-	Limits      ResourceLimits
-	replay      *resourceSession
+	// BaseURI opts into RFC 3986 relative URI resolution. It must be an absolute,
+	// hierarchical, fragment-free URI identifying the signature document. Nested
+	// external Manifests instead use their complete resolved resource URI as the
+	// retrieval base. Inherited xml:base on permitted XML containers is applied
+	// before checking the exact resolved URI against AllowedURIs. Empty keeps the
+	// existing literal-URI contract. Empty and #fragment references always select
+	// the containing document, independently of BaseURI and xml:base.
+	BaseURI string
+	Limits  ResourceLimits
+	replay  *resourceSession
 }
 
 type resourceSession struct {
-	source       Resolver
-	allowed      map[string]bool
-	cache        map[[32]byte]ReferenceResult
-	fingerprints map[string][]byte
-	limits       ResourceLimits
-	remaining    int
+	source             Resolver
+	allowed            map[string]bool
+	cache              map[[32]byte]ReferenceResult
+	fingerprints       map[string][]byte
+	limits             ResourceLimits
+	remaining          int
+	captureManifests   bool
+	captureTransformed bool
+	baseURI            *url.URL
 }
 
 func newResourceSession(opt *ExternalReferences) (*resourceSession, error) {
@@ -57,9 +75,22 @@ func newResourceSession(opt *ExternalReferences) (*resourceSession, error) {
 	}
 
 	s := &resourceSession{source: opt.Resolver, allowed: make(map[string]bool), cache: make(map[[32]byte]ReferenceResult), fingerprints: make(map[string][]byte), limits: limits, remaining: limits.MaxTotalResourceBytes}
+
+	s.baseURI, err = resourceBaseURI(opt.BaseURI)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, uri := range opt.AllowedURIs {
-		if err := validExternalURI(uri); err != nil {
+		if err := validExternalReferenceURI(uri); err != nil {
 			return nil, err
+		}
+
+		if s.baseURI != nil {
+			parsed, _ := url.Parse(uri) // validated above
+			if !parsed.IsAbs() {
+				return nil, fmt.Errorf("%w: resolved absolute URI allowlist required with BaseURI", ErrPolicy)
+			}
 		}
 
 		if s.allowed[uri] {
@@ -73,16 +104,7 @@ func newResourceSession(opt *ExternalReferences) (*resourceSession, error) {
 		maps.Copy(s.fingerprints, opt.replay.fingerprints)
 
 		for key, result := range opt.replay.cache {
-			builtin := true
-
-			for _, tr := range result.transforms {
-				if reference.IsExtension(tr.Algorithm) {
-					builtin = false
-					break
-				}
-			}
-
-			if builtin {
+			if cacheableExternalTransforms(result.transforms) {
 				s.cache[key] = result
 			}
 		}
@@ -91,12 +113,34 @@ func newResourceSession(opt *ExternalReferences) (*resourceSession, error) {
 	return s, nil
 }
 
+func resourceBaseURI(value string) (*url.URL, error) {
+	base, err := uriref.Base(value)
+	if err != nil {
+		return nil, fmt.Errorf("%w: BaseURI: %w", ErrPolicy, err)
+	}
+
+	return base, nil
+}
+
+// Program fingerprints exclude runtime expression handles. Even identical
+// approved programs can make different execution decisions for two References;
+// their results cannot be shared across references or signing/self-check passes.
+func cacheableExternalTransforms(transforms []reference.Transform) bool {
+	for _, tr := range transforms {
+		if reference.IsExtension(tr.Algorithm) {
+			return false
+		}
+	}
+
+	return true
+}
+
 func (s *resourceSession) permits(uri string) error {
 	if s == nil || !s.allowed[uri] {
 		return fmt.Errorf("%w: external URI not allowed: %q", ErrPolicy, uri)
 	}
 
-	return validExternalURI(uri)
+	return validExternalReferenceURI(uri)
 }
 
 // replayOptions reuses authenticated processing evidence for the signing
@@ -108,7 +152,32 @@ func (s *resourceSession) replayOptions() *ExternalReferences {
 		allowed = append(allowed, uri)
 	}
 
-	return &ExternalReferences{AllowedURIs: allowed, Limits: s.limits, Resolver: s.source, replay: s}
+	opt := &ExternalReferences{AllowedURIs: allowed, Limits: s.limits, Resolver: s.source, replay: s}
+	if s.baseURI != nil {
+		opt.BaseURI = s.baseURI.String()
+	}
+
+	return opt
+}
+
+// referenceURI does not authorize or fetch anything. Same-document references
+// are handled by taskTarget before this method, including under xml:base.
+func (s *resourceSession) referenceURI(scope *manifestScope, ref coreReference) (string, error) {
+	if err := validExternalReferenceURI(ref.uri); err != nil {
+		return "", err
+	}
+
+	var base *url.URL
+	if s != nil {
+		base = s.baseURI
+	}
+
+	resolved, err := uriref.Resolve(ref.uri, base, scope.uri, ref.digestNode.Parent)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrReference, err)
+	}
+
+	return resolved, nil
 }
 
 func (s *resourceSession) process(ctx context.Context, b *coreBudget, ref coreReference, opt reference.Options) (ReferenceResult, error) {
@@ -121,7 +190,8 @@ func (s *resourceSession) process(ctx context.Context, b *coreBudget, ref coreRe
 		return ReferenceResult{}, err
 	}
 
-	if cached, ok := s.cache[key]; ok {
+	cacheable := cacheableExternalTransforms(ref.transforms)
+	if cached, ok := s.cache[key]; ok && cacheable {
 		if cached.processed.ProducedBytes() > b.bytes || cached.processed.NodeVisits() > b.visits {
 			return ReferenceResult{}, ErrPolicy
 		}
@@ -138,14 +208,16 @@ func (s *resourceSession) process(ctx context.Context, b *coreBudget, ref coreRe
 	}
 
 	digest := h.New()
-	source := &referenceSource{resolver: s.source, uri: ref.uri, limits: s.limits}
+	source := &referenceSource{resolver: s.source, uri: ref.uri, limits: s.limits, captureManifest: s.captureManifests && ref.typeURI == ManifestType && externalManifestProvenance(ref.transforms)}
 
 	opt.MaxNodeVisits = b.visits
 	if b.visits <= 0 {
 		return ReferenceResult{}, ErrPolicy
 	}
 
-	report, err := source.write(ctx, digest, ref.transforms, opt, &b.bytes, &s.remaining)
+	writer, captured := manifestOutputWriter(digest, s.captureTransformed && ref.typeURI == ManifestType && !externalManifestProvenance(ref.transforms))
+
+	report, err := source.write(ctx, writer, ref.transforms, opt, &b.bytes, &s.remaining)
 	if err != nil {
 		return ReferenceResult{}, err
 	}
@@ -153,12 +225,18 @@ func (s *resourceSession) process(ctx context.Context, b *coreBudget, ref coreRe
 	b.visits -= report.NodeVisits()
 
 	result := ReferenceResult{uri: ref.uri, typeURI: ref.typeURI, digestMethod: ref.method, transforms: ref.transforms, processed: report, external: source, processing: opt, digest: digest.Sum(nil)}
+	if captured != nil {
+		result.manifestInput = captured.Bytes()
+	}
+
 	if previous := s.fingerprints[ref.uri]; previous != nil && !bytes.Equal(previous, source.rawDigest) {
 		return ReferenceResult{}, ErrDigest
 	}
 
 	s.fingerprints[ref.uri] = source.rawDigest
-	s.cache[key] = result
+	if cacheable {
+		s.cache[key] = result
+	}
 
 	return result, nil
 }
@@ -212,7 +290,10 @@ func externalURI(uri string) bool { return uri != "" && !strings.HasPrefix(uri, 
 func processCoreTask(ctx context.Context, doc *document.Document, p *corePlan, b *coreBudget, task *coreTask) (*reference.Report, ReferenceResult, error) {
 	ref := task.ref
 	if task.external {
+		ref.uri = task.resourceURI
 		result, err := p.external.process(ctx, b, ref, p.processing)
+		result.uri = task.ref.uri // expose signed spelling separately from resolver identity
+
 		return result.processed, result, err
 	}
 
@@ -225,7 +306,14 @@ func processCoreTask(ctx context.Context, doc *document.Document, p *corePlan, b
 
 	var err error
 
-	resolved, err = p.resolver.Resolve(ctx, ref.uri)
+	resolver := p.resolver
+
+	if task.scope != nil {
+		doc = task.scope.doc
+		resolver = task.scope.resolver
+	}
+
+	resolved, err = resolver.Resolve(ctx, ref.uri)
 	if err != nil {
 		return nil, rr, err
 	}
@@ -240,39 +328,50 @@ func processCoreTask(ctx context.Context, doc *document.Document, p *corePlan, b
 
 	digest := h.New()
 
-	out, err := b.write(ctx, digest, data, ref.transforms, p.processing)
+	writer, captured := manifestOutputWriter(digest, p.graph.policy.AllowTransformed && transformedManifestEdge(task))
+
+	out, err := b.write(ctx, writer, data, ref.transforms, p.processing)
 	if err != nil {
 		return nil, rr, err
 	}
 
-	rr.processed, rr.resolver, rr.processing, rr.digest = out, p.resolver, p.processing, digest.Sum(nil)
+	rr.processed, rr.resolver, rr.processing, rr.digest = out, resolver, p.processing, digest.Sum(nil)
+	if captured != nil {
+		rr.manifestInput = captured.Bytes()
+	}
+
 	rr.coverageDoc, rr.coverageRoot, rr.coverageExclude = coreCoverage(doc, p.sig, resolved, out)
 
 	return out, rr, nil
 }
 
-func taskTarget(ctx context.Context, doc *document.Document, p *corePlan, r coreReference) (*tree.Node, bool, error) {
+func taskTarget(ctx context.Context, scope *manifestScope, p *corePlan, r coreReference) (*tree.Node, bool, string, error) {
 	if externalURI(r.uri) {
-		if err := p.external.permits(r.uri); err != nil {
-			return nil, true, err
+		uri, err := p.external.referenceURI(scope, r)
+		if err != nil {
+			return nil, true, "", err
+		}
+
+		if err := p.external.permits(uri); err != nil {
+			return nil, true, uri, err
 		}
 
 		if err := validateDetachedTransforms(r.transforms, p.processing); err != nil {
-			return nil, true, err
+			return nil, true, uri, err
 		}
 
-		return nil, true, nil
+		return nil, true, uri, nil
 	}
 
-	e, whole, err := p.resolver.Target(ctx, r.uri)
+	e, whole, err := scope.resolver.Target(ctx, r.uri)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 
 	_, n := tree.Unwrap(e)
 	if whole {
-		n = tree.Root(doc)
+		n = tree.Root(scope.doc)
 	}
 
-	return n, false, nil
+	return n, false, "", nil
 }

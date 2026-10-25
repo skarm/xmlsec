@@ -23,6 +23,8 @@ const (
 	RSAPSS = PSSNamespace + "rsa-pss"
 	// MGF1 is the generic MGF1 mask-generation URI.
 	MGF1 = PSSNamespace + "MGF1"
+	// HMACSHA1 is the legacy HMAC-SHA1 URI. It requires LegacyHMACPolicy or an explicit allowlist.
+	HMACSHA1 = Namespace + "hmac-sha1"
 	// HMACSHA256 is the HMAC-SHA-256 algorithm URI.
 	HMACSHA256 = "http://www.w3.org/2001/04/xmldsig-more#hmac-sha256"
 	// HMACSHA384 is the HMAC-SHA-384 algorithm URI.
@@ -256,6 +258,10 @@ func (s signatureSpec) validatePublicKey(key crypto.PublicKey, p Policy) error {
 }
 
 func (s signatureSpec) validateSigner(signer crypto.Signer) error {
+	if s.algorithm == DSASHA1 || s.algorithm == RSASHA1 {
+		return fmt.Errorf("%w: legacy signature generation is disabled", ErrPolicy)
+	}
+
 	if s.pss != nil && (s.pss.Hash != s.pss.MGFHash || s.pss.SaltLength == 0) {
 		if _, ok := signer.(ParameterizedPSSSigner); !ok {
 			return fmt.Errorf("%w: parameters require ParameterizedPSSSigner (different MGF hash or exact zero salt)", ErrAlgorithm)
@@ -421,6 +427,8 @@ func (s signatureSpec) signPrepared(ctx context.Context, signer crypto.Signer, k
 
 func macHash(method string) (crypto.Hash, bool) {
 	switch method {
+	case HMACSHA1:
+		return crypto.SHA1, true
 	case HMACSHA256:
 		return crypto.SHA256, true
 	case HMACSHA384:
@@ -434,6 +442,8 @@ func macHash(method string) (crypto.Hash, bool) {
 
 func digestURI(h crypto.Hash) (string, error) {
 	switch h {
+	case crypto.SHA1:
+		return SHA1, nil
 	case crypto.SHA256:
 		return SHA256, nil
 	case crypto.SHA384:
@@ -441,7 +451,7 @@ func digestURI(h crypto.Hash) (string, error) {
 	case crypto.SHA512:
 		return SHA512, nil
 	default:
-		return "", fmt.Errorf("%w: only SHA-256/384/512 are supported", ErrAlgorithm)
+		return "", fmt.Errorf("%w: unsupported digest", ErrAlgorithm)
 	}
 }
 
@@ -454,6 +464,10 @@ func normalizeSignatureSpec(method string, params SignatureParameters) (signatur
 
 		p := PSSParameters{Hash: crypto.SHA256, MGFHash: crypto.SHA256, SaltLength: 32, TrailerField: 1}
 		normalizeSignatureSpecPSS(&params, &p)
+
+		if p.Hash == crypto.SHA1 || p.MGFHash == crypto.SHA1 {
+			return s, fmt.Errorf("%w: parameterized PSS requires SHA-2", ErrAlgorithm)
+		}
 
 		if _, err := digestURI(p.Hash); err != nil {
 			return s, err

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/keyinfo"
 	"github.com/skarm/xmlsec/reference"
@@ -349,7 +349,7 @@ func verifySignatureDetailed(ctx context.Context, doc *document.Document, select
 		return result, report, nil
 	} // no fingerprint of a shared secret
 
-	spki, err := x509.MarshalPKIXPublicKey(credential.public)
+	spki, err := signature.MarshalPublicKey(credential.public)
 	if err != nil {
 		return nil, report, fmt.Errorf("%w: %w", ErrKey, err)
 	}
@@ -506,12 +506,14 @@ const (
 
 // ReferenceReport records a reference digest check and transform diagnostics.
 type ReferenceReport struct {
-	Index  int              `json:"index"`
-	URI    string           `json:"uri"`
-	Status CheckStatus      `json:"status"`
-	Stage  string           `json:"stage,omitempty"`
-	Error  string           `json:"error,omitempty"`
-	Steps  []reference.Step `json:"steps,omitempty"`
+	Index int    `json:"index"`
+	URI   string `json:"uri"`
+	// ResourceURI is the authorized resolver URI; URI preserves signed spelling.
+	ResourceURI string           `json:"resource_uri,omitempty"`
+	Status      CheckStatus      `json:"status"`
+	Stage       string           `json:"stage,omitempty"`
+	Error       string           `json:"error,omitempty"`
+	Steps       []reference.Step `json:"steps,omitempty"`
 }
 
 // VerificationReport records signature, reference and Manifest checks. Inspect the

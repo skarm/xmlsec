@@ -436,7 +436,7 @@ func templateID(n *tree.Node, id string) error {
 
 func referenceTemplateNode(ctx context.Context, r ReferenceTemplate) (*tree.Node, error) {
 	if externalURI(r.URI) {
-		if err := validExternalURI(r.URI); err != nil {
+		if err := validExternalReferenceURI(r.URI); err != nil {
 			return nil, err
 		}
 	}

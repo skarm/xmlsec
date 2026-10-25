@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/fips140"
 	"crypto/hmac"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +21,70 @@ import (
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/xmldsig"
 )
+
+func TestLegacyHMACSHA1(t *testing.T) {
+	if fips140.Enabled() {
+		t.Skip("legacy compatibility is disabled in FIPS mode")
+	}
+	// RFC 2202 section 3, case 6: independent expected bytes, not a local round-trip.
+	secret := bytes.Repeat([]byte{0xaa}, 80)
+	message := []byte("Test Using Larger Than Block-Size Key - Hash Key First")
+
+	want, err := hex.DecodeString("aa4ae5e15272d00e95705637ce8a3b55ed402112")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	policy := xmldsig.LegacyHMACPolicy()
+
+	tag, err := xmldsig.ComputeHMAC(t.Context(), message, secret, xmldsig.HMACSHA1, 0, policy)
+	if err != nil || !bytes.Equal(tag, want) {
+		t.Fatalf("RFC 2202: %x, %v", tag, err)
+	}
+
+	if err := xmldsig.VerifyHMAC(t.Context(), message, want, secret, xmldsig.HMACSHA1, 0, policy); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, p := range []xmldsig.Policy{xmldsig.DefaultPolicy(), xmldsig.HMACPolicy(), xmldsig.LegacyVerificationPolicy()} {
+		if _, err := xmldsig.ComputeHMAC(t.Context(), message, secret, xmldsig.HMACSHA1, 0, p); !errors.Is(err, xmldsig.ErrPolicy) {
+			t.Fatal("implicit legacy HMAC", err)
+		}
+	}
+
+	if err := xmldsig.VerifyHMAC(t.Context(), []byte("changed"), want, secret, xmldsig.HMACSHA1, 0, policy); !errors.Is(err, xmldsig.ErrSignature) {
+		t.Fatal(err)
+	}
+
+	if _, err := xmldsig.ComputeHMAC(t.Context(), message, secret, xmldsig.HMACSHA1, 128, policy); !errors.Is(err, xmldsig.ErrPolicy) {
+		t.Fatal("implicit truncation", err)
+	}
+
+	policy.AllowHMACTruncation = true
+
+	short, err := xmldsig.ComputeHMAC(t.Context(), message, secret, xmldsig.HMACSHA1, 128, policy)
+	if err != nil || !bytes.Equal(short, want[:16]) {
+		t.Fatal(short, err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join("..", "testdata", "legacy-dsig", "hmac-sha1.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := coreParse(t, string(raw))
+	opt := xmldsig.SignatureOptions{Policy: xmldsig.LegacyHMACPolicy(), ExpectedURIs: []string{"#root", nameData}, RequiredElements: []document.Element{d.Root()}}
+
+	result, err := xmldsig.VerifyHMACSignature(t.Context(), d, xmldsig.Signatures(d)[0], secret, opt)
+	if err != nil || result == nil || len(result.References()) != 2 || !result.CoversElement(d.Root()) {
+		t.Fatal(result, err)
+	}
+
+	changed := coreParse(t, strings.Replace(string(raw), "legacy fixture", "changed fixture", 1))
+	if _, err := xmldsig.VerifyHMACSignature(t.Context(), changed, xmldsig.Signatures(changed)[0], secret, xmldsig.SignatureOptions{Policy: opt.Policy}); !errors.Is(err, xmldsig.ErrDigest) {
+		t.Fatal("changed HMAC XML", err)
+	}
+}
 
 func TestHMACMessageMethods(t *testing.T) {
 	ctx := context.Background()

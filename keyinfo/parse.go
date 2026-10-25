@@ -3,6 +3,9 @@ package keyinfo
 import (
 	"context"
 	"crypto"
+
+	// #nosec G406 -- Explicit bounded legacy compatibility only.
+	"crypto/dsa" //nolint:staticcheck // XMLDSig 1.1 requires legacy DSA verification; generation is disabled.
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -11,9 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/url"
 	"strings"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/reference"
 )
@@ -21,8 +26,8 @@ import (
 // Parse reads one explicitly selected ds:KeyInfo in the supplied snapshot.
 // Unsupported choices are errors, not silently ignored extensions. KeyName is
 // preserved verbatim. KeyInfoReference/typed RetrievalMethod follow bounded
-// references; RetrievalMethod transforms support ONLY a single Base64 step for
-// rawX509Certificate. No arbitrary transform runs during key discovery.
+// references. Additional RetrievalMethod chains require explicit processing
+// policy; no arbitrary program runs during key discovery by default.
 func Parse(ctx context.Context, doc *document.Document, selected document.Element, opt Options) (*Result, error) {
 	if ctx == nil || doc == nil {
 		return nil, ErrInput
@@ -55,6 +60,14 @@ func Parse(ctx context.Context, doc *document.Document, selected document.Elemen
 	}
 
 	if err := p.configureExternal(); err != nil {
+		return nil, err
+	}
+
+	if err := p.configureRetrieval(); err != nil {
+		return nil, err
+	}
+
+	if err := p.configureDSAParameters(); err != nil {
 		return nil, err
 	}
 
@@ -96,17 +109,22 @@ type visitKey struct {
 }
 
 type parser struct {
-	ctx                            context.Context
-	limits                         Limits
-	options                        Options
-	result                         Result
-	elements, total, externalBytes int
-	active                         map[visitKey]bool
-	scopes                         map[*document.Document]*scope
-	resources                      map[string]resourceBlob
-	parsedResources                map[string]*scope
-	allow                          map[string]bool
-	keyData                        map[document.Name]bool
+	ctx                                           context.Context
+	limits                                        Limits
+	options                                       Options
+	result                                        Result
+	elements, total, externalBytes                int
+	active                                        map[visitKey]bool
+	scopes                                        map[*document.Document]*scope
+	resources                                     map[string]resourceBlob
+	parsedResources                               map[string]*scope
+	allow                                         map[string]bool
+	keyData                                       map[document.Name]bool
+	externalReads, transformBytes, transformNodes int
+	retrievalPlans                                map[visitKey]retrievalPlan
+	rawResources                                  map[string][]byte
+	transformedScopes                             map[retrievalOutput]*scope
+	baseURI                                       *url.URL
 }
 
 func (p *parser) newScope(d *document.Document, resource string) (*scope, error) {
@@ -172,6 +190,18 @@ func (p *parser) keyInfo(s *scope, n *tree.Node, depth int) error {
 		if err := p.checkKeyData(child); err != nil {
 			return err
 		}
+
+		if is(child, Namespace, "RetrievalMethod") {
+			if _, err := p.prepareRetrieval(s, child); err != nil {
+				return err
+			}
+		}
+
+		if is(child, Namespace11, nameKeyInfoReference) {
+			if _, err := p.keyInfoReferenceURI(s, child); err != nil {
+				return err
+			}
+		}
 	}
 
 	for _, child := range children {
@@ -228,18 +258,9 @@ func (p *parser) item(s *scope, n *tree.Node, depth int) error {
 			return ErrLimit
 		}
 
-		c, err := structure(n, Namespace11, nameKeyInfoReference, "Id", "URI")
+		uri, err := p.keyInfoReferenceURI(s, n)
 		if err != nil {
 			return err
-		}
-
-		if len(c) != 0 {
-			return ErrInput
-		}
-
-		uri, ok := attr(n, "URI")
-		if !ok {
-			return fmt.Errorf("%w: KeyInfoReference URI missing", ErrInput)
 		}
 
 		target, scope, err := p.resolveXML(s, uri)
@@ -366,6 +387,8 @@ func (p *parser) bareKey(s *scope, n *tree.Node) error {
 	)
 
 	switch n.Name {
+	case document.Name{Space: Namespace, Local: nameDSAKeyValue}:
+		key, err = p.dsaKeyValue(n)
 	case document.Name{Space: Namespace, Local: nameRSAKeyValue}:
 		key, err = p.rsaKeyValue(n)
 	case document.Name{Space: Namespace11, Local: nameECKeyValue}:
@@ -414,6 +437,150 @@ func (p *parser) rsaKeyValue(n *tree.Node) (*rsa.PublicKey, error) {
 	}
 
 	return &rsa.PublicKey{N: new(big.Int).SetBytes(modulus), E: int(e.Int64())}, nil
+}
+
+func (p *parser) dsaKeyValue(n *tree.Node) (*dsa.PublicKey, error) {
+	children, err := structure(n, Namespace, nameDSAKeyValue)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(children) < 1 || len(children) > 7 {
+		return nil, ErrInput
+	}
+
+	k, remaining, err := p.dsaPublicFields(children)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(remaining) > 0 && is(remaining[0], Namespace, "J") {
+		j, err := p.dsaInteger(remaining[0])
+		if err != nil {
+			return nil, err
+		}
+
+		if k.Q.Sign() == 0 || j.Cmp(new(big.Int).Div(new(big.Int).Sub(k.P, big.NewInt(1)), k.Q)) != 0 {
+			return nil, ErrKey
+		}
+
+		remaining = remaining[1:]
+	}
+
+	if len(remaining) > 0 {
+		if len(remaining) != 2 || !is(remaining[0], Namespace, "Seed") || !is(remaining[1], Namespace, "PgenCounter") {
+			return nil, ErrInput
+		}
+
+		for _, child := range remaining {
+			if _, err := p.dsaInteger(child); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return k, nil
+}
+
+func (p *parser) configureDSAParameters() error {
+	parameters := p.options.DSAParameters
+	if parameters == nil {
+		return nil
+	}
+
+	if parameters.P == nil || parameters.Q == nil || parameters.G == nil || parameters.P.BitLen() != 1024 || parameters.Q.BitLen() != 160 || parameters.G.BitLen() > 1024 {
+		return fmt.Errorf("%w: invalid DSA parameter context", ErrPolicy)
+	}
+
+	copyParameters := dsa.Parameters{P: new(big.Int).Set(parameters.P), Q: new(big.Int).Set(parameters.Q), G: new(big.Int).Set(parameters.G)}
+	if err := signature.LegacyDSAKey(&dsa.PublicKey{Parameters: copyParameters, Y: copyParameters.G}); err != nil {
+		return fmt.Errorf("%w: DSA parameter context: %w", ErrPolicy, err)
+	}
+
+	p.options.DSAParameters = &copyParameters
+
+	return p.ctx.Err()
+}
+
+func (p *parser) dsaPublicFields(children []*tree.Node) (*dsa.PublicKey, []*tree.Node, error) {
+	key := &dsa.PublicKey{}
+
+	remaining := children
+	if is(remaining[0], Namespace, "P") {
+		if len(remaining) < 2 || !is(remaining[1], Namespace, "Q") {
+			return nil, nil, ErrInput
+		}
+
+		var err error
+
+		key.P, err = p.dsaInteger(remaining[0])
+		if err != nil {
+			return nil, nil, err
+		}
+
+		key.Q, err = p.dsaInteger(remaining[1])
+		if err != nil {
+			return nil, nil, err
+		}
+
+		remaining = remaining[2:]
+	}
+
+	if len(remaining) > 0 && is(remaining[0], Namespace, "G") {
+		var err error
+
+		key.G, err = p.dsaInteger(remaining[0])
+		if err != nil {
+			return nil, nil, err
+		}
+
+		remaining = remaining[1:]
+	}
+
+	if len(remaining) == 0 || !is(remaining[0], Namespace, "Y") {
+		return nil, nil, ErrInput
+	}
+
+	var err error
+
+	key.Y, err = p.dsaInteger(remaining[0])
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if key.P == nil || key.G == nil {
+		if p.options.DSAParameters == nil {
+			return nil, nil, fmt.Errorf("%w: DSA parameter context required", ErrUnsupported)
+		}
+
+		if key.P == nil {
+			key.P = p.options.DSAParameters.P
+			key.Q = p.options.DSAParameters.Q
+		}
+
+		if key.G == nil {
+			key.G = p.options.DSAParameters.G
+		}
+	}
+
+	return key, remaining[1:], nil
+}
+
+func (p *parser) dsaInteger(n *tree.Node) (*big.Int, error) {
+	value, err := p.binary(n)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(value) > 1 && value[0] == 0 {
+		return nil, fmt.Errorf("%w: nonminimal DSA CryptoBinary", ErrInput)
+	}
+
+	if len(value) > 128 {
+		return nil, ErrKey
+	}
+
+	return new(big.Int).SetBytes(value), nil
 }
 
 func (p *parser) ecKeyValue(n *tree.Node) (*ecdsa.PublicKey, error) {
@@ -498,7 +665,7 @@ func (p *parser) addCandidate(s *scope, n *tree.Node, key crypto.PublicKey, cert
 		return fmt.Errorf("%w: candidates", ErrLimit)
 	}
 
-	spki, err := x509.MarshalPKIXPublicKey(key)
+	spki, err := signature.MarshalPublicKey(key)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrKey, err)
 	}
@@ -512,6 +679,10 @@ func (p *parser) addCandidate(s *scope, n *tree.Node, key crypto.PublicKey, cert
 
 func validateKey(key crypto.PublicKey, maxRSA int) error {
 	switch k := key.(type) {
+	case *dsa.PublicKey:
+		if err := signature.LegacyDSAKey(k); err != nil {
+			return fmt.Errorf("%w: invalid legacy DSA public key", ErrKey)
+		}
 	case *rsa.PublicKey:
 		if k == nil || k.N == nil || k.N.Sign() <= 0 || k.N.Bit(0) == 0 || k.N.BitLen() > maxRSA || k.E < 3 || k.E%2 == 0 || int64(k.E) > 2147483647 || k.N.Cmp(big.NewInt(int64(k.E))) <= 0 {
 			return ErrKey

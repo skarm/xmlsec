@@ -21,6 +21,7 @@ func runKeyInfo(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	format := fs.String("format", "der", "public key representation: der or xml")
 	resources := fs.String("resources", "", "separate trusted URI/path allowlist for external KeyInfo retrieval")
 	configFile := fs.String("config", "", "trusted JSON keyinfo.Options for inspection limits, ID rules and allowed representations")
+	baseURI := fs.String("base-uri", "", "explicit KeyInfo document base URI; requires -resources")
 
 	var names, keys, certs, refs repeatedFlag
 	fs.Var(&names, "name", "KeyName hint; repeatable")
@@ -28,7 +29,7 @@ func runKeyInfo(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.Var(&certs, "certificate", "certificate file; repeatable")
 	fs.Var(&refs, "reference", "KeyInfoReference URI; repeatable")
 
-	specific := "in out id index resources config"
+	specific := "in out id index resources config base-uri"
 	if cmd == "build" {
 		specific = "out id format name key certificate reference"
 	}
@@ -64,28 +65,9 @@ func runKeyInfo(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return err
 	}
 
-	opt := keyinfo.Options{}
-	if *configFile != "" {
-		if err := readJSONFile(ctx, *configFile, &opt); err != nil {
-			return err
-		}
-
-		if opt.External != nil {
-			return usageError("external KeyInfo access must use -resources")
-		}
-	}
-
-	if *resources != "" {
-		entries, resolver, err := loadResourcesContext(ctx, *resources)
-		if err != nil {
-			return err
-		}
-
-		if err := validateResourceAllowlist(entries); err != nil {
-			return err
-		}
-
-		opt.External = &keyinfo.ExternalResources{AllowedURIs: detachedResourceURIs(entries), Resolver: resolver}
+	opt, err := inspectionKeyInfoOptions(ctx, exec, *configFile, *resources, *baseURI)
+	if err != nil {
+		return err
 	}
 
 	result, err := keyinfo.Parse(ctx, doc, selected, opt)
@@ -118,6 +100,47 @@ func runKeyInfo(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	}
 
 	return jsonOutput(ctx, *output, stdout, map[string]any{fieldStatus: statusUnverified, "key_names": result.KeyNames(), "candidates": candidates, "x509_groups": len(result.X509Groups()), "external_uris": result.ExternalURIs()})
+}
+
+func inspectionKeyInfoOptions(ctx context.Context, exec *executionFlags, configFile, resources, baseURI string) (keyinfo.Options, error) {
+	opt := keyinfo.Options{}
+	if baseURI != "" && resources == "" {
+		return opt, usageError("-base-uri requires -resources")
+	}
+
+	if configFile != "" {
+		if err := readJSONFile(ctx, configFile, &opt); err != nil {
+			return opt, err
+		}
+
+		if opt.External != nil {
+			return opt, usageError("external KeyInfo access must use -resources")
+		}
+	}
+
+	if resources != "" {
+		entries, resolver, err := loadResourcesContext(ctx, resources)
+		if err != nil {
+			return opt, err
+		}
+
+		if err := validateResourceAllowlist(entries); err != nil {
+			return opt, err
+		}
+
+		opt.External = &keyinfo.ExternalResources{AllowedURIs: detachedResourceURIs(entries), Resolver: resolver, BaseURI: baseURI}
+	}
+
+	if opt.RetrievalProcessing != nil && exec.programs != "" {
+		processing, err := exec.processing(ctx, 0, "")
+		if err != nil {
+			return opt, err
+		}
+
+		opt.RetrievalProcessing.Extension = processing.Extension
+	}
+
+	return opt, nil
 }
 
 func buildKeyInfoCLI(ctx context.Context, stdout io.Writer, output string, spec keyinfo.Template, keys, certs []string, format string) error {

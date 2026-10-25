@@ -148,6 +148,17 @@ type coreCountSigner struct {
 	calls int
 }
 
+type legacySigningProbe struct {
+	key   crypto.PublicKey
+	calls int
+}
+
+func (s *legacySigningProbe) Public() crypto.PublicKey { return s.key }
+func (s *legacySigningProbe) Sign(io.Reader, []byte, crypto.SignerOpts) ([]byte, error) {
+	s.calls++
+	return nil, xmldsig.ErrAlgorithm
+}
+
 func (s *coreCountSigner) Sign(r io.Reader, d []byte, o crypto.SignerOpts) ([]byte, error) {
 	s.calls++
 	return s.Signer.Sign(r, d, o)

@@ -6,6 +6,7 @@ const (
 	flagEnabledReferenceUris = "--enabled-reference-uris"
 	flagIDAttrID             = "--id-attr:ID"
 	flagPubkeyPem            = "--pubkey-pem"
+	flagNativeOutput         = "--output"
 	flagO2                   = "-O2"
 	flagBinary               = "-binary"
 	flagCert                 = "-cert"

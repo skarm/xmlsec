@@ -686,7 +686,7 @@ func TestProgramFingerprintWorkingStorage(t *testing.T) {
 	}
 }
 
-func TestExternalTransformCacheAndResultOwnership(t *testing.T) {
+func TestExternalTransformExecutionAndResultOwnership(t *testing.T) {
 	key, _ := nativeIOSigner(t)
 	const uri = "urn:cache:source"
 	var refs []xmldsig.ReferenceTemplate
@@ -708,12 +708,17 @@ func TestExternalTransformCacheAndResultOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Every extension runs in its Reference's original context, both while
+	// filling the template and during the independent signing self-check.
+	if opened != 2*len(refs) || closed != opened {
+		t.Fatal("signing skipped extension execution or leaked a reader", opened, closed)
+	}
 	result, err := xmldsig.VerifySignature(t.Context(), signed, signed.Root(), key.Public(), options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opened != 6 || closed != opened {
-		t.Fatal("equivalent/different programs changed cache or reader lifecycle", opened, closed)
+	if opened != 3*len(refs) || closed != opened {
+		t.Fatal("verification skipped extension execution or leaked a reader", opened, closed)
 	}
 	for i, ref := range result.References() {
 		want := "onebody"

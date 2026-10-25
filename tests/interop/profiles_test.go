@@ -5,19 +5,245 @@ package interop_test
 import (
 	"bytes"
 	"compress/flate"
+	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/skarm/xmlsec/c14n"
+	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/reference"
+	"github.com/skarm/xmlsec/xmldsig"
 )
 
 const nameFresh = "fresh"
+
+const uriAttachment = "urn:attachment"
+
+const uriManifest = "urn:manifest"
+
+func TestXMLSecExternalManifestURIContext(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	key := generateKey(t, fixture.work, nameRsaSha256)
+	_, privateArg := nativeKeyArgs(nameRsa, "")
+
+	const resourceURI = "urn:external#manifest"
+
+	payload := []byte("external fragment payload")
+	digest := sha256.Sum256(payload)
+	manifestXML := `<ds:Manifest xmlns:ds="` + ds + `" Id="manifest"><ds:Reference URI="urn:attachment"><ds:DigestMethod Algorithm="` + xmldsig.SHA256 + `"/><ds:DigestValue>` + base64.StdEncoding.EncodeToString(digest[:]) + `</ds:DigestValue></ds:Reference></ds:Manifest>`
+	manifest := xmlDoc(t, []byte(manifestXML))
+
+	var selectedXML bytes.Buffer
+	if err := c14n.WriteElement(t.Context(), &selectedXML, manifest.Root(), c14n.Options{Algorithm: c14n.Canonical10}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The native engine receives the original XML resource and performs its own
+	// fragment selection. The Go resolver supplies the identified subresource
+	// as octets, as required by the external-URI processing contract.
+	nativeManifest := write(t, filepath.Join(fixture.work, "fragment-manifest.xml"), []byte(`<!DOCTYPE ds:Manifest [<!ATTLIST ds:Manifest Id ID #REQUIRED>]>`+manifestXML))
+	payloadPath := write(t, filepath.Join(fixture.work, "fragment-payload.bin"), payload)
+	opt := xmldsig.SignatureOptions{
+		ExpectedURIs: []string{resourceURI},
+		Manifests:    xmldsig.ManifestPolicy{Mode: xmldsig.ManifestRecursive, AllowExternal: true},
+		External: &xmldsig.ExternalReferences{AllowedURIs: []string{resourceURI, uriAttachment}, Resolver: xmldsig.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
+			switch uri {
+			case resourceURI:
+				return io.NopCloser(bytes.NewReader(selectedXML.Bytes())), ctx.Err()
+			case uriAttachment:
+				return os.Open(payloadPath)
+			default:
+				return nil, xmldsig.ErrPolicy
+			}
+		})},
+	}
+
+	draft, selectedSignature, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{
+		SignatureMethod: key.method,
+		References:      []xmldsig.ReferenceTemplate{{URI: resourceURI, Type: xmldsig.ManifestType, Transforms: []reference.Transform{{Algorithm: c14n.Canonical10}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	template := write(t, filepath.Join(fixture.work, "fragment-template.xml"), xmlBytes(t, draft))
+
+	signed, err := xmldsig.SignTemplate(t.Context(), draft, selectedSignature, key.signer, xmldsig.TemplateSignOptions{Validation: opt})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ours := write(t, filepath.Join(fixture.work, "fragment-go.xml"), xmlBytes(t, signed))
+	nativeArgs := []string{"--url-map:urn:external", nativeManifest, "--url-map:urn:attachment", payloadPath}
+	native(t, fixture, true, nameVerify, append(append([]string{flagPubkeyPem, key.public}, nativeArgs...), ours)...)
+	theirs := filepath.Join(fixture.work, "fragment-native.xml")
+	native(t, fixture, true, nameSign, append(append([]string{privateArg, key.private, flagNativeOutput, theirs}, nativeArgs...), template)...)
+	nativeDoc := xmlDoc(t, read(t, theirs))
+
+	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), nativeDoc, nativeDoc.Root(), key.signer.Public(), opt)
+	if err != nil || result == nil || len(result.Manifests()) != 1 || report.ManifestValidation != xmldsig.Valid {
+		t.Fatal(result, report, err)
+	}
+
+	write(t, payloadPath, []byte("changed fragment payload"))
+
+	result, report, err = xmldsig.VerifySignatureDetailed(t.Context(), nativeDoc, nativeDoc.Root(), key.signer.Public(), opt)
+	if !errors.Is(err, xmldsig.ErrDigest) || result != nil || report.References[0].Status != xmldsig.Valid {
+		t.Fatal(result, report, err)
+	}
+
+	// xmlsec1 validates this external Manifest's incoming Reference, but does
+	// not recursively discover its children. Record that boundary explicitly.
+	native(t, fixture, true, nameVerify, append(append([]string{flagPubkeyPem, key.public}, nativeArgs...), ours)...)
+
+	changedDigest := sha256.Sum256([]byte("different nested digest"))
+	changedManifest := strings.Replace(manifestXML, base64.StdEncoding.EncodeToString(digest[:]), base64.StdEncoding.EncodeToString(changedDigest[:]), 1)
+	write(t, nativeManifest, []byte(`<!DOCTYPE ds:Manifest [<!ATTLIST ds:Manifest Id ID #REQUIRED>]>`+changedManifest))
+	native(t, fixture, false, nameVerify, append(append([]string{flagPubkeyPem, key.public}, nativeArgs...), ours)...)
+}
+
+func TestXMLSecRelativeURIContext(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	key := generateKey(t, fixture.work, nameRsaSha256)
+	_, privateArg := nativeKeyArgs(nameRsa, "")
+
+	const resolved = "https://example.test/payload.bin?version=1"
+
+	payload := write(t, filepath.Join(fixture.work, "relative-payload.bin"), []byte("relative resource"))
+	input := xmlDoc(t, []byte(`<message xml:base="https://example.test/packages/"/>`))
+
+	draft, selectedSignature, err := xmldsig.BuildTemplate(t.Context(), input, input.Root(), xmldsig.SignatureTemplate{SignatureMethod: key.method, References: []xmldsig.ReferenceTemplate{{URI: "../payload.bin?version=1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	opt := xmldsig.SignatureOptions{ExpectedURIs: []string{"../payload.bin?version=1"}, External: &xmldsig.ExternalReferences{BaseURI: "https://example.test/messages/signature.xml", AllowedURIs: []string{resolved}, Resolver: xmldsig.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		if uri != resolved {
+			return nil, xmldsig.ErrPolicy
+		}
+
+		return os.Open(payload)
+	})}}
+
+	signed, err := xmldsig.SignTemplate(t.Context(), draft, selectedSignature, key.signer, xmldsig.TemplateSignOptions{Validation: opt})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ours := write(t, filepath.Join(fixture.work, "relative-go.xml"), xmlBytes(t, signed))
+	args := []string{"--url-map:" + resolved, payload}
+	// xmlsec1's CLI opens the literal relative URI in this profile instead of
+	// applying inherited xml:base. Keep that difference visible, then exchange
+	// identical octets through an explicit literal mapping in the native adapter.
+	native(t, fixture, false, nameVerify, append(append([]string{flagPubkeyPem, key.public}, args...), ours)...)
+	args = []string{"--url-map:../payload.bin?version=1", payload}
+	native(t, fixture, true, nameVerify, append(append([]string{flagPubkeyPem, key.public}, args...), ours)...)
+	template := write(t, filepath.Join(fixture.work, "relative-template.xml"), xmlBytes(t, draft))
+	theirs := filepath.Join(fixture.work, "relative-native.xml")
+	native(t, fixture, true, nameSign, append(append([]string{privateArg, key.private, flagNativeOutput, theirs}, args...), template)...)
+
+	nativeDoc := xmlDoc(t, read(t, theirs))
+	if result, _, err := xmldsig.VerifySignatureDetailed(t.Context(), nativeDoc, xmldsig.Signatures(nativeDoc)[0], key.signer.Public(), opt); err != nil || result == nil || result.References()[0].ResourceURI() != resolved {
+		t.Fatal(result, err)
+	}
+
+	write(t, payload, []byte("changed relative resource"))
+	native(t, fixture, false, nameVerify, append(append([]string{flagPubkeyPem, key.public}, args...), ours)...)
+
+	if result, _, err := xmldsig.VerifySignatureDetailed(t.Context(), nativeDoc, xmldsig.Signatures(nativeDoc)[0], key.signer.Public(), opt); !errors.Is(err, xmldsig.ErrDigest) || result != nil {
+		t.Fatal(result, err)
+	}
+}
+
+func TestExternalManifestInterop(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "portable")
+	key := generateKey(t, fixture.work, nameRsaSha256)
+	theirs := filepath.Join(fixture.work, "jdk-external.xml")
+	manifest := filepath.Join(fixture.work, "external-manifest.xml")
+	payload := write(t, filepath.Join(fixture.work, "external-payload.bin"), []byte("external Manifest payload\x00\xff"))
+	java(t, fixture, "ManifestOracle", "sign-external", key.private, theirs, manifest, payload, key.method)
+	verifyJava(t, java(t, fixture, "ManifestOracle", "verify-external", key.public, theirs, manifest, payload), true)
+	paths := map[string]string{uriManifest: manifest, uriAttachment: payload}
+	options := xmldsig.SignatureOptions{
+		Manifests: xmldsig.ManifestPolicy{Mode: xmldsig.ManifestRecursive, AllowExternal: true}, ExpectedURIs: []string{uriManifest},
+		External: &xmldsig.ExternalReferences{AllowedURIs: []string{uriManifest, uriAttachment}, Resolver: xmldsig.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+
+			path, ok := paths[uri]
+			if !ok {
+				return nil, xmldsig.ErrPolicy
+			}
+
+			return os.Open(path)
+		})},
+	}
+
+	doc, err := document.Parse(t.Context(), read(t, theirs), document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), doc, doc.Root(), key.signer.Public(), options)
+	if err != nil || result == nil || len(result.Manifests()) != 1 || len(result.Manifests()[0].References()) != 1 || report.ManifestValidation != xmldsig.Valid {
+		t.Fatal(result, report, err)
+	}
+
+	resources := write(t, filepath.Join(fixture.work, "resources.json"), []byte(`[{"uri":"urn:manifest","path":"external-manifest.xml"},{"uri":"urn:attachment","path":"external-payload.bin"}]`))
+	cli := binary(t, fixture, "xmlsec")
+	cliReport, _ := command(t, fixture, true, nil, cli, "verify-core", "-in", theirs, "-key", key.public, "-signature-index", "0", "-manifests", "recursive-external", "-resources", resources, "-expect-uri", uriManifest)
+	verifyReport(t, cliReport, true)
+
+	draft := xmlDoc(t, read(t, theirs))
+	for _, value := range append(nodes(tree.Root(draft), ds, "SignatureValue"), nodes(tree.Root(draft), ds, "DigestValue")...) {
+		value.Children = nil
+	}
+
+	template, err := document.Parse(t.Context(), xmlBytes(t, draft), document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	signed, err := xmldsig.SignTemplate(t.Context(), template, template.Root(), key.signer, xmldsig.TemplateSignOptions{Validation: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := signed.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ours := write(t, filepath.Join(fixture.work, "go-external.xml"), raw)
+	verifyJava(t, java(t, fixture, "ManifestOracle", "verify-external", key.public, ours, manifest, payload), true)
+	write(t, payload, []byte("changed external payload"))
+
+	result, report, err = xmldsig.VerifySignatureDetailed(t.Context(), signed, signed.Root(), key.signer.Public(), options)
+	if !errors.Is(err, xmldsig.ErrDigest) || result != nil || report.SignatureValue != xmldsig.Valid || report.References[0].Status != xmldsig.Valid {
+		t.Fatal(result, report, err)
+	}
+
+	verifyJava(t, java(t, fixture, "ManifestOracle", "verify-external", key.public, ours, manifest, payload), false)
+}
 
 func TestManifestProfiles(t *testing.T) {
 	fixture := newInteropFixture(t)
@@ -316,7 +542,7 @@ func referenceInput(t *testing.T, fixture *interopFixture, d *tree.Document, sig
 		target *tree.Node
 		octets []byte
 	)
-	if uri == "urn:attachment" {
+	if uri == uriAttachment {
 		octets = bytes.Clone(attachment)
 	} else if uri == "" {
 		target = tree.Root(d)

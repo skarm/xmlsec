@@ -21,6 +21,7 @@ func (p *parser) configureKeyData() error {
 	for _, name := range p.options.AllowedKeyData {
 		switch name {
 		case document.Name{Space: Namespace, Local: "KeyName"},
+			document.Name{Space: Namespace, Local: nameDSAKeyValue},
 			document.Name{Space: Namespace, Local: nameRSAKeyValue},
 			document.Name{Space: Namespace11, Local: nameECKeyValue},
 			document.Name{Space: Namespace11, Local: nameDEREncodedKeyValue},

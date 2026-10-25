@@ -582,7 +582,7 @@ func TestDetachedProgramParameters(t *testing.T) {
 		{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: programTrueXPath}}},
 		{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "boolean(//p:value)", Namespaces: map[string]string{"p": uriUrnData}}}},
 		{Algorithm: reference.XPathFilter2, XPath: []reference.XPathExpression{
-			{Expression: "/", Filter: "intersect"},
+			{Expression: "/", Filter: filterIntersect},
 			{Expression: "//p:value", Filter: "union", Namespaces: map[string]string{"p": uriUrnData}},
 			{Expression: "//absent", Filter: "subtract"},
 		}},

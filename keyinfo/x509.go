@@ -1,6 +1,7 @@
 package keyinfo
 
 import (
+	"context"
 	"crypto/x509"
 	"fmt"
 	"strings"
@@ -49,7 +50,7 @@ func (p *parser) x509Data(s *scope, n *tree.Node) error {
 // Certificates also enter the candidate list immediately, in document order.
 func (p *parser) x509DataItem(s *scope, n *tree.Node, group *X509Group) error {
 	switch n.Name {
-	case document.Name{Space: Namespace, Local: "X509Certificate"}:
+	case document.Name{Space: Namespace, Local: nameX509Certificate}:
 		der, err := p.binary(n)
 		if err != nil {
 			return err
@@ -60,7 +61,7 @@ func (p *parser) x509DataItem(s *scope, n *tree.Node, group *X509Group) error {
 		}
 
 		group.certs = append(group.certs, der)
-	case document.Name{Space: Namespace, Local: "X509CRL"}:
+	case document.Name{Space: Namespace, Local: nameX509CRL}:
 		der, err := p.binary(n)
 		if err != nil {
 			return err
@@ -82,7 +83,7 @@ func (p *parser) x509DataItem(s *scope, n *tree.Node, group *X509Group) error {
 		}
 
 		group.subjects = append(group.subjects, name)
-	case document.Name{Space: Namespace, Local: "X509SKI"}:
+	case document.Name{Space: Namespace, Local: nameX509SKI}:
 		keyID, err := p.binary(n)
 		if err != nil {
 			return err
@@ -130,6 +131,10 @@ func (p *parser) x509IssuerSerial(n *tree.Node) (IssuerSerial, error) {
 		return IssuerSerial{}, err
 	}
 
+	return normalizeIssuerSerial(issuer, serial)
+}
+
+func normalizeIssuerSerial(issuer, serial string) (IssuerSerial, error) {
 	serial = strings.Trim(serial, " \t\r\n")
 	serial = strings.TrimPrefix(serial, "+")
 
@@ -151,6 +156,142 @@ func (p *parser) x509IssuerSerial(n *tree.Node) (IssuerSerial, error) {
 	}
 
 	return IssuerSerial{issuer, serial}, nil
+}
+
+func x509SourceBudget(group X509Data, charge func(int) error) error {
+	for _, values := range [][][]byte{group.Certificates, group.CRLs, group.SubjectKeyIdentifiers} {
+		for _, value := range values {
+			if err := charge(len(value)); err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, issuer := range group.IssuerSerials {
+		if err := charge(len(issuer.Issuer)); err != nil {
+			return err
+		}
+
+		if err := charge(len(issuer.Serial)); err != nil {
+			return err
+		}
+	}
+
+	for _, subject := range group.SubjectNames {
+		if err := charge(len(subject)); err != nil {
+			return err
+		}
+	}
+
+	for _, digest := range group.CertificateDigests {
+		if err := charge(len(digest.Algorithm)); err != nil {
+			return err
+		}
+
+		if err := charge(len(digest.Value)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func buildX509Data(ctx context.Context, root *tree.Node, group X509Data) error {
+	n := element(Namespace, "ds", nameX509Data)
+
+	for _, issuer := range group.IssuerSerials {
+		value, err := normalizeIssuerSerial(issuer.Issuer, issuer.Serial)
+		if err != nil {
+			return err
+		}
+
+		pair := element(Namespace, "ds", "X509IssuerSerial")
+		addString(pair, "X509IssuerName", value.Issuer)
+		addString(pair, "X509SerialNumber", value.Serial)
+		add(n, pair)
+	}
+
+	for _, subject := range group.SubjectNames {
+		if strings.TrimSpace(subject) == "" {
+			return ErrInput
+		}
+
+		addString(n, "X509SubjectName", subject)
+	}
+
+	if err := buildX509Blobs(ctx, n, group); err != nil {
+		return err
+	}
+
+	for _, digest := range group.CertificateDigests {
+		size := x509DigestSize(digest.Algorithm)
+		if size == 0 {
+			return fmt.Errorf("%w: certificate digest algorithm", ErrUnsupported)
+		}
+
+		if len(digest.Value) != size {
+			return ErrInput
+		}
+
+		child := element(Namespace11, "dsig11", "X509Digest")
+		set(child, "Algorithm", digest.Algorithm)
+
+		encoded, err := tree.EncodeBase64(ctx, digest.Value)
+		if err != nil {
+			return err
+		}
+
+		addText(child, encoded)
+		add(n, child)
+	}
+
+	add(root, n)
+
+	return ctx.Err()
+}
+
+func addString(parent *tree.Node, local, value string) {
+	n := element(Namespace, "ds", local)
+	addText(n, value)
+	add(parent, n)
+}
+
+func buildX509Blobs(ctx context.Context, node *tree.Node, group X509Data) error {
+	for _, field := range []struct {
+		name   string
+		values [][]byte
+	}{
+		{nameX509Certificate, group.Certificates},
+		{nameX509CRL, group.CRLs},
+		{nameX509SKI, group.SubjectKeyIdentifiers},
+	} {
+		for _, value := range field.values {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+
+			switch field.name {
+			case nameX509Certificate:
+				if _, err := x509.ParseCertificate(value); err != nil {
+					return fmt.Errorf("%w: certificate: %w", ErrInput, err)
+				}
+			case nameX509CRL:
+				if _, err := x509.ParseRevocationList(value); err != nil {
+					return fmt.Errorf("%w: CRL: %w", ErrInput, err)
+				}
+			case nameX509SKI:
+				if len(value) == 0 {
+					return ErrInput
+				}
+			}
+
+			if err := blob(ctx, node, Namespace, "ds", field.name, value); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 func (p *parser) x509Digest(n *tree.Node) (CertificateDigest, error) {

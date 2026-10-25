@@ -28,7 +28,7 @@ public class DetachedOracle {
     }
     static Key key(Path path, boolean privateKey) throws Exception {
         byte[] der = pem(path);
-        for (String algorithm : List.of("RSA", "EC")) {
+        for (String algorithm : List.of("RSA", "EC", "DSA")) {
             try {
                 KeyFactory f = KeyFactory.getInstance(algorithm);
                 return privateKey ? f.generatePrivate(new PKCS8EncodedKeySpec(der))

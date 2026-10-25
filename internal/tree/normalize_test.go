@@ -70,7 +70,7 @@ func TestUnicodeNormalizationConformance(t *testing.T) {
 		for i := range values {
 			var value strings.Builder
 
-			for _, encoded := range strings.Fields(columns[i]) {
+			for encoded := range strings.FieldsSeq(columns[i]) {
 				r, err := strconv.ParseInt(encoded, 16, 32)
 				if err != nil {
 					t.Fatal(err)

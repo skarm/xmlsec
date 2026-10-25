@@ -14,6 +14,8 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const nameRecursiveExternal = "recursive-external"
+
 type repeatedFlag []string
 
 func (v *repeatedFlag) String() string { return strings.Join(*v, ",") }
@@ -26,10 +28,11 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
 
-	keyInfoConfig, keyInfoResources := "", ""
+	keyInfoConfig, keyInfoResources, keyInfoBase := "", "", ""
 	if cmd == nameVerifyKeyInfo {
 		fs.StringVar(&keyInfoConfig, "keyinfo-config", "", "trusted JSON KeyInfo parsing policy")
 		fs.StringVar(&keyInfoResources, "keyinfo-resources", "", "separate trusted URI/path allowlist for KeyInfo retrieval")
+		fs.StringVar(&keyInfoBase, "keyinfo-base-uri", "", "explicit KeyInfo base URI; requires -keyinfo-resources")
 	}
 
 	var keyFlags *privateKeyFlags
@@ -45,11 +48,13 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	idNS := fs.String("id-ns", "", "application ID namespace URI")
 	methods := fs.String(nameC14n, c14n.Exclusive, "comma-separated allowed SignedInfo canonicalization URIs")
 	modern := fs.Bool("modern-algorithms", false, "also permit fixed RSA-PSS, Ed25519 and Ed25519ph")
-	manifests := fs.String("manifests", "none", "Manifest validation: none or recursive")
+	manifests := fs.String("manifests", "none", "Manifest validation: none, recursive or recursive-external")
+	manifestTransforms := fs.Bool("manifest-transforms", false, "follow authenticated Manifest transform results; requires recursive mode")
 	depth := fs.Int("manifest-max-depth", 8, "recursive Manifest depth limit")
 	nodes := fs.Int("manifest-max-nodes", 64, "maximum unique Manifest elements")
 	refs := fs.Int("manifest-max-references", 256, "maximum total direct and nested Reference elements")
 	resources := fs.String("resources", "", "optional trusted JSON URI/path allowlist for external references")
+	baseURI := fs.String("base-uri", "", "explicit absolute signature document URI for relative external references; requires -resources")
 	resourceLimit := fs.Int("max-resource-bytes", 8<<20, "maximum bytes per external resource")
 	totalLimit := fs.Int("max-total-resource-bytes", 32<<20, "maximum fetched source bytes per operation")
 	allowedTransforms := fs.String("allowed-transforms", "", "comma-separated permitted Reference transform URIs")
@@ -100,7 +105,7 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 
 	opt := xmldsig.SignatureOptions{IDAttribute: document.Name{Space: *idNS, Local: *idAttr}, AllowedCanonicalizationMethods: strings.Split(*methods, ","), ExpectedURIs: expected}
 
-	cfg := coreValidationFlags{modern: *modern, resourceLimit: *resourceLimit, totalLimit: *totalLimit, allowedTransforms: *allowedTransforms, maxSignatures: *maxSignatures, idRules: *idRules, requiredIDs: requiredIDs, manifests: *manifests, depth: *depth, nodes: *nodes, references: *refs, resources: *resources, rootRequired: *rootRequired}
+	cfg := coreValidationFlags{modern: *modern, resourceLimit: *resourceLimit, totalLimit: *totalLimit, allowedTransforms: *allowedTransforms, maxSignatures: *maxSignatures, idRules: *idRules, requiredIDs: requiredIDs, manifests: *manifests, depth: *depth, nodes: *nodes, references: *refs, resources: *resources, baseURI: *baseURI, rootRequired: *rootRequired, manifestTransforms: *manifestTransforms}
 
 	opt, err = cfg.options(ctx, doc, exec, opt)
 	if err != nil {
@@ -146,7 +151,7 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 
 	if cmd == nameVerifyKeyInfo {
-		return verifyWithKeyInfoCLI(ctx, doc, signatures[*index], key, opt, keyInfoConfig, keyInfoResources, *output, stdout)
+		return verifyWithKeyInfoCLI(ctx, doc, signatures[*index], key, opt, keyInfoConfig, keyInfoResources, keyInfoBase, *output, stdout)
 	}
 
 	result, report, verifyErr := xmldsig.VerifySignatureDetailed(ctx, doc, signatures[*index], key, opt)
@@ -188,14 +193,18 @@ func runCorePreserve(ctx context.Context, preserve repeatedFlag, signatures []do
 }
 
 type coreValidationFlags struct {
-	modern, rootRequired                                               bool
+	modern, rootRequired, manifestTransforms                           bool
 	resourceLimit, totalLimit, maxSignatures, depth, nodes, references int
-	allowedTransforms, idRules, manifests, resources                   string
+	allowedTransforms, idRules, manifests, resources, baseURI          string
 	requiredIDs                                                        []string
 }
 
 func (c coreValidationFlags) options(ctx context.Context, doc *document.Document, exec *executionFlags, opt xmldsig.SignatureOptions) (xmldsig.SignatureOptions, error) {
 	var err error
+
+	if c.baseURI != "" && c.resources == "" {
+		return opt, usageError("-base-uri requires -resources")
+	}
 
 	opt.Policy, err = exec.signaturePolicy(c.modern)
 	if err != nil {
@@ -228,10 +237,22 @@ func (c coreValidationFlags) options(ctx context.Context, doc *document.Document
 
 	switch c.manifests {
 	case "none":
-	case "recursive":
-		opt.Manifests = xmldsig.ManifestPolicy{Mode: xmldsig.ManifestRecursive, MaxDepth: c.depth, MaxManifests: c.nodes, MaxReferences: c.references}
+	case "recursive", nameRecursiveExternal:
+		if c.manifests == nameRecursiveExternal && c.resources == "" {
+			return opt, errors.New("external Manifest validation requires -resources")
+		}
+
+		opt.Manifests = xmldsig.ManifestPolicy{Mode: xmldsig.ManifestRecursive, AllowExternal: c.manifests == nameRecursiveExternal, MaxDepth: c.depth, MaxManifests: c.nodes, MaxReferences: c.references}
 	default:
-		return opt, errors.New("-manifests must be none or recursive")
+		return opt, errors.New("-manifests must be none, recursive or recursive-external")
+	}
+
+	if c.manifestTransforms {
+		if opt.Manifests.Mode != xmldsig.ManifestRecursive {
+			return opt, usageError("-manifest-transforms requires recursive Manifest mode")
+		}
+
+		opt.Manifests.AllowTransformed = true
 	}
 
 	if c.resources != "" {
@@ -239,6 +260,8 @@ func (c coreValidationFlags) options(ctx context.Context, doc *document.Document
 		if err != nil {
 			return opt, err
 		}
+
+		opt.External.BaseURI = c.baseURI
 	}
 
 	if c.rootRequired {

@@ -48,6 +48,8 @@ type TemplateSignOptions struct {
 // operation. Self-verification is performed after serialization and reparsing.
 // All byte/node budgets apply per verification/generation pass, not as a single
 // budget shared with the extra preservation and self-verification passes.
+// Explicit external Manifest graphs are checked before the private signer call,
+// using a separate processing budget and the same bounded resource-read cache.
 //
 // AdaptContextSigner passes context to capable providers; plain crypto.Signer
 // has no cancellation parameter and its blocking call cannot be interrupted. Like other
@@ -145,6 +147,10 @@ func signTemplate(ctx context.Context, doc *document.Document, selected document
 
 	budget, err := fillTemplateDigests(ctx, out, plan)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := validateGeneratedManifests(ctx, out, plan); err != nil {
 		return nil, err
 	}
 
@@ -338,6 +344,7 @@ func fillTemplateDigests(ctx context.Context, out *document.Document, plan *core
 		}
 
 		replaceValue(task.ref.digestNode, base64.StdEncoding.EncodeToString(checked.digest))
+		task.ref.digest = checked.digest
 	}
 
 	return budget, nil

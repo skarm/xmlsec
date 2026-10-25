@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+
+	// #nosec G406 -- Explicit bounded legacy compatibility only.
+	"crypto/dsa" //nolint:staticcheck // XMLDSig 1.1 requires legacy DSA verification; generation is disabled.
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
+	_ "crypto/sha1" // #nosec G505 -- Explicit legacy policy only; disabled in FIPS mode.
 	_ "crypto/sha256"
 	_ "crypto/sha512"
 	"encoding/asn1"
@@ -24,6 +29,12 @@ const (
 	Namespace = "http://www.w3.org/2000/09/xmldsig#"
 	// EnvelopedSignature identifies the transform that removes its containing Signature.
 	EnvelopedSignature = Namespace + "enveloped-signature"
+	// SHA1 is the legacy SHA-1 digest URI. It requires an explicit compatibility policy.
+	SHA1 = Namespace + "sha1"
+	// DSASHA1 is the legacy DSA-SHA1 URI, supported for verification only.
+	DSASHA1 = Namespace + "dsa-sha1"
+	// RSASHA1 is the legacy RSA-SHA1 URI, supported for verification only.
+	RSASHA1 = Namespace + "rsa-sha1"
 	// SHA256 is the SHA-256 digest algorithm URI.
 	SHA256 = "http://www.w3.org/2001/04/xmlenc#sha256"
 	// SHA384 is the SHA-384 digest algorithm URI.
@@ -76,6 +87,12 @@ var (
 
 func hashForDigest(uri string) (crypto.Hash, error) {
 	switch uri {
+	case SHA1:
+		if fips140.Enabled() {
+			return 0, fmt.Errorf("%w: legacy SHA-1 is disabled in FIPS mode", ErrPolicy)
+		}
+
+		return crypto.SHA1, nil
 	case SHA256:
 		return crypto.SHA256, nil
 	case SHA384:
@@ -89,6 +106,12 @@ func hashForDigest(uri string) (crypto.Hash, error) {
 
 func signatureAlgorithm(uri string) (crypto.Hash, bool, error) {
 	switch uri {
+	case DSASHA1, RSASHA1, HMACSHA1:
+		if fips140.Enabled() {
+			return 0, false, fmt.Errorf("%w: legacy methods are disabled in FIPS mode", ErrPolicy)
+		}
+
+		return crypto.SHA1, false, nil
 	case Ed25519:
 		return 0, false, nil
 	case RSASHA256, RSAPSSSHA256, RSAPSS, HMACSHA256:
@@ -149,8 +172,16 @@ func validateKey(key crypto.PublicKey, p Policy) error {
 		if len(k) != ed25519.PublicKeySize {
 			return fmt.Errorf("%w: Ed25519 public key size", ErrKey)
 		}
+	case *dsa.PublicKey:
+		if fips140.Enabled() {
+			return fmt.Errorf("%w: legacy DSA is disabled in FIPS mode", ErrPolicy)
+		}
+
+		if err := signature.LegacyDSAKey(k); err != nil {
+			return fmt.Errorf("%w: invalid legacy DSA public key", ErrKey)
+		}
 	default:
-		return fmt.Errorf("%w: expected RSA, ECDSA or Ed25519 public key", ErrKey)
+		return fmt.Errorf("%w: unsupported public key type", ErrKey)
 	}
 
 	return nil
@@ -165,6 +196,8 @@ func matchKeyAlgorithm(uri string, key crypto.PublicKey) error {
 	ok := false
 	if uri == Ed25519 || uri == Ed25519ph {
 		_, ok = key.(ed25519.PublicKey)
+	} else if uri == DSASHA1 {
+		_, ok = key.(*dsa.PublicKey)
 	} else if ec {
 		_, ok = key.(*ecdsa.PublicKey)
 	} else {
@@ -183,6 +216,10 @@ func isPSS(uri string) bool { return uri == RSAPSSSHA256 || uri == RSAPSSSHA384 
 func signPreparedValue(ctx context.Context, uri string, signer crypto.Signer, pub crypto.PublicKey, h crypto.Hash, digest []byte) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+
+	if uri == DSASHA1 || uri == RSASHA1 {
+		return nil, fmt.Errorf("%w: legacy signature generation is disabled", ErrPolicy)
 	}
 
 	var opts crypto.SignerOpts = h
@@ -251,6 +288,14 @@ func verifyPreparedValue(uri string, pub crypto.PublicKey, h crypto.Hash, digest
 		r, s := new(big.Int).SetBytes(sig[:n]), new(big.Int).SetBytes(sig[n:])
 		if !ecdsa.Verify(k, digest, r, s) {
 			return fmt.Errorf("%w: ECDSA", ErrSignature)
+		}
+	case *dsa.PublicKey:
+		if uri != DSASHA1 || h != crypto.SHA1 || len(digest) != 20 || len(sig) != 40 {
+			return fmt.Errorf("%w: DSA-SHA1 requires fixed-width r || s", ErrSignature)
+		}
+
+		if !dsa.Verify(k, digest, new(big.Int).SetBytes(sig[:20]), new(big.Int).SetBytes(sig[20:])) {
+			return fmt.Errorf("%w: DSA", ErrSignature)
 		}
 	default:
 		return ErrKey

@@ -10,14 +10,163 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/skarm/xmlsec/c14n"
+	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/keyinfo"
+	"github.com/skarm/xmlsec/reference"
+	"github.com/skarm/xmlsec/transform"
 )
 
-const uriUrnKey = "urn:key"
+const (
+	uriUrnKey    = "urn:key"
+	prefixDSig11 = "dsig11"
+	uriChanged   = "urn:changed"
+)
+
+func TestKeyInfoURIContexts(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		t.Run(strconv.FormatBool(explicit), func(t *testing.T) { testKeyInfoURIContext(t, explicit) })
+	}
+}
+
+func testKeyInfoURIContext(t *testing.T, explicit bool) {
+	t.Helper()
+
+	const (
+		base  = "https://example.test/messages/signature.xml"
+		outer = "https://example.test/keys/bundle.xml#key"
+		leaf  = "https://example.test/keys/nested.xml?version=1#leaf"
+	)
+
+	key := ec(t, elliptic.P256())
+
+	remote := wrap(derXML(t, &key.PublicKey))
+	options := keyinfo.Options{}
+
+	if explicit {
+		processing := reference.DefaultOptions()
+		options.RetrievalProcessing = &processing
+	}
+
+	resources := map[string]string{outer: wrap(`<k:KeyInfoReference URI="nested.xml?version=1#leaf"/>`), leaf: remote}
+	calls := map[string]int{}
+
+	var readers []*reader
+
+	options.External = &keyinfo.ExternalResources{BaseURI: base, AllowedURIs: []string{outer, leaf}, Resolver: resolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+		calls[uri]++
+
+		value, ok := resources[uri]
+		if !ok {
+			t.Fatal("unexpected URI", uri)
+		}
+		// Configuration belongs to the operation after entry, even when a
+		// callback mutates every caller-owned URI setting.
+		options.External.BaseURI = "https://changed.test/"
+		options.External.AllowedURIs[1] = uriChanged
+		stream := &reader{read: strings.NewReader(value).Read}
+		readers = append(readers, stream)
+
+		return stream, nil
+	})}
+
+	info, err := keyinfo.Build(t.Context(), keyinfo.Template{KeyInfoReferences: []string{"bundle.xml#key"}, RetrievalMethods: []keyinfo.RetrievalMethod{{URI: "./bundle.xml#key"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc := parseXML(t, `<message xml:base="../keys/">`+asXML(t, info)+`</message>`)
+
+	result, err := keyinfo.Parse(t.Context(), doc, doc.Root().Children()[0], options)
+	if err != nil || len(result.Candidates()) != 2 || calls[outer] != 1 || calls[leaf] != 1 || len(calls) != 2 {
+		t.Fatal("nested URI context/cache", err, calls)
+	}
+
+	for _, candidate := range result.Candidates() {
+		if candidate.ResourceURI() != leaf || !bytes.Equal(candidate.SPKI(), mustSPKI(t, &key.PublicKey)) {
+			t.Fatal("resolved key identity changed")
+		}
+	}
+
+	for _, stream := range readers {
+		if !stream.closed {
+			t.Fatal("resource was not closed")
+		}
+	}
+
+	// Resolved aliases must identify the same graph node, including when
+	// transformed snapshots are used by the explicit processing profile.
+	resources[leaf] = wrap(`<k:KeyInfoReference URI="./bundle.xml#key"/>`)
+	options.External.BaseURI = base
+	options.External.AllowedURIs = []string{outer, leaf}
+
+	clear(calls)
+
+	if result, err := keyinfo.Parse(t.Context(), doc, doc.Root().Children()[0], options); result != nil || !errors.Is(err, keyinfo.ErrCycle) || calls[outer] != 1 || calls[leaf] != 1 {
+		t.Fatal("resolved cycle", err, calls)
+	}
+}
+
+func TestKeyInfoURIContextPolicy(t *testing.T) {
+	const (
+		base    = "https://example.test/messages/signature.xml"
+		allowed = "https://example.test/messages/key.xml#selected"
+	)
+
+	noRead := resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+		t.Fatal("I/O preceded URI preflight")
+		return nil, nil
+	})
+	for _, value := range []string{"relative", "urn:opaque", base + "#fragment", "https://user:secret@example.test/key", "https://example.test/%xy", strings.Repeat("x", 8193)} {
+		options := keyinfo.Options{External: &keyinfo.ExternalResources{BaseURI: value, AllowedURIs: []string{allowed}, Resolver: noRead}}
+		requireErr(t, wrap(`<ds:KeyName>hint</ds:KeyName>`), options, keyinfo.ErrPolicy)
+	}
+
+	options := keyinfo.Options{External: &keyinfo.ExternalResources{BaseURI: base, AllowedURIs: []string{allowed}, Resolver: noRead}}
+	for _, body := range []string{
+		`<k:KeyInfoReference URI="key.xml#selected"/><k:KeyInfoReference URI="denied.xml"/>`,
+		`<k:KeyInfoReference URI="key.xml#selected"/><ds:RetrievalMethod URI="denied.xml"/>`,
+	} {
+		requireErr(t, wrap(body), options, keyinfo.ErrPolicy)
+	}
+
+	for _, uri := range []string{"bad%xx", "key.xml#one#two", `key\file`, "key file"} {
+		requireErr(t, wrap(`<k:KeyInfoReference URI="`+uri+`"/>`), options, keyinfo.ErrInput)
+	}
+
+	options.External.BaseURI = ""
+	requireErr(t, wrap(`<k:KeyInfoReference URI="key.xml#selected"/>`), options, keyinfo.ErrPolicy)
+
+	key := ec(t, elliptic.P256())
+	doc := parseXML(t, `<message xml:base="https://elsewhere.test/"><ds:KeyInfo xmlns:ds="`+ns+`" xmlns:k="`+ns11+`"><k:KeyInfoReference URI="#local"/></ds:KeyInfo><ds:KeyInfo xmlns:ds="`+ns+`" xmlns:k="`+ns11+`" Id="local">`+derXML(t, &key.PublicKey)+`</ds:KeyInfo></message>`)
+	options.External.BaseURI = base
+
+	result, err := keyinfo.Parse(t.Context(), doc, doc.Root().Children()[0], options)
+	if err != nil || len(result.Candidates()) != 1 || result.Candidates()[0].ResourceURI() != "" || len(result.ExternalURIs()) != 0 {
+		t.Fatal("same-document scope changed under xml:base", err)
+	}
+
+	// Complete fragment identities reach the resolver, also for binary keys.
+	der := cert(t, key)
+	options.External.Resolver = resolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+		if uri != allowed {
+			t.Fatal("fragment was discarded", uri)
+		}
+
+		return io.NopCloser(bytes.NewReader(der)), nil
+	})
+	doc = parseXML(t, wrap(`<ds:RetrievalMethod URI="key.xml#selected" Type="`+keyinfo.RawX509Certificate+`"/>`))
+
+	result, err = keyinfo.Parse(t.Context(), doc, doc.Root(), options)
+	if err != nil || len(result.Candidates()) != 1 || result.Candidates()[0].ResourceURI() != allowed {
+		t.Fatal("raw-certificate URI context", err)
+	}
+}
 
 func TestRetrievalTypesAndPreflight(t *testing.T) {
 	k := ec(t, elliptic.P256())
@@ -148,3 +297,355 @@ func TestRawCertificateRetainsFinalReadError(t *testing.T) {
 		t.Fatal("resource failure yielded key candidates", result, err, source.closed)
 	}
 }
+
+func TestRetrievalTransformChains(t *testing.T) {
+	key := ec(t, elliptic.P256())
+	keyXML := `<k:DEREncodedKeyValue xmlns:k="` + ns11 + `" Id="shared">` + enc(mustSPKI(t, &key.PublicKey)) + `</k:DEREncodedKeyValue>`
+
+	certificate := cert(t, key)
+	for _, test := range []struct {
+		name, uri, typ, local string
+		input                 []byte
+		chain                 []reference.Transform
+	}{
+		{"base64-XML", uriUrnKey, ns11 + "DEREncodedKeyValue", "", []byte(enc([]byte(keyXML))), []reference.Transform{{Algorithm: reference.Base64}}},
+		{"two-base64-certificate", uriUrnKey, keyinfo.RawX509Certificate, "", []byte(enc([]byte(enc(certificate)))), []reference.Transform{{Algorithm: reference.Base64}, {Algorithm: reference.Base64}}},
+		{"local-certificate", "#encoded", keyinfo.RawX509Certificate, `<encoded Id="encoded">` + enc(certificate) + `</encoded>`, nil, []reference.Transform{{Algorithm: reference.Base64}}},
+		{"exclusive-prefix-list", uriUrnKey, ns11 + "DEREncodedKeyValue", "", []byte(keyXML), []reference.Transform{{Algorithm: c14n.Exclusive, InclusivePrefixes: []string{"k", "#default"}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			info, err := keyinfo.Build(t.Context(), keyinfo.Template{RetrievalMethods: []keyinfo.RetrievalMethod{{URI: test.uri, Type: test.typ, Transforms: test.chain}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			doc := parseXML(t, `<root>`+asXML(t, info)+test.local+`</root>`)
+			calls := 0
+			options := retrievalOptions(test.chain)
+			options.AdditionalIDRules = []reference.IDAttributeRule{{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Local: "encoded"}}}}
+			options.External = &keyinfo.ExternalResources{AllowedURIs: []string{uriUrnKey}, Resolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				calls++
+				return io.NopCloser(bytes.NewReader(test.input)), nil
+			})}
+
+			result, err := keyinfo.Parse(t.Context(), doc, doc.Root().Children()[0], options)
+			if err != nil || len(result.Candidates()) != 1 || !bytes.Equal(result.Candidates()[0].SPKI(), mustSPKI(t, &key.PublicKey)) {
+				t.Fatal(result, err)
+			}
+
+			wantURI := ""
+			if test.uri == uriUrnKey {
+				wantURI = uriUrnKey
+			}
+
+			if result.Candidates()[0].ResourceURI() != wantURI || calls != len(result.ExternalURIs()) {
+				t.Fatal("resource provenance", result.ExternalURIs(), calls)
+			}
+
+			if test.typ == keyinfo.RawX509Certificate && !bytes.Equal(result.Candidates()[0].CertificateDER(), certificate) {
+				t.Fatal("certificate bytes changed")
+			}
+		})
+	}
+
+	for _, algorithm := range []string{c14n.Canonical10, c14n.Canonical10WithComments, c14n.Canonical11, c14n.Canonical11WithComments, c14n.Exclusive, c14n.ExclusiveWithComments} {
+		t.Run(algorithm, func(t *testing.T) {
+			doc := parseXML(t, `<root>`+wrap(`<ds:RetrievalMethod URI="#shared" Type="`+ns11+`DEREncodedKeyValue"><ds:Transforms><ds:Transform Algorithm="`+algorithm+`"/></ds:Transforms></ds:RetrievalMethod>`)+keyXML+`</root>`)
+			options := retrievalOptions(nil)
+
+			result, err := keyinfo.Parse(t.Context(), doc, doc.Root().Children()[0], options)
+			if err != nil || len(result.Candidates()) != 1 || result.Candidates()[0].Source().Node().Document() == doc {
+				t.Fatal("canonical result was not parsed as a new bounded snapshot", err)
+			}
+		})
+	}
+
+	t.Run("enveloped-containing-signature", func(t *testing.T) {
+		info := wrap(`<ds:RetrievalMethod URI="#shared" Type="` + ns11 + `DEREncodedKeyValue"><ds:Transforms><ds:Transform Algorithm="` + reference.EnvelopedSignature + `"/><ds:Transform Algorithm="` + c14n.Exclusive + `"/></ds:Transforms></ds:RetrievalMethod>`)
+		doc := parseXML(t, `<root><ds:Signature xmlns:ds="`+ns+`">`+info+`</ds:Signature>`+keyXML+`</root>`)
+
+		result, err := keyinfo.Parse(t.Context(), doc, doc.Root().Children()[0].Children()[0], retrievalOptions(nil))
+		if err != nil || len(result.Candidates()) != 1 || !bytes.Equal(result.Candidates()[0].SPKI(), mustSPKI(t, &key.PublicKey)) {
+			t.Fatal("containing signature context was lost", err)
+		}
+	})
+}
+
+func retrievalOptions(programs []reference.Transform) keyinfo.Options {
+	processing := reference.DefaultOptions()
+
+	for _, program := range programs {
+		if reference.IsExtension(program.Algorithm) {
+			processing.AllowedTransforms = append(processing.AllowedTransforms, program.Algorithm)
+		}
+	}
+
+	return keyinfo.Options{RetrievalProcessing: &processing}
+}
+
+func TestRetrievalApprovedPrograms(t *testing.T) {
+	key := ec(t, elliptic.P256())
+
+	target := `<ds:KeyInfo xmlns:ds="` + ns + `" xmlns:dsig11="` + ns11 + `" Id="shared"><dsig11:DEREncodedKeyValue>` + enc(mustSPKI(t, &key.PublicKey)) + `</dsig11:DEREncodedKeyValue></ds:KeyInfo>`
+	for _, test := range []struct {
+		name    string
+		program reference.Transform
+	}{
+		{"XPath", reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: `ancestor-or-self::dsig11:DEREncodedKeyValue`, Namespaces: map[string]string{"ds": ns, prefixDSig11: ns11}}}}},
+		{"Filter2", reference.Transform{Algorithm: reference.XPathFilter2, XPath: []reference.XPathExpression{{Expression: `//dsig11:DEREncodedKeyValue`, Filter: "intersect", Namespaces: map[string]string{"ds": ns, prefixDSig11: ns11, "xf": reference.XPathFilter2}}}}},
+		{"here", reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: `count(here()/ancestor::ds:RetrievalMethod)=1 and ancestor-or-self::dsig11:DEREncodedKeyValue`, Namespaces: map[string]string{"ds": ns, prefixDSig11: ns11}}}}},
+		{"XSLT", reference.Transform{Algorithm: reference.XSLT, Stylesheet: []byte(`<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:ds="` + ns + `" xmlns:dsig11="` + ns11 + `" version="1.0"><xsl:output omit-xml-declaration="yes"/><xsl:template match="/"><xsl:copy-of select="//dsig11:DEREncodedKeyValue"/></xsl:template></xsl:stylesheet>`)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			engine, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{test.program}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			info, err := keyinfo.Build(t.Context(), keyinfo.Template{RetrievalMethods: []keyinfo.RetrievalMethod{{URI: "#shared", Type: ns11 + "DEREncodedKeyValue", Transforms: []reference.Transform{test.program, {Algorithm: c14n.Exclusive}}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			doc := parseXML(t, `<root>`+asXML(t, info)+target+`</root>`)
+			options := retrievalOptions([]reference.Transform{test.program})
+			options.RetrievalProcessing.Extension = engine
+
+			result, err := keyinfo.Parse(t.Context(), doc, doc.Root().Children()[0], options)
+			if err != nil || len(result.Candidates()) != 1 || !bytes.Equal(result.Candidates()[0].SPKI(), mustSPKI(t, &key.PublicKey)) {
+				t.Fatal(result, err)
+			}
+
+			options.RetrievalProcessing.Extension = nil
+			if result, err := keyinfo.Parse(t.Context(), doc, doc.Root().Children()[0], options); result != nil || !errors.Is(err, keyinfo.ErrPolicy) {
+				t.Fatal("program ran without approval", err)
+			}
+		})
+	}
+}
+
+func TestRetrievalTransformPreflight(t *testing.T) {
+	const (
+		start = `<ds:RetrievalMethod URI="urn:key"><ds:Transforms>`
+		end   = `</ds:Transforms></ds:RetrievalMethod>`
+	)
+
+	for _, test := range []struct {
+		name, body string
+		want       error
+	}{
+		{"unknown", `<ds:Transform Algorithm="urn:unknown"/>`, keyinfo.ErrUnsupported},
+		{"no-extension", `<ds:Transform Algorithm="` + reference.XPath + `"><ds:XPath>true()</ds:XPath></ds:Transform>`, keyinfo.ErrPolicy},
+		{"foreign-base64-parameter", `<ds:Transform Algorithm="` + reference.Base64 + `"><ds:XPath>true()</ds:XPath></ds:Transform>`, keyinfo.ErrInput},
+		{"inclusive-on-C14N10", `<ds:Transform Algorithm="` + c14n.Canonical10 + `"><ec:InclusiveNamespaces xmlns:ec="` + c14n.Exclusive + `" PrefixList="ds"/></ds:Transform>`, keyinfo.ErrInput},
+		{"missing-prefix-list", `<ds:Transform Algorithm="` + c14n.Exclusive + `"><ec:InclusiveNamespaces xmlns:ec="` + c14n.Exclusive + `"/></ds:Transform>`, keyinfo.ErrInput},
+		{"empty-transforms", "", keyinfo.ErrInput},
+		{"no-containing-signature", `<ds:Transform Algorithm="` + reference.EnvelopedSignature + `"/>`, keyinfo.ErrInput},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			options := retrievalOptions(nil)
+			options.RetrievalProcessing.AllowedTransforms = append(options.RetrievalProcessing.AllowedTransforms, reference.XPath)
+			options.External = &keyinfo.ExternalResources{AllowedURIs: []string{uriUrnKey}, Resolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				calls++
+				return nil, errors.New("unexpected read")
+			})}
+			// A malformed later sibling is rejected before the first link is read.
+			requireErr(t, wrap(`<ds:RetrievalMethod URI="urn:key"/>`+start+test.body+end), options, test.want)
+
+			if calls != 0 {
+				t.Fatal("read before complete preflight", calls)
+			}
+		})
+	}
+
+	requireErr(t, wrap(start+`<ds:Transform Algorithm="`+c14n.Exclusive+`"/>`+end), keyinfo.Options{}, keyinfo.ErrUnsupported)
+}
+
+func TestRetrievalTransformGraphAndBudgets(t *testing.T) {
+	key := ec(t, elliptic.P256())
+	target := `<k:DEREncodedKeyValue xmlns:k="` + ns11 + `">` + enc(mustSPKI(t, &key.PublicKey)) + `</k:DEREncodedKeyValue>`
+
+	link := `<ds:RetrievalMethod URI="urn:key"><ds:Transforms><ds:Transform Algorithm="` + c14n.Exclusive + `"/></ds:Transforms></ds:RetrievalMethod>`
+	for _, test := range []struct {
+		name, xml, input string
+		limits           keyinfo.Limits
+		want             error
+	}{
+		{"cycle", wrap(link), wrap(link), keyinfo.Limits{}, keyinfo.ErrCycle},
+		{"total-output", wrap(link + link), target, keyinfo.Limits{MaxTransformBytes: len(target) + 16}, keyinfo.ErrLimit},
+		{"node-budget", wrap(link), target, keyinfo.Limits{MaxTransformNodes: 4}, keyinfo.ErrLimit},
+		{"wrong-result-type", wrap(strings.Replace(link, `URI="urn:key"`, `URI="urn:key" Type="`+ns+`X509Data"`, 1)), target, keyinfo.Limits{}, keyinfo.ErrInput},
+		{"multiple-elements", wrap(link), target + target, keyinfo.Limits{}, keyinfo.ErrInput},
+		{"empty-result", wrap(link), "", keyinfo.Limits{}, keyinfo.ErrInput},
+		{"external-bytes", wrap(link), target, keyinfo.Limits{MaxExternalBytes: len(target) - 1}, keyinfo.ErrLimit},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			options := retrievalOptions(nil)
+			options.Limits = test.limits
+			options.External = &keyinfo.ExternalResources{AllowedURIs: []string{uriUrnKey}, Resolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				calls++
+				return io.NopCloser(strings.NewReader(test.input)), nil
+			})}
+			requireErr(t, test.xml, options, test.want)
+
+			if calls != 1 {
+				t.Fatal("resource was not immutable within one parse", calls)
+			}
+		})
+	}
+}
+
+func TestRetrievalResourceSnapshot(t *testing.T) {
+	key := ec(t, elliptic.P256())
+	remote := wrap(derXML(t, &key.PublicKey))
+	link := `<ds:RetrievalMethod URI="urn:key"><ds:Transforms><ds:Transform Algorithm="` + c14n.Exclusive + `"/></ds:Transforms></ds:RetrievalMethod>`
+	doc := parseXML(t, wrap(link+`<k:KeyInfoReference URI="urn:key"/>`+link))
+	calls := 0
+	options := retrievalOptions(nil)
+	options.Limits.MaxExternalResources = 1
+	options.External = &keyinfo.ExternalResources{AllowedURIs: []string{uriUrnKey}, Resolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+		calls++
+		// A resource callback cannot change the already frozen policy.
+		options.RetrievalProcessing.AllowedTransforms[0] = "urn:changed"
+		options.RetrievalProcessing.MaxOutputBytes = 1
+		options.External.AllowedURIs[0] = "urn:changed"
+
+		return io.NopCloser(strings.NewReader(remote)), nil
+	})}
+
+	result, err := keyinfo.Parse(t.Context(), doc, doc.Root(), options)
+	if err != nil || len(result.Candidates()) != 3 || calls != 1 || len(result.ExternalURIs()) != 1 {
+		t.Fatal(result, err, calls)
+	}
+
+	for _, candidate := range result.Candidates() {
+		if candidate.ResourceURI() != uriUrnKey || !bytes.Equal(candidate.SPKI(), mustSPKI(t, &key.PublicKey)) {
+			t.Fatal("resource interpretation changed")
+		}
+	}
+}
+
+func TestRetrievalInputLimitPrecedesBuffering(t *testing.T) {
+	reads := 0
+	source := &reader{read: func(dst []byte) (int, error) {
+		for i := range dst {
+			dst[i] = 'A'
+		}
+
+		reads += len(dst)
+
+		return len(dst), nil
+	}}
+	options := retrievalOptions(nil)
+	options.RetrievalProcessing.MaxInputBytes = 32
+	options.External = &keyinfo.ExternalResources{AllowedURIs: []string{uriUrnKey}, Resolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) { return source, nil })}
+	requireErr(t, wrap(`<ds:RetrievalMethod URI="urn:key" Type="`+keyinfo.RawX509Certificate+`"/>`), options, keyinfo.ErrLimit)
+
+	if reads != 33 || !source.closed {
+		t.Fatal("input budget failed to bound reading", reads, source.closed)
+	}
+}
+
+func TestRetrievalProcessingPolicy(t *testing.T) {
+	doc := parseXML(t, wrap(`<ds:KeyName>untrusted</ds:KeyName>`))
+	for _, processing := range []reference.Options{
+		{MaxInputBytes: -1},
+		{XMLLimits: document.Limits{MaxBytes: 1}},
+		{Signature: doc.Root()},
+		{IDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: "id"}}}},
+	} {
+		result, err := keyinfo.Parse(t.Context(), doc, doc.Root(), keyinfo.Options{RetrievalProcessing: &processing})
+		if result != nil || !errors.Is(err, keyinfo.ErrPolicy) {
+			t.Fatal("invalid processing policy accepted", err)
+		}
+	}
+}
+
+func TestRetrievalRejectsUnapprovedOrEmptyPrograms(t *testing.T) {
+	program := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "false()", Namespaces: map[string]string{"ds": ns, "k": ns11}}}}
+
+	engine, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{program}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	link := `<ds:RetrievalMethod URI="urn:key"><ds:Transforms><ds:Transform Algorithm="` + reference.XPath + `"><ds:XPath>false()</ds:XPath></ds:Transform></ds:Transforms></ds:RetrievalMethod>`
+	options := retrievalOptions([]reference.Transform{program})
+	options.RetrievalProcessing.Extension = engine
+	calls := 0
+	options.External = &keyinfo.ExternalResources{AllowedURIs: []string{uriUrnKey}, Resolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+		calls++
+		return io.NopCloser(strings.NewReader(wrap(`<ds:KeyName>untrusted</ds:KeyName>`))), nil
+	})}
+	requireErr(t, wrap(strings.Replace(link, "false()", "true()", 1)), options, keyinfo.ErrPolicy)
+
+	if calls != 0 {
+		t.Fatal("unapproved program triggered I/O")
+	}
+
+	requireErr(t, wrap(link), options, keyinfo.ErrInput)
+
+	if calls != 1 {
+		t.Fatal(calls)
+	}
+}
+
+func TestRetrievalTransformReaderFailures(t *testing.T) {
+	key := ec(t, elliptic.P256())
+
+	certificate := cert(t, key)
+
+	const stepCancel = "cancel"
+	for _, stage := range []string{"final-read", "close", stepCancel} {
+		t.Run(stage, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			failure := errors.New("resource failure")
+			input := bytes.NewReader([]byte(enc(certificate)))
+			source := &reader{read: func(dst []byte) (int, error) {
+				n, err := input.Read(dst)
+				if input.Len() == 0 {
+					if stage == "final-read" {
+						err = failure
+					}
+
+					if stage == stepCancel {
+						cancel()
+					}
+				}
+
+				return n, err
+			}}
+
+			var stream io.ReadCloser = source
+			if stage == "close" {
+				stream = &retrievalCloseFailure{source: source, err: failure}
+			}
+
+			doc := parseXML(t, wrap(`<ds:RetrievalMethod URI="urn:key" Type="`+keyinfo.RawX509Certificate+`"><ds:Transforms><ds:Transform Algorithm="`+reference.Base64+`"/></ds:Transforms></ds:RetrievalMethod>`))
+			options := retrievalOptions(nil)
+			options.External = &keyinfo.ExternalResources{AllowedURIs: []string{uriUrnKey}, Resolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) { return stream, nil })}
+			result, err := keyinfo.Parse(ctx, doc, doc.Root(), options)
+
+			want := failure
+			if stage == stepCancel {
+				want = context.Canceled
+			}
+
+			if result != nil || !errors.Is(err, want) || !source.closed {
+				t.Fatal("failed stream produced a candidate", err, source.closed)
+			}
+		})
+	}
+}
+
+type retrievalCloseFailure struct {
+	source *reader
+	err    error
+}
+
+func (r *retrievalCloseFailure) Read(dst []byte) (int, error) { return r.source.Read(dst) }
+func (r *retrievalCloseFailure) Close() error                 { _ = r.source.Close(); return r.err }
