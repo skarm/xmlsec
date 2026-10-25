@@ -9,11 +9,93 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
+	"unicode/utf16"
 
 	"github.com/skarm/xmlsec/internal/normalization"
 
 	treepkg "github.com/skarm/xmlsec/internal/tree"
 )
+
+func TestXMLPrologValidation(t *testing.T) {
+	for _, test := range []struct {
+		source string
+		valid  bool
+	}{
+		{`<r/>`, true},
+		{`<r>`, true},
+		{`<r><unfinished`, true},
+		{`<r/><s/>`, true},
+		{`<?xml version="1.0"?><!--ok--><r a="v">`, true},
+		{``, false},
+		{`<?xml version="1.0"?>`, false},
+		{`<r a=>`, false},
+		{`<r a="1" a="2">`, false},
+		{`<p:r>`, false},
+		{`<!DOCTYPE r><r>`, false},
+		{`text<r>`, false},
+		{`<!--invalid--comment--><r>`, false},
+	} {
+		encoded := make([]byte, 2, 2+2*len(test.source))
+		encoded[0], encoded[1] = 0xff, 0xfe
+		for _, value := range utf16.Encode([]rune(test.source)) {
+			encoded = append(encoded, byte(value), byte(value>>8))
+		}
+		for _, data := range [][]byte{[]byte(test.source), encoded} {
+			err := treepkg.CheckXMLProlog(t.Context(), bytes.NewReader(data), treepkg.DefaultLimits(), false)
+			if (err == nil) != test.valid {
+				t.Fatal(test.source, data, err, test.valid)
+			}
+		}
+	}
+	limits := treepkg.DefaultLimits()
+	limits.MaxBytes = 32
+	if err := treepkg.CheckXMLProlog(t.Context(), strings.NewReader(strings.Repeat(" ", 64)+`<r/>`), limits, false); !errors.Is(err, treepkg.ErrLimit) {
+		t.Fatal(err)
+	}
+	if err := treepkg.CheckXMLProlog(t.Context(), iotest.ErrReader(io.ErrClosedPipe), treepkg.DefaultLimits(), false); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := treepkg.CheckXMLProlog(ctx, strings.NewReader(`<r>`), treepkg.DefaultLimits(), false); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+}
+
+func TestParsedElementSourceLines(t *testing.T) {
+	const source = "<r>\n<!--x\n y-->\n<a\n key='x&#xA;\n y'/>\n<![CDATA[x\n y]]>\n<b/>\n</r>"
+	for _, ending := range []string{"\n", "\r\n", "\r"} {
+		input := strings.ReplaceAll(source, "\n", ending)
+		encoded := make([]byte, 2, 2+2*len(input))
+		encoded[0], encoded[1] = 0xff, 0xfe
+		for _, value := range utf16.Encode([]rune(input)) {
+			encoded = append(encoded, byte(value), byte(value>>8))
+		}
+		for _, data := range [][]byte{[]byte(input), encoded} {
+			doc, err := treepkg.ParseReader(t.Context(), bytes.NewReader(data), treepkg.DefaultLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			clone, err := treepkg.Clone(t.Context(), doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tree := range []*treepkg.Document{doc, clone} {
+				root := treepkg.Root(tree)
+				if root.SourceLine != 1 {
+					t.Fatal(ending, root.SourceLine)
+				}
+				lines := map[string]int{"a": 4, "b": 9}
+				for _, node := range root.Children {
+					if node.Kind == treepkg.ElementNode && int(node.SourceLine) != lines[node.Name.Local] {
+						t.Fatal(ending, node.Name, node.SourceLine)
+					}
+				}
+			}
+		}
+	}
+}
 
 func TestLexicalNormalizationOwnsOneCopyAndPreservesReferences(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{

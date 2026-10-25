@@ -27,6 +27,9 @@ const (
 )
 
 func (ec *execContext) applyTemplates(ctx context.Context, node xdm.Node, mode string, paramValues ...map[string]xdm.Sequence) error {
+	initialCall := ec.initialTemplateCall
+	ec.initialTemplateCall = false
+
 	if normalizeNode(node) == nil {
 		return nil
 	}
@@ -42,18 +45,8 @@ func (ec *execContext) applyTemplates(ctx context.Context, node xdm.Node, mode s
 	}
 	defer func() { ec.depth-- }()
 
-	switch mode {
-	case modeCurrent:
-		mode = ec.currentMode
-	case modeUnnamed:
-		mode = "" // the unnamed mode, regardless of default-mode
-	case modeDefault, "":
-		mode = ec.stylesheet.defaultMode
-	}
-	// Normalize #unnamed to "" for consistent template lookup
-	if mode == modeUnnamed {
-		mode = ""
-	}
+	mode, restoreMode := ec.pushMode(mode)
+	defer restoreMode()
 
 	// Collect param values if any
 	var pv map[string]xdm.Sequence
@@ -84,6 +77,12 @@ func (ec *execContext) applyTemplates(ctx context.Context, node xdm.Node, mode s
 	}
 
 	if tmpl != nil {
+		if initialCall {
+			if err := ec.checkInitialTemplateParameters(tmpl); err != nil {
+				return err
+			}
+		}
+
 		return ec.executeTemplate(ctx, tmpl, node, mode, pv)
 	}
 
@@ -146,11 +145,11 @@ func (ec *execContext) findBestTemplate(ctx context.Context, node xdm.Node, mode
 	ec.currentNode = node
 	defer func() { ec.currentNode = savedCurrent }()
 
-	best := ec.findFirstMatch(ctx, ec.stylesheet.modeTemplates[mode], ec.stylesheet.modeIndex[mode], node)
+	best := ec.findFirstMatch(ctx, ec.activeModePackage().modeTemplates[mode], ec.activeModePackage().modeIndex[mode], node)
 
 	// Also check #all mode templates that might not be registered in this mode
 	if best == nil && mode != modeAll {
-		best = ec.findFirstMatch(ctx, ec.stylesheet.modeTemplates[modeAll], ec.stylesheet.modeIndex[modeAll], node)
+		best = ec.findFirstMatch(ctx, ec.activeModePackage().modeTemplates[modeAll], ec.activeModePackage().modeIndex[modeAll], node)
 	}
 
 	if best == nil {
@@ -169,7 +168,7 @@ func (ec *execContext) findBestTemplate(ctx context.Context, node xdm.Node, mode
 }
 
 // findFirstMatch returns the first template in the list that matches the
-// node. idx is ec.stylesheet.modeIndex for the same mode templates was drawn
+// node. idx is ec.activeModePackage().modeIndex for the same mode templates was drawn
 // from; when non-nil the scan visits only the positions the dispatch index
 // cannot rule out (dispatch_index.go candidates), in the same ascending order
 // a plain scan would find them in. idx == nil (a mode list below
@@ -214,14 +213,14 @@ func (ec *execContext) findFirstMatch(ctx context.Context, templates []*template
 			}
 
 			tmpl := templates[pos]
-			if tmpl.Match != nil && tmpl.Match.matchPatternProbe(ctx, ec, node) {
+			if ec.matchTemplatePattern(ctx, tmpl, node, true) {
 				return tmpl
 			}
 		}
 	}
 
 	for _, tmpl := range templates {
-		if tmpl.Match != nil && tmpl.Match.matchPatternProbe(ctx, ec, node) {
+		if ec.matchTemplatePattern(ctx, tmpl, node, true) {
 			return tmpl
 		}
 	}
@@ -253,12 +252,12 @@ func (ec *execContext) onMultipleMatchFail(mode string) bool {
 // hasConflictingMatch checks whether there is another template (besides best)
 // that matches the same node with equal import precedence and priority.
 func (ec *execContext) hasConflictingMatch(ctx context.Context, node xdm.Node, mode string, best *template) bool {
-	if ec.hasConflictingMatchIn(ctx, ec.stylesheet.modeTemplates[mode], ec.stylesheet.modeIndex[mode], node, best) {
+	if ec.hasConflictingMatchIn(ctx, ec.activeModePackage().modeTemplates[mode], ec.activeModePackage().modeIndex[mode], node, best) {
 		return true
 	}
 
 	if mode != modeAll {
-		return ec.hasConflictingMatchIn(ctx, ec.stylesheet.modeTemplates[modeAll], ec.stylesheet.modeIndex[modeAll], node, best)
+		return ec.hasConflictingMatchIn(ctx, ec.activeModePackage().modeTemplates[modeAll], ec.activeModePackage().modeIndex[modeAll], node, best)
 	}
 
 	return false
@@ -350,7 +349,7 @@ func classifyConflictCandidate(ctx context.Context, ec *execContext, tmpl, best 
 		return conflictCandidateNone
 	}
 
-	if tmpl.Match != nil && tmpl.Match.matchPatternProbe(ctx, ec, node) {
+	if ec.matchTemplatePattern(ctx, tmpl, node, true) {
 		return conflictCandidateFound
 	}
 
@@ -362,17 +361,17 @@ func classifyConflictCandidate(ctx context.Context, ec *execContext, tmpl, best 
 func (ec *execContext) findAtomicTemplate(ctx context.Context, item xdm.Item, mode string) (*template, error) {
 	var best *template
 
-	templates := ec.stylesheet.modeTemplates[mode]
+	templates := ec.activeModePackage().modeTemplates[mode]
 	for _, tmpl := range templates {
-		if tmpl.Match != nil && ec.matchAtomicPattern(ctx, tmpl.Match, item) {
+		if tmpl.Match != nil && ec.matchAtomicTemplate(ctx, tmpl, item) {
 			best = tmpl
 			break
 		}
 	}
 
 	if best == nil && mode != modeAll {
-		for _, tmpl := range ec.stylesheet.modeTemplates[modeAll] {
-			if tmpl.Match != nil && ec.matchAtomicPattern(ctx, tmpl.Match, item) {
+		for _, tmpl := range ec.activeModePackage().modeTemplates[modeAll] {
+			if tmpl.Match != nil && ec.matchAtomicTemplate(ctx, tmpl, item) {
 				best = tmpl
 				break
 			}
@@ -415,25 +414,49 @@ func (ec *execContext) hasConflictingAtomicMatch(ctx context.Context, item xdm.I
 				continue
 			}
 
-			if tmpl.Match != nil && ec.matchAtomicPattern(ctx, tmpl.Match, item) {
+			if tmpl.Match != nil && ec.matchAtomicTemplate(ctx, tmpl, item) {
 				return true
 			}
 		}
 
 		return false
 	}
-	if check(ec.stylesheet.modeTemplates[mode]) {
+	if check(ec.activeModePackage().modeTemplates[mode]) {
 		return true
 	}
 
 	if mode != modeAll {
-		return check(ec.stylesheet.modeTemplates[modeAll])
+		return check(ec.activeModePackage().modeTemplates[modeAll])
 	}
 
 	return false
 }
 
-func (ec *execContext) matchAtomicPattern(ctx context.Context, p *pattern, item xdm.Item) bool {
+func (ec *execContext) matchTemplatePattern(ctx context.Context, tmpl *template, node xdm.Node, probe bool) bool {
+	if tmpl.Match == nil {
+		return false
+	}
+
+	defer ec.pushPackage(tmpl.OwnerPackage)()
+
+	if probe {
+		return tmpl.Match.matchPatternProbe(ctx, ec, node)
+	}
+
+	return tmpl.Match.matchPattern(ctx, ec, node)
+}
+
+func (ec *execContext) matchAtomicTemplate(ctx context.Context, tmpl *template, item xdm.Item) bool {
+	defer ec.pushPackage(tmpl.OwnerPackage)()
+
+	p := tmpl.Match
+	savedNS, savedDefault, savedHasDefault, savedInPattern := ec.patternNamespaces, ec.xpathDefaultNS, ec.hasXPathDefaultNS, ec.inPatternMatch
+
+	ec.patternNamespaces, ec.xpathDefaultNS, ec.hasXPathDefaultNS, ec.inPatternMatch = p.nsBindings, p.xpathDefaultNS, p.hasXPathDefaultNS, true
+	defer func() {
+		ec.patternNamespaces, ec.xpathDefaultNS, ec.hasXPathDefaultNS, ec.inPatternMatch = savedNS, savedDefault, savedHasDefault, savedInPattern
+	}()
+
 	for _, alt := range p.Alternatives {
 		// variable reference patterns (e.g., match="$var") only match nodes,
 		// never atomic items per XSLT 3.0 §5.5.3.
@@ -472,6 +495,8 @@ func (ec *execContext) matchAtomicPattern(ctx context.Context, p *pattern, item 
 }
 
 func (ec *execContext) executeAtomicTemplate(ctx context.Context, tmpl *template, item xdm.Item, mode string, paramOverrides ...map[string]xdm.Sequence) error {
+	defer ec.pushPackage(tmpl.OwnerPackage)()
+
 	savedContext := ec.contextNode
 	savedCurrent := ec.currentNode
 	savedMode := ec.currentMode
@@ -514,21 +539,21 @@ func (ec *execContext) executeAtomicTemplate(ctx context.Context, tmpl *template
 }
 
 func (ec *execContext) executeTemplate(ctx context.Context, tmpl *template, node xdm.Node, mode string, paramOverrides ...map[string]xdm.Sequence) error {
+	if tmpl.Visibility == visAbstract {
+		return dynamicError(errCodeXTDE3052, "abstract template %q was invoked without an implementation", tmpl.Name)
+	}
+
 	// If the template belongs to a package, switch function scope
 	// so package-private functions are visible.
 	savedFnsNS := ec.cachedFnsNS
 	savedPackage := ec.currentPackage
-	// Override templates (OriginalTemplate != nil) run in the main stylesheet
-	// context so that strip-space and other package-scoped rules from the
-	// using package apply, not the used package's rules (mirrors
-	// execCallTemplate).
-	if tmpl.OriginalTemplate != nil {
+	// Component bodies retain the scope of the package that declares them,
+	// including overriding match rules without a named original.
+	if tmpl.OwnerPackage != ec.currentPackage {
 		ec.cachedFnsNS = nil
-		ec.currentPackage = nil
-	} else if tmpl.OwnerPackage != nil && tmpl.OwnerPackage != ec.currentPackage {
-		ec.cachedFnsNS = nil // force rebuild with new package scope
 		ec.currentPackage = tmpl.OwnerPackage
 	}
+
 	defer func() {
 		ec.cachedFnsNS = savedFnsNS
 		ec.currentPackage = savedPackage
@@ -545,8 +570,6 @@ func (ec *execContext) executeTemplate(ctx context.Context, tmpl *template, node
 	savedTunnel := ec.tunnelParams
 	savedXPathDefaultNS := ec.xpathDefaultNS
 	savedHasXPathDefaultNS := ec.hasXPathDefaultNS
-	savedGroup := ec.currentGroup
-	savedGroupKey := ec.currentGroupKey
 	savedDefaultCollation := ec.defaultCollation
 	ec.currentNode = node
 	ec.contextNode = node
@@ -573,11 +596,6 @@ func (ec *execContext) executeTemplate(ctx context.Context, tmpl *template, node
 	if err := ec.checkContextItemType(tmpl); err != nil {
 		return err
 	}
-	// XSLT spec: current-group() and current-grouping-key() are only
-	// available within the body of xsl:for-each-group, not in templates
-	// called from it.
-	ec.currentGroup = nil
-	ec.currentGroupKey = nil
 	// Track overriding template for xsl:original support
 	savedOverridingTemplate := ec.overridingTemplate
 	if tmpl.OriginalTemplate != nil {
@@ -596,8 +614,6 @@ func (ec *execContext) executeTemplate(ctx context.Context, tmpl *template, node
 		ec.position = savedPos
 		ec.size = savedSize
 		ec.tunnelParams = savedTunnel
-		ec.currentGroup = savedGroup
-		ec.currentGroupKey = savedGroupKey
 	}()
 
 	ec.pushVarScope()
@@ -627,6 +643,10 @@ func (ec *execContext) bindTemplateParams(ctx context.Context, params []*param, 
 	for _, p := range params {
 		val, fromCaller := ec.callerTemplateParam(p, overrides)
 		if !fromCaller {
+			if err := ec.missingTemplateParam(p); err != nil {
+				return err
+			}
+
 			var err error
 
 			val, err = defaultValue(p)
@@ -658,26 +678,45 @@ func (ec *execContext) callerTemplateParam(p *param, overrides map[string]xdm.Se
 }
 
 func (ec *execContext) checkTemplateParam(ctx context.Context, p *param, val xdm.Sequence, fromCaller bool) (xdm.Sequence, error) {
-	// A supplied nil value is an empty sequence and still needs XTTE0590 checking.
-	if p.As == "" || val == nil && !fromCaller {
+	if p.As == "" {
 		return val, nil
 	}
 
-	st := parseSequenceType(p.As)
-
-	errCode := errCodeXTTE0570
+	code := ec.parameterDefaultErrorCode()
 	if fromCaller {
-		errCode = errCodeXTTE0590
+		code = errCodeXTTE0590
 	}
 
-	return checkSequenceType(ctx, val, st, errCode, "param $"+p.Name, ec)
+	savedNS, savedDefault, savedHas := ec.nsOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS
+
+	ec.nsOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS = p.TypeNamespaces, p.XPathDefaultNS, p.HasXPathDefaultNS
+	defer func() { ec.nsOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS = savedNS, savedDefault, savedHas }()
+
+	return checkSequenceType(ctx, val, parseSequenceType(p.As), code, "param $"+p.Name, ec)
+}
+
+func (ec *execContext) parameterDefaultErrorCode() string {
+	if ec.stylesheet.processorLanguage() == 20 {
+		return "XTTE0600"
+	}
+
+	return errCodeXTTE0590
+}
+
+func (ec *execContext) missingTemplateParam(p *param) error {
+	if !p.Required && !p.implicitlyMandatory() {
+		return nil
+	}
+
+	code := errCodeXTDE0700
+	if !p.Required && ec.stylesheet.processorLanguage() == 20 {
+		code = "XTDE0610"
+	}
+
+	return dynamicError(code, "required template parameter $%s was not supplied", p.Name)
 }
 
 func (ec *execContext) atomicTemplateParamDefault(ctx context.Context, p *param, item xdm.Item) (xdm.Sequence, error) {
-	if p.Required {
-		return nil, dynamicError(errCodeXTDE0700, "required parameter $%s was not supplied", p.Name)
-	}
-
 	if p.Select != nil {
 		result, err := ec.withCompat(ec.xpathEvaluator(ctx).ContextItem(item), p.Select).Evaluate(ec.xpathContext(ctx), p.Select, nil)
 		if err != nil {
@@ -691,19 +730,6 @@ func (ec *execContext) atomicTemplateParamDefault(ctx context.Context, p *param,
 }
 
 func (ec *execContext) nodeTemplateParamDefault(ctx context.Context, p *param, node xdm.Node) (xdm.Sequence, error) {
-	if p.Required {
-		kind := ""
-		if p.Tunnel {
-			kind = "tunnel "
-		}
-
-		return nil, dynamicError(errCodeXTDE0700, "required %sparameter $%s was not supplied", kind, p.Name)
-	}
-
-	if err := executeTemplateSelect(p); err != nil {
-		return nil, err
-	}
-
 	if p.Select != nil {
 		result, err := ec.evalXPath(ctx, p.Select, node)
 		if err != nil {
@@ -716,20 +742,12 @@ func (ec *execContext) nodeTemplateParamDefault(ctx context.Context, p *param, n
 	return ec.templateParamBody(ctx, p)
 }
 
-func executeTemplateSelect(p *param) error {
-	if p.Select == nil && len(p.Body) == 0 && p.As != "" {
-		if !allowsEmptySequence(p.As) {
-			return dynamicError(errCodeXTDE0700,
-				"required parameter $%s (type %s does not allow empty sequence) was not supplied",
-				p.Name, p.As)
-		}
-	}
-
-	return nil
-}
-
 func (ec *execContext) templateParamBody(ctx context.Context, p *param) (xdm.Sequence, error) {
 	if len(p.Body) == 0 {
+		if p.As == "" {
+			return xdm.SingleString(""), nil
+		}
+
 		return xdm.EmptySequence(), nil
 	}
 
@@ -742,7 +760,7 @@ func (ec *execContext) templateParamBody(ctx context.Context, p *param) (xdm.Seq
 	if p.As != "" {
 		val, err = ec.evaluateBodyAsSequence(ctx, p.Body)
 	} else {
-		val, err = ec.evaluateBody(ctx, p.Body)
+		val, err = ec.evaluateBodyAsDocument(ctx, p.Body)
 	}
 
 	ec.temporaryOutputDepth--
@@ -875,19 +893,16 @@ func (ec *execContext) writeTypedTemplateNode(v xdm.NodeItem, out *outputFrame, 
 			return err
 		}
 	}
-	// Attribute nodes must be set as attributes on the current
-	// element, not added as child nodes — except in capture/sequence
-	// mode (xsl:function / xsl:variable with as=, etc.), where the
-	// attribute is a free-standing sequence item that must be captured
-	// intact (out.current is not the eventual owner element). Falling
-	// through to ec.addNode captures it as a pendingItem in that case,
-	// mirroring copyNodeToOutput's sequenceMode handling.
-	if v.Node.Type() == xdm.AttributeNode && !out.captureItems && !out.sequenceMode {
-		if err := writeTypedTemplateAttribute(v.Node, out); err != nil {
+	// Raw sequences retain identity; complex content copies the returned node
+	// through the same namespace/attribute fixup path as xsl:sequence.
+	if out.sequenceMode {
+		if err := ec.addNode(v.Node); err != nil {
 			return err
 		}
-	} else if err := executeTemplateBodyWithAsType(&v, out, ec); err != nil {
-		return err
+	} else if !out.captureXSLSequence(xdm.ItemSlice{v}) {
+		if _, err := ec.writeXSLSequenceNode(v.Node); err != nil {
+			return err
+		}
 	}
 
 	if emitDOE {
@@ -895,70 +910,6 @@ func (ec *execContext) writeTypedTemplateNode(v xdm.NodeItem, out *outputFrame, 
 		if err := ec.addNode(piEnd); err != nil {
 			return err
 		}
-	}
-
-	return nil
-}
-
-func writeTypedTemplateAttribute(node xdm.Node, out *outputFrame) error {
-	attr, ok := node.(*xdm.Attribute)
-	if ok {
-		if elem, ok := out.current.(*xdm.Element); ok {
-			// XTDE0410: cannot add attribute after child content
-			if elem.FirstChild() != nil {
-				return dynamicError(errCodeXTDE0410,
-					"cannot add attribute to element after children have been added")
-			}
-
-			if attr.URI() != "" {
-				// Use copyAttributeToElement so the attribute's
-				// namespace is declared on the element (and prefix
-				// conflicts are resolved). Setting only the attribute
-				// without a namespace declaration would leave the
-				// prefix undeclared in the serialized output.
-				copyAttributeToElement(elem, attr)
-			} else {
-				if err := elem.SetAttribute(attr.LocalName(), xdm.CharacterData(attr)); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
-func executeTemplateBodyWithAsChildren(doc *xdm.Document, ec *execContext) error {
-	for dc := range xdm.Children(doc) {
-		if !xdm.IsXDMChild(dc) {
-			continue
-		}
-
-		copied, copyErr := xdm.CopyNode(dc, ec.resultDoc)
-		if copyErr != nil {
-			return copyErr
-		}
-
-		if err := ec.addNode(copied); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func executeTemplateBodyWithAsType(v *xdm.NodeItem, out *outputFrame, ec *execContext) error {
-	if v.Node.Type() == xdm.DocumentNode && !out.captureItems && !out.sequenceMode {
-		// Document nodes are unwrapped when writing to a real
-		// DOM output: emit children since documents can't be
-		// children of elements. In capture/sequence mode, keep
-		// the document node intact (pattern matching may need it).
-		doc, _ := xdm.AsNode[*xdm.Document](v.Node)
-		if err := executeTemplateBodyWithAsChildren(doc, ec); err != nil {
-			return err
-		}
-	} else if err := ec.addNode(v.Node); err != nil {
-		return err
 	}
 
 	return nil

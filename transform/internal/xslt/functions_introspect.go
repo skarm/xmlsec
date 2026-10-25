@@ -10,238 +10,159 @@ import (
 
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/intconv"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 	"github.com/skarm/xmlsec/transform/internal/xslt/internal/elements"
 )
 
-func (ec *execContext) fnElementAvailable(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 || (args[0] == nil || xdm.SequenceLen(args[0]) == 0) {
-		return xdm.SingleBoolean(false), nil
-	}
-
-	av, err := xpath.AtomizeItem(args[0].Get(0))
-	if err != nil {
-		return xdm.SingleBoolean(false), nil //nolint:nilerr // element-available returns false on atomization failure
-	}
-
-	name, _ := xpath.AtomicToString(av)
-
-	// XTDE1440: element name must be a valid QName or EQName
-	if !strings.HasPrefix(name, "Q{") && !xmlchar.IsValidQName(name) {
-		return nil, dynamicError(errCodeXTDE1440,
-			"element-available: %q is not a valid EQName", name)
-	}
-
-	// Resolve prefix:local or Q{uri}local to namespace + local
-	local := name
-	ns := lexicon.NamespaceXSLT
-
-	if strings.HasPrefix(name, "Q{") {
-		if end := strings.IndexByte(name, '}'); end > 2 {
-			ns = name[2:end]
-			local = name[end+1:]
-		}
-	} else if prefix, l, ok := strings.Cut(name, ":"); ok {
-		local = l
-		resolved := false
-
-		if uri, ok := ec.stylesheet.namespaces[prefix]; ok {
-			ns = uri
-			resolved = true
-		}
-		// XTDE1440: prefix has no namespace declaration
-		if !resolved {
-			return nil, dynamicError(errCodeXTDE1440,
-				"element-available: prefix %q has no namespace declaration", prefix)
-		}
-	}
-
-	if ns != lexicon.NamespaceXSLT {
-		return xdm.SingleBoolean(false), nil
-	}
-
-	if !elements.IsKnown(local) || !elements.IsImplemented(local) {
-		return xdm.SingleBoolean(false), nil
-	}
-
-	if minVer := elements.MinVersion(local); fmt.Sprintf("%d.0", ec.stylesheet.processorLanguage()/10) < minVer {
-		return xdm.SingleBoolean(false), nil
-	}
-
-	return xdm.SingleBoolean(true), nil
+func (ec *execContext) fnElementAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return introspectionElementAvailable(ctx, args, ec.stylesheet.processorLanguage(), ec.stylesheet.dynamicEvaluationDisabled)
 }
 
-// function-available(name, arity?) returns true if the named function is available.
-func (ec *execContext) fnFunctionAvailable(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 || (args[0] == nil || xdm.SequenceLen(args[0]) == 0) {
-		return xdm.SingleBoolean(false), nil
-	}
-
-	av, err := xpath.AtomizeItem(args[0].Get(0))
-	if err != nil {
-		return xdm.SingleBoolean(false), nil //nolint:nilerr // function-available returns false on atomization failure
-	}
-
-	name, _ := xpath.AtomicToString(av)
-	if !strings.HasPrefix(name, "Q{") && !xmlchar.IsValidQName(name) {
-		return nil, dynamicError(errCodeXTDE1400, "function-available: %q is not a valid QName", name)
-	}
-
-	available, err := ec.functionAvailable(name, functionAvailableArity(args))
+func introspectionElementAvailable(ctx context.Context, args []xdm.Sequence, processor int, disabled bool) (xdm.Sequence, error) {
+	name, err := introspectionArgumentName(ctx, args, xpath.FnDefaultXMLNamespace(ctx), errCodeXTDE1440)
 	if err != nil {
 		return nil, err
 	}
 
-	return xdm.SingleBoolean(available), nil
+	return xdm.SingleBoolean(elementAvailable(name, processor, disabled)), nil
 }
 
-func functionAvailableArity(args []xdm.Sequence) int {
-	if len(args) < 2 || args[1] == nil || xdm.SequenceLen(args[1]) == 0 {
-		return -1
-	}
-
-	atom, err := xpath.AtomizeItem(args[1].Get(0))
+func introspectionArgumentName(ctx context.Context, args []xdm.Sequence, defaultNS, code string) (xdm.QNameValue, error) {
+	value, err := xpath.AtomizeItem(args[0].Get(0))
 	if err != nil {
-		return -1
+		return xdm.QNameValue{}, err
 	}
 
-	text, _ := xpath.AtomicToString(atom)
-	// Atoi saturates int64 values outside int on 32-bit platforms.
-	arity, err := intconv.Atoi(strings.TrimSpace(text))
+	name, err := xpath.AtomicToString(value)
 	if err != nil {
-		return -1
+		return xdm.QNameValue{}, err
 	}
 
-	return arity
+	return resolveIntrospectionName(name, defaultNS, code, func(prefix string) (string, bool) { return xpath.FnNamespace(ctx, prefix) })
 }
 
-func (ec *execContext) functionAvailable(name string, arity int) (bool, error) {
-	if ec.stylesheet.processorLanguage() == 10 {
-		if strings.Contains(name, ":") {
-			return false, nil
-		}
-
-		_, core := xpath.XPath10FunctionArity(name)
-		_, host := lookupxslt10Functions(name)
-
-		return core || host, nil
+func elementAvailable(name xdm.QNameValue, processor int, disabled bool) bool {
+	if name.URI != lexicon.NamespaceXSLT || !elements.IsImplemented(name.Local) {
+		return false
 	}
 
-	if function, found := ec.xsltFunctions()[name]; found {
-		return functionAvailableAtArity(function, arity), nil
+	if name.Local == lexicon.XSLTElementEvaluate && disabled {
+		return false
 	}
 
-	if strings.HasPrefix(name, "Q{") {
-		if closeIndex := strings.IndexByte(name, '}'); closeIndex > 0 {
-			return ec.eqNameFunctionAvailable(name[2:closeIndex], name[closeIndex+1:], arity), nil
-		}
+	if processor < 30 && !elements.IsInstruction(name.Local) {
+		return false
 	}
 
-	if prefix, local, found := strings.Cut(name, ":"); found {
-		return ec.prefixedFunctionAvailable(name, prefix, local, arity)
-	}
-
-	return ec.builtinFunctionAvailable(xpath.NSFn, name, arity), nil
-}
-
-func (ec *execContext) eqNameFunctionAvailable(uri, local string, arity int) bool {
-	if ec.findXSLFunction(xpath.QualifiedName{URI: uri, Name: local}, arity) != nil {
+	switch elements.MinVersion(name.Local) {
+	case "3.0":
+		return processor >= 30
+	case "2.0":
+		return processor >= 20
+	default:
 		return true
 	}
-
-	// EQNames consult declared functions and XPath builtins.
-	return ec.builtinFunctionAvailable(uri, local, arity)
 }
 
-func (ec *execContext) prefixedFunctionAvailable(name, prefix, local string, arity int) (bool, error) {
-	uri, found := ec.stylesheet.namespaces[prefix]
-	if !found {
-		return false, dynamicError(errCodeXTDE1400,
-			"undeclared namespace prefix %q in function-available(%q)", prefix, name)
+// function-available(name, arity?) returns true if the named function is available.
+func (ec *execContext) fnFunctionAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	name, err := introspectionArgumentName(ctx, args, xpath.NSFn, errCodeXTDE1400)
+	if err != nil {
+		return nil, err
 	}
 
-	qname := xpath.QualifiedName{URI: uri, Name: local}
-	if ec.findXSLFunction(qname, arity) != nil {
-		return true, nil
+	arity, valid := functionAvailableArity(args)
+	if !valid {
+		return xdm.SingleBoolean(false), nil
 	}
 
-	if functions := ec.xsltFunctionsNS(); functions != nil {
-		if function, found := functions[qname]; found {
-			return functionAvailableAtArity(function, arity), nil
+	return xdm.SingleBoolean(ec.functionAvailable(name, arity)), nil
+}
+
+// functionAvailableArity reserves -1 for an omitted argument. Huge positive
+// integers saturate, preserving variadic availability without an int overflow.
+func functionAvailableArity(args []xdm.Sequence) (int, bool) {
+	if len(args) < 2 {
+		return -1, true
+	}
+
+	value, ok := args[1].Get(0).(xdm.AtomicValue)
+	if !ok {
+		return 0, false
+	}
+
+	arity, fits := value.Int64Val()
+	if !fits {
+		return int(^uint(0) >> 1), value.BigInt().Sign() >= 0
+	}
+
+	if arity < 0 {
+		return 0, false
+	}
+
+	if uint64(arity) > uint64(^uint(0)>>1) {
+		return int(^uint(0) >> 1), true
+	}
+
+	return int(arity), true
+}
+
+func (ec *execContext) functionAvailable(name xdm.QNameValue, arity int) bool {
+	if ec.stylesheet.processorLanguage() == 10 {
+		if name.URI != xpath.NSFn {
+			return false
+		}
+
+		_, core := xpath.XPath10FunctionArity(name.Local)
+		_, host := lookupxslt10Functions(name.Local)
+
+		return core || host
+	}
+
+	qname := xpath.QualifiedName{URI: name.URI, Name: name.Local}
+	if ec.stylesheetFunctionDefined(qname, arity) {
+		return ec.dynamicStylesheetFunction(qname, arity) != nil
+	}
+
+	if name.URI == xpath.NSFn {
+		if function, found := ec.xsltFunctions()[name.Local]; found {
+			return functionAvailableAtArity(function, arity)
 		}
 	}
 
-	if xpath.IsBuiltinFunctionNS(uri, local) {
-		return ec.builtinFunctionAvailable(uri, local, arity), nil
+	if function, found := ec.xsltFunctionsNS()[qname]; found {
+		return functionAvailableAtArity(function, arity)
 	}
 
-	return ec.builtinFunctionAvailable(xpath.NSFn, name, arity), nil
+	return ec.builtinFunctionAvailable(name.URI, name.Local, arity)
 }
 
 // type-available(name) returns true if the named type is available.
-func (ec *execContext) fnTypeAvailable(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 || (args[0] == nil || xdm.SequenceLen(args[0]) == 0) {
-		return xdm.SingleBoolean(false), nil
-	}
-
-	av, err := xpath.AtomizeItem(args[0].Get(0))
+func fnTypeAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	name, err := introspectionArgumentName(ctx, args, xpath.FnDefaultXMLNamespace(ctx), errCodeXTDE1428)
 	if err != nil {
-		return xdm.SingleBoolean(false), nil //nolint:nilerr // type-available returns false on atomization failure
+		return nil, err
 	}
 
-	name, _ := xpath.AtomicToString(av)
+	return xdm.SingleBoolean(typeAvailable(ctx, name)), nil
+}
 
-	// XTDE1428: type name must be a valid QName or EQName
-	if !strings.HasPrefix(name, "Q{") && !xmlchar.IsValidQName(name) {
-		return nil, dynamicError(errCodeXTDE1428,
-			"type-available: %q is not a valid EQName", name)
+func typeAvailable(ctx context.Context, name xdm.QNameValue) bool {
+	if name.URI != lexicon.NamespaceXSD || !xdm.IsKnownXSDType("xs:"+name.Local) {
+		return false
 	}
 
-	// XTDE1428: if it's a prefixed QName, the prefix must have a namespace declaration
-	if !strings.HasPrefix(name, "Q{") {
-		if prefix, _, ok := strings.Cut(name, ":"); ok {
-			if prefix != "xs" && prefix != lexicon.PrefixXSD {
-				if _, ok := ec.stylesheet.namespaces[prefix]; !ok {
-					return nil, dynamicError(errCodeXTDE1428,
-						"type-available: prefix %q has no namespace declaration", prefix)
-				}
-			}
-		}
-	}
-
-	// Resolve QName to canonical xs:... form
-	resolved := resolveQName(name, ec.stylesheet.namespaces)
-	// If it resolved to {uri}local, normalize XSD namespace to xs: prefix
-	if strings.HasPrefix(resolved, "{"+lexicon.NamespaceXSD+"}") {
-		local := resolved[len("{"+lexicon.NamespaceXSD+"}"):]
-		resolved = "xs:" + local
-	} else if prefix, local, ok := strings.Cut(name, ":"); ok {
-		if prefix == "xs" || prefix == nameXsd {
-			resolved = "xs:" + local
-		} else if uri, ok := ec.stylesheet.namespaces[prefix]; ok && uri == lexicon.NamespaceXSD {
-			resolved = "xs:" + local
-		}
-	}
-
-	// xs:error is never available (it's the error type, not a real XSD type).
-	// xs:dateTimeStamp is a valid XSD 1.1 type that we support, so it is NOT excluded.
-	switch resolved {
-	case "xs:error":
-		return xdm.SingleBoolean(false), nil
-	}
-
-	if xdm.IsKnownXSDType(resolved) {
-		return xdm.SingleBoolean(true), nil
-	}
-
-	return xdm.SingleBoolean(false), nil
+	return name.Local != "dateTimeStamp" || xpath.XMLSchemaVersion(ctx) >= 11
 }
 
 // current-group() returns the items in the current group during for-each-group.
-func (ec *execContext) fnCurrentGroup(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
-	if !ec.inGroupContext {
+func (ec *execContext) fnCurrentGroup(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
+	if !ec.inGroupContext || xpath.IsDynamicCall(ctx) {
+		if ec.stylesheet.processorLanguage() < 30 {
+			return xdm.EmptySequence(), nil
+		}
+
 		return nil, dynamicError(errCodeXTDE1061, "current-group() called outside xsl:for-each-group")
 	}
 
@@ -256,12 +177,20 @@ func (ec *execContext) fnCurrentGroup(_ context.Context, _ []xdm.Sequence) (xdm.
 // XTDE1071: it is a non-recoverable dynamic error if called when the innermost
 // xsl:for-each-group uses group-starting-with or group-ending-with (which do
 // not establish a grouping key), or when called outside xsl:for-each-group.
-func (ec *execContext) fnCurrentGroupingKey(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
-	if !ec.inGroupContext {
+func (ec *execContext) fnCurrentGroupingKey(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
+	if !ec.inGroupContext || xpath.IsDynamicCall(ctx) {
+		if ec.stylesheet.processorLanguage() < 30 {
+			return xdm.EmptySequence(), nil
+		}
+
 		return nil, dynamicError(errCodeXTDE1071, "current-grouping-key() called outside xsl:for-each-group")
 	}
 
 	if !ec.groupHasKey {
+		if ec.stylesheet.processorLanguage() < 30 {
+			return xdm.EmptySequence(), nil
+		}
+
 		return nil, dynamicError(errCodeXTDE1071, "current-grouping-key() called within xsl:for-each-group that uses group-starting-with or group-ending-with")
 	}
 
@@ -395,10 +324,6 @@ func accumulatorNodeValue(
 }
 
 func (ec *execContext) accumulatorLookupNode(ctx context.Context, fnName string) (xdm.Node, error) {
-	if xpath.IsDynamicCall(ctx) && ec.isStreamableMode() {
-		return nil, dynamicError(errCodeXTDE3350, "%s called via dynamic reference in streaming mode", fnName)
-	}
-
 	node := xpath.FnContextNode(ctx)
 	if node == nil {
 		node = ec.contextNode
@@ -436,19 +361,6 @@ func (ec *execContext) mergeKeyAccumulatorValue(node xdm.Node, stateKey string) 
 	}
 
 	return nil, false
-}
-
-// isStreamableMode returns true when the current mode has streamable="yes".
-func (ec *execContext) isStreamableMode() bool {
-	mode := ec.currentMode
-	modeDefs := ec.effectiveModeDefs()
-
-	md := modeDefs[mode]
-	if md == nil && (mode == "" || mode == modeUnnamed) {
-		md = modeDefs[modeDefault]
-	}
-
-	return md != nil && md.Streamable
 }
 
 func (ec *execContext) checkAccumulatorAccess(name string) error {
@@ -493,16 +405,7 @@ func (ec *execContext) checkAccumulatorAccess(name string) error {
 		}
 	}
 
-	if !ec.requireStreamableAccums {
-		return nil
-	}
-
-	def, ok := ec.effectiveAccumulators()[name]
-	if !ok || def.Streamable {
-		return nil
-	}
-
-	return dynamicError(errCodeXTDE3362, "accumulator %q is not streamable", name)
+	return nil
 }
 
 // ensureAccumulatorStates lazily computes accumulator states for the document
@@ -547,7 +450,15 @@ func (ec *execContext) ensureAccumulatorStates(ctx context.Context, node xdm.Nod
 }
 
 func functionAvailableAtArity(function xpath.Function, arity int) bool {
-	return arity < 0 || (arity >= function.MinArity() && arity <= function.MaxArity())
+	if arity < 0 {
+		return true
+	}
+
+	if overloads, ok := function.(interface{ AcceptsArity(int) bool }); ok {
+		return overloads.AcceptsArity(arity)
+	}
+
+	return arity >= function.MinArity() && (function.MaxArity() < 0 || arity <= function.MaxArity())
 }
 
 func (ec *execContext) builtinFunctionAvailable(uri, local string, arity int) bool {

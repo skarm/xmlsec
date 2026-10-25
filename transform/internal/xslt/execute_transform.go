@@ -52,6 +52,8 @@ func mapElementAttributes(nodeMap map[xdm.Node]xdm.Node, ea, eb *xdm.Element) {
 // executeTransform keeps source preparation, global initialization, initial
 // invocation and result delivery in their required evaluation order.
 func executeTransform(ctx context.Context, source *xdm.Document, ss *Stylesheet, cfg *transformConfig) (*xdm.Document, error) {
+	ctx = xpath.WithoutDynamicCall(ctx)
+
 	if ss == nil {
 		return nil, errNilStylesheet
 	}
@@ -65,6 +67,7 @@ func executeTransform(ctx context.Context, source *xdm.Document, ss *Stylesheet,
 	selectionSupplied := matchSelection != nil
 
 	ec := newTransformExecContext(ctx, source, ss, cfg)
+
 	resultDoc := ec.resultDoc
 
 	matchSelection, err := ec.prepareTransformSource(matchSelection)
@@ -73,7 +76,11 @@ func executeTransform(ctx context.Context, source *xdm.Document, ss *Stylesheet,
 	}
 
 	restoreGlobalContextItem := ec.prepareTransformGlobalContext(ctx, cfg)
+
 	ctx = withExecContext(ctx, ec)
+	if err := ec.recordInitialResources(ctx, matchSelection); err != nil {
+		return nil, err
+	}
 
 	if err := ec.initializeTransformGlobals(ctx, cfg, restoreGlobalContextItem); err != nil {
 		return nil, err
@@ -85,6 +92,11 @@ func executeTransform(ctx context.Context, source *xdm.Document, ss *Stylesheet,
 
 	if cfg != nil && cfg.initialFunction != "" {
 		return ec.executeInitialFunction(ctx, cfg)
+	}
+
+	if !selectionSupplied && ec.sourceDoc == nil && ec.globalContextItem != nil && !ec.globalContextAbsent {
+		matchSelection = xdm.ItemSlice{ec.globalContextItem}
+		selectionSupplied = true
 	}
 
 	if err := ec.executeInitialTemplates(ctx, cfg, matchSelection, selectionSupplied); err != nil {
@@ -131,6 +143,7 @@ func executeTransform(ctx context.Context, source *xdm.Document, ss *Stylesheet,
 }
 
 func newTransformExecContext(ctx context.Context, source *xdm.Document, ss *Stylesheet, cfg *transformConfig) *execContext {
+	properties := xpath.CaptureDynamicProperties(ctx, time.Now().UTC())
 	resultDoc := xdm.NewDefaultDocument()
 
 	captureItems := cfg != nil && cfg.rawCapture
@@ -139,6 +152,7 @@ func newTransformExecContext(ctx context.Context, source *xdm.Document, ss *Styl
 	}
 
 	ec := &execContext{
+		execution:           new(executionIdentity),
 		budgetCtx:           ctx,
 		stylesheet:          ss,
 		sourceDoc:           source,
@@ -148,9 +162,12 @@ func newTransformExecContext(ctx context.Context, source *xdm.Document, ss *Styl
 		outputStack:         []*outputFrame{{doc: resultDoc, current: resultDoc, itemSeparator: ss.defaultItemSeparator(), captureItems: captureItems, sequenceMode: cfg != nil && cfg.rawSequence}},
 		keyTables:           make(map[string]*keyTable),
 		docCache:            make(map[string]*xdm.Document),
+		collectionCache:     make(map[string]xdm.Sequence),
+		uriCollectionCache:  make(map[string][]string),
 		functionResultCache: make(map[string]xdm.Sequence),
 		accumulatorState:    make(map[string]xdm.Sequence),
-		currentTime:         xpath.CurrentTime(ctx, time.Now().UTC()),
+		currentTime:         properties.CurrentTime,
+		dynamicProperties:   properties,
 		resultDocuments:     make(map[string]*xdm.Document),
 		resultDocItems:      make(map[string]xdm.Sequence),
 		resultDocOutputDefs: make(map[string]*OutputDef),
@@ -160,6 +177,7 @@ func newTransformExecContext(ctx context.Context, source *xdm.Document, ss *Styl
 		defaultCollation:    ss.defaultCollation,
 		docOrderCache:       xpath.NewDocOrderCache(),
 	}
+	ec.outputStack[0].implicitPrimary = &ec.primaryClaimedImplicitly
 	ec.setCurrentTemplate(nil) // start with no current template; baseDir() falls back to the stylesheet base
 	// Set the principal output method so that isItemOutputMethod() returns
 	// true when the default xsl:output method is json or adaptive.  Without
@@ -193,16 +211,7 @@ func newTransformExecContext(ctx context.Context, source *xdm.Document, ss *Styl
 
 	if cfg != nil && cfg.baseOutputURI != "" {
 		ec.currentOutputURI = cfg.baseOutputURI
-		// The principal result tree always exists and its URI is the base output
-		// URI, so reserve the canonical form of that URI up front. A secondary
-		// xsl:result-document whose href resolves to it denotes the SAME final
-		// result tree and must raise XTDE1490. Canonicalize with the SAME resolver
-		// the secondary duplicate key uses (canonicalResultURIKey) so a relative
-		// secondary href and the equivalent absolute one both match this seed.
-		// The primary output itself keys on the "" sentinel, so this distinct
-		// canonical key never makes the primary collide with itself.
 		ec.canonicalPrimaryURI = canonicalResultURIKey(cfg.baseOutputURI, "")
-		ec.usedResultURIs[ec.canonicalPrimaryURI] = struct{}{}
 	} else if cfg != nil && cfg.outputBaseURI != "" {
 		// No base-output-uri was supplied, so the principal output has no declared
 		// URI (no canonicalPrimaryURI reservation; the principal result-map key
@@ -211,6 +220,8 @@ func newTransformExecContext(ctx context.Context, source *xdm.Document, ss *Styl
 		// so their result-map keys are absolute whenever any base exists.
 		ec.currentOutputURI = cfg.outputBaseURI
 	}
+
+	ec.baseOutputURI = ec.currentOutputURI
 	// Make the transform config (and thus its URIResolver) available before
 	// any runtime resource loading. initGlobalVars also assigns this; setting
 	// it here ensures schema-location loads below route through the resolver.
@@ -431,7 +442,6 @@ func (ec *execContext) prepareTransformGlobalContext(ctx context.Context, cfg *t
 
 func (ec *execContext) initializeTransformGlobals(ctx context.Context, cfg *transformConfig, restoreGlobalContextItem bool) error {
 	effectiveSource := ec.sourceDoc
-	ss := ec.stylesheet
 
 	if err := ec.initGlobalVars(ctx, cfg); err != nil {
 		return err
@@ -440,18 +450,6 @@ func (ec *execContext) initializeTransformGlobals(ctx context.Context, cfg *tran
 	// XTTE0590: validate global context item against declared type.
 	if err := ec.validateGlobalContextItem(ctx, effectiveSource); err != nil {
 		return err
-	}
-
-	// XPDY0002: when the initial mode is streamable and the principal source
-	// document is provided, global variables whose select expressions depend
-	// on the document context are not allowed — the streamed document is not
-	// available for random access.
-	if effectiveSource != nil && cfg != nil && cfg.initialMode != "" {
-		if md := ss.modeDefs[cfg.initialMode]; md != nil && md.Streamable {
-			if err := checkGlobalVarsStreamingContext(ss); err != nil {
-				return err
-			}
-		}
 	}
 
 	// Eagerly evaluate all global variables and parameters so that errors
@@ -494,12 +492,14 @@ func (ec *execContext) prepareTransformAccumulators(ctx context.Context) error {
 }
 
 func (ec *execContext) executeInitialFunction(ctx context.Context, cfg *transformConfig) (*xdm.Document, error) {
-	ss := ec.stylesheet
-
-	cfg.resolvedOutputDef = cloneOutputDef(ss.outputs[""])
+	cfg.resolvedOutputDef = ec.resolvePrimaryOutputDef()
 
 	doc, err := ec.invokeInitialFunction(ctx, cfg)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := ec.checkImplicitPrimaryOutput(); err != nil {
 		return nil, err
 	}
 
@@ -572,16 +572,22 @@ func (ec *execContext) executeNamedInitialTemplate(ctx context.Context, cfg *tra
 	if tmpl == nil {
 		return dynamicError(errCodeXTDE0040, "initial template %q not found", initialTemplateName)
 	}
-	// XTDE0040: initial template must be public in a package context
-	if ec.stylesheet.isPackage && tmpl.Visibility != "" && tmpl.Visibility != visPublic && tmpl.Visibility != visFinal {
-		return dynamicError(errCodeXTDE0040, "initial template %q is not public (visibility=%q)", initialTemplateName, tmpl.Visibility)
+
+	visibility := tmpl.Visibility
+	if visibility == "" {
+		visibility = defaultComponentVisibility(ec.stylesheet)
 	}
-	// Also check for templates with no explicit visibility in packages (default=private)
-	if ec.stylesheet.isPackage && tmpl.Visibility == "" {
-		return dynamicError(errCodeXTDE0040, "initial template %q is not public", initialTemplateName)
+
+	if visibility != visPublic && visibility != visFinal {
+		return dynamicError(errCodeXTDE0040, "initial template %q is not public (visibility=%q)", initialTemplateName, visibility)
 	}
-	// XTDE0060: initial template must not have any required parameters
-	// that are not supplied by the caller.
+
+	if err := ec.checkInitialTemplateParameters(tmpl); err != nil {
+		return err
+	}
+
+	// XSLT 3.0 permits required initial-template parameters, but an omitted
+	// value still raises the ordinary missing-parameter error XTDE0700.
 	for _, p := range tmpl.Params {
 		if !p.Required {
 			continue
@@ -622,6 +628,10 @@ func (ec *execContext) executeNamedInitialTemplate(ctx context.Context, cfg *tra
 }
 
 func (ec *execContext) applyInitialTemplates(ctx context.Context, cfg *transformConfig, matchSelection xdm.Sequence, selectionSupplied bool, initialMode string) error {
+	if ec.sourceDoc == nil && !selectionSupplied && initialMode != "" {
+		return dynamicError(errCodeXTDE0044, "initial mode requires an initial match selection")
+	}
+
 	if initialMode != "" {
 		if err := ec.checkInitialMode(initialMode); err != nil {
 			return err
@@ -648,15 +658,18 @@ func (ec *execContext) applyInitialTemplates(ctx context.Context, cfg *transform
 		return ec.applyInitialSelection(ctx, matchSelection, initialMode, initialModeParams)
 	}
 
+	ec.initialTemplateCall = true
+
 	return ec.applyTemplates(ctx, ec.sourceDoc, initialMode, initialModeParams)
 }
 
 func (ec *execContext) applyInitialSelection(ctx context.Context, selection xdm.Sequence, initialMode string, params map[string]xdm.Sequence) error {
-	resolvedMode := ec.resolveInitialSelectionMode(initialMode)
 	selLen := xdm.SequenceLen(selection)
 
 	for i := range selLen {
 		item := selection.Get(i)
+		ec.initialTemplateCall = true
+
 		switch v := item.(type) {
 		case xdm.NodeItem:
 			ec.contextNode = v.Node
@@ -672,7 +685,7 @@ func (ec *execContext) applyInitialSelection(ctx context.Context, selection xdm.
 			ec.position = i + 1
 			ec.size = selLen
 
-			if err := ec.applyInitialAtomic(ctx, v, resolvedMode, params); err != nil {
+			if err := ec.applyInitialAtomic(ctx, v, initialMode, params); err != nil {
 				return err
 			}
 		}
@@ -681,30 +694,25 @@ func (ec *execContext) applyInitialSelection(ctx context.Context, selection xdm.
 	return nil
 }
 
-func (ec *execContext) resolveInitialSelectionMode(mode string) string {
-	switch mode {
-	case modeCurrent:
-		mode = ec.currentMode
-	case modeUnnamed:
-		mode = ""
-	case modeDefault, "":
-		mode = ec.stylesheet.defaultMode
-	}
-
-	if mode == modeUnnamed {
-		return ""
-	}
-
-	return mode
-}
-
 func (ec *execContext) applyInitialAtomic(ctx context.Context, value xdm.AtomicValue, mode string, params map[string]xdm.Sequence) error {
+	initialCall := ec.initialTemplateCall
+	ec.initialTemplateCall = false
+
+	mode, restoreMode := ec.pushMode(mode)
+	defer restoreMode()
+
 	tmpl, err := ec.findAtomicTemplate(ctx, value, mode)
 	if err != nil {
 		return err
 	}
 
 	if tmpl != nil {
+		if initialCall {
+			if err := ec.checkInitialTemplateParameters(tmpl); err != nil {
+				return err
+			}
+		}
+
 		return ec.executeAtomicTemplate(ctx, tmpl, value, mode, params)
 	}
 
@@ -720,6 +728,20 @@ func (ec *execContext) applyInitialAtomic(ctx context.Context, value xdm.AtomicV
 	}
 
 	return ec.addNode(ec.resultDoc.CreateText(text))
+}
+
+func (ec *execContext) checkInitialTemplateParameters(tmpl *template) error {
+	if ec.stylesheet.processorLanguage() != 20 {
+		return nil
+	}
+
+	for _, parameter := range tmpl.Params {
+		if parameter.Required {
+			return dynamicError("XTDE0060", "XSLT 2.0 initial template must not declare required parameter $%s", parameter.Name)
+		}
+	}
+
+	return nil
 }
 
 func (ec *execContext) serializeSecondaryResults() error {
@@ -864,7 +886,18 @@ func (ec *execContext) resolvePrimaryOutputDef() *OutputDef {
 		outDef.ResolvedCharMap = ec.primaryResolvedCharMap
 	}
 
-	return ec.applyPrimaryOutputOverrides(outDef)
+	outDef = ec.applyPrimaryOutputOverrides(outDef)
+	if version, valid := compareLanguageVersion(ss.version, 1); valid && version == 0 {
+		if _, explicit := ec.usedResultURIs[""]; !explicit {
+			if outDef == nil {
+				outDef = defaultOutputDef()
+			}
+
+			outDef.implicitXMLMethod = true
+		}
+	}
+
+	return outDef
 }
 
 func (ec *execContext) applyPrimaryOutputOverrides(outDef *OutputDef) *OutputDef {
@@ -982,70 +1015,38 @@ func (ec *execContext) deliverTransformAnnotations(cfg *transformConfig) error {
 	return cfg.annotationHandler.HandleAnnotations(ec.typeAnnotations, sd)
 }
 
-// checkInitialMode verifies the initial mode is available and returns an error
-// if it is not. Returns XTDE0044 if the mode exists but is not public in a
-// package, or XTDE0045 if the mode is not found.
+// checkInitialMode enforces the eligibility alternatives in XSLT 3.0 2.3.3.
 func (ec *execContext) checkInitialMode(mode string) error {
-	// Resolve #default to the actual default mode name
-	resolvedMode := mode
+	resolved := mode
 	switch mode {
 	case "", modeDefault:
-		resolvedMode = ec.stylesheet.defaultMode
+		resolved = ec.stylesheet.defaultMode
 	case modeUnnamed:
-		resolvedMode = ""
+		resolved = ""
 	}
 
-	// The stylesheet's default-mode is always eligible as an initial mode,
-	// even if private (per XSLT 3.0 spec).
-	if resolvedMode == ec.stylesheet.defaultMode {
+	if resolved == "" || resolved == ec.stylesheet.defaultMode {
 		return nil
 	}
 
-	// The unnamed mode (#unnamed) is always eligible as an initial mode
-	// when explicitly requested, even if private in a package (XSLT 3.0 §2.4).
-	if mode == modeUnnamed || resolvedMode == "" {
-		return nil
-	}
-
-	if ec.stylesheet.isPackage {
-		// In packages, check if the resolved mode is public
-		if md := ec.stylesheet.modeDefs[resolvedMode]; md != nil {
-			if md.Visibility == visPrivate || md.Visibility == "" {
-				return dynamicError(errCodeXTDE0044, "initial mode %q is not public in the package", mode)
+	definition := ec.stylesheet.modeDefs[resolved]
+	// Explicit private modes follow the prohibition in 6.6.1; the broader
+	// wording in 2.3.3 is the subject of the unresolved W3C bug 30405.
+	if !ec.stylesheet.declaredModes && (definition == nil || definition.Implicit) {
+		for _, rule := range ec.stylesheet.modeTemplates[resolved] {
+			if rule.OwnerPackage == nil || rule.OwnerPackage == ec.stylesheet {
+				return nil
 			}
+		}
+	}
 
-			return nil
-		}
-		// For packages with declared-modes="true" (default), undeclared modes
-		// are implicitly private.
-		if ec.stylesheet.declaredModes {
-			return dynamicError(errCodeXTDE0044, "initial mode %q is not declared in the package", mode)
-		}
-	} else {
-		// In non-package stylesheets, special modes are always available
-		switch mode {
-		case "", modeDefault, modeUnnamed:
+	if definition := ec.stylesheet.modeDefs[resolved]; definition != nil {
+		if definition.Visibility == visPublic || definition.Visibility == visFinal || !ec.stylesheet.isPackage && definition.Visibility == "" {
 			return nil
 		}
 	}
 
-	if md := ec.stylesheet.modeDefs[mode]; md != nil {
-		if md.Visibility == visPrivate {
-			return dynamicError(errCodeXTDE0044, "initial mode %q is not public", mode)
-		}
-
-		if ec.stylesheet.isPackage && md.Visibility == "" {
-			return dynamicError(errCodeXTDE0044, "initial mode %q is not public in the package", mode)
-		}
-
-		return nil
-	}
-	// The initial mode must have at least one template rule (XTDE0045).
-	if len(ec.stylesheet.modeTemplates[mode]) > 0 {
-		return nil
-	}
-
-	return dynamicError(errCodeXTDE0045, "initial mode %q not found", mode)
+	return dynamicError(errCodeXTDE0045, "initial mode %q is not eligible in the top-level package", mode)
 }
 
 // cloneOutputDef returns a deep copy of an OutputDef. All pointer, slice, and

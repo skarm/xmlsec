@@ -32,7 +32,7 @@ func testContentAllSuitesCase(t *testing.T, content *string, data *string, wrap 
 	source := parse(t, []byte(`<?outside ok?><!--before--><r xmlns="urn:r" xmlns:p="urn:p" xmlns:q="urn:unused" xml:lang="ru" xml:base="https://example.test/"><head>visible</head><box flag="public">`+(*content)+`</box><tail/></r><!--after-->`))
 	parent := source.Root().Children()[1]
 	before := xmlBytes(t, source)
-	options := xmlenc.Options{DataAlgorithm: (*data)}
+	options := xmlenc.Options{DataAlgorithm: *data}
 
 	var (
 		encrypted, restored           *document.Document
@@ -40,18 +40,18 @@ func testContentAllSuitesCase(t *testing.T, content *string, data *string, wrap 
 		err                           error
 	)
 	if (*wrap) == "" {
-		encrypted, cipherElement, err = xmlenc.EncryptContent((*ctx), source, parent, &(*recipient).PublicKey, options)
+		encrypted, cipherElement, err = xmlenc.EncryptContent(*ctx, source, parent, &(*recipient).PublicKey, options)
 		if err == nil {
-			restored, restoredParent, err = xmlenc.DecryptContent((*ctx), encrypted, cipherElement, (*recipient), options)
+			restored, restoredParent, err = xmlenc.DecryptContent(*ctx, encrypted, cipherElement, *recipient, options)
 		}
 	} else {
 		sizes := map[string]int{xmlenc.AES128KeyWrap: 16, xmlenc.AES192KeyWrap: 24, xmlenc.AES256KeyWrap: 32}
 		kek := bytes.Repeat([]byte{7}, sizes[(*wrap)])
-		kw := xmlenc.KeyWrapOptions{Data: options, KeyAlgorithm: (*wrap)}
+		kw := xmlenc.KeyWrapOptions{Data: options, KeyAlgorithm: *wrap}
 
-		encrypted, cipherElement, err = xmlenc.EncryptContentWithKeyWrap((*ctx), source, parent, kek, kw)
+		encrypted, cipherElement, err = xmlenc.EncryptContentWithKeyWrap(*ctx, source, parent, kek, kw)
 		if err == nil {
-			restored, restoredParent, err = xmlenc.DecryptContentWithKeyWrap((*ctx), encrypted, cipherElement, kek, kw)
+			restored, restoredParent, err = xmlenc.DecryptContentWithKeyWrap(*ctx, encrypted, cipherElement, kek, kw)
 		}
 	}
 

@@ -5,7 +5,10 @@ package xslt
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math/bits"
+	"slices"
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/xmlchar"
@@ -14,282 +17,265 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+type keyFunction struct {
+	ec    *execContext
+	scope *Stylesheet
+}
+
+func (f *keyFunction) MinArity() int { return 2 }
+func (f *keyFunction) MaxArity() int { return 3 }
+func (f *keyFunction) FuncParamTypesForArity(arity int) []xdm.SequenceType {
+	return xsltFunctionTypes()[functionTypeKey{nameKey2, arity}].params
+}
+
+func (f *keyFunction) FuncReturnTypeForArity(arity int) *xdm.SequenceType {
+	return xsltFunctionTypes()[functionTypeKey{nameKey2, arity}].result
+}
+
+func (f *keyFunction) BindFunctionReference() xpath.Function {
+	return &keyFunction{ec: f.ec.captureFunctionContext(), scope: f.scope}
+}
+
+func (f *keyFunction) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	ec, err := functionExecution(ctx, f.ec)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx = withExecContext(ctx, ec)
+
+	defer ec.pushPackage(f.scope)()
+
+	return ec.fnKey(ctx, args)
+}
+
 func (ec *execContext) fnKey(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) < 2 {
-		return nil, dynamicError(errCodeXTDE1170, "key() requires at least 2 arguments")
+	if len(args) != 2 && len(args) != 3 {
+		return nil, dynamicError("XPST0017", "key() requires two or three arguments")
 	}
 
-	// fn:key($key-name as xs:string, ...): the first argument is required to be
-	// a single string. An empty sequence is a type error, not a panic.
-	if args[0] == nil || xdm.SequenceLen(args[0]) == 0 {
-		return nil, dynamicError(errCodeXPTY0004, "key() first argument must be a single xs:string, got empty sequence")
-	}
-
-	nameAV, err := xpath.AtomizeItem(args[0].Get(0))
+	name, err := keyArgumentName(ctx, args[0])
 	if err != nil {
 		return nil, err
 	}
 
-	name, err := xpath.AtomicToString(nameAV)
+	defs := ec.effectiveKeys()[name]
+	if len(defs) == 0 {
+		return nil, dynamicError(errCodeXTDE1260, "unknown key %q", name)
+	}
+
+	root, err := ec.keyArgumentRoot(ctx, args)
 	if err != nil {
 		return nil, err
 	}
 
-	// Resolve prefixed key names to expanded names using stylesheet namespaces
-	name = resolveQName(name, ec.stylesheet.namespaces)
-
-	if args[1] == nil || xdm.SequenceLen(args[1]) == 0 {
-		return xdm.EmptySequence(), nil
+	values, err := xpath.FnAtomize(ctx, args[1])
+	if err != nil {
+		return nil, err
 	}
 
-	// Determine the root for key lookup.
-	// Default: use the document containing the context node (per XSLT spec §16.3).
-	// When the 3rd argument is provided, use that node directly as the search root.
-	// This allows scoping to a subtree (e.g., key('k', 'v', $tree/sub)).
-	var root xdm.Node = ec.sourceDoc
-
-	if returned1, matchedBranch := fnKeyLen(ctx, args, &root, ec); matchedBranch {
-		return nil, returned1
+	var nodes []xdm.Node
+	if defs[0].Composite {
+		nodes, err = ec.lookupCompositeKey(ctx, name, values, root)
+	} else {
+		nodes, err = ec.lookupKeyValues(ctx, name, values, root)
 	}
 
-	isComposite := false
-	if defs, ok := ec.effectiveKeys()[name]; ok && len(defs) > 0 {
-		isComposite = defs[0].Composite
+	if err != nil {
+		return nil, err
 	}
 
-	if isComposite {
-		// Composite key: the entire second argument sequence is a single
-		// composite lookup key (matched element-by-element).
-		avs := make([]xdm.AtomicValue, 0, xdm.SequenceLen(args[1]))
-		for item := range xdm.SequenceItems(args[1]) {
-			av, err := xpath.AtomizeItem(item)
-			if err != nil {
-				return nil, err
-			}
+	if err := xpath.Charge(ctx, len(nodes)); err != nil {
+		return nil, err
+	}
 
-			avs = append(avs, av)
-		}
-
-		nodes, err := ec.lookupCompositeKey(ctx, name, avs, root)
-		if err != nil {
+	if len(nodes) > 1 {
+		// Reserve the sorting work before indexing or comparing document positions.
+		if err := xpath.Charge(ctx, len(nodes)*bits.Len(uint(len(nodes)))); err != nil {
 			return nil, err
 		}
 
-		var seq xdm.ItemSlice
-		for _, n := range nodes {
-			seq = append(seq, xdm.NodeItem{Node: n})
+		if ec.docOrderCache == nil {
+			ec.docOrderCache = xpath.NewDocOrderCache()
 		}
 
-		return seq, nil
+		ec.docOrderCache.BuildFrom(root)
+		slices.SortStableFunc(nodes, ec.docOrderCache.Compare)
 	}
 
-	// Non-composite: look up each value individually and union the results
-	// (XSLT 2.0+ §16.3.2).
-	seen := make(map[xdm.Node]struct{})
-
-	var seq xdm.ItemSlice
-
-	for item := range xdm.SequenceItems(args[1]) {
-		valAV, err := xpath.AtomizeItem(item)
-		if err != nil {
-			return nil, err
-		}
-
-		nodes, err := ec.lookupKey(ctx, name, valAV, root)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, n := range nodes {
-			if _, dup := seen[n]; !dup {
-				seen[n] = struct{}{}
-				seq = append(seq, xdm.NodeItem{Node: n})
-			}
-		}
+	seq := make(xdm.ItemSlice, len(nodes))
+	for i, node := range nodes {
+		seq[i] = xdm.NodeItem{Node: node}
 	}
 
 	return seq, nil
 }
 
-// documentRoot walks up to the document root of the given node.
-func documentRoot(n xdm.Node) xdm.Node {
-	for n.Parent() != nil {
-		n = n.Parent()
+func documentRoot(node xdm.Node) xdm.Node {
+	for node.Parent() != nil {
+		node = node.Parent()
 	}
 
-	return n
+	return node
 }
 
-func fnKeyLen(ctx context.Context, args []xdm.Sequence, root *xdm.Node, ec *execContext) (returned1 error, matchedBranch bool) {
-	if len(args) >= 3 && args[2] != nil && xdm.SequenceLen(args[2]) > 0 {
-		ni, ok := args[2].Get(0).(xdm.NodeItem)
-		if ok {
-			// XTDE1270: 3rd arg must have a document node as root
-			r := ni.Node
-			for r.Parent() != nil {
-				r = r.Parent()
-			}
+func keyArgumentName(ctx context.Context, arg xdm.Sequence) (string, error) {
+	var name string
 
-			if r.Type() != xdm.DocumentNode {
-				return dynamicError(errCodeXTDE1270,
-					"key() third argument: root of tree is not a document node"), true
-			}
+	if xpath.FnXPath10Compat(ctx) {
+		var err error
 
-			(*root) = ni.Node
+		name, err = xpath.XPath10String(arg)
+		if err != nil {
+			return "", err
 		}
 	} else {
-		// 2-arg form: context node is required
-		ctxNode := xpath.FnContextNode(ctx)
-		if ctxNode == nil {
-			ctxNode = ec.contextNode
+		atoms, err := xpath.FnAtomize(ctx, arg)
+		if err != nil {
+			return "", err
 		}
 
-		if ctxNode == nil {
-			// XTDE1270: no context node
-			return dynamicError(errCodeXTDE1270,
-				"key() called with no context node"), true
-		}
-		// XTDE1270: root of context node's tree must be a document node
-		r := ctxNode
-		for r.Parent() != nil {
-			r = r.Parent()
+		if len(atoms) != 1 || !isStringLikeType(atoms[0].TypeName) {
+			return "", dynamicError(errCodeXPTY0004, "key name must be one xs:string")
 		}
 
-		if r.Type() != xdm.DocumentNode {
-			return dynamicError(errCodeXTDE1270,
-				"key() context node's root is not a document node"), true
+		name, err = xpath.AtomicToString(atoms[0])
+		if err != nil {
+			return "", err
 		}
-
-		(*root) = documentRoot(ctxNode)
 	}
 
-	return
+	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
+		return "", dynamicError(errCodeXTDE1260, "invalid key name %q", name)
+	}
+
+	if strings.HasPrefix(name, "Q{") {
+		return resolveQName(name, nil), nil
+	}
+
+	if prefix, local, found := strings.Cut(name, ":"); found {
+		uri, ok := xpath.FnNamespace(ctx, prefix)
+		if !ok || uri == "" {
+			return "", dynamicError(errCodeXTDE1260, "undeclared prefix in key name %q", name)
+		}
+
+		return xdm.ClarkName(uri, local), nil
+	}
+
+	return name, nil
 }
 
-// generate-id(node?) returns a unique string identifier for a node.
-// With no arguments, returns the ID of the context node.
-// With an empty sequence argument, returns the empty string.
-func (ec *execContext) fnGenerateID(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	var node xdm.Node
+func (ec *execContext) keyArgumentRoot(ctx context.Context, args []xdm.Sequence) (xdm.Node, error) {
+	var root xdm.Node
 
-	if len(args) == 0 {
-		// No argument: use the XPath context node (correct inside
-		// predicates), and never the XSLT context node.
-		if xpathNode := xpath.FnContextNode(ctx); xpathNode != nil {
-			node = xpathNode
-		} else {
-			node = ec.contextNode
-		}
-	} else {
-		if args[0] == nil || xdm.SequenceLen(args[0]) == 0 {
-			// Argument is an empty sequence: return empty string per spec.
-			return xdm.SingleString(""), nil
+	if len(args) == 3 {
+		if xdm.SequenceLen(args[2]) != 1 {
+			return nil, dynamicError(errCodeXPTY0004, "key() third argument must be one node")
 		}
 
-		ni, ok := args[0].Get(0).(xdm.NodeItem)
+		node, ok := args[2].Get(0).(xdm.NodeItem)
 		if !ok {
-			return nil, dynamicError(errCodeXPTY0004, "generate-id() argument must be a node")
+			return nil, dynamicError(errCodeXPTY0004, "key() third argument must be a node")
 		}
 
-		node = ni.Node
+		root = normalizeNode(node.Node)
+	} else {
+		root = xpath.FnContextNode(ctx)
 	}
 
-	if node == nil {
-		return xdm.SingleString(""), nil
+	if root == nil {
+		return nil, dynamicError(errCodeXTDE1270, "key() requires a context node")
 	}
 
-	return xdm.SingleString(xpath.StableNodeID(node)), nil
+	for ancestor := root; ancestor != nil; ancestor = ancestor.Parent() {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return nil, err
+		}
+
+		if ancestor.Parent() == nil && ancestor.Type() != xdm.DocumentNode {
+			return nil, dynamicError(errCodeXTDE1270, "key() requires a document-rooted tree")
+		}
+	}
+
+	if len(args) == 2 {
+		root = documentRoot(root)
+	}
+
+	return root, nil
 }
 
 // system-property(name) returns XSLT system properties.
 func (ec *execContext) fnSystemProperty(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 || (args[0] == nil || xdm.SequenceLen(args[0]) == 0) {
-		return xdm.SingleString(""), nil
-	}
+	return introspectionSystemProperty(ctx, args, ec.stylesheet.processorLanguage(), ec.stylesheet.dynamicEvaluationDisabled)
+}
 
-	av, err := xpath.AtomizeItem(args[0].Get(0))
+func introspectionSystemProperty(ctx context.Context, args []xdm.Sequence, processor int, disabled bool) (xdm.Sequence, error) {
+	name, err := introspectionArgumentName(ctx, args, "", errCodeXTDE1390)
 	if err != nil {
 		return nil, err
 	}
 
-	name, err := xpath.AtomicToString(av)
-	if err != nil {
-		return nil, err
-	}
-
-	// XTDE1390: validate that the argument is a valid QName or EQName.
-	if !strings.HasPrefix(name, "Q{") && !xmlchar.IsValidQName(name) {
-		return nil, dynamicError(errCodeXTDE1390,
-			"system-property argument %q is not a valid QName", name)
-	}
-
-	// Resolve QName: only prefixed names in the XSLT namespace return
-	// XSLT properties. Unprefixed names are in no namespace and return "".
-	local := name
-	ns := ""
-
-	if strings.HasPrefix(name, "Q{") {
-		// URIQualifiedName: Q{uri}local
-		end := strings.IndexByte(name, '}')
-		if end > 2 {
-			ns = name[2:end]
-			local = name[end+1:]
-		}
-	} else if prefix, l, ok := strings.Cut(name, ":"); ok {
-		local = l
-		// Resolve prefix via stylesheet-level namespaces.
-		resolved := false
-
-		if uri, ok := ec.stylesheet.namespaces[prefix]; ok {
-			ns = uri
-			resolved = true
-		}
-		// XTDE1390: prefix has no namespace declaration
-		if !resolved {
-			return nil, dynamicError(errCodeXTDE1390,
-				"system-property prefix %q has no namespace declaration", prefix)
-		}
-	}
+	ns, local := name.URI, name.Local
 
 	if ns != lexicon.NamespaceXSLT {
 		return xdm.SingleString(""), nil
 	}
 
-	switch local {
-	case paramVersion:
-		if ec.stylesheet.processorLanguage() == 10 {
-			return xdm.SingleDouble(1), nil
+	if local == nameSupportsDynamicEvaluation {
+		if disabled {
+			return xdm.SingleString(lexicon.ValueNo), nil
 		}
 
-		return xdm.SingleString(fmt.Sprintf("%d.0", ec.stylesheet.processorLanguage()/10)), nil
+		return xdm.SingleString(lexicon.ValueYes), nil
+	}
+
+	return systemPropertyValue(ctx, local, processor), nil
+}
+
+func systemPropertyValue(ctx context.Context, local string, processor int) xdm.Sequence {
+	switch local {
+	case paramVersion:
+		if processor == 10 {
+			return xdm.SingleDouble(1)
+		}
+
+		return xdm.SingleString(fmt.Sprintf("%d.0", processor/10))
 	case "vendor":
-		return xdm.SingleString("xmlsec"), nil
+		return xdm.SingleString(processorProductName)
 	case "vendor-url":
-		return xdm.SingleString("https://github.com/skarm/xmlsec"), nil
-	case "product-name":
-		return xdm.SingleString("xmlsec"), nil
+		return xdm.SingleString("https://github.com/skarm/xmlsec")
+	case nameProductName:
+		return xdm.SingleString(processorProductName)
 	case "product-version":
-		return xdm.SingleString("0.1"), nil
+		return xdm.SingleString("0.1")
 	case nameIsSchemaAware:
-		return xdm.SingleString(lexicon.ValueNo), nil
+		return xdm.SingleString(lexicon.ValueNo)
 	case nameSupportsSerialization:
-		return xdm.SingleString(lexicon.ValueYes), nil
+		return xdm.SingleString(lexicon.ValueYes)
 	case textSupportsBackwardsCompatibility:
-		return xdm.SingleString(lexicon.ValueYes), nil
+		return xdm.SingleString(lexicon.ValueYes)
 	case nameSupportsNamespaceAxis:
-		return xdm.SingleString(lexicon.ValueYes), nil
+		return xdm.SingleString(lexicon.ValueYes)
 	case nameSupportsStreaming:
-		return xdm.SingleString(lexicon.ValueNo), nil
+		return xdm.SingleString(lexicon.ValueNo)
 	case nameSupportsDynamicEvaluation:
-		return xdm.SingleString(lexicon.ValueYes), nil
+		if dynamicEvaluationDisabled(ctx) {
+			return xdm.SingleString(lexicon.ValueNo)
+		}
+
+		return xdm.SingleString(lexicon.ValueYes)
 	case textSupportsHigherOrderFunctions:
-		return xdm.SingleString(lexicon.ValueYes), nil
+		return xdm.SingleString(lexicon.ValueYes)
 	case "xpath-version":
-		return xdm.SingleString("3.1"), nil
+		return xdm.SingleString(map[int]string{10: lexicon.XSLTVersion10, 20: lexicon.XSLTVersion20, 30: "3.1"}[processor])
 	case "xsd-version":
-		return xdm.SingleString("1.1"), nil
+		if xpath.XMLSchemaVersion(ctx) == 10 {
+			return xdm.SingleString(lexicon.XSLTVersion10)
+		}
+
+		return xdm.SingleString("1.1")
 	default:
-		return xdm.SingleString(""), nil
+		return xdm.SingleString("")
 	}
 }
 
@@ -298,58 +284,69 @@ func (ec *execContext) fnSystemProperty(ctx context.Context, args []xdm.Sequence
 // fnStreamAvailable implements fn:stream-available — returns true when the
 // URI identifies a resource that can be streamed.
 func (ec *execContext) fnStreamAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 || (args[0] == nil || xdm.SequenceLen(args[0]) == 0) {
+	if xdm.SequenceLen(args[0]) == 0 {
 		return xdm.SingleBoolean(false), nil
 	}
 
-	av, err := xpath.AtomizeItem(args[0].Get(0))
+	atom, err := xpath.AtomizeItem(args[0].Get(0))
 	if err != nil {
 		return nil, err
 	}
 
-	uri, err := xpath.AtomicToString(av)
+	uri, err := xpath.AtomicToString(atom)
 	if err != nil {
 		return nil, err
 	}
 
-	if uri == "" {
+	resolved, err := xpath.ResolveDocumentURI(ctx, uri)
+	if err != nil {
+		if detail, ok := errors.AsType[*xdm.Error](err); ok && detail.Code == "FODC0005" {
+			return nil, err
+		}
+
 		return xdm.SingleBoolean(false), nil
 	}
-	// Retrieve through the configured URIResolver / HTTPClient, stat-ing no
-	// host filesystem directly. We only need the leading bytes
-	// to decide whether the resource is XML, so read a bounded prefix instead
-	// of the whole document. With no resolver installed this fails the
-	// default-deny check; an unavailable resource is reported as not
-	// streamable (false), and never surfaced as an error.
-	resolved := ec.resolveDocumentURI(uri, ec.baseDir())
 
-	prefix, err := ec.retrieveDocumentPrefix(ctx, resolved, 256)
-	if err != nil {
-		// fn:stream-available reports availability, not retrieval failure:
-		// a resource we cannot fetch is simply not streamable.
-		return xdm.SingleBoolean(false), nil //nolint:nilerr
+	if err := ec.CheckRead(ctx, resolved); err != nil {
+		return nil, err
 	}
-	// Only XML resources can be streamed. Quick check on the leading bytes.
-	content := strings.TrimSpace(string(prefix))
-	isXML := strings.HasPrefix(content, "<?xml") || strings.HasPrefix(content, "<")
 
-	return xdm.SingleBoolean(isXML), nil
+	if doc, found := ec.docCache[ec.docCacheKey(resolved)]; found {
+		_, err := ec.existingDocumentRead(ctx, doc)
+		return xdm.SingleBoolean(err == nil), err
+	}
+
+	reader, err := ec.retrieveDocumentReader(ctx, resolved)
+	if err != nil {
+		if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+			return nil, err
+		}
+
+		return xdm.SingleBoolean(false), nil
+	}
+
+	options := ec.inputParseOptions().WithByteLimit(ec.resourceLimit())
+	err = options.CheckXMLProlog(ctx, reader)
+	err = errors.Join(err, reader.Close())
+
+	return xdm.SingleBoolean(err == nil), nil
 }
 
 // fnCurrentOutputURI implements current-output-uri() — returns the URI
 // of the current output destination.
-// Returns empty sequence in temporary output state or when no base output URI is set.
-func (ec *execContext) fnCurrentOutputURI(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
-	if ec.inPatternMatch || ec.inSortKeyEval || ec.temporaryOutputDepth > 0 || ec.currentOutputURI == "" {
+// Temporary local variables retain the URI; non-contextual calls and global
+// initialization clear it independently of the output construction state.
+func (ec *execContext) fnCurrentOutputURI(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
+	if xpath.IsDynamicCall(ctx) || ec.inPatternMatch || ec.inSortKeyEval || ec.currentOutputURI == "" {
 		return xdm.EmptySequence(), nil
 	}
 
 	return xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: ec.currentOutputURI}}, nil
 }
 
-func (ec *execContext) fnAvailableSystemProperties(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
+func fnAvailableSystemProperties(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 	props := []string{
-		paramVersion, "vendor", "vendor-url", "product-name", "product-version",
+		paramVersion, "vendor", "vendor-url", nameProductName, "product-version",
 		nameIsSchemaAware, nameSupportsSerialization,
 		textSupportsBackwardsCompatibility, nameSupportsNamespaceAxis,
 		nameSupportsStreaming, nameSupportsDynamicEvaluation,
@@ -380,52 +377,39 @@ func (ec *execContext) fnUnparsedEntityPublicID(ctx context.Context, args []xdm.
 // xslMultiArityFunc wraps multiple xsl:function overloads (same QName,
 // different arity) as a single xpath.Function that dispatches by arg count.
 
-// emptyUnparsedEntity checks context and argument types before returning an empty entity result.
+// emptyUnparsedEntity validates the document context in the DTD-free input model.
 func (ec *execContext) emptyUnparsedEntity(ctx context.Context, args []xdm.Sequence, functionName, errorCode string) (xdm.Sequence, error) {
-	// Determine the document node: 2-arg form uses the second arg, 1-arg form uses context node.
-	var doc *xdm.Document
+	var item xdm.Item
+	if len(args) == 2 {
+		item = args[1].Get(0) // The declared node() signature enforces cardinality.
+	} else {
+		var err error
 
-	if len(args) >= 2 && args[1] != nil && xdm.SequenceLen(args[1]) > 0 {
-		if ni, ok := args[1].Get(0).(xdm.NodeItem); ok {
-			doc = documentNodeFromNode(ni.Node)
+		item, err = xpath.FnContextItem(ctx)
+		if err != nil {
+			if ec.stylesheet.processorLanguage() < 30 {
+				return nil, dynamicError(errorCode, "%s requires a context node", functionName)
+			}
+
+			return nil, err
 		}
 	}
 
-	if doc == nil {
-		// 1-arg form: use XPath context node, then XSLT context node
-		ctxNode := xpath.FnContextNode(ctx)
-		if ctxNode == nil {
-			ctxNode = ec.contextNode
+	node, ok := item.(xdm.NodeItem)
+	if !ok {
+		if ec.stylesheet.processorLanguage() < 30 {
+			return nil, dynamicError(errorCode, "%s requires a context node", functionName)
 		}
 
-		if ctxNode == nil {
-			return nil, dynamicError(errorCode,
-				"%s called when there is no context node", functionName)
-		}
-
-		root := ctxNode
-		for root.Parent() != nil {
-			root = root.Parent()
-		}
-
-		if root.Type() != xdm.DocumentNode {
-			return nil, dynamicError(errorCode,
-				"%s called when root of context tree is not a document node", functionName)
-		}
+		return nil, dynamicError(errCodeXPTY0004, "%s requires a node", functionName)
 	}
 
-	if args[0] == nil || xdm.SequenceLen(args[0]) == 0 {
-		return xdm.SingleString(""), nil
+	if documentNodeFromNode(node.Node) == nil {
+		return nil, dynamicError(errorCode, "%s requires a document-rooted tree", functionName)
 	}
 
-	av, err := xpath.AtomizeItem(args[0].Get(0))
-	if err != nil {
-		return xdm.SingleString(""), nil //nolint:nilerr // unparsed-entity-uri returns "" on atomization failure
-	}
-
-	_, err = xpath.AtomicToString(av)
-	if err != nil {
-		return xdm.SingleString(""), nil //nolint:nilerr // unparsed-entity-uri returns "" on string conversion failure
+	if functionName == nameUnparsedEntityUri {
+		return xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: ""}}, nil
 	}
 
 	return xdm.SingleString(""), nil

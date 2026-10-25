@@ -65,6 +65,7 @@ type Config struct {
 	BaseURI     string
 	HTTPClient  *http.Client
 	URIResolver URIResolver
+	ReadPolicy  xdm.ResourceReadPolicy
 	// MaxBytes bounds the number of bytes read from a single resolver- or
 	// HTTP-backed resource. Reads larger than MaxBytes fail with an
 	// ErrCodeRetrieval error before an unbounded body is buffered. A value
@@ -141,6 +142,13 @@ func LoadTextLinesBounded(ctx context.Context, cfg *Config, href, encoding strin
 // IsAvailable validates the resource without retaining decoded text. Byte caps
 // apply, but no output storage is charged through CheckBytes.
 func IsAvailable(ctx context.Context, cfg *Config, href, encoding string) bool {
+	available, _ := CheckAvailability(ctx, cfg, href, encoding)
+	return available
+}
+
+// CheckAvailability validates without retaining the content. Retrieval failures
+// mean unavailable; a host resource-access failure remains an error.
+func CheckAvailability(ctx context.Context, cfg *Config, href, encoding string) (bool, error) {
 	if cfg != nil {
 		policy := *cfg
 		policy.CheckBytes = nil
@@ -149,7 +157,11 @@ func IsAvailable(ctx context.Context, cfg *Config, href, encoding string) bool {
 
 	err := loadText(ctx, cfg, href, encoding, func([]byte) error { return nil })
 
-	return err == nil
+	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+		return false, err
+	}
+
+	return err == nil, nil
 }
 
 // ResolveURI validates and resolves an href against the base URI in cfg.
@@ -501,6 +513,12 @@ func openURI(ctx context.Context, cfg *Config, uri string) (io.ReadCloser, strin
 		return nil, "", err
 	}
 
+	if cfg != nil && cfg.ReadPolicy != nil {
+		if err := cfg.ReadPolicy.CheckRead(ctx, uri); err != nil {
+			return nil, "", &xdm.ResourceAccessError{Cause: err}
+		}
+	}
+
 	var rc io.ReadCloser
 
 	hint := ""
@@ -524,6 +542,12 @@ func openURI(ctx context.Context, cfg *Config, uri string) (io.ReadCloser, strin
 
 	if nilcheck.IsNil(rc) {
 		return nil, "", errors.New("resolver returned a nil reader")
+	}
+
+	if cfg != nil && cfg.ReadPolicy != nil {
+		if err := cfg.ReadPolicy.RecordRead(ctx, uri); err != nil {
+			return nil, "", errors.Join(&xdm.ResourceAccessError{Cause: err}, rc.Close())
+		}
 	}
 
 	if typed, ok := rc.(resource.TypedReader); ok {
@@ -556,6 +580,10 @@ func (r *retrievalReader) Read(p []byte) (int, error) {
 }
 
 func retrievalError(err error) error {
+	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+		return err
+	}
+
 	if _, ok := errors.AsType[*Error](err); ok {
 		return err
 	}
@@ -624,7 +652,7 @@ func detectBOM(data []byte) (string, []byte) {
 // It works on raw bytes assuming the declaration is in ASCII-compatible encoding.
 func detectXMLDeclEncoding(data []byte) string {
 	// XML declaration must start at the very beginning.
-	if len(data) < 5 || string(data[:5]) != "<?xml" {
+	if !bytes.HasPrefix(data, []byte("<?xml")) {
 		return ""
 	}
 
@@ -633,21 +661,21 @@ func detectXMLDeclEncoding(data []byte) string {
 		return ""
 	}
 
-	decl := string(data[:end])
+	decl := data[:end]
 	// Look for encoding="..." or encoding='...'.
-	_, rest, found := strings.Cut(decl, "encoding")
+	_, rest, found := bytes.Cut(decl, []byte("encoding"))
 	if !found {
 		return ""
 	}
 
-	rest = strings.TrimLeft(rest, " \t\r\n")
+	rest = bytes.TrimLeft(rest, " \t\r\n")
 	if len(rest) == 0 || rest[0] != '=' {
 		return ""
 	}
 
 	rest = rest[1:]
 
-	rest = strings.TrimLeft(rest, " \t\r\n")
+	rest = bytes.TrimLeft(rest, " \t\r\n")
 	if len(rest) == 0 {
 		return ""
 	}
@@ -657,12 +685,12 @@ func detectXMLDeclEncoding(data []byte) string {
 		return ""
 	}
 
-	encVal, _, found2 := strings.Cut(rest[1:], string(quote))
-	if !found2 {
+	valueEnd := bytes.IndexByte(rest[1:], quote)
+	if valueEnd < 0 {
 		return ""
 	}
 
-	return encVal
+	return string(rest[1 : valueEnd+1])
 }
 
 // resolveEncoding determines the effective encoding from the user-specified

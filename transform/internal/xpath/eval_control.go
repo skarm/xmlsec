@@ -428,7 +428,7 @@ func buildCatchContext(ec *evalContext, xpErr *xdm.Error) *evalContext {
 	})
 	ctx := ec.withVar("err:code", errQN)
 	ctx = ctx.withVar("err:description", xdm.SingleString(xpErr.Message))
-	ctx = ctx.withVar("err:value", nil)
+	ctx = ctx.withVar("err:value", xpErr.Value)
 	ctx = ctx.withVar("err:module", nil)
 	ctx = ctx.withVar("err:line-number", nil)
 	ctx = ctx.withVar("err:column-number", nil)

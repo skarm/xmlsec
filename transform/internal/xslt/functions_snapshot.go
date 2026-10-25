@@ -75,7 +75,7 @@ func fnCopyOfNodes(ctx context.Context, nodes []xdm.Node, ec *execContext, resul
 
 		copied, err := xdm.CopyNode(node, ec.resultDoc)
 		if err != nil {
-			(*result) = append((*result), xdm.NodeItem{Node: node})
+			*result = append(*result, xdm.NodeItem{Node: node})
 			continue
 		}
 		// copy-of preserves all in-scope namespaces, not just those
@@ -109,7 +109,7 @@ func fnCopyOfNodes(ctx context.Context, nodes []xdm.Node, ec *execContext, resul
 			ec.accumulatorComputedDocs[copyRoot] = struct{}{}
 		}
 
-		(*result) = append((*result), xdm.NodeItem{Node: copied})
+		*result = append(*result, xdm.NodeItem{Node: copied})
 	}
 
 	return
@@ -511,8 +511,8 @@ func (ec *execContext) snapshotAttributeNode(node xdm.Node) (xdm.Node, error) {
 // regex-group(n) returns the nth captured group from the current regex match.
 // Returns empty string if called outside xsl:matching-substring or if the
 // group number is out of range.
-func (ec *execContext) fnRegexGroup(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 || (args[0] == nil || xdm.SequenceLen(args[0]) == 0) {
+func (ec *execContext) fnRegexGroup(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	if xpath.IsDynamicCall(ctx) || ec.inPatternMatch || len(args) == 0 || (args[0] == nil || xdm.SequenceLen(args[0]) == 0) {
 		return xdm.SingleString(""), nil
 	}
 

@@ -90,6 +90,40 @@ func IsLiteralChar(r rune, xml11 bool) bool {
 // IsSpace reports whether r belongs to XML 1.0's S production.
 func IsSpace(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' }
 
+// CollapseSpace trims and collapses only XML whitespace (#x20, #x9, #xD, #xA).
+// Other Unicode spaces remain part of the value. Unchanged input is reused.
+func CollapseSpace(s string) string {
+	var (
+		b     strings.Builder
+		first string
+	)
+	for field := range strings.FieldsFuncSeq(s, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	}) {
+		if first == "" {
+			first = field
+			continue
+		}
+
+		if b.Len() == 0 {
+			b.WriteString(first)
+		}
+
+		b.WriteByte(' ')
+		b.WriteString(field)
+	}
+
+	if b.Len() != 0 {
+		return b.String()
+	}
+
+	if len(first) == len(s) {
+		return s
+	}
+
+	return strings.Clone(first)
+}
+
 // IsAllSpace reports whether every byte of b is XML 1.0 §2.3 whitespace (the S
 // production: #x20 | #x9 | #xD | #xA). An empty value is all-space.
 func IsAllSpace[T string | []byte](b T) bool {

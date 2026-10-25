@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/tree"
-	"github.com/skarm/xmlsec/internal/xmloutput"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
@@ -142,19 +141,22 @@ func firstSerializationElement(seq xdm.Sequence) *xdm.Element {
 }
 
 func streamXMLValue(ctx context.Context, w io.Writer, result ValueResult, definition *OutputDef) error {
-	root := firstSerializationElement(result.Items)
-	if err := writeXMLProlog(w, root, definition); err != nil {
+	if err := writeXMLProlog(w, definition); err != nil {
 		return err
 	}
 
 	options := streamXMLWriteOptions(definition, strings.ToLower(definition.Encoding))
 	sequence := serializationSequence{ctx: ctx, definition: definition}
+
 	writer := xdm.XMLSerialization{XMLWriteOptions: options}
+	if definition.DoctypeSystem != "" {
+		writer.Doctype = &xdm.Doctype{PublicID: definition.DoctypePublic, SystemID: definition.DoctypeSystem}
+	}
 
 	return xmlInvalidCharError(writer.WriteSequence(ctx, w, sequence.items(result.Items)))
 }
 
-func writeXMLProlog(w io.Writer, root *xdm.Element, definition *OutputDef) error {
+func writeXMLProlog(w io.Writer, definition *OutputDef) error {
 	version := validOutputXMLVersion(definition.Version)
 	if version == "" {
 		version = lexicon.XSLTVersion10
@@ -177,17 +179,6 @@ func writeXMLProlog(w io.Writer, root *xdm.Element, definition *OutputDef) error
 		}
 
 		if err := writeFullString(w, declaration); err != nil {
-			return err
-		}
-	}
-
-	if definition.DoctypeSystem != "" {
-		name := "html"
-		if root != nil {
-			name = root.Name()
-		}
-
-		if err := xmloutput.WriteDoctype(w, name, definition.DoctypePublic, definition.DoctypeSystem); err != nil {
 			return err
 		}
 	}

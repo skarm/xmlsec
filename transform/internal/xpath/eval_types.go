@@ -36,41 +36,136 @@ func CoerceToSequenceTypeContext(ctx context.Context, seq xdm.Sequence, st xdm.S
 	return coerceToSequenceType(ctx, seq, st, nil)
 }
 
+// ConvertToSequenceType applies function conversion with error propagation.
+// Plain type/cardinality mismatches are XPTY0004; cast, atomization and control
+// errors retain their own codes and causes.
+func ConvertToSequenceType(ctx context.Context, seq xdm.Sequence, st xdm.SequenceType) (xdm.Sequence, error) {
+	return (Evaluator{}).ConvertToSequenceType(ctx, seq, st, 31)
+}
+
+// ConvertToSequenceType applies function conversion in this evaluator's static
+// typing context, using the live invocation's limits. version is the XPath
+// language version; XPath 1.0 compatibility conversion is never applied.
+func (e Evaluator) ConvertToSequenceType(ctx context.Context, seq xdm.Sequence, st xdm.SequenceType, version int) (xdm.Sequence, error) {
+	ec := e.newEvalCtx(nil)
+	ec.version, ec.xpath10Compat = version, false
+	applyBudget(ctx, ec)
+
+	value, err := coerceToSequenceTypeE(ctx, seq, st, ec)
+	if errors.Is(err, errCoerceMismatch) {
+		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("value does not match required type %v", st)}
+	}
+
+	return value, err
+}
+
+// BindSequenceType expands signature names at their declaration site. Function
+// metadata can then cross modules and survive a caller rebinding its prefixes.
+func BindSequenceType(ctx context.Context, st xdm.SequenceType, namespaces map[string]string, defaultNS string) (xdm.SequenceType, error) {
+	if err := Charge(ctx, 1); err != nil {
+		return st, err
+	}
+
+	name := func(lexical, ns string) string {
+		if lexical == "" || lexical == "*" {
+			return lexical
+		}
+
+		_, local := splitEQName(lexical)
+
+		return "Q{" + resolveStaticNameURI(lexical, namespaces, ns) + "}" + local
+	}
+
+	child := func(t xdm.SequenceType) (xdm.SequenceType, error) {
+		return BindSequenceType(ctx, t, namespaces, defaultNS)
+	}
+	switch t := st.ItemTest.(type) {
+	case xdm.AtomicOrUnionType:
+		t.Prefix, t.Name = "", name(joinQName(t.Prefix, t.Name), defaultNS)
+		st.ItemTest = t
+	case xdm.ElementTest:
+		t.Name, t.TypeName = name(t.Name, defaultNS), name(t.TypeName, defaultNS)
+		st.ItemTest = t
+	case xdm.AttributeTest:
+		t.Name, t.TypeName = name(t.Name, ""), name(t.TypeName, defaultNS)
+		st.ItemTest = t
+	case xdm.SchemaElementTest:
+		t.Name = name(t.Name, defaultNS)
+		st.ItemTest = t
+	case xdm.SchemaAttributeTest:
+		t.Name = name(t.Name, "")
+		st.ItemTest = t
+	case xdm.DocumentTest:
+		if t.Inner != nil {
+			inner, err := child(xdm.SequenceType{ItemTest: t.Inner})
+			if err != nil {
+				return st, err
+			}
+
+			t.Inner = inner.ItemTest
+		}
+
+		st.ItemTest = t
+	case xdm.FunctionTest:
+		if t.AnyFunction {
+			return st, nil
+		}
+
+		params := make([]xdm.SequenceType, len(t.ParamTypes))
+		for i, param := range t.ParamTypes {
+			bound, err := child(param)
+			if err != nil {
+				return st, err
+			}
+
+			params[i] = bound
+		}
+
+		result, err := child(t.ReturnType)
+		if err != nil {
+			return st, err
+		}
+
+		t.ParamTypes, t.ReturnType = params, result
+		st.ItemTest = t
+	case xdm.MapTest:
+		if t.AnyType {
+			return st, nil
+		}
+
+		key, err := child(xdm.SequenceType{ItemTest: t.KeyType})
+		if err != nil {
+			return st, err
+		}
+
+		value, err := child(t.ValType)
+		if err != nil {
+			return st, err
+		}
+
+		t.KeyType, t.ValType = key.ItemTest, value
+		st.ItemTest = t
+	case xdm.ArrayTest:
+		if t.AnyType {
+			return st, nil
+		}
+
+		member, err := child(t.MemberType)
+		if err != nil {
+			return st, err
+		}
+
+		t.MemberType = member
+		st.ItemTest = t
+	}
+
+	return st, nil
+}
+
 // MatchesSequenceType checks if a sequence matches a SequenceType using
 // the XPath 3.1 SequenceType matching rules (no coercion).
 func MatchesSequenceType(seq xdm.Sequence, st xdm.SequenceType) bool {
 	return matchesSequenceType(seq, st, nil)
-}
-
-// CheckFunctionParamCompat checks whether a FunctionItem's declared parameter
-// types are compatible with a target FunctionTest's parameter types using
-// contravariance. Returns true if each target param type is a subtype of the
-// corresponding function param type (i.e., the function can accept the target's
-// argument types). If the function has no declared param types, returns true
-// (unknown types are assumed compatible).
-func CheckFunctionParamCompat(fi xdm.FunctionItem, st xdm.SequenceType) bool {
-	ft, ok := st.ItemTest.(xdm.FunctionTest)
-	if !ok || ft.AnyFunction {
-		return true
-	}
-
-	if len(fi.ParamTypes) == 0 || len(ft.ParamTypes) == 0 {
-		return true // no type info → assume compatible
-	}
-
-	if fi.Arity >= 0 && fi.Arity != len(ft.ParamTypes) {
-		return false
-	}
-
-	for i, testParam := range ft.ParamTypes {
-		// Contravariant: the function's param must be a supertype of the target's param
-		parameter, declared := xdm.FunctionParameterType(fi.ParamTypes, fi.RepeatParamType, i)
-		if declared && !isSequenceSubtype(testParam, parameter, nil) {
-			return false
-		}
-	}
-
-	return true
 }
 
 func evalInstanceOfExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e InstanceOfExpr) (xdm.Sequence, error) {
@@ -292,6 +387,10 @@ func evalCastExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e 
 	av := atoms[0]
 	// xs:QName cast from string requires namespace context
 	if targetType == xdm.TypeQName {
+		if !qnameCastOperandAllowed(ec, e.Expr, av) {
+			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "XPath 2.0 QName cast requires a string literal or QName value"}
+		}
+
 		result, err := castToQName(av, ec)
 		if err != nil {
 			return nil, err
@@ -372,7 +471,12 @@ func evalCastableExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext
 	av := atoms[0]
 	// xs:QName cast from string requires namespace context
 	if targetType == xdm.TypeQName {
+		if !qnameCastOperandAllowed(ec, e.Expr, av) {
+			return xdm.SingleBoolean(false), nil
+		}
+
 		_, castErr := castToQName(av, ec)
+
 		return xdm.SingleBoolean(castErr == nil), nil
 	}
 	// xs:ENTITIES, xs:IDREFS, xs:NMTOKENS are list types:
@@ -616,7 +720,19 @@ func coerceToSequenceTypeE(ctx context.Context, seq xdm.Sequence, st xdm.Sequenc
 		return seq, nil
 	}
 
-	if fnTest, ok := st.ItemTest.(xdm.FunctionTest); ok {
+	if _, ok := st.ItemTest.(xdm.FunctionTest); ok {
+		var namespaces map[string]string
+		if ec != nil {
+			namespaces = ec.namespaces
+		}
+
+		bound, err := BindSequenceType(ctx, st, namespaces, namespaces[""])
+		if err != nil {
+			return nil, err
+		}
+
+		fnTest := bound.ItemTest.(xdm.FunctionTest) //nolint:forcetypeassert // binding preserves the item-test kind
+
 		return coerceFunctionSequence(ctx, seq, st.Occurrence, fnTest, ec)
 	}
 
@@ -708,13 +824,9 @@ func atomizeForSequenceCoercion(ctx context.Context, seq xdm.Sequence, occurrenc
 
 	tooMany := false
 
-	_, err := atomizeStreamCont(seq, typedValueItemCheckFor(ec), func(atom xdm.AtomicValue) (bool, error) {
+	err := atomizeBounded(ctx, ec, seq, func(atom xdm.AtomicValue) (bool, error) {
 		if len(atoms) >= fnMaxNodes(ec) {
 			return false, ErrNodeSetLimit
-		}
-
-		if err := fnCountOps(ctx, ec, 1); err != nil {
-			return false, err
 		}
 
 		atoms = append(atoms, atom)
@@ -807,8 +919,24 @@ func coerceFunctionItem(item xdm.Item, target xdm.FunctionTest, ec *evalContext)
 		return nil, false
 	}
 
+	if ec == nil {
+		ec = (Evaluator{}).newEvalCtx(nil)
+		ec.version = 31
+	}
+
 	paramTypes := append([]xdm.SequenceType(nil), target.ParamTypes...)
 	returnType := target.ReturnType
+	// The adapter only needs typing information. Do not retain the producing
+	// evaluation's focus, variables, resource resolvers or diagnostic writers.
+	captured := &evalContext{
+		namespaces: ec.namespaces, schemaDeclarations: ec.schemaDeclarations,
+		typeAnnotations: ec.typeAnnotations, nilledElements: ec.nilledElements,
+		preservedIDAnnotations: ec.preservedIDAnnotations, idNodes: ec.idNodes,
+		version: ec.version, xmlSchemaVersion: ec.xmlSchemaVersion,
+		strictPrefixes: ec.strictPrefixes, qnameValueNoDefaultNS: ec.qnameValueNoDefaultNS,
+		allowXML11Chars: ec.allowXML11Chars,
+		opLimit:         ec.opLimit, maxNodes: ec.maxNodes, maxRecursionDepth: ec.maxRecursionDepth,
+	}
 
 	return xdm.FunctionItem{
 		Arity:      len(paramTypes),
@@ -824,12 +952,17 @@ func coerceFunctionItem(item xdm.Item, target xdm.FunctionTest, ec *evalContext)
 				}
 			}
 
-			invokeCtx := ec
-			if fnCtx := getFnContext(ctx); fnCtx != nil {
-				invokeCtx = fnCtx
+			// Keep the required type's static context while borrowing the live
+			// caller's work state, including on calls after this coercion returns.
+			invokeCtx := calleeContext(ctx, captured)
+			applyBudget(ctx, invokeCtx)
+
+			callArgs, err := coerceFunctionItemArgs(ctx, xdm.FunctionItem{ParamTypes: paramTypes}, args, invokeCtx)
+			if err != nil {
+				return nil, err
 			}
 
-			callArgs, err := coerceFunctionItemArgs(ctx, actual, args, invokeCtx)
+			callArgs, err = coerceFunctionItemArgs(ctx, actual, callArgs, invokeCtx)
 			if err != nil {
 				return nil, err
 			}
@@ -1327,6 +1460,13 @@ func isItemTypeSubtype(a, b xdm.NodeTest, ec *evalContext) bool {
 		return at.Local == bt.Local && at.Prefix == bt.Prefix
 	case xdm.ElementTest:
 		return isElementTestSubtype(a, bt, ec)
+	case xdm.DocumentTest:
+		at, ok := a.(xdm.DocumentTest)
+		if !ok {
+			return false
+		}
+
+		return bt.Inner == nil || at.Inner != nil && isItemTypeSubtype(at.Inner, bt.Inner, ec)
 	case xdm.AttributeTest:
 		at, ok := a.(xdm.AttributeTest)
 		if !ok {
@@ -1337,7 +1477,7 @@ func isItemTypeSubtype(a, b xdm.NodeTest, ec *evalContext) bool {
 			return true
 		}
 
-		return at.Name == bt.Name
+		return sameTypeTestName(at.Name, bt.Name, ec, true)
 	case xdm.FunctionTest:
 		return isFunctionTestSubtype(a, bt, ec)
 	}
@@ -1411,7 +1551,7 @@ func isElementTestSubtype(a xdm.NodeTest, bt xdm.ElementTest, ec *evalContext) b
 		return true // element() matches any element
 	}
 
-	if bt.Name != "" && bt.Name != "*" && at.Name != bt.Name {
+	if bt.Name != "" && bt.Name != "*" && !sameTypeTestName(at.Name, bt.Name, ec, false) {
 		return false
 	}
 	// Check type annotation: if bt specifies a type, at must have a
@@ -1424,7 +1564,7 @@ func isElementTestSubtype(a xdm.NodeTest, bt xdm.ElementTest, ec *evalContext) b
 		}
 
 		bType := resolveTestTypeName(bt.TypeName, ec)
-		if !xdm.IsSubtypeOf(at.TypeName, bType) {
+		if !matchesAnnotationSubtype(resolveTestTypeName(at.TypeName, ec), bType, ec) {
 			return false
 		}
 		// Nillable: element(N, T?) is not subtype of element(N, T)
@@ -1434,6 +1574,13 @@ func isElementTestSubtype(a xdm.NodeTest, bt xdm.ElementTest, ec *evalContext) b
 	}
 
 	return true
+}
+
+func sameTypeTestName(a, b string, ec *evalContext, attribute bool) bool {
+	aLocal, aURI := resolveSchemaTestName(a, ec, attribute)
+	bLocal, bURI := resolveSchemaTestName(b, ec, attribute)
+
+	return aLocal == bLocal && aURI == bURI
 }
 
 func isFunctionTestSubtype(a xdm.NodeTest, bt xdm.FunctionTest, ec *evalContext) bool {
@@ -1488,9 +1635,24 @@ func isAnyItemTest(t xdm.NodeTest) bool {
 	return ok
 }
 
-// castToQName casts an atomic value to xs:QName using the evaluation context's
-// namespace bindings to resolve prefixes. Per XPath 3.1, casting from xs:string
-// (or xs:untypedAtomic) to xs:QName requires namespace context.
+// XPath 2.0 restricts lexical QName casts to string literal operands. Inspect
+// the source expression, rather than an evaluated or constant-folded value.
+func qnameCastOperandAllowed(ec *evalContext, source Expr, value xdm.AtomicValue) bool {
+	if ec == nil || ec.version != 20 || value.TypeName == xdm.TypeQName || value.BaseType == xdm.TypeQName {
+		return true
+	}
+
+	literal, ok := source.(LiteralExpr)
+	if !ok {
+		return false
+	}
+
+	_, ok = literal.Value.(string)
+
+	return ok
+}
+
+// castToQName resolves lexical QNames in the evaluator's namespace context.
 func castToQName(v xdm.AtomicValue, ec *evalContext) (xdm.AtomicValue, error) {
 	// QName → QName: identity
 	if v.TypeName == xdm.TypeQName {

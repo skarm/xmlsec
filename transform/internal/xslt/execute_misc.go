@@ -5,13 +5,12 @@ package xslt
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
-	xpathstream "github.com/skarm/xmlsec/transform/internal/xslt/internal/stream"
 )
 
 type analyzeStringSource struct {
@@ -56,10 +55,26 @@ func (ec *execContext) execAnalyzeString(ctx context.Context, inst *analyzeStrin
 	}
 
 	// Compile the regex using XPath regex semantics
-	re, err := xpath.CompileRegex(regex, flags)
+	re, err := xpath.CompileRegexContext(ctx, regex, flags)
 	if err != nil {
 		// Map XPath regex errors to XSLT error codes
+		var detail *xdm.Error
+		if errors.As(err, &detail) && detail.Code == "FORX0001" {
+			return dynamicErrorCause(errCodeXTDE1145, err, "xsl:analyze-string invalid flags: %v", err)
+		}
+
 		return dynamicErrorCause(errCodeXTDE1140, err, "xsl:analyze-string invalid regex: %v", err)
+	}
+
+	if input.version2 {
+		emptyMatch, err := re.MatchString(ctx, "")
+		if err != nil {
+			return err
+		}
+
+		if emptyMatch {
+			return dynamicError(errCodeXTDE1150, "XSLT 2.0 analyze-string regular expression must not match an empty string")
+		}
 	}
 
 	// XSLT 3.0 removed the XTDE1150 error for zero-length regex matches.
@@ -352,195 +367,95 @@ func analyzeStringGroups(input string, matches []int) []string {
 	return groups
 }
 
+// execWherePopulated applies section 8.4.1 to each item before the caller
+// constructs complex content. Capturing the raw sequence preserves document,
+// text, attribute and array boundaries until after deemed-empty filtering.
 func (ec *execContext) execWherePopulated(ctx context.Context, inst *wherePopulatedInst) error {
-	out := ec.currentOutput()
-
-	// When the outer frame captures items (e.g. inside xsl:variable with
-	// as="map(*)?"), use sequence mode so maps/arrays aren't rejected as
-	// XTDE0450. Delegate filtering to isItemSequencePopulated.
-	if out.captureItems {
-		return ec.execWherePopulatedSequence(ctx, inst)
-	}
-
-	// Execute body into a temporary document, then filter per XSLT 3.0 section 8.4.
-	tmpDoc := xdm.NewDefaultDocument()
-
-	tmpRoot, err := tmpDoc.CreateElement("_tmp")
-	if err != nil {
-		return err
-	}
-
-	if err := tmpDoc.AddChild(tmpRoot); err != nil {
-		return err
-	}
-
-	ec.outputStack = append(ec.outputStack, &outputFrame{doc: tmpDoc, current: tmpRoot, wherePopulated: true})
-
-	if err := ec.executeSequenceConstructor(ctx, inst.Body); err != nil {
-		ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
-		return err
-	}
-
-	ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
-
-	// Collect surviving attributes (non-empty value) and surviving child nodes.
-	var survivingAttrs []*xdm.Attribute
-
-	for _, attr := range tmpRoot.Attributes() {
-		if len(xdm.CharacterData(attr)) > 0 {
-			survivingAttrs = append(survivingAttrs, attr)
-		}
-	}
-
-	hasSignificantChild := false
-
-	for child := range xdm.Children(tmpRoot) {
-		if isPopulated(child) {
-			hasSignificantChild = true
-			break
-		}
-	}
-
-	// If nothing survives (no populated attrs and no populated children),
-	// discard the whole result.
-	if len(survivingAttrs) == 0 && !hasSignificantChild {
-		return nil
-	}
-
-	if err := ec.emitPopulatedAttributes(out, survivingAttrs); err != nil {
-		return err
-	}
-
-	for child := range xdm.Children(tmpRoot) {
-		if !isPopulated(child) {
-			continue
-		}
-
-		if err := ec.copyPopulatedChild(child); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (ec *execContext) emitPopulatedAttributes(out *outputFrame, attrs []*xdm.Attribute) error {
-	for _, attr := range attrs {
-		if elem, ok := out.current.(*xdm.Element); ok {
-			if elem.FirstChild() != nil {
-				return dynamicError(errCodeXTDE0410,
-					"cannot add attribute to element after children have been added")
-			}
-
-			if attr.URI() != "" {
-				ns, _ := out.doc.CreateNamespace(attr.Prefix(), attr.URI())
-				if err := elem.SetAttributeNS(attr.LocalName(), xdm.CharacterData(attr), ns); err != nil {
-					return err
-				}
-			} else {
-				if err := elem.SetAttribute(attr.LocalName(), xdm.CharacterData(attr)); err != nil {
-					return err
-				}
-			}
-
-			out.noteOutput()
-		}
-	}
-
-	return nil
-}
-
-func (ec *execContext) copyPopulatedChild(child xdm.Node) error {
-	if child.Type() != xdm.DocumentNode {
-		return ec.copyPopulatedNode(child)
-	}
-
-	doc, _ := xdm.AsNode[*xdm.Document](child)
-	for node := range xdm.Children(doc) {
-		if !xdm.IsXDMChild(node) {
-			continue
-		}
-
-		if err := ec.copyPopulatedNode(node); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (ec *execContext) copyPopulatedNode(node xdm.Node) error {
-	copied, err := xdm.CopyNode(node, ec.resultDoc)
-	if err != nil {
-		return err
-	}
-
-	return ec.addNode(copied)
-}
-
-// execWherePopulatedSequence handles xsl:where-populated inside a sequence
-// context (xsl:variable with as= or similar). The body is evaluated as a
-// sequence and items are filtered using the XSLT 3.0 populated-item rules.
-func (ec *execContext) execWherePopulatedSequence(ctx context.Context, inst *wherePopulatedInst) error {
 	seq, err := ec.evaluateBodyAsSequence(ctx, inst.Body)
 	if err != nil {
 		return err
 	}
 
-	if !isItemSequencePopulated(seq) {
-		return nil
-	}
+	var populated xdm.ItemSlice
 
-	out := ec.currentOutput()
-	out.pendingItems = append(out.pendingItems, xdm.Materialize(seq)...)
-	out.noteOutput()
+	for item := range xdm.SequenceItems(seq) {
+		empty, err := conditionalItemEmpty(ctx, item, deemedEmpty, 0)
+		if err != nil {
+			return err
+		}
 
-	return nil
-}
-
-// isItemSequencePopulated returns true if the XDM item sequence contains
-// at least one "significant" item per XSLT 3.0 xsl:where-populated rules.
-//
-//   - A map is significant if it has at least one entry.
-//   - An array is significant if at least one member (recursively) is
-//     a non-empty sequence containing a significant item.
-//   - An empty string ("") is not significant.
-//   - Any other atomic value, node, or non-empty-string is significant.
-func isItemSequencePopulated(items xdm.Sequence) bool {
-	if items == nil {
-		return false
-	}
-
-	for item := range xdm.SequenceItems(items) {
-		if isItemSignificant(item) {
-			return true
+		if !empty {
+			populated = append(populated, item)
 		}
 	}
 
-	return false
+	return ec.outputSequence(populated)
 }
 
-func isItemSignificant(item xdm.Item) bool {
-	switch v := item.(type) {
+type conditionalEmptiness uint8
+
+const (
+	deemedEmpty conditionalEmptiness = iota
+	vacuousItem
+)
+
+// conditionalItemEmpty keeps the distinct definitions in sections 8.4.1 and
+// 8.4.2 while sharing bounded recursive array flattening and atomic conversion.
+func conditionalItemEmpty(ctx context.Context, item xdm.Item, rule conditionalEmptiness, depth int) (bool, error) {
+	if err := xpath.Charge(ctx, 1); err != nil {
+		return false, err
+	}
+
+	if depth > xpath.DepthLimit(ctx, 128) {
+		return false, xpath.ErrBudget
+	}
+
+	switch value := item.(type) {
+	case xdm.NodeItem:
+		kind := value.Node.Type()
+		if kind == xdm.DocumentNode || (rule == deemedEmpty && kind == xdm.ElementNode) {
+			return value.Node.FirstChild() == nil, nil
+		}
+
+		if rule == deemedEmpty || kind == xdm.TextNode || kind == xdm.CDATASectionNode {
+			return xdm.StringValue(value.Node) == "", nil
+		}
+
+		return false, nil
+	case xdm.AtomicValue:
+		text, err := xpath.AtomicToString(value)
+		return text == "", err
 	case xdm.MapItem:
-		return v.Size() > 0
+		return rule == deemedEmpty && value.Size() == 0, nil
 	case xdm.ArrayItem:
-		for i := 1; i <= v.Size(); i++ {
-			member, _ := v.Get(i)
-			if isItemSequencePopulated(member) {
-				return true
+		return conditionalArrayEmpty(ctx, value, rule, depth)
+	case *xdm.ArrayItem:
+		return conditionalArrayEmpty(ctx, *value, rule, depth)
+	default:
+		return false, nil
+	}
+}
+
+func conditionalArrayEmpty(ctx context.Context, array xdm.ArrayItem, rule conditionalEmptiness, depth int) (bool, error) {
+	for i := 1; i <= array.Size(); i++ {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return false, err
+		}
+
+		member, err := array.GetView(i)
+		if err != nil {
+			return false, err
+		}
+
+		for item := range xdm.SequenceItems(member) {
+			empty, err := conditionalItemEmpty(ctx, item, rule, depth+1)
+			if err != nil || !empty {
+				return empty, err
 			}
 		}
-
-		return false
-	case xdm.AtomicValue:
-		s, _ := xpath.AtomicToString(v)
-		return s != ""
-	case xdm.NodeItem:
-		return isPopulated(v.Node)
-	default:
-		return true
 	}
+
+	return true, nil
 }
 
 func (ec *execContext) evaluateConditionalInstruction(ctx context.Context, selectExpr *xpath.Expression, body []instruction) (xdm.Sequence, error) {
@@ -570,20 +485,29 @@ func (ec *execContext) registerConditionalOutput(ctx context.Context, selectExpr
 		return nil
 	}
 
-	content, err := ec.evaluateConditionalInstruction(ctx, selectExpr, body)
-	if err != nil {
-		return err
+	var local *varScope
+
+	if ec.localVars != nil {
+		if err := xpath.Charge(ctx, len(ec.localVars.vars)); err != nil {
+			return err
+		}
+
+		local = &varScope{vars: maps.Clone(ec.localVars.vars), deferredErrors: maps.Clone(ec.localVars.deferredErrors), parent: ec.localVars.parent}
 	}
 
 	placeholder := out.doc.CreateComment("")
-	if err := ec.addNodeUntracked(placeholder); err != nil {
+	if out.sequenceMode {
+		out.pendingItems = append(out.pendingItems, xdm.NodeItem{Node: placeholder})
+	} else if err := ec.addNodeUntracked(placeholder); err != nil {
 		return err
 	}
 
 	scopeIdx := len(out.conditionalScopes) - 1
 	out.conditionalScopes[scopeIdx].actions = append(out.conditionalScopes[scopeIdx].actions, conditionalAction{
-		kind:          kind,
-		content:       content,
+		kind:       kind,
+		selectExpr: selectExpr, body: body, localVars: local,
+		staticBaseURI: ec.staticBaseURIOverride, xpathDefaultNS: ec.xpathDefaultNS, hasXPathDefaultNS: ec.hasXPathDefaultNS,
+		sourceLine: ec.errSourceLine, sourceModule: ec.errSourceModule,
 		placeholder:   placeholder,
 		prevWasAtomic: out.prevWasAtomic,
 	})
@@ -591,54 +515,36 @@ func (ec *execContext) registerConditionalOutput(ctx context.Context, selectExpr
 	return nil
 }
 
-// execMap executes an xsl:map instruction, producing a MapItem from child
-// xsl:map-entry instructions.
+// execMap combines a sequence of maps using the shared duplicate-key rules.
 func (ec *execContext) execMap(ctx context.Context, inst *mapInst) error {
-	tmpDoc := xdm.NewDefaultDocument()
-
-	tmpRoot, err := tmpDoc.CreateElement("_tmp")
+	maps, err := ec.evaluateBodyAsSequence(ctx, inst.Body)
 	if err != nil {
 		return err
 	}
 
-	if err := tmpDoc.AddChild(tmpRoot); err != nil {
-		return err
-	}
-
-	frame := &outputFrame{
-		doc:            tmpDoc,
-		current:        tmpRoot,
-		captureItems:   true,
-		sequenceMode:   true,
-		mapConstructor: true,
-	}
-
-	ec.outputStack = append(ec.outputStack, frame)
-	if err := ec.executeSequenceConstructor(ctx, inst.Body); err != nil {
-		ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
-		return err
-	}
-
-	ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
-
-	var entries []xdm.MapEntry
-
-	dupCheck := xdm.NewMap(nil)
-
-	for _, item := range frame.pendingItems {
-		m, ok := item.(xdm.MapItem)
-		if !ok {
-			return dynamicError(errCodeXTDE0450, "xsl:map body produced non-map item %T", item)
+	builder := xdm.NewMapBuilder(xdm.MergeReject, xdm.SequenceLen(maps))
+	for item := range xdm.SequenceItems(maps) {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
 		}
 
-		if err := m.ForEach(func(k xdm.AtomicValue, v xdm.Sequence) error {
-			if _, exists := dupCheck.Get(k); exists {
-				ks, _ := xpath.AtomicToString(k)
-				return dynamicError(errCodeXTDE3365, "duplicate key %q in xsl:map", ks)
+		m, ok := item.(xdm.MapItem)
+		if !ok {
+			return dynamicError("XTTE3375", "xsl:map body produced non-map item %T", item)
+		}
+
+		if err := m.ForEachView(func(key xdm.AtomicValue, value xdm.Sequence) error {
+			if err := xpath.Charge(ctx, 1); err != nil {
+				return err
 			}
 
-			entries = append(entries, xdm.MapEntry{Key: k, Value: v})
-			dupCheck = xdm.NewMap(entries)
+			if err := builder.Add(key, value); err != nil {
+				return dynamicError(errCodeXTDE3365, "duplicate key in xsl:map")
+			}
+
+			if builder.Size() > xpath.NodeLimit(ctx, xdm.DefaultMaxNodeSetLength) {
+				return xpath.ErrBudget
+			}
 
 			return nil
 		}); err != nil {
@@ -646,122 +552,87 @@ func (ec *execContext) execMap(ctx context.Context, inst *mapInst) error {
 		}
 	}
 
-	m := xdm.NewMap(entries)
-
-	out := ec.currentOutput()
-	if out.captureItems {
-		out.pendingItems = append(out.pendingItems, m)
-		out.noteOutput()
-
-		return nil
-	}
-	// For json/adaptive output methods, capture items instead of XTDE0450.
-	if ec.isItemOutputMethod() {
-		out.pendingItems = append(out.pendingItems, m)
-		out.noteOutput()
-
-		return nil
-	}
-
-	return dynamicError(errCodeXTDE0450, "cannot add a map to the result tree")
+	return ec.outputSequence(xdm.ItemSlice{builder.Build()})
 }
 
-// execMapEntry is a no-op when called outside xsl:map; entries are handled
-// by execMap directly.
+// execMapEntry constructs one map entry, including outside xsl:map.
 func (ec *execContext) execMapEntry(ctx context.Context, inst *mapEntryInst) error {
-	out := ec.currentOutput()
-
-	// When called standalone (outside xsl:map), produce a single-entry map.
-	// Per XSLT 3.0 §11.9.4, xsl:map-entry always produces a map item.
 	keyResult, err := ec.evalXPath(ctx, inst.Key, ec.contextNode)
 	if err != nil {
 		return err
 	}
 
-	keySeq := keyResult.Sequence()
-	if keySeq == nil || xdm.SequenceLen(keySeq) != 1 {
-		return dynamicError(errCodeXPTY0004, "xsl:map-entry key must be a single atomic value")
-	}
-
-	keyAV, err := xpath.AtomizeItem(keySeq.Get(0))
+	key, err := ec.convertSequenceType(ctx, keyResult.Sequence(), xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: "Q{http://www.w3.org/2001/XMLSchema}anyAtomicType"}})
 	if err != nil {
 		return err
 	}
 
-	var valSeq xdm.Sequence
+	keyValue, err := xpath.AtomizeItem(key.Get(0))
+	if err != nil {
+		return err
+	}
+
+	var value xdm.Sequence
 
 	if inst.Select != nil {
-		valResult, err := ec.evalXPath(ctx, inst.Select, ec.contextNode)
+		result, err := ec.evalXPath(ctx, inst.Select, ec.contextNode)
 		if err != nil {
 			return err
 		}
 
-		valSeq = valResult.Sequence()
+		value = result.Sequence()
 	} else if len(inst.Body) > 0 {
-		valSeq, err = ec.evaluateBodyAsSequence(ctx, inst.Body)
+		value, err = ec.evaluateBodyAsSequence(ctx, inst.Body)
 		if err != nil {
 			return err
 		}
 	}
 
-	mapItem := xdm.NewMap([]xdm.MapEntry{{
-		Key:   keyAV,
-		Value: valSeq,
-	}})
-
-	if out.captureItems {
-		out.pendingItems = append(out.pendingItems, mapItem)
-		out.noteOutput()
-
-		return nil
-	}
-	// If not capturing items, output the map as text (fallback)
-	s := stringifySequenceWithSep(xdm.ItemSlice{mapItem}, " ")
-	if s != "" {
-		text := ec.resultDoc.CreateText(s)
-		return ec.addNode(text)
-	}
-
-	return nil
+	return ec.outputSequence(xdm.ItemSlice{xdm.SingleEntryMap(keyValue, value)})
 }
 
-// execAssert implements xsl:assert.
-// If the test expression evaluates to false, an error is raised with the
-// specified error code (default XTMM9001).
+type assertionsKey struct{}
+
+type dynamicEvaluationDisabledKey struct{}
+
+// WithDynamicEvaluationDisabled selects a static feature restriction inherited
+// by nested compilation. It cannot enable evaluation in a disabled outer scope.
+func WithDynamicEvaluationDisabled(ctx context.Context) context.Context {
+	return context.WithValue(ctx, dynamicEvaluationDisabledKey{}, true)
+}
+
+func dynamicEvaluationDisabled(ctx context.Context) bool {
+	disabled, _ := ctx.Value(dynamicEvaluationDisabledKey{}).(bool)
+	return disabled
+}
+
+// WithAssertions selects the invocation's external XSLT assertion policy.
+func WithAssertions(ctx context.Context, enabled bool) context.Context {
+	return context.WithValue(ctx, assertionsKey{}, enabled)
+}
+
+// execAssert implements xsl:assert when externally enabled. False tests and
+// ordinary dynamic test errors follow the terminating message rules.
 func (ec *execContext) execAssert(ctx context.Context, inst *assertInst) error {
-	if inst.Test == nil {
+	enabled, _ := ctx.Value(assertionsKey{}).(bool)
+	if !enabled || inst.Test == nil {
 		return nil
 	}
 
-	b, err := ec.evalXPathEBV(ctx, inst.Test, ec.contextNode)
+	passed, err := ec.evalXPathEBV(ctx, inst.Test, ec.contextNode)
 	if err != nil {
-		return err
+		if err := preserveControlFailure(ctx, err); err != nil {
+			return err
+		}
 	}
 
-	if !b {
-		errCode := inst.ErrorCode
-		if errCode == "" {
-			errCode = errCodeXTMM9001
-		}
-
-		msg := "assertion failed"
-
-		if inst.Select != nil {
-			sel, selErr := ec.evalXPath(ctx, inst.Select, ec.contextNode)
-			if selErr == nil {
-				msg = stringifySequence(sel.Sequence())
-			}
-		} else if len(inst.Body) > 0 {
-			seq, bodyErr := ec.evaluateBody(ctx, inst.Body)
-			if bodyErr == nil {
-				msg = stringifySequence(seq)
-			}
-		}
-
-		return dynamicError(errCode, "%s", msg)
+	if passed {
+		return nil
 	}
 
-	return nil
+	message := &messageInst{sourceInfo: inst.sourceInfo, Select: inst.Select, Body: inst.Body, ErrorCode: inst.ErrorCode, ErrorNamespaces: inst.ErrorNamespaces}
+
+	return ec.execMessageWithDefaults(ctx, message, true, errCodeXTMM9001)
 }
 
 // execEvaluate implements xsl:evaluate — dynamically compile and evaluate
@@ -769,6 +640,14 @@ func (ec *execContext) execAssert(ctx context.Context, inst *assertInst) error {
 func (ec *execContext) execEvaluate(ctx context.Context, inst *evaluateInst) error {
 	xpathStr, err := ec.evaluateXPathSource(ctx, inst)
 	if err != nil {
+		return err
+	}
+
+	if limit := dynamicProgramLimit(ctx, ec.resourceLimit()); limit > 0 && int64(len(xpathStr)) > limit {
+		return xpath.ErrBudget
+	}
+
+	if err := xpath.Charge(ctx, len(xpathStr)); err != nil {
 		return err
 	}
 
@@ -786,13 +665,13 @@ func (ec *execContext) execEvaluate(ctx context.Context, inst *evaluateInst) err
 		return err
 	}
 
-	dynExpr, compileErr := xpath.NewCompiler().Compile(xpathStr)
+	dynExpr, compileErr := xpath.NewCompiler().Context(ctx).Language(31, nsBindings).Compile(xpathStr)
 	if compileErr != nil {
-		return dynamicError(errCodeXTDE3160, "xsl:evaluate: cannot compile XPath expression %q: %v", xpathStr, compileErr)
-	}
+		if failure := preserveControlFailure(ctx, compileErr); failure != nil {
+			return failure
+		}
 
-	if err := validateDynamicExpression(dynExpr, nsBindings); err != nil {
-		return err
+		return dynamicError(errCodeXTDE3160, "xsl:evaluate: cannot compile XPath expression %q: %v", xpathStr, compileErr)
 	}
 
 	dynCtx := ec.xpathContext(ctx)
@@ -803,6 +682,14 @@ func (ec *execContext) execEvaluate(ctx context.Context, inst *evaluateInst) err
 	}
 
 	eval := ec.dynamicXPathEvaluator(vars, nsBindings)
+	if err := eval.ValidateExpression(ctx, dynExpr); err != nil {
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return failure
+		}
+
+		return dynamicError(errCodeXTDE3160, "xsl:evaluate static context: %s", err)
+	}
+
 	if inst.BaseURI != nil {
 		baseURI, buErr := inst.BaseURI.evaluate(dynCtx, ec.contextNode)
 		if buErr != nil {
@@ -837,13 +724,6 @@ func (ec *execContext) execEvaluate(ctx context.Context, inst *evaluateInst) err
 		eval = eval.Position(1).Size(1)
 	}
 
-	// The dynamically-compiled expression inherits backwards-compatible processing
-	// from the xsl:evaluate instruction: when the static xpath attribute is
-	// compat-marked (an effective version < 2.0), evaluate the dynamic expression
-	// in XPath 1.0 compatibility mode too.
-	if ec.isCompatExpr(inst.XPath) {
-		eval = eval.XPath10Compat()
-	}
 	// 7. Evaluate the dynamic expression.
 	var evalNode xdm.Node
 	if dynContextNode != nil {
@@ -858,97 +738,17 @@ func (ec *execContext) execEvaluate(ctx context.Context, inst *evaluateInst) err
 	}
 
 	seq := result.Sequence()
-	if inst.As != "" {
-		if typeErr := ec.checkEvaluateAsType(inst.As, seq); typeErr != nil {
-			return typeErr
+
+	if inst.ResultType != nil {
+		converted, err := ec.convertSequenceType(ctx, seq, *inst.ResultType)
+		if err != nil {
+			return err
 		}
+
+		seq = converted
 	}
 
 	return ec.outputSequence(seq)
-}
-
-func validateDynamicExpression(dynExpr *xpath.Expression, nsBindings map[string]string) error {
-	// 5b. XTDE3160: per XSLT 3.0 §20.3, when the dynamic expression is NOT
-	// schema-aware its static context includes only the built-in schema
-	// components — none of the schema types imported by xsl:import-schema. A
-	// SequenceType in the target expression (instance of / cast as / castable as
-	// / treat as) that names a user-defined schema type is therefore a static
-	// error when analyzing the string, surfaced as the dynamic error XTDE3160.
-	// Schema-aware requests are rejected before this stage. The unprefixed form
-	// already fails through built-in type resolution; this checks prefixed types.
-	if badType := dynExprReferencesSchemaType(dynExpr.AST(), nsBindings); badType != "" {
-		return dynamicError(errCodeXTDE3160,
-			"xsl:evaluate: type %q is not in scope (schema-aware is not enabled)", badType)
-	}
-
-	// 5a. XTDE3160: certain XSLT functions are not allowed in xsl:evaluate
-	if xpathstream.ExprUsesFunction(dynExpr, "current") {
-		return dynamicError(errCodeXTDE3160, "xsl:evaluate: current() is not allowed in dynamically evaluated expressions")
-	}
-
-	for _, blocked := range []string{funcSystemProperty, fnNameCurrentOutputURI, funcAvailableSystemProperties, fnNameDocument} {
-		if xpathstream.ExprUsesFunction(dynExpr, blocked) {
-			return dynamicError(errCodeXTDE3160, "xsl:evaluate: %s() is not allowed in dynamically evaluated expressions", blocked)
-		}
-	}
-
-	return nil
-}
-
-// dynExprReferencesSchemaType reports the first SequenceType atomic/union type in
-// a dynamic xsl:evaluate target expression that names a user-defined schema type
-// (a type whose namespace is non-empty and is not the XSD built-in namespace). It
-// is used to detect XTDE3160 when the dynamic expression is not schema-aware: such
-// a type is not in the dynamic static context, so referencing it (in instance of /
-// cast as / castable as / treat as) is a static error.
-//
-// A prefix that resolves to no namespace, or to the XSD namespace, names a
-// built-in type and is always in scope; only a prefix bound to a non-XSD
-// namespace identifies an imported schema type. The unprefixed form is handled
-// elsewhere (it resolves through the xs: built-in path and already fails), so it
-// is not flagged here. Returns "" when no such reference is present.
-func dynExprReferencesSchemaType(ast xpath.Expr, nsBindings map[string]string) string {
-	var found string
-
-	check := func(prefix, name string) bool {
-		if prefix == "" || prefix == "xs" || prefix == nameXsd {
-			return false
-		}
-
-		uri, ok := nsBindings[prefix]
-		if !ok || uri == "" || uri == lexicon.NamespaceXSD {
-			return false
-		}
-
-		found = prefix + ":" + name
-
-		return true
-	}
-
-	xpathstream.WalkExpr(ast, func(e xpath.Expr) bool {
-		if found != "" {
-			return false
-		}
-
-		switch n := e.(type) {
-		case xpath.InstanceOfExpr:
-			if t, ok := n.Type.ItemTest.(xdm.AtomicOrUnionType); ok {
-				check(t.Prefix, t.Name)
-			}
-		case xpath.TreatAsExpr:
-			if t, ok := n.Type.ItemTest.(xdm.AtomicOrUnionType); ok {
-				check(t.Prefix, t.Name)
-			}
-		case xpath.CastExpr:
-			check(n.Type.Prefix, n.Type.Name)
-		case xpath.CastableExpr:
-			check(n.Type.Prefix, n.Type.Name)
-		}
-
-		return found == ""
-	})
-
-	return found
 }
 
 func (ec *execContext) evaluateXPathSource(ctx context.Context, inst *evaluateInst) (string, error) {
@@ -957,26 +757,12 @@ func (ec *execContext) evaluateXPathSource(ctx context.Context, inst *evaluateIn
 		return "", err
 	}
 
-	xpathStr, ok := xpathResult.IsString()
-	if !ok {
-		// Atomize and convert to string
-		seq := xpathResult.Sequence()
-		if seq == nil || xdm.SequenceLen(seq) == 0 {
-			return "", dynamicError(errCodeXTDE3160, "xsl:evaluate: xpath attribute evaluated to empty sequence")
-		}
-
-		av, atomErr := xpath.AtomizeItem(seq.Get(0))
-		if atomErr != nil {
-			return "", atomErr
-		}
-
-		s, sErr := xpath.AtomicToString(av)
-		if sErr != nil {
-			return "", sErr
-		}
-
-		xpathStr = s
+	value, err := ec.convertSequenceType(ctx, xpathResult.Sequence(), xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: "Q{http://www.w3.org/2001/XMLSchema}string"}})
+	if err != nil {
+		return "", err
 	}
+
+	xpathStr := value.Get(0).(xdm.AtomicValue).StringVal() //nolint:forcetypeassert // conversion requires one xs:string
 
 	if strings.TrimSpace(xpathStr) == "" {
 		return "", dynamicError(errCodeXTDE3160, "xsl:evaluate: xpath expression is empty")
@@ -1022,7 +808,7 @@ func (ec *execContext) evaluateContextItem(ctx context.Context, inst *evaluateIn
 			hasContextItem = false
 		}
 	} else {
-		// Per XSLT 3.0 §20.3.2: when no context-item attribute is present,
+		// Per XSLT 3.0 §10.4.2: when no context-item attribute is present,
 		// the context item for the dynamic expression is absent.
 		hasContextItem = false
 	}
@@ -1033,13 +819,12 @@ func (ec *execContext) evaluateContextItem(ctx context.Context, inst *evaluateIn
 func (ec *execContext) evaluateNamespaces(ctx context.Context, inst *evaluateInst) (map[string]string, error) {
 	nsBindings := make(map[string]string)
 
-	// Start with stylesheet namespace bindings
-	for k, v := range ec.stylesheet.namespaces {
-		if k == "" {
-			continue // don't inherit default namespace by default
+	if inst.NamespaceContext == nil {
+		for prefix, uri := range inst.Namespaces {
+			if prefix != "" {
+				nsBindings[prefix] = uri
+			}
 		}
-
-		nsBindings[k] = v
 	}
 
 	// If namespace-context is specified, collect namespaces from that node
@@ -1069,32 +854,24 @@ func (ec *execContext) evaluateNamespaces(ctx context.Context, inst *evaluateIns
 				"xsl:evaluate namespace-context must be a single node")
 		}
 
-		collectEvaluateNamespaces(ni.Node, nsBindings)
+		if err := collectEvaluateNamespaces(ctx, ni.Node, nsBindings); err != nil {
+			return nil, err
+		}
 	}
 
-	// 4. Handle xpath-default-namespace for the dynamic expression.
-	// Per XSLT 3.0 §3.18.2: when namespace-context is present, the
-	// in-scope namespaces of that node define the namespace context for
-	// the dynamic expression, including any default namespace. An explicit
-	// xpath-default-namespace on xsl:evaluate overrides this. But an
-	// *inherited* xpath-default-namespace from the stylesheet must NOT
-	// override the namespace-context's default namespace.
-	if inst.HasLocalXPathDefaultNS {
+	if inst.NamespaceContext == nil && inst.HasXPathDefaultNS {
 		nsBindings[""] = inst.XPathDefaultNS
-	} else if inst.NamespaceContext != nil {
-		// Keep whatever default namespace came from the namespace-context
-		// node (which may be absent, i.e. no key "" in nsBindings).
-	} else if inst.HasXPathDefaultNS {
-		nsBindings[""] = inst.XPathDefaultNS
-	} else if ec.hasXPathDefaultNS {
-		nsBindings[""] = ec.xpathDefaultNS
 	}
 
 	return nsBindings, nil
 }
 
-func collectEvaluateNamespaces(node xdm.Node, bindings map[string]string) {
+func collectEvaluateNamespaces(ctx context.Context, node xdm.Node, bindings map[string]string) error {
 	for node != nil {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
 		if _, element := node.(*xdm.Element); element {
 			break
 		}
@@ -1105,12 +882,20 @@ func collectEvaluateNamespaces(node xdm.Node, bindings map[string]string) {
 	seen := make(map[string]struct{})
 
 	for current := node; current != nil; current = current.Parent() {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
 		element, ok := current.(*xdm.Element)
 		if !ok {
 			continue
 		}
 
 		for _, namespace := range element.Namespaces() {
+			if err := xpath.Charge(ctx, 1); err != nil {
+				return err
+			}
+
 			prefix := namespace.Prefix()
 			if _, exists := seen[prefix]; exists {
 				continue
@@ -1120,6 +905,8 @@ func collectEvaluateNamespaces(node xdm.Node, bindings map[string]string) {
 			bindings[prefix] = namespace.URI()
 		}
 	}
+
+	return nil
 }
 
 func (ec *execContext) checkEvaluateSchemaAwareness(ctx context.Context, inst *evaluateInst) error {
@@ -1143,10 +930,12 @@ func (ec *execContext) checkEvaluateSchemaAwareness(ctx context.Context, inst *e
 }
 
 func (ec *execContext) evaluateVariables(ctx context.Context, inst *evaluateInst) (map[string]xdm.Sequence, error) {
-	// Collect variables: start with current XSLT variables plus xsl:with-param.
-	// collectAllVars returns a cached map shared with other evaluators, so
-	// copy it before adding the parameters below.
-	vars := maps.Clone(ec.collectAllVars(ctx))
+	// Only explicit parameters are in the target expression's static scope.
+	vars := make(map[string]xdm.Sequence)
+
+	if err := xpath.Charge(ctx, len(inst.Params)); err != nil {
+		return nil, err
+	}
 
 	for _, wp := range inst.Params {
 		paramVal, paramErr := ec.evaluateWithParam(ctx, wp)
@@ -1165,29 +954,34 @@ func (ec *execContext) evaluateVariables(ctx context.Context, inst *evaluateInst
 		}
 
 		wpSeq := wpResult.Sequence()
-		if wpSeq != nil && xdm.SequenceLen(wpSeq) == 1 {
-			if wpMap, mapOK := wpSeq.Get(0).(xdm.MapItem); mapOK {
-				forEachErr := wpMap.ForEach(func(key xdm.AtomicValue, value xdm.Sequence) error {
-					// XTTE3165: with-params map keys must be xs:QName
-					if key.TypeName != xdm.TypeQName {
-						return dynamicError(errCodeXTTE3165, "xsl:evaluate: with-params map key must be xs:QName, got %s", key.TypeName)
-					}
-					// Store under the Clark-name representation used by XPath
-					// variable lookup so namespaced keys (e.g. {urn:p}x) resolve
-					// as $p:x and don't collide with no-namespace variables.
-					clark, clarkErr := paramKeyToClark(key)
-					if clarkErr != nil {
-						return clarkErr
-					}
+		if xdm.SequenceLen(wpSeq) != 1 {
+			return nil, dynamicError(errCodeXTTE3165, "xsl:evaluate: with-params must be a single QName-keyed map")
+		}
 
-					vars[clark] = value
+		wpMap, ok := wpSeq.Get(0).(xdm.MapItem)
+		if !ok {
+			return nil, dynamicError(errCodeXTTE3165, "xsl:evaluate: with-params must be a single QName-keyed map")
+		}
 
-					return nil
-				})
-				if forEachErr != nil {
-					return nil, forEachErr
-				}
+		if err := wpMap.ForEach(func(key xdm.AtomicValue, value xdm.Sequence) error {
+			if err := xpath.Charge(ctx, 1); err != nil {
+				return err
 			}
+
+			if key.TypeName != xdm.TypeQName {
+				return dynamicError(errCodeXTTE3165, "xsl:evaluate: with-params map keys must be xs:QName")
+			}
+
+			name, err := paramKeyToClark(key)
+			if err != nil {
+				return err
+			}
+
+			vars[name] = value
+
+			return nil
+		}); err != nil {
+			return nil, err
 		}
 	}
 
@@ -1195,14 +989,16 @@ func (ec *execContext) evaluateVariables(ctx context.Context, inst *evaluateInst
 }
 
 func (ec *execContext) dynamicXPathEvaluator(vars map[string]xdm.Sequence, nsBindings map[string]string) xpath.Evaluator {
-	// Per XSLT 3.0 section 20.3: the available functions include all
-	// functions from the static context of the xsl:evaluate instruction
-	// EXCEPT current(), user-defined stylesheet functions (xsl:function),
-	// and functions in the XSLT namespace.
+	// XSLT 3.0 section 10.4 exposes the standard XPath library and visible
+	// public/final stylesheet functions, without XSLT-specific built-ins.
 	evalFns := ec.xsltEvaluateFunctions()
+
 	eval := xpath.NewEvaluator(xpath.EvalBorrowing).
 		Variables(vars).
 		Functions(evalFns, ec.xsltEvaluateFunctionsNS())
+	if ec.stylesheet.processorLanguage() >= 30 {
+		eval = eval.ResourceReads(ec)
+	}
 
 	// Forward the same runtime evaluator configuration that ordinary XPath
 	// evaluation uses (see buildBaseXPathEvaluator), so a dynamically-evaluated
@@ -1212,7 +1008,7 @@ func (ec *execContext) dynamicXPathEvaluator(vars map[string]xdm.Sequence, nsBin
 	// inside xsl:evaluate behave differently from the same call made statically.
 	eval = eval.
 		CurrentTime(ec.currentTime).
-		ImplicitTimezone(ec.currentTime.Location()).
+		ImplicitTimezone(ec.dynamicProperties.Timezone).
 		AllowXML11Chars().
 		TraceWriter(ec.traceWriter)
 	if resolver := ec.collectionResolver(); resolver != nil {
@@ -1241,9 +1037,7 @@ func (ec *execContext) dynamicXPathEvaluator(vars map[string]xdm.Sequence, nsBin
 		eval = eval.ParseOptions(*p)
 	}
 
-	if len(nsBindings) > 0 {
-		eval = eval.Namespaces(nsBindings)
-	}
+	eval = eval.Namespaces(nsBindings).StrictPrefixes()
 
 	if ec.typeAnnotations != nil {
 		eval = eval.TypeAnnotations(ec.typeAnnotations)
@@ -1279,98 +1073,4 @@ func (ec *execContext) configureDynamicCollation(eval xpath.Evaluator) xpath.Eva
 	}
 
 	return eval
-}
-
-// checkEvaluateAsType checks the xsl:evaluate as= type constraint.
-// Returns XPTY0004 if the result does not match the expected type.
-// Per XSLT 3.0, the result is coerced to the target type.
-// For now, only check obvious mismatches.
-func (ec *execContext) checkEvaluateAsType(asType string, seq xdm.Sequence) error {
-	switch asType {
-	case lexicon.XSString, lexicon.XSInteger, lexicon.XSBoolean:
-	default:
-		return nil
-	}
-
-	for item := range xdm.SequenceItems(seq) {
-		if !evaluateAsTypeItem(asType, item) {
-			return dynamicError(errCodeXPTY0004, "xsl:evaluate: result does not match as=%q", asType)
-		}
-	}
-
-	return nil
-}
-
-func evaluateAsTypeItem(asType string, item xdm.Item) bool {
-	if asType == lexicon.XSString {
-		if _, node := item.(xdm.NodeItem); node {
-			return true // nodes atomize to untypedAtomic and coerce to string
-		}
-	}
-
-	value, atomic := item.(xdm.AtomicValue)
-	if !atomic {
-		return false
-	}
-
-	if value.TypeName == xdm.TypeUntypedAtomic {
-		return true
-	}
-
-	switch asType {
-	case lexicon.XSString:
-		return value.TypeName == xdm.TypeString || value.TypeName == xdm.TypeAnyURI
-	case lexicon.XSInteger:
-		return value.TypeName == xdm.TypeInteger
-	case lexicon.XSBoolean:
-		return value.TypeName == xdm.TypeBoolean
-	default:
-		return true
-	}
-}
-
-// isPopulated checks if a node is "populated" per XSLT 3.0 xsl:where-populated semantics
-// (section 11.1.8). A node N is significant unless:
-//   - N is a text node with zero-length string value
-//   - N is a comment node with zero-length string value
-//   - N is a processing-instruction node with zero-length string value
-//   - N is an element or document node with no significant children
-//
-// Element nodes are always significant.
-func isPopulated(node xdm.Node) bool {
-	switch node.Type() {
-	case xdm.ElementNode, xdm.DocumentNode:
-		for child := range xdm.Children(node) {
-			switch child.Type() {
-			case xdm.ElementNode:
-				return true
-			case xdm.TextNode:
-				if len(xdm.CharacterData(child)) > 0 {
-					return true
-				}
-			case xdm.CommentNode, xdm.ProcessingInstructionNode:
-				if len(xdm.CharacterData(child)) > 0 {
-					return true
-				}
-			case xdm.DocumentNode:
-				// Document nodes can appear as children when xsl:document is
-				// used inside xsl:where-populated. Recursively check if the
-				// document itself is populated.
-				if isPopulated(child) {
-					return true
-				}
-			}
-		}
-
-		return false
-	case xdm.TextNode:
-		return len(xdm.CharacterData(node)) > 0
-	case xdm.CommentNode, xdm.ProcessingInstructionNode:
-		return len(xdm.CharacterData(node)) > 0
-	case xdm.AttributeNode:
-		// An attribute is populated if its value is non-empty.
-		return len(xdm.CharacterData(node)) > 0
-	default:
-		return false
-	}
 }

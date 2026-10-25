@@ -1071,7 +1071,7 @@ func (w *Writer) StartDTD(name, pubid, sysid string) error {
 		return w.err
 	}
 
-	if w.state != stateDocument {
+	if w.depth != 0 || (w.state != stateDocument && w.state != stateNone && w.state != stateText) {
 		return errors.New("stream: StartDTD called in invalid state")
 	}
 
@@ -1210,6 +1210,19 @@ func (w *Writer) writeStr(s string) {
 	w.err = err
 }
 
+func (w *Writer) writeBytes(data []byte) {
+	if !w.ensureWritable() {
+		return
+	}
+
+	n, err := w.out.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+
+	w.err = err
+}
+
 func (w *Writer) writeEscaped(s string, escape escapeMode) {
 	if !w.ensureWritable() {
 		return
@@ -1299,7 +1312,7 @@ func writeEscapedXml11(w *Writer, s string, i int, start *int) {
 
 				w.writeDecimalCharRef(r)
 
-				(*start) = i + width
+				*start = i + width
 			}
 		}
 	}
@@ -1328,7 +1341,7 @@ func (w *Writer) writeDecimalCharRef(r rune) {
 	buf[n] = '#'
 	n--
 	buf[n] = '&'
-	w.writeStr(string(buf[n:]))
+	w.writeBytes(buf[n:])
 }
 
 func (w *Writer) writeByte(b byte) {

@@ -219,13 +219,29 @@ func (ec *execContext) executeScopedSequenceConstructor(ctx context.Context, bod
 	return ec.executeSequenceConstructor(ctx, body)
 }
 
-func (ec *execContext) execForEachGroup(ctx context.Context, inst *forEachGroupInst) error {
+func (ec *execContext) selectGroupPopulation(ctx context.Context, inst *forEachGroupInst) (xdm.Sequence, error) {
 	result, err := ec.evalXPath(ctx, inst.Select, ec.contextNode)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	seq := result.Sequence()
+	if ec.stylesheet.processorLanguage() == 20 && (inst.GroupStartingWith != nil || inst.GroupEndingWith != nil) {
+		for i := range xdm.SequenceLen(seq) {
+			if _, ok := seq.Get(i).(xdm.NodeItem); !ok {
+				return nil, dynamicError("XTTE1120", "XSLT 2.0 pattern grouping requires a population of nodes")
+			}
+		}
+	}
+
+	return seq, nil
+}
+
+func (ec *execContext) execForEachGroup(ctx context.Context, inst *forEachGroupInst) error {
+	seq, err := ec.selectGroupPopulation(ctx, inst)
+	if err != nil {
+		return err
+	}
 
 	// Resolve collation key function: explicit collation attribute takes
 	// precedence, then fall back to the default collation in scope.
@@ -237,14 +253,16 @@ func (ec *execContext) execForEachGroup(ctx context.Context, inst *forEachGroupI
 			return collErr
 		}
 
+		collationURI = resolveAgainstBaseURI(collationURI, ec.effectiveStaticBaseURI())
+
 		collationKeyFn, err = xpath.ResolveCollationKeyFunc(collationURI)
 		if err != nil {
-			return err
+			return dynamicErrorCause(errCodeXTDE1110, err, "unsupported grouping collation %q", collationURI)
 		}
 	} else if ec.defaultCollation != "" {
 		collationKeyFn, err = xpath.ResolveCollationKeyFunc(ec.defaultCollation)
 		if err != nil {
-			return err
+			return dynamicErrorCause(errCodeXTDE1110, err, "unsupported grouping collation %q", ec.defaultCollation)
 		}
 	}
 
@@ -459,7 +477,12 @@ func (ec *execContext) groupAdjacent(ctx context.Context, seq xdm.Sequence, adjE
 		}
 
 		if collationKeyFn != nil {
-			lookupKey = collationKeyFn(stringifyResult(result))
+			value, err := stringifyResult(ctx, result)
+			if err != nil {
+				return nil, err
+			}
+
+			lookupKey = collationKeyFn(value)
 		}
 
 		if lookupKey == currentKey && len(currentItems) > 0 {

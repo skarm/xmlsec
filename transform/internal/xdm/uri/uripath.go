@@ -137,14 +137,7 @@ func WindowsToFileURI(s string) string {
 // runtime.GOOS), so a Windows path is normalized — and the normalization is
 // testable — on POSIX as well.
 func ToSlash(s string) string {
-	b := []byte(s)
-	for i := range b {
-		if b[i] == '\\' {
-			b[i] = '/'
-		}
-	}
-
-	return string(b)
+	return strings.ReplaceAll(s, "\\", "/")
 }
 
 // JoinLocalBaseDir resolves a relative local-filesystem ref against the

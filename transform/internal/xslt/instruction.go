@@ -4,6 +4,7 @@
 package xslt
 
 import (
+	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -87,6 +88,7 @@ type withParam struct {
 	Select *xpath.Expression
 	Body   []instruction
 	As     string
+	Type   *xdm.SequenceType
 	Tunnel bool
 }
 
@@ -305,10 +307,11 @@ func (*numberInst) instructionTag() {}
 
 type messageInst struct {
 	sourceInfo
-	Select    *xpath.Expression
-	Body      []instruction
-	Terminate *avt // defaults to "no"
-	ErrorCode *avt // defaults to "XTMM9000"
+	Select          *xpath.Expression
+	Body            []instruction
+	Terminate       *avt // defaults to "no"
+	ErrorCode       *avt // defaults to "XTMM9000"
+	ErrorNamespaces map[string]string
 }
 
 func (*messageInst) instructionTag() {}
@@ -597,10 +600,11 @@ func (*analyzeStringInst) instructionTag() {}
 type assertInst struct {
 	sourceInfo
 	xpathNS
-	Test      *xpath.Expression
-	Select    *xpath.Expression
-	ErrorCode string // default "XTMM9001"
-	Body      []instruction
+	Test            *xpath.Expression
+	Select          *xpath.Expression
+	ErrorCode       *avt // default "XTMM9001"
+	ErrorNamespaces map[string]string
+	Body            []instruction
 }
 
 func (*assertInst) instructionTag() {}
@@ -614,8 +618,10 @@ type evaluateInst struct {
 	NamespaceContext *xpath.Expression // namespace-context attribute (optional, expression producing a node)
 	WithParamsExpr   *xpath.Expression // with-params attribute (optional, map expression)
 	As               string            // as attribute (optional sequence type)
-	SchemaAwareAVT   *avt              // nil = absent; non-nil = schema-aware attribute present
-	Params           []*withParam      // child xsl:with-param elements
+	ResultType       *xdm.SequenceType
+	Namespaces       map[string]string
+	SchemaAwareAVT   *avt         // nil = absent; non-nil = schema-aware attribute present
+	Params           []*withParam // child xsl:with-param elements
 }
 
 func (*evaluateInst) instructionTag() {}
@@ -628,6 +634,7 @@ type fallbackInst struct {
 	Body        []instruction // compiled xsl:fallback children
 	Name        string        // original instruction name for error messages
 	HasFallback bool          // true if at least one xsl:fallback was found
+	ErrorCode   string        // disabled features use their prescribed error instead of XTDE1450
 }
 
 func (*fallbackInst) instructionTag() {}

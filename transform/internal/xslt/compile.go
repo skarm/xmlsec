@@ -11,7 +11,6 @@ import (
 	"maps"
 	"net/url"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/xmlchar"
@@ -166,13 +165,6 @@ func (c Compiler) Compile(ctx context.Context, doc *xdm.Document) (*Stylesheet, 
 }
 
 func compile(ctx context.Context, doc *xdm.Document, cfg *compileConfig) (*Stylesheet, error) {
-	var stackErr error
-
-	ctx, stackErr = enterPackage(ctx, doc)
-	if stackErr != nil {
-		return nil, stackErr
-	}
-
 	processor := 0
 	if cfg != nil {
 		processor = cfg.processorVersion
@@ -192,12 +184,9 @@ func compile(ctx context.Context, doc *xdm.Document, cfg *compileConfig) (*Style
 
 	cfg.processorVersion = version
 
-	prepared := doc
-	if version == 10 {
-		prepared, err = prepareModule10(ctx, doc)
-		if err != nil {
-			return nil, err
-		}
+	prepared, err := prepareModule(ctx, doc, version)
+	if err != nil {
+		return nil, err
 	}
 
 	s, err := compilePrepared(ctx, prepared, cfg)
@@ -236,26 +225,40 @@ func compilePrepared(ctx context.Context, doc *xdm.Document, cfg *compileConfig)
 	c := &compiler{
 		invocation: ctx,
 		stylesheet: &Stylesheet{
-			namedTemplates:   make(map[string]*template),
-			modeTemplates:    make(map[string][]*template),
-			keys:             make(map[string][]*keyDef),
-			outputs:          make(map[string]*OutputDef),
-			functions:        make(map[funcKey]*xslFunction),
-			namespaces:       make(map[string]string),
-			accumulators:     make(map[string]*accumulatorDef),
-			accumulatorOrder: make([]string, 0),
+			dynamicEvaluationDisabled: dynamicEvaluationDisabled(ctx),
+			namedTemplates:            make(map[string]*template),
+			modeTemplates:             make(map[string][]*template),
+			keys:                      make(map[string][]*keyDef),
+			outputs:                   make(map[string]*OutputDef),
+			functions:                 make(map[funcKey]*xslFunction),
+			namespaces:                make(map[string]string),
+			accumulators:              make(map[string]*accumulatorDef),
+			accumulatorOrder:          make([]string, 0),
 		},
 		nsBindings:    make(map[string]string),
-		importStack:   make(map[string]struct{}),
+		importStack:   make(map[string]int),
 		localExcludes: make(map[string]struct{}),
 		includeRoots:  make(map[string]*xdm.Element),
+	}
+
+	c.applyPreparedConfig(cfg)
+	// Namespace and base URI are available to root shadow expressions. Other
+	// root attributes are interpreted only after their shadows have replaced them.
+	if xmlBase := getAttr(root, lexicon.QNameXMLBase); xmlBase != "" {
+		c.baseURI = resolveRootXMLBase(c.baseURI, xmlBase)
+	}
+
+	c.collectNamespaces(ctx, root)
+
+	if c.stylesheet.processorLanguage() >= 30 {
+		if err := c.resolveShadowAttributes(ctx, root); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := c.readPackageMetadata(root, localName); err != nil {
 		return nil, err
 	}
-
-	c.applyPreparedConfig(cfg)
 
 	if err := c.configureRootContext(ctx, root); err != nil {
 		return nil, err
@@ -264,6 +267,19 @@ func compilePrepared(ctx context.Context, doc *xdm.Document, cfg *compileConfig)
 	if err := c.readRootVersion(ctx, root, localName); err != nil {
 		return nil, err
 	}
+
+	if err := c.validateKnownElementAttributes(ctx, root); err != nil {
+		return nil, err
+	}
+
+	var identityErr error
+
+	ctx, identityErr = enterPackage(ctx, doc)
+	if identityErr != nil {
+		return nil, identityErr
+	}
+
+	c.invocation = ctx
 
 	if err := c.readResultNamespacePolicy(root); err != nil {
 		return nil, err
@@ -351,38 +367,38 @@ const (
 )
 
 type compiler struct {
-	invocation              context.Context
-	resolver                URIResolver
-	packageResolver         PackageResolver
-	stylesheet              *Stylesheet
-	nsBindings              map[string]string
-	importStack             map[string]struct{}             // circular import detection
-	parseOptions            *xdm.ParseOptions               // injected base parseOptions governing parse policy (nil = hardened default)
-	moduleRoot              *xdm.Element                    // embedded (fragment-selected) module root; descendant xml:base walks stop here. nil = stop before the document element
-	localExcludes           map[string]struct{}             // accumulated LRE-level exclude-result-prefixes (stores URIs, not prefixes)
-	extensionURIs           map[string]struct{}             // namespace URIs declared as extension-element-prefixes
-	includeRoots            map[string]*xdm.Element         // cached parsed roots from collectIncludeImports for reuse in compileIncludeTemplates
-	useWhenExcluded         map[string]struct{}             // import keys excluded by use-when="false()" on the root element
-	staticVars              map[string]xdm.Sequence         // static="yes" params evaluated at compile time
-	staticVarKinds          map[string]string               // tracks "param" or "variable" for each static var (XTSE3450)
-	mainStaticVarValues     map[string]xdm.Sequence         // values set by main module only (for XTSE3450 value conflict)
-	importedStaticVarKinds  map[string]string               // kinds set by imported modules only
-	importedStaticVarValues map[string]xdm.Sequence         // values set by imported modules only
-	externalStaticParams    map[string]xdm.Sequence         // externally supplied static param overrides
-	charMapModuleKeys       map[string]string               // character-map name -> moduleKey that first defined it (for XTSE1580)
-	moduleSources           map[*xdm.Document]*xdm.Document // original source of normalized 1.0 modules
-	usedModes               map[string]struct{}             // all mode names referenced (for XTSE3085)
-	outputAllowDupExplicit  map[string]bool                 // per-output-name: allow-duplicate-names explicitly set (compile-time merge bookkeeping, keyed like stylesheet.outputs)
-	localTemplateNames      map[string]struct{}             // pre-scanned named templates in this module (for XTSE3055)
-	overrideDecls           map[string]struct{}             // "kind:name" of every xsl:override declaration so far (for XTSE3055)
-	localVarNames           map[string]struct{}             // pre-scanned variable names in this module (for XTSE3050)
-	localModeNames          map[string]struct{}             // pre-scanned mode names in this module (for XTSE3050)
+	invocation                 context.Context
+	resolver                   URIResolver
+	packageResolver            PackageResolver
+	stylesheet                 *Stylesheet
+	nsBindings                 map[string]string
+	originalVariableVisibility string
+	importStack                map[string]int                  // module URI -> active module-path position
+	parseOptions               *xdm.ParseOptions               // injected base parseOptions governing parse policy (nil = hardened default)
+	moduleRoot                 *xdm.Element                    // embedded (fragment-selected) module root; descendant xml:base walks stop here. nil = stop before the document element
+	localExcludes              map[string]struct{}             // accumulated LRE-level exclude-result-prefixes (stores URIs, not prefixes)
+	extensionURIs              map[string]struct{}             // namespace URIs declared as extension-element-prefixes
+	includeRoots               map[string]*xdm.Element         // cached parsed roots from collectIncludeImports for reuse in compileIncludeTemplates
+	useWhenExcluded            map[string]struct{}             // import keys excluded by use-when="false()" on the root element
+	staticVars                 map[string]xdm.Sequence         // static="yes" params evaluated at compile time
+	staticVarKinds             map[string]string               // tracks "param" or "variable" for each static var (XTSE3450)
+	mainStaticVarValues        map[string]xdm.Sequence         // values set by main module only (for XTSE3450 value conflict)
+	importedStaticVarKinds     map[string]string               // kinds set by imported modules only
+	importedStaticVarValues    map[string]xdm.Sequence         // values set by imported modules only
+	externalStaticParams       map[string]xdm.Sequence         // externally supplied static param overrides
+	charMapModuleKeys          map[string]string               // character-map name -> moduleKey that first defined it (for XTSE1580)
+	moduleSources              map[*xdm.Document]*xdm.Document // original source of normalized 1.0 modules
+	usedModes                  map[string]struct{}             // all mode names referenced (for XTSE3085)
+	outputAllowDupExplicit     map[string]bool                 // per-output-name: allow-duplicate-names explicitly set (compile-time merge bookkeeping, keyed like stylesheet.outputs)
+	localTemplateNames         map[string]struct{}             // pre-scanned named templates in this module (for XTSE3055)
+	overrideDecls              map[string]struct{}             // "kind:name" of every xsl:override declaration so far (for XTSE3055)
+	localVarNames              map[string]struct{}             // pre-scanned variable names in this module (for XTSE3050)
+	localModeNames             map[string]struct{}             // pre-scanned mode names in this module (for XTSE3050)
 	// Declared visibility snapshots (before xsl:expose modification)
 	declaredTemplateVis map[string]string
 	declaredFunctionVis map[string]string
 	declaredVariableVis map[string]string
 	declaredAttrSetVis  map[string]string
-	declaredParamVis    map[string]string
 	declaredModeVis     map[string]string
 	// patternNamespaceMaps holds the shared in-scope namespace maps of the
 	// patterns compiled so far, keyed by their sorted bindings; see
@@ -391,21 +407,28 @@ type compiler struct {
 	xpathDefaultNS            string // current xpath-default-namespace value
 	baseURI                   string
 	moduleKey                 string
-	defaultMode               string                     // current default-mode (inherited through instruction nesting)
 	defaultCollation          string                     // current default-collation URI (resolved from space-separated list)
 	effectiveVersion          string                     // effective XSLT version for forwards-compat processing
+	modulePath                []moduleLoad               // distinguishes include-only and import cycles
 	pendingPatternValidations []pendingPatternValidation // deferred pattern function validations
-	pendingOverrideTypeChecks []pendingOverrideTypeCheck // deferred XTSE3070 override variable same-type checks
-	usedAttrSetRefs           []string                   // all use-attribute-sets names referenced (for XTSE0710)
+	pendingFunctionCalls      []xpath.FunctionNameRef
+	pendingTemplateCalls      []templateCallReference
+	usedAttrSetRefs           []string // all use-attribute-sets names referenced (for XTSE0710)
 	importPrec                int
 	minImportPrec             int   // importPrec value before processing this module's xsl:import elements
 	maxResourceBytes          int64 // per-resource read cap; 0 = MaxResourceBytes default, <0 = unbounded
 	iterateDepth              int   // nesting depth of xsl:iterate (for xsl:break/next-iteration validation)
+	inOverrideRule            bool  // lexical restriction on xsl:apply-imports (XTSE3460)
 	hasXPathDefaultNS         bool  // whether an xpath-default-namespace is in effect (distinguishes explicit "" reset from absent)
 	preserveSpace             bool  // xml:space="preserve" in effect
 	expandText                bool  // expand-text="yes" — text value templates enabled
 	breakAllowed              bool  // true when xsl:break/xsl:next-iteration are allowed at this position
 	insideImport              bool  // true when compiling an imported module (for XTSE3008)
+}
+
+type templateCallReference struct {
+	Name     string
+	Forwards bool
 }
 
 // recordModeUsage records a mode name (or space-separated list of mode names)
@@ -423,32 +446,6 @@ func (c *compiler) recordModeUsage(_ context.Context, mode string) {
 		// Empty mode means unnamed mode is used
 		c.usedModes[""] = struct{}{}
 	}
-}
-
-// resolveMode resolves mode name QNames to expanded Clark notation.
-// Special mode names (#all, #default, #unnamed, #current) are returned as-is.
-// Whitespace-separated lists are handled: each token is resolved independently.
-func (c *compiler) resolveMode(_ context.Context, mode string) string {
-	modes := strings.Fields(mode)
-	if len(modes) <= 1 {
-		mode = strings.TrimSpace(mode)
-		if mode == "" || mode[0] == '#' {
-			return mode // special names
-		}
-
-		return resolveQName(mode, c.nsBindings)
-	}
-
-	resolved := make([]string, len(modes))
-	for i, m := range modes {
-		if m[0] == '#' {
-			resolved[i] = m
-		} else {
-			resolved[i] = resolveQName(m, c.nsBindings)
-		}
-	}
-
-	return strings.Join(resolved, " ")
 }
 
 // shouldStripText returns true if a whitespace-only text node should be stripped
@@ -520,6 +517,10 @@ func (c *compiler) pushElementVersion(elem *xdm.Element) func() {
 // so it must not affect the effective version.
 func elementXSLTVersion(elem *xdm.Element) string {
 	if elem.URI() == lexicon.NamespaceXSLT {
+		if elem.LocalName() == nameOutput || elem.LocalName() == lexicon.XSLTElementResultDocument {
+			return "" // These version attributes select serialization, not XSLT.
+		}
+
 		return getAttr(elem, paramVersion)
 	}
 
@@ -595,7 +596,7 @@ func (c *compiler) hasEffectiveContent(ctx context.Context, elem *xdm.Element) b
 			}
 
 			if uw != "" {
-				include, err := c.evaluateUseWhen(ctx, uw)
+				include, err := c.evaluateDeclarationUseWhen(ctx, v, uw)
 				if err == nil && !include {
 					continue // excluded by use-when
 				}
@@ -870,6 +871,10 @@ func (c *compiler) checkQNamePrefix(_ context.Context, name, context string) err
 	return nil
 }
 
+func isShadowAttributeName(name string) bool {
+	return len(name) > 1 && name[0] == '_' && name[1] != '_' && name[1:] != "xmlns"
+}
+
 // resolveShadowAttributes processes shadow attributes on an XSLT element.
 // A shadow attribute _foo="avt" is evaluated at compile time and replaces
 // the regular foo attribute. Per XSLT 3.0 §3.5.2: "A shadow attribute
@@ -878,7 +883,7 @@ func (c *compiler) resolveShadowAttributes(ctx context.Context, elem *xdm.Elemen
 	attrs := elem.Attributes()
 	for _, attr := range attrs {
 		name := attr.LocalName()
-		if attr.URI() != "" || len(name) < 2 || name[0] != '_' {
+		if attr.URI() != "" || !isShadowAttributeName(name) {
 			continue
 		}
 
@@ -887,8 +892,7 @@ func (c *compiler) resolveShadowAttributes(ctx context.Context, elem *xdm.Elemen
 
 		avt, err := c.compileAVT(avtStr, c.nsBindings)
 		if err != nil {
-			return staticError(errCodeXTSE0020,
-				"invalid AVT in shadow attribute _%s: %v", realName, err)
+			return fmt.Errorf("invalid shadow attribute _%s: %w", realName, err)
 		}
 
 		// Evaluate using static variables and XSLT static functions
@@ -897,8 +901,7 @@ func (c *compiler) resolveShadowAttributes(ctx context.Context, elem *xdm.Elemen
 
 		val, err := avt.evaluateStatic(ctx, eval, nil)
 		if err != nil {
-			return staticError(errCodeXTSE0020,
-				"error evaluating shadow attribute _%s: %v", realName, err)
+			return fmt.Errorf("evaluate shadow attribute _%s: %w", realName, err)
 		}
 
 		// Remove the shadow attribute and set the real one.
@@ -922,16 +925,14 @@ func (c *compiler) resolveSingleShadowAttribute(ctx context.Context, elem *xdm.E
 
 	avt, err := c.compileAVT(avtStr, c.nsBindings)
 	if err != nil {
-		return staticError(errCodeXTSE0020,
-			"invalid AVT in shadow attribute _%s: %v", name, err)
+		return fmt.Errorf("invalid shadow attribute _%s: %w", name, err)
 	}
 
 	eval := c.useWhenEvaluator(ctx)
 
 	val, err := avt.evaluateStatic(ctx, eval, nil)
 	if err != nil {
-		return staticError(errCodeXTSE0020,
-			"error evaluating shadow attribute _%s: %v", name, err)
+		return fmt.Errorf("evaluate shadow attribute _%s: %w", name, err)
 	}
 
 	elem.RemoveAttribute(shadowName)
@@ -945,13 +946,11 @@ func (c *compiler) resolveSingleShadowAttribute(ctx context.Context, elem *xdm.E
 // XPath expressions at compile time (static="yes" params/variables). It
 // provides fn:transform and other XSLT static functions so that compile-time
 // evaluation can invoke dynamic transforms (used by use-when patterns).
-func (c *compiler) staticEvaluator(_ context.Context) xpath.Evaluator {
-	fns := map[string]xpath.Function{
-		fnNameTransform: &xsltFunc{min: 1, max: 1, fn: c.staticFnTransform},
-	}
+func (c *compiler) staticEvaluator(ctx context.Context) xpath.Evaluator {
+	fns := c.useWhenFunctions()
+	fns[fnNameTransform] = &xsltFunc{min: 1, max: 1, fn: c.staticFnTransform, name: fnNameTransform, signature: xpath.HostBuiltin(31, fnNameTransform)}
 
-	eval := xpath.NewEvaluator(xpath.DefaultEvaluatorOptions).TraceWriter(io.Discard).
-		Functions(fns, nil)
+	eval := c.useWhenEvaluator(ctx).Functions(fns, staticFunctionsNS(fns))
 	if c.parseOptions != nil {
 		eval = eval.ParseOptions(*c.parseOptions)
 	}
@@ -1017,6 +1016,8 @@ func (c *compiler) staticFnTransform(ctx context.Context, args []xdm.Sequence) (
 		outputStack:         []*outputFrame{{doc: xdm.NewDefaultDocument(), current: xdm.NewDefaultDocument()}},
 		keyTables:           make(map[string]*keyTable),
 		docCache:            make(map[string]*xdm.Document),
+		collectionCache:     make(map[string]xdm.Sequence),
+		uriCollectionCache:  make(map[string][]string),
 		functionResultCache: make(map[string]xdm.Sequence),
 		accumulatorState:    make(map[string]xdm.Sequence),
 		resultDocuments:     make(map[string]*xdm.Document),
@@ -1028,19 +1029,37 @@ func (c *compiler) staticFnTransform(ctx context.Context, args []xdm.Sequence) (
 	return ec.fnTransform(ctx, args)
 }
 
-// useWhenEvaluator builds a compile-time evaluator for use-when evaluation
-// and shadow attribute resolution. It provides XSLT static functions
-// (system-property, function-available, type-available, element-available).
-func (c *compiler) useWhenEvaluator(_ context.Context) xpath.Evaluator {
-	fns := map[string]xpath.Function{
-		fnNameFunctionAvailable: &xsltFunc{min: 1, max: 2, fn: c.useWhenFunctionAvailable},
-		funcSystemProperty:      &xsltFunc{min: 1, max: 1, fn: c.useWhenSystemProperty},
-		fnNameTypeAvailable:     &xsltFunc{min: 1, max: 1, fn: c.useWhenTypeAvailable},
-		fnNameElementAvailable:  &xsltFunc{min: 1, max: 1, fn: c.useWhenElementAvailable},
+func (c *compiler) useWhenFunctions() map[string]xpath.Function {
+	processor, disabled := c.stylesheet.processorLanguage(), c.stylesheet.dynamicEvaluationDisabled
+
+	return map[string]xpath.Function{
+		fnNameFunctionAvailable: newIntrospectionFunc(fnNameFunctionAvailable, func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+			return useWhenFunctionAvailable(ctx, args, processor)
+		}),
+		funcSystemProperty: newIntrospectionFunc(funcSystemProperty, func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+			return introspectionSystemProperty(ctx, args, processor, disabled)
+		}),
+		fnNameTypeAvailable: newIntrospectionFunc(fnNameTypeAvailable, fnTypeAvailable),
+		fnNameElementAvailable: newIntrospectionFunc(fnNameElementAvailable, func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+			return introspectionElementAvailable(ctx, args, processor, disabled)
+		}),
+		funcAvailableSystemProperties: &xsltFunc{min: 0, max: 0, fn: fnAvailableSystemProperties, name: funcAvailableSystemProperties},
+	}
+}
+
+func staticFunctionsNS(fns map[string]xpath.Function) map[xpath.QualifiedName]xpath.Function {
+	namespaced := make(map[xpath.QualifiedName]xpath.Function, len(fns))
+	for name, function := range fns {
+		namespaced[xpath.QualifiedName{URI: xpath.NSFn, Name: name}] = function
 	}
 
-	eval := xpath.NewEvaluator(xpath.DefaultEvaluatorOptions).TraceWriter(io.Discard).
-		Functions(fns, nil)
+	return namespaced
+}
+
+func (c *compiler) useWhenEvaluator(_ context.Context) xpath.Evaluator {
+	fns := c.useWhenFunctions()
+
+	eval := xpath.NewEvaluator(xpath.DefaultEvaluatorOptions).TraceWriter(io.Discard).Functions(fns, staticFunctionsNS(fns))
 	if c.parseOptions != nil {
 		eval = eval.ParseOptions(*c.parseOptions)
 	}
@@ -1063,10 +1082,9 @@ func (c *compiler) useWhenEvaluator(_ context.Context) xpath.Evaluator {
 	if c.baseURI != "" {
 		eval = eval.BaseURI(ensureFileURI(c.baseURI))
 	}
-	// Route compile-time doc()/doc-available() in use-when through the same
-	// resolver that loads stylesheet modules, so a root use-when can probe for a
-	// resource relative to the module's effective static base.
-	if c.resolver != nil {
+	// XSLT 2.0 use-when has no available documents (section 3.12).
+	// The 3.0 static context may access explicitly resolved resources.
+	if c.resolver != nil && c.stylesheet.processorLanguage() >= 30 {
 		eval = eval.URIResolver(c.resolver)
 	}
 	// Honor the compiler's per-resource read cap on compile-time doc() /
@@ -1079,13 +1097,35 @@ func (c *compiler) useWhenEvaluator(_ context.Context) xpath.Evaluator {
 	return eval
 }
 
-func (c *compiler) compileXPath(expr string, _ map[string]string) (*xpath.Expression, error) {
-	version := c.stylesheet.xpathVersion()
+// xpathNamespaces keeps the XML default separate from XPath's element/type default.
+func (c *compiler) xpathNamespaces(ns map[string]string) map[string]string {
+	bound := map[string]string{lexicon.PrefixXML: lexicon.NamespaceXML}
 
-	compiled, err := xpath.NewCompiler().Context(c.invocation).Language(version, c.nsBindings).Compile(expr)
+	for prefix, uri := range ns {
+		if prefix != "" {
+			bound[prefix] = uri
+		}
+	}
+
+	if c.hasXPathDefaultNS {
+		bound[""] = c.xpathDefaultNS
+	}
+
+	return bound
+}
+
+func (c *compiler) compileXPath(expr string, ns map[string]string) (*xpath.Expression, error) {
+	version := c.stylesheet.xpathVersion()
+	if err := xpath.Charge(c.invocation, len(ns)); err != nil {
+		return nil, err
+	}
+
+	bound := c.xpathNamespaces(ns)
+
+	compiled, err := xpath.NewCompiler().Context(c.invocation).Language(version, bound).HostFunctions(c.hostFunctionAvailable).Compile(expr)
 	if err != nil {
-		if c.stylesheet.processorLanguage() == 10 && c.forwardsCompatible(c.effectiveVersion) {
-			return xpath.DeferredExpression(err, 10), nil
+		if c.forwardsCompatible(c.effectiveVersion) {
+			return xpath.DeferredExpression(err, version), nil
 		}
 
 		code := "XPST0003"
@@ -1096,11 +1136,32 @@ func (c *compiler) compileXPath(expr string, _ map[string]string) (*xpath.Expres
 
 		return nil, staticErrorCause(code, err, "invalid XPath %q: %v", expr, err)
 	}
+
+	compiled = compiled.BindNamespaceContext(bound, ns[""])
+
+	refs := compiled.StaticReferences(bound)
+	for _, name := range refs.FreeVariables {
+		if xpath.VariableKey(name, bound) == xdm.ClarkName(lexicon.NamespaceXSLT, nameOriginal) {
+			if c.originalVariableVisibility == visAbstract {
+				return nil, staticError("XTSE3075", "abstract variable has no xsl:original value")
+			}
+
+			if c.originalVariableVisibility == "" {
+				return nil, staticError("XPST0008", "xsl:original is outside an overriding variable or parameter")
+			}
+		}
+	}
 	// XSLT backwards-compatible processing: an expression compiled under an
 	// effective version < 2.0 is evaluated in XPath 1.0 compatibility mode. Record
 	// it by pointer identity so evalXPath can select the compat evaluator.
 	if c.backwardsCompatible() {
 		c.markCompatExpr(compiled)
+	} else if !c.forwardsCompatible(c.effectiveVersion) {
+		if err := compiled.Validate(bound); err != nil {
+			return nil, err
+		}
+
+		c.pendingFunctionCalls = append(c.pendingFunctionCalls, refs.FunctionNames...)
 	}
 
 	return compiled, nil
@@ -1109,7 +1170,12 @@ func (c *compiler) compileXPath(expr string, _ map[string]string) (*xpath.Expres
 func (c *compiler) readPackageMetadata(root *xdm.Element, localName string) error {
 	if localName == namePackage {
 		c.stylesheet.packageName = getAttr(root, xslAttrName)
+
 		c.stylesheet.packageVersion = getAttr(root, namePackageVersion)
+		if _, present := root.GetAttribute(namePackageVersion); !present {
+			c.stylesheet.packageVersion = "1"
+		}
+
 		c.stylesheet.isPackage = true
 		c.stylesheet.declaredModes = true // default for xsl:package
 
@@ -1122,7 +1188,7 @@ func (c *compiler) readPackageMetadata(root *xdm.Element, localName string) erro
 		// package-version is only allowed on xsl:package, not xsl:stylesheet/xsl:transform.
 		// In forwards-compatible mode (version > 3.0), unknown attributes are silently ignored.
 		ver := getAttr(root, paramVersion)
-		if getAttr(root, namePackageVersion) != "" && !isForwardsCompatible(ver) {
+		if _, present := root.GetAttribute(namePackageVersion); present && !isForwardsCompatible(ver) {
 			return staticError(errCodeXTSE0090,
 				"attribute package-version is not allowed on xsl:%s", localName)
 		}
@@ -1134,16 +1200,8 @@ func (c *compiler) readPackageMetadata(root *xdm.Element, localName string) erro
 // isForwardsCompatible returns true if the version string indicates
 // forwards-compatible mode (version > 3.0).
 func isForwardsCompatible(ver string) bool {
-	if ver == "" || ver == "3.0" {
-		return false
-	}
-
-	f, err := strconv.ParseFloat(ver, 64)
-	if err != nil {
-		return false
-	}
-
-	return f > 3.0
+	comparison, valid := compareLanguageVersion(ver, 3)
+	return valid && comparison > 0
 }
 
 func (c *compiler) applyPreparedConfig(cfg *compileConfig) {
@@ -1165,24 +1223,12 @@ func (c *compiler) applyPreparedConfig(cfg *compileConfig) {
 	}
 }
 
-// configureRootContext establishes the static context before shadow version
-// evaluation, preserving the order of collation and expand-text validation.
+// configureRootContext interprets root settings after shadow expansion.
 func (c *compiler) configureRootContext(ctx context.Context, root *xdm.Element) error {
-	// Process xml:base on the stylesheet root element to adjust the
-	// static base URI for all expressions in this module.
-	// xml:base="innerdoc/" on a stylesheet at /a/b/style.xsl means
-	// the effective base URI becomes /a/b/innerdoc/style.xsl, so that
-	// filepath.Dir() returns /a/b/innerdoc for relative URI resolution.
-	if xmlBase := getAttr(root, lexicon.QNameXMLBase); xmlBase != "" {
-		c.baseURI = resolveRootXMLBase(c.baseURI, xmlBase)
-	}
-
-	c.collectNamespaces(ctx, root)
-
 	// Read default-validation from stylesheet root (XSLT 3.0).
 	// Per §3.6, the default value is "strip".
 	if dv := getAttr(root, nameDefaultValidation); dv != "" {
-		c.stylesheet.defaultValidation = dv
+		c.stylesheet.defaultValidation = basicValidation(dv)
 	} else if c.stylesheet.defaultValidation == "" {
 		c.stylesheet.defaultValidation = validationStrip
 	}
@@ -1218,11 +1264,12 @@ func (c *compiler) configureRootContext(ctx context.Context, root *xdm.Element) 
 		}
 	}
 
-	if dm := getAttr(root, nameDefaultMode); dm != "" {
-		resolved := resolveQName(dm, c.nsBindings)
-		c.stylesheet.defaultMode = resolved
-		c.defaultMode = resolved
+	defaultMode, err := defaultModeForElement(ctx, root)
+	if err != nil {
+		return err
 	}
+
+	c.stylesheet.defaultMode = defaultMode
 
 	return nil
 }
@@ -1448,6 +1495,16 @@ func compilePreparedFieldsSeq(erp string, c *compiler) error {
 // completeTopLevelDeclarations runs checks that depend on finalized import
 // precedence before sorting templates or validating cross-component references.
 func (c *compiler) completeTopLevelDeclarations(ctx context.Context, root *xdm.Element, cfg *compileConfig) error {
+	if err := c.finalizeGlobalDeclarations(ctx); err != nil {
+		return err
+	}
+
+	for name, tmpl := range c.stylesheet.namedTemplates {
+		if tmpl.conflictDuplicate {
+			return staticError(errCodeXTSE0660, "duplicate template name %q at the effective import precedence", name)
+		}
+	}
+
 	// XTSE0810: check for conflicting namespace-alias declarations
 	// (same stylesheet URI, same import precedence, different result URIs)
 	// unless a higher-precedence alias overrides. This runs after all
@@ -1547,7 +1604,34 @@ func (c *compiler) recordStylesheetSource(doc *xdm.Document) {
 	}
 }
 
+func (c *compiler) validateTemplateReferences() error {
+	for _, call := range c.pendingTemplateCalls {
+		if call.Name == xdm.ClarkName(lexicon.NamespaceXSLT, nameOriginal) {
+			continue // Bound by the overriding component at execution.
+		}
+
+		target := c.stylesheet.namedTemplates[call.Name]
+		// An accepted private component is visible inside the accepting package;
+		// private limits re-export, while hidden removes the binding.
+		if (target == nil || target.Visibility == visHidden) && !call.Forwards {
+			return staticError(errCodeXTSE0650, "xsl:call-template references unavailable template %q", call.Name)
+		}
+	}
+
+	return nil
+}
+
 func (c *compiler) validateDeferredReferences(ctx context.Context) error {
+	if err := c.validateTemplateReferences(); err != nil {
+		return err
+	}
+
+	for _, call := range c.pendingFunctionCalls {
+		if !c.staticFunctionAvailable(ctx, call.URI, call.Name, call.Arity) {
+			return staticError(errCodeXPST0017, "unknown function Q{%s}%s#%d", call.URI, call.Name, call.Arity)
+		}
+	}
+
 	// Validate deferred pattern function calls now that all xsl:function
 	// declarations have been processed.
 	for _, pv := range c.pendingPatternValidations {
@@ -1578,18 +1662,10 @@ func (c *compiler) validateDeferredReferences(ctx context.Context) error {
 		return err
 	}
 
-	// XTSE0710: validate all use-attribute-sets references point to declared attribute sets.
-	// Hidden/private attribute-sets from used packages are in the map for
-	// internal reference resolution but must not be directly used from the
-	// using stylesheet. Locally declared private attribute-sets (OwnerPackage
-	// == nil) are always accessible from the stylesheet's own code.
+	// XTSE0710: only locally declared or accepted attribute sets are in this
+	// scope. Hidden sets remain available to their declaring package's code.
 	for _, ref := range c.usedAttrSetRefs {
-		asd, ok := c.stylesheet.attributeSets[ref]
-		if !ok {
-			return staticError(errCodeXTSE0710, "use-attribute-sets references undeclared attribute-set %q", ref)
-		}
-
-		if asd != nil && asd.OwnerPackage != nil && (asd.Visibility == visHidden || asd.Visibility == visPrivate) {
+		if c.stylesheet.attributeSets[ref] == nil {
 			return staticError(errCodeXTSE0710, "use-attribute-sets references undeclared attribute-set %q", ref)
 		}
 	}
@@ -1609,13 +1685,33 @@ func (c *compiler) validateDeferredReferences(ctx context.Context) error {
 		return err
 	}
 
-	// XTSE3070: deferred override-variable same-type checks for custom schema
-	// types, now that the using package's import-schema types are compiled.
-	if err := c.checkPendingOverrideTypes(); err != nil {
-		return err
+	return nil
+}
+
+func (c *compiler) staticFunctionAvailable(ctx context.Context, uri, name string, arity int) bool {
+	qualified := xpath.QualifiedName{URI: uri, Name: name}
+	if c.stylesheet.functions[funcKey{Name: qualified, Arity: arity}] != nil {
+		return true
 	}
 
-	return nil
+	if function := xpath.FunctionsFromContext(ctx)[qualified]; function != nil {
+		return arity >= function.MinArity() && (function.MaxArity() < 0 || arity <= function.MaxArity())
+	}
+
+	if uri == lexicon.NamespaceXSLT && name == nameOriginal {
+		return true // The overriding component supplies the original function.
+	}
+
+	if c.hostFunctionAvailable(uri, name, arity) {
+		return true
+	}
+
+	return xpath.StandardFunctionAcceptsArity(uri, name, arity)
+}
+
+func (c *compiler) hostFunctionAvailable(uri, name string, arity int) bool {
+	return uri == lexicon.NamespaceFn && xsltFunctionAcceptsVersionArity(c.stylesheet.processorLanguage(), name, arity) &&
+		(c.stylesheet.processorLanguage() >= 30 || !xslt30Function(name))
 }
 
 // checkDeclaredModes verifies that all modes referenced in the stylesheet
@@ -1801,6 +1897,18 @@ func (c *compiler) checkAbstractComponents(_ context.Context) error {
 		}
 	}
 
+	for _, v := range c.stylesheet.globalVars {
+		if v.Visibility == visAbstract {
+			return staticError(errCodeXTSE3080, "abstract variable %q has no implementation", v.Name)
+		}
+	}
+
+	for name, attrs := range c.stylesheet.attributeSets {
+		if attrs.Visibility == visAbstract {
+			return staticError(errCodeXTSE3080, "abstract attribute-set %q has no implementation", name)
+		}
+	}
+
 	return nil
 }
 
@@ -1849,17 +1957,8 @@ func xsdBoolTrue(s string) bool {
 // compatibility mode. Per XSLT 3.0 §3.10 this is any effective version below 2.0
 // (an effective version in [2.0, 3.0) behaves identically to 3.0).
 func isBackwardsCompatible(ver string) bool {
-	ver = strings.TrimSpace(ver)
-	if ver == "" {
-		return false
-	}
-
-	f, err := strconv.ParseFloat(ver, 64)
-	if err != nil {
-		return false
-	}
-
-	return f < 2.0
+	comparison, valid := compareLanguageVersion(ver, 2)
+	return valid && comparison < 0
 }
 
 // resolveQName resolves a QName (prefix:local or just local) to an expanded name.
@@ -1981,7 +2080,7 @@ func isValidEQName(s string) bool {
 	}
 
 	closeIdx := strings.IndexByte(s, '}')
-	if closeIdx < 0 || closeIdx == len(s)-1 {
+	if closeIdx < 0 || closeIdx == len(s)-1 || strings.ContainsAny(s[2:closeIdx], "{}") {
 		return false
 	}
 

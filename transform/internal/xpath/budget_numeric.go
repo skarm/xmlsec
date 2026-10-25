@@ -248,6 +248,10 @@ func CastAtomicContext(ctx context.Context, value xdm.AtomicValue, target string
 		}
 	}
 
+	if err := validateVersionedCast(ctx, value, target); err != nil {
+		return xdm.AtomicValue{}, err
+	}
+
 	result, err := CastAtomic(value, target)
 	if err == nil {
 		err = ChargeNumber(ctx, result)

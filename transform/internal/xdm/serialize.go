@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/xmloutput"
@@ -17,6 +16,7 @@ type XMLSerialization struct {
 	tree.XMLWriteOptions
 	OmitDeclaration, OmitDoctype, CompactDeclaration bool
 	Encoding, Standalone                             string
+	Doctype                                          *Doctype
 }
 
 func (w XMLSerialization) WriteTo(dst io.Writer, n Node) error {
@@ -24,32 +24,27 @@ func (w XMLSerialization) WriteTo(dst io.Writer, n Node) error {
 		return errors.New("nil XML serialization input")
 	}
 
-	var nodes []*tree.Node
 	if d, ok := n.(*Document); ok {
-		nodes = d.raw.Children
 		if err := w.declaration(dst, d); err != nil {
 			return err
 		}
 
-		if !w.OmitDoctype && d.Doctype != nil {
-			if err := writeDoctype(dst, d.Doctype); err != nil {
-				return err
-			}
+		if !w.OmitDoctype {
+			w.Doctype = d.Doctype
 		}
-	} else {
-		nodes = []*tree.Node{n.view().raw}
 	}
 
-	options := w.XMLWriteOptions
-
-	options.SelfClose, options.Reconcile = true, true
-	if strings.EqualFold(w.Encoding, "US-ASCII") {
-		options.ASCII = true
-	}
-
-	_, err := tree.WriteXMLFragmentOptions(context.Background(), dst, nodes, int(^uint(0)>>1), options)
-
-	return err
+	return w.WriteSequence(context.Background(), dst, func(yield func(XMLItem, error) bool) {
+		if doc, ok := n.(*Document); ok {
+			for child := range Children(doc) {
+				if !yield(XMLItem{Node: child}, nil) {
+					return
+				}
+			}
+		} else {
+			yield(XMLItem{Node: n}, nil)
+		}
+	})
 }
 
 func writeDoctype(dst io.Writer, d *Doctype) error {

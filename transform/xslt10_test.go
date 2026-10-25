@@ -1,6 +1,7 @@
 package transform_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -81,7 +82,7 @@ func TestXSLT10CoreAndTemporaryTrees(t *testing.T) {
 	tests := []struct{ body, want string }{
 		{`<xsl:key name="inf" match="n" use="1 div 0"/><xsl:key name="small" match="n" use="0.0000001"/><xsl:template match="/"><xsl:value-of select="concat(count(key('inf',1 div 0)),':',count(key('small',0.0000001)))"/></xsl:template>`, "3:3"},
 		{`<xsl:template match="/"><xsl:for-each select="/r/n"><xsl:sort select="concat(.,'e2')" data-type="number"/><xsl:value-of select="@k"/></xsl:for-each></xsl:template>`, "aab"},
-		{`<xsl:template match="/"><wrap xsl:version="2.0"><xsl:sequence select="1"><xsl:fallback>fallback</xsl:fallback></xsl:sequence></wrap></xsl:template>`, "fallback"},
+		{`<xsl:template match="/"><wrap xsl:version="2.0"><xsl:sequence select="1"><xsl:fallback>fallback</xsl:fallback></xsl:sequence></wrap></xsl:template>`, nameFallbackResult},
 		{`<xsl:template match="/"><ext:run xmlns:ext="urn:ext" xsl:extension-element-prefixes="ext"><xsl:fallback>extension-fallback</xsl:fallback></ext:run></xsl:template>`, "extension-fallback"},
 		{`<xsl:template match="/"><xsl:value-of select="document('')/*/@version"/></xsl:template>`, version10},
 		{`<xsl:template match="/"><xsl:value-of select="/r/n"/>:<xsl:value-of select="1 div 0"/>:<xsl:value-of select="0.0000001"/>:<xsl:value-of select="number('+1')"/></xsl:template>`, "2:Infinity:0.0000001:NaN"},
@@ -152,7 +153,7 @@ func TestXSLT10ModulesAndConcurrentReuse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s, err := e.CompileXSLT(ctx, []byte(xslt10(`<xsl:import href="urn:test:imported"/><xsl:include href="urn:test:included"/><xsl:template match="/"><xsl:call-template name="included"/>:<xsl:apply-templates select="/r/n"/></xsl:template><xsl:template match="n">new:<xsl:apply-imports/></xsl:template>`)), transform.XSLTOptions{BaseURI: "urn:test:main"})
+	s, err := e.CompileXSLT(ctx, []byte(sheetStart+version10+`"><xsl:import href="urn:test:imported"/><xsl:output method="text"/><xsl:include href="urn:test:included"/><xsl:template match="/"><xsl:call-template name="included"/>:<xsl:apply-templates select="/r/n"/></xsl:template><xsl:template match="n">new:<xsl:apply-imports/></xsl:template></xsl:stylesheet>`), transform.XSLTOptions{BaseURI: "urn:test:main"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +266,7 @@ func TestXSLT10SerializationDefaults(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if !strings.Contains(string(out.Primary), tc.want) || strings.Contains(string(out.Primary), tc.absent) {
+		if !bytes.Contains(out.Primary, []byte(tc.want)) || bytes.Contains(out.Primary, []byte(tc.absent)) {
 			t.Fatalf("wrong v1 serialization defaults: %s", out.Primary)
 		}
 	}
@@ -282,7 +283,7 @@ func TestXSLT10SerializationDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if strings.Contains(string(out.Primary), "<?xml") {
+	if bytes.Contains(out.Primary, []byte("<?xml")) {
 		t.Fatal(string(out.Primary))
 	}
 }

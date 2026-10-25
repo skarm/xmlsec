@@ -27,9 +27,11 @@ type EvalState struct {
 	// baseNode / baseContextItem capture the focus seeded by NewEvalState so
 	// each EvaluateReuse call starts from that base focus, and never a focus
 	// mutated by a prior call.
-	baseNode        xdm.Node
-	baseContextItem xdm.Item
-	baseCompat      bool
+	baseNode         xdm.Node
+	baseContextItem  xdm.Item
+	baseCompat       bool
+	baseNamespaces   map[string]string
+	baseXMLNamespace string
 
 	// explicitTime is true when the Evaluator had an explicitly configured
 	// CurrentTime. When false, EvaluateReuse refreshes the clock per call so
@@ -74,6 +76,14 @@ func (e *Expression) EvaluateReuse(ctx context.Context, state *EvalState, node x
 
 	ec := &state.ec
 	ec.version = e.version
+	ec.defaultXMLNamespace = state.baseXMLNamespace
+
+	ec.namespaces = state.baseNamespaces
+	if e.staticNamespaces != nil {
+		ec.namespaces = e.staticNamespaces
+		ec.defaultXMLNamespace = e.defaultXMLNamespace
+	}
+
 	ec.xpath10Compat = state.baseCompat || e.version == 10
 	applyBudget(ctx, ec)
 
@@ -123,7 +133,7 @@ func (e *Expression) EvaluateReuse(ctx context.Context, state *EvalState, node x
 		return Result{seq: xdm.ItemSlice(state.oneItem[:])}, nil
 	}
 
-	if err := e.prefixPlan.Validate(ec.namespaces, ec.strictPrefixes, ec.schemaDeclarations); err != nil {
+	if err := e.prefixPlan.Validate(ec.namespaces, e.staticNamespaces != nil || ec.strictPrefixes || e.version == 10, ec.schemaDeclarations); err != nil {
 		return Result{}, err
 	}
 
@@ -213,6 +223,8 @@ func (e Evaluator) NewEvalState(node xdm.Node) *EvalState {
 	// newEvalCtx clears ec.node when a non-node context item is configured, so
 	// read both back from the freshly built context.
 	s.baseCompat = s.ec.xpath10Compat
+	s.baseNamespaces = s.ec.namespaces
+	s.baseXMLNamespace = s.ec.defaultXMLNamespace
 	s.baseNode = s.ec.node
 	s.baseContextItem = s.ec.contextItem
 

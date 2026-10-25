@@ -111,10 +111,8 @@ func (ec *execContext) setComputedElementNamespace(ctx context.Context, elem *xd
 		return nil
 	}
 
-	if inst.Namespace != nil || !ec.isNSDeclaredInScope(prefix, uri) {
-		if err := elem.DeclareNamespace(prefix, uri); err != nil {
-			return err
-		}
+	if err := elem.DeclareNamespace(prefix, uri); err != nil {
+		return err
 	}
 
 	if err := elem.SetActiveNamespace(prefix, uri); err != nil {
@@ -141,19 +139,16 @@ func (ec *execContext) executeComputedElementContent(ctx context.Context, elem *
 	savedPrevAtomic := out.prevWasAtomic
 	savedSeqMode := out.sequenceMode
 	savedCapture := out.captureItems
-	savedWherePop := out.wherePopulated
 	out.current = elem
 	out.prevWasAtomic = false
 	out.sequenceMode = false
 	out.captureItems = false
-	out.wherePopulated = false
 
 	defer func() {
 		out.current = savedCurrent
 		out.prevWasAtomic = savedPrevAtomic
 		out.sequenceMode = savedSeqMode
 		out.captureItems = savedCapture
-		out.wherePopulated = savedWherePop
 	}()
 
 	// Attribute sets precede the body so explicitly constructed attributes win.
@@ -167,8 +162,8 @@ func (ec *execContext) executeComputedElementContent(ctx context.Context, elem *
 		return err
 	}
 
-	if !inst.InheritNamespaces {
-		undeclareInheritedNamespaces(elem)
+	if err := finishConstructedNamespaces(ctx, elem, inst.InheritNamespaces); err != nil {
+		return err
 	}
 
 	if inst.TypeName != "" {
@@ -260,10 +255,7 @@ func undeclareChildNamespace(elem *xdm.Element, prefix, parentURI string) {
 			continue
 		}
 
-		if ns.URI() == parentURI {
-			elem.RemoveNamespaceByPrefix(prefix)
-		}
-
+		// Existing namespace nodes are retained, even if they match the parent.
 		return
 	}
 
@@ -552,18 +544,12 @@ func (ec *execContext) execAttribute(ctx context.Context, inst *attributeInst) e
 		return ec.captureSequenceAttribute(ctx, out, inst, resolved, value)
 	}
 
-	// An empty where-populated attribute must not replace an existing value.
-	if out.wherePopulated && value == "" {
-		return nil
-	}
-
 	elem, ok := out.current.(*xdm.Element)
 	if !ok {
 		return ec.outputNonElementAttribute(out, name, resolved, value)
 	}
 
-	// A where-populated body is filtered after temporary-tree construction.
-	if !out.wherePopulated && out.hasChildContent(elem) {
+	if out.hasChildContent(elem) {
 		return dynamicError(errCodeXTDE0410, "cannot add attribute to element after children have been added")
 	}
 
@@ -654,7 +640,7 @@ func (ec *execContext) evaluateComputedAttributeValue(ctx context.Context, inst 
 	val = removeZeroLengthTextNodes(val)
 	val = mergeAdjacentTextNodes(val)
 
-	return stringifySequenceWithSep(val, sep), nil
+	return stringifySimpleContent(ctx, val, sep)
 }
 
 func (ec *execContext) computedAttributeContent(ctx context.Context, inst *attributeInst) (xdm.Sequence, error) {
@@ -824,7 +810,10 @@ func (ec *execContext) execComment(ctx context.Context, inst *commentInst) error
 			return err
 		}
 
-		value = stringifyResult(result)
+		value, err = stringifyResult(ctx, result)
+		if err != nil {
+			return err
+		}
 	} else if len(inst.Body) > 0 {
 		// XSLT 2.0: comment body is temporary output state (XTDE1480).
 		// XSLT 3.0 relaxes this restriction.
@@ -841,7 +830,10 @@ func (ec *execContext) execComment(ctx context.Context, inst *commentInst) error
 			return err
 		}
 
-		value = stringifySimpleContent(val, " ")
+		value, err = stringifySimpleContent(ctx, val, " ")
+		if err != nil {
+			return err
+		}
 	}
 
 	// Sanitize comment content per XSLT 3.0 spec §11.1:
@@ -900,7 +892,10 @@ func (ec *execContext) execPI(ctx context.Context, inst *piInst) error {
 			return err
 		}
 
-		value = stringifyResult(result)
+		value, err = stringifyResult(ctx, result)
+		if err != nil {
+			return err
+		}
 	} else if len(inst.Body) > 0 {
 		// XSLT 2.0: PI body is temporary output state (XTDE1480).
 		// XSLT 3.0 relaxes this restriction.
@@ -917,7 +912,10 @@ func (ec *execContext) execPI(ctx context.Context, inst *piInst) error {
 			return err
 		}
 
-		value = stringifySimpleContent(val, " ")
+		value, err = stringifySimpleContent(ctx, val, " ")
+		if err != nil {
+			return err
+		}
 	}
 
 	// XTDE0890: name must be a valid NCName and PITarget
@@ -956,9 +954,6 @@ func (ec *execContext) execNamespace(ctx context.Context, inst *namespaceInst) e
 	}
 
 	// The xml namespace is always implicitly declared.
-	if name == lexicon.PrefixXML && value == lexicon.NamespaceXML {
-		return nil
-	}
 
 	out := ec.currentOutput()
 	if out.sequenceMode {
@@ -974,6 +969,10 @@ func (ec *execContext) execNamespace(ctx context.Context, inst *namespaceInst) e
 	if !ok {
 		return dynamicError(errCodeXTDE0420,
 			"cannot add namespace node to a non-element node")
+	}
+
+	if out.hasChildContent(elem) {
+		return dynamicError(errCodeXTDE0410, "cannot add a namespace after child nodes")
 	}
 
 	if err := ec.addComputedNamespace(elem, name, value); err != nil {
@@ -1015,7 +1014,7 @@ func validateComputedNamespace(name, value string) error {
 
 	// XSD 1.1 xs:anyURI accepts any string; only an empty URI with a
 	// non-empty prefix needs another namespace construction error.
-	if name != "" && value == "" {
+	if value == "" {
 		return dynamicError(errCodeXTDE0930,
 			"namespace prefix %q requires a non-empty URI", name)
 	}
@@ -1030,7 +1029,7 @@ func (ec *execContext) computedNamespaceValue(ctx context.Context, inst *namespa
 			return "", err
 		}
 
-		return stringifyResult(result), nil
+		return stringifyResult(ctx, result)
 	}
 
 	if len(inst.Body) == 0 {

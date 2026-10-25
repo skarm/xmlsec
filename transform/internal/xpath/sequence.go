@@ -4,6 +4,7 @@
 package xpath
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"math/big"
@@ -107,6 +108,68 @@ func AtomizeSequence(seq xdm.Sequence) ([]xdm.AtomicValue, error) {
 	}
 
 	return result, nil
+}
+
+// FnAtomize applies typed atomization at an adapter function boundary, charging
+// array edges, empty members and emitted atoms to the current invocation.
+func FnAtomize(ctx context.Context, seq xdm.Sequence) ([]xdm.AtomicValue, error) {
+	ec := getFnContext(ctx)
+
+	var atoms []xdm.AtomicValue
+
+	err := atomizeBounded(ctx, ec, seq, func(atom xdm.AtomicValue) (bool, error) {
+		if len(atoms) >= fnMaxNodes(ec) {
+			return false, ErrBudget
+		}
+
+		atoms = append(atoms, atom)
+
+		return true, nil
+	})
+
+	return atoms, err
+}
+
+// atomizeBounded charges array traversal even when every leaf atomizes to ().
+// The callback can stop before a later item, preserving cardinality error order.
+func atomizeBounded(ctx context.Context, ec *evalContext, seq xdm.Sequence, yield func(xdm.AtomicValue) (bool, error)) error {
+	check := typedValueItemCheckFor(ec)
+
+	stack := []seqCursor{{members: []xdm.Sequence{seq}}}
+	for len(stack) != 0 {
+		item, ok, empty := stack[len(stack)-1].next()
+		if err := fnCountOps(ctx, ec, empty+1); err != nil {
+			return err
+		}
+
+		if !ok {
+			stack = stack[:len(stack)-1]
+			continue
+		}
+
+		if array, isArray := item.(xdm.ArrayItem); isArray {
+			if len(stack) >= DepthLimit(ctx, 128) {
+				return ErrBudget
+			}
+
+			stack = append(stack, seqCursor{members: array.MembersView()})
+
+			continue
+		}
+
+		cont, err := atomizeStreamCont(xdm.ItemSlice{item}, check, func(atom xdm.AtomicValue) (bool, error) {
+			if err := fnCountOp(ctx, ec); err != nil {
+				return false, err
+			}
+
+			return yield(atom)
+		})
+		if err != nil || !cont {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // atomizeStreamCont is the recursive worker behind atomizeStream. It returns

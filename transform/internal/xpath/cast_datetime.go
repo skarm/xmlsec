@@ -866,11 +866,13 @@ func writeDurationMonths(b *strings.Builder, d xdm.Duration) {
 	}
 
 	if years := months / 12; years != 0 {
-		fmt.Fprintf(b, "%dY", years)
+		writeDurationInteger(b, int64(years))
+		b.WriteByte('Y')
 	}
 
 	if remainder := months % 12; remainder != 0 {
-		fmt.Fprintf(b, "%dM", remainder)
+		writeDurationInteger(b, int64(remainder))
+		b.WriteByte('M')
 	}
 }
 
@@ -936,7 +938,8 @@ func writeDurationDayTime(b *strings.Builder, totalSeconds *big.Int, micro int64
 	hasSeconds := seconds != 0 || hasFraction
 
 	if days.Sign() != 0 {
-		fmt.Fprintf(b, "%sD", days.String())
+		b.WriteString(days.String())
+		b.WriteByte('D')
 	}
 
 	if hours == 0 && minutes == 0 && !hasSeconds {
@@ -946,11 +949,13 @@ func writeDurationDayTime(b *strings.Builder, totalSeconds *big.Int, micro int64
 	b.WriteByte('T')
 
 	if hours != 0 {
-		fmt.Fprintf(b, "%dH", hours)
+		writeDurationInteger(b, hours)
+		b.WriteByte('H')
 	}
 
 	if minutes != 0 {
-		fmt.Fprintf(b, "%dM", minutes)
+		writeDurationInteger(b, minutes)
+		b.WriteByte('M')
 	}
 
 	if hasSeconds {
@@ -959,23 +964,25 @@ func writeDurationDayTime(b *strings.Builder, totalSeconds *big.Int, micro int64
 }
 
 func writeDurationSeconds(b *strings.Builder, whole, micro int64, fraction *big.Rat) {
+	writeDurationInteger(b, whole)
+
 	if fraction != nil && fraction.Sign() != 0 {
 		digits := exactFractionDigits(fraction)
-		if digits == "" {
-			fmt.Fprintf(b, "%dS", whole)
-		} else {
-			fmt.Fprintf(b, "%d.%sS", whole, digits)
+		if digits != "" {
+			b.WriteByte('.')
+			b.WriteString(digits)
 		}
+	} else if micro != 0 {
+		digits := strings.TrimRight(fmt.Sprintf("%06d", micro), "0")
 
-		return
+		b.WriteByte('.')
+		b.WriteString(digits)
 	}
 
-	if micro == 0 {
-		fmt.Fprintf(b, "%dS", whole)
-		return
-	}
+	b.WriteByte('S')
+}
 
-	digits := fmt.Sprintf("%06d", micro)
-	digits = strings.TrimRight(digits, "0")
-	fmt.Fprintf(b, "%d.%sS", whole, digits)
+func writeDurationInteger(b *strings.Builder, value int64) {
+	var digits [20]byte
+	b.Write(strconv.AppendInt(digits[:0], value, 10))
 }

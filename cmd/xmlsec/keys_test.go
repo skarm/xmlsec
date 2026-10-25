@@ -89,8 +89,8 @@ func TestCLIKeyFormats(t *testing.T) {
 }
 
 func testCLIKeyFormatsCase(t *testing.T, dir *string, name *string, encoded *[]byte, public *map[string][]byte) {
-	path := filepath.Join((*dir), (*name))
-	if err := os.WriteFile(path, (*encoded), 0o600); err != nil {
+	path := filepath.Join(*dir, *name)
+	if err := os.WriteFile(path, *encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,7 +100,7 @@ func testCLIKeyFormatsCase(t *testing.T, dir *string, name *string, encoded *[]b
 	}
 
 	for publicName, encodedPublic := range *public {
-		publicPath := filepath.Join((*dir), publicName)
+		publicPath := filepath.Join(*dir, publicName)
 		if err := os.WriteFile(publicPath, encodedPublic, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -178,28 +178,28 @@ func TestCLIProtectedKeys(t *testing.T) {
 }
 
 func testCLIProtectedKeysCase(t *testing.T, mode *string, private *string, format *string, pwd *string, public *string, template *string, resources *string, ctx *context.Context, write *func(name string, contents []byte) string) {
-	args := []string{(*mode), flagKey, (*private), "-key-format", (*format), "-password-file", (*pwd)}
-	verify := []string{nameVerify, flagKey, (*public)}
+	args := []string{*mode, flagKey, *private, "-key-format", *format, "-password-file", *pwd}
+	verify := []string{nameVerify, flagKey, *public}
 	input := `<r ID="root"><v>protected</v></r>`
 
 	switch *mode {
 	case nameSignTemplate:
-		input = (*template)
+		input = *template
 
 		args = append(args, flagSignatureIndex, "0")
-		verify = []string{nameVerifyCore, flagKey, (*public), flagSignatureIndex, "0"}
+		verify = []string{nameVerifyCore, flagKey, *public, flagSignatureIndex, "0"}
 	case nameSignDetached:
-		args = append(args, flagResources, (*resources))
-		verify = []string{nameVerifyDetached, flagKey, (*public), flagResources, (*resources)}
+		args = append(args, flagResources, *resources)
+		verify = []string{nameVerifyDetached, flagKey, *public, flagResources, *resources}
 	}
 
 	var signed, stderr bytes.Buffer
-	if err := run((*ctx), args, strings.NewReader(input), &signed, &stderr); err != nil {
+	if err := run(*ctx, args, strings.NewReader(input), &signed, &stderr); err != nil {
 		t.Fatal(err, stderr.String())
 	}
 
 	var report bytes.Buffer
-	if err := run((*ctx), verify, bytes.NewReader(signed.Bytes()), &report, &stderr); err != nil {
+	if err := run(*ctx, verify, bytes.NewReader(signed.Bytes()), &report, &stderr); err != nil {
 		t.Fatal(err, report.String())
 	}
 
@@ -210,7 +210,7 @@ func testCLIProtectedKeysCase(t *testing.T, mode *string, private *string, forma
 
 	signed.Reset()
 
-	if err := run((*ctx), args, strings.NewReader(input), &signed, &stderr); err == nil || signed.Len() != 0 {
+	if err := run(*ctx, args, strings.NewReader(input), &signed, &stderr); err == nil || signed.Len() != 0 {
 		t.Fatal("wrong password returned signature output")
 	}
 

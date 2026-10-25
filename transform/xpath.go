@@ -13,6 +13,18 @@ import (
 
 const documentXMLNamespace = "http://www.w3.org/XML/1998/namespace"
 
+// XMLSchemaVersion selects the datatype and regex edition used by an engine.
+type XMLSchemaVersion uint8
+
+const (
+	// XMLSchema10 rejects +INF, year zero and malformed xs:anyURI escapes;
+	// regular expressions use XML Schema 1.0 character range syntax.
+	XMLSchema10 XMLSchemaVersion = 10
+	// XMLSchema11 permits +INF, year zero and the wider xs:anyURI lexical space;
+	// regular expressions use XML Schema 1.1 character range syntax.
+	XMLSchema11 XMLSchemaVersion = 11
+)
+
 // XPathVersion selects a grammar and function library, not a compatibility hint.
 type XPathVersion uint8
 
@@ -34,6 +46,9 @@ type XPathOptions struct {
 	DefaultCollation string
 	// Version defaults to XPath31.
 	Version XPathVersion
+	// XPath10Compatibility enables the XPath 1.0 compatibility property in a
+	// modern grammar. Zero retains ordinary XPath 2.0+ conversion rules.
+	XPath10Compatibility bool
 	// Namespaces maps prefixes to namespace URIs and is copied during compilation.
 	// The empty prefix sets the default element namespace in XPath 2.0 and newer.
 	Namespaces map[string]string
@@ -274,6 +289,9 @@ func (e *Engine) CompileXPath(ctx context.Context, source string, options XPathO
 	}
 
 	evaluator := xpath.NewEvaluator(xpath.DefaultEvaluatorOptions).Namespaces(namespaces).DefaultCollation(options.DefaultCollation).BaseURI(options.BaseURI).ParseOptions(e.parseOptions()).MaxResourceBytes(int64(e.limits.MaxInputBytes)).OpLimit(e.limits.MaxOperations)
+	if options.XPath10Compatibility {
+		evaluator = evaluator.XPath10Compat()
+	}
 
 	evaluator, err = e.xpathDecimalFormats(ctx, evaluator, options.DecimalFormats, version)
 	if err != nil {

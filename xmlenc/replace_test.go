@@ -32,22 +32,22 @@ func testSelectedElementAllSuitesCase(t *testing.T, data *string, wrap *string, 
 	source := parse(t, []byte(`<?before ok?><!--outside--><r xmlns="urn:outer" xmlns:p="urn:p" xmlns:q="urn:unused" xmlns:ds="urn:shadow-ds" xml:lang="ru" xml:base="https://example.test/"><before>visible</before><box xmlns:p="urn:shadow-p"><p:secret xmlns="" p:flag="é">before<bare/>й 😀<!--inside--><?inside ok?></p:secret><after/></box></r><!--after-->`))
 	before := xmlBytes(t, source)
 	selected := source.Root().Children()[1].Children()[0]
-	options := xmlenc.Options{DataAlgorithm: (*data)}
+	options := xmlenc.Options{DataAlgorithm: *data}
 
 	var (
 		encrypted, restored *document.Document
 		err                 error
 	)
 	if (*wrap) == "" {
-		encrypted, _, err = xmlenc.EncryptElement((*ctx), source, selected, &(*recipient).PublicKey, options)
+		encrypted, _, err = xmlenc.EncryptElement(*ctx, source, selected, &(*recipient).PublicKey, options)
 	} else {
 		sizes := map[string]int{xmlenc.AES128KeyWrap: 16, xmlenc.AES192KeyWrap: 24, xmlenc.AES256KeyWrap: 32}
 		kek := bytes.Repeat([]byte{7}, sizes[(*wrap)])
-		kw := xmlenc.KeyWrapOptions{Data: options, KeyAlgorithm: (*wrap)}
+		kw := xmlenc.KeyWrapOptions{Data: options, KeyAlgorithm: *wrap}
 
-		encrypted, _, err = xmlenc.EncryptElementWithKeyWrap((*ctx), source, selected, kek, kw)
+		encrypted, _, err = xmlenc.EncryptElementWithKeyWrap(*ctx, source, selected, kek, kw)
 		if err == nil {
-			restored, _, err = xmlenc.DecryptElementWithKeyWrap((*ctx), encrypted, encrypted.Root().Children()[1].Children()[0], kek, kw)
+			restored, _, err = xmlenc.DecryptElementWithKeyWrap(*ctx, encrypted, encrypted.Root().Children()[1].Children()[0], kek, kw)
 		}
 	}
 
@@ -56,7 +56,7 @@ func testSelectedElementAllSuitesCase(t *testing.T, data *string, wrap *string, 
 	}
 
 	if (*wrap) == "" {
-		restored, _, err = xmlenc.DecryptElement((*ctx), encrypted, encrypted.Root().Children()[1].Children()[0], (*recipient), options)
+		restored, _, err = xmlenc.DecryptElement(*ctx, encrypted, encrypted.Root().Children()[1].Children()[0], *recipient, options)
 	}
 
 	if err != nil {

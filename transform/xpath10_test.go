@@ -102,12 +102,12 @@ func testXPath10CoreConformanceCase(t *testing.T, e **transform.Engine, ctx *con
 	want  any
 }, d **transform.Document,
 ) {
-	q, err := (*e).CompileXPath((*ctx), tt.query, transform.XPathOptions{Version: transform.XPath10, Namespaces: map[string]string{"p": namespaceP}})
+	q, err := (*e).CompileXPath(*ctx, tt.query, transform.XPathOptions{Version: transform.XPath10, Namespaces: map[string]string{"p": namespaceP}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	seq, err := q.Evaluate((*ctx), (*d), transform.XPathContext{})
+	seq, err := q.Evaluate(*ctx, *d, transform.XPathContext{})
 	if err != nil {
 		t.Fatal(err)
 	}

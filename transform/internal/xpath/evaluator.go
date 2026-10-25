@@ -37,6 +37,7 @@ type Evaluator struct {
 
 type evaluatorCfg struct {
 	uriResolver            URIResolver
+	resourceReads          xdm.ResourceReadPolicy
 	collectionResolver     CollectionResolver
 	contextItem            xdm.Item
 	variableResolver       VariableResolver
@@ -45,6 +46,7 @@ type evaluatorCfg struct {
 	traceWriter            io.Writer
 	runtime                *evaluationRuntime
 	namespaces             map[string]string
+	defaultXMLNamespace    string
 	variables              map[string]xdm.Sequence
 	varScope               *variableScope             // root scope built once from variables by Variables(); shared read-only by every evaluation
 	functions              map[string]Function        // unqualified calls
@@ -98,6 +100,15 @@ func (e Evaluator) Namespaces(ns map[string]string) Evaluator {
 	} else {
 		e.cfg.namespaces = maps.Clone(ns)
 	}
+
+	return e
+}
+
+// DefaultXMLNamespace supplies the XML default for host expressions without a
+// bound namespace context. Bound expressions retain their declaration context.
+func (e Evaluator) DefaultXMLNamespace(uri string) Evaluator {
+	e = e.clone()
+	e.cfg.defaultXMLNamespace = uri
 
 	return e
 }
@@ -252,6 +263,14 @@ func (e Evaluator) ParseOptions(p xdm.ParseOptions) Evaluator {
 func (e Evaluator) URIResolver(r URIResolver) Evaluator {
 	e = e.clone()
 	e.cfg.uriResolver = r
+
+	return e
+}
+
+// ResourceReads installs the current host invocation's read/write guard.
+func (e Evaluator) ResourceReads(policy xdm.ResourceReadPolicy) Evaluator {
+	e = e.clone()
+	e.cfg.resourceReads = policy
 
 	return e
 }
@@ -472,13 +491,19 @@ func (e Evaluator) Evaluate(ctx context.Context, expr *Expression, node xdm.Node
 	ec := e.newEvalCtx(node)
 
 	ec.version = expr.version
+
+	if expr.staticNamespaces != nil {
+		ec.defaultXMLNamespace = expr.defaultXMLNamespace
+		ec.namespaces = expr.staticNamespaces
+	}
+
 	if expr.version == 10 {
 		ec.xpath10Compat = true
 	}
 
 	applyBudget(ctx, ec)
 
-	if err := expr.prefixPlan.Validate(ec.namespaces, ec.strictPrefixes || ec.version == 10, ec.schemaDeclarations); err != nil {
+	if err := expr.prefixPlan.Validate(ec.namespaces, expr.staticNamespaces != nil || ec.strictPrefixes || ec.version == 10, ec.schemaDeclarations); err != nil {
 		return nil, err
 	}
 
@@ -495,6 +520,63 @@ func (e Evaluator) Evaluate(ctx context.Context, expr *Expression, node xdm.Node
 	box.result.seq = &box.nodes
 
 	return &box.result, nil
+}
+
+// ValidateExpression checks all static references against this evaluator's
+// explicit variables and functions, including references in unevaluated branches.
+// Host languages use this after compiling dynamically supplied expression text.
+func (e Evaluator) ValidateExpression(ctx context.Context, expr *Expression) error {
+	if err := expr.requireCompiledProgram(); err != nil {
+		return err
+	}
+
+	ec := e.newEvalCtx(nil)
+
+	ec.version = expr.version
+
+	if expr.staticNamespaces != nil {
+		ec.defaultXMLNamespace = expr.defaultXMLNamespace
+		ec.namespaces = expr.staticNamespaces
+	}
+
+	applyBudget(ctx, ec)
+
+	if err := expr.prefixPlan.Validate(ec.namespaces, ec.strictPrefixes, ec.schemaDeclarations); err != nil {
+		return err
+	}
+
+	collector := staticRefCollector{bound: map[string]int{}, namespaces: ec.namespaces}
+	collector.walk(expr.astExpr())
+
+	if err := ec.countOps(ctx, max(1, collector.visits)); err != nil {
+		return err
+	}
+
+	if ec.schemaDeclarations == nil {
+		if len(collector.schemaComponentTests) > 0 {
+			return &xdm.Error{Code: "XPST0008", Message: "no schema declarations in the static context"}
+		}
+
+		for _, typ := range collector.typeNames {
+			if typ.URI != NSXS || (!knownXSTypeNames(typ.Name) && typ.Name != "anyType" && typ.Name != "anySimpleType" && typ.Name != "untyped") {
+				return &xdm.Error{Code: "XPST0051", Message: "unknown type in the static context: " + typ.Name}
+			}
+		}
+	}
+
+	for _, name := range collector.freeVars {
+		if _, exists := ec.vars.Lookup(VariableKey(name, ec.namespaces)); !exists {
+			return &xdm.Error{Code: "XPST0008", Message: "undeclared variable: $" + name}
+		}
+	}
+
+	for _, function := range collector.funcNames {
+		if _, err := resolveFunctionByURIInfo(ctx, ec, function.URI, function.Name, function.Arity); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // EvaluateEBV evaluates the compiled expression against the given context
@@ -516,13 +598,19 @@ func (e Evaluator) EvaluateEBV(ctx context.Context, expr *Expression, node xdm.N
 	ec := e.newEvalCtx(node)
 
 	ec.version = expr.version
+
+	if expr.staticNamespaces != nil {
+		ec.defaultXMLNamespace = expr.defaultXMLNamespace
+		ec.namespaces = expr.staticNamespaces
+	}
+
 	if expr.version == 10 {
 		ec.xpath10Compat = true
 	}
 
 	applyBudget(ctx, ec)
 
-	if err := expr.prefixPlan.Validate(ec.namespaces, ec.strictPrefixes || ec.version == 10, ec.schemaDeclarations); err != nil {
+	if err := expr.prefixPlan.Validate(ec.namespaces, expr.staticNamespaces != nil || ec.strictPrefixes || ec.version == 10, ec.schemaDeclarations); err != nil {
 		return false, err
 	}
 
@@ -573,6 +661,7 @@ func (e Evaluator) newEvalCtx(node xdm.Node) *evalContext {
 
 	// namespaces
 	ec.namespaces = cfg.namespaces
+	ec.defaultXMLNamespace = cfg.defaultXMLNamespace
 
 	// variables: the root scope is built once by Variables() and shared.
 	ec.vars = cfg.varScope
@@ -585,6 +674,7 @@ func (e Evaluator) newEvalCtx(node xdm.Node) *evalContext {
 	ec.variableResolver = cfg.variableResolver
 	ec.functionResolver = cfg.functionResolver
 	ec.uriResolver = cfg.uriResolver
+	ec.resourceReads = cfg.resourceReads
 	ec.collectionResolver = cfg.collectionResolver
 	ec.httpClient = cfg.httpClient
 	ec.maxResourceBytes = cfg.maxResourceBytes

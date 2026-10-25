@@ -6,10 +6,12 @@ package xslt
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
 // compileUsePackage handles xsl:use-package by resolving and compiling the
@@ -27,7 +29,12 @@ func (c *compiler) compileUsePackage(ctx context.Context, elem *xdm.Element) err
 
 	pkgVersion := getAttr(elem, namePackageVersion)
 	if !ParseVersionConstraint(pkgVersion).Valid() {
-		return staticError(errCodeXTSE3000, "invalid package version range %q", pkgVersion)
+		return staticError(errCodeXTSE0020, "invalid package version range %q", pkgVersion)
+	}
+
+	acceptRules, err := parseAcceptRules(ctx, elem)
+	if err != nil {
+		return err
 	}
 
 	if c.packageResolver == nil {
@@ -67,6 +74,10 @@ func (c *compiler) compileUsePackage(ctx context.Context, elem *xdm.Element) err
 		return fmt.Errorf("xsl:use-package: cannot compile package %q: %w", pkgName, err)
 	}
 
+	if err := checkCompiledPackage(pkgSS, pkgName, pkgVersion); err != nil {
+		return err
+	}
+
 	c.stylesheet.usedPackages = append(c.stylesheet.usedPackages, pkgSS)
 
 	// Carry over the used package's backwards-compatible expression set: its
@@ -82,7 +93,7 @@ func (c *compiler) compileUsePackage(ctx context.Context, elem *xdm.Element) err
 	}
 
 	// Merge components from the package, respecting visibility, xsl:accept rules, and overrides.
-	if err := c.mergePackageComponents(ctx, pkgSS, elem, oset); err != nil {
+	if err := c.mergePackageComponents(ctx, pkgSS, elem, oset, acceptRules); err != nil {
 		return err
 	}
 
@@ -91,16 +102,8 @@ func (c *compiler) compileUsePackage(ctx context.Context, elem *xdm.Element) err
 
 // mergePackageComponents merges components from a used package into the
 // current stylesheet, respecting visibility and xsl:accept rules.
-func (c *compiler) mergePackageComponents(ctx context.Context, pkg *Stylesheet, usePackageElem *xdm.Element, oset *overrideSet) error {
+func (c *compiler) mergePackageComponents(ctx context.Context, pkg *Stylesheet, usePackageElem *xdm.Element, oset *overrideSet, acceptRules []acceptRule) error {
 	nsBindings := c.collectElemNamespaces(ctx, usePackageElem)
-
-	acceptRules := parseAcceptRules(usePackageElem, nsBindings)
-	for _, rule := range acceptRules {
-		if rule.component == xslWildcard && !isWildcard(rule.names) {
-			return staticError(errCodeXTSE3032,
-				"xsl:accept with component='*' requires names to be a wildcard, got %q", rule.names)
-		}
-	}
 
 	var excluded map[*xdm.Element]struct{}
 	if oset != nil {
@@ -112,7 +115,7 @@ func (c *compiler) mergePackageComponents(ctx context.Context, pkg *Stylesheet, 
 		return err
 	}
 
-	if err := c.validatePackageAcceptVisibility(pkg, acceptRules); err != nil {
+	if err := c.validatePackageAcceptVisibility(ctx, pkg, acceptRules); err != nil {
 		return err
 	}
 
@@ -132,7 +135,9 @@ func (c *compiler) mergePackageComponents(ctx context.Context, pkg *Stylesheet, 
 		return err
 	}
 
-	c.mergePackageParams(pkg, acceptRules)
+	if err := c.mergePackageParams(pkg, overrideNames); err != nil {
+		return err
+	}
 	// Keys, decimal formats and named outputs remain package-scoped and are
 	// obtained by package code through their effective* accessors.
 	if err := c.mergePackageModes(pkg, acceptRules); err != nil {
@@ -141,9 +146,8 @@ func (c *compiler) mergePackageComponents(ctx context.Context, pkg *Stylesheet, 
 
 	c.mergePackageAccumulators(pkg)
 	c.mergePackageAttributeSets(pkg, acceptRules, overrideNames)
-	c.mergePackageOverrides(pkg, oset)
 
-	return nil
+	return c.mergePackageOverrides(ctx, pkg, oset)
 }
 
 func (c *compiler) validatePackageOverrideConflicts(oset *overrideSet) error {
@@ -167,11 +171,15 @@ func (c *compiler) validatePackageOverrideConflicts(oset *overrideSet) error {
 		}
 
 		for name := range oset.variables {
-			for _, v := range c.stylesheet.globalVars {
-				if v.Name == name && v.OwnerPackage == nil {
-					return staticError(errCodeXTSE3055,
-						"override variable %q conflicts with a local variable of the same name", name)
-				}
+			if _, local := c.localVarNames[name]; local {
+				return staticError(errCodeXTSE3055,
+					"override variable %q conflicts with a local variable of the same name", name)
+			}
+		}
+
+		for name := range oset.params {
+			if _, local := c.localVarNames[name]; local {
+				return staticError(errCodeXTSE3055, "override parameter %q conflicts with a local declaration", name)
 			}
 		}
 	}
@@ -179,82 +187,78 @@ func (c *compiler) validatePackageOverrideConflicts(oset *overrideSet) error {
 	return nil
 }
 
-func (c *compiler) validatePackageAcceptVisibility(pkg *Stylesheet, acceptRules []acceptRule) error {
-	// XTSE3040 excludes wildcard tokens from visibility compatibility checks.
-	for _, rule := range acceptRules {
-		if isWildcard(rule.names) {
-			continue
-		}
+type acceptedComponent struct{ kind, name, visibility string }
 
-		for _, tmpl := range pkg.templates {
-			if tmpl.Name == "" {
+func packageComponents(pkg *Stylesheet) []acceptedComponent {
+	var components []acceptedComponent
+	for name := range pkg.namedTemplates {
+		components = append(components, acceptedComponent{xslElemTemplate, name, getComponentVisibility(pkg, xslElemTemplate, name)})
+	}
+
+	for key := range pkg.functions {
+		name := functionVisKey(key.Name, key.Arity)
+		components = append(components, acceptedComponent{xslElemFunction, name, getComponentVisibility(pkg, xslElemFunction, name)})
+	}
+
+	for _, v := range pkg.globalVars {
+		components = append(components, acceptedComponent{xslElemVariable, v.Name, getComponentVisibility(pkg, xslElemVariable, v.Name)})
+	}
+
+	for name := range pkg.attributeSets {
+		components = append(components, acceptedComponent{xslElemAttributeSet, name, getComponentVisibility(pkg, xslElemAttributeSet, name)})
+	}
+
+	for name := range pkg.modeDefs {
+		if name != "" && name != modeDefault && name != modeUnnamed {
+			components = append(components, acceptedComponent{xslElemMode, name, getComponentVisibility(pkg, xslElemMode, name)})
+		}
+	}
+
+	return components
+}
+
+func (c *compiler) validatePackageAcceptVisibility(ctx context.Context, pkg *Stylesheet, rules []acceptRule) error {
+	components := packageComponents(pkg)
+
+	for _, rule := range rules {
+		wildcard, matched := isWildcard(rule.names), false
+
+		for _, component := range components {
+			if err := xpath.Charge(ctx, 1); err != nil {
+				return err
+			}
+
+			if wildcard || rule.component != xslWildcard && rule.component != component.kind || !componentNameMatches(component.name, rule.names) {
 				continue
 			}
 
-			if err := validateAcceptedPackageComponent(pkg, rule, xslElemTemplate, tmpl.Name); err != nil {
-				return err
+			matched = true
+
+			if !isAcceptVisibilityCompatible(component.visibility, rule.visibility) {
+				return staticError(errCodeXTSE3040, "xsl:accept: visibility %q is incompatible with %s %q (declared %s)", rule.visibility, component.kind, component.name, component.visibility)
 			}
 		}
 
-		for key, fn := range pkg.functions {
-			if err := validateAcceptedPackageComponent(pkg, rule, xslElemFunction, functionVisKey(key.Name, len(fn.Params))); err != nil {
-				return err
-			}
-		}
-
-		for _, variable := range pkg.globalVars {
-			if err := validateAcceptedPackageComponent(pkg, rule, xslElemVariable, variable.Name); err != nil {
-				return err
-			}
+		if !wildcard && !matched {
+			return staticError(errCodeXTSE3030, "xsl:accept: no %s matches %q", rule.component, rule.names)
 		}
 	}
 
 	return nil
 }
 
-func validateAcceptedPackageComponent(pkg *Stylesheet, rule acceptRule, kind, name string) error {
-	if rule.component != xslWildcard && rule.component != kind {
-		return nil
-	}
-
-	if !componentNameMatches(name, rule.names) {
-		return nil
-	}
-
-	visibility := getComponentVisibility(pkg, kind, name)
-	if !isAcceptVisibilityCompatible(visibility, rule.visibility) {
-		return staticError(errCodeXTSE3040,
-			"xsl:accept: visibility %q is incompatible with component %q (declared %s)",
-			rule.visibility, name, visibility)
-	}
-
-	return nil
-}
-
-// isAcceptVisibilityCompatible checks whether changing a component's visibility
-// from 'declared' to 'accepted' is allowed by the XSLT 3.0 spec §3.6.2.
-// The rule: xsl:accept cannot increase the visibility of a component.
-// private → public/final/abstract is not allowed.
-// final → public is not allowed.
-// hidden is always allowed (decreasing).
+// isAcceptVisibilityCompatible implements the table in XSLT 3.0 3.5.3.2.
 func isAcceptVisibilityCompatible(declared, accepted string) bool {
-	if accepted == visHidden {
-		return true // hiding is always allowed
-	}
-	// Cannot make private component visible (public/final/abstract)
-	if declared == visPrivate && (accepted == visPublic || accepted == visFinal || accepted == visAbstract) {
+	switch declared {
+	case visPublic:
+		return accepted == visPublic || accepted == visPrivate || accepted == visFinal || accepted == visHidden
+	case visFinal:
+		return accepted == visPrivate || accepted == visFinal || accepted == visHidden
+	case visAbstract:
+		return accepted == visAbstract || accepted == visHidden
+	default:
 		return false
 	}
-	// Cannot make final component public or abstract
-	if declared == visFinal && (accepted == visPublic || accepted == visAbstract) {
-		return false
-	}
-	// Cannot make non-abstract component abstract
-	if declared != visAbstract && accepted == visAbstract {
-		return false
-	}
-
-	return true
 }
 
 func (c *compiler) validatePackageAcceptOverrides(acceptRules []acceptRule, overrideNames map[string]struct{}) error {
@@ -310,39 +314,41 @@ func (c *compiler) mergePackageTemplates(pkg *Stylesheet, acceptRules []acceptRu
 }
 
 func (c *compiler) mergePackageTemplate(pkg *Stylesheet, tmpl *template, acceptRules []acceptRule, overrideNames map[string]struct{}) error {
-	if tmpl.Name != "" {
-		pkgVis := getComponentVisibility(pkg, xslElemTemplate, tmpl.Name)
-		if !isVisibleFromOutside(pkgVis) {
-			return nil // private components are not merged
-		}
-		// Apply accept rules
-		if len(acceptRules) > 0 {
-			acceptVis := applyAcceptRules(xslElemTemplate, tmpl.Name, acceptRules, pkgVis)
-			if acceptVis == visHidden {
-				return nil
-			}
-
-			tmpl.Visibility = acceptVis
-		}
+	// A named template and its match rules are separate declarations. Rules
+	// belong to their mode even when the template's name is private or hidden.
+	// Accepted modes retain their own rule lists; only the name is merged here.
+	if tmpl.Name == "" {
+		return nil
 	}
 
-	if tmpl.Name != "" {
-		if _, overridden := overrideNames[xslElemTemplate+":"+tmpl.Name]; overridden {
-			return nil
-		}
+	accepted := *tmpl
+	tmpl = &accepted
+
+	pkgVis := getComponentVisibility(pkg, xslElemTemplate, tmpl.Name)
+	if !isVisibleFromOutside(pkgVis) {
+		return nil
 	}
 
-	// XTSE3050: local template with same name as package component
-	if tmpl.Name != "" {
-		if _, local := c.localTemplateNames[tmpl.Name]; local {
-			return staticError(errCodeXTSE3050,
-				"local template %q conflicts with public component from used package", tmpl.Name)
-		}
+	tmpl.Visibility = applyAcceptRules(xslElemTemplate, tmpl.Name, acceptRules, pkgVis)
+	if tmpl.Visibility == visHidden {
+		return nil
+	}
+
+	if _, overridden := overrideNames[xslElemTemplate+":"+tmpl.Name]; overridden {
+		return nil
+	}
+
+	if _, local := c.localTemplateNames[tmpl.Name]; local {
+		return staticError(errCodeXTSE3050,
+			"local template %q conflicts with public component from used package", tmpl.Name)
 	}
 
 	tmpl.ImportPrec = c.importPrec - 1
+
 	tmpl.MinImportPrec = tmpl.ImportPrec // package templates have no sub-imports
-	tmpl.OwnerPackage = pkg
+	if tmpl.OwnerPackage == nil {
+		tmpl.OwnerPackage = pkg
+	}
 
 	c.stylesheet.templates = append(c.stylesheet.templates, tmpl)
 	if tmpl.Name != "" {
@@ -354,13 +360,6 @@ func (c *compiler) mergePackageTemplate(pkg *Stylesheet, tmpl *template, acceptR
 			return staticError(errCodeXTSE3050,
 				"template %q accepted from multiple packages with non-hidden visibility",
 				tmpl.Name)
-		}
-	}
-
-	if tmpl.Match != nil {
-		rules := templateRules(tmpl)
-		for _, mode := range resolveTemplateModes(tmpl.Mode) {
-			c.stylesheet.modeTemplates[mode] = append(c.stylesheet.modeTemplates[mode], rules...)
 		}
 	}
 
@@ -377,13 +376,12 @@ func (c *compiler) mergePackageFunctions(pkg *Stylesheet, acceptRules []acceptRu
 			continue
 		}
 
-		if len(acceptRules) > 0 {
-			acceptVis := applyAcceptRules(xslElemFunction, key, acceptRules, pkgVis)
-			if acceptVis == visHidden {
-				continue
-			}
+		accepted := *fn
+		fn = &accepted
 
-			fn.Visibility = acceptVis
+		fn.Visibility = applyAcceptRules(xslElemFunction, key, acceptRules, pkgVis)
+		if fn.Visibility == visHidden {
+			continue
 		}
 
 		if _, overridden := overrideNames[xslElemFunction+":"+key]; overridden {
@@ -421,44 +419,84 @@ func (c *compiler) mergePackageVariables(pkg *Stylesheet, acceptRules []acceptRu
 			continue
 		}
 
-		if len(acceptRules) > 0 {
-			acceptVis := applyAcceptRules(xslElemVariable, v.Name, acceptRules, pkgVis)
-			if acceptVis == visHidden {
-				continue
-			}
+		accepted := *v
+		accepted.Declaration = v.binding().variable
+		v = &accepted
 
-			v.Visibility = acceptVis
+		v.Visibility = applyAcceptRules(xslElemVariable, v.Name, acceptRules, pkgVis)
+		if v.Visibility == visHidden {
+			continue
 		}
+
 		// XTSE3050: local variable with same name as package component
 		if _, local := c.localVarNames[v.Name]; local {
 			return staticError(errCodeXTSE3050,
 				"local variable %q conflicts with public component from used package", v.Name)
 		}
 
-		v.OwnerPackage = pkg
+		if v.OwnerPackage == nil {
+			v.OwnerPackage = pkg
+		}
+
+		if err := c.checkAcceptedGlobalName(v.Name); err != nil {
+			return err
+		}
+
 		c.stylesheet.globalVars = append(c.stylesheet.globalVars, v)
 	}
 
 	return nil
 }
 
-func (c *compiler) mergePackageParams(pkg *Stylesheet, acceptRules []acceptRule) {
-	// Merge global params
+func (c *compiler) mergePackageParams(pkg *Stylesheet, overrides map[string]struct{}) error {
 	for _, p := range pkg.globalParams {
-		pkgVis := getComponentVisibility(pkg, xslElemVariable, p.Name)
-		if !isVisibleFromOutside(pkgVis) {
+		if p.IsStatic {
 			continue
 		}
 
-		if len(acceptRules) > 0 {
-			acceptVis := applyAcceptRules(xslElemVariable, p.Name, acceptRules, pkgVis)
-			if acceptVis == visHidden {
-				continue
-			}
+		if _, overridden := overrides[xslElemVariable+":"+p.Name]; overridden {
+			continue
 		}
 
-		c.stylesheet.globalParams = append(c.stylesheet.globalParams, p)
+		if _, local := c.localVarNames[p.Name]; local {
+			return staticError(errCodeXTSE3050, "local declaration conflicts with accepted parameter %q", p.Name)
+		}
+
+		if err := c.checkAcceptedGlobalName(p.Name); err != nil {
+			return err
+		}
+
+		accepted := *p
+
+		accepted.Declaration = p.binding().param
+		if accepted.OwnerPackage == nil {
+			accepted.OwnerPackage = pkg
+		}
+
+		c.stylesheet.globalParams = append(c.stylesheet.globalParams, &accepted)
 	}
+
+	return nil
+}
+
+func (c *compiler) checkAcceptedGlobalName(name string) error {
+	if err := xpath.Charge(c.invocation, len(c.stylesheet.globalVars)+len(c.stylesheet.globalParams)+1); err != nil {
+		return err
+	}
+
+	for _, v := range c.stylesheet.globalVars {
+		if v.Name == name {
+			return staticError(errCodeXTSE3050, "variable %q accepted more than once", name)
+		}
+	}
+
+	for _, p := range c.stylesheet.globalParams {
+		if p.Name == name {
+			return staticError(errCodeXTSE3050, "parameter %q accepted more than once", name)
+		}
+	}
+
+	return nil
 }
 
 func (c *compiler) mergePackageModes(pkg *Stylesheet, acceptRules []acceptRule) error {
@@ -473,23 +511,26 @@ func (c *compiler) mergePackageModes(pkg *Stylesheet, acceptRules []acceptRule) 
 				continue
 			}
 
-			if len(acceptRules) > 0 {
-				acceptVis := applyAcceptRules(xslElemMode, name, acceptRules, md.Visibility)
-				if acceptVis == visHidden {
-					continue
-				}
+			accepted := *md
+			md = &accepted
+			md.OwnerPackage = pkg.modePackage(name)
 
-				md.Visibility = acceptVis
+			md.Visibility = applyAcceptRules(xslElemMode, name, acceptRules, md.Visibility)
+			if md.Visibility == visHidden {
+				continue
 			}
+
 			// XTSE3050: local mode with same name as package mode
 			if _, local := c.localModeNames[name]; local {
 				return staticError(errCodeXTSE3050,
 					"local mode %q conflicts with public component from used package", name)
 			}
 
-			if _, exists := c.stylesheet.modeDefs[name]; !exists {
-				c.stylesheet.modeDefs[name] = md
+			if _, exists := c.stylesheet.modeDefs[name]; exists {
+				return staticError(errCodeXTSE3050, "mode %q accepted from multiple packages", name)
 			}
+
+			c.stylesheet.modeDefs[name] = md
 		}
 	}
 
@@ -510,8 +551,8 @@ func (c *compiler) mergePackageAccumulators(pkg *Stylesheet) {
 }
 
 func (c *compiler) mergePackageAttributeSets(pkg *Stylesheet, acceptRules []acceptRule, overrideNames map[string]struct{}) {
-	// Merge attribute sets. Private attribute-sets are also merged (for
-	// package-internal use-attribute-sets references) but keep their visibility.
+	// Package-internal references use the original package map; only
+	// accepted attribute sets enter the using package scope.
 	if pkg.attributeSets != nil {
 		if c.stylesheet.attributeSets == nil {
 			c.stylesheet.attributeSets = make(map[string]*attributeSetDef)
@@ -523,13 +564,12 @@ func (c *compiler) mergePackageAttributeSets(pkg *Stylesheet, acceptRules []acce
 			}
 
 			pkgVis := getComponentVisibility(pkg, xslElemAttributeSet, name)
-			if len(acceptRules) > 0 {
-				acceptVis := applyAcceptRules(xslElemAttributeSet, name, acceptRules, pkgVis)
-				if acceptVis == visHidden {
-					// Mark as hidden but still merge so that package-
-					// internal use-attribute-sets references resolve.
-					as.Visibility = visHidden
-				}
+			accepted := *as
+			as = &accepted
+
+			as.Visibility = applyAcceptRules(xslElemAttributeSet, name, acceptRules, pkgVis)
+			if as.Visibility == visHidden {
+				continue
 			}
 
 			as.OwnerPackage = pkg
@@ -540,13 +580,13 @@ func (c *compiler) mergePackageAttributeSets(pkg *Stylesheet, acceptRules []acce
 	}
 }
 
-func (c *compiler) mergePackageOverrides(pkg *Stylesheet, oset *overrideSet) {
+func (c *compiler) mergePackageOverrides(ctx context.Context, pkg *Stylesheet, oset *overrideSet) error {
 	// Merge override components (these replace the originals).
 	// Override functions/templates/variables also replace the entries in the
 	// package's own maps so that package-internal calls dispatch to the
 	// override (XSLT 3.0 late-binding / virtual-dispatch semantics).
 	if oset == nil {
-		return
+		return nil
 	}
 
 	for qn, fn := range oset.functions {
@@ -558,16 +598,17 @@ func (c *compiler) mergePackageOverrides(pkg *Stylesheet, oset *overrideSet) {
 
 	for name, tmpl := range oset.namedTemplates {
 		tmpl.ImportPrec = c.importPrec - 1
-		tmpl.OwnerPackage = pkg
+		tmpl.OwnerPackage = c.stylesheet
 		c.stylesheet.templates = append(c.stylesheet.templates, tmpl)
 		c.stylesheet.namedTemplates[name] = tmpl
 		// Update the package's own named template map for late binding
 		pkg.namedTemplates[name] = tmpl
 	}
 
+	modeRules := make(map[string][]*template)
+
 	for _, tmpl := range oset.matchTemplates {
-		tmpl.ImportPrec = c.importPrec - 1
-		tmpl.OwnerPackage = pkg
+		tmpl.OwnerPackage = c.stylesheet
 		// A template with both a name and a match is already in
 		// templates from the namedTemplates loop above. Adding it again
 		// would make a package that uses this one register its rules
@@ -578,27 +619,29 @@ func (c *compiler) mergePackageOverrides(pkg *Stylesheet, oset *overrideSet) {
 		}
 
 		rules := templateRules(tmpl)
-		// Resolve mode list: may be multi-mode (e.g. "m3 m4")
 		for _, mode := range resolveTemplateModes(tmpl.Mode) {
-			c.stylesheet.modeTemplates[mode] = append(c.stylesheet.modeTemplates[mode], rules...)
-			// Update the package's mode template list for late binding
-			pkg.modeTemplates[mode] = append(pkg.modeTemplates[mode], rules...)
+			modeRules[mode] = append(modeRules[mode], rules...)
+		}
+	}
+
+	for mode, rules := range modeRules {
+		if err := extendPackageMode(ctx, pkg.modePackage(mode), mode, rules); err != nil {
+			return err
 		}
 	}
 
 	for _, v := range oset.variables {
 		c.stylesheet.globalVars = append(c.stylesheet.globalVars, v)
-		// Update the package's own global vars for late binding
-		for i, pv := range pkg.globalVars {
-			if pv.Name == v.Name {
-				pkg.globalVars[i] = v
-				break
-			}
+		if err := replacePackageGlobal(ctx, pkg, v.Original, v.binding()); err != nil {
+			return err
 		}
 	}
 
 	for _, p := range oset.params {
 		c.stylesheet.globalParams = append(c.stylesheet.globalParams, p)
+		if err := replacePackageGlobal(ctx, pkg, p.Original, p.binding()); err != nil {
+			return err
+		}
 	}
 
 	for name, as := range oset.attributeSets {
@@ -623,6 +666,64 @@ func (c *compiler) mergePackageOverrides(pkg *Stylesheet, oset *overrideSet) {
 
 		pkg.attributeSets[name] = as
 	}
+
+	return nil
+}
+
+// modePackage identifies the rule list bound to a mode, independently of the
+// lexical package of the template currently executing. Accepted modes retain
+// this identity through re-exports and further overrides.
+func (ss *Stylesheet) modePackage(mode string) *Stylesheet {
+	if md := ss.modeDefs[mode]; md != nil && md.OwnerPackage != nil {
+		return md.OwnerPackage
+	}
+
+	return ss
+}
+
+func extendPackageMode(ctx context.Context, pkg *Stylesheet, mode string, rules []*template) error {
+	existing := pkg.modeTemplates[mode]
+	if err := xpath.Charge(ctx, len(existing)+len(rules)); err != nil {
+		return err
+	}
+
+	maxPrec := 0
+	for _, rule := range existing {
+		maxPrec = max(maxPrec, rule.ImportPrec)
+	}
+
+	// One using package is a precedence layer above every rule of the used
+	// package. Within that layer, priority and declaration order still decide.
+	added := make([]*template, 0, len(rules))
+	for _, rule := range rules {
+		copyRule := *rule
+		copyRule.ImportPrec = maxPrec + 1
+		copyRule.MinImportPrec = copyRule.ImportPrec // used packages are not stylesheet imports
+		added = append(added, &copyRule)
+	}
+
+	slices.Reverse(added)
+	slices.SortStableFunc(added, func(a, b *template) int {
+		if a.Priority > b.Priority {
+			return -1
+		}
+
+		if a.Priority < b.Priority {
+			return 1
+		}
+
+		return 0
+	})
+	pkg.modeTemplates[mode] = append(added, existing...)
+	// The package was already compiled and indexed before its using package
+	// supplied these rules. Rebuild this index from the new final positions.
+	if pkg.modeIndex == nil {
+		pkg.modeIndex = make(map[string]*templateIndex)
+	}
+
+	pkg.modeIndex[mode] = buildTemplateIndex(pkg.modeTemplates[mode])
+
+	return nil
 }
 
 // getComponentVisibility returns the effective visibility of a component.
@@ -701,4 +802,55 @@ func resolveTemplateModes(mode string) []string {
 	}
 
 	return modes
+}
+
+// Redirect references to the overridden component throughout its package
+// instance graph; homonymous private declarations retain their own bindings.
+func replacePackageGlobal(ctx context.Context, pkg *Stylesheet, original, replacement globalBinding) error {
+	stack := []*Stylesheet{pkg}
+	seen := make(map[*Stylesheet]struct{})
+
+	for len(stack) != 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		if _, visited := seen[current]; visited {
+			continue
+		}
+
+		if err := xpath.Charge(ctx, len(current.globalVars)+len(current.globalParams)+1); err != nil {
+			return err
+		}
+
+		seen[current] = struct{}{}
+		matched := false
+		current.globalVars = slices.DeleteFunc(current.globalVars, func(v *variable) bool {
+			if v.binding() == original {
+				matched = true
+				return true
+			}
+
+			return false
+		})
+		current.globalParams = slices.DeleteFunc(current.globalParams, func(p *param) bool {
+			if p.binding() == original {
+				matched = true
+				return true
+			}
+
+			return false
+		})
+
+		if matched {
+			if replacement.variable != nil {
+				current.globalVars = append(current.globalVars, replacement.variable)
+			} else {
+				current.globalParams = append(current.globalParams, replacement.param)
+			}
+		}
+
+		stack = append(stack, current.usedPackages...)
+	}
+
+	return nil
 }

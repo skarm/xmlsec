@@ -1001,7 +1001,7 @@ func TestManifestGraphAndMixedReferences(t *testing.T) {
 func testManifestGraphAndMixedReferencesCase(t *testing.T, external *bool) {
 	ctx := context.Background()
 	k := graphKey(t)
-	d, s := makeGraph(t, (*external))
+	d, s := makeGraph(t, *external)
 	before, _ := d.XML(ctx)
 	opt := graphOptions()
 	calls := 0

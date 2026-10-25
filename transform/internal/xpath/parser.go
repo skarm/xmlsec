@@ -56,8 +56,9 @@ type tokenStream interface {
 }
 
 type parseOptions struct {
-	lexer tokenStream
-	depth int
+	lexer   tokenStream
+	depth   int
+	version int
 }
 
 // parseExpression parses → ExprSingle (',' ExprSingle)* (sequence constructor).
@@ -123,6 +124,20 @@ func (p *parseOptions) parseExprSingle() (Expr, error) {
 	return p.parseOrExpr()
 }
 
+// peekOperator resolves a word where the grammar expects an operator or
+// clause delimiter. The lexer's preceding-token heuristic cannot distinguish
+// the two meanings of '*' or a keyword subsequently consumed as a name.
+func (p *parseOptions) peekOperator() Token {
+	tok := p.lexer.Peek()
+	if tok.Type == TokenName {
+		if keyword, ok := lookupOperatorKeyword(tok.Value); ok {
+			tok.Type = keyword
+		}
+	}
+
+	return tok
+}
+
 // parseOrExpr parses → AndExpr ('or' AndExpr)*.
 func (p *parseOptions) parseOrExpr() (Expr, error) {
 	left, err := p.parseAndExpr()
@@ -130,7 +145,7 @@ func (p *parseOptions) parseOrExpr() (Expr, error) {
 		return nil, err
 	}
 
-	for p.lexer.Peek().Type == TokenOr {
+	for p.peekOperator().Type == TokenOr {
 		p.lexer.Next()
 
 		right, err := p.parseAndExpr()
@@ -151,7 +166,7 @@ func (p *parseOptions) parseAndExpr() (Expr, error) {
 		return nil, err
 	}
 
-	for p.lexer.Peek().Type == TokenAnd {
+	for p.peekOperator().Type == TokenAnd {
 		p.lexer.Next()
 
 		right, err := p.parseComparisonExpr()
@@ -174,7 +189,7 @@ func (p *parseOptions) parseComparisonExpr() (Expr, error) {
 		return nil, err
 	}
 
-	tok := p.lexer.Peek()
+	tok := p.peekOperator()
 	if isGeneralComp(tok.Type) || isValueComp(tok.Type) || isNodeComp(tok.Type) {
 		p.lexer.Next()
 
@@ -212,7 +227,7 @@ func (p *parseOptions) parseConcatExpr() (Expr, error) {
 		return nil, err
 	}
 
-	for p.lexer.Peek().Type == TokenConcat {
+	for p.peekOperator().Type == TokenConcat {
 		p.lexer.Next()
 
 		right, err := p.parseRangeExpr()
@@ -233,7 +248,7 @@ func (p *parseOptions) parseRangeExpr() (Expr, error) {
 		return nil, err
 	}
 
-	if p.lexer.Peek().Type == TokenTo {
+	if p.peekOperator().Type == TokenTo {
 		p.lexer.Next()
 
 		right, err := p.parseAdditiveExpr()
@@ -255,7 +270,7 @@ func (p *parseOptions) parseAdditiveExpr() (Expr, error) {
 	}
 
 	for {
-		tok := p.lexer.Peek()
+		tok := p.peekOperator()
 		if tok.Type != TokenPlus && tok.Type != TokenMinus {
 			break
 		}
@@ -281,7 +296,7 @@ func (p *parseOptions) parseMultiplicativeExpr() (Expr, error) {
 	}
 
 	for {
-		tok := p.lexer.Peek()
+		tok := p.peekOperator()
 		if tok.Type != TokenStar && tok.Type != TokenDiv && tok.Type != TokenIdiv && tok.Type != TokenMod {
 			break
 		}
@@ -307,7 +322,7 @@ func (p *parseOptions) parseUnionExpr() (Expr, error) {
 	}
 
 	for {
-		tok := p.lexer.Peek()
+		tok := p.peekOperator()
 		if tok.Type != TokenPipe && tok.Type != TokenUnion {
 			break
 		}
@@ -333,7 +348,7 @@ func (p *parseOptions) parseIntersectExceptExpr() (Expr, error) {
 	}
 
 	for {
-		tok := p.lexer.Peek()
+		tok := p.peekOperator()
 		if tok.Type != TokenIntersect && tok.Type != TokenExcept {
 			break
 		}
@@ -358,11 +373,11 @@ func (p *parseOptions) parseInstanceOfExpr() (Expr, error) {
 		return nil, err
 	}
 
-	if p.lexer.Peek().Type == TokenInstanceOf {
+	if p.peekOperator().Type == TokenInstanceOf {
 		p.lexer.Next() // consume 'instance'
 
-		if p.lexer.Peek().Type != TokenOf {
-			return nil, fmt.Errorf("%w: 'of' after 'instance' but got %s", ErrExpectedToken, p.lexer.Peek())
+		if p.peekOperator().Type != TokenOf {
+			return nil, fmt.Errorf("%w: 'of' after 'instance' but got %s", ErrExpectedToken, p.peekOperator())
 		}
 
 		p.lexer.Next() // consume 'of'
@@ -385,11 +400,11 @@ func (p *parseOptions) parseTreatAsExpr() (Expr, error) {
 		return nil, err
 	}
 
-	if p.lexer.Peek().Type == TokenTreatAs {
+	if p.peekOperator().Type == TokenTreatAs {
 		p.lexer.Next() // consume 'treat'
 
-		if p.lexer.Peek().Type != TokenAs {
-			return nil, fmt.Errorf("%w: 'as' after 'treat' but got %s", ErrExpectedToken, p.lexer.Peek())
+		if p.peekOperator().Type != TokenAs {
+			return nil, fmt.Errorf("%w: 'as' after 'treat' but got %s", ErrExpectedToken, p.peekOperator())
 		}
 
 		p.lexer.Next() // consume 'as'
@@ -412,11 +427,11 @@ func (p *parseOptions) parseCastableAsExpr() (Expr, error) {
 		return nil, err
 	}
 
-	if p.lexer.Peek().Type == TokenCastableAs {
+	if p.peekOperator().Type == TokenCastableAs {
 		p.lexer.Next() // consume 'castable'
 
-		if p.lexer.Peek().Type != TokenAs {
-			return nil, fmt.Errorf("%w: 'as' after 'castable' but got %s", ErrExpectedToken, p.lexer.Peek())
+		if p.peekOperator().Type != TokenAs {
+			return nil, fmt.Errorf("%w: 'as' after 'castable' but got %s", ErrExpectedToken, p.peekOperator())
 		}
 
 		p.lexer.Next() // consume 'as'
@@ -439,11 +454,11 @@ func (p *parseOptions) parseCastAsExpr() (Expr, error) {
 		return nil, err
 	}
 
-	if p.lexer.Peek().Type == TokenCastAs {
+	if p.peekOperator().Type == TokenCastAs {
 		p.lexer.Next() // consume 'cast'
 
-		if p.lexer.Peek().Type != TokenAs {
-			return nil, fmt.Errorf("%w: 'as' after 'cast' but got %s", ErrExpectedToken, p.lexer.Peek())
+		if p.peekOperator().Type != TokenAs {
+			return nil, fmt.Errorf("%w: 'as' after 'cast' but got %s", ErrExpectedToken, p.peekOperator())
 		}
 
 		p.lexer.Next() // consume 'as'
@@ -740,11 +755,9 @@ func (p *parseOptions) canStartPostfixExpr() bool {
 	case TokenVariableRef, TokenLParen, TokenString, TokenNumber,
 		TokenDot, TokenQMark, TokenLBracket:
 		return true
-	case TokenName, TokenFunction, TokenMap, TokenArray, TokenFor, TokenLet, TokenSome, TokenEvery, TokenIf, TokenTry, TokenCatch:
-		return true
+	default:
+		return isNameLikeToken(tok.Type)
 	}
-
-	return false
 }
 
 // parsePostfixExpr parses → PrimaryExpr (Predicate | ArgumentList | Lookup)*.
@@ -835,7 +848,7 @@ func (p *parseOptions) parsePrimaryExpr() (Expr, error) {
 	case TokenFunction:
 		// nameFunction followed by "(" is an inline function or function test.
 		// Otherwise it's a name test (e.g., child::function or xs:QName(function)).
-		if p.lexer.PeekAt(1).Type == TokenLParen {
+		if (p.version == 0 || p.version >= 30) && p.lexer.PeekAt(1).Type == TokenLParen {
 			return p.parseFunctionKeyword()
 		}
 		// Treat as a regular name (name test / path step).
@@ -871,6 +884,10 @@ func (p *parseOptions) parsePrimaryExpr() (Expr, error) {
 		return p.parseNamePrimary()
 
 	default:
+		if isNameLikeToken(tok.Type) {
+			return p.parseNamePrimary()
+		}
+
 		return nil, fmt.Errorf("%w: %s in primary expression", ErrUnexpectedToken, tok)
 	}
 }
@@ -1238,8 +1255,8 @@ func (p *parseOptions) parseStep() (Step, error) {
 		axisSpecified = true
 
 		p.lexer.Next()
-	case TokenName, TokenFunction, TokenMap, TokenArray, TokenFor, TokenLet, TokenSome, TokenEvery, TokenIf, TokenTry, TokenCatch:
-		if p.lexer.PeekAt(1).Type == TokenColonColon {
+	default:
+		if isNameLikeToken(tok.Type) && p.lexer.PeekAt(1).Type == TokenColonColon {
 			if a, ok := xdm.AxisFromName(tok.Value); ok {
 				axis = a
 				axisSpecified = true
@@ -1607,7 +1624,7 @@ func (p *parseOptions) parseFLWOR() (Expr, error) {
 		clauses = append(clauses, lc...)
 	}
 
-	if p.lexer.Peek().Type != TokenReturn {
+	if p.peekOperator().Type != TokenReturn {
 		return nil, fmt.Errorf("%w: 'return' but got %s", ErrExpectedToken, p.lexer.Peek())
 	}
 
@@ -1644,7 +1661,7 @@ func (p *parseOptions) parseForBindings() ([]FLWORClause, error) {
 			posVar = p.lexer.Next().Value
 		}
 
-		if p.lexer.Peek().Type != TokenIn {
+		if p.peekOperator().Type != TokenIn {
 			return nil, fmt.Errorf("%w: 'in' after variable but got %s", ErrExpectedToken, p.lexer.Peek())
 		}
 
@@ -1719,7 +1736,7 @@ func (p *parseOptions) parseQuantifiedExpr(some bool) (Expr, error) {
 		}
 
 		varName := p.lexer.Next().Value
-		if p.lexer.Peek().Type != TokenIn {
+		if p.peekOperator().Type != TokenIn {
 			return nil, fmt.Errorf("%w: 'in' after variable but got %s", ErrExpectedToken, p.lexer.Peek())
 		}
 
@@ -1739,7 +1756,7 @@ func (p *parseOptions) parseQuantifiedExpr(some bool) (Expr, error) {
 		p.lexer.Next()
 	}
 
-	if p.lexer.Peek().Type != TokenSatisfies {
+	if p.peekOperator().Type != TokenSatisfies {
 		return nil, fmt.Errorf("%w: 'satisfies' but got %s", ErrExpectedToken, p.lexer.Peek())
 	}
 
@@ -1774,7 +1791,7 @@ func (p *parseOptions) parseIfExpr() (Expr, error) {
 
 	p.lexer.Next()
 
-	if p.lexer.Peek().Type != TokenThen {
+	if p.peekOperator().Type != TokenThen {
 		return nil, fmt.Errorf("%w: 'then' but got %s", ErrExpectedToken, p.lexer.Peek())
 	}
 
@@ -1785,7 +1802,7 @@ func (p *parseOptions) parseIfExpr() (Expr, error) {
 		return nil, err
 	}
 
-	if p.lexer.Peek().Type != TokenElse {
+	if p.peekOperator().Type != TokenElse {
 		return nil, fmt.Errorf("%w: 'else' but got %s", ErrExpectedToken, p.lexer.Peek())
 	}
 
@@ -1974,7 +1991,7 @@ func (p *parseOptions) parseFunctionKeyword() (Expr, error) {
 
 	var returnType *xdm.SequenceType
 
-	if p.lexer.Peek().Type == TokenAs {
+	if p.peekOperator().Type == TokenAs {
 		p.lexer.Next()
 
 		st, err := p.parseSequenceType()
@@ -2008,7 +2025,7 @@ func (p *parseOptions) parseInlineFunctionParams() ([]FunctionParam, error) {
 			paramName := p.lexer.Next().Value
 			param := FunctionParam{Name: paramName}
 
-			if p.lexer.Peek().Type == TokenAs {
+			if p.peekOperator().Type == TokenAs {
 				p.lexer.Next()
 
 				st, err := p.parseSequenceType()
@@ -2338,7 +2355,7 @@ func (p *parseOptions) parseFunctionItemType() (xdm.NodeTest, error) {
 
 	var returnType xdm.SequenceType
 
-	if p.lexer.Peek().Type == TokenAs {
+	if p.peekOperator().Type == TokenAs {
 		p.lexer.Next()
 
 		rt, err := p.parseSequenceType()
@@ -2528,68 +2545,71 @@ func (p *parseOptions) looksLikeStep() bool {
 
 func (p *parseOptions) looksLikeStepOffset(offset int) bool {
 	tok := p.lexer.PeekAt(offset)
-	switch tok.Type {
-	case TokenDotDot, TokenAt, TokenStar:
+	if tok.Type == TokenDotDot || tok.Type == TokenAt || tok.Type == TokenStar {
 		return true
-	case TokenName, TokenFunction, TokenMap, TokenArray, TokenFor, TokenLet, TokenSome, TokenEvery, TokenIf, TokenTry, TokenCatch:
-		next := p.lexer.PeekAt(offset + 1)
-
-		if next.Type == TokenColonColon {
-			return true // axis::
-		}
-
-		if next.Type == TokenLParen {
-			// node(), text(), comment(), processing-instruction(),
-			// element(), attribute(), document-node(), schema-element(),
-			// schema-attribute(), namespace-node() are steps
-			switch tok.Value {
-			case "node", "text", "comment", nameProcessingInstruction,
-				lexicon.KindElement, "attribute", "document-node", lexicon.KindSchemaElement,
-				"schema-attribute", "namespace-node":
-				return true
-			}
-
-			return false // function call
-		}
-
-		if next.Type == TokenColon {
-			// Per XPath 3.1 A.2.1: a QName is Name:Name with NO whitespace
-			// around the colon. If whitespace precedes ':', this is a plain
-			// name test (the ':' is a map-entry separator, not a QName colon).
-			if !p.joinedQNameAt(offset + 1) {
-				return true // plain name test; ':' is map entry separator
-			}
-			// prefix:local (name test) vs prefix:name( (QName function call)
-			// vs prefix:name# (named function ref)
-			localTok := p.lexer.PeekAt(offset + 2)
-			if isNameLikeToken(localTok.Type) {
-				afterLocal := p.lexer.PeekAt(offset + 3)
-				if afterLocal.Type == TokenLParen {
-					return false // QName function call
-				}
-
-				if afterLocal.Type == TokenHash {
-					return false // named function ref
-				}
-
-				return true // QName step
-			}
-
-			return true
-		}
-
-		if next.Type == TokenHash {
-			return false // named function ref: name#arity
-		}
-		// map{} and array{} are constructors, not name tests
-		if next.Type == TokenLBrace && (tok.Type == TokenMap || tok.Type == TokenArray) {
-			return false
-		}
-
-		return true // plain name test
 	}
 
-	return false
+	if !isNameLikeToken(tok.Type) {
+		return false
+	}
+
+	next := p.lexer.PeekAt(offset + 1)
+
+	if next.Type == TokenColonColon {
+		return true // axis::
+	}
+
+	if next.Type == TokenLParen {
+		// node(), text(), comment(), processing-instruction(),
+		// element(), attribute(), document-node(), schema-element(),
+		// schema-attribute(), namespace-node() are steps
+		switch tok.Value {
+		case "node", "text", "comment", nameProcessingInstruction,
+			lexicon.KindElement, "attribute", "document-node", lexicon.KindSchemaElement,
+			"schema-attribute":
+			return true
+		case "namespace-node":
+			return p.version == 0 || p.version >= 30
+		}
+
+		return false // function call
+	}
+
+	if next.Type == TokenColon {
+		// Per XPath 3.1 A.2.1: a QName is Name:Name with NO whitespace
+		// around the colon. If whitespace precedes ':', this is a plain
+		// name test (the ':' is a map-entry separator, not a QName colon).
+		if !p.joinedQNameAt(offset + 1) {
+			return true // plain name test; ':' is map entry separator
+		}
+		// prefix:local (name test) vs prefix:name( (QName function call)
+		// vs prefix:name# (named function ref)
+		localTok := p.lexer.PeekAt(offset + 2)
+		if isNameLikeToken(localTok.Type) {
+			afterLocal := p.lexer.PeekAt(offset + 3)
+			if afterLocal.Type == TokenLParen {
+				return false // QName function call
+			}
+
+			if afterLocal.Type == TokenHash {
+				return false // named function ref
+			}
+
+			return true // QName step
+		}
+
+		return true
+	}
+
+	if next.Type == TokenHash {
+		return false // named function ref: name#arity
+	}
+	// map{} and array{} are constructors, not name tests
+	if next.Type == TokenLBrace && (tok.Type == TokenMap || tok.Type == TokenArray) {
+		return false
+	}
+
+	return true // plain name test
 }
 
 // joinedQNameAt recognizes a colon joined to both adjacent QName components.
@@ -2600,21 +2620,11 @@ func (p *parseOptions) joinedQNameAt(offset int) bool {
 	return colon.Type == TokenColon && !colon.SpaceBefore && !p.lexer.PeekAt(offset+1).SpaceBefore
 }
 
-// isNameLikeToken returns true if the token type can be used as a local name
-// after a prefix ':' in a QName. XPath 3.1 keywords are context-sensitive:
-// e.g. "my:function()" is a valid prefixed function call, not a keyword.
+// isNameLikeToken recognizes names wherever the grammar requires an operand
+// or QName component. An operator keyword is not reserved in these positions,
+// even when the lexer saw an ambiguous preceding '*' token.
 func isNameLikeToken(t TokenType) bool {
-	switch t {
-	case TokenName, TokenFunction, TokenMap, TokenArray,
-		TokenIf, TokenThen, TokenElse,
-		TokenFor, TokenLet, TokenSome, TokenEvery, TokenReturn,
-		TokenIn, TokenSatisfies,
-		TokenIs, TokenAs, TokenOf,
-		TokenTry, TokenCatch:
-		return true
-	}
-
-	return false
+	return t == TokenName || isKeywordToken(t)
 }
 
 func splitQName(qname string) (string, string) {

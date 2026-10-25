@@ -138,13 +138,13 @@ func testHMACMessageMethodsCase(t *testing.T, ctx *context.Context, msg *[]byte,
 	p := xmldsig.HMACPolicy()
 	p.AllowHMACTruncation = true
 
-	tag, e := xmldsig.ComputeHMAC((*ctx), (*msg), (*key), tc.method, (*bits), p)
+	tag, e := xmldsig.ComputeHMAC(*ctx, *msg, *key, tc.method, *bits, p)
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	m := hmac.New(tc.hash.New, (*key))
-	m.Write((*msg))
+	m := hmac.New(tc.hash.New, *key)
+	m.Write(*msg)
 
 	expected := m.Sum(nil)
 	if (*bits) != 0 {
@@ -155,22 +155,22 @@ func testHMACMessageMethodsCase(t *testing.T, ctx *context.Context, msg *[]byte,
 		t.Fatal("stdlib MAC mismatch")
 	}
 
-	if e = xmldsig.VerifyHMAC((*ctx), (*msg), tag, (*key), tc.method, (*bits), p); e != nil {
+	if e = xmldsig.VerifyHMAC(*ctx, *msg, tag, *key, tc.method, *bits, p); e != nil {
 		t.Fatal(e)
 	}
 
 	for _, bad := range [][]byte{tag[1:], append(bytes.Clone(tag), 0), bytes.Repeat([]byte{0}, len(tag))} {
-		if e = xmldsig.VerifyHMAC((*ctx), (*msg), bad, (*key), tc.method, (*bits), p); !errors.Is(e, xmldsig.ErrSignature) {
+		if e = xmldsig.VerifyHMAC(*ctx, *msg, bad, *key, tc.method, *bits, p); !errors.Is(e, xmldsig.ErrSignature) {
 			t.Fatalf("bad tag accepted %v", e)
 		}
 	}
 
-	if e = xmldsig.VerifyHMAC((*ctx), []byte("changed"), tag, (*key), tc.method, (*bits), p); !errors.Is(e, xmldsig.ErrSignature) {
+	if e = xmldsig.VerifyHMAC(*ctx, []byte("changed"), tag, *key, tc.method, *bits, p); !errors.Is(e, xmldsig.ErrSignature) {
 		t.Fatal(e)
 	}
 
 	if (*bits) != 0 && (*bits) != tc.hash.Size()*8 {
-		if _, e = xmldsig.ComputeHMAC((*ctx), (*msg), (*key), tc.method, (*bits), xmldsig.HMACPolicy()); !errors.Is(e, xmldsig.ErrPolicy) {
+		if _, e = xmldsig.ComputeHMAC(*ctx, *msg, *key, tc.method, *bits, xmldsig.HMACPolicy()); !errors.Is(e, xmldsig.ErrPolicy) {
 			t.Fatalf("implicit truncation %v", e)
 		}
 	}

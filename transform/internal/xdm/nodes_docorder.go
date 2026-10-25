@@ -582,9 +582,8 @@ func CompareNodeOrder(a, b Node) int {
 
 	// Compare the element-level ancestors
 	if aElem != bElem {
-		cmp := compareElementOrder(aElem, bElem)
-		if cmp != 0 {
-			return cmp
+		if order := compareElementOrder(aElem, bElem); order != 0 {
+			return order
 		}
 	}
 

@@ -4,6 +4,7 @@
 package xpath
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -14,8 +15,36 @@ import (
 
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	lexical "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
+
+func validateVersionedCast(ctx context.Context, source xdm.AtomicValue, target string) error {
+	if XMLSchemaVersion(ctx) != 10 {
+		return nil
+	}
+
+	source = normalizeCastSource(source)
+	if source.TypeName != xdm.TypeUntypedAtomic && !xdm.IsStringDerived(source.TypeName) {
+		return nil
+	}
+
+	switch target {
+	case xdm.TypeDouble, xdm.TypeFloat, xdm.TypeDate, xdm.TypeDateTime,
+		xdm.TypeDateTimeStamp, xdm.TypeGYear, xdm.TypeGYearMonth, xdm.TypeAnyURI:
+		text := collapseXMLWhitespace(source.StringVal())
+		if err := lexical.ValidateBuiltin(text, strings.TrimPrefix(target, "xs:"), lexical.Version10); err != nil {
+			return castError(text, target)
+		}
+	}
+
+	return nil
+}
+
+// CastFromStringContext applies the invocation's datatype edition and budgets.
+func CastFromStringContext(ctx context.Context, source, target string) (xdm.AtomicValue, error) {
+	return CastAtomicContext(ctx, xdm.AtomicValue{TypeName: xdm.TypeString, Value: source}, target)
+}
 
 // msgDateTimeStampTimezone is the FORG0001 message for an xs:dateTimeStamp
 // value that is missing its mandatory timezone.
@@ -23,6 +52,10 @@ const msgDateTimeStampTimezone = "xs:dateTimeStamp requires a timezone"
 
 // CastAtomic casts an AtomicValue to the target type.
 func CastAtomic(v xdm.AtomicValue, targetType string) (xdm.AtomicValue, error) {
+	if targetType == xdm.TypeError {
+		return xdm.AtomicValue{}, &xdm.Error{Code: errCodeFORG0001, Message: "xs:error has an empty value space"}
+	}
+
 	if isAbstractCastTarget(targetType) {
 		return xdm.AtomicValue{}, &xdm.Error{
 			Code:    errCodeXPST0080,

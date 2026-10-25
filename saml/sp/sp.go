@@ -278,7 +278,7 @@ func beginEndpoints(other *metadata.Role, o *BeginOptions, destination *string) 
 				return ErrPolicy, true
 			}
 
-			(*destination) = ep.Location
+			*destination = ep.Location
 		}
 	}
 

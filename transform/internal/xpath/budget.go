@@ -47,6 +47,15 @@ func DepthLimit(ctx context.Context, fallback int) int {
 	return fallback
 }
 
+// NodeLimit returns the invocation's collection/tree size limit, if configured.
+func NodeLimit(ctx context.Context, fallback int) int {
+	if b := getBudget(ctx); b != nil {
+		return b.nodes
+	}
+
+	return fallback
+}
+
 // WithFunctions installs an immutable application registry for one invocation.
 func WithFunctions(ctx context.Context, functions map[QualifiedName]Function) context.Context {
 	return context.WithValue(ctx, functionsKey{}, functions)
@@ -175,6 +184,7 @@ func getBudget(ctx context.Context) *budget {
 }
 
 func applyBudget(ctx context.Context, ec *evalContext) {
+	ec.xmlSchemaVersion = XMLSchemaVersion(ctx)
 	if value, ok := evaluationContextFrom(ctx); ok {
 		ec.currentTime = &value.CurrentTime
 

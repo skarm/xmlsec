@@ -105,6 +105,10 @@ func resolveDecimalFormatName(ctx context.Context, name string) (QualifiedName, 
 }
 
 func boundedFormatNumber(ctx context.Context, value xdm.AtomicValue, picture string, df icu.DecimalFormat) (string, error) {
+	if ec := getFnContext(ctx); ec != nil && ec.version != 0 && ec.version < 31 {
+		df.ExponentDisabled = true
+	}
+
 	// Picture width bounds the scaling powers used by the exact formatter.
 	// Reject excessive pictures before parsing/scaling, and account for the
 	// resulting text even when a surrounding expression consumes only its length.

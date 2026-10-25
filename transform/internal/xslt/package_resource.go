@@ -22,14 +22,14 @@ func enterPackage(ctx context.Context, doc *xdm.Document) (context.Context, erro
 		return ctx, nil
 	}
 
-	version := getAttr(root, namePackageVersion)
-	if version == "" {
+	version, present := root.GetAttribute(namePackageVersion)
+	if !present {
 		version = "1"
 	}
 
 	parsed := ParsePackageVersion(version)
 	if !parsed.Valid() {
-		return nil, staticError(errCodeXTSE3000, "invalid package version %q", version)
+		return nil, staticError(errCodeXTSE0020, "invalid package version %q", version)
 	}
 
 	identity := packageIdentity{name: getAttr(root, xslAttrName), version: parsed}
@@ -56,8 +56,16 @@ func enterPackage(ctx context.Context, doc *xdm.Document) (context.Context, erro
 
 func checkResolvedPackage(doc *xdm.Document, name, version string) error {
 	root := doc.DocumentElement()
-	if root == nil || root.URI() != lexicon.NamespaceXSLT || root.LocalName() != namePackage || getAttr(root, xslAttrName) != name {
+	if root == nil || root.URI() != lexicon.NamespaceXSLT || root.LocalName() != namePackage {
 		return staticError(errCodeXTSE3000, "resolved package does not match %q", name)
+	}
+
+	if _, shadow := root.GetAttribute("_name"); !shadow && getAttr(root, xslAttrName) != name {
+		return staticError(errCodeXTSE3000, "resolved package does not match %q", name)
+	}
+
+	if _, shadow := root.GetAttribute("_package-version"); shadow {
+		return nil
 	}
 
 	actual := getAttr(root, namePackageVersion)
@@ -67,6 +75,14 @@ func checkResolvedPackage(doc *xdm.Document, name, version string) error {
 
 	if !ParseVersionConstraint(version).Matches(ParsePackageVersion(actual)) {
 		return staticError(errCodeXTSE3000, "package %q version %q does not match %q", name, actual, version)
+	}
+
+	return nil
+}
+
+func checkCompiledPackage(ss *Stylesheet, name, version string) error {
+	if !ss.isPackage || ss.packageName != name || !ParseVersionConstraint(version).Matches(ParsePackageVersion(ss.packageVersion)) {
+		return staticError(errCodeXTSE3000, "resolved package does not match %q version %q", name, version)
 	}
 
 	return nil

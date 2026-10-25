@@ -3,6 +3,7 @@ package xslt
 import (
 	"context"
 	"io"
+	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
@@ -19,7 +20,7 @@ func SerializeValue(ctx context.Context, w io.Writer, result ValueResult) error 
 	}
 
 	definition.Method = effectiveStreamMethod(result, definition)
-	if err := validateSerializationParams(definition, result.Document); err != nil {
+	if err := validateSerializationParams(ctx, definition, result.Document); err != nil {
 		return err
 	}
 
@@ -38,6 +39,10 @@ func SerializeValue(ctx context.Context, w io.Writer, result ValueResult) error 
 
 	normalizer := valueNormalizer{ctx: ctx, doc: xdm.NewDefaultDocument(), separator: definition.ItemSeparator}
 	if err := normalizer.appendItems(result.Items, 0); err != nil {
+		return err
+	}
+
+	if err := normalizer.flushText(); err != nil {
 		return err
 	}
 
@@ -85,12 +90,26 @@ type valueNormalizer struct {
 	doc                          *xdm.Document
 	separator                    *string
 	previousAtomic, previousItem bool
+	pendingText                  strings.Builder
 }
 
 func (n *valueNormalizer) text(value string) error {
 	if err := xpath.ChargeString(n.ctx, len(value)); err != nil {
 		return err
 	}
+
+	n.pendingText.WriteString(value)
+
+	return nil
+}
+
+func (n *valueNormalizer) flushText() error {
+	if n.pendingText.Len() == 0 {
+		return n.ctx.Err()
+	}
+
+	value := n.pendingText.String()
+	n.pendingText.Reset()
 
 	return n.doc.AddChild(n.doc.CreateText(value))
 }
@@ -182,6 +201,14 @@ func (n *valueNormalizer) node(value xdm.Node) error {
 		return nil
 	}
 
+	if value.Type() == xdm.TextNode || value.Type() == xdm.CDATASectionNode {
+		return n.text(xdm.CharacterData(value))
+	}
+
+	if err := n.flushText(); err != nil {
+		return err
+	}
+
 	if element, ok := value.(*xdm.Element); ok {
 		subtree, err := xdm.ElementDocument(n.ctx, element)
 		if err != nil {
@@ -197,4 +224,68 @@ func (n *valueNormalizer) node(value xdm.Node) error {
 	}
 
 	return n.doc.AddChild(cloned)
+}
+
+// NormalizeExecution applies stylesheet-directed or forced final tree
+// construction to raw values without serializing or modifying their nodes.
+func NormalizeExecution(ctx context.Context, execution *Execution, forceTree *bool, baseURI string) (*Execution, error) {
+	primary, err := normalizeValue(ctx, execution.Primary, forceTree, baseURI)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &Execution{Primary: primary, Secondary: make(map[string]ValueResult, len(execution.Secondary))}
+	for uri, value := range execution.Secondary {
+		normalized, err := normalizeValue(ctx, value, forceTree, uri)
+		if err != nil {
+			return nil, err
+		}
+
+		result.Secondary[uri] = normalized
+	}
+
+	return result, ctx.Err()
+}
+
+func normalizeValue(ctx context.Context, value ValueResult, forceTree *bool, baseURI string) (ValueResult, error) {
+	buildTree := true
+
+	var separator *string
+
+	if value.Output != nil {
+		buildTree = !isItemSerializationMethod(value.Output.Method)
+		if value.Output.BuildTree != nil {
+			buildTree = *value.Output.BuildTree
+		}
+
+		separator = value.Output.ItemSeparator
+	}
+
+	if forceTree != nil {
+		buildTree = *forceTree
+	}
+
+	if !buildTree {
+		return value, ctx.Err()
+	}
+
+	if baseURI == "" && value.Document != nil {
+		baseURI = value.Document.URL()
+	}
+
+	normalizer := valueNormalizer{ctx: ctx, doc: xdm.NewDefaultDocument(), separator: separator}
+	normalizer.doc.SetURL(baseURI)
+
+	if err := normalizer.appendItems(value.Items, 0); err != nil {
+		return ValueResult{}, err
+	}
+
+	if err := normalizer.flushText(); err != nil {
+		return ValueResult{}, err
+	}
+
+	value.Document = normalizer.doc
+	value.Items = xdm.ItemSlice{xdm.NodeItem{Node: normalizer.doc}}
+
+	return value, nil
 }

@@ -17,6 +17,11 @@ import (
 	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
+const (
+	jsonHexLower = "0123456789abcdef"
+	jsonHexUpper = "0123456789ABCDEF"
+)
+
 func lookupFunctionsJson(name string) (*builtinFunc, bool) {
 	switch name {
 	case "parse-json":
@@ -637,7 +642,7 @@ func appendEscapedJSONStringRune(b *strings.Builder, r rune) {
 		b.WriteString(`\t`)
 	default:
 		if (r >= 0x00 && r <= 0x1F) || !isValidXMLCodepoint(int(r)) {
-			fmt.Fprintf(b, `\u%04x`, r)
+			appendJSONCodeUnit(b, uint16(r), jsonHexLower)
 			return
 		}
 
@@ -665,12 +670,18 @@ func appendSerializedJSONStringRune(b *strings.Builder, r rune) {
 		b.WriteString(`\t`)
 	default:
 		if (r >= 0x00 && r <= 0x1F) || (r >= 0x7F && r <= 0x9F) || !isValidXMLCodepoint(int(r)) {
-			fmt.Fprintf(b, `\u%04X`, r)
+			appendJSONCodeUnit(b, uint16(r), jsonHexUpper)
 			return
 		}
 
 		b.WriteRune(r)
 	}
+}
+
+// appendJSONCodeUnit writes one UTF-16 code unit as a fixed-width JSON escape.
+func appendJSONCodeUnit(b *strings.Builder, unit uint16, digits string) {
+	escaped := [6]byte{'\\', 'u', digits[unit>>12], digits[(unit>>8)&0x0F], digits[(unit>>4)&0x0F], digits[unit&0x0F]}
+	b.Write(escaped[:])
 }
 
 func canonicalInvalidJSONEscape(raw string) string {

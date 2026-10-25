@@ -99,20 +99,78 @@ func fnMapMerge(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 		}
 	}
 
-	builder := xdm.NewMapBuilder(duplicates, xdm.SequenceLen(args[0]))
-	for item := range xdm.SequenceItems(args[0]) {
+	return mergeMapSequence(ctx, args[0], duplicates)
+}
+
+func mergeMapSequence(ctx context.Context, maps xdm.Sequence, duplicates xdm.MergePolicy) (xdm.Sequence, error) {
+	ec := getFnContext(ctx)
+
+	var combinedLengths map[xdm.MapKey]int
+	if duplicates == xdm.MergeCombine {
+		combinedLengths = make(map[xdm.MapKey]int)
+	}
+
+	builder := xdm.NewMapBuilder(duplicates, xdm.SequenceLen(maps))
+	for item := range xdm.SequenceItems(maps) {
+		if err := fnCountOp(ctx, ec); err != nil {
+			return nil, err
+		}
+
 		m, ok := item.(xdm.MapItem)
 		if !ok {
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "map:merge requires sequence of maps"}
 		}
 
-		mergeErr := m.ForEachView(builder.Add)
+		mergeErr := m.ForEachView(func(key xdm.AtomicValue, value xdm.Sequence) error {
+			if err := fnCountOp(ctx, ec); err != nil {
+				return err
+			}
+
+			if err := prepareMergedValue(ctx, ec, combinedLengths, key, value); err != nil {
+				return err
+			}
+
+			if err := builder.Add(key, value); err != nil {
+				return err
+			}
+
+			if builder.Size() > fnMaxNodes(ec) {
+				return ErrBudget
+			}
+
+			return nil
+		})
 		if mergeErr != nil {
 			return nil, mergeErr
 		}
 	}
 
 	return xdm.ItemSlice{builder.Build()}, nil
+}
+
+// Combining duplicate values uses a builder-owned buffer with amortized append.
+// Bound the accumulated size and charge incoming items before copying them.
+func prepareMergedValue(ctx context.Context, ec *evalContext, lengths map[xdm.MapKey]int, key xdm.AtomicValue, value xdm.Sequence) error {
+	if lengths == nil {
+		return nil
+	}
+
+	normalized := xdm.NormalizeMapKey(key)
+	previous := lengths[normalized]
+
+	incoming := xdm.SequenceLen(value)
+	if incoming > fnMaxNodes(ec)-previous {
+		return ErrBudget
+	}
+
+	total := previous + incoming
+	if err := fnCountOps(ctx, ec, max(1, incoming)); err != nil {
+		return err
+	}
+
+	lengths[normalized] = total
+
+	return nil
 }
 
 // coerceDuplicatesOption converts the 'duplicates' option value of map:merge to

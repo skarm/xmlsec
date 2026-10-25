@@ -14,6 +14,7 @@ import (
 
 // Function registers an application-owned function with fixed arity. Use an
 // application namespace; standard XPath, XML and XSLT namespaces are reserved.
+// Its parameters and result have the generic XPath type item()*.
 type Function struct {
 	Name  Name
 	Arity int
@@ -36,7 +37,7 @@ func (e *Engine) registerFunctions(functions []Function) error {
 			return fmt.Errorf("%w: duplicate application function", ErrInput)
 		}
 
-		native := &applicationFunction{definition: fn, limits: e.limits}
+		native := &applicationFunction{definition: fn, limits: e.limits, resultType: xdm.SequenceType{ItemTest: xdm.AnyItemTest{}, Occurrence: xdm.OccurrenceZeroOrMore}}
 		e.functions[name], e.functionNames[expandedName(fn.Name)] = native, native
 	}
 
@@ -54,6 +55,12 @@ func reservedFunctionNamespace(uri string) bool {
 }
 
 func (e *Engine) languageContext(ctx context.Context) context.Context {
+	ctx = xpath.WithXMLSchemaVersion(ctx, int(e.xmlSchemaVersion))
+
+	ctx = xslt.WithAssertions(ctx, e.xsltAssertions)
+	if e.xsltDynamicEvaluationDisabled {
+		ctx = xslt.WithDynamicEvaluationDisabled(ctx)
+	}
 	// Compilation may evaluate static expressions. Give them the same explicit
 	// collection policy and deterministic diagnostic defaults as runtime calls.
 	ctx = xpath.WithEvaluationContext(ctx, xpath.EvaluationContext{CurrentTime: time.Now().UTC(), Timezone: time.UTC, Trace: io.Discard, Collections: e.collectionResolver()})
@@ -66,6 +73,7 @@ func (e *Engine) transformFunction(baseURI string) xpath.Function {
 	options := []xslt.TransformOption{
 		xslt.WithTransformBaseURI(baseURI), xslt.WithTransformParseOptions(e.parseOptions()),
 		xslt.WithTransformMaxResourceBytes(int64(e.limits.MaxInputBytes)),
+		xslt.WithTransformCollectionResolver(e.collectionResolver()),
 	}
 	if e.resolver != nil {
 		options = append(options, xslt.WithTransformURIResolver(resourceAdapter{engine: e}))
@@ -75,23 +83,20 @@ func (e *Engine) transformFunction(baseURI string) xpath.Function {
 		options = append(options, xslt.WithTransformPackageResolver(packageAdapter{engine: e}))
 	}
 
-	return xpathTransformFunction{native: xslt.TransformFunction(options...)}
+	return xpathTransformFunction{TypedFunctionByArity: xslt.TransformFunction(options...)}
 }
 
-type xpathTransformFunction struct{ native xpath.Function }
-
-func (f xpathTransformFunction) MinArity() int { return 1 }
-func (f xpathTransformFunction) MaxArity() int { return 1 }
+type xpathTransformFunction struct{ xpath.TypedFunctionByArity }
 
 func (f xpathTransformFunction) Call(ctx context.Context, arguments []xdm.Sequence) (xdm.Sequence, error) {
-	result, err := f.native.Call(ctx, arguments)
+	result, err := f.TypedFunctionByArity.Call(ctx, arguments)
 	if err == nil {
 		return result, nil
 	}
 
 	wrapped := xsltError("fn:transform", err)
 	if detail, ok := errors.AsType[*xslt.XSLTError](err); ok && detail.Code != "" {
-		return nil, &xdm.Error{Code: detail.Code, Message: detail.Message, Cause: wrapped}
+		return nil, &xdm.Error{Code: detail.CodeQName().Local, QualifiedCode: detail.CodeQName(), Message: detail.Message, Cause: wrapped}
 	}
 
 	return nil, wrapped
@@ -100,11 +105,17 @@ func (f xpathTransformFunction) Call(ctx context.Context, arguments []xdm.Sequen
 type applicationFunction struct {
 	definition Function
 	limits     Limits
+	resultType xdm.SequenceType
 }
 
 func (f *applicationFunction) MinArity() int { return f.definition.Arity }
 
 func (f *applicationFunction) MaxArity() int { return f.definition.Arity }
+
+// Generic item()* parameters need no conversion or arity-sized metadata slice.
+func (f *applicationFunction) FuncParamTypes() []xdm.SequenceType { return nil }
+
+func (f *applicationFunction) FuncReturnType() *xdm.SequenceType { return &f.resultType }
 
 func (f *applicationFunction) Call(ctx context.Context, arguments []xdm.Sequence) (xdm.Sequence, error) {
 	if err := xpath.Charge(ctx, len(arguments)+1); err != nil {

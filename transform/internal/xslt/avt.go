@@ -61,7 +61,7 @@ func (a *avt) evaluate(ctx context.Context, node xdm.Node) (string, error) {
 			}
 
 			if err != nil {
-				return "", &XSLTError{Code: errCodeXTDE0045, Message: "AVT evaluation error: " + err.Error(), Cause: err}
+				return "", err
 			}
 			// XSLT 1.0 behavior (backwards-compatible processing): when converting
 			// the AVT expression value to a string, all items after the first are
@@ -73,10 +73,15 @@ func (a *avt) evaluate(ctx context.Context, node xdm.Node) (string, error) {
 				}
 
 				sb.WriteString(s)
-			} else if seq := result.Sequence(); ec != nil && seq != nil && xdm.SequenceLen(seq) > 1 && ec.isCompatExpr(p.expr) {
-				sb.WriteString(stringifyItem(seq.Get(0)))
 			} else {
-				sb.WriteString(stringifyResult(result))
+				seq := result.Sequence()
+
+				value, err := stringifyAVTContent(ctx, seq, ec != nil && ec.isCompatExpr(p.expr))
+				if err != nil {
+					return "", err
+				}
+
+				sb.WriteString(value)
 			}
 		} else {
 			sb.WriteString(p.literal)
@@ -111,10 +116,15 @@ func (a *avt) evaluateStatic(ctx context.Context, eval xpath.Evaluator, node xdm
 		if p.expr != nil {
 			result, err := eval.Evaluate(ctx, p.expr, node)
 			if err != nil {
-				return "", &XSLTError{Code: errCodeXTDE0045, Message: "AVT evaluation error: " + err.Error(), Cause: err}
+				return "", err
 			}
 
-			sb.WriteString(stringifyResult(result))
+			value, err := stringifyResult(ctx, result)
+			if err != nil {
+				return "", err
+			}
+
+			sb.WriteString(value)
 		} else {
 			sb.WriteString(p.literal)
 		}
@@ -126,8 +136,8 @@ func (a *avt) evaluateStatic(ctx context.Context, eval xpath.Evaluator, node xdm
 // stringifyResult converts an xpath.Result to its string representation.
 // Adjacent text nodes are merged before items are joined with spaces,
 // consistent with the XSLT 3.0 simple content construction rules (§5.7.2).
-func stringifyResult(r *xpath.Result) string {
-	return stringifySimpleContent(r.Sequence(), " ")
+func stringifyResult(ctx context.Context, r *xpath.Result) (string, error) {
+	return stringifySimpleContent(ctx, r.Sequence(), " ")
 }
 
 func stringifySequenceWithSep(seq xdm.Sequence, sep string) string {
@@ -198,40 +208,162 @@ func stringifySequenceWithSep(seq xdm.Sequence, sep string) string {
 // construction: adjacent text nodes are merged first, zero-length
 // text nodes are removed, then remaining items are separated by the
 // given separator string.
-func stringifySimpleContent(seq xdm.Sequence, sep string) string {
-	seq = flattenArraysInSequence(seq)
-	if seq == nil || xdm.SequenceLen(seq) == 0 {
-		return ""
+func stringifySimpleContent(ctx context.Context, seq xdm.Sequence, sep string) (string, error) {
+	if xdm.SequenceLen(seq) == 1 {
+		if _, array := seq.Get(0).(xdm.ArrayItem); !array {
+			if err := xpath.Charge(ctx, 1); err != nil {
+				return "", err
+			}
+
+			atoms, err := xpath.AtomizeSequence(seq)
+			if err != nil {
+				return "", err
+			}
+
+			if len(atoms) == 1 {
+				// Reuse immutable singleton text instead of retaining another copy.
+				return xpath.AtomicToString(atoms[0])
+			}
+		}
 	}
 
-	merged := mergeAdjacentTextNodes(seq)
-	// Step 2: remove zero-length text nodes so they don't produce
-	// stray separators (e.g. empty TVTs in sequence mode).
-	merged = removeEmptyTextNodes(merged)
+	state := simpleContentState{ctx: ctx, separator: sep, depthLimit: xpath.DepthLimit(ctx, 128)}
+	if err := state.appendSequence(seq, 0, true); err != nil {
+		return "", err
+	}
 
-	return stringifySequenceWithSep(merged, sep)
+	return state.value.String(), nil
 }
 
-func removeEmptyTextNodes(seq xdm.Sequence) xdm.Sequence {
-	if seq == nil {
+func stringifyAVTContent(ctx context.Context, seq xdm.Sequence, backwards bool) (string, error) {
+	if !backwards {
+		return stringifySimpleContent(ctx, seq, " ")
+	}
+
+	state := simpleContentState{ctx: ctx, depthLimit: xpath.DepthLimit(ctx, 128), firstOnly: true}
+	if err := state.appendSequence(seq, 0, false); err != nil {
+		return "", err
+	}
+
+	return state.value.String(), nil
+}
+
+// Simple content flattens arrays, merges adjacent text and propagates conversion
+// errors without materializing an expanded array or a second atomic sequence.
+type simpleContentState struct {
+	ctx          context.Context
+	separator    string
+	value        strings.Builder
+	depthLimit   int
+	firstOnly    bool
+	hasItem      bool
+	previousText bool
+}
+
+func (s *simpleContentState) appendSequence(seq xdm.Sequence, depth int, normalizeText bool) error {
+	if depth > s.depthLimit {
+		return xpath.ErrRecursionLimit
+	}
+
+	for item := range xdm.SequenceItems(seq) {
+		if err := xpath.Charge(s.ctx, 1); err != nil {
+			return err
+		}
+
+		if err := s.appendItem(item, depth, normalizeText); err != nil {
+			return err
+		}
+	}
+
+	return s.ctx.Err()
+}
+
+func (s *simpleContentState) appendItem(item xdm.Item, depth int, normalizeText bool) error {
+	if array, ok := item.(xdm.ArrayItem); ok {
+		s.previousText = false
+		err := s.appendArray(array, depth)
+		s.previousText = false
+
+		return err
+	}
+
+	if node, ok := item.(xdm.NodeItem); normalizeText && ok && node.Node.Type() == xdm.TextNode {
+		value := xdm.CharacterData(node.Node)
+		if value == "" {
+			return nil
+		}
+
+		if err := s.appendString(value, s.previousText); err != nil {
+			return err
+		}
+
+		s.previousText = true
+
 		return nil
 	}
 
-	seqLen := xdm.SequenceLen(seq)
-
-	result := make(xdm.ItemSlice, 0, seqLen)
-	for i := range seqLen {
-		item := seq.Get(i)
-
-		ni, ok := item.(xdm.NodeItem)
-		if ok && ni.Node.Type() == xdm.TextNode && len(xdm.CharacterData(ni.Node)) == 0 {
-			continue
-		}
-
-		result = append(result, item)
+	s.previousText = false
+	if atom, ok := item.(xdm.AtomicValue); ok {
+		return s.appendAtomic(atom)
 	}
 
-	return result
+	atoms, err := xpath.AtomizeSequence(xdm.ItemSlice{item})
+	if err != nil {
+		return err
+	}
+
+	for _, atom := range atoms {
+		if err := s.appendAtomic(atom); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Arrays are atomized after the outer text-node normalization. Their member
+// text nodes are separate atomic values, even when empty (XSLT 3.0 §5.7.2).
+func (s *simpleContentState) appendArray(array xdm.ArrayItem, depth int) error {
+	for i := 1; i <= array.Size(); i++ {
+		member, _ := array.Get(i)
+		if err := s.appendSequence(member, depth+1, false); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *simpleContentState) appendAtomic(atom xdm.AtomicValue) error {
+	value, err := xpath.AtomicToString(atom)
+	if err != nil {
+		return err
+	}
+
+	return s.appendString(value, false)
+}
+
+func (s *simpleContentState) appendString(value string, merge bool) error {
+	if s.firstOnly && s.hasItem {
+		return nil
+	}
+
+	if err := xpath.ChargeString(s.ctx, len(value)); err != nil {
+		return err
+	}
+
+	if s.hasItem && !merge {
+		if err := xpath.ChargeString(s.ctx, len(s.separator)); err != nil {
+			return err
+		}
+
+		s.value.WriteString(s.separator)
+	}
+
+	s.value.WriteString(value)
+	s.hasItem = true
+
+	return nil
 }
 
 // flattenArraysInSequence recursively replaces any ArrayItem in the
@@ -435,14 +567,14 @@ func compileAVTIsXPathCommentOnly(trimmed string, c *compiler, parts *[]avtPart,
 			return staticError("XTSE0370", "empty XPath 1.0 AVT expression"), true
 		}
 
-		(*parts) = appendLiteral((*parts), "")
+		*parts = appendLiteral(*parts, "")
 	} else {
 		expr, err := c.compileXPath(exprStr, nsBindings)
 		if err != nil {
 			return err, true
 		}
 
-		(*parts) = append((*parts), avtPart{expr: expr})
+		*parts = append(*parts, avtPart{expr: expr})
 	}
 
 	return

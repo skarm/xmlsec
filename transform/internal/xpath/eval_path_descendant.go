@@ -559,19 +559,19 @@ func walkCounting(ctx context.Context, w *descendantWalker, visited int) error {
 
 func walkAxis(ctx context.Context, step *vmLocationStep, w *descendantWalker, traversed *int, err *error, ec *evalContext, cur *descendantEntry) (returned1 error, matchedBranch bool) {
 	if step.Axis == AxisChild {
-		w.stack, w.matched, (*traversed), (*err) = pushMatchingChildEntries(ctx, ec, w.stack, w.matched[:0], cur.node, step.NodeTest)
+		w.stack, w.matched, *traversed, *err = pushMatchingChildEntries(ctx, ec, w.stack, w.matched[:0], cur.node, step.NodeTest)
 		if (*err) != nil {
-			return (*err), true
+			return *err, true
 		}
 	} else {
-		w.matched, (*traversed), (*err) = appendAxisNodeMatches(ctx, w.matched[:0], ec, cur.node, AxisAttribute, step.NodeTest)
+		w.matched, *traversed, *err = appendAxisNodeMatches(ctx, w.matched[:0], ec, cur.node, AxisAttribute, step.NodeTest)
 		if (*err) != nil {
-			return (*err), true
+			return *err, true
 		}
 
-		w.stack, (*err) = pushChildEntries(ctx, w.stack, cur.node)
+		w.stack, *err = pushChildEntries(ctx, w.stack, cur.node)
 		if (*err) != nil {
-			return (*err), true
+			return *err, true
 		}
 	}
 

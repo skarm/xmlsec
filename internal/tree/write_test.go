@@ -102,8 +102,8 @@ func TestXMLWriterCDATAUsesSharedEscapingAndNormalization(t *testing.T) {
 
 	b.Reset()
 
-	if _, err = treepkg.WriteXMLFragmentOptions(ctx, &b, []*treepkg.Node{n}, 4096, options); err != nil || b.String() != "<r><![CDATA[a]]><p/><![CDATA[b]]></r>" {
-		t.Fatal("character map stayed inside CDATA", b.String(), err)
+	if _, err = treepkg.WriteXMLFragmentOptions(ctx, &b, []*treepkg.Node{n}, 4096, options); err != nil || b.String() != "<r><![CDATA[a@b]]></r>" {
+		t.Fatal("character map affected CDATA", b.String(), err)
 	}
 
 	for _, bad := range []string{"\x00", "\xff", "\ufffe"} {
@@ -236,7 +236,7 @@ func TestBase64TextWorkingStorage(t *testing.T) {
 	allocation := measure(func() error {
 		got, err := treepkg.EncodeBase64(t.Context(), payload)
 		if err == nil && got != encoded {
-			return errors.New("Base64 output changed")
+			return errors.New("base64 output changed")
 		}
 
 		return err
@@ -355,4 +355,23 @@ func (c *countingContext) Err() error {
 	}
 
 	return c.Context.Err()
+}
+
+func TestXMLWriterPrefixUndeclarations(t *testing.T) {
+	nodes := []*treepkg.Node{{Kind: treepkg.ElementNode, Name: treepkg.Name{Local: "r"}, NS: []treepkg.Namespace{{Prefix: "p", URI: "urn:p"}}, Children: []*treepkg.Node{{Kind: treepkg.ElementNode, Name: treepkg.Name{Local: "c"}, NS: []treepkg.Namespace{{Prefix: "p", URI: ""}}, Children: []*treepkg.Node{{Kind: treepkg.ElementNode, Name: treepkg.Name{Space: "urn:p", Local: "again"}, Prefix: "p"}}}}}}
+	for _, test := range []struct {
+		version   string
+		undeclare bool
+		want      string
+	}{
+		{"1.0", false, `<r xmlns:p="urn:p"><c><p:again/></c></r>`},
+		{"1.1", false, `<r xmlns:p="urn:p"><c><p:again/></c></r>`},
+		{"1.1", true, `<r xmlns:p="urn:p"><c xmlns:p=""><p:again xmlns:p="urn:p"/></c></r>`},
+	} {
+		var output bytes.Buffer
+		_, err := treepkg.WriteXMLFragmentOptions(t.Context(), &output, nodes, 4096, treepkg.XMLWriteOptions{Version: test.version, PrefixUndeclarations: test.undeclare, Reconcile: true, SelfClose: true})
+		if err != nil || output.String() != test.want {
+			t.Fatal(test.version, test.undeclare, output.String(), err, test.want)
+		}
+	}
 }

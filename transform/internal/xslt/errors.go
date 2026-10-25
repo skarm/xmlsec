@@ -6,6 +6,9 @@ package xslt
 import (
 	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
 // XSLT error codes per the W3C XSLT 3.0 specification.
@@ -28,8 +31,6 @@ const (
 	errCodeSEPM0016 = "SEPM0016" // invalid serialization parameter value
 	errCodeSERE0006 = "SERE0006" // character invalid for the output XML version
 	errCodeSERE0012 = "SERE0012" // invalid character in text
-	errCodeSERE0014 = "SERE0014" // invalid character in comment or PI
-	errCodeSERE0015 = "SERE0015" // invalid character in namespace
 	errCodeSERE0022 = "SERE0022" // duplicate keys in JSON map
 	errCodeSESU0007 = "SESU0007" // unsupported output version
 	errCodeSESU0011 = "SESU0011" // unsupported normalization form
@@ -50,10 +51,9 @@ const (
 	errCodeXTDE0290 = "XTDE0290" // invalid URI for xsl:result-document output
 	errCodeXTDE0040 = "XTDE0040" // initial template not public
 	errCodeXTDE0041 = "XTDE0041" // initial function not found or not public
-	errCodeXTDE0044 = "XTDE0044" // initial mode not public in package
-	errCodeXTDE0045 = "XTDE0045" // evaluation error in avt
+	errCodeXTDE0044 = "XTDE0044" // initial mode without an initial match selection
+	errCodeXTDE0045 = "XTDE0045" // initial mode is unavailable or ineligible
 	errCodeXTDE0050 = "XTDE0050" // required stylesheet parameter not supplied
-	errCodeXTDE0060 = "XTDE0060" // required template parameter not supplied / invalid call-template target
 	errCodeXTDE0160 = "XTDE0160" // multiple output documents same URI
 	errCodeXTDE0410 = "XTDE0410" // attribute or namespace node after child content
 	errCodeXTDE0420 = "XTDE0420" // namespace conflict
@@ -89,6 +89,7 @@ const (
 	errCodeXTDE1160 = "XTDE1160" // fragment identifier in document URI not supported
 	errCodeXTDE1162 = "XTDE1162" // document() with text node without base URI
 	errCodeXTDE1170 = "XTDE1170" // key function lookup error
+	errCodeXTDE1260 = "XTDE1260" // invalid or unknown key name
 	errCodeXTDE1270 = "XTDE1270" // key() applied to non-document tree
 	errCodeXTDE1360 = "XTDE1360" // current() called when context item is absent
 	errCodeXTDE1370 = "XTDE1370" // unparsed-entity-uri with no context node or non-document root
@@ -107,6 +108,7 @@ const (
 	errCodeXTDE3052 = "XTDE3052" // runtime: abstract component invoked
 	errCodeXTDE3086 = "XTDE3086" // required global context item absent
 	errCodeXTDE3160 = "XTDE3160" // xsl:evaluate runtime error
+	errCodeXTDE3175 = "XTDE3175" // xsl:evaluate is disabled
 	errCodeXTDE3340 = "XTDE3340" // unknown accumulator name
 	errCodeXTDE3350 = "XTDE3350" // accumulator-before/after called via dynamic function reference
 	errCodeXTDE3362 = "XTDE3362" // streaming accumulator error
@@ -123,10 +125,6 @@ const (
 	errCodeXTMM9000 = "XTMM9000" // xsl:message terminate default error code
 	errCodeXTMM9001 = "XTMM9001" // xsl:assert default error code
 
-	// XTRE — Runtime Errors (recoverable)
-	errCodeXTRE0540 = "XTRE0540" // ambiguous rule match in xsl:next-match
-	errCodeXTRE1495 = "XTRE1495" // primary output URI conflict (implicit vs explicit)
-
 	// XTSE — Static Errors
 	errCodeXTSE0010 = "XTSE0010" // generic static error
 	errCodeXTSE0020 = "XTSE0020" // reserved namespace
@@ -138,6 +136,9 @@ const (
 	errCodeXTSE0130 = "XTSE0130" // duplicate global variable
 	errCodeXTSE0150 = "XTSE0150" // xsl:import-schema after non-import children
 	errCodeXTSE0165 = "XTSE0165" // invalid xpath expression
+	errCodeXTSE0170 = "XTSE0170" // xsl:include is not top-level
+	errCodeXTSE0180 = "XTSE0180" // include cycle
+	errCodeXTSE0190 = "XTSE0190" // xsl:import is not top-level
 	errCodeXTSE0210 = "XTSE0210" // circular import
 	errCodeXTSE0215 = "XTSE0215" // type attribute requires schema-aware processor
 	errCodeXTSE0220 = "XTSE0220" // validation attribute requires schema-aware processor
@@ -145,10 +146,10 @@ const (
 	errCodeXTSE0265 = "XTSE0265" // conflicting input-type-annotations across modules
 	errCodeXTSE0270 = "XTSE0270" // conflicting strip-space/preserve-space
 	errCodeXTSE0280 = "XTSE0280" // element not allowed in context
-	errCodeXTSE0340 = "XTSE0340" // unknown attribute on XSLT element
+	errCodeXTSE0340 = "XTSE0340" // invalid pattern syntax
 	errCodeXTSE0350 = "XTSE0350" // unmatched opening brace in value template
 	errCodeXTSE0370 = "XTSE0370" // unescaped closing brace in value template
-	errCodeXTSE0500 = "XTSE0500" // invalid pattern
+	errCodeXTSE0500 = "XTSE0500" // invalid template match/name/mode/priority/visibility combination
 	errCodeXTSE0530 = "XTSE0530" // priority is not a valid xs:decimal
 	errCodeXTSE0545 = "XTSE0545" // conflicting xsl:mode declarations
 	errCodeXTSE0550 = "XTSE0550" // invalid mode name on xsl:template
@@ -156,12 +157,15 @@ const (
 	errCodeXTSE0590 = "XTSE0590" // as= references undeclared schema type/element/attribute
 	errCodeXTSE0620 = "XTSE0620" // cannot write to output
 	errCodeXTSE0630 = "XTSE0630" // duplicate global variable or parameter
+	errCodeXTSE0650 = "XTSE0650" // unavailable named template reference
+	errCodeXTSE0660 = "XTSE0660" // duplicate effective named template
 	errCodeXTSE0670 = "XTSE0670" // duplicate sibling xsl:with-param name
 	errCodeXTSE0680 = "XTSE0680" // invalid xsl:number
 	errCodeXTSE0690 = "XTSE0690" // required parameter not supplied in call-template
 	errCodeXTSE0710 = "XTSE0710" // undeclared attribute-set reference
 	errCodeXTSE0720 = "XTSE0720" // cyclic use-attribute-sets
 	errCodeXTSE0730 = "XTSE0730" // xsl:attribute-set circular reference
+	errCodeXTSE0740 = "XTSE0740" // function name has no namespace
 	errCodeXTSE0760 = "XTSE0760" // conflicting xsl:mode property values
 	errCodeXTSE0770 = "XTSE0770" // override type mismatch
 	errCodeXTSE0800 = "XTSE0800" // reserved namespace used as extension namespace
@@ -169,6 +173,7 @@ const (
 	errCodeXTSE0808 = "XTSE0808" // invalid combination of xsl:on-empty/xsl:on-non-empty
 	errCodeXTSE0809 = "XTSE0809" // #default in exclude-result-prefixes with no default namespace
 	errCodeXTSE0810 = "XTSE0810" // conflicting namespace-alias declarations
+	errCodeXTSE0812 = "XTSE0812" // namespace-alias prefix is unbound
 	errCodeXTSE0840 = "XTSE0840" // xsl:attribute with select and non-empty content
 	errCodeXTSE0870 = "XTSE0870" // xsl:value-of with select and non-empty content
 	errCodeXTSE0910 = "XTSE0910" // xsl:namespace select/content exclusivity
@@ -199,22 +204,23 @@ const (
 	errCodeXTSE3000 = "XTSE3000" // package not found
 	errCodeXTSE3005 = "XTSE3005" // circular package dependency
 	errCodeXTSE3008 = "XTSE3008" // override not allowed for this component
-	errCodeXTSE3010 = "XTSE3010" // xsl:expose component not in this package
-	errCodeXTSE3020 = "XTSE3020" // xsl:expose visibility error
-	errCodeXTSE3022 = "XTSE3022" // xsl:expose would increase visibility
-	errCodeXTSE3025 = "XTSE3025" // xsl:expose conflict
-	errCodeXTSE3030 = "XTSE3030" // xsl:accept visibility error
-	errCodeXTSE3032 = "XTSE3032" // xsl:accept conflict
-	errCodeXTSE3040 = "XTSE3040" // using a hidden component
-	errCodeXTSE3050 = "XTSE3050" // accept of non-existent component
-	errCodeXTSE3051 = "XTSE3051" // accept makes component private but it is also overridden
+	errCodeXTSE3010 = "XTSE3010" // explicit exposure conflicts with declared visibility
+	errCodeXTSE3020 = "XTSE3020" // explicit exposure name has no matching component
+	errCodeXTSE3022 = "XTSE3022" // component wildcard requires a name wildcard
+	errCodeXTSE3025 = "XTSE3025" // exposure cannot make a concrete component abstract
+	errCodeXTSE3030 = "XTSE3030" // explicit acceptance name has no matching component
+	errCodeXTSE3032 = "XTSE3032" // component wildcard requires a name wildcard
+	errCodeXTSE3040 = "XTSE3040" // acceptance is incompatible with declared visibility
+	errCodeXTSE3050 = "XTSE3050" // conflicting accepted or local components
+	errCodeXTSE3051 = "XTSE3051" // explicit acceptance also names an overridden component
 	errCodeXTSE3055 = "XTSE3055" // override homonymous with local declaration
 	errCodeXTSE3058 = "XTSE3058" // override child no matching component
-	errCodeXTSE3060 = "XTSE3060" // conflicting accept rules
-	errCodeXTSE3070 = "XTSE3070" // overriding a final component
-	errCodeXTSE3080 = "XTSE3080" // overriding a private component
+	errCodeXTSE3060 = "XTSE3060" // overridden component must be public or abstract
+	errCodeXTSE3070 = "XTSE3070" // override is not type-compatible with its base component
+	errCodeXTSE3080 = "XTSE3080" // top-level package contains an abstract component
 	errCodeXTSE3085 = "XTSE3085" // declared mode is used without xsl:mode declaration
 	errCodeXTSE3087 = "XTSE3087" // duplicate xsl:global-context-item declaration
+	errCodeXTSE3088 = "XTSE3088" // context-item use='absent' with @as
 	errCodeXTSE3089 = "XTSE3089" // global-context-item use='absent' with @as
 	errCodeXTSE3105 = "XTSE3105" // match pattern element name not in imported schema (typed="strict")
 	errCodeXTSE3120 = "XTSE3120" // xsl:break/xsl:next-iteration not allowed in this position
@@ -233,6 +239,7 @@ const (
 	errCodeXTSE3440 = "XTSE3440" // override template in undeclared or private mode
 	errCodeXTSE3441 = "XTSE3441" // streamability error in accumulator
 	errCodeXTSE3450 = "XTSE3450" // conflicting static variable values
+	errCodeXTSE3460 = "XTSE3460" // apply-imports within an overriding template rule
 	errCodeXTSE3470 = "XTSE3470" // merge-key or merge-group disallowed in context
 	errCodeXTSE3500 = "XTSE3500" // current-merge-key disallowed in pattern
 	errCodeXTSE3520 = "XTSE3520" // iterate param without default when type requires value
@@ -254,6 +261,7 @@ const (
 	errCodeXTTE1550 = "XTTE1550" // document node is not a valid document (multiple roots or text nodes)
 	errCodeXTTE1555 = "XTTE1555" // attribute validation fails (no matching global attribute declaration)
 	errCodeXTTE2230 = "XTTE2230" // merge keys are not comparable
+	errCodeXTTE3090 = "XTTE3090" // required template context item is absent
 	errCodeXTTE3100 = "XTTE3100" // typed mode: untyped node in typed mode
 	errCodeXTTE3110 = "XTTE3110" // typed="no" mode: typed node in untyped mode
 	errCodeXTTE3165 = "XTTE3165" // xsl:evaluate with-params map key is not xs:QName
@@ -279,13 +287,33 @@ var (
 
 // XSLTError is a structured error with an XSLT error code.
 type XSLTError struct {
-	Code    string
-	Message string
-	Cause   error
+	QualifiedCode xdm.QNameValue
+	Code          string
+	Message       string
+	Cause         error
 	// Value holds the sequence associated with the error. For xsl:message
 	// terminate="yes", this carries the message body content (nodes/atomics)
 	// so that $err:value in xsl:catch can expose it.
 	Value any
+}
+
+// CodeQName preserves application error namespaces on public and catch paths.
+func (e *XSLTError) CodeQName() xdm.QNameValue {
+	if e == nil {
+		return xdm.QNameValue{}
+	}
+
+	if e.QualifiedCode.Local != "" {
+		return e.QualifiedCode
+	}
+
+	if strings.HasPrefix(e.Code, "{") {
+		if uri, local, ok := strings.Cut(e.Code[1:], "}"); ok {
+			return xdm.QNameValue{URI: uri, Local: local}
+		}
+	}
+
+	return (&xdm.Error{Code: e.Code}).CodeQName()
 }
 
 func (e *XSLTError) Error() string {

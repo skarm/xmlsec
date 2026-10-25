@@ -18,12 +18,12 @@ import (
 
 // collectNamespaces gathers namespace declarations from an element.
 func (c *compiler) collectNamespaces(_ context.Context, elem *xdm.Element) {
+	c.nsBindings = inScopeNamespaces(elem)
 	for _, ns := range elem.Namespaces() {
 		prefix := ns.Prefix()
 		uri := ns.URI()
 		// All namespace bindings (including XSLT) are needed for XPath
 		// resolution (e.g., document('')/*/xsl:template).
-		c.nsBindings[prefix] = uri
 		c.stylesheet.namespaces[prefix] = uri
 	}
 }
@@ -47,15 +47,14 @@ func (c *compiler) compileTopLevel(ctx context.Context, root *xdm.Element) error
 	aliasEndIdx := len(c.stylesheet.namespaceAliases)
 
 	dv := c.stylesheet.defaultValidation
-	if (dv == validationStrict || dv == validationLax) && !c.stylesheet.schemaAware {
-		return staticError(errCodeXTSE0020,
-			"default-validation=%q requires xsl:import-schema", dv)
+	if requiresSchemaAttribute(nameDefaultValidation, dv, c.stylesheet.processorLanguage()) && !c.stylesheet.schemaAware {
+		return staticError("XTSE1660", "default-validation=%q requires a schema-aware processor", dv)
 	}
 
 	c.collectLocalComponentNames(root)
 
 	moduleStaticNames := collectModuleStaticNames(root)
-	if err := c.preEvaluateStaticDeclarations(ctx, root, moduleStaticNames); err != nil {
+	if err := c.evaluateStaticDeclarations(ctx, root, true, moduleStaticNames); err != nil {
 		return err
 	}
 
@@ -81,7 +80,7 @@ func (c *compiler) compileTopLevel(ctx context.Context, root *xdm.Element) error
 		return err
 	}
 
-	if err := c.evaluateModuleStaticDeclarations(ctx, root); err != nil {
+	if err := c.evaluateStaticDeclarations(ctx, root, false, nil); err != nil {
 		return err
 	}
 
@@ -161,11 +160,11 @@ func (c *compiler) collectLocalComponentNames(root *xdm.Element) {
 			}
 
 			if !c.stylesheet.declaredModes {
-				if m := getAttr(elem, nameMode); m != "" && m != lexicon.ModeDefault && m != lexicon.ModeAll && m != "#unnamed" {
+				if m := getAttr(elem, nameMode); m != "" && m != lexicon.ModeDefault && m != lexicon.ModeAll && m != modeUnnamed {
 					c.localModeNames[resolveQName(m, c.nsBindings)] = struct{}{}
 				}
 			}
-		case lexicon.XSLTElementVariable:
+		case lexicon.XSLTElementVariable, xslElemParam:
 			if n := getAttr(elem, xslAttrName); n != "" {
 				c.localVarNames[resolveQName(n, c.nsBindings)] = struct{}{}
 			}
@@ -177,19 +176,30 @@ func (c *compiler) collectLocalComponentNames(root *xdm.Element) {
 	}
 }
 
-// tryEvaluateStaticSelect leaves malformed expressions for the main compilation
-// pass to diagnose. Evaluation errors are returned so the early pass can detect
-// forbidden forward references before imports and shadow attributes are resolved.
-func (c *compiler) tryEvaluateStaticSelect(ctx context.Context, elem *xdm.Element) (xdm.Sequence, bool, error) {
-	savedNS := c.nsBindings
+// The early pass can defer malformed expressions until imports are known.
+// Final passes report compilation and evaluation errors without suppressing them.
+func (c *compiler) tryEvaluateStaticSelect(ctx context.Context, elem *xdm.Element, speculative bool) (xdm.Sequence, bool, error) {
+	savedNS, savedDefault, savedHas := c.nsBindings, c.xpathDefaultNS, c.hasXPathDefaultNS
 
 	c.nsBindings = inScopeNamespaces(elem)
-	defer func() { c.nsBindings = savedNS }()
 
-	compiled, err := xpath.NewCompiler().Compile(getAttr(elem, xslAttrSelect))
+	c.xpathDefaultNS, c.hasXPathDefaultNS = c.declarationDefaultNamespace(elem)
+	defer func() { c.nsBindings, c.xpathDefaultNS, c.hasXPathDefaultNS = savedNS, savedDefault, savedHas }()
+
+	compiled, err := xpath.NewCompiler().Context(ctx).Language(c.stylesheet.xpathVersion(), c.xpathNamespaces(c.nsBindings)).Compile(getAttr(elem, xslAttrSelect))
 	if err != nil {
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return nil, false, failure
+		}
+
+		if !speculative {
+			return nil, false, err
+		}
+
 		return nil, false, nil //nolint:nilerr // This speculative pass defers syntax errors to main compilation.
 	}
+
+	compiled = compiled.BindNamespaceContext(c.xpathNamespaces(c.nsBindings), c.nsBindings[""])
 
 	eval := c.staticEvaluator(ctx)
 	if elemBase := getAttr(elem, lexicon.QNameXMLBase); elemBase != "" {
@@ -205,7 +215,78 @@ func (c *compiler) tryEvaluateStaticSelect(ctx context.Context, elem *xdm.Elemen
 		return nil, false, err
 	}
 
-	return result.Sequence(), true, nil
+	value, err := c.convertStaticDeclarationValue(ctx, elem, result.Sequence())
+
+	return value, err == nil, err
+}
+
+// Static values must be converted before another declaration, use-when or
+// shadow attribute observes them, rather than only when the stylesheet runs.
+func (c *compiler) convertStaticDeclarationValue(ctx context.Context, elem *xdm.Element, value xdm.Sequence) (xdm.Sequence, error) {
+	if elem.LocalName() == nameParam && xsdBoolTrue(getAttr(elem, ctxItemRequired)) {
+		if err := validateRequiredParamDefault(elem); err != nil {
+			return nil, err
+		}
+	}
+
+	as := getAttr(elem, "as")
+	if err := c.validateAsSequenceType(ctx, elem, as, "static "+elem.LocalName()); err != nil {
+		return nil, err
+	}
+
+	if as == "" {
+		return value, nil
+	}
+
+	st, err := xpath.ParseSequenceType(as)
+	if err != nil {
+		return nil, err
+	}
+
+	defaultNS, _ := c.declarationDefaultNamespace(elem)
+
+	st, err = xpath.BindSequenceType(ctx, st, inScopeNamespaces(elem), defaultNS)
+	if err != nil {
+		return nil, err
+	}
+
+	converted, err := c.staticEvaluator(ctx).ConvertToSequenceType(ctx, value, st, c.stylesheet.xpathVersion())
+	if err == nil {
+		return converted, nil
+	}
+
+	if failure := preserveControlFailure(ctx, err); failure != nil {
+		return nil, failure
+	}
+
+	code := errCodeXTTE0570
+	if elem.LocalName() == nameParam {
+		code = errCodeXTTE0590
+	}
+
+	return nil, staticErrorCause(code, err, "static %s $%s: %v", elem.LocalName(), getAttr(elem, xslAttrName), err)
+}
+
+func (c *compiler) bindImplicitStaticParam(ctx context.Context, elem *xdm.Element) error {
+	if elem.LocalName() != nameParam || hasSignificantContent(elem) {
+		return nil
+	}
+
+	as := getAttr(elem, "as")
+	if err := c.validateAsSequenceType(ctx, elem, as, "static parameter"); err != nil {
+		return err
+	}
+
+	if xsdBoolTrue(getAttr(elem, ctxItemRequired)) || as != "" && !allowsEmptySequence(as) {
+		return staticError(errCodeXTDE0050, "required static parameter $%s was not supplied", getAttr(elem, xslAttrName))
+	}
+
+	var value xdm.Sequence
+	if as == "" {
+		value = xdm.SingleString("")
+	}
+
+	return c.setStaticVarWithKind(ctx, resolveQName(getAttr(elem, xslAttrName), inScopeNamespaces(elem)), nameParam, value)
 }
 
 // bindExternalStaticParam establishes the supplied value at the declaration's
@@ -223,45 +304,86 @@ func (c *compiler) bindExternalStaticParam(ctx context.Context, elem *xdm.Elemen
 		return false, nil
 	}
 
+	value, err := c.convertStaticDeclarationValue(ctx, elem, value)
+	if err != nil {
+		return false, err
+	}
+
 	return true, c.setStaticVarWithKind(ctx, name, nameParam, value)
 }
 
-func (c *compiler) preEvaluateStaticDeclarations(ctx context.Context, root *xdm.Element, moduleStaticNames []string) error {
+func (c *compiler) evaluateStaticDeclarations(ctx context.Context, root *xdm.Element, speculative bool, moduleStaticNames []string) error {
 	for child := range xdm.Children(root) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		elem, ok := child.(*xdm.Element)
 		if !ok || !isStaticTopLevelDeclaration(elem) {
 			continue
 		}
 
-		supplied, err := c.bindExternalStaticParam(ctx, elem)
-		if err != nil {
+		if err := c.evaluateStaticDeclaration(ctx, elem, speculative, moduleStaticNames); err != nil {
 			return err
 		}
+	}
 
-		if supplied {
-			continue
-		}
+	return nil
+}
 
-		name := getAttr(elem, xslAttrName)
-		if name == "" || getAttr(elem, xslAttrSelect) == "" {
-			continue
-		}
+func (c *compiler) evaluateStaticDeclaration(ctx context.Context, elem *xdm.Element, speculative bool, moduleStaticNames []string) error {
+	include, err := c.topLevelDeclarationIncluded(ctx, elem)
+	if err != nil {
+		return staticDeclarationFailure(ctx, elem, err, speculative, moduleStaticNames)
+	}
 
-		value, evaluated, err := c.tryEvaluateStaticSelect(ctx, elem)
-		if err != nil {
-			if errors.Is(err, xpath.ErrUndefinedVariable) && isForwardRef(err, moduleStaticNames, name) {
-				return staticError(errCodeXPST0008,
-					"static %s %q references undefined variable: %v", elem.LocalName(), name, err)
-			}
+	if !include {
+		return nil
+	}
 
-			continue
-		}
+	if supplied, err := c.bindExternalStaticParam(ctx, elem); supplied || err != nil {
+		return err
+	}
 
-		if evaluated {
-			if err := c.setStaticVarWithKind(ctx, resolveQName(name, inScopeNamespaces(elem)), elem.LocalName(), value); err != nil {
-				return err
-			}
-		}
+	name := getAttr(elem, xslAttrName)
+	if name == "" {
+		return nil
+	}
+
+	if _, present := elem.GetAttribute(xslAttrSelect); !present {
+		return c.bindImplicitStaticParam(ctx, elem)
+	}
+
+	value, evaluated, err := c.tryEvaluateStaticSelect(ctx, elem, speculative)
+	if err != nil {
+		return staticDeclarationFailure(ctx, elem, err, speculative, moduleStaticNames)
+	}
+
+	if !evaluated {
+		return nil
+	}
+
+	return c.setStaticVarWithKind(ctx, resolveQName(name, inScopeNamespaces(elem)), elem.LocalName(), value)
+}
+
+// Imports can establish missing bindings after the early pass. Type and control
+// failures already have an authoritative cause and must not be deferred.
+func staticDeclarationFailure(ctx context.Context, elem *xdm.Element, err error, speculative bool, moduleStaticNames []string) error {
+	if failure := preserveControlFailure(ctx, err); failure != nil {
+		return failure
+	}
+
+	if !speculative {
+		return err
+	}
+
+	if detail, ok := errors.AsType[*xdm.Error](err); ok && (detail.Code == errCodeXTTE0590 || detail.Code == errCodeXTTE0570) {
+		return err
+	}
+
+	name := getAttr(elem, xslAttrName)
+	if errors.Is(err, xpath.ErrUndefinedVariable) && isForwardRef(err, moduleStaticNames, name) {
+		return staticError(errCodeXPST0008, "static %s %q references undefined variable: %v", elem.LocalName(), name, err)
 	}
 
 	return nil
@@ -286,9 +408,17 @@ func (c *compiler) resolveImportShadowAttributes(ctx context.Context, root *xdm.
 }
 
 func (c *compiler) collectTopLevelImports(ctx context.Context, root *xdm.Element) error {
+	if err := c.validateModuleImportOrder(ctx, root); err != nil {
+		return err
+	}
+
 	for child := range xdm.Children(root) {
 		elem, ok := child.(*xdm.Element)
 		if !ok || elem.URI() != lexicon.NamespaceXSLT {
+			continue
+		}
+
+		if c.ignoredTopLevelDeclaration(elem) {
 			continue
 		}
 
@@ -308,16 +438,16 @@ func (c *compiler) collectTopLevelImports(ctx context.Context, root *xdm.Element
 }
 
 func (c *compiler) collectTopLevelModule(ctx context.Context, elem *xdm.Element) error {
+	include, err := c.topLevelUseWhen(ctx, elem)
+	if err != nil || !include {
+		return err
+	}
+
 	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(nameHref, xslAttrUseWhen)); err != nil {
 		return err
 	}
 
 	if err := c.validateEmptyElement(ctx, elem, "xsl:"+elem.LocalName()); err != nil {
-		return err
-	}
-
-	include, err := c.topLevelUseWhen(ctx, elem)
-	if err != nil || !include {
 		return err
 	}
 
@@ -329,13 +459,17 @@ func (c *compiler) collectTopLevelModule(ctx context.Context, elem *xdm.Element)
 }
 
 func (c *compiler) collectTopLevelPackage(ctx context.Context, elem *xdm.Element) error {
+	include, err := c.topLevelUseWhen(ctx, elem)
+	if err != nil || !include {
+		return err
+	}
+
 	if c.insideImport {
 		return staticError(errCodeXTSE3008,
 			"xsl:use-package is not allowed in an imported stylesheet module")
 	}
 
-	include, err := c.topLevelUseWhen(ctx, elem)
-	if err != nil || !include {
+	if err := c.validateKnownElementAttributes(ctx, elem); err != nil {
 		return err
 	}
 
@@ -343,11 +477,89 @@ func (c *compiler) collectTopLevelPackage(ctx context.Context, elem *xdm.Element
 }
 
 func (c *compiler) topLevelUseWhen(ctx context.Context, elem *xdm.Element) (bool, error) {
-	if uw := getAttr(elem, xslAttrUseWhen); uw != "" {
-		return c.evaluateUseWhen(ctx, uw)
+	value, present := elem.GetAttribute(xslAttrUseWhen)
+	if elem.URI() != lexicon.NamespaceXSLT {
+		value, present = elem.GetAttributeNS(xslAttrUseWhen, lexicon.NamespaceXSLT)
+	}
+
+	if present {
+		return c.evaluateDeclarationUseWhen(ctx, elem, value)
 	}
 
 	return true, nil
+}
+
+func (c *compiler) ignoredTopLevelDeclaration(elem *xdm.Element) bool {
+	if c.stylesheet.processorLanguage() >= 30 {
+		if _, shadow := elem.GetAttribute("_version"); shadow {
+			return false
+		}
+	}
+
+	return elem.URI() == lexicon.NamespaceXSLT && elementForwardsCompatible(elem, c.stylesheet.processorLanguage()) && unavailableInstruction(elem.LocalName(), c.stylesheet.processorLanguage())
+}
+
+func (c *compiler) validateModuleImportOrder(ctx context.Context, root *xdm.Element) error {
+	if c.stylesheet.processorLanguage() >= 30 {
+		return nil
+	}
+
+	late, err := hasLateModuleImport(ctx, root)
+	if err != nil || !late {
+		return err
+	}
+
+	seenOther := false
+
+	for elem := range xdm.ChildElements(root) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if c.ignoredTopLevelDeclaration(elem) {
+			continue
+		}
+
+		include, err := c.topLevelUseWhen(ctx, elem)
+		if err != nil {
+			return err
+		}
+
+		if !include {
+			continue
+		}
+
+		if elem.URI() == lexicon.NamespaceXSLT && elem.LocalName() == nameImport {
+			if seenOther {
+				return staticError("XTSE0200", "xsl:import must precede other module elements in XSLT 1.0/2.0")
+			}
+		} else {
+			seenOther = true
+		}
+	}
+
+	return nil
+}
+
+// A module already ordered structurally needs no additional use-when evaluation.
+func hasLateModuleImport(ctx context.Context, root *xdm.Element) (bool, error) {
+	seenOther := false
+
+	for elem := range xdm.ChildElements(root) {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+
+		if elem.URI() == lexicon.NamespaceXSLT && elem.LocalName() == nameImport {
+			if seenOther {
+				return true, nil
+			}
+		} else {
+			seenOther = true
+		}
+	}
+
+	return false, nil
 }
 
 func (c *compiler) resolveStaticDeclarationShadows(ctx context.Context, root *xdm.Element) error {
@@ -360,55 +572,6 @@ func (c *compiler) resolveStaticDeclarationShadows(ctx context.Context, root *xd
 		ln := elem.LocalName()
 		if ln == lexicon.XSLTElementParam || ln == nameVariable {
 			if err := c.resolveSingleShadowAttribute(ctx, elem, nameStatic); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-func (c *compiler) evaluateModuleStaticDeclarations(ctx context.Context, root *xdm.Element) error {
-	for child := range xdm.Children(root) {
-		elem, ok := child.(*xdm.Element)
-		if !ok || !isStaticTopLevelDeclaration(elem) {
-			continue
-		}
-
-		supplied, err := c.bindExternalStaticParam(ctx, elem)
-		if err != nil {
-			return err
-		}
-
-		if supplied {
-			continue
-		}
-
-		name := resolveQName(getAttr(elem, xslAttrName), inScopeNamespaces(elem))
-		if name == "" {
-			continue
-		}
-
-		if getAttr(elem, xslAttrSelect) != "" {
-			value, evaluated, err := c.tryEvaluateStaticSelect(ctx, elem)
-			if err == nil && evaluated {
-				if err := c.setStaticVarWithKind(ctx, name, elem.LocalName(), value); err != nil {
-					return err
-				}
-			}
-
-			continue
-		}
-
-		if elem.LocalName() == nameParam && !hasSignificantContent(elem) {
-			// A bodyless param defaults to a zero-length string without an as
-			// attribute, or to the empty sequence when a type was supplied.
-			var value xdm.Sequence
-			if getAttr(elem, "as") == "" {
-				value = xdm.SingleString("")
-			}
-
-			if err := c.setStaticVarWithKind(ctx, name, elem.LocalName(), value); err != nil {
 				return err
 			}
 		}
@@ -433,6 +596,10 @@ func (c *compiler) compileTopLevelDeclarations(ctx context.Context, root *xdm.El
 			continue
 		}
 
+		if c.ignoredTopLevelDeclaration(elem) {
+			continue
+		}
+
 		if err := c.resolveShadowAttributes(ctx, elem); err != nil {
 			return err
 		}
@@ -444,6 +611,15 @@ func (c *compiler) compileTopLevelDeclarations(ctx context.Context, root *xdm.El
 
 		if !include {
 			continue
+		}
+
+		// Module/package declarations were checked only when included, before I/O.
+		switch elem.LocalName() {
+		case nameImport, nameInclude, nameUsePackage:
+		default:
+			if err := c.validateKnownElementAttributes(ctx, elem); err != nil {
+				return err
+			}
 		}
 
 		if err := c.compileTopLevelDeclaration(ctx, elem); err != nil {
@@ -486,6 +662,12 @@ func (c *compiler) topLevelDeclarationIncluded(ctx context.Context, elem *xdm.El
 // evaluateDeclarationUseWhen removes a static declaration's own value for this
 // evaluation so self references report XPST0008, then restores the static scope.
 func (c *compiler) evaluateDeclarationUseWhen(ctx context.Context, elem *xdm.Element, uw string) (bool, error) {
+	savedNS, savedDefault, savedHas := c.nsBindings, c.xpathDefaultNS, c.hasXPathDefaultNS
+	c.nsBindings = inScopeNamespaces(elem)
+
+	c.xpathDefaultNS, c.hasXPathDefaultNS = c.declarationDefaultNamespace(elem)
+	defer func() { c.nsBindings, c.xpathDefaultNS, c.hasXPathDefaultNS = savedNS, savedDefault, savedHas }()
+
 	if isStaticTopLevelDeclaration(elem) {
 		if selfName := resolveQName(getAttr(elem, xslAttrName), inScopeNamespaces(elem)); selfName != "" {
 			if oldVal, had := c.staticVars[selfName]; had {
@@ -500,6 +682,10 @@ func (c *compiler) evaluateDeclarationUseWhen(ctx context.Context, elem *xdm.Ele
 }
 
 func (c *compiler) compileTopLevelDeclaration(ctx context.Context, elem *xdm.Element) error {
+	if c.ignoredTopLevelDeclaration(elem) {
+		return nil
+	}
+
 	switch elem.LocalName() {
 	case lexicon.XSLTElementImport, lexicon.XSLTElementUsePackage,
 		lexicon.XSLTElementNamespaceAlias, lexicon.XSLTElementExpose:
@@ -658,7 +844,7 @@ func (c *compiler) compileNamespaceAlias(ctx context.Context, elem *xdm.Element)
 	} else {
 		uri, ok := localNS[stylesheetPrefix]
 		if !ok {
-			return staticError(errCodeXTSE0010, "xsl:namespace-alias: stylesheet-prefix %q is not bound to a namespace", stylesheetPrefix)
+			return staticError(errCodeXTSE0812, "xsl:namespace-alias: stylesheet-prefix %q is not bound to a namespace", stylesheetPrefix)
 		}
 
 		stylesheetURI = uri
@@ -680,7 +866,7 @@ func (c *compiler) compileNamespaceAlias(ctx context.Context, elem *xdm.Element)
 	default:
 		uri, ok := localNS[resultPrefix]
 		if !ok {
-			return staticError(errCodeXTSE0010, "xsl:namespace-alias: result-prefix %q is not bound to a namespace", resultPrefix)
+			return staticError(errCodeXTSE0812, "xsl:namespace-alias: result-prefix %q is not bound to a namespace", resultPrefix)
 		}
 
 		resultURI = uri

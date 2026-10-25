@@ -14,7 +14,7 @@ import (
 )
 
 func (c *compiler) compileImportSchema(ctx context.Context, elem *xdm.Element) error {
-	return ErrLanguageUnsupported
+	return staticError("XTSE1650", "schema imports require a schema-aware processor")
 }
 
 // schemaDeclsForValidation returns the in-scope schema declarations for
@@ -33,8 +33,16 @@ func (c *compiler) schemaDeclsForValidation() xpath.SchemaDeclarations { return 
 //
 // This covers the most common case where compile-time static errors arise:
 // using schema-element() or schema-attribute() with an undeclared name.
-func (c *compiler) validateAsSequenceType(ctx context.Context, as string, context string) error {
-	return c.validateAsSequenceTypeWithNS(ctx, as, context, c.nsBindings, c.xpathDefaultNS, c.hasXPathDefaultNS)
+func (c *compiler) validateAsSequenceType(ctx context.Context, elem *xdm.Element, as string, context string) error {
+	if as == "" {
+		if _, present := elem.GetAttribute("as"); present {
+			return staticError(errCodeXPST0003, "%s: empty 'as' type", context)
+		}
+	}
+
+	defaultNS, hasDefaultNS := c.declarationDefaultNamespace(elem)
+
+	return c.validateAsSequenceTypeWithNS(ctx, as, context, inScopeNamespaces(elem), defaultNS, hasDefaultNS)
 }
 
 // validateAsSequenceTypeWithNS is like validateAsSequenceType but resolves
@@ -46,13 +54,14 @@ func (c *compiler) validateAsSequenceType(ctx context.Context, as string, contex
 // namespace context in scope at the declaration element itself — matching the
 // runtime resolveSchemaQName logic so an unprefixed name with an in-scope
 // xpath-default-namespace is not wrongly resolved to {}name at compile time.
-func (c *compiler) validateAsSequenceTypeWithNS(_ context.Context, as string, context string, _ map[string]string, _ string, _ bool) error {
+func (c *compiler) validateAsSequenceTypeWithNS(_ context.Context, as string, context string, ns map[string]string, defaultNS string, hasDefaultNS bool) error {
 	if as == "" {
 		return nil
 	}
 	// Validate syntax of the sequence type expression (catches errors
 	// like function(xs:integer) missing "as ReturnType").
-	if _, err := xpath.ParseSequenceType(as); err != nil {
+	st, err := xpath.ParseSequenceType(as)
+	if err != nil {
 		if xpErr, ok := errors.AsType[*xdm.Error](err); ok {
 			return staticError(xpErr.Code, "%s: invalid 'as' type: %s", context, err)
 		}
@@ -60,7 +69,50 @@ func (c *compiler) validateAsSequenceTypeWithNS(_ context.Context, as string, co
 		return staticError(errCodeXPST0003, "%s: invalid 'as' type: %s", context, err)
 	}
 
+	if requiresSchemaNodeTest(st.ItemTest, ns, defaultNS, hasDefaultNS) {
+		return staticError("XTSE1660", "%s: 'as' requires schema-annotated nodes", context)
+	}
+
+	if err := xpath.ValidateSequenceType(st, ns, defaultNS, nil); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func requiresSchemaNodeTest(test xdm.NodeTest, ns map[string]string, defaultNS string, hasDefaultNS bool) bool {
+	var typeName string
+
+	attribute := false
+
+	switch typed := test.(type) {
+	case xdm.ElementTest:
+		typeName = typed.TypeName
+	case xdm.AttributeTest:
+		typeName = typed.TypeName
+		attribute = true
+	case xdm.DocumentTest:
+		return requiresSchemaNodeTest(typed.Inner, ns, defaultNS, hasDefaultNS)
+	case xdm.SchemaElementTest, xdm.SchemaAttributeTest:
+		return true
+	default:
+		return false
+	}
+
+	if typeName == "" {
+		return false
+	}
+
+	local, uri := resolveSequenceTypeQName(typeName, qnameTypeName, nsResolverFromMap(ns), defaultNS, hasDefaultNS)
+	if uri != lexicon.NamespaceXSD {
+		return true
+	}
+
+	if attribute {
+		return local != "untypedAtomic" && local != "anyAtomicType" && local != "anySimpleType"
+	}
+
+	return local != strings.TrimPrefix(lexicon.XSUntyped, "xs:") && local != "anyType"
 }
 
 // checkTypedModePatterns validates XTSE3105: for modes declared with

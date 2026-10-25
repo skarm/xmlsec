@@ -37,6 +37,7 @@ type documentParser struct {
 	seenDecl            bool
 	characterInput      bool
 	singleByteEncodings bool
+	stopAtRoot          bool
 }
 
 func (p *documentParser) parse(ctx context.Context) (*Document, error) {
@@ -71,13 +72,17 @@ func (p *documentParser) parse(ctx context.Context) (*Document, error) {
 		if err := p.consumeToken(token, offset); err != nil {
 			return nil, err
 		}
+
+		if p.stopAtRoot && p.doc.root != nil {
+			break
+		}
 	}
 
 	if p.encoding.name != nameUTF8 && !p.encoding.bom && !p.seenDecl {
 		return nil, fmt.Errorf("%w: UTF-16 without BOM requires an endian-specific declaration", ErrMalformed)
 	}
 
-	if p.doc.root == nil || len(p.stack) != 0 {
+	if p.doc.root == nil || !p.stopAtRoot && len(p.stack) != 0 {
 		return nil, fmt.Errorf("%w: missing or unclosed root", ErrMalformed)
 	}
 
@@ -149,6 +154,10 @@ func (p *documentParser) startElement(element xml.StartElement) error {
 	}
 
 	n := &Node{Kind: ElementNode, Prefix: element.Name.Space, Name: Name{Local: element.Name.Local}}
+	if line := p.input.tokenLine; line <= 1<<32-1 {
+		n.SourceLine = uint32(line)
+	}
+
 	if n.Prefix != "" {
 		// The tokenizer splits both parts from one QName string. Each part can
 		// escape independently through a name or prefix accessor.

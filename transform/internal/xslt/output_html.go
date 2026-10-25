@@ -5,19 +5,17 @@ package xslt
 
 import (
 	"bytes"
-	"fmt"
+	"context"
 	"io"
+	"strconv"
 	"strings"
 
-	"github.com/skarm/xmlsec/internal/xmloutput"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	htmlpkg "github.com/skarm/xmlsec/transform/internal/xdm/html"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func serializeHTML(w io.Writer, doc *xdm.Document, outDef *OutputDef) error {
-	// Determine DOCTYPE handling.
-	hasDoctypeAttrs := outDef.DoctypePublic != "" || outDef.DoctypeSystem != ""
 	// Use explicit HTMLVersion for DOCTYPE/structural decisions.
 	isHTML5 := isHTMLVersion5(outDef.HTMLVersion)
 	// Use effective version (with XSLT 3.0 default=5) for character escaping.
@@ -26,21 +24,6 @@ func serializeHTML(w io.Writer, doc *xdm.Document, outDef *OutputDef) error {
 	// no-namespace elements are HTML elements, so a namespaced void element
 	// (e.g. an XHTML-namespace <meta>) is serialized with an explicit end tag.
 	html4 := isHTMLVersionBelow5(outDef.HTMLVersion)
-
-	if hasDoctypeAttrs {
-		rootName := methodHTML
-		if root := doc.DocumentElement(); root != nil {
-			rootName = root.Name()
-		}
-
-		if err := xmloutput.WriteHTMLDoctype(w, rootName, outDef.DoctypePublic, outDef.DoctypeSystem); err != nil {
-			return err
-		}
-
-		if err := writeFullString(w, "\n"); err != nil {
-			return err
-		}
-	}
 
 	// Insert <meta http-equiv="Content-Type"> in <head> if not already present.
 	if outDef.IncludeContentType == nil || *outDef.IncludeContentType {
@@ -58,20 +41,7 @@ func serializeHTML(w io.Writer, doc *xdm.Document, outDef *OutputDef) error {
 	// children manually to insert <!DOCTYPE html> before the first element.
 	noEscapeURI := outDef.EscapeURIAttributes != nil && !*outDef.EscapeURIAttributes
 
-	if isHTML5 && !hasDoctypeAttrs {
-		hw := htmlpkg.NewWriter().Format(false).PreserveCase(true)
-		if escapeCtrl {
-			hw = hw.EscapeControlChars(true)
-		}
-
-		if noEscapeURI {
-			hw = hw.EscapeURIAttributes(false)
-		}
-
-		return serializeHTML5Children(w, doc, hw)
-	}
-
-	hw := htmlpkg.NewWriter().DefaultDTD(false).Format(false).PreserveCase(true)
+	hw := htmlpkg.NewWriter().DefaultDTD(false).Format(false).PreserveCase(true).DOEMarkers(true)
 	if noEscapeURI {
 		hw = hw.EscapeURIAttributes(false)
 	}
@@ -84,26 +54,39 @@ func serializeHTML(w io.Writer, doc *xdm.Document, outDef *OutputDef) error {
 		hw = hw.NullNamespaceHTMLOnly(true)
 	}
 
-	return hw.WriteTo(w, doc)
+	return serializeHTMLChildren(w, doc, hw, outDef)
 }
 
-func serializeHTML5Children(w io.Writer, doc *xdm.Document, hw htmlpkg.Writer) error {
-	doctypeEmitted := false
-	for child := range xdm.Children(doc) {
-		if child.Type() == xdm.ElementNode && !doctypeEmitted {
-			if err := writeFullString(w, "<!DOCTYPE html>"); err != nil {
-				return err
+func serializeHTMLChildren(w io.Writer, doc *xdm.Document, hw htmlpkg.Writer, outDef *OutputDef) error {
+	emitted := false
+	automatic := isHTMLVersion5(outDef.HTMLVersion)
+	explicit := outDef.DoctypePublic != "" || outDef.DoctypeSystem != ""
+	items := func(yield func(xdm.XMLItem, error) bool) {
+		for child := range xdm.Children(doc) {
+			if !emitted && serializationHasNonWhitespaceText(xdm.XMLItem{Node: child}) {
+				automatic = false
 			}
 
-			doctypeEmitted = true
+			if child.Type() == xdm.ElementNode && !emitted {
+				if err := writeHTMLResultDoctype(w, child, outDef, explicit, automatic); err != nil {
+					yield(xdm.XMLItem{}, err)
+					return
+				}
+
+				emitted = true
+			}
+
+			if !yield(xdm.XMLItem{Node: child}, nil) {
+				return
+			}
 		}
 
-		if err := hw.WriteTo(w, child); err != nil {
-			return err
+		if err := writeRootlessHTMLDoctype(w, outDef, emitted); err != nil {
+			yield(xdm.XMLItem{}, err)
 		}
 	}
 
-	return nil
+	return hw.WriteSequence(context.Background(), w, items)
 }
 
 // serializeXHTML serializes using the XHTML output method.
@@ -114,12 +97,6 @@ func serializeHTML5Children(w io.Writer, doc *xdm.Document, hw htmlpkg.Writer) e
 func serializeXHTML(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMap map[rune]string) error {
 	isHTML5 := isHTMLVersion5(outDef.HTMLVersion)
 
-	// XSLT 3.0 §20: for xhtml method with html-version >= 5, the default
-	// for omit-xml-declaration is "yes" (unless explicitly set otherwise).
-	if isHTML5 && !outDef.OmitDeclarationExplicit {
-		outDef.OmitDeclaration = true
-	}
-
 	// Per XSLT spec, doctype-public without doctype-system is ignored for xhtml.
 	if outDef.DoctypeSystem == "" && outDef.DoctypePublic != "" {
 		outDef.DoctypePublic = ""
@@ -128,7 +105,7 @@ func serializeXHTML(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMap m
 	// For HTML5: only use explicit doctype when doctype-system is specified.
 	// Without doctype-system (even if doctype-public is set), use <!DOCTYPE html>.
 	// Only emit the HTML5 DOCTYPE when the root element is "html" in the XHTML namespace.
-	if isHTML5 && outDef.DoctypeSystem == "" {
+	if isHTML5 && outDef.DoctypeSystem == "" && allowsAutomaticResultDoctype(doc) {
 		root := doc.DocumentElement()
 		if root != nil && strings.EqualFold(root.LocalName(), methodHTML) &&
 			root.URI() == lexicon.NamespaceXHTML {
@@ -147,15 +124,10 @@ func serializeXHTML(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMap m
 		}
 	}
 
-	// Normalize XHTML namespace: elements in http://www.w3.org/1999/xhtml
-	// that use a prefix should be converted to use the default namespace.
-	normalizeXHTMLNamespace(doc)
-
-	// For HTML5: normalize SVG and MathML namespaces so that elements in
-	// those namespaces use the default namespace (unprefixed) per the
-	// HTML5 serialization spec.
 	if isHTML5 {
-		normalizeForeignNamespaces(doc)
+		normalizeXHTML5Prefixes(doc)
+	} else {
+		normalizeXHTMLNamespace(doc)
 	}
 
 	// Serialize as XML first.
@@ -182,6 +154,20 @@ func serializeXHTML(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMap m
 	return writeFullString(w, result)
 }
 
+func allowsAutomaticResultDoctype(doc *xdm.Document) bool {
+	for child := range xdm.Children(doc) {
+		if child.Type() == xdm.ElementNode {
+			return true
+		}
+
+		if serializationHasNonWhitespaceText(xdm.XMLItem{Node: child}) {
+			return false
+		}
+	}
+
+	return false
+}
+
 // normalizeXHTMLNamespace walks the document and converts prefixed XHTML
 // namespace elements to use the default namespace (unprefixed), as required
 // by the XHTML output method. The default namespace declaration is added
@@ -190,6 +176,53 @@ func normalizeXHTMLNamespace(doc *xdm.Document) {
 	normalizer := xhtmlNamespaceNormalizer{}
 	// The freshly built tree is acyclic; namespace normalization cannot create cycles.
 	_ = xdm.Walk(doc, xdm.NodeWalkerFunc(normalizer.visit))
+}
+
+// Serialization 3.1 section 6 removes bindings for all three namespaces from
+// every element, except prefixes used by attributes on that element or an
+// ancestor. Element names in these namespaces use a new default binding.
+func normalizeXHTML5Prefixes(doc *xdm.Document) {
+	_ = xdm.Walk(doc, xdm.NodeWalkerFunc(func(n xdm.Node) error {
+		elem, ok := n.(*xdm.Element)
+		if !ok {
+			return nil
+		}
+
+		for _, ns := range elem.Namespaces() {
+			if xhtml5Namespace(ns.URI()) && !ancestorAttributeUsesPrefix(elem, ns.Prefix()) {
+				elem.RemoveNamespaceByPrefix(ns.Prefix())
+			}
+		}
+
+		if uri := elem.URI(); xhtml5Namespace(uri) {
+			_ = elem.DeclareNamespace("", uri)
+			_ = elem.SetActiveNamespace("", uri)
+		}
+
+		return nil
+	}))
+}
+
+func xhtml5Namespace(uri string) bool {
+	return uri == lexicon.NamespaceXHTML || uri == lexicon.NamespaceSVG || uri == lexicon.NamespaceMathML
+}
+
+func ancestorAttributeUsesPrefix(elem *xdm.Element, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+
+	for node := xdm.Node(elem); node != nil; node = node.Parent() {
+		if parent, ok := node.(*xdm.Element); ok {
+			for _, attr := range parent.Attributes() {
+				if attr.Prefix() == prefix {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 type xhtmlNamespaceNormalizer struct {
@@ -413,13 +446,16 @@ func escapeURIAttrsInTag(tag string) string {
 
 // percentEncodeNonASCII percent-encodes non-ASCII bytes in a string.
 func percentEncodeNonASCII(s string) string {
+	const hex = "0123456789ABCDEF"
+
 	var buf strings.Builder
 
-	b := []byte(s)
-	for i := range b {
-		c := b[i]
+	for i := range len(s) {
+		c := s[i]
 		if c > 0x7E {
-			fmt.Fprintf(&buf, "%%%02X", c)
+			buf.WriteByte('%')
+			buf.WriteByte(hex[c>>4])
+			buf.WriteByte(hex[c&0x0F])
 		} else {
 			buf.WriteByte(c)
 		}
@@ -431,14 +467,19 @@ func percentEncodeNonASCII(s string) string {
 // escapeC1ControlsInString replaces C1 control characters (U+0080-U+009F)
 // in the serialized string with numeric character references.
 func escapeC1ControlsInString(s string) string {
-	var buf strings.Builder
+	var (
+		buf    strings.Builder
+		digits [10]byte
+	)
 	buf.Grow(len(s))
 
 	changed := false
 
 	for _, r := range s {
 		if r >= 0x80 && r <= 0x9F {
-			fmt.Fprintf(&buf, "&#%d;", r)
+			buf.WriteString("&#")
+			buf.Write(strconv.AppendInt(digits[:0], int64(r), 10))
+			buf.WriteByte(';')
 
 			changed = true
 		} else {

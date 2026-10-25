@@ -48,15 +48,15 @@ func TestTranslateXPathCharacterClasses(t *testing.T) {
 }
 
 func TestValidateXPathRegex(t *testing.T) {
-	for _, pattern := range []string{`(?=a)`, `(?<=a)b`, `(?i)a`} {
-		if err := xpathregex.RejectPerlSpecific(pattern); err == nil {
-			t.Errorf("Perl construct %q accepted", pattern)
+	for _, p := range []string{`(?=a)`, `(?<=a)b`, `(?i)a`} {
+		if err := xpathregex.RejectPerlSpecific(p); err == nil {
+			t.Errorf("Perl construct %q accepted", p)
 		}
 	}
 
-	for _, pattern := range []string{`\p{UnknownProperty}`, `[a-z`} {
-		if err := xpathregex.Validate(pattern, false); err == nil {
-			t.Errorf("invalid pattern %q accepted", pattern)
+	for _, p := range []string{`\p{UnknownProperty}`, `[a-z`} {
+		if err := xpathregex.Validate(p, false); err == nil {
+			t.Errorf("invalid pattern %q accepted", p)
 		}
 	}
 

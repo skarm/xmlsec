@@ -14,6 +14,7 @@ type Error struct {
 	Code          string // e.g. "XPTY0004", "FOER0000" (without err: prefix)
 	Message       string
 	QualifiedCode QNameValue
+	Value         Sequence // fn:error's arbitrary error object; node identity is preserved.
 }
 
 // Unwrap preserves the original dynamic failure.

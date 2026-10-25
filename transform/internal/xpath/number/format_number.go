@@ -14,6 +14,8 @@ import (
 // DecimalFormat holds the characters used for number formatting per the
 // ICU decimal format specification.
 type DecimalFormat struct {
+	Infinity          string
+	NaN               string
 	DecimalSeparator  rune
 	GroupingSeparator rune
 	Percent           rune
@@ -22,15 +24,16 @@ type DecimalFormat struct {
 	Digit             rune
 	PatternSeparator  rune
 	ExponentSeparator rune
-	Infinity          string
-	NaN               string
 	MinusSign         rune
+	ExponentDisabled  bool
 }
 
 // DefaultDecimalFormat returns the standard ICU decimal format with default
 // characters.
 func DefaultDecimalFormat() DecimalFormat {
 	return DecimalFormat{
+		Infinity:          "Infinity",
+		NaN:               "NaN",
 		DecimalSeparator:  '.',
 		GroupingSeparator: ',',
 		Percent:           '%',
@@ -39,9 +42,8 @@ func DefaultDecimalFormat() DecimalFormat {
 		Digit:             '#',
 		PatternSeparator:  ';',
 		ExponentSeparator: 'e',
-		Infinity:          "Infinity",
-		NaN:               "NaN",
 		MinusSign:         '-',
+		ExponentDisabled:  false,
 	}
 }
 
@@ -166,15 +168,22 @@ func hasInvalidLiteralChars(part []rune, df DecimalFormat) bool {
 }
 
 func splitPictureExponent(runes []rune, df DecimalFormat) ([]rune, []rune, bool) {
+	if df.ExponentDisabled {
+		return runes, nil, false
+	}
+
 	separator := df.ExponentSeparator
 	if separator == 0 {
 		separator = 'e'
 	}
 
+	precededByActive := false
 	for i, r := range runes {
-		if r == separator && i+1 < len(runes) && isPatternDigit(runes[i+1], df) {
+		if r == separator && precededByActive && i+1 < len(runes) && isPatternDigit(runes[i+1], df) {
 			return runes[:i], runes[i+1:], true
 		}
+
+		precededByActive = precededByActive || isPatternDigit(r, df) || r == df.DecimalSeparator || r == df.GroupingSeparator
 	}
 
 	return runes, nil, false

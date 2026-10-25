@@ -9,9 +9,11 @@ import (
 	"io"
 	"maps"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -30,7 +32,7 @@ func (c *compiler) compileCharacterMap(ctx context.Context, elem *xdm.Element) e
 
 	name := getAttr(elem, xslAttrName)
 	if name == "" {
-		return staticError(errCodeXTSE0110, "xsl:character-map requires name attribute")
+		return staticError(errCodeXTSE0010, "xsl:character-map requires name attribute")
 	}
 
 	name = resolveQName(name, c.nsBindings)
@@ -119,16 +121,16 @@ func (c *compiler) compileKey(ctx context.Context, elem *xdm.Element) error {
 
 	name := getAttr(elem, xslAttrName)
 	if name == "" {
-		return staticError(errCodeXTSE0110, "xsl:key requires name attribute")
+		return staticError(errCodeXTSE0010, "xsl:key requires name attribute")
 	}
 
 	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
 		return staticError(errCodeXTSE0020, "invalid name %q on xsl:key", name)
 	}
 
-	matchAttr := getAttr(elem, nameMatch2)
-	if matchAttr == "" {
-		return staticError(errCodeXTSE0110, "xsl:key requires match attribute")
+	matchAttr, hasMatch := elem.GetAttribute(nameMatch2)
+	if !hasMatch {
+		return staticError(errCodeXTSE0010, "xsl:key requires match attribute")
 	}
 
 	// Apply a local xpath-default-namespace on the xsl:key element (presence,
@@ -137,9 +139,13 @@ func (c *compiler) compileKey(ctx context.Context, elem *xdm.Element) error {
 	xpathDefaultNS := c.xpathDefaultNS
 	hasXPathDefaultNS := c.hasXPathDefaultNS
 
+	savedDefaultNS, savedHasDefaultNS := c.xpathDefaultNS, c.hasXPathDefaultNS
+	defer func() { c.xpathDefaultNS, c.hasXPathDefaultNS = savedDefaultNS, savedHasDefaultNS }()
+
 	if xdn, ok := elem.GetAttribute(nameXpathDefaultNamespace); ok {
 		xpathDefaultNS = xdn
 		hasXPathDefaultNS = true
+		c.xpathDefaultNS, c.hasXPathDefaultNS = xdn, true
 	}
 
 	matchPat, err := c.compilePattern(matchAttr, elem, xpathDefaultNS, hasXPathDefaultNS)
@@ -183,11 +189,12 @@ func (c *compiler) compileKey(ctx context.Context, elem *xdm.Element) error {
 	}
 
 	kd := &keyDef{
-		Name:      expandedName,
-		Match:     matchPat,
-		Composite: composite,
-		Collation: collationURI,
-		Compat:    c.backwardsCompatible(),
+		StaticBaseURI: stylesheetBaseURI(elem, c.baseURI, c.moduleRoot),
+		Name:          expandedName,
+		Match:         matchPat,
+		Composite:     composite,
+		Collation:     collationURI,
+		Compat:        c.backwardsCompatible(),
 	}
 
 	if err := c.compileKeyValue(ctx, elem, kd); err != nil {
@@ -493,9 +500,8 @@ func mergeOutputDefinition(out, existing *OutputDef, elem *xdm.Element) {
 		out.MediaType = existing.MediaType
 	}
 
-	if getAttr(elem, paramCDATASectionElements) == "" {
-		out.CDATASections = existing.CDATASections
-	}
+	out.CDATASections = slices.Concat(existing.CDATASections, out.CDATASections)
+	out.SuppressIndentation = slices.Concat(existing.SuppressIndentation, out.SuppressIndentation)
 
 	if getAttr(elem, paramItemSeparator) == "" {
 		out.ItemSeparator = existing.ItemSeparator
@@ -551,8 +557,8 @@ func (c *compiler) compileOutputSerialization(elem *xdm.Element, out *OutputDef,
 		out.NormalizationForm = strings.ToUpper(strings.TrimSpace(form))
 	}
 
-	if maps := getAttr(elem, paramUseCharacterMaps); maps != "" {
-		for name := range strings.FieldsSeq(maps) {
+	if attr := getAttr(elem, paramUseCharacterMaps); attr != "" {
+		for name := range strings.FieldsSeq(attr) {
 			out.UseCharacterMaps = append(out.UseCharacterMaps, resolveQName(name, c.nsBindings))
 		}
 	}
@@ -726,6 +732,9 @@ func loadParameterDocumentRoot(ctx context.Context, injected *xdm.ParseOptions, 
 }
 
 func parameterDocumentLoadError(err error, href string, runtime bool) error {
+	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+		return err
+	}
 	// Runtime failures are dynamic, while their raw cause survives the wrapper.
 	if runtime {
 		return dynamicErrorCause(errCodeFODC0002, err, "cannot read parameter-document %q: %v", href, err)
@@ -747,7 +756,7 @@ func (c *compiler) compileAttributeSet(ctx context.Context, elem *xdm.Element) e
 
 	name := getAttr(elem, xslAttrName)
 	if name == "" {
-		return staticError(errCodeXTSE0110, "xsl:attribute-set requires name attribute")
+		return staticError(errCodeXTSE0010, "xsl:attribute-set requires name attribute")
 	}
 
 	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
@@ -775,6 +784,10 @@ func (c *compiler) compileAttributeSet(ctx context.Context, elem *xdm.Element) e
 		Name:       name,
 		Visibility: getAttr(elem, xslAttrVisibility),
 		Streamable: streamable,
+	}
+
+	if c.stylesheet.isPackage {
+		asd.OwnerPackage = c.stylesheet
 	}
 
 	if uas := getAttr(elem, nameUseAttributeSets); uas != "" {
@@ -816,20 +829,15 @@ func (c *compiler) compileAttributeSet(ctx context.Context, elem *xdm.Element) e
 		Attrs:         asd.Attrs,
 		StaticBaseURI: effectiveBase,
 	}
-	// Merge same-named attribute-sets (XSLT spec: union of all definitions).
-	// When an existing entry comes from a used package (OwnerPackage != nil)
-	// and the new definition is local, the local definition replaces the
-	// package's private attribute-set, merging with none of it.
-	if existing, ok := c.stylesheet.attributeSets[name]; ok {
-		if existing.OwnerPackage != nil {
-			// Replace package-scoped attribute-set with local definition.
-			asd.Parts = []attributeSetPart{part}
-			c.stylesheet.attributeSets[name] = asd
-		} else {
-			existing.Attrs = append(existing.Attrs, asd.Attrs...)
-			existing.UseAttrSets = append(existing.UseAttrSets, asd.UseAttrSets...)
-			existing.Parts = append(existing.Parts, part)
+	// Same-named local declarations merge; an accepted component conflicts.
+	if existing := c.stylesheet.attributeSets[name]; existing != nil {
+		if existing.OwnerPackage != nil && existing.OwnerPackage != c.stylesheet {
+			return staticError(errCodeXTSE3050, "local attribute-set %q conflicts with an accepted component", name)
 		}
+
+		existing.Attrs = append(existing.Attrs, asd.Attrs...)
+		existing.UseAttrSets = append(existing.UseAttrSets, asd.UseAttrSets...)
+		existing.Parts = append(existing.Parts, part)
 	} else {
 		asd.Parts = []attributeSetPart{part}
 		c.stylesheet.attributeSets[name] = asd
@@ -846,7 +854,11 @@ func (c *compiler) compileDecimalFormat(ctx context.Context, elem *xdm.Element) 
 	saved := c.pushElementNamespaces(ctx, elem)
 	defer func() { c.nsBindings = saved }()
 
-	qn, err := decimalFormatName(getAttr(elem, xslAttrName), c.nsBindings)
+	if err := validateDecimalFormatCharacters(elem); err != nil {
+		return err
+	}
+
+	qn, err := c.decimalFormatName(elem)
 	if err != nil {
 		return err
 	}
@@ -871,6 +883,7 @@ func (c *compiler) compileDecimalFormat(ctx context.Context, elem *xdm.Element) 
 
 	if !exists {
 		df = xpath.DefaultDecimalFormat()
+		df.ExponentDisabled = c.stylesheet.processorLanguage() < 30
 	}
 
 	// XTSE1290: record potential conflicts for deferred checking after all imports.
@@ -920,25 +933,30 @@ func (c *compiler) compileDecimalFormat(ctx context.Context, elem *xdm.Element) 
 	return nil
 }
 
-func decimalFormatName(name string, bindings map[string]string) (xpath.QualifiedName, error) {
-	qn := xpath.QualifiedName{}
-
-	if name != "" {
-		if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
-			return qn, staticError(errCodeXTSE0020, "invalid name %q on xsl:decimal-format", name)
-		}
-
-		qn = xpath.QualifiedName{Name: name}
-		if prefix, local, ok := strings.Cut(name, ":"); ok {
-			if uri, ok := bindings[prefix]; ok {
-				qn = xpath.QualifiedName{URI: uri, Name: local}
-			} else {
-				qn.Name = local
-			}
+func validateDecimalFormatCharacters(elem *xdm.Element) error {
+	for _, name := range []string{nameDecimalSeparator, nameGroupingSeparator, namePercent, namePerMille, nameZeroDigit, nameDigit, namePatternSeparator, nameExponentSeparator, nameMinusSign} {
+		if value, present := elem.GetAttribute(name); present && utf8.RuneCountInString(value) != 1 {
+			return staticError(errCodeXTSE0020, "%s on xsl:decimal-format must be one character", name)
 		}
 	}
 
-	return qn, nil
+	return nil
+}
+
+func (c *compiler) decimalFormatName(elem *xdm.Element) (xpath.QualifiedName, error) {
+	name, present := elem.GetAttribute(xslAttrName)
+	if !present {
+		return xpath.QualifiedName{}, nil
+	}
+
+	name = strings.TrimFunc(name, xmlchar.IsSpace)
+	if !xmlchar.IsValidQName(name) && !(c.stylesheet.processorLanguage() >= 30 && isValidEQName(name)) {
+		return xpath.QualifiedName{}, staticError(errCodeXTSE0020, "invalid name %q on xsl:decimal-format", name)
+	}
+
+	qn, err := resolveIntrospectionName(name, "", errCodeXTSE0280, nsResolverFromMap(inScopeNamespaces(elem)))
+
+	return xpath.QualifiedName{URI: qn.URI, Name: qn.Local}, err
 }
 
 func applyDecimalFormatAttributes(df *xpath.DecimalFormat, elem *xdm.Element) {
@@ -1432,10 +1450,18 @@ func resolveOutputNames(value string, bindings map[string]string) []string {
 	resolved := make([]string, len(names))
 
 	for i, name := range names {
-		resolved[i] = resolveQName(name, bindings)
+		resolved[i] = resolveOutputName(name, bindings)
 	}
 
 	return resolved
+}
+
+func resolveOutputName(name string, bindings map[string]string) string {
+	if !strings.ContainsAny(name, ":{") && bindings[""] != "" {
+		return xdm.ClarkName(bindings[""], name)
+	}
+
+	return resolveQName(name, bindings)
 }
 
 func firstRune(s string) rune {
@@ -1656,17 +1682,26 @@ func checkAttributeSetCycles(ss *Stylesheet) error {
 		case done:
 			return nil
 		case visiting:
+			if ss.processorLanguage() >= 30 {
+				return nil
+			}
+
 			return staticError(errCodeXTSE0720,
 				"attribute-set %q has a circular use-attribute-sets reference", name)
 		}
 
 		state[name] = visiting
 		if asd := ss.attributeSets[name]; asd != nil {
+			if asd.OwnerPackage != nil && asd.OwnerPackage != ss {
+				state[name] = done
+				return nil
+			}
+
 			for _, ref := range asd.UseAttrSets {
 				// use-attribute-sets="xsl:original" refers to the
 				// original attribute-set being overridden, not a
 				// named attribute-set in the stylesheet.
-				if ref == xdm.ClarkName(lexicon.NamespaceXSLT, "original") && asd.OriginalAttrSet != nil {
+				if ref == xdm.ClarkName(lexicon.NamespaceXSLT, nameOriginal) && asd.OriginalAttrSet != nil {
 					continue
 				}
 
@@ -1700,7 +1735,7 @@ func checkAttributeSetCycles(ss *Stylesheet) error {
 // must also specify streamable="yes".
 func checkAttributeSetStreamable(ss *Stylesheet) error {
 	for _, asd := range ss.attributeSets {
-		if !asd.Streamable {
+		if !asd.Streamable || asd.OwnerPackage != nil && asd.OwnerPackage != ss {
 			continue
 		}
 
@@ -1737,8 +1772,17 @@ func checkDecimalFormatCharConflicts(df xpath.DecimalFormat) error {
 		{df.ZeroDigit, nameZeroDigit},
 		{df.Digit, nameDigit},
 		{df.PatternSeparator, namePatternSeparator},
-		{df.ExponentSeparator, nameExponentSeparator},
 	}
+	if !df.ExponentDisabled {
+		roles = append(roles, charRole{df.ExponentSeparator, nameExponentSeparator})
+	}
+
+	for _, role := range roles {
+		if role.role != nameZeroDigit && role.char >= df.ZeroDigit && role.char <= df.ZeroDigit+9 {
+			return staticError(errCodeXTSE1300, "%s conflicts with the zero-digit family", role.role)
+		}
+	}
+
 	for i := range roles {
 		for j := i + 1; j < len(roles); j++ {
 			if roles[i].char == roles[j].char {

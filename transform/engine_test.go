@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -117,6 +118,24 @@ func TestLimitsCancellationAndResources(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	assertionEngine := engine(t, transform.Config{EnableXSLTAssertions: true, Limits: transform.Limits{MaxOutputBytes: 64, MaxOperations: 100, MaxNodes: 50}})
+
+	for _, instruction := range []string{
+		`<xsl:assert test="sum(1 to 10000) = 0"/>`,
+		`<xsl:assert test="false()" error-code="{string-join(1 to 40, 'abcdefgh')}"/>`,
+		`<xsl:assert test="false()" select="string-join(1 to 40, 'abcdefgh')"/>`,
+		`<xsl:message select="string-join(1 to 40, 'abcdefgh')"/>`,
+		`<xsl:value-of select="fold-left(1 to 16, [()], function($a,$b){[$a,$a]})"/>`,
+	} {
+		program := sheet(version30, `<xsl:template name="start">`+instruction+`<xsl:text>after</xsl:text></xsl:template>`)
+		for _, nested := range []bool{false, true} {
+			_, err := resourceStylesheetResult(t, assertionEngine, program, nested, true)
+			if !errors.Is(err, transform.ErrLimit) {
+				t.Fatal(instruction, nested, err)
+			}
+		}
+	}
+
 	var requested string
 
 	resourceEngine := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
@@ -127,6 +146,170 @@ func TestLimitsCancellationAndResources(t *testing.T) {
 	result, err := query(t, resourceEngine, `string(doc('urn:test'))`, transform.XPath31).Evaluate(ctx, nil, transform.XPathContext{})
 	if err != nil || text(t, result) != "loaded" || requested != "urn:test" {
 		t.Fatal(result, requested, err)
+	}
+}
+
+func TestXSLTResultNormalizationBudget(t *testing.T) {
+	e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 64}})
+	compiled := stylesheet(t, e, sheet(version30, `<xsl:output item-separator="`+strings.Repeat("|", 64)+`"/><xsl:template name="start"><xsl:sequence select="(1,2)"/></xsl:template>`))
+	options := transform.XSLTContext{Template: transform.Name{Local: nameStart}}
+
+	result, err := compiled.Execute(t.Context(), nil, options)
+	if err != nil || result.Primary().Len() != 2 {
+		t.Fatal(result, err)
+	}
+
+	options.ResultMode = transform.ResultDocument
+
+	result, err = compiled.Execute(t.Context(), nil, options)
+	if result != nil || !errors.Is(err, transform.ErrLimit) {
+		t.Fatal("normalization escaped the shared byte budget", result, err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	result, err = compiled.Execute(ctx, nil, options)
+	if result != nil || !errors.Is(err, context.Canceled) {
+		t.Fatal(result, err)
+	}
+}
+
+func TestKeyAtomizationBudget(t *testing.T) {
+	const expansion = `fold-left(1 to 16, [()], function($a,$b){[$a,$a]})`
+
+	e := engine(t, transform.Config{Limits: transform.Limits{MaxOperations: 10000}})
+
+	for _, test := range []struct{ use, lookup string }{
+		{`@k`, expansion},
+		{expansion, `'a'`},
+	} {
+		source := sheet(version30, `<xsl:key name="k" match="n" use="`+test.use+`"/><xsl:template name="start"><xsl:variable name="d" select="parse-xml('&lt;n k=&quot;a&quot;/>')"/><xsl:value-of select="count(key('k',`+test.lookup+`,$d))"/></xsl:template>`)
+		for _, nested := range []bool{false, true} {
+			_, err := resourceStylesheetResult(t, e, source, nested)
+			if !errors.Is(err, transform.ErrLimit) {
+				t.Fatal("empty array expansion escaped key atomization budget", test, nested, err)
+			}
+		}
+	}
+}
+
+func TestGlobalDependencyBudget(t *testing.T) {
+	var declarations strings.Builder
+	for i := range 40 {
+		kind := "variable"
+		if i%2 == 1 {
+			kind = "param"
+		}
+		value := "1"
+		if i < 39 {
+			value = "$v" + strconv.Itoa(i+1)
+		}
+		declarations.WriteString(`<xsl:` + kind + ` name="v` + strconv.Itoa(i) + `" select="` + value + `"/>`)
+	}
+	source := sheet(version30, declarations.String()+`<xsl:template name="start"><xsl:value-of select="$v0"/></xsl:template>`)
+	for _, depth := range []int{8, 128} {
+		e := engine(t, transform.Config{Limits: transform.Limits{MaxDepth: depth}})
+		for _, nested := range []bool{false, true} {
+			got, err := resourceStylesheetResult(t, e, source, nested)
+			if depth == 8 {
+				if !errors.Is(err, transform.ErrLimit) {
+					t.Fatal(nested, got, err)
+				}
+			} else if err != nil || got != "1" {
+				t.Fatal(nested, got, err)
+			}
+		}
+	}
+}
+
+func TestPackageExposureBudget(t *testing.T) {
+	var declarations, rules strings.Builder
+
+	for i := range 40 {
+		name := "target" + strconv.Itoa(i)
+		declarations.WriteString(`<xsl:template name="` + name + `"/>`)
+		rules.WriteString(`<xsl:expose component="template" names="` + name + `" visibility="public"/>`)
+	}
+
+	source := []byte(packageSheet("", declarations.String()+rules.String()))
+
+	for _, work := range []int{1000, 100000} {
+		e := engine(t, transform.Config{Limits: transform.Limits{MaxOperations: work}})
+
+		_, err := e.CompileXSLT(t.Context(), source, transform.XSLTOptions{})
+		if work == 1000 {
+			if !errors.Is(err, transform.ErrLimit) {
+				t.Fatal("component matching escaped work budget", err)
+			}
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestPackageAcceptanceAndAttributeSetBudgets(t *testing.T) {
+	var declarations, rules, chain strings.Builder
+
+	for i := range 40 {
+		name := "target" + strconv.Itoa(i)
+		declarations.WriteString(`<xsl:template name="` + name + `" visibility="public"/>`)
+		rules.WriteString(`<xsl:accept component="template" names="` + name + `" visibility="private"/>`)
+
+		if i < 39 {
+			chain.WriteString(`<xsl:attribute-set name="a` + strconv.Itoa(i) + `" use-attribute-sets="a` + strconv.Itoa(i+1) + `"/>`)
+		} else {
+			chain.WriteString(`<xsl:attribute-set name="a39"/>`)
+		}
+	}
+
+	for _, work := range []int{1000, 100000} {
+		e := engine(t, transform.Config{Limits: transform.Limits{MaxOperations: work}, PackageResolver: transform.PackageResolverFunc(func(ctx context.Context, name, _ string) (transform.PackageResource, error) {
+			return transform.PackageResource{BaseURI: name, Reader: io.NopCloser(strings.NewReader(packageSheet(`name="urn:binding-library"`, declarations.String())))}, ctx.Err()
+		})})
+
+		_, err := e.CompileXSLT(t.Context(), []byte(packageSheet("", `<xsl:use-package name="urn:binding-library">`+rules.String()+`</xsl:use-package>`)), transform.XSLTOptions{})
+		if work == 1000 {
+			if !errors.Is(err, transform.ErrLimit) {
+				t.Fatal("acceptance escaped work budget", err)
+			}
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, depth := range []int{8, 128} {
+		e := engine(t, transform.Config{Limits: transform.Limits{MaxDepth: depth}})
+		source := packageSheet("", chain.String()+`<xsl:template name="start" visibility="public"><r xsl:use-attribute-sets="a0"/></xsl:template>`)
+
+		_, err := resourceStylesheetResult(t, e, source, false)
+		if depth == 8 {
+			if !errors.Is(err, transform.ErrLimit) {
+				t.Fatal("attribute-set graph escaped depth budget", err)
+			}
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestPackageModeBudget(t *testing.T) {
+	library := packageSheet(`name="urn:mode-library"`, `<xsl:mode name="p:m" visibility="public"/>`+strings.Repeat(`<xsl:template match="n[false()]" mode="p:m"/>`, 300))
+	source := []byte(packageSheet("", `<xsl:use-package name="urn:mode-library"><xsl:override><xsl:template match="n" mode="p:m">ok<xsl:next-match/></xsl:template></xsl:override></xsl:use-package>`))
+
+	for _, work := range []int{100, 100000} {
+		e := engine(t, transform.Config{Limits: transform.Limits{MaxOperations: work}, PackageResolver: transform.PackageResolverFunc(func(ctx context.Context, name, _ string) (transform.PackageResource, error) {
+			return transform.PackageResource{BaseURI: name, Reader: io.NopCloser(strings.NewReader(library))}, ctx.Err()
+		})})
+
+		_, err := e.CompileXSLT(t.Context(), source, transform.XSLTOptions{})
+		if work == 100 {
+			if !errors.Is(err, transform.ErrLimit) {
+				t.Fatal("package rule compilation escaped work budget", err)
+			}
+		} else if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -280,7 +463,7 @@ func TestNumericBudgetBindingsAndXSLT(t *testing.T) {
 
 	e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 64}})
 	for _, value := range []transform.Value{large, transform.Array(transform.Values(large)), m} {
-		_, err := query(t, e, `true()`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "unused"}: transform.Values(value)}})
+		_, err := query(t, e, trueExpression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "unused"}: transform.Values(value)}})
 		if !errors.Is(err, transform.ErrLimit) {
 			t.Fatalf("oversized binding: %v", err)
 		}
@@ -292,7 +475,7 @@ func TestNumericBudgetBindingsAndXSLT(t *testing.T) {
 	}
 	// The exact denominator fits in the binary budget even though its lexical
 	// representation is longer; no decimal string is needed for admission.
-	if _, err := query(t, e, `true()`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "unused"}: transform.Values(decimal)}}); err != nil {
+	if _, err := query(t, e, trueExpression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "unused"}: transform.Values(decimal)}}); err != nil {
 		t.Fatal(err)
 	}
 

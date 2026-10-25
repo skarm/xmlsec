@@ -158,7 +158,7 @@ func fnNamespaceURIForPrefix(_ context.Context, args []xdm.Sequence) (xdm.Sequen
 		return nil, err
 	}
 
-	if ns := xdm.LookupNSByPrefix(elem, prefix); ns != nil {
+	if ns := xdm.LookupNSByPrefix(elem, prefix); ns != nil && ns.URI() != "" {
 		return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: ns.URI()}), nil
 	}
 
@@ -217,7 +217,7 @@ func fnResolveQName(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error
 
 	if prefix != "" {
 		ns := xdm.LookupNSByPrefix(elem, prefix)
-		if ns == nil {
+		if ns == nil || ns.URI() == "" {
 			return nil, &xdm.Error{Code: errCodeFONS0004, Message: "resolve-QName: no namespace binding for prefix " + prefix}
 		}
 

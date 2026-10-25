@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/skarm/xmlsec/document"
@@ -65,6 +66,16 @@ func DefaultLimits() Limits {
 // performed. Resolver may be used concurrently and must honor its context.
 type Config struct {
 	Limits Limits
+	// XMLSchemaVersion selects builtin datatype lexical rules and the regular
+	// expression range grammar. Zero selects XMLSchema11. This does not enable
+	// XML Schema validation or schema-aware XPath/XSLT.
+	XMLSchemaVersion XMLSchemaVersion
+	// EnableXSLTAssertions enables xsl:assert for direct XSLT invocations.
+	// Nested fn:transform calls use their own enable-assertions option, default false.
+	EnableXSLTAssertions bool
+	// DisableXSLTDynamicEvaluation statically disables xsl:evaluate in compiled
+	// stylesheets and nested transforms. xsl:fallback remains available.
+	DisableXSLTDynamicEvaluation bool
 	// AllowSingleByteEncodings permits ASCII-compatible IANA single-byte XML
 	// encodings in addition to UTF-8/UTF-16. DTDs remain disabled. Raw and decoded
 	// bytes share the input limit. The zero value retains the security profile.
@@ -98,19 +109,30 @@ type ResolverFunc = resource.ResolverFunc
 // Engine owns immutable policy and creates compiled programs.
 // Its zero value is invalid; construct it with NewEngine.
 type Engine struct {
-	packages                 PackageResolver
-	collections              CollectionResolver
-	functions                map[xpath.QualifiedName]xpath.Function
-	functionNames            map[string]xpath.Function
-	limits                   Limits
-	resolver                 Resolver
-	environment              map[string]string
-	v1                       *v1Processor
-	allowSingleByteEncodings bool
+	packages                      PackageResolver
+	collections                   CollectionResolver
+	functions                     map[xpath.QualifiedName]xpath.Function
+	functionNames                 map[string]xpath.Function
+	limits                        Limits
+	resolver                      Resolver
+	environment                   map[string]string
+	v1                            *v1Processor
+	xmlSchemaVersion              XMLSchemaVersion
+	xsltAssertions                bool
+	xsltDynamicEvaluationDisabled bool
+	allowSingleByteEncodings      bool
 }
 
 // NewEngine validates policy and returns a reusable engine. Config{} is valid.
 func NewEngine(config Config) (*Engine, error) {
+	if config.XMLSchemaVersion == 0 {
+		config.XMLSchemaVersion = XMLSchema11
+	}
+
+	if config.XMLSchemaVersion != XMLSchema10 && config.XMLSchemaVersion != XMLSchema11 {
+		return nil, wrap("configure", ErrInput)
+	}
+
 	limits := config.Limits
 	d := DefaultLimits()
 
@@ -140,7 +162,7 @@ func NewEngine(config Config) (*Engine, error) {
 		config.Resolver = nil
 	}
 
-	e := &Engine{limits: limits, resolver: config.Resolver, environment: maps.Clone(config.Environment), allowSingleByteEncodings: config.AllowSingleByteEncodings}
+	e := &Engine{limits: limits, resolver: config.Resolver, environment: maps.Clone(config.Environment), allowSingleByteEncodings: config.AllowSingleByteEncodings, xmlSchemaVersion: config.XMLSchemaVersion, xsltAssertions: config.EnableXSLTAssertions, xsltDynamicEvaluationDisabled: config.DisableXSLTDynamicEvaluation}
 	if !nilcheck.IsNil(config.CollectionResolver) {
 		e.collections = config.CollectionResolver
 	}
@@ -214,8 +236,20 @@ type Error struct {
 	Operation string
 	// Code is the local part of the XPath, XSLT or application error code,
 	// or empty when none is available. CodeName also preserves its namespace.
-	Code  string
-	cause error
+	Code     string
+	name     Name
+	cause    error
+	messages []Message
+}
+
+// Messages returns an owned copy of XSLT diagnostics emitted before failure.
+// It exposes no partial primary or secondary result.
+func (e *Error) Messages() []Message {
+	if e == nil {
+		return nil
+	}
+
+	return slices.Clone(e.messages)
 }
 
 // Error implements error.
@@ -236,6 +270,10 @@ func (e *Error) Unwrap() error { return e.cause }
 func (e *Error) CodeName() Name {
 	if e == nil || e.Code == "" {
 		return Name{}
+	}
+
+	if e.name.Local != "" {
+		return e.name
 	}
 
 	if detail, ok := errors.AsType[*xdm.Error](e.cause); ok {

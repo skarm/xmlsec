@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 
@@ -66,7 +65,7 @@ func TestXPathAndFilter2(t *testing.T) {
 		{"namespace-prefix", `<r xmlns:p="urn:p"><p:keep/><p:hidden/></r>`, reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: `not(ancestor-or-self::p:hidden)`, Namespaces: map[string]string{"p": namespaceP}}}}, `<r xmlns:p="urn:p"><p:keep></p:keep></r>`},
 		{"filter-order", "<r><signed><skip><keep>yes</keep>no</skip><a/></signed><unsigned/></r>", f2(reference.XPathExpression{Expression: `//signed`, Filter: "intersect"}, reference.XPathExpression{Expression: `//skip`, Filter: "subtract"}, reference.XPathExpression{Expression: `//keep`, Filter: nameUnion}), `<signed><keep>yes</keep><a></a></signed>`},
 		{"union-only-is-noop", "<r><a/></r>", f2(reference.XPathExpression{Expression: `//a`, Filter: nameUnion}), `<r><a></a></r>`},
-		{"empty", `<r/>`, xp(`false()`), ``},
+		{"empty", `<r/>`, xp(falseExpression), ``},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			d := doc(t, tt.input)
@@ -169,16 +168,16 @@ func TestProgramPreflight(t *testing.T) {
 		})
 	}
 
-	tr := xp(`true()`)
+	tr := xp(trueExpression)
 
 	p := proc(t, tr)
-	if e := p.Validate(context.Background(), xp(`false()`)); !errors.Is(e, reference.ErrPolicy) {
+	if e := p.Validate(context.Background(), xp(falseExpression)); !errors.Is(e, reference.ErrPolicy) {
 		t.Fatal(e)
 	}
 
-	tr.XPath[0].Expression = `false()`
+	tr.XPath[0].Expression = falseExpression
 
-	if e := p.Validate(context.Background(), xp(`true()`)); e != nil {
+	if e := p.Validate(context.Background(), xp(trueExpression)); e != nil {
 		t.Fatal("config mutated", e)
 	}
 }
@@ -198,7 +197,7 @@ func TestXSLTAndLimits(t *testing.T) {
 	}
 
 	b, _ := out.Bytes()
-	if strings.TrimSpace(string(b)) != "<out>yes</out>" {
+	if !bytes.Equal(bytes.TrimSpace(b), []byte("<out>yes</out>")) {
 		t.Fatalf("%q", b)
 	}
 
@@ -237,7 +236,7 @@ func TestXSLTAndLimits(t *testing.T) {
 }
 
 func TestConcurrentAndCancelled(t *testing.T) {
-	tr := xp(`true()`)
+	tr := xp(trueExpression)
 	p := proc(t, tr)
 	in := nodes(t, doc(t, `<r a="1"/>`))
 

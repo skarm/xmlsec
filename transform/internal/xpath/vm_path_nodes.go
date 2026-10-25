@@ -288,7 +288,7 @@ func (v *vm) evalFunctionCall(ctx context.Context, ec *evalContext, e FunctionCa
 
 	args := []xdm.Sequence{enrichNodeItems(ctx, ec, nodeItemsFor(ctx, ec, nodes))}
 
-	return callResolvedFunction(ctx, ec, r, args)
+	return callResolvedFunction(ctx, ec, r, args, e.Args)
 }
 
 // callNodeListFunction returns the result of the built-in function r applied

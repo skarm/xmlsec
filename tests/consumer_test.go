@@ -2,9 +2,11 @@ package tests_test
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,7 +21,7 @@ import (
 	_ "github.com/skarm/xmlsec/saml/sp"
 	_ "github.com/skarm/xmlsec/saml/state"
 	_ "github.com/skarm/xmlsec/timestamp"
-	_ "github.com/skarm/xmlsec/transform" // Track library changes in Go's test cache.
+	_ "github.com/skarm/xmlsec/transform" // Compile the public transformation API in the parent build.
 	_ "github.com/skarm/xmlsec/xades"
 	_ "github.com/skarm/xmlsec/xmldsig"
 	_ "github.com/skarm/xmlsec/xmlenc"
@@ -30,6 +32,26 @@ import (
 func TestExternalConsumer(t *testing.T) {
 	root, err := filepath.Abs("..")
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Subprocess reads are not inputs to the parent test's cache. Record the
+	// library sources here as well, so implementation-only changes rerun the
+	// external module instead of reusing a stale successful result.
+	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(path, ".go") || entry.Name() == "go.mod" || entry.Name() == "go.sum" {
+			_, err = os.ReadFile(path)
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 

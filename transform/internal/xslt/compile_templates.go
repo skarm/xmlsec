@@ -6,6 +6,7 @@ package xslt
 import (
 	"context"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -99,8 +100,8 @@ func (c *compiler) compileTemplate(ctx context.Context, elem *xdm.Element) error
 	tmpl.DefaultCollation = c.defaultCollation
 	defer func() { c.defaultCollation = savedDefaultCollation }()
 
-	matchAttr := getAttr(elem, nameMatch2)
-	if matchAttr != "" {
+	matchAttr, hasMatch := elem.GetAttribute(nameMatch2)
+	if hasMatch {
 		p, err := c.compilePattern(matchAttr, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
 		if err != nil {
 			return err
@@ -118,16 +119,6 @@ func (c *compiler) compileTemplate(ctx context.Context, elem *xdm.Element) error
 
 	tmpl.Name = name
 
-	// XSLT 3.0 §3.8.2: default-mode on xsl:template affects both the
-	// template's own mode (when mode is omitted) and xsl:apply-templates
-	// within the template body. Read it before resolving the mode so
-	// the template's own default-mode is visible to the mode defaulting.
-	savedDefaultMode := c.defaultMode
-	if dm := getAttr(elem, nameDefaultMode); dm != "" {
-		c.defaultMode = dm
-	}
-	defer func() { c.defaultMode = savedDefaultMode }()
-
 	if err := c.compileTemplateModeAndPriority(ctx, elem, tmpl, matchAttr); err != nil {
 		return err
 	}
@@ -143,14 +134,22 @@ func (c *compiler) compileTemplate(ctx context.Context, elem *xdm.Element) error
 	if ctxDecl != nil {
 		tmpl.ContextItemAs = ctxDecl.as
 		tmpl.ContextItemUse = ctxDecl.use
+		tmpl.contextTypeKey = ctxDecl.typeKey
+		tmpl.contextItemType = ctxDecl.itemType
 	}
 
 	tmplAs := getAttr(elem, "as")
-	if err := c.validateAsSequenceType(ctx, tmplAs, "xsl:template"); err != nil {
+	if err := c.validateAsSequenceType(ctx, elem, tmplAs, "xsl:template"); err != nil {
 		return err
 	}
 
 	tmpl.As = tmplAs
+
+	tmpl.signatureTypeKey = c.declarationTypeKey(elem, tmplAs)
+	if ctxDecl == nil {
+		tmpl.contextTypeKey = c.declarationTypeKey(elem, lexicon.NodeTestItem)
+	}
+
 	tmpl.Visibility = getAttr(elem, xslAttrVisibility)
 	// Only set Version when the template has its own version attribute.
 	// Stylesheet-level version is NOT propagated to templates because
@@ -164,20 +163,12 @@ func (c *compiler) compileTemplate(ctx context.Context, elem *xdm.Element) error
 }
 
 func (c *compiler) compileTemplateModeAndPriority(ctx context.Context, elem *xdm.Element, tmpl *template, matchAttr string) error {
-	if err := c.checkTemplateMode(elem); err != nil {
+	mode, err := compileTemplateModes(ctx, elem)
+	if err != nil {
 		return err
 	}
 
-	modeAttr := getAttr(elem, nameMode)
-	if modeAttr != "" {
-		// Resolve mode QNames to Clark notation for namespace-aware matching
-		tmpl.Mode = c.resolveMode(ctx, modeAttr)
-	}
-	// XSLT 3.0 §6.7: if the stylesheet (or an included/imported module) has
-	// default-mode, templates without an explicit mode attribute belong to it.
-	if tmpl.Mode == "" && c.defaultMode != "" {
-		tmpl.Mode = c.resolveMode(ctx, c.defaultMode)
-	}
+	tmpl.Mode = mode
 
 	// Record mode usage for XTSE3085 checking (only match templates have modes)
 	if matchAttr != "" {
@@ -273,9 +264,10 @@ func (c *compiler) registerCompiledTemplate(ctx context.Context, tmpl *template)
 
 	if tmpl.Name != "" {
 		if existing, exists := c.stylesheet.namedTemplates[tmpl.Name]; exists {
-			// Same import precedence = error; different = higher precedence wins
+			// Same-precedence conflicts are checked only after all imports:
+			// a higher-precedence declaration is allowed to override both.
 			if existing.ImportPrec == tmpl.ImportPrec {
-				return staticError(errCodeXTSE0080, "duplicate template name %q", tmpl.Name)
+				existing.conflictDuplicate = true
 			}
 
 			if tmpl.ImportPrec > existing.ImportPrec {
@@ -391,54 +383,120 @@ func (c *compiler) checkTemplateName(ctx context.Context, elem *xdm.Element, mat
 	return name, nil
 }
 
-// checkTemplateMode validates xsl:template's mode attribute (XTSE0550,
-// XTSE0280). It applies to a top-level xsl:template and to one inside
-// xsl:override alike.
-func (c *compiler) checkTemplateMode(elem *xdm.Element) error {
-	if modeAttrVal, hasMode := elem.GetAttribute(nameMode); hasMode {
-		// XTSE0550: empty mode list is invalid.
-		if strings.TrimSpace(modeAttrVal) == "" {
-			return staticError(errCodeXTSE0550, "mode attribute on xsl:template must not be empty")
+// modeQName expands a mode name in the namespace context of its attribute.
+func modeQName(name string, elem *xdm.Element, code string) (string, error) {
+	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
+		return "", staticError(code, "invalid mode name %q", name)
+	}
+
+	ns := inScopeNamespaces(elem)
+	if !strings.HasPrefix(name, "Q{") {
+		if prefix, _, found := strings.Cut(name, ":"); found && ns[prefix] == "" {
+			return "", staticError(errCodeXTSE0280, "undeclared prefix %q in mode name", prefix)
 		}
 	}
 
-	modeAttr := getAttr(elem, nameMode)
-	if modeAttr == "" {
+	return resolveQName(name, ns), nil
+}
+
+func defaultModeForElement(ctx context.Context, elem *xdm.Element) (string, error) {
+	for node := xdm.Node(elem); node != nil; node = node.Parent() {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return "", err
+		}
+
+		ancestor, ok := node.(*xdm.Element)
+		if !ok {
+			continue
+		}
+
+		raw, present := ancestor.GetAttribute(nameDefaultMode)
+		if ancestor.URI() != lexicon.NamespaceXSLT {
+			raw, present = ancestor.GetAttributeNS(nameDefaultMode, lexicon.NamespaceXSLT)
+		}
+
+		if !present {
+			continue
+		}
+
+		name := strings.Trim(raw, " \t\r\n")
+		if name == modeUnnamed {
+			return "", nil
+		}
+
+		return modeQName(name, ancestor, errCodeXTSE0020)
+	}
+
+	return "", nil
+}
+
+func (c *compiler) checkDefaultModeAttribute(ctx context.Context, elem *xdm.Element) error {
+	_, present := elem.GetAttribute(nameDefaultMode)
+	if elem.URI() != lexicon.NamespaceXSLT {
+		_, present = elem.GetAttributeNS(nameDefaultMode, lexicon.NamespaceXSLT)
+	}
+
+	if !present {
 		return nil
 	}
 
-	modeFields := strings.Fields(modeAttr)
-	seenModes := make(map[string]struct{}, len(modeFields))
-	hasAll := false
-
-	for _, m := range modeFields {
-		if m[0] != '#' && !xmlchar.IsValidQName(m) && !isValidEQName(m) {
-			return staticError(errCodeXTSE0550, "invalid mode name %q on xsl:template", m)
-		}
-		// XTSE0280: check for undeclared prefix in mode name.
-		if idx := strings.IndexByte(m, ':'); idx > 0 {
-			prefix := m[:idx]
-			if _, ok := c.nsBindings[prefix]; !ok {
-				return staticError(errCodeXTSE0280, "undeclared namespace prefix %q in mode name %q", prefix, m)
-			}
-		}
-
-		if m == modeAll {
-			hasAll = true
-		}
-
-		if _, dup := seenModes[m]; dup {
-			return staticError(errCodeXTSE0550, "duplicate mode %q in xsl:template/@mode", m)
-		}
-
-		seenModes[m] = struct{}{}
+	mode, err := defaultModeForElement(ctx, elem)
+	if err != nil {
+		return err
 	}
 
-	if hasAll && len(modeFields) > 1 {
-		return staticError(errCodeXTSE0550, "#all must not appear with other modes in xsl:template/@mode")
-	}
+	c.recordModeUsage(ctx, mode)
 
 	return nil
+}
+
+func modeTokens(raw string) []string {
+	return strings.FieldsFunc(raw, func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' })
+}
+
+func compileTemplateModes(ctx context.Context, elem *xdm.Element) (string, error) {
+	raw, present := elem.GetAttribute(nameMode)
+	if !present {
+		return defaultModeForElement(ctx, elem)
+	}
+
+	modes := modeTokens(raw)
+	if len(modes) == 0 {
+		return "", staticError(errCodeXTSE0550, "empty template mode list")
+	}
+
+	seen := make(map[string]struct{}, len(modes))
+	for i, token := range modes {
+		var err error
+
+		switch token {
+		case modeDefault:
+			modes[i], err = defaultModeForElement(ctx, elem)
+		case modeUnnamed:
+			modes[i] = ""
+		case modeAll:
+			if len(modes) != 1 {
+				return "", staticError(errCodeXTSE0550, "#all cannot be combined with other modes")
+			}
+		default:
+			modes[i], err = modeQName(token, elem, errCodeXTSE0550)
+		}
+
+		if err != nil {
+			return "", err
+		}
+
+		if _, duplicate := seen[modes[i]]; duplicate {
+			return "", staticError(errCodeXTSE0550, "duplicate template mode %q", token)
+		}
+
+		seen[modes[i]] = struct{}{}
+		if modes[i] == "" {
+			modes[i] = modeUnnamed
+		}
+	}
+
+	return strings.Join(modes, " "), nil
 }
 
 // registerTemplateInModes adds a template to the appropriate mode template lists.
@@ -546,15 +604,15 @@ func (c *compiler) validateContextItem(ctx context.Context, elem *xdm.Element) e
 	}
 
 	asAttr := getAttr(elem, "as")
-	if asAttr != "" {
-		// XTSE0020: occurrence indicators (?, *, +) not allowed
-		trimmed := strings.TrimSpace(asAttr)
-		if len(trimmed) > 0 {
-			last := trimmed[len(trimmed)-1]
-			if last == '?' || last == '*' || last == '+' {
-				return staticError(errCodeXTSE0020,
-					"xsl:context-item/@as must not have an occurrence indicator: %q", asAttr)
-			}
+	if _, present := elem.GetAttribute("as"); present {
+		st, err := xpath.ParseSequenceType(asAttr)
+		if err != nil || st.Void || st.Occurrence != xdm.OccurrenceExactlyOne {
+			return staticError(errCodeXTSE0020, "xsl:context-item/@as must be an ItemType: %q", asAttr)
+		}
+
+		defaultNS, hasDefault := c.declarationDefaultNamespace(elem)
+		if err := c.validateAsSequenceTypeWithNS(ctx, asAttr, "xsl:context-item", inScopeNamespaces(elem), defaultNS, hasDefault); err != nil {
+			return err
 		}
 	}
 
@@ -564,10 +622,13 @@ func (c *compiler) validateContextItem(ctx context.Context, elem *xdm.Element) e
 			"xsl:context-item/@use must be 'required', 'optional', or 'absent': %q", useAttr)
 	}
 
-	// XTSE0020: if use="absent", cannot also have as=
-	if useAttr == ctxItemAbsent && asAttr != "" {
-		return staticError(errCodeXTSE0020,
+	if _, hasAs := elem.GetAttribute("as"); useAttr == ctxItemAbsent && hasAs {
+		return staticError(errCodeXTSE3088,
 			"xsl:context-item with use=\"absent\" must not have @as")
+	}
+
+	if parent, ok := elem.Parent().(*xdm.Element); ok && getAttr(parent, xslAttrName) == "" && useAttr != "" && useAttr != ctxItemRequired {
+		return staticError(errCodeXTSE0020, "an unnamed template requires xsl:context-item/@use=\"required\"")
 	}
 
 	// xsl:context-item must not have child elements or text content
@@ -606,7 +667,7 @@ func (c *compiler) compileParamDef(ctx context.Context, elem *xdm.Element) (*par
 
 	name := getAttr(elem, xslAttrName)
 	if name == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:param requires name attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:param requires name attribute")
 	}
 
 	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
@@ -626,7 +687,7 @@ func (c *compiler) compileParamDef(ctx context.Context, elem *xdm.Element) (*par
 		}
 	}
 
-	required := getAttr(elem, ctxItemRequired) == lexicon.ValueYes
+	required := xsdBoolTrue(getAttr(elem, ctxItemRequired))
 
 	if required {
 		if err := validateRequiredParamDefault(elem); err != nil {
@@ -642,7 +703,7 @@ func (c *compiler) compileParamDef(ctx context.Context, elem *xdm.Element) (*par
 	}
 
 	// XTSE0010: A static parameter must not have a sequence constructor (body content).
-	// Static params default to empty sequence when no select is provided.
+	// Implicit defaults and mandatory values are established in static scope.
 	isStatic := xsdBoolTrue(getAttr(elem, nameStatic))
 
 	// XTSE0020: static parameter must not have tunnel="yes"
@@ -657,7 +718,7 @@ func (c *compiler) compileParamDef(ctx context.Context, elem *xdm.Element) (*par
 	}
 
 	asAttr := getAttr(elem, "as")
-	if err := c.validateAsSequenceType(ctx, asAttr, "xsl:param "+name); err != nil {
+	if err := c.validateAsSequenceType(ctx, elem, asAttr, "xsl:param "+name); err != nil {
 		return nil, err
 	}
 
@@ -672,10 +733,18 @@ func (c *compiler) compileParamDef(ctx context.Context, elem *xdm.Element) (*par
 	// Capture the declaration-site static base URI (the module base, plus any
 	// xml:base override) so that body evaluation resolves resources against the
 	// declaration site, never the currently-executing template's base URI.
+	p.signatureTypeKey = c.declarationTypeKey(elem, asAttr)
+	if err := xpath.Charge(ctx, len(c.nsBindings)); err != nil {
+		return nil, err
+	}
+
+	p.TypeNamespaces = maps.Clone(c.nsBindings)
+	p.XPathDefaultNS, p.HasXPathDefaultNS = c.declarationDefaultNamespace(elem)
+
 	p.StaticBaseURI = stylesheetBaseURI(elem, c.baseURI, c.moduleRoot)
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
+	if hasSelect {
 		expr, err := c.compileXPath(selectAttr, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -684,7 +753,7 @@ func (c *compiler) compileParamDef(ctx context.Context, elem *xdm.Element) (*par
 		p.Select = expr
 	}
 
-	if selectAttr == "" {
+	if !hasSelect {
 		body, err := c.compileChildren(ctx, elem)
 		if err != nil {
 			return nil, err
@@ -757,7 +826,7 @@ func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element)
 
 	name := getAttr(elem, xslAttrName)
 	if name == "" {
-		return staticError(errCodeXTSE0110, "xsl:variable requires name attribute")
+		return staticError(errCodeXTSE0010, "xsl:variable requires name attribute")
 	}
 
 	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
@@ -771,16 +840,14 @@ func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element)
 		}
 	}
 
-	// XTSE0020: static variable must not have visibility attribute
 	if xsdBoolTrue(getAttr(elem, nameStatic)) {
-		if vis := getAttr(elem, xslAttrVisibility); vis != "" {
-			return staticError(errCodeXTSE0020,
-				"xsl:variable %q with static='yes' must not have visibility attribute", name)
+		if err := c.validateStaticVariable(ctx, elem, name); err != nil {
+			return err
 		}
 	}
 
 	asAttr := getAttr(elem, "as")
-	if err := c.validateAsSequenceType(ctx, asAttr, "xsl:variable "+name); err != nil {
+	if err := c.validateAsSequenceType(ctx, elem, asAttr, "xsl:variable "+name); err != nil {
 		return err
 	}
 
@@ -797,6 +864,10 @@ func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element)
 	// Capture the declaration-site static base URI (the module base, plus any
 	// xml:base override) so that body evaluation resolves resources against the
 	// declaration site, never the currently-executing template's base URI.
+	v.signatureTypeKey = c.declarationTypeKey(elem, asAttr)
+	v.TypeNamespaces = inScopeNamespaces(elem)
+	v.XPathDefaultNS, v.HasXPathDefaultNS = c.declarationDefaultNamespace(elem)
+
 	v.StaticBaseURI = stylesheetBaseURI(elem, c.baseURI, c.moduleRoot)
 
 	// For static variables, use the pre-computed value from compile-time
@@ -809,8 +880,8 @@ func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element)
 		}
 	}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
+	if hasSelect {
 		// XTSE0620: select and non-empty content are mutually exclusive.
 		// Use-when-aware check: elements excluded by use-when don't count as content.
 		if c.hasEffectiveContent(ctx, elem) {
@@ -1041,22 +1112,24 @@ func xpathMapConstructorRefsVar(expr xpath.MapConstructorExpr, local, prefix str
 }
 
 func (c *compiler) registerGlobalVariable(v *variable) error {
-	// XTSE0630: duplicate global variable with same name and same import precedence.
-	// Only flag duplicates within the same module (same importPrec).
-	for _, existing := range c.stylesheet.globalVars {
-		if existing.Name == v.Name && existing.ImportPrec == c.importPrec {
-			return staticError(errCodeXTSE0630, "duplicate global variable %q", v.Name)
-		}
-	}
-
-	for _, existing := range c.stylesheet.globalParams {
-		if existing.Name == v.Name && existing.ImportPrec == c.importPrec {
-			return staticError(errCodeXTSE0630, "duplicate global variable/param %q", v.Name)
-		}
-	}
-
 	v.ImportPrec = c.importPrec
 	c.stylesheet.globalVars = append(c.stylesheet.globalVars, v)
+
+	return nil
+}
+
+func (c *compiler) validateStaticVariable(ctx context.Context, elem *xdm.Element, name string) error {
+	if _, present := elem.GetAttribute(xslAttrSelect); !present {
+		return staticError(errCodeXTSE0010, "static xsl:variable %q requires select", name)
+	}
+
+	if c.hasEffectiveContent(ctx, elem) {
+		return staticError(errCodeXTSE0620, "static xsl:variable %q has both select and content", name)
+	}
+
+	if visibility, present := elem.GetAttribute(xslAttrVisibility); present && visibility != visPrivate {
+		return staticError(errCodeXTSE0020, "static xsl:variable %q must have private visibility", name)
+	}
 
 	return nil
 }
@@ -1078,21 +1151,16 @@ func (c *compiler) compileGlobalParam(ctx context.Context, elem *xdm.Element) er
 		return err
 	}
 
-	if xsdBoolTrue(getAttr(elem, nameStatic)) {
-		p.IsStatic = true
-		p.StaticValue = xdm.CloneSequence(c.staticVars[p.Name])
-	}
-	// XTSE0630: duplicate global param/variable with same name and same import precedence
-	for _, existing := range c.stylesheet.globalParams {
-		if existing.Name == p.Name && existing.ImportPrec == c.importPrec {
-			return staticError(errCodeXTSE0630, "duplicate global param %q", p.Name)
-		}
+	if c.stylesheet.isPackage {
+		p.OwnerPackage = c.stylesheet
 	}
 
-	for _, existing := range c.stylesheet.globalVars {
-		if existing.Name == p.Name && existing.ImportPrec == c.importPrec {
-			return staticError(errCodeXTSE0630, "duplicate global param/variable %q", p.Name)
-		}
+	p.Visibility = visPublic
+
+	if xsdBoolTrue(getAttr(elem, nameStatic)) {
+		p.IsStatic = true
+		p.Visibility = visPrivate
+		p.StaticValue = xdm.CloneSequence(c.staticVars[p.Name])
 	}
 
 	p.ImportPrec = c.importPrec
@@ -1103,8 +1171,10 @@ func (c *compiler) compileGlobalParam(ctx context.Context, elem *xdm.Element) er
 
 // contextItemDecl holds the parsed xsl:context-item declaration from a template body.
 type contextItemDecl struct {
-	as  string // type constraint (e.g., "xs:string", "element()")
-	use string // "required", "optional", "absent"
+	typeKey  string
+	itemType *xdm.SequenceType
+	as       string // type constraint (e.g., "xs:string", "element()")
+	use      string // "required", "optional", "absent"
 }
 
 type templateBodyCompiler struct {
@@ -1198,9 +1268,24 @@ func (b *templateBodyCompiler) compileContextItem(ctx context.Context, elem *xdm
 		return err
 	}
 
+	as := defaultContextItemType(getAttr(elem, "as"))
+
+	st, err := xpath.ParseSequenceType(as)
+	if err != nil {
+		return err
+	}
+
+	defaultNS, _ := b.compiler.declarationDefaultNamespace(elem)
+
+	bound, err := xpath.BindSequenceType(ctx, st, inScopeNamespaces(elem), defaultNS)
+	if err != nil {
+		return err
+	}
+
 	// An omitted use stays empty; runtime selects the named/match default.
 	b.context = &contextItemDecl{
 		as: getAttr(elem, "as"), use: strings.TrimSpace(getAttr(elem, nameUse)),
+		typeKey: b.compiler.declarationTypeKey(elem, as), itemType: &bound,
 	}
 
 	return nil
@@ -1253,4 +1338,54 @@ func contextItemAllowedAttrs(key string) bool {
 	}
 
 	return false
+}
+
+// Resolve variables and parameters together after all import precedences are known.
+func (c *compiler) finalizeGlobalDeclarations(ctx context.Context) error {
+	type candidate struct {
+		binding    globalBinding
+		precedence int
+		duplicate  bool
+	}
+
+	selected := make(map[string]candidate)
+
+	record := func(name string, precedence int, binding globalBinding) error {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		current, exists := selected[name]
+		if !exists || precedence > current.precedence {
+			selected[name] = candidate{binding: binding, precedence: precedence}
+		} else if precedence == current.precedence {
+			current.duplicate = true
+			selected[name] = current
+		}
+
+		return nil
+	}
+
+	for _, v := range c.stylesheet.globalVars {
+		if err := record(v.Name, v.ImportPrec, v.binding()); err != nil {
+			return err
+		}
+	}
+
+	for _, p := range c.stylesheet.globalParams {
+		if err := record(p.Name, p.ImportPrec, p.binding()); err != nil {
+			return err
+		}
+	}
+
+	for name, candidate := range selected {
+		if candidate.duplicate {
+			return staticError(errCodeXTSE0630, "duplicate effective global declaration %q", name)
+		}
+	}
+
+	c.stylesheet.globalVars = slices.DeleteFunc(c.stylesheet.globalVars, func(v *variable) bool { return selected[v.Name].binding != v.binding() })
+	c.stylesheet.globalParams = slices.DeleteFunc(c.stylesheet.globalParams, func(p *param) bool { return selected[p.Name].binding != p.binding() })
+
+	return nil
 }

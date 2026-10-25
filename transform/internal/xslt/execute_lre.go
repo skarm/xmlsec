@@ -6,9 +6,11 @@ package xslt
 import (
 	"context"
 	"errors"
+	"maps"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
 func (ec *execContext) execLiteralResultElement(ctx context.Context, inst *literalResultElement) error {
@@ -26,17 +28,16 @@ func (ec *execContext) execLiteralResultElement(ctx context.Context, inst *liter
 		return err
 	}
 
-	// Declare namespaces (skip if parent already has the same declaration).
+	// Retain the element's own namespace nodes even when the output parent has
+	// the same binding. They independently block inheritance from ancestors.
 	// Declare the default namespace first for deterministic serialization order.
 	if uri, ok := inst.Namespaces[""]; ok {
-		if !ec.isNSDeclaredInScope("", uri) {
-			if err := elem.DeclareNamespace("", uri); err != nil {
-				return err
-			}
+		if err := elem.DeclareNamespace("", uri); err != nil {
+			return err
 		}
 	}
 
-	if err := execLiteralResultElementNamespaces(inst, ec, elem); err != nil {
+	if err := execLiteralResultElementNamespaces(inst, elem); err != nil {
 		return err
 	}
 
@@ -71,17 +72,10 @@ func (ec *execContext) execLiteralResultElement(ctx context.Context, inst *liter
 	savedPrevAtomic := out.prevWasAtomic
 	savedSeqMode := out.sequenceMode
 	savedCapture := out.captureItems
-	savedWherePop := out.wherePopulated
 	out.current = elem
 	out.prevWasAtomic = false
 	out.sequenceMode = false
 	out.captureItems = false
-	// Clear wherePopulated inside the LRE body so that xsl:document
-	// unwraps its children normally. The LRE element itself is the node
-	// that xsl:where-populated will check for emptiness — preserving
-	// document nodes inside it would leave orphaned document children
-	// that are invisible to isPopulated and the serializer.
-	out.wherePopulated = false
 
 	ec.pushVarScope()
 
@@ -110,7 +104,6 @@ func (ec *execContext) execLiteralResultElement(ctx context.Context, inst *liter
 		out.prevWasAtomic = savedPrevAtomic
 		out.sequenceMode = savedSeqMode
 		out.captureItems = savedCapture
-		out.wherePopulated = savedWherePop
 	}()
 
 	// Apply attribute sets first, then LRE attributes override them
@@ -140,8 +133,8 @@ func (ec *execContext) execLiteralResultElement(ctx context.Context, inst *liter
 
 	// inherit-namespaces="no": undeclare parent namespaces on direct
 	// child elements so they do not inherit them via the DOM tree.
-	if !inst.InheritNamespaces {
-		undeclareInheritedNamespaces(elem)
+	if err := finishConstructedNamespaces(ctx, elem, inst.InheritNamespaces); err != nil {
+		return err
 	}
 
 	// Type-based content validation (xsl:type on LRE).
@@ -202,17 +195,15 @@ func execLiteralResultElementAttrs(ctx context.Context, inst *literalResultEleme
 	return nil
 }
 
-func execLiteralResultElementNamespaces(inst *literalResultElement, ec *execContext, elem *xdm.Element) error {
+func execLiteralResultElementNamespaces(inst *literalResultElement, elem *xdm.Element) error {
 	for _, prefix := range inst.NamespacePrefixes {
 		uri := inst.Namespaces[prefix]
 		if prefix == "" {
 			continue // already handled above
 		}
 
-		if !ec.isNSDeclaredInScope(prefix, uri) {
-			if err := elem.DeclareNamespace(prefix, uri); err != nil {
-				return err
-			}
+		if err := elem.DeclareNamespace(prefix, uri); err != nil {
+			return err
 		}
 	}
 
@@ -259,7 +250,7 @@ func execLiteralResultElementNamespace(inst *literalResultElement, elem *xdm.Ele
 				}
 			}
 		} else {
-			(*prefixExcluded) = true
+			*prefixExcluded = true
 			// The declaration for the literal result element's own prefix is
 			// intentionally deferred. xsl:namespace may bind that prefix to a
 			// different URI, in which case namespace fixup renames the element.
@@ -280,28 +271,24 @@ func execLiteralResultElementNamespace(inst *literalResultElement, elem *xdm.Ele
 }
 
 // applyAttributeSets applies named attribute sets to the current output element.
-// Each call starts a fresh cycle-detection scope so that body instructions
-// (e.g., an LRE inside the attribute set that itself uses an attribute set)
-// are allowed to re-enter without being flagged as cycles.
+// Nested constructors and callbacks share the active component identities.
 func (ec *execContext) applyAttributeSets(ctx context.Context, names []string) error {
-	return ec.applyAttributeSetsGuarded(ctx, names, make(map[string]struct{}))
+	if ec.attributeSetEvaluating == nil {
+		ec.attributeSetEvaluating = make(map[*attributeSetDef]struct{})
+	}
+
+	return ec.applyAttributeSetsGuarded(ctx, names, ec.attributeSetEvaluating)
 }
 
 // applyAttributeSetsGuarded is the recursive core that tracks which attribute
 // sets are currently being expanded via use-attribute-sets (defense in depth).
-func (ec *execContext) applyAttributeSetsGuarded(ctx context.Context, names []string, active map[string]struct{}) error {
-	xslOriginalName := xdm.ClarkName(lexicon.NamespaceXSLT, "original")
+func (ec *execContext) applyAttributeSetsGuarded(ctx context.Context, names []string, active map[*attributeSetDef]struct{}) error {
+	xslOriginalName := xdm.ClarkName(lexicon.NamespaceXSLT, nameOriginal)
 	for _, name := range names {
 		// Handle use-attribute-sets="xsl:original": apply the original
 		// attribute-set that was overridden via xsl:override.
 		if name == xslOriginalName {
 			if ec.currentAttrSetOriginal != nil {
-				// Temporarily remove the override's name from the active
-				// set so the original (same name) doesn't trigger cycle
-				// detection. xsl:original is by definition non-circular.
-				origName := ec.currentAttrSetOriginal.Name
-				delete(active, origName)
-
 				if err := ec.applyOneAttributeSet(ctx, ec.currentAttrSetOriginal, active); err != nil {
 					return err
 				}
@@ -325,20 +312,37 @@ func (ec *execContext) applyAttributeSetsGuarded(ctx context.Context, names []st
 
 // applyOneAttributeSet applies a single attribute-set definition, tracking
 // the original for xsl:original support.
-func (ec *execContext) applyOneAttributeSet(ctx context.Context, asDef *attributeSetDef, active map[string]struct{}) error {
+func (ec *execContext) applyOneAttributeSet(ctx context.Context, asDef *attributeSetDef, active map[*attributeSetDef]struct{}) error {
+	if err := xpath.Charge(ctx, 1); err != nil {
+		return err
+	}
+
+	ec.depth++
+	defer func() { ec.depth-- }()
+
+	if ec.depth > xpath.DepthLimit(ctx, maxRecursionDepth) {
+		return dynamicErrorCause(errCodeXTDE0640, xpath.ErrBudget, "attribute-set recursion depth exceeded")
+	}
+
 	name := asDef.Name
 
-	if asDef.Visibility == visAbstract || asDef.Visibility == visHidden {
+	if asDef.Visibility == visAbstract {
 		return dynamicError(errCodeXTDE3052,
 			"abstract attribute-set %q was invoked without being overridden", name)
 	}
 
-	if _, ok := active[name]; ok {
-		return dynamicError(errCodeXTSE0720,
+	if _, ok := active[asDef]; ok {
+		code := errCodeXTSE0720
+		if ec.stylesheet.processorLanguage() >= 30 {
+			code = errCodeXTDE0640
+		}
+
+		return dynamicError(code,
 			"attribute-set %q has a circular use-attribute-sets reference (runtime)", name)
 	}
 
-	active[name] = struct{}{}
+	active[asDef] = struct{}{}
+	defer delete(active, asDef)
 
 	// Switch to the attribute-set's owning package so that
 	// use-attribute-sets references resolve from the package scope.
@@ -367,8 +371,6 @@ func (ec *execContext) applyOneAttributeSet(ctx context.Context, asDef *attribut
 				ec.staticBaseURIOverride = savedBaseOverride
 				ec.currentAttrSetOriginal = savedOriginal
 
-				delete(active, name)
-
 				return err
 			}
 		}
@@ -384,8 +386,6 @@ func (ec *execContext) applyOneAttributeSet(ctx context.Context, asDef *attribut
 				ec.staticBaseURIOverride = savedBaseOverride
 				ec.currentAttrSetOriginal = savedOriginal
 
-				delete(active, name)
-
 				return err
 			}
 		}
@@ -395,8 +395,6 @@ func (ec *execContext) applyOneAttributeSet(ctx context.Context, asDef *attribut
 	}
 
 	ec.currentAttrSetOriginal = savedOriginal
-
-	delete(active, name)
 
 	return nil
 }
@@ -540,9 +538,115 @@ func (ec *execContext) fixupExcludedElementNS(elem *xdm.Element, origPrefix, ori
 		}
 	}
 	// Prefix is free — declare it for the element
-	if !ec.isNSDeclaredInScope(origPrefix, origURI) {
-		_ = elem.DeclareNamespace(origPrefix, origURI)
+	_ = elem.DeclareNamespace(origPrefix, origURI)
+}
+
+func finishConstructedNamespaces(ctx context.Context, elem *xdm.Element, inherit bool) error {
+	if !inherit {
+		undeclareInheritedNamespaces(elem)
+		return nil
 	}
+
+	return inheritConstructedNamespaces(ctx, elem)
+}
+
+// inheritConstructedNamespaces applies XSLT 3.0 section 5.7.1 after complex
+// content construction. Empty-URI markers are not XDM namespace nodes and do
+// not block inheritance. A no-namespace element does block a default binding.
+func inheritConstructedNamespaces(ctx context.Context, parent *xdm.Element) error {
+	bindings := make(map[string]string)
+
+	for _, namespace := range collectInScopeNamespaces(parent) {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		if namespace.Prefix() != lexicon.PrefixXML && namespace.URI() != "" {
+			bindings[namespace.Prefix()] = namespace.URI()
+		}
+	}
+
+	if len(bindings) == 0 {
+		return nil
+	}
+
+	return inheritConstructedNamespacesWalk(ctx, parent, bindings, 0)
+}
+
+func inheritConstructedNamespacesWalk(ctx context.Context, parent *xdm.Element, bindings map[string]string, depth int) error {
+	if depth > xpath.DepthLimit(ctx, 128) {
+		return xpath.ErrBudget
+	}
+
+	for child := range xdm.Children(parent) {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		elem, ok := child.(*xdm.Element)
+		if !ok {
+			continue
+		}
+
+		next, err := inheritChildNamespaceMarkers(ctx, elem, bindings)
+		if err != nil {
+			return err
+		}
+
+		if len(next) > 0 {
+			if err := inheritConstructedNamespacesWalk(ctx, elem, next, depth+1); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func inheritChildNamespaceMarkers(ctx context.Context, elem *xdm.Element, bindings map[string]string) (map[string]string, error) {
+	noNamespace := elem.Prefix() == "" && elem.URI() == ""
+	next := bindings
+	cloned := false
+	block := func(prefix string) {
+		if _, exists := next[prefix]; !exists {
+			return
+		}
+
+		if !cloned {
+			next = maps.Clone(next)
+			cloned = true
+		}
+
+		delete(next, prefix)
+	}
+
+	namespaces := elem.Namespaces()
+	if err := xpath.Charge(ctx, len(namespaces)+len(bindings)); err != nil {
+		return nil, err
+	}
+
+	for _, namespace := range namespaces {
+		if namespace.URI() != "" {
+			block(namespace.Prefix())
+			continue
+		}
+
+		if bindings[namespace.Prefix()] != "" && (namespace.Prefix() != "" || !noNamespace) {
+			elem.RemoveNamespaceByPrefix(namespace.Prefix())
+		}
+	}
+
+	if noNamespace {
+		if bindings[""] != "" {
+			if err := elem.DeclareNamespace("", ""); err != nil {
+				return nil, err
+			}
+		}
+
+		block("")
+	}
+
+	return next, nil
 }
 
 // fixDescendantDefaultNS recursively walks the descendant elements of elem

@@ -5,6 +5,7 @@ package xslt
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"strconv"
@@ -193,7 +194,7 @@ func serializeResult(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMaps
 	detectOutputMethod(outDef, doc, autoHTML)
 
 	// Validate serialization parameters before proceeding.
-	if err := validateSerializationParams(outDef, doc); err != nil {
+	if err := validateSerializationParams(context.Background(), outDef, doc); err != nil {
 		return err
 	}
 
@@ -366,7 +367,7 @@ func serializeText(w io.Writer, doc *xdm.Document, charMap map[rune]string, norm
 
 // validateSerializationParams checks serialization parameters for errors
 // per the XSLT 3.0 serialization spec.
-func validateSerializationParams(outDef *OutputDef, doc *xdm.Document) error {
+func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xdm.Document) error {
 	method := outDef.Method
 
 	// SEPM0004: standalone != "omit" with multiple element children of root
@@ -386,7 +387,7 @@ func validateSerializationParams(outDef *OutputDef, doc *xdm.Document) error {
 	}
 
 	// SEPM0010: undeclare-prefixes="yes" with version="1.0"
-	if outDef.UndeclarePrefixes && outDef.Version == "1.0" {
+	if outDef.UndeclarePrefixes && outDef.Version == lexicon.XSLTVersion10 {
 		return dynamicError(errCodeSEPM0010,
 			"undeclare-prefixes=\"yes\" is not allowed with version=\"1.0\"")
 	}
@@ -425,25 +426,14 @@ func validateSerializationParams(outDef *OutputDef, doc *xdm.Document) error {
 	}
 
 	// SERE0012: fully-normalized and result begins with combining character
-	if outDef.NormalizationForm == lexicon.NormFullyNormalized {
+	if doc != nil && outDef.NormalizationForm == lexicon.NormFullyNormalized {
 		if err := checkFullyNormalized(doc); err != nil {
 			return err
 		}
 	}
 
-	// SERE0014: HTML method with characters in #x7F-#x9F range in text.
-	// HTML5 allows these characters as character references, so skip for version >= 5.
-	// For HTML 4.x, raise the error as required by the spec.
-	// XSLT 3.0 §20: the default value of html-version is 5.
-	if method == methodHTML && !effectiveHTMLVersion5(outDef) {
-		if err := checkHTMLInvalidChars(doc); err != nil {
-			return err
-		}
-	}
-
-	// SERE0015: ">" in PI content for HTML output
-	if method == methodHTML {
-		if err := checkHTMLPIContent(doc); err != nil {
+	if doc != nil && method == methodHTML {
+		if err := xpath.ValidateHTMLItem(ctx, xdm.XMLItem{Node: doc}, effectiveHTMLVersion5(outDef)); err != nil {
 			return err
 		}
 	}
@@ -497,59 +487,6 @@ func checkFullyNormalized(doc *xdm.Document) error {
 	return firstErr
 }
 
-// checkHTMLInvalidChars checks for characters in the #x7F-#x9F range in
-// HTML text content (SERE0014).
-func checkHTMLInvalidChars(doc *xdm.Document) error {
-	var firstErr error
-
-	werr := xdm.Walk(doc, xdm.NodeWalkerFunc(func(n xdm.Node) error {
-		if n.Type() == xdm.TextNode || n.Type() == xdm.CDATASectionNode {
-			content := xdm.CharacterData(n)
-			for _, r := range content {
-				if r >= 0x7F && r <= 0x9F && r != 0x85 {
-					firstErr = dynamicError(errCodeSERE0014,
-						"HTML output contains character U+%04X in #x7F-#x9F range", r)
-
-					return firstErr
-				}
-			}
-		}
-
-		return nil
-	}))
-	if firstErr == nil {
-		// Surfaces a tree cycle (ErrWalkCycle); nil in the normal case.
-		firstErr = werr
-	}
-
-	return firstErr
-}
-
-// checkHTMLPIContent checks that no PI in the result tree contains ">".
-func checkHTMLPIContent(doc *xdm.Document) error {
-	var err error
-
-	werr := xdm.Walk(doc, xdm.NodeWalkerFunc(func(n xdm.Node) error {
-		if n.Type() == xdm.ProcessingInstructionNode {
-			content := xdm.CharacterData(n)
-			if strings.Contains(content, ">") {
-				err = dynamicError(errCodeSERE0015,
-					"processing instruction content contains '>' in HTML output")
-
-				return err
-			}
-		}
-
-		return nil
-	}))
-	if err == nil {
-		// Surfaces a tree cycle (ErrWalkCycle); nil in the normal case.
-		err = werr
-	}
-
-	return err
-}
-
 // effectiveHTMLVersion5 returns true when the output definition's effective
 // HTML version is 5 or higher. It checks HTMLVersion first, falls back to
 // Version, and defaults to 5 per XSLT 3.0 §20.
@@ -584,11 +521,11 @@ func isHTMLVersion5(v string) bool {
 func detectOutputMethod(outDef *OutputDef, doc *xdm.Document, autoHTML bool) {
 	if !outDef.MethodExplicit && outDef.Method == methodXML {
 		if root := doc.DocumentElement(); root != nil {
-			if autoHTML && strings.EqualFold(root.Name(), methodHTML) && root.URI() == "" {
+			if autoHTML && root.LocalName() == methodHTML && root.URI() == "" {
 				// Root is "html" in no namespace → HTML output method.
 				outDef.Method = methodHTML
 				outDef.OmitDeclaration = true
-			} else if outDef.languageVersion != 10 && strings.EqualFold(root.LocalName(), methodHTML) && root.URI() == lexicon.NamespaceXHTML {
+			} else if outDef.languageVersion != 10 && !outDef.implicitXMLMethod && root.LocalName() == methodHTML && root.URI() == lexicon.NamespaceXHTML {
 				// Root is "html" in XHTML namespace → XHTML output method.
 				outDef.Method = methodXHTML
 			}
@@ -603,7 +540,7 @@ func validateSerializationParamsLanguageVersion(outDef *OutputDef, method string
 				"omit-xml-declaration=\"yes\" conflicts with standalone=%q", outDef.Standalone)
 		}
 
-		if outDef.DoctypeSystem != "" && outDef.Version != "" && outDef.Version != "1.0" {
+		if outDef.DoctypeSystem != "" && outDef.Version != "" && outDef.Version != lexicon.XSLTVersion10 {
 			return dynamicError(errCodeSEPM0009,
 				"omit-xml-declaration=\"yes\" conflicts with doctype-system and version=%q", outDef.Version)
 		}
@@ -668,7 +605,7 @@ func validateExplicitHTMLVersion(method string, outDef *OutputDef) error {
 	if method == methodHTML && outDef.MethodExplicit && outDef.Version != "" {
 		v, err := strconv.ParseFloat(outDef.Version, 64)
 		if err == nil && v != 4.0 && v != 4.01 && v != 5.0 {
-			return dynamicError(errCodeSESU0007,
+			return dynamicError(errCodeSESU0013,
 				"unsupported version %q for html output method", outDef.Version)
 		}
 	}
@@ -707,19 +644,28 @@ const (
 )
 
 type conditionalAction struct {
-	kind          conditionalKind
-	content       xdm.Sequence
-	placeholder   xdm.MutableNode
-	prevWasAtomic bool // whether the output preceding this action was an atomic value
+	placeholder       xdm.MutableNode
+	selectExpr        *xpath.Expression
+	localVars         *varScope
+	staticBaseURI     string
+	xpathDefaultNS    string
+	sourceModule      string
+	body              []instruction
+	kind              conditionalKind
+	sourceLine        int
+	hasXPathDefaultNS bool
+	prevWasAtomic     bool // whether the output preceding this action was an atomic value
 }
 
 type conditionalScope struct {
+	pendingStart   int // first raw item produced by this sequence constructor
 	hasOutput      bool
 	actions        []conditionalAction
 	untrackedNodes []xdm.MutableNode // nodes added via addNodeUntracked; removed when on-empty fires
 }
 
 type outputFrame struct {
+	implicitPrimary     *bool                      // shared claim, present only on frames contributing to the principal result
 	current             xdm.MutableNode            // current insertion point
 	doc                 *xdm.Document              // result document being built
 	seqPlaceholders     map[xdm.Node]xdm.ItemSlice // placeholder PI node -> buffered xsl:sequence items, resolved by evaluateBodyAsDocument
@@ -733,10 +679,8 @@ type outputFrame struct {
 	captureItems        bool   // when true, xsl:sequence adds to pendingItems instead of DOM
 	separateTextNodes   bool   // when true, text nodes are captured as separate string items (prevents DOM merging)
 	sequenceMode        bool   // when true, all nodes (text, element, attr, comment, PI) are captured as separate items
-	mapConstructor      bool   // when true, xsl:map-entry emits single-entry maps into pendingItems
 	documentConstructor bool   // when true, the frame builds a document node tree; xsl:sequence output is marked with placeholders in the DOM so it interleaves in document order with literal result elements
 	prevWasAtomic       bool   // true when last xsl:sequence output was an atomic value (for inter-call space separation)
-	wherePopulated      bool   // when true, xsl:document emits document node (not children) so xsl:where-populated can check emptiness
 	prevHadOutput       bool   // true when any item (node or atomic) was previously output; used for item-separator between non-atomic items
 }
 
@@ -788,6 +732,9 @@ func (out *outputFrame) isConditionalPlaceholder(n xdm.Node) bool {
 
 func (out *outputFrame) noteOutput() {
 	out.outputSerial++
+	if out.implicitPrimary != nil {
+		*out.implicitPrimary = true
+	}
 }
 
 // captureSequenceItems records captured sequence items for later assembly.

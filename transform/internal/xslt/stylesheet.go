@@ -95,9 +95,8 @@ const (
 // schema-aware or not. See the package documentation's Concurrency section for
 // the full contract.
 type Stylesheet struct {
-	processorVersion int
-	packageResolver  PackageResolver // resolver used at compile time (for fn:transform package-name)
-	uriResolver      URIResolver     // resolver used at compile time (for fn:transform nested compiles)
+	packageResolver PackageResolver // resolver used at compile time (for fn:transform package-name)
+	uriResolver     URIResolver     // resolver used at compile time (for fn:transform nested compiles)
 	// compatExprs holds every compiled XPath expression that must evaluate in
 	// XPath 1.0 compatibility mode (XSLT backwards-compatible processing, effective
 	// version < 2.0), keyed by pointer identity. nil when the stylesheet has no
@@ -132,35 +131,37 @@ type Stylesheet struct {
 	// Visibility maps track per-component visibility for package system.
 	// Keys are component names (expanded QNames for templates/variables,
 	// QualifiedName.String() for functions with arity suffix).
-	templateVisibility    map[string]string     // template name -> visibility
-	functionVisibility    map[string]string     // "ns:local#arity" -> visibility
-	variableVisibility    map[string]string     // variable name -> visibility
-	attrSetVisibility     map[string]string     // attribute-set name -> visibility
-	globalParamVisibility map[string]string     // global param name -> visibility
-	globalContextItem     *globalContextItemDef // xsl:global-context-item declaration
-	globalContextModules  map[string]*globalContextItemDef
-	characterMaps         map[string]*characterMapDef // name -> character map definition
-	parseOptions          *xdm.ParseOptions           // caller-injected base parseOptions from the compiler (forwarded to runtime + fn:transform nested compiles); nil = hardened default
-	version               string
-	defaultMode           string
-	baseURI               string // base URI for resolving relative document references
-	defaultValidation     string // "strict", "lax", "preserve", "strip" (default-validation attr)
-	inputTypeAnnotations  string // "preserve", "strip", "unspecified" (input-type-annotations attr)
-	defaultCollation      string // default-collation URI from stylesheet root
-	packageName           string // xsl:package/@name
-	packageVersion        string // xsl:package/@package-version
-	templates             []*template
-	globalVars            []*variable // topologically sorted
-	globalParams          []*param
-	stripSpace            []nameTest
-	preserveSpace         []nameTest
-	accumulatorOrder      []string
-	namespaceAliases      []namespaceAlias // xsl:namespace-alias declarations
-	usedPackages          []*Stylesheet    // packages loaded via xsl:use-package
-	maxResourceBytes      int64            // per-resource read cap from compiler; 0 = MaxResourceBytes default, <0 = unbounded
-	schemaAware           bool             // true when xsl:import-schema was encountered
-	isPackage             bool             // true when compiled from xsl:package root
-	declaredModes         bool             // xsl:package/@declared-modes (default true)
+	templateVisibility        map[string]string     // template name -> visibility
+	functionVisibility        map[string]string     // "ns:local#arity" -> visibility
+	variableVisibility        map[string]string     // variable name -> visibility
+	attrSetVisibility         map[string]string     // attribute-set name -> visibility
+	globalParamVisibility     map[string]string     // global param name -> visibility
+	globalContextItem         *globalContextItemDef // xsl:global-context-item declaration
+	globalContextModules      map[string]*globalContextItemDef
+	characterMaps             map[string]*characterMapDef // name -> character map definition
+	parseOptions              *xdm.ParseOptions           // caller-injected base parseOptions from the compiler (forwarded to runtime + fn:transform nested compiles); nil = hardened default
+	version                   string
+	defaultMode               string
+	baseURI                   string // base URI for resolving relative document references
+	defaultValidation         string // "strict", "lax", "preserve", "strip" (default-validation attr)
+	inputTypeAnnotations      string // "preserve", "strip", "unspecified" (input-type-annotations attr)
+	defaultCollation          string // default-collation URI from stylesheet root
+	packageName               string // xsl:package/@name
+	packageVersion            string // xsl:package/@package-version
+	templates                 []*template
+	globalVars                []*variable // topologically sorted
+	globalParams              []*param
+	stripSpace                []nameTest
+	preserveSpace             []nameTest
+	accumulatorOrder          []string
+	namespaceAliases          []namespaceAlias // xsl:namespace-alias declarations
+	usedPackages              []*Stylesheet    // packages loaded via xsl:use-package
+	processorVersion          int
+	maxResourceBytes          int64 // per-resource read cap from compiler; 0 = MaxResourceBytes default, <0 = unbounded
+	dynamicEvaluationDisabled bool
+	schemaAware               bool // true when xsl:import-schema was encountered
+	isPackage                 bool // true when compiled from xsl:package root
+	declaredModes             bool // xsl:package/@declared-modes (default true)
 }
 
 // funcKey identifies an xsl:function by its expanded QName and arity.
@@ -193,13 +194,15 @@ type namespaceAlias struct {
 }
 
 type modeDef struct {
-	UseAccumulators     *string // nil = attribute absent; non-nil = attribute present (space-separated names, "#all", or "")
+	OwnerPackage        *Stylesheet // non-nil for a mode accepted from another package
+	UseAccumulators     *string     // nil = attribute absent; non-nil = attribute present (space-separated names, "#all", or "")
 	Name                string
 	OnNoMatch           string // "shallow-copy", "deep-copy", "shallow-skip", "deep-skip", "text-only-copy", "fail"
 	Typed               string // "strict", "lax", "unspecified", "yes", "no"
 	Visibility          string // "public", "private", "final"
 	OnMultipleMatch     string // "use-last", "fail"
 	ImportPrec          int
+	Implicit            bool // created from a template rule, with no matching xsl:expose
 	Streamable          bool
 	conflictStreamable  bool // deferred: conflicting streamable at same prec
 	conflictOnNoMatch   bool
@@ -228,6 +231,8 @@ type attributeSetDef struct {
 }
 
 type xslFunction struct {
+	signatureTypeKey string
+
 	Name          xpath.QualifiedName
 	Params        []*param
 	Body          []instruction
@@ -243,36 +248,16 @@ type xslFunction struct {
 	IsOverride    bool         // true if this function was defined in xsl:override
 
 	// Call-time data that prepareCall derives once from the fields above.
+	cacheAtomicSelf bool               // select-only arithmetic/self recursion, with no dynamic or external calls
 	selectOnly      bool               // Body holds only select-form xsl:sequence instructions
-	paramTypes      []xdm.SequenceType // Params' types for xpath argument coercion; nil if any fails to parse
-	returnType      *xdm.SequenceType  // As for xpath; nil if As is empty or fails to parse
-	paramCheckTypes []sequenceType     // Params' types for checkSequenceType (XTTE0790)
-	returnCheckType sequenceType       // As for checkSequenceType (XTTE0780)
+	paramTypes      []xdm.SequenceType // declaration-bound parameter types for XPath function conversion
+	returnType      *xdm.SequenceType  // declaration-bound return type; nil if As is empty
 }
 
 type template struct {
 	Match            *pattern
-	Name             string
-	Mode             string // "" = default, "#all" = all modes
-	Priority         float64
-	ImportPrec       int
-	MinImportPrec    int // lowest import precedence among this module's imports (for apply-imports boundary)
-	Params           []*param
-	Body             []instruction
-	As               string      // return type constraint (e.g., "element()")
-	ContextItemAs    string      // xsl:context-item/@as type constraint
-	ContextItemUse   string      // xsl:context-item/@use: "required" (default), "optional", "absent"
-	XPathDefaultNS   string      // xpath-default-namespace (inherited or explicit)
-	DefaultCollation string      // default-collation URI (inherited or explicit)
-	BaseURI          string      // base URI of the stylesheet module that defined this template
-	Visibility       string      // "public", "private", "final", "abstract"
-	Version          string      // effective version (from template or stylesheet)
 	OwnerPackage     *Stylesheet // package that defined this template (nil = main stylesheet)
 	OriginalTemplate *template   // original template being overridden (for xsl:original calls)
-	// explicitPriority reports a priority attribute on the template. Without
-	// one, a union match pattern is split into one rule per alternative
-	// (templateRules).
-	explicitPriority bool
 	// splitOriginID identifies the originating template rule when a union match
 	// pattern (P1 | P2) is split into separate template entries. All split
 	// branches of one rule share the same non-nil identity so the on-multiple-match
@@ -280,17 +265,45 @@ type template struct {
 	// the template was not produced by a union split. The identity is allocated by
 	// nextSplitOriginID so splits from independently
 	// compiled packages merged via xsl:use-package never collide.
-	splitOriginID *splitOrigin
+	splitOriginID     *splitOrigin
+	signatureTypeKey  string
+	contextTypeKey    string
+	contextItemType   *xdm.SequenceType // bound in the xsl:context-item declaration's scope
+	Name              string
+	Mode              string // "" = default, "#all" = all modes
+	As                string // return type constraint (e.g., "element()")
+	ContextItemAs     string // xsl:context-item/@as type constraint
+	ContextItemUse    string // xsl:context-item/@use: "required" (default), "optional", "absent"
+	XPathDefaultNS    string // xpath-default-namespace (inherited or explicit)
+	DefaultCollation  string // default-collation URI (inherited or explicit)
+	BaseURI           string // base URI of the stylesheet module that defined this template
+	Visibility        string // "public", "private", "final", "abstract"
+	Version           string // effective version (from template or stylesheet)
+	Params            []*param
+	Body              []instruction
+	Priority          float64
+	ImportPrec        int
+	MinImportPrec     int  // lowest import precedence among this module's imports (for apply-imports boundary)
+	conflictDuplicate bool // deferred XTSE0660, discarded by a higher-precedence declaration
+	// explicitPriority reports a priority attribute on the template. Without
+	// one, a union match pattern is split into one rule per alternative
+	// (templateRules).
+	explicitPriority bool
 }
 
 type variable struct {
+	signatureTypeKey  string
+	TypeNamespaces    map[string]string
+	HasXPathDefaultNS bool
+
 	Name           string
 	Select         *xpath.Expression
 	Body           []instruction // used when select is absent
 	As             string        // type declaration (e.g., "element()*")
 	Visibility     string        // "public", "private", "final", "abstract"
 	OwnerPackage   *Stylesheet   // package that defined this variable (nil = main stylesheet)
-	OriginalVar    *variable     // original variable being overridden (for $xsl:original)
+	Original       globalBinding // hidden original component bound to $xsl:original
+	Declaration    *variable     // shared declaration identity of accepted copies
 	ImportPrec     int           // import precedence for XTSE0630 duplicate detection
 	StaticValue    xdm.Sequence  // pre-computed value for static="yes" variables
 	XPathDefaultNS string        // xpath-default-namespace in scope at definition site
@@ -298,27 +311,70 @@ type variable struct {
 }
 
 type param struct {
-	StaticValue   xdm.Sequence
-	Select        *xpath.Expression
-	Name          string
-	As            string        // type declaration (e.g., "xs:integer")
-	Visibility    string        // "public", "private", "final", "abstract" (for global params)
-	StaticBaseURI string        // declaration-site static base URI (module base + any xml:base override)
-	Body          []instruction // used when select is absent
-	ImportPrec    int           // import precedence for XTSE0630 duplicate detection
-	IsStatic      bool          // xmlsec: static parameters retain their compile-time values.
-	Required      bool
-	Tunnel        bool
+	StaticValue       xdm.Sequence
+	Original          globalBinding
+	TypeNamespaces    map[string]string
+	OwnerPackage      *Stylesheet
+	Declaration       *param
+	Select            *xpath.Expression
+	signatureTypeKey  string
+	XPathDefaultNS    string
+	Name              string
+	As                string        // type declaration (e.g., "xs:integer")
+	Visibility        string        // "public", "private", "final", "abstract" (for global params)
+	StaticBaseURI     string        // declaration-site static base URI (module base + any xml:base override)
+	Body              []instruction // used when select is absent
+	ImportPrec        int           // import precedence for XTSE0630 duplicate detection
+	HasXPathDefaultNS bool
+	IsStatic          bool // xmlsec: static parameters retain their compile-time values.
+	Required          bool
+	Tunnel            bool
+}
+
+func (p *param) implicitlyMandatory() bool {
+	return p.Select == nil && len(p.Body) == 0 && p.As != "" && !allowsEmptySequence(p.As)
+}
+
+// globalBinding identifies one declaration, independently of its symbolic name
+// and of the accepted copies exposing it in other packages.
+type globalBinding struct {
+	variable *variable
+	param    *param
+}
+
+func (v *variable) binding() globalBinding {
+	if v.Declaration != nil {
+		return globalBinding{variable: v.Declaration}
+	}
+
+	return globalBinding{variable: v}
+}
+
+func (p *param) binding() globalBinding {
+	if p.Declaration != nil {
+		return globalBinding{param: p.Declaration}
+	}
+
+	return globalBinding{param: p}
+}
+
+func (b globalBinding) typeKey() string {
+	if b.variable != nil {
+		return b.variable.signatureTypeKey
+	}
+
+	return b.param.signatureTypeKey
 }
 
 type keyDef struct {
-	Match     *pattern
-	Use       *xpath.Expression
-	Name      string
-	Collation string        // collation URI (explicit or default; empty = codepoint)
-	Body      []instruction // content constructor (when use attribute is absent)
-	Composite bool          // composite="yes" on xsl:key
-	Compat    bool          // backwards-compatible processing (effective version < 2.0)
+	StaticBaseURI string
+	Match         *pattern
+	Use           *xpath.Expression
+	Name          string
+	Collation     string        // collation URI (explicit or default; empty = codepoint)
+	Body          []instruction // content constructor (when use attribute is absent)
+	Composite     bool          // composite="yes" on xsl:key
+	Compat        bool          // backwards-compatible processing (effective version < 2.0)
 }
 
 type characterMapDef struct {
@@ -370,12 +426,12 @@ type nameTest struct {
 // as declared at compile time. For the effective output definition that
 // includes runtime overrides from xsl:result-document, use
 // Invocation.ResolvedOutputDef after calling Do.
-func (s *Stylesheet) DefaultOutputDef() *OutputDef {
-	if s == nil {
+func (ss *Stylesheet) DefaultOutputDef() *OutputDef {
+	if ss == nil {
 		return nil
 	}
 
-	return cloneOutputDef(s.outputs[""])
+	return cloneOutputDef(ss.outputs[""])
 }
 
 // Transform creates an Invocation that applies templates to the source
@@ -415,12 +471,12 @@ func (ss *Stylesheet) CallFunction(name string, args ...xdm.Sequence) Invocation
 
 // defaultItemSeparator returns the item-separator from the default output
 // definition, or nil if not set.
-func (s *Stylesheet) defaultItemSeparator() *string {
-	if s == nil {
+func (ss *Stylesheet) defaultItemSeparator() *string {
+	if ss == nil {
 		return nil
 	}
 
-	if outDef, ok := s.outputs[""]; ok {
+	if outDef, ok := ss.outputs[""]; ok {
 		return outDef.ItemSeparator
 	}
 
@@ -478,7 +534,10 @@ type OutputDef struct {
 	SuppressIndentation []string // suppress-indentation element names
 	// languageVersion preserves host-language serialization defaults.
 	languageVersion int
-	ImportPrec      int // import precedence for XTSE1560 conflict detection
+	// An implicit result from a 1.0 principal module defaults to XML even
+	// with an XHTML html element. Explicit result-document output is exempt.
+	implicitXMLMethod bool
+	ImportPrec        int // import precedence for XTSE1560 conflict detection
 	// MethodExplicit is true when method was explicitly specified (not defaulted).
 	MethodExplicit bool
 	// Indent enables pretty-printing of the output.
@@ -504,16 +563,16 @@ func (o *OutputDef) GetUseCharacterMaps() []string {
 }
 
 // processorLanguage also covers internal zero-value stylesheet helpers.
-func (s *Stylesheet) processorLanguage() int {
-	if s.processorVersion == 0 {
+func (ss *Stylesheet) processorLanguage() int {
+	if ss.processorVersion == 0 {
 		return 30
 	}
 
-	return s.processorVersion
+	return ss.processorVersion
 }
 
-func (s *Stylesheet) xpathVersion() int {
-	switch s.processorLanguage() {
+func (ss *Stylesheet) xpathVersion() int {
+	switch ss.processorLanguage() {
 	case 10:
 		return 10
 	case 20:

@@ -43,6 +43,12 @@ func TestResultsRetainTypesOrderAndOutputDefinitions(t *testing.T) {
 	var group sync.WaitGroup
 	for range 8 {
 		group.Go(func() {
+			for _, uri := range []string{"", "https://result.test/secondary.json"} {
+				encoding, err := r.OutputEncoding(uri)
+				if err != nil || encoding != "UTF-8" {
+					t.Error(encoding, err)
+				}
+			}
 			out, err := r.Serialize(t.Context())
 			if err != nil {
 				t.Error(err)
@@ -177,7 +183,7 @@ func TestResultWriterToHonorsWriterErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var source io.WriterTo = result.WriterTo(t.Context())
+	source := result.WriterTo(t.Context())
 	failure := errors.New("destination failed")
 	for _, tc := range []struct {
 		name    string
@@ -203,11 +209,11 @@ func TestResultWriterToHonorsWriterErrors(t *testing.T) {
 
 func TestSecondaryOutputMustBeConsumedExplicitly(t *testing.T) {
 	sheet := compileSheet(t, newEngine(t, transform.Config{}), `<xsl:output method="text"/><xsl:template name="start">main<xsl:result-document href="extra" method="text">extra</xsl:result-document></xsl:template>`)
-	context := transform.XSLTContext{Template: document.Name{Local: "start"}}
-	if n, err := sheet.Write(t.Context(), io.Discard, nil, context); n != 0 || !errors.Is(err, transform.ErrUnsupported) {
+	xsltContext := transform.XSLTContext{Template: document.Name{Local: "start"}}
+	if n, err := sheet.Write(t.Context(), io.Discard, nil, xsltContext); n != 0 || !errors.Is(err, transform.ErrUnsupported) {
 		t.Fatal(n, err)
 	}
-	result, err := sheet.Execute(t.Context(), nil, context)
+	result, err := sheet.Execute(t.Context(), nil, xsltContext)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +230,7 @@ func TestStreamedSerializationPreservesOutputPolicy(t *testing.T) {
 		{`method="xml" omit-xml-declaration="yes" cdata-section-elements="r"`, `<r>&lt;content&gt;</r>`, `<r><![CDATA[<content>]]></r>`},
 		{`method="xml" omit-xml-declaration="yes" encoding="US-ASCII"`, `<r>я</r>`, `<r>&#1103;</r>`},
 		{`method="xml" omit-xml-declaration="yes" encoding="US-ASCII" cdata-section-elements="r"`, `<r>я</r>`, `<r>&#1103;</r>`},
-		{`method="html" html-version="5"`, `<xsl:comment>before</xsl:comment><p>after</p>`, `<!--before--><!DOCTYPE html><p>after</p>`},
+		{`method="html" html-version="5"`, `<xsl:comment>before</xsl:comment><p>after</p>`, `<!--before--><p>after</p>`},
 		{`method="html" html-version="5"`, `<html><head/><body><input checked="checked"/><script>&lt;x&gt;&amp;</script><br/></body></html>`, `<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body><input checked><script><x>&</script><br></body></html>`},
 		{`method="html" html-version="5"`, `<html><head><meta http-equiv="Content-Type" content="old"/></head><body>&#x85;</body></html>`, `<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>&#x85;</body></html>`},
 		{`method="text" normalization-form="NFC"`, `<xsl:sequence select="('e','&#x301;')"/>`, `e ́`},

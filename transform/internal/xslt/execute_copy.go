@@ -125,16 +125,18 @@ func (ec *execContext) execCopySelected(ctx context.Context, inst *copyInst, con
 }
 
 func (ec *execContext) execCopySelectedNode(ctx context.Context, inst *copyInst, node xdm.Node, opts copyNodeOpts) error {
-	savedCtx, savedCur := ec.contextNode, ec.currentNode
-	savedPos, savedSize := ec.position, ec.size
+	savedFocus := ec.captureExecutionFocus()
+	savedTemplate := ec.currentTemplate
 	ec.contextNode, ec.currentNode = node, node
+	ec.contextItem = nil
+	ec.setCurrentTemplate(nil)
 	ec.position, ec.size = 1, 1
 	out := ec.currentOutput()
 	lastBefore := out.current.LastChild()
 	pendingBefore := len(out.pendingItems)
 	err := ec.execCopyNode(ctx, node, opts)
-	ec.contextNode, ec.currentNode = savedCtx, savedCur
-	ec.position, ec.size = savedPos, savedSize
+	ec.restoreExecutionFocus(savedFocus)
+	ec.setCurrentTemplate(savedTemplate)
 
 	if err != nil {
 		return err
@@ -302,6 +304,9 @@ func (ec *execContext) execCopyNode(ctx context.Context, node xdm.Node, opts cop
 	case xdm.AttributeNode:
 		attr, _ := xdm.AsNode[*xdm.Attribute](node)
 		return ec.copyAttributeNodeToOutput(attr)
+	case xdm.NamespaceNode:
+		ns, _ := xdm.AsNode[*xdm.NamespaceNodeWrapper](node)
+		return ec.copyNamespaceNodeToOutput(ns)
 	}
 
 	return nil
@@ -330,11 +335,12 @@ func (ec *execContext) execCopyElement(ctx context.Context, src *xdm.Element, op
 	}
 
 	out := ec.currentOutput()
-	savedCurrent, savedPrevAtomic, savedSeqMode := out.current, out.prevWasAtomic, out.sequenceMode
+	savedCurrent, savedPrevAtomic, savedSeqMode, savedCapture := out.current, out.prevWasAtomic, out.sequenceMode, out.captureItems
 
-	out.current, out.prevWasAtomic, out.sequenceMode = elem, false, false
+	out.current, out.prevWasAtomic, out.sequenceMode, out.captureItems = elem, false, false, false
+
 	defer func() {
-		out.current, out.prevWasAtomic, out.sequenceMode = savedCurrent, savedPrevAtomic, savedSeqMode
+		out.current, out.prevWasAtomic, out.sequenceMode, out.captureItems = savedCurrent, savedPrevAtomic, savedSeqMode, savedCapture
 	}()
 
 	if len(opts.useAttrSets) > 0 {
@@ -347,8 +353,8 @@ func (ec *execContext) execCopyElement(ctx context.Context, src *xdm.Element, op
 		return err
 	}
 
-	if !opts.inheritNamespaces {
-		undeclareInheritedNamespaces(elem)
+	if err := finishConstructedNamespaces(ctx, elem, opts.inheritNamespaces); err != nil {
+		return err
 	}
 
 	return nil
@@ -409,8 +415,9 @@ func (ec *execContext) execCopyDocument(ctx context.Context, source xdm.Node, bo
 
 func (ec *execContext) executeDocumentCopyBody(ctx context.Context, doc *xdm.Document, body []instruction, capture bool) error {
 	out := ec.currentOutput()
-	savedDoc, savedCurrent, savedSeqMode := ec.resultDoc, out.current, out.sequenceMode
+	savedDoc, savedCurrent, savedSeqMode, savedCapture := ec.resultDoc, out.current, out.sequenceMode, out.captureItems
 	ec.resultDoc, out.current = doc, doc
+	out.captureItems = false
 	// Captured document children belong to the document, not pendingItems.
 	if capture {
 		out.sequenceMode = false
@@ -418,6 +425,8 @@ func (ec *execContext) executeDocumentCopyBody(ctx context.Context, doc *xdm.Doc
 
 	defer func() {
 		ec.resultDoc, out.current = savedDoc, savedCurrent
+
+		out.captureItems = savedCapture
 		if capture {
 			out.sequenceMode = savedSeqMode
 		}
@@ -452,11 +461,11 @@ func (ec *execContext) copyAttributeNodeToOutput(attr *xdm.Attribute) error {
 
 	elem, ok := out.current.(*xdm.Element)
 	if !ok {
-		return dynamicError(errCodeXTDE0410,
+		return dynamicError(errCodeXTDE0420,
 			"cannot add attribute %s to a non-element node", attr.Name())
 	}
 
-	if elem.FirstChild() != nil {
+	if out.hasChildContent(elem) {
 		return dynamicError(errCodeXTDE0410,
 			"cannot add attribute %s after child nodes have been added", attr.Name())
 	}
@@ -482,8 +491,23 @@ func (ec *execContext) execCopyOf(ctx context.Context, inst *copyOfInst) error {
 	out := ec.currentOutput()
 	prevWasAtomic := out.prevWasAtomic
 
-	seq := flattenArraysInSequence(result.Sequence())
+	seq := result.Sequence()
+
+	capture := out.captureItems && ec.stylesheet.processorLanguage() >= 20
+	if !capture {
+		seq = flattenArraysInSequence(seq)
+	}
+
 	for item := range xdm.SequenceItems(seq) {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		if _, node := item.(xdm.NodeItem); !node && capture {
+			out.captureSequenceItems(xdm.ItemSlice{item})
+			continue
+		}
+
 		switch value := item.(type) {
 		case xdm.NodeItem:
 			prevWasAtomic = false
@@ -493,6 +517,10 @@ func (ec *execContext) execCopyOf(ctx context.Context, inst *copyOfInst) error {
 			}
 		case xdm.AtomicValue:
 			if err := ec.emitAtomicText(value, &prevWasAtomic); err != nil {
+				return err
+			}
+		default:
+			if err := ec.outputSequence(xdm.ItemSlice{item}); err != nil {
 				return err
 			}
 		}
@@ -879,35 +907,20 @@ func (ec *execContext) copyNamespaceNodeToOutput(ns *xdm.NamespaceNodeWrapper) e
 
 	elem, ok := out.current.(*xdm.Element)
 	if !ok {
-		return nil
+		return dynamicError(errCodeXTDE0420, "cannot add a namespace to a document node")
 	}
 
-	return ec.declareCopiedNamespace(elem, ns.Name(), xdm.CharacterData(ns))
-}
-
-func (ec *execContext) declareCopiedNamespace(elem *xdm.Element, prefix, uri string) error {
-	_, fixupOK := ec.nsFixupAllowed[elem]
-	for _, ns := range elem.Namespaces() {
-		if ns.Prefix() != prefix || ns.URI() == uri {
-			continue
-		}
-
-		if !fixupOK || elem.Prefix() != prefix || elem.URI() != ns.URI() {
-			return dynamicError(errCodeXTDE0430,
-				"namespace prefix %q is already bound to %q; cannot rebind to %q", prefix, ns.URI(), uri)
-		}
-
-		// Rename the copied element's prefix before installing the binding.
-		origURI := elem.URI()
-		newPrefix := uniqueNSPrefix(elem, prefix+"_0", origURI)
-		elem.RemoveNamespaceByPrefix(prefix)
-		_ = elem.DeclareNamespace(newPrefix, origURI)
-		_ = elem.SetActiveNamespace(newPrefix, origURI)
-
-		break
+	if out.hasChildContent(elem) {
+		return dynamicError(errCodeXTDE0410, "cannot add a namespace after child nodes")
 	}
 
-	return elem.DeclareNamespace(prefix, uri)
+	if err := ec.addComputedNamespace(elem, ns.Name(), xdm.CharacterData(ns)); err != nil {
+		return err
+	}
+
+	out.noteOutput()
+
+	return nil
 }
 
 // copyElementNoNamespaces deep-copies an element without copying namespace

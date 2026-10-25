@@ -137,7 +137,7 @@ func TestResultWriterToUsesContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	var writer io.WriterTo = result.WriterTo(ctx)
+	writer := result.WriterTo(ctx)
 	n, err := writer.WriteTo(&out)
 	if err != nil || out.String() != `<out>text</out>` || n != int64(out.Len()) {
 		t.Fatalf("WriteTo: %q, %d, %v", out.Bytes(), n, err)

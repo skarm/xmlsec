@@ -37,12 +37,6 @@ const roundMaxComputeScale = 1 << 20
 // an astronomically large exponent to Exp.
 const ratFracDigitNonTerminating = 1 << 30
 
-// FormatNumber exposes the shared number formatter to the XSLT 1.0 host. It is
-// not part of XPath 1.0's standalone core function library.
-func FormatNumber(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return fnFormatNumber(ctx, args)
-}
-
 // compatArgString applies the XPath 1.0 function-conversion rule for an
 // xs:string argument: fn:string of its first item. Used for format-number's
 // picture and decimal-format-name arguments under compatibility mode.
@@ -84,7 +78,7 @@ func fnFormatNumber(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 		}
 
 		if a.TypeName == xdm.TypeUntypedAtomic {
-			if a, err = CastAtomic(a, xdm.TypeDouble); err != nil {
+			if a, err = CastAtomicContext(ctx, a, xdm.TypeDouble); err != nil {
 				return nil, err
 			}
 		}
@@ -151,7 +145,7 @@ func lookupFunctionsNumeric(name string) (*builtinFunc, bool) {
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnRoundHalfToEven}, true
 	case "format-integer":
 		return &builtinFunc{name: name, min: 2, max: 3, fn: fnFormatInteger}, true
-	case "format-number":
+	case fnNameFormatNumber:
 		return &builtinFunc{name: name, min: 2, max: 3, fn: fnFormatNumber}, true
 	}
 

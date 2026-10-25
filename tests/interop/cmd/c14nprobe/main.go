@@ -166,7 +166,7 @@ func processSelect(r *request, d *document.Document, out *response, b *bytes.Buf
 		for _, s := range *r.Select {
 			n, err := resolve(d, s)
 			if err != nil {
-				return (*out), err, true
+				return *out, err, true
 			}
 
 			refs = append(refs, n)
@@ -174,29 +174,29 @@ func processSelect(r *request, d *document.Document, out *response, b *bytes.Buf
 
 		set, err := document.NewNodeSet(d, refs...)
 		if err != nil {
-			return (*out), err, true
+			return *out, err, true
 		}
 
-		err = c14n.WriteNodeSet(context.Background(), b, set, (*opt))
+		err = c14n.WriteNodeSet(context.Background(), b, set, *opt)
 		if err != nil {
-			return (*out), err, true
+			return *out, err, true
 		}
 	} else if r.Subtree != nil {
 		n, err := resolve(d, selector{Path: r.Subtree})
 		if err != nil {
-			return (*out), err, true
+			return *out, err, true
 		}
 
 		e, ok := n.Element()
 		if !ok {
-			return (*out), errors.New("subtree target is not an element"), true
+			return *out, errors.New("subtree target is not an element"), true
 		}
 
-		if err := c14n.WriteElement(context.Background(), b, e, (*opt)); err != nil {
-			return (*out), err, true
+		if err := c14n.WriteElement(context.Background(), b, e, *opt); err != nil {
+			return *out, err, true
 		}
-	} else if err := c14n.WriteDocument(context.Background(), b, d, (*opt)); err != nil {
-		return (*out), err, true
+	} else if err := c14n.WriteDocument(context.Background(), b, d, *opt); err != nil {
+		return *out, err, true
 	}
 
 	return returned0, returned1, matched

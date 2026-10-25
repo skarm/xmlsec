@@ -32,6 +32,7 @@ type evalContext struct {
 	node                 xdm.Node
 	contextItem          xdm.Item    // non-nil when context item is not a node (simple map over atomics)
 	uriResolver          URIResolver // custom URI resolver for fn:unparsed-text, fn:doc, etc.
+	resourceReads        xdm.ResourceReadPolicy
 	collectionResolver   CollectionResolver
 	variableResolver     VariableResolver   // lazy resolver for variables not in static scope
 	functionResolver     FunctionResolver   // lazy resolver for functions (not visible to function-lookup)
@@ -41,6 +42,7 @@ type evalContext struct {
 	invocation           *invocationState
 	vars                 *variableScope
 	namespaces           map[string]string
+	defaultXMLNamespace  string
 	functions            map[string]Function
 	fnsNS                map[QualifiedName]Function
 	opCount              *int // shared via pointer across copies; safe because eval is single-goroutine
@@ -65,6 +67,7 @@ type evalContext struct {
 	defaultCollation       string                // for string functions without explicit collation
 	baseURI                string                // static base URI for resolving relative URIs
 	version                int                   // xmlsec language profile, selected by the compiled expression.
+	xmlSchemaVersion       int
 	position               int
 	size                   int
 	depth                  int

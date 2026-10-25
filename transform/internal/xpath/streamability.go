@@ -427,8 +427,8 @@ func inspectPredicateMotion(e, pred Expr, step *Step) (bool, bool) {
 		if isFn {
 			switch local {
 			case nameName2, nameLocalName, nameNamespaceUri, nameNodeName,
-				"self", nameGenerateId, "base-uri", "document-uri",
-				"nilled", nameHasChildren, nameStringLength, "current":
+				"self", nameGenerateId, "base-uri", fnNameDocumentURI,
+				fnNameNilled, nameHasChildren, nameStringLength, "current":
 				return false, false
 			}
 		}

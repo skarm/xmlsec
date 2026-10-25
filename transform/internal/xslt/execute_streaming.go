@@ -64,11 +64,24 @@ func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocum
 	resolvedURI := resolveAgainstBaseURI(docURI, effectiveBase)
 
 	cacheKey := ec.docCacheKey(resolvedURI)
+	if err := ec.CheckRead(ctx, resolvedURI); err != nil {
+		return err
+	}
 
 	doc, ok := ec.docCache[cacheKey]
+	if ok {
+		if _, err := ec.existingDocumentRead(ctx, doc); err != nil {
+			return err
+		}
+	}
+
 	if !ok {
 		reader, err := ec.retrieveDocumentReader(ctx, resolvedURI)
 		if err != nil {
+			if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+				return err
+			}
+
 			return dynamicErrorCause(errCodeFODC0002, err, "xsl:source-document cannot load %q: %v", uri, err)
 		}
 
@@ -124,7 +137,6 @@ func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocum
 	savedPos := ec.position
 	savedSize := ec.size
 	savedActiveAccums := ec.activeAccumulators
-	savedRequireStreamable := ec.requireStreamableAccums
 	ec.sourceDoc = doc
 	ec.contextNode = startNode
 	ec.currentNode = startNode
@@ -137,7 +149,6 @@ func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocum
 		ec.activeAccumulators[name] = struct{}{}
 	}
 
-	ec.requireStreamableAccums = inst.Streamable
 	defer func() {
 		ec.sourceDoc = savedSource
 		ec.contextNode = savedContext
@@ -146,7 +157,6 @@ func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocum
 		ec.position = savedPos
 		ec.size = savedSize
 		ec.activeAccumulators = savedActiveAccums
-		ec.requireStreamableAccums = savedRequireStreamable
 	}()
 
 	for _, child := range inst.Body {
@@ -1419,11 +1429,15 @@ func (ec *execContext) loadMergeDocument(ctx context.Context, uri string, effect
 
 	mergeCacheKey := ec.docCacheKey(resolvedURI)
 	if doc, ok := ec.docCache[mergeCacheKey]; ok {
-		return doc, nil
+		return ec.existingDocumentRead(ctx, doc)
 	}
 
 	reader, err := ec.retrieveDocumentReader(ctx, resolvedURI)
 	if err != nil {
+		if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+			return nil, err
+		}
+
 		return nil, dynamicErrorCause(errCodeFODC0002, err, "xsl:merge cannot load %q: %v", uri, err)
 	}
 
@@ -1943,8 +1957,8 @@ type mergeActionState struct {
 	validSourceNames map[string]struct{}
 }
 
-func (state *mergeActionState) currentGroup(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if !state.ec.inMergeAction {
+func (state *mergeActionState) currentGroup(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	if !state.ec.inMergeAction || xpath.IsDynamicCall(ctx) {
 		return nil, dynamicError(errCodeXTDE3480, "current-merge-group() is not available outside the body of xsl:merge-action")
 	}
 
@@ -1973,8 +1987,8 @@ func (state *mergeActionState) currentGroup(_ context.Context, args []xdm.Sequen
 	return xdm.EmptySequence(), nil
 }
 
-func (state *mergeActionState) currentKey(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
-	if !state.ec.inMergeAction {
+func (state *mergeActionState) currentKey(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
+	if !state.ec.inMergeAction || xpath.IsDynamicCall(ctx) {
 		return nil, dynamicError(errCodeXTDE3510, "current-merge-key() is not available outside the body of xsl:merge-action")
 	}
 

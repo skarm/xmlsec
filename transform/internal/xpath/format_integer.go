@@ -238,9 +238,9 @@ func classifyFormatToken(primary string) formatTokenKind {
 func formatSpecialToken(n *big.Int, primary string, kind formatTokenKind) (string, error) {
 	switch kind {
 	case fmtTokenGreekLower:
-		return formatAlphaRange(n, 'α', 24), nil
+		return FormatGreekAlphabetic(n, false), nil
 	case fmtTokenGreekUpper:
-		return formatAlphaRange(n, 'Α', 24), nil
+		return FormatGreekAlphabetic(n, true), nil
 	case fmtTokenCJK:
 		return formatCJK(n), nil
 	case fmtTokenCircled:
@@ -257,24 +257,33 @@ func formatSpecialToken(n *big.Int, primary string, kind formatTokenKind) (strin
 	}
 }
 
-func formatAlphaRange(n *big.Int, base rune, size int) string {
-	if n.Sign() == 0 {
-		return "0"
+// FormatGreekAlphabetic uses the 24-letter Greek alphabet, excluding the
+// unassigned capital U+03A2 and the context-specific lowercase final sigma.
+// It is shared with XSLT numbering so both execution paths use the same digits.
+func FormatGreekAlphabetic(n *big.Int, upper bool) string {
+	if n.Sign() <= 0 {
+		return n.String()
 	}
 
-	val := new(big.Int).Set(n)
-	one := big.NewInt(1)
-	sz := big.NewInt(int64(size))
-
-	var digits []rune
-
-	for val.Sign() > 0 {
-		val.Sub(val, one)
-
-		mod := new(big.Int)
-		val.DivMod(val, sz, mod)
-		digits = append([]rune{base + rune(mod.Int64())}, digits...)
+	alphabet := []rune("αβγδεζηθικλμνξοπρστυφχψω")
+	if upper {
+		alphabet = []rune("ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ")
 	}
+
+	value, one, size := new(big.Int).Set(n), big.NewInt(1), big.NewInt(int64(len(alphabet)))
+
+	var (
+		digits    []rune
+		remainder big.Int
+	)
+
+	for value.Sign() > 0 {
+		value.Sub(value, one)
+		value.DivMod(value, size, &remainder)
+		digits = append(digits, alphabet[remainder.Int64()])
+	}
+
+	slices.Reverse(digits)
 
 	return string(digits)
 }

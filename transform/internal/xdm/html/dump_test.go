@@ -51,6 +51,32 @@ func TestHTMLCharacterMapBeforeNormalization(t *testing.T) {
 	}
 }
 
+func TestHTMLLatin1CharacterReferences(t *testing.T) {
+	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<p a="café中😀">café中😀</p>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc.SetEncoding("ISO-8859-1")
+
+	var output strings.Builder
+
+	writer := html.NewWriter().DefaultDTD(false).Format(false)
+	if err := writer.WriteTo(&output, doc); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "<p a=\"caf&eacute;&#20013;&#128512;\">caf\xe9&#20013;&#128512;</p>"
+	if output.String() != want {
+		t.Fatalf("got %q, want %q", output.String(), want)
+	}
+
+	failure := errors.New("latin-1 destination failed")
+	if err := writer.WriteTo(errorWriter{failure}, doc); !errors.Is(err, failure) {
+		t.Fatalf("destination failure lost: %v", err)
+	}
+}
+
 type errorWriter struct{ err error }
 
 func (w errorWriter) Write([]byte) (int, error) { return 0, w.err }

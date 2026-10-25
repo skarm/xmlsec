@@ -74,6 +74,11 @@ func (o ParseOptions) ParseReader(ctx context.Context, r io.Reader) (*Document, 
 	return view, nil
 }
 
+// CheckXMLProlog checks bytes through the first complete element start tag.
+func (o ParseOptions) CheckXMLProlog(ctx context.Context, r io.Reader) error {
+	return tree.CheckXMLProlog(ctx, r, o.limits(), o.AllowSingleByteEncodings)
+}
+
 // ParseFragment builds a document from a sequence of XML content nodes.
 func (o ParseOptions) ParseFragment(ctx context.Context, fragment string) (*Document, error) {
 	d, err := tree.ParseFragmentText(ctx, fragment, o.limits())

@@ -49,7 +49,7 @@ func lookupFunctionsString(name string) (*builtinFunc, bool) {
 		return &builtinFunc{name: name, min: 2, max: 2, fn: fnCodepointEqual}, true
 	case nameConcat:
 		return &builtinFunc{name: name, min: 2, max: -1, fn: fnConcat}, true
-	case "string-join":
+	case fnNameStringJoin:
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnStringJoin}, true
 	case fnNameSubstring:
 		return &builtinFunc{name: name, min: 2, max: 3, fn: fnSubstring}, true
@@ -425,7 +425,7 @@ func fnSubstring(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 		return nil, err
 	}
 
-	startPos, err := coerceArgToDoubleRequired(args[1])
+	startPos, err := coerceArgToDoubleRequired(ctx, args[1])
 	if err != nil {
 		return nil, err
 	}
@@ -435,7 +435,7 @@ func fnSubstring(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 	end := math.Inf(1)
 
 	if len(args) == 3 {
-		length, err := coerceArgToDoubleRequired(args[2])
+		length, err := coerceArgToDoubleRequired(ctx, args[2])
 		if err != nil {
 			return nil, err
 		}
@@ -811,7 +811,7 @@ func fnMatches(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "fn:matches pattern must not be empty sequence"}
 	}
 
-	pattern, err := coerceArgToStringRequired(ctx, args[1])
+	required, err := coerceArgToStringRequired(ctx, args[1])
 	if err != nil {
 		return nil, err
 	}
@@ -829,11 +829,11 @@ func fnMatches(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		}
 	}
 
-	if err := checkVersionRegex(ctx, pattern, flags); err != nil {
+	if err := checkVersionRegex(ctx, required, flags); err != nil {
 		return nil, err
 	}
 
-	re, err := compileXPathRegex(ctx, pattern, flags)
+	re, err := compileXPathRegex(ctx, required, flags)
 	if err != nil {
 		return nil, err
 	}
@@ -878,7 +878,7 @@ func fnReplace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "fn:replace pattern must not be empty sequence"}
 	}
 
-	pattern, err := coerceArgToStringRequired(ctx, args[1])
+	required, err := coerceArgToStringRequired(ctx, args[1])
 	if err != nil {
 		return nil, err
 	}
@@ -907,11 +907,11 @@ func fnReplace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	isLiteral := strings.Contains(flags, "q")
 
-	if err := checkVersionRegex(ctx, pattern, flags); err != nil {
+	if err := checkVersionRegex(ctx, required, flags); err != nil {
 		return nil, err
 	}
 
-	re, err := compileXPathRegex(ctx, pattern, flags)
+	re, err := compileXPathRegex(ctx, required, flags)
 	if err != nil {
 		return nil, err
 	}
@@ -1059,7 +1059,7 @@ func fnTokenize(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "fn:tokenize pattern must not be empty sequence"}
 	}
 
-	pattern, err := coerceArgToStringRequired(ctx, args[1])
+	required, err := coerceArgToStringRequired(ctx, args[1])
 	if err != nil {
 		return nil, err
 	}
@@ -1077,11 +1077,11 @@ func fnTokenize(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 		}
 	}
 
-	if err := checkVersionRegex(ctx, pattern, flags); err != nil {
+	if err := checkVersionRegex(ctx, required, flags); err != nil {
 		return nil, err
 	}
 
-	re, err := compileXPathRegex(ctx, pattern, flags)
+	re, err := compileXPathRegex(ctx, required, flags)
 	if err != nil {
 		return nil, err
 	}
@@ -1144,7 +1144,7 @@ func fnAnalyzeString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 		return nil, err
 	}
 
-	pattern, err := coerceArgToStringRequired(ctx, args[1])
+	required, err := coerceArgToStringRequired(ctx, args[1])
 	if err != nil {
 		return nil, err
 	}
@@ -1157,11 +1157,11 @@ func fnAnalyzeString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 		}
 	}
 
-	if err := checkVersionRegex(ctx, pattern, flags); err != nil {
+	if err := checkVersionRegex(ctx, required, flags); err != nil {
 		return nil, err
 	}
 
-	re, err := compileXPathRegex(ctx, pattern, flags)
+	re, err := compileXPathRegex(ctx, required, flags)
 	if err != nil {
 		return nil, err
 	}
@@ -1175,7 +1175,7 @@ func fnAnalyzeString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 		return nil, &xdm.Error{Code: errCodeFORX0003, Message: "analyze-string pattern matches zero-length string"}
 	}
 
-	return buildAnalyzeStringResult(ctx, re, s, pattern, flags)
+	return buildAnalyzeStringResult(ctx, re, s, required, flags)
 }
 
 func buildAnalyzeStringResult(ctx context.Context, re *compiledXPathRegex, s, pattern, flags string) (xdm.Sequence, error) {
@@ -1729,6 +1729,25 @@ func compileXPathRegex(ctx context.Context, source, flags string) (*compiledXPat
 		return nil, err
 	}
 
+	if len(source) > 64<<10 {
+		return nil, pattern.ErrLimit
+	}
+
+	if XMLSchemaVersion(ctx) == 10 && !strings.ContainsRune(flags, 'q') {
+		checked := source
+		if strings.ContainsRune(flags, 'x') {
+			checked = stripFreeSpacing(checked)
+		}
+
+		if err := Charge(ctx, len(checked)); err != nil {
+			return nil, err
+		}
+
+		if err := xpathregex.ValidateXSD10(checked); err != nil {
+			return nil, xsdRegexError(err)
+		}
+	}
+
 	ec := getFnContext(ctx)
 	if ec == nil || ec.runtime == nil {
 		return compileXPathRegexUncached(source, flags)
@@ -1768,7 +1787,7 @@ func compileXPathRegexUncached(source, flags string) (*compiledXPathRegex, error
 		return nil, pattern.ErrLimit
 	}
 
-	options := pattern.Options{Property: xpathregex.ResolveProperty}
+	options := pattern.Options{Property: xpathregex.ResolveProperty, XPathAnchors: true}
 
 	for _, flag := range flags {
 		switch flag {

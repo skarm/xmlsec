@@ -268,12 +268,12 @@ func validatePreservedArchives(ctx context.Context, material *preservation, time
 			return e
 		}
 
-		stamp, e := tsa.Verify(ctx, token, timestamp.Expectation{Imprint: imprint}, (*at), (*tsaProof))
+		stamp, e := tsa.Verify(ctx, token, timestamp.Expectation{Imprint: imprint}, *at, *tsaProof)
 		if e != nil {
 			return fmt.Errorf("%w: archive: %w", ErrTimestamp, e)
 		}
 
-		if stamp.Trust().RevocationStatus() != pki.Valid || stamp.Info().GenTime().Before((*previous)) {
+		if stamp.Trust().RevocationStatus() != pki.Valid || stamp.Info().GenTime().Before(*previous) {
 			return fmt.Errorf("%w: archive trust/chronology", ErrTimestamp)
 		}
 

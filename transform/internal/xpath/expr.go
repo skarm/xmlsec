@@ -336,6 +336,9 @@ type InlineFunctionExpr struct {
 	ReturnType *xdm.SequenceType // nil if not specified
 	Body       Expr
 	EmptyBody  bool // lexically empty FunctionBody, distinct from { () }
+	// Retain the definition for nonlocal-variable analysis after VM lowering
+	// replaces expression children with opaque instruction references.
+	nonlocalBody Expr
 }
 
 func (InlineFunctionExpr) exprNode() {}

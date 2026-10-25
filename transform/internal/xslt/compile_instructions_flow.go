@@ -11,6 +11,7 @@ import (
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
 func (c *compiler) compileApplyTemplates(ctx context.Context, elem *xdm.Element) (*applyTemplatesInst, error) {
@@ -71,28 +72,24 @@ func (c *compiler) compileApplyTemplates(ctx context.Context, elem *xdm.Element)
 }
 
 func (c *compiler) compileApplyTemplatesMode(ctx context.Context, elem *xdm.Element) (string, error) {
-	mode := strings.TrimSpace(getAttr(elem, nameMode))
-	// Validate mode name is a valid QName.
-	if mode != "" && mode[0] != '#' {
-		if !xmlchar.IsValidQName(mode) && !isValidEQName(mode) {
-			return "", staticError(errCodeXTSE0550, "invalid mode name %q on xsl:apply-templates", mode)
-		}
-		// XTSE0280: check for undeclared prefix.
-		if idx := strings.IndexByte(mode, ':'); idx > 0 {
-			prefix := mode[:idx]
-			if _, ok := c.nsBindings[prefix]; !ok {
-				return "", staticError(errCodeXTSE0280, "undeclared namespace prefix %q in mode name %q", prefix, mode)
-			}
-		}
+	raw, present := elem.GetAttribute(nameMode)
+	mode := strings.Trim(raw, " \t\r\n")
+
+	var err error
+	if !present || mode == modeDefault {
+		mode, err = defaultModeForElement(ctx, elem)
+	} else if mode != modeUnnamed && mode != modeCurrent {
+		mode, err = modeQName(mode, elem, errCodeXTSE0020)
 	}
-	// When mode is absent, use the current default-mode (set by
-	// compileInstruction from ancestor or self default-mode attributes).
-	if mode == "" && c.defaultMode != "" {
-		mode = c.defaultMode
+
+	if err != nil {
+		return "", err
 	}
-	// Resolve mode QName to Clark notation (namespace-aware)
-	mode = c.resolveMode(ctx, mode)
-	// Record mode usage for XTSE3085 checking
+
+	if mode == "" {
+		mode = modeUnnamed
+	}
+
 	if mode != modeCurrent {
 		c.recordModeUsage(ctx, mode)
 	}
@@ -145,10 +142,20 @@ func (c *compiler) compileCallTemplate(ctx context.Context, elem *xdm.Element) (
 
 	name := strings.TrimSpace(getAttr(elem, xslAttrName))
 	if name == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:call-template requires name attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:call-template requires name attribute")
 	}
 
-	inst := &callTemplateInst{Name: resolveQName(name, c.nsBindings), Compat: c.backwardsCompatible()}
+	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
+		return nil, staticError(errCodeXTSE0020, "xsl:call-template name %q is not a valid EQName", name)
+	}
+
+	namespaces := inScopeNamespaces(elem)
+	if prefix, _, qualified := strings.Cut(name, ":"); qualified && !strings.HasPrefix(name, "Q{") && namespaces[prefix] == "" {
+		return nil, staticError(errCodeXTSE0280, "undeclared prefix %q in xsl:call-template name", prefix)
+	}
+
+	inst := &callTemplateInst{Name: resolveQName(name, namespaces), Compat: c.backwardsCompatible()}
+	c.pendingTemplateCalls = append(c.pendingTemplateCalls, templateCallReference{Name: inst.Name, Forwards: c.forwardsCompatible(c.effectiveVersion)})
 
 	for child := range xdm.Children(elem) {
 		childElem, ok := child.(*xdm.Element)
@@ -188,7 +195,7 @@ func (c *compiler) compileCallTemplate(ctx context.Context, elem *xdm.Element) (
 func (c *compiler) compileIf(ctx context.Context, elem *xdm.Element) (*ifInst, error) {
 	testAttr := getAttr(elem, nameTest2)
 	if testAttr == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:if requires test attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:if requires test attribute")
 	}
 
 	expr, err := c.compileXPath(testAttr, c.nsBindings)
@@ -282,7 +289,7 @@ func (c *compiler) compileWhenClause(ctx context.Context, elem *xdm.Element) (*w
 
 	testAttr := getAttr(elem, nameTest2)
 	if testAttr == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:when requires test attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:when requires test attribute")
 	}
 
 	expression, err := c.compileXPath(testAttr, c.nsBindings)
@@ -364,7 +371,7 @@ func (c *compiler) compileForEach(ctx context.Context, elem *xdm.Element) (*forE
 
 	selectAttr := getAttr(elem, xslAttrSelect)
 	if selectAttr == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:for-each requires select attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:for-each requires select attribute")
 	}
 
 	expr, err := c.compileXPath(selectAttr, c.nsBindings)
@@ -587,7 +594,7 @@ func (c *compiler) compileWithParam(ctx context.Context, elem *xdm.Element) (*wi
 
 	name := getAttr(elem, xslAttrName)
 	if name == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:with-param requires name attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:with-param requires name attribute")
 	}
 
 	// Validate tunnel attribute value if present (including empty string)
@@ -598,13 +605,28 @@ func (c *compiler) compileWithParam(ctx context.Context, elem *xdm.Element) (*wi
 	}
 
 	asAttr := getAttr(elem, "as")
-	if err := c.validateAsSequenceType(ctx, asAttr, "xsl:with-param "+name); err != nil {
+	if err := c.validateAsSequenceType(ctx, elem, asAttr, "xsl:with-param "+name); err != nil {
 		return nil, err
 	}
 
 	wp := &withParam{
 		Name: resolveQName(name, c.nsBindings),
 		As:   asAttr,
+	}
+	if asAttr != "" {
+		st, err := xpath.ParseSequenceType(asAttr)
+		if err != nil {
+			return nil, err
+		}
+
+		defaultNS, _ := c.declarationDefaultNamespace(elem)
+
+		bound, err := xpath.BindSequenceType(ctx, st, c.nsBindings, defaultNS)
+		if err != nil {
+			return nil, err
+		}
+
+		wp.Type = &bound
 	}
 
 	wp.Tunnel = xsdBoolTrue(getAttr(elem, nameTunnel))
@@ -737,6 +759,10 @@ func (c *compiler) compileNextMatch(ctx context.Context, elem *xdm.Element) (*ne
 }
 
 func (c *compiler) compileApplyImports(ctx context.Context, elem *xdm.Element) (*applyImportsInst, error) {
+	if c.inOverrideRule {
+		return nil, staticError(errCodeXTSE3460, "xsl:apply-imports is not allowed in a template rule declared within xsl:override")
+	}
+
 	if err := c.validateXSLTAttrs(ctx, elem, attributeNames()); err != nil {
 		return nil, err
 	}
@@ -853,19 +879,15 @@ func (c *compiler) compileCatchClause(ctx context.Context, elem *xdm.Element) (*
 
 	defer c.pushElementVersion(elem)()
 
+	savedNamespaces := c.pushElementNamespaces(ctx, elem)
+	defer func() { c.nsBindings = savedNamespaces }()
+
 	// Parse errors attribute (space-separated list of error codes).
 	// Namespace declarations on xsl:catch itself must be visible
 	// when resolving prefixed error codes (e.g. err:XTDE0555).
 	if errAttr := getAttr(elem, "errors"); errAttr != "" {
-		catchNS := make(map[string]string, len(c.nsBindings))
-		maps.Copy(catchNS, c.nsBindings)
-
-		for _, ns := range elem.Namespaces() {
-			catchNS[ns.Prefix()] = ns.URI()
-		}
-
 		for code := range strings.FieldsSeq(errAttr) {
-			clause.Errors = append(clause.Errors, resolveQName(code, catchNS))
+			clause.Errors = append(clause.Errors, resolveQName(code, c.nsBindings))
 		}
 	}
 
@@ -897,7 +919,7 @@ func (c *compiler) compileCatchClause(ctx context.Context, elem *xdm.Element) (*
 func (c *compiler) compileForEachGroup(ctx context.Context, elem *xdm.Element) (*forEachGroupInst, error) {
 	selectAttr := getAttr(elem, xslAttrSelect)
 	if selectAttr == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:for-each-group requires select attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:for-each-group requires select attribute")
 	}
 
 	if err := validateGroupingAttributes(elem); err != nil {
@@ -926,20 +948,11 @@ func validateGroupingAttributes(elem *xdm.Element) error {
 	// XTSE1080: exactly one of group-by, group-adjacent, group-starting-with,
 	// group-ending-with must be present
 	groupingCount := 0
-	if getAttr(elem, "group-by") != "" {
-		groupingCount++
-	}
 
-	if getAttr(elem, "group-adjacent") != "" {
-		groupingCount++
-	}
-
-	if getAttr(elem, "group-starting-with") != "" {
-		groupingCount++
-	}
-
-	if getAttr(elem, "group-ending-with") != "" {
-		groupingCount++
+	for _, name := range []string{"group-by", "group-adjacent", "group-starting-with", "group-ending-with"} {
+		if _, present := elem.GetAttribute(name); present {
+			groupingCount++
+		}
 	}
 
 	if groupingCount == 0 {
@@ -951,9 +964,9 @@ func validateGroupingAttributes(elem *xdm.Element) error {
 	}
 
 	// XTSE1090: collation/composite only with group-by or group-adjacent
-	hasGroupBy := getAttr(elem, "group-by") != ""
+	_, hasGroupBy := elem.GetAttribute("group-by")
 
-	hasGroupAdjacent := getAttr(elem, "group-adjacent") != ""
+	_, hasGroupAdjacent := elem.GetAttribute("group-adjacent")
 	if !hasGroupBy && !hasGroupAdjacent {
 		if getAttr(elem, nameCollation) != "" {
 			return staticError(errCodeXTSE1090,
@@ -991,7 +1004,7 @@ func (c *compiler) compileGroupingOptions(elem *xdm.Element, inst *forEachGroupI
 		}
 	}
 
-	if gb := getAttr(elem, "group-by"); gb != "" {
+	if gb, present := elem.GetAttribute("group-by"); present {
 		gbExpr, gbErr := c.compileXPath(gb, c.nsBindings)
 		if gbErr != nil {
 			return gbErr
@@ -1000,7 +1013,7 @@ func (c *compiler) compileGroupingOptions(elem *xdm.Element, inst *forEachGroupI
 		inst.GroupBy = gbExpr
 	}
 
-	if ga := getAttr(elem, "group-adjacent"); ga != "" {
+	if ga, present := elem.GetAttribute("group-adjacent"); present {
 		gaExpr, gaErr := c.compileXPath(ga, c.nsBindings)
 		if gaErr != nil {
 			return gaErr
@@ -1009,7 +1022,7 @@ func (c *compiler) compileGroupingOptions(elem *xdm.Element, inst *forEachGroupI
 		inst.GroupAdjacent = gaExpr
 	}
 
-	if gs := getAttr(elem, "group-starting-with"); gs != "" {
+	if gs, present := elem.GetAttribute("group-starting-with"); present {
 		gsPat, gsErr := c.compilePattern(gs, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
 		if gsErr != nil {
 			return gsErr
@@ -1018,7 +1031,7 @@ func (c *compiler) compileGroupingOptions(elem *xdm.Element, inst *forEachGroupI
 		inst.GroupStartingWith = gsPat
 	}
 
-	if ge := getAttr(elem, "group-ending-with"); ge != "" {
+	if ge, present := elem.GetAttribute("group-ending-with"); present {
 		gePat, geErr := c.compilePattern(ge, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
 		if geErr != nil {
 			return geErr
@@ -1070,12 +1083,12 @@ func (c *compiler) compileGroupingBody(ctx context.Context, elem *xdm.Element, i
 func (c *compiler) compileAnalyzeString(ctx context.Context, elem *xdm.Element) (*analyzeStringInst, error) {
 	selectAttr := getAttr(elem, xslAttrSelect)
 	if selectAttr == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:analyze-string requires select attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:analyze-string requires select attribute")
 	}
 
 	regexAttr, regexFound := elem.GetAttribute("regex")
 	if !regexFound {
-		return nil, staticError(errCodeXTSE0110, "xsl:analyze-string requires regex attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:analyze-string requires regex attribute")
 	}
 
 	selectExpr, err := c.compileXPath(selectAttr, c.nsBindings)
@@ -1114,6 +1127,7 @@ func (c *compiler) compileAnalyzeString(ctx context.Context, elem *xdm.Element) 
 	)
 
 	phase := phaseInit
+	hasBranch := false
 
 	for child := range xdm.Children(elem) {
 		childElem, ok := child.(*xdm.Element)
@@ -1127,6 +1141,8 @@ func (c *compiler) compileAnalyzeString(ctx context.Context, elem *xdm.Element) 
 
 		switch childElem.LocalName() {
 		case lexicon.XSLTElementMatchingSubstring:
+			hasBranch = true
+
 			if phase >= phaseMatching {
 				return nil, staticError(errCodeXTSE0010, "xsl:matching-substring must precede xsl:non-matching-substring and xsl:fallback")
 			}
@@ -1140,6 +1156,8 @@ func (c *compiler) compileAnalyzeString(ctx context.Context, elem *xdm.Element) 
 
 			inst.MatchingBody = body
 		case lexicon.XSLTElementNonMatchingSubstring:
+			hasBranch = true
+
 			if phase >= phaseNonMatch {
 				return nil, staticError(errCodeXTSE0010, "xsl:non-matching-substring out of order in xsl:analyze-string")
 			}
@@ -1158,7 +1176,7 @@ func (c *compiler) compileAnalyzeString(ctx context.Context, elem *xdm.Element) 
 	}
 
 	// XTSE1130: at least one of matching-substring or non-matching-substring is required
-	if len(inst.MatchingBody) == 0 && len(inst.NonMatchingBody) == 0 {
+	if !hasBranch {
 		return nil, staticError(errCodeXTSE1130, "xsl:analyze-string must contain xsl:matching-substring or xsl:non-matching-substring")
 	}
 
@@ -1167,6 +1185,11 @@ func (c *compiler) compileAnalyzeString(ctx context.Context, elem *xdm.Element) 
 
 func (c *compiler) compileEvaluate(ctx context.Context, elem *xdm.Element) (instruction, error) {
 	inst := &evaluateInst{}
+
+	inst.Namespaces = inScopeNamespaces(elem)
+	if err := xpath.Charge(ctx, len(inst.Namespaces)); err != nil {
+		return nil, err
+	}
 
 	// xpath attribute is required
 	xpathAttr := getAttr(elem, "xpath")
@@ -1223,6 +1246,25 @@ func (c *compiler) compileEvaluate(ctx context.Context, elem *xdm.Element) (inst
 
 	// as (optional type name)
 	inst.As = getAttr(elem, "as")
+	if inst.As != "" {
+		if err := c.validateAsSequenceType(ctx, elem, inst.As, "xsl:evaluate"); err != nil {
+			return nil, err
+		}
+
+		st, err := xpath.ParseSequenceType(inst.As)
+		if err != nil {
+			return nil, err
+		}
+
+		defaultNS, _ := c.declarationDefaultNamespace(elem)
+
+		bound, err := xpath.BindSequenceType(ctx, st, inst.Namespaces, defaultNS)
+		if err != nil {
+			return nil, err
+		}
+
+		inst.ResultType = &bound
+	}
 
 	// schema-aware (optional avt that evaluates to boolean)
 	if saStr, hasSA := elem.GetAttribute("schema-aware"); hasSA {

@@ -521,7 +521,7 @@ func normalizeSignatureSpec(method string, params SignatureParameters) (signatur
 
 func normalizeSignatureSpecPSS(params *SignatureParameters, p *PSSParameters) {
 	if params.PSS != nil {
-		(*p) = *params.PSS
+		*p = *params.PSS
 		if p.Hash == 0 {
 			p.Hash = crypto.SHA256
 		}

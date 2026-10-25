@@ -131,7 +131,7 @@ func castUntypedToType(ctx context.Context, untyped xdm.AtomicValue, targetType 
 		return schemaAwareCast(ctx, ec, untyped, targetType)
 	}
 
-	return CastFromString(stringFromAtomic(untyped), targetType)
+	return CastFromStringContext(ctx, stringFromAtomic(untyped), targetType)
 }
 
 // compareAtomicCollation compares two atomic values using the given collation

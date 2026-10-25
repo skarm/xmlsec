@@ -263,12 +263,11 @@ records do not promote the complete formatting or processor inventory to complet
 existing adapter test file, including negative controls.
 
 Repository checks, lint, relevant race checks and Docker libxml2/libxslt
-comparisons pass. The existing comparison file also runs 95 Saxon HE 12.10 query agreements and
-two original-octet XML transformations. Two known oracle/publisher disagreements
-remain separate diagnostics; complete independent clause fixtures remain pending.
-Basic XSLT, complete XPath conformance, processor-version forcing, additional
-XML input encodings/schema processing and unimplemented assertion forms retain explicit
-gaps. Schema awareness and normative streamability remain separate directions.
+comparisons pass. The existing comparison file also runs 137 Saxon HE 12.10 query agreements and
+two original-octet XML transformations. Known diagnostic differences
+remain separate from exact agreements; complete independent clause fixtures remain pending.
+Basic XSLT, complete XPath conformance, additional XML input encodings/schema
+processing and unimplemented assertion forms retain explicit gaps. Schema awareness and normative streamability remain separate directions.
 
 The resource closure block preserves resource MIME/charset metadata end to end,
 including HTTP and nested transforms. Its bounded decoding contract is checked
@@ -276,8 +275,45 @@ by `TestTextResourceMediaType`, `TestXSLTTextResourceMediaType` and
 `TestHTTPTextMetadataAndDecodedLimit`. Calendar/duration representability and
 lexical errors are distinguished, formatter overloads and function conversion
 are enforced, and quantified anchors retain bounded zero-width matching.
-`TestCompareSaxonLanguageSemantics` replays 92 fixed queries with ready Saxon HE
-12.10 binaries. XSD 1.0/1.1 regex-range differences remain outside that evidence.
+`TestCompareSaxonLanguageSemantics` replays 101 fixed queries with ready Saxon HE
+12.10 binaries. `TestCompareSaxonAssertionPolicies` adds eight enabled/disabled
+assertion and QName comparisons; `TestCompareSaxonBasicProfile` adds eleven
+Basic and simple-content comparisons. They do not supply complete clause fixtures. Edition-specific regex differences have local controls; complete independent edition-specific fixtures remain pending.
+
+The explicit assertion switch defaults off; the comparable enabled baseline opts
+in. Named, inline, lookup and partial function values retain datatype and
+compatibility context. Package versions keep distinct retrieval URIs. Basic
+schema-only constructs use prescribed static errors, while lax/preserve act as
+strip. Streaming annotations execute with materialized trees and enforce
+accumulator applicability, without a streamability claim. AVTs and simple
+content preserve expanded errors and follow text normalization before array
+atomization. Shared budgets bound their work and strings; singleton text retains
+immutable storage. Assertion namespace scopes are inherited and isolated.
+The next component checks declaration-site QName names, static named-template
+binding after imports, duplicate-name conflicts after precedence resolution and
+prescribed circularity/context/mode errors. `TestXSLTDeclarationContracts` and
+`TestXSLTModuleCyclesAndPrecedence` supply local positive/negative cases. Saxon
+adds twelve exact declaration comparisons and five exact module comparisons;
+one mixed-cycle code choice and two multi-diagnostic placements are recorded
+separately. These tests close their stated regressions, not all outstanding Basic duties.
+
+Raw result delivery now preserves mixed item order/types and node identity for
+primary and secondary values. Explicit document construction and effective
+`build-tree` defaults use shared sequence normalization, including separators,
+arrays, empty results, copied nodes and prescribed rejection errors. The suite
+runner selects this final-tree mode directly. Per-call `fn:transform` assertions
+use their own typed option, default false. Local tests cover each mode and
+shared budget/cancellation boundaries; independent comparisons and build-tree
+diagnostics remain separate. Complete Basic duties remain open.
+
+Package exposure now chooses the most specific applicable rule, preserving
+declared visibility against wildcards and excluding components accepted from
+other packages and parameters. Component syntax/arity and namespace scope have local tests.
+Root shadow processing precedes package identity checks, preserves prescribed
+expression errors and keeps `document('')` source trees unchanged. Basic schema
+resource declarations reach actual compiler errors without pretending to validate
+sources. Function NameTests under REC 2017 versus E36 and the conflicting initial
+mode wording are explicit edition/interpretation records, not adopted errata claims.
 
 ## Stage 4 acceptance record
 
@@ -338,3 +374,17 @@ accepted use without reclassifying mandatory algorithm availability as optional.
 PGP/SPKI/MgmtData, arbitrary explicit EC parameters and DSA-SHA256 are optional
 extensions not selected for this stage. Missing mandatory processing obligations
 of the broader standard stay recorded; policy restrictions do not close them.
+
+The datatype/compatibility closure block uses explicit XSD 1.0/1.1 lexical and
+regex selection across constructors, numeric promotion, function values and XSLT.
+Recurring numeric/duration division and averages now produce finite decimals;
+tiny nonzero quotients retain significant digits. Higher/future XSLT declarations
+exercise fallback and deferred errors, static function name/arity checks run after
+all declarations, and serialization versions do not change language semantics.
+`fn:transform` uses the 3.0 processor for supported minimums and reports actual
+capabilities. Unicode 17.0 block data includes historical aliases with XSD name
+syntax. Collection/document identities and stable results are tested through
+direct XPath, XSLT and nested transforms, including whitespace stripping and
+conflicting-URI failures. Existing test files contain all new regressions.
+The refreshed full-catalog baseline separates new passes from corrected exact
+Unicode-edition dependencies and retains mandatory failures as failures.

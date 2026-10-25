@@ -6,9 +6,9 @@ package xslt
 import (
 	"context"
 	"fmt"
-	"maps"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
@@ -57,66 +57,168 @@ type acceptRule struct {
 	visibility string // target visibility
 }
 
-// parseAcceptRules extracts xsl:accept children from an xsl:use-package element.
-func parseAcceptRules(usePackageElem *xdm.Element, nsBindings map[string]string) []acceptRule {
+// parseAcceptRules validates acceptance declarations before merging components.
+func parseAcceptRules(ctx context.Context, usePackageElem *xdm.Element) ([]acceptRule, error) {
 	var rules []acceptRule
 
-	for child := range xdm.Children(usePackageElem) {
-		elem, ok := child.(*xdm.Element)
-		if !ok || elem.URI() != lexicon.NamespaceXSLT || elem.LocalName() != xslElemAccept {
+	for elem := range xdm.ChildElements(usePackageElem) {
+		if elem.URI() != lexicon.NamespaceXSLT || elem.LocalName() != xslElemAccept {
 			continue
 		}
 
-		comp := getAttr(elem, xslAttrComponent)
-		names := getAttr(elem, xslAttrNames)
-		vis := getAttr(elem, xslAttrVisibility)
-		// Resolve namespace prefixes in names
-		for name := range strings.FieldsSeq(names) {
-			resolvedName := resolveComponentName(name, nsBindings, elem)
-			rules = append(rules, acceptRule{
-				component:  comp,
-				names:      resolvedName,
-				visibility: vis,
-			})
+		parsed, err := parseComponentRules(ctx, elem, true)
+		if err != nil {
+			return nil, err
+		}
+
+		rules = append(rules, parsed...)
+	}
+
+	return rules, nil
+}
+
+func parseComponentRules(ctx context.Context, elem *xdm.Element, accept bool) ([]acceptRule, error) {
+	kind := elem.LocalName()
+	for _, name := range []string{xslAttrComponent, xslAttrNames, xslAttrVisibility} {
+		if _, present := elem.GetAttribute(name); !present {
+			return nil, staticError(errCodeXTSE0010, "xsl:%s requires %s", kind, name)
 		}
 	}
 
-	return rules
+	component := strings.Trim(getAttr(elem, xslAttrComponent), " \t\r\n")
+	visibility := strings.Trim(getAttr(elem, xslAttrVisibility), " \t\r\n")
+
+	switch component {
+	case xslElemTemplate, xslElemFunction, xslElemVariable, xslElemAttributeSet, xslElemMode, xslWildcard:
+	default:
+		return nil, staticError(errCodeXTSE0020, "invalid xsl:%s component %q", kind, component)
+	}
+
+	switch visibility {
+	case visPublic, visPrivate, visFinal, visAbstract:
+	case visHidden:
+		if !accept {
+			return nil, staticError(errCodeXTSE0020, "hidden is not an xsl:expose visibility")
+		}
+	default:
+		return nil, staticError(errCodeXTSE0020, "invalid xsl:%s visibility %q", kind, visibility)
+	}
+
+	names := strings.FieldsFunc(getAttr(elem, xslAttrNames), xmlchar.IsSpace)
+	if len(names) == 0 {
+		return nil, staticError(errCodeXTSE0020, "xsl:%s requires a nonempty names list", kind)
+	}
+
+	rules := make([]acceptRule, 0, len(names))
+	for _, name := range names {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return nil, err
+		}
+
+		resolved, err := resolveComponentReference(name, component, elem)
+		if err != nil {
+			return nil, err
+		}
+
+		if component == xslWildcard && !isWildcard(resolved) {
+			code := errCodeXTSE3022
+			if accept {
+				code = errCodeXTSE3032
+			}
+
+			return nil, staticError(code, "xsl:%s component='*' requires wildcard names", kind)
+		}
+
+		rules = append(rules, acceptRule{component: component, names: resolved, visibility: visibility})
+	}
+
+	return rules, nil
 }
 
-// applyAcceptRules determines the effective visibility of a component after
-// applying xsl:accept rules. Returns the visibility and whether the component
-// should be included (hidden components are excluded).
-// acceptRules are processed in order; more specific patterns override wildcards.
-func applyAcceptRules(compType, compName string, rules []acceptRule, defaultVis string) string {
-	bestVis := defaultVis
-	bestSpecificity := -1
+func resolveComponentReference(name, component string, elem *xdm.Element) (string, error) {
+	base, arity, present := splitComponentArity(name)
+	if present {
+		if component != xslElemFunction || arity == "" {
+			return "", staticError(errCodeXTSE0020, "invalid component name %q", name)
+		}
+
+		var err error
+
+		arity, err = normalizedComponentArity(arity, name)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	ns := inScopeNamespaces(elem)
+
+	wildcard := base == xslWildcard || strings.HasPrefix(base, "*:") || strings.HasSuffix(base, ":*") || strings.HasSuffix(base, "}*")
+	if arity != "" && wildcard {
+		return "", staticError(errCodeXTSE0020, "a named function reference requires an EQName: %q", name)
+	}
+
+	switch {
+	case base == xslWildcard:
+		return base, nil
+	case strings.HasPrefix(base, "*:"):
+		if xmlchar.IsValidNCName(base[2:]) {
+			return base, nil
+		}
+	case strings.HasSuffix(base, ":*"):
+		prefix := base[:len(base)-2]
+		if xmlchar.IsValidNCName(prefix) && ns[prefix] != "" {
+			return xdm.ClarkName(ns[prefix], "*"), nil
+		}
+	case strings.HasPrefix(base, "Q{") && strings.HasSuffix(base, "}*"):
+		if isValidEQName(base[:len(base)-1] + "x") {
+			return base[1:], nil
+		}
+	default:
+		if xmlchar.IsValidQName(base) || isValidEQName(base) {
+			if prefix, _, prefixed := strings.Cut(base, ":"); prefixed && !strings.HasPrefix(base, "Q{") && ns[prefix] == "" {
+				return "", staticError(errCodeXTSE0280, "unbound prefix %q in component name", prefix)
+			}
+
+			return resolveQName(base, ns) + arity, nil
+		}
+	}
+
+	return "", staticError(errCodeXTSE0020, "invalid component name %q", name)
+}
+
+func normalizedComponentArity(arity, name string) (string, error) {
+	for _, c := range arity {
+		if c < '0' || c > '9' {
+			return "", staticError(errCodeXTSE0020, "invalid function arity in %q", name)
+		}
+	}
+
+	arity = strings.TrimLeft(arity, "0")
+	if arity == "" {
+		arity = "0"
+	}
+
+	return "#" + arity, nil
+}
+
+// applyAcceptRules selects an accepted component's visibility. An incompatible
+// wildcard is ignored; explicit incompatibilities are rejected before merging.
+func applyAcceptRules(compType, compName string, rules []acceptRule, declared string) string {
+	bestVis := visHidden
+	if declared == visPublic || declared == visFinal {
+		bestVis = visPrivate
+	}
+
+	bestPriority := -1
 
 	for _, rule := range rules {
-		if rule.component != xslWildcard && rule.component != compType {
+		if rule.component != xslWildcard && rule.component != compType || !componentNameMatches(compName, rule.names) || !isAcceptVisibilityCompatible(declared, rule.visibility) {
 			continue
 		}
 
-		if !componentNameMatches(compName, rule.names) {
-			continue
-		}
-
-		// Calculate specificity based on name token only (XSLT 3.0 §3.6.2):
-		// * = 0, ns:* or *:local = 1, explicit name = 2.
-		// Component attribute does NOT affect priority.
-		// When priority ties, last matching rule (document order) wins.
-		spec := 0
-		if rule.names == xslWildcard {
-			spec = 0
-		} else if strings.HasSuffix(rule.names, "}*") || strings.HasPrefix(rule.names, "*:") {
-			spec = 1
-		} else {
-			spec = 2
-		}
-
-		if spec >= bestSpecificity {
-			bestSpecificity = spec
-			bestVis = rule.visibility
+		priority := componentRulePriority(rule.names)
+		if priority >= bestPriority {
+			bestPriority, bestVis = priority, rule.visibility
 		}
 	}
 
@@ -130,25 +232,199 @@ func (c *compiler) processExpose(ctx context.Context, root *xdm.Element) error {
 		return nil
 	}
 
-	c.initializeTemplateFunctionVisibility()
-	c.initializeVariableAttributeVisibility()
-	c.initializeDeclaredModeVisibility()
-	c.saveDeclaredComponentVisibility()
+	var rules []acceptRule
 
-	for child := range xdm.Children(root) {
-		elem, ok := child.(*xdm.Element)
-		if !ok || elem.URI() != lexicon.NamespaceXSLT || elem.LocalName() != xslElemExpose {
+	for elem := range xdm.ChildElements(root) {
+		if elem.URI() != lexicon.NamespaceXSLT || elem.LocalName() != xslElemExpose {
 			continue
 		}
 
-		if err := c.compileExpose(ctx, elem); err != nil {
+		excluded, err := c.excludedByUseWhen(ctx, elem)
+		if err != nil {
 			return err
+		}
+
+		if excluded {
+			continue
+		}
+
+		parsed, err := parseComponentRules(ctx, elem, false)
+		if err != nil {
+			return err
+		}
+
+		rules = append(rules, parsed...)
+	}
+
+	c.initializeTemplateFunctionVisibility()
+	c.initializeVariableAttributeVisibility()
+	c.initializeImplicitExposedModes()
+	c.initializeDeclaredModeVisibility()
+	c.saveDeclaredComponentVisibility()
+	components := c.localExposedComponents()
+
+	for _, rule := range rules {
+		matched := false
+
+		for _, component := range components {
+			if err := xpath.Charge(ctx, 1); err != nil {
+				return err
+			}
+
+			if component.matches(rule) {
+				matched = true
+			}
+		}
+
+		if !matched && !isWildcard(rule.names) {
+			return staticError(errCodeXTSE3020, "xsl:expose: no %s matches %q", rule.component, rule.names)
 		}
 	}
 
-	c.publishComponentVisibility()
+	for _, component := range components {
+		visibility, exposed, err := component.exposedVisibility(ctx, rules)
+		if err != nil {
+			return err
+		}
+
+		component.set(visibility, exposed)
+	}
 
 	return nil
+}
+
+type exposedComponent struct {
+	kind, name, declared string
+	set                  func(string, bool)
+}
+
+func (c *compiler) initializeImplicitExposedModes() {
+	if c.stylesheet.declaredModes {
+		return
+	}
+
+	for name, templates := range c.stylesheet.modeTemplates {
+		if name == "" || name == modeDefault || name == modeAll || c.stylesheet.modeDefs[name] != nil {
+			continue
+		}
+
+		for _, tmpl := range templates {
+			if tmpl.OwnerPackage == nil || tmpl.OwnerPackage == c.stylesheet {
+				if c.stylesheet.modeDefs == nil {
+					c.stylesheet.modeDefs = make(map[string]*modeDef)
+				}
+
+				c.stylesheet.modeDefs[name] = &modeDef{Name: name, Implicit: true}
+
+				break
+			}
+		}
+	}
+}
+
+func (component exposedComponent) matches(rule acceptRule) bool {
+	return (rule.component == xslWildcard || rule.component == component.kind) && componentNameMatches(component.name, rule.names)
+}
+
+func (component exposedComponent) exposedVisibility(ctx context.Context, rules []acceptRule) (string, bool, error) {
+	visibility := component.declared
+
+	priority := -1
+	if visibility != "" {
+		priority = 2
+	} else {
+		visibility = visPrivate
+	}
+
+	explicit, exposed := false, false
+
+	for _, rule := range rules {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return "", false, err
+		}
+
+		if !component.matches(rule) {
+			continue
+		}
+
+		exposed = true
+
+		candidate := componentRulePriority(rule.names)
+		if candidate >= priority {
+			priority, visibility = candidate, rule.visibility
+			explicit = candidate == 3
+		}
+	}
+
+	if explicit {
+		code, message := checkExposeVisibility(component.name, visibility, component.declared)
+		if code != "" {
+			return "", false, staticError(code, "%s", message)
+		}
+	} else if visibility == visAbstract && component.declared != visAbstract {
+		return "", false, staticError(errCodeXTSE3025, "xsl:expose cannot make %q abstract", component.name)
+	}
+
+	return visibility, exposed, nil
+}
+
+func componentRulePriority(name string) int {
+	if name == xslWildcard {
+		return 0
+	}
+
+	if isWildcard(name) {
+		return 1
+	}
+
+	return 3
+}
+
+func (c *compiler) localExposedComponents() []exposedComponent {
+	var components []exposedComponent
+
+	for name, tmpl := range c.stylesheet.namedTemplates {
+		if tmpl.OwnerPackage != nil && tmpl.OwnerPackage != c.stylesheet {
+			continue
+		}
+
+		components = append(components, exposedComponent{kind: xslElemTemplate, name: name, declared: c.declaredTemplateVis[name], set: func(vis string, _ bool) { tmpl.Visibility = vis; c.stylesheet.templateVisibility[name] = vis }})
+	}
+
+	for key, fn := range c.stylesheet.functions {
+		if fn.OwnerPackage != nil && fn.OwnerPackage != c.stylesheet {
+			continue
+		}
+
+		name := functionVisKey(key.Name, len(fn.Params))
+		components = append(components, exposedComponent{kind: xslElemFunction, name: name, declared: c.declaredFunctionVis[name], set: func(vis string, _ bool) { fn.Visibility = vis; c.stylesheet.functionVisibility[name] = vis }})
+	}
+
+	for _, v := range c.stylesheet.globalVars {
+		if v.OwnerPackage != nil && v.OwnerPackage != c.stylesheet {
+			continue
+		}
+
+		components = append(components, exposedComponent{kind: xslElemVariable, name: v.Name, declared: c.declaredVariableVis[v.Name], set: func(vis string, _ bool) { v.Visibility = vis; c.stylesheet.variableVisibility[v.Name] = vis }})
+	}
+
+	for name, attrs := range c.stylesheet.attributeSets {
+		if attrs.OwnerPackage != nil && attrs.OwnerPackage != c.stylesheet {
+			continue
+		}
+
+		components = append(components, exposedComponent{kind: xslElemAttributeSet, name: name, declared: c.declaredAttrSetVis[name], set: func(vis string, _ bool) { attrs.Visibility = vis; c.stylesheet.attrSetVisibility[name] = vis }})
+	}
+
+	for name, mode := range c.stylesheet.modeDefs {
+		if name == "" || name == modeDefault || name == modeUnnamed || mode.OwnerPackage != nil {
+			continue
+		}
+
+		components = append(components, exposedComponent{kind: xslElemMode, name: name, declared: c.declaredModeVis[name], set: func(vis string, exposed bool) { mode.Visibility = vis; mode.Implicit = mode.Implicit && !exposed }})
+	}
+
+	return components
 }
 
 func (c *compiler) initializeTemplateFunctionVisibility() {
@@ -192,7 +468,7 @@ func (c *compiler) initializeVariableAttributeVisibility() {
 		if p.Visibility != "" {
 			c.stylesheet.globalParamVisibility[p.Name] = p.Visibility
 		} else {
-			c.stylesheet.globalParamVisibility[p.Name] = visPrivate
+			c.stylesheet.globalParamVisibility[p.Name] = visPublic
 		}
 	}
 
@@ -254,513 +530,11 @@ func (c *compiler) saveDeclaredComponentVisibility() {
 			c.declaredAttrSetVis[name] = as.Visibility
 		}
 	}
-
-	c.declaredParamVis = make(map[string]string)
-	for _, p := range c.stylesheet.globalParams {
-		if p.Visibility != "" {
-			c.declaredParamVis[p.Name] = p.Visibility
-		}
-	}
-}
-
-func (c *compiler) publishComponentVisibility() {
-	for _, tmpl := range c.stylesheet.templates {
-		if tmpl.Name != "" {
-			if vis, ok := c.stylesheet.templateVisibility[tmpl.Name]; ok {
-				tmpl.Visibility = vis
-			}
-		}
-	}
-
-	for fk, fn := range c.stylesheet.functions {
-		key := functionVisKey(fk.Name, len(fn.Params))
-		if vis, ok := c.stylesheet.functionVisibility[key]; ok {
-			fn.Visibility = vis
-		}
-	}
-
-	for _, v := range c.stylesheet.globalVars {
-		if vis, ok := c.stylesheet.variableVisibility[v.Name]; ok {
-			v.Visibility = vis
-		}
-	}
-
-	for _, p := range c.stylesheet.globalParams {
-		if vis, ok := c.stylesheet.globalParamVisibility[p.Name]; ok {
-			p.Visibility = vis
-		}
-	}
-}
-
-func (c *compiler) compileExpose(ctx context.Context, elem *xdm.Element) error {
-	component := getAttr(elem, xslAttrComponent)
-	names := getAttr(elem, xslAttrNames)
-	visibility := getAttr(elem, xslAttrVisibility)
-
-	if component == "" || names == "" || visibility == "" {
-		return staticError(errCodeXTSE0010, "xsl:expose requires component, names, and visibility attributes")
-	}
-
-	// Validate visibility value
-	switch visibility {
-	case visPublic, visPrivate, visFinal, visAbstract, visHidden:
-		// ok
-	default:
-		return staticError(errCodeXTSE0020, "invalid visibility value %q on xsl:expose", visibility)
-	}
-
-	// Validate component type
-	validComponents := map[string]struct{}{
-		xslElemTemplate: {}, xslElemFunction: {}, xslElemVariable: {},
-		xslElemAttributeSet: {}, xslElemMode: {}, xslWildcard: {},
-	}
-	if _, ok := validComponents[component]; !ok {
-		return staticError(errCodeXTSE0020, "invalid component type %q on xsl:expose", component)
-	}
-
-	nsBindings := c.collectElemNamespaces(ctx, elem)
-
-	for name := range strings.FieldsSeq(names) {
-		resolvedName := resolveComponentName(name, nsBindings, elem)
-
-		if err := c.applyExposeComponent(ctx, component, resolvedName, name, visibility); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// resolveComponentName resolves a component name (possibly prefixed) to an
-// expanded Clark notation name. Handles wildcards like "*", "ns:*", "*:local".
-func resolveComponentName(name string, nsBindings map[string]string, elem *xdm.Element) string {
-	arity := ""
-	if idx := strings.LastIndex(name, "#"); idx >= 0 {
-		arity = name[idx:]
-		name = name[:idx]
-	}
-
-	if name == xslWildcard {
-		return xslWildcard + arity
-	}
-
-	if strings.HasPrefix(name, "*:") {
-		return name + arity
-	}
-
-	if strings.HasPrefix(name, "Q{") {
-		return name[1:] + arity
-	}
-
-	if prefix, local, ok := strings.Cut(name, ":"); ok {
-		uri := componentNamespaceURI(prefix, nsBindings, elem)
-
-		if uri != "" {
-			if local == "*" {
-				return "{" + uri + "}*" + arity
-			}
-
-			return xdm.ClarkName(uri, local) + arity
-		}
-		// If no URI found, return as-is (may be an error in the stylesheet)
-		return name + arity
-	}
-
-	return name + arity
-}
-
-func componentNamespaceURI(prefix string, bindings map[string]string, elem *xdm.Element) string {
-	uri := bindings[prefix]
-	if uri != "" {
-		return uri
-	}
-
-	for node := xdm.Node(elem); node != nil; node = node.Parent() {
-		element, ok := node.(*xdm.Element)
-		if !ok {
-			continue
-		}
-
-		for _, namespace := range element.Namespaces() {
-			if namespace.Prefix() == prefix {
-				uri = namespace.URI()
-				break
-			}
-		}
-
-		if uri != "" {
-			return uri
-		}
-	}
-
-	return ""
-}
-
-func (c *compiler) applyExposeComponent(ctx context.Context, component, resolvedName, originalName, visibility string) error {
-	switch component {
-	case xslElemTemplate:
-		if err := c.applyExposeToTemplates(ctx, resolvedName, visibility, false); err != nil {
-			return err
-		}
-	case xslElemFunction:
-		// XTSE3020 (erratum E36): non-wildcard function names must include
-		// arity (e.g., "f#2"). A bare name without "#" is an error.
-		if !isWildcard(resolvedName) && !strings.Contains(resolvedName, "#") {
-			return staticError(errCodeXTSE3020,
-				"xsl:expose: function name %q must include arity (e.g. %s#0)", originalName, originalName)
-		}
-
-		if err := c.applyExposeToFunctionsStrict(ctx, resolvedName, visibility); err != nil {
-			return err
-		}
-	case xslElemVariable:
-		if err := c.applyExposeToVariablesStrict(ctx, resolvedName, visibility); err != nil {
-			return err
-		}
-	case xslElemAttributeSet:
-		if err := c.applyExposeToAttrSets(ctx, resolvedName, visibility, true); err != nil {
-			return err
-		}
-	case xslElemMode:
-		if err := c.applyExposeToModes(ctx, resolvedName, visibility, true); err != nil {
-			return err
-		}
-	case xslWildcard:
-		return c.applyWildcardExpose(ctx, resolvedName, visibility)
-	}
-
-	return nil
-}
-
-func (c *compiler) applyWildcardExpose(ctx context.Context, resolvedName, visibility string) error {
-	// When component="*", apply to all component types.
-	// Use non-strict mode so we don't error when a name matches
-	// in one component type but not others. But propagate XTSE3025
-	// (abstract on non-abstract) which applies regardless.
-	for _, fn := range []func() error{
-		func() error { return c.applyExposeToTemplates(ctx, resolvedName, visibility, true) },
-		func() error { return c.applyExposeToFunctions(ctx, resolvedName, visibility) },
-		func() error { return c.applyExposeToVariables(ctx, resolvedName, visibility) },
-		func() error { return c.applyExposeToAttrSets(ctx, resolvedName, visibility, false) },
-		func() error { return c.applyExposeToModes(ctx, resolvedName, visibility, false) },
-	} {
-		if err := fn(); err != nil {
-			if xErr, ok := err.(*XSLTError); ok && xErr.Code == errCodeXTSE3025 {
-				return err
-			}
-		}
-	}
-
-	return nil
 }
 
 // collectElemNamespaces gathers namespace bindings from an element and its ancestors.
 func (c *compiler) collectElemNamespaces(_ context.Context, elem *xdm.Element) map[string]string {
-	bindings := make(map[string]string)
-	maps.Copy(bindings, c.nsBindings)
-
-	for n := xdm.Node(elem); n != nil; n = n.Parent() {
-		if e, ok := n.(*xdm.Element); ok {
-			for _, ns := range e.Namespaces() {
-				if _, exists := bindings[ns.Prefix()]; !exists {
-					bindings[ns.Prefix()] = ns.URI()
-				}
-			}
-		}
-	}
-
-	return bindings
-}
-
-func (c *compiler) applyExposeToTemplates(_ context.Context, pattern, visibility string, isWildcardComponent bool) error {
-	matched := false
-
-	isWild := isWildcard(pattern)
-	for name := range c.stylesheet.templateVisibility {
-		if componentNameMatches(name, pattern) {
-			declared := c.declaredTemplateVis[name] // "" if not explicitly declared
-			// Only check conflicts for non-wildcard patterns
-			if !isWild {
-				code, msg := checkExposeVisibility(name, visibility, declared)
-				if code != "" {
-					return staticError(code, "%s", msg)
-				}
-			} else {
-				// For wildcard patterns, XTSE3025 (abstract) is still a
-				// hard error, but XTSE3010 (visibility increase) silently
-				// skips the component instead of erroring.
-				code, msg := checkExposeVisibility(name, visibility, declared)
-				if code == errCodeXTSE3025 {
-					return staticError(code, "%s", msg)
-				}
-
-				if declared != "" && isVisibilityIncrease(declared, visibility) {
-					continue
-				}
-			}
-
-			c.stylesheet.templateVisibility[name] = visibility
-			matched = true
-		}
-	}
-
-	if !matched && !isWildcard(pattern) && !isWildcardComponent {
-		return staticError(errCodeXTSE3010, "xsl:expose: no template %q found in package", pattern)
-	}
-
-	return nil
-}
-
-func (c *compiler) applyExposeToFunctions(_ context.Context, pattern, visibility string) error {
-	matched := false
-
-	isWild := isWildcard(pattern)
-	for key := range c.stylesheet.functionVisibility {
-		if componentNameMatches(key, pattern) {
-			declared := c.declaredFunctionVis[key]
-			if !isWild {
-				code, msg := checkExposeVisibility(key, visibility, declared)
-				if code != "" {
-					return staticError(code, "%s", msg)
-				}
-			} else {
-				code, msg := checkExposeVisibility(key, visibility, declared)
-				if code != "" {
-					return staticError(code, "%s", msg)
-				}
-
-				if declared != "" && visibilityLevel(visibility) > visibilityLevel(declared) {
-					continue
-				}
-			}
-
-			c.stylesheet.functionVisibility[key] = visibility
-			matched = true
-		}
-	}
-
-	_ = matched
-
-	return nil
-}
-
-// applyExposeToFunctionsStrict is like applyExposeToFunctions but reports
-// XTSE3010 when a non-wildcard pattern has no match. Used when the expose
-// element has component="function" (not component="*").
-func (c *compiler) applyExposeToFunctionsStrict(_ context.Context, pattern, visibility string) error {
-	matched := false
-
-	isWild := isWildcard(pattern)
-	for key := range c.stylesheet.functionVisibility {
-		if componentNameMatches(key, pattern) {
-			declared := c.declaredFunctionVis[key]
-			if !isWild {
-				code, msg := checkExposeVisibility(key, visibility, declared)
-				if code != "" {
-					return staticError(code, "%s", msg)
-				}
-			} else {
-				code, msg := checkExposeVisibility(key, visibility, declared)
-				if code != "" {
-					return staticError(code, "%s", msg)
-				}
-
-				if declared != "" && visibilityLevel(visibility) > visibilityLevel(declared) {
-					continue
-				}
-			}
-
-			c.stylesheet.functionVisibility[key] = visibility
-			matched = true
-		}
-	}
-
-	if !matched && !isWildcard(pattern) {
-		return staticError(errCodeXTSE3010, "xsl:expose: no function %q found in package", pattern)
-	}
-
-	return nil
-}
-
-func (c *compiler) applyExposeToVariables(_ context.Context, pattern, visibility string) error {
-	if _, err := applyExposeVisibilityMap(c.stylesheet.variableVisibility, c.declaredVariableVis, pattern, visibility); err != nil {
-		return err
-	}
-
-	_, err := applyExposeVisibilityMap(c.stylesheet.globalParamVisibility, c.declaredParamVis, pattern, visibility)
-
-	return err
-}
-
-// applyExposeToVariablesStrict rejects a parameter-only explicit name and
-// reports XTSE3010 when neither variables nor params match a non-wildcard name.
-func (c *compiler) applyExposeToVariablesStrict(_ context.Context, pattern, visibility string) error {
-	variableMatched, err := applyExposeVisibilityMap(c.stylesheet.variableVisibility, c.declaredVariableVis, pattern, visibility)
-	if err != nil {
-		return err
-	}
-
-	paramMatched := false
-
-	wildcard := isWildcard(pattern)
-	for name := range c.stylesheet.globalParamVisibility {
-		if !componentNameMatches(name, pattern) {
-			continue
-		}
-
-		if !wildcard && !variableMatched {
-			return staticError(errCodeXTSE3020, "xsl:expose: %q is a stylesheet parameter, not a variable", name)
-		}
-
-		allowed, err := exposeVisibilityAllowed(name, visibility, c.declaredParamVis[name], wildcard)
-		if err != nil {
-			return err
-		}
-
-		if allowed {
-			c.stylesheet.globalParamVisibility[name] = visibility
-			paramMatched = true
-		}
-	}
-
-	if !variableMatched && !paramMatched && !wildcard {
-		return staticError(errCodeXTSE3010, "xsl:expose: no variable or parameter %q found in package", pattern)
-	}
-
-	return nil
-}
-
-func (c *compiler) applyExposeToAttrSets(_ context.Context, pattern, visibility string, strict bool) error {
-	matched := false
-
-	isWild := isWildcard(pattern)
-	for name := range c.stylesheet.attrSetVisibility {
-		if componentNameMatches(name, pattern) {
-			declared := c.declaredAttrSetVis[name]
-			if !isWild {
-				code, msg := checkExposeVisibility(name, visibility, declared)
-				if code != "" {
-					return staticError(code, "%s", msg)
-				}
-			} else {
-				// For wildcard patterns, XTSE3025 (abstract) is still a
-				// hard error, but XTSE3010 (visibility increase) silently
-				// skips the component instead of erroring.
-				code, msg := checkExposeVisibility(name, visibility, declared)
-				if code == errCodeXTSE3025 {
-					return staticError(code, "%s", msg)
-				}
-
-				if declared != "" && isVisibilityIncrease(declared, visibility) {
-					continue
-				}
-			}
-
-			c.stylesheet.attrSetVisibility[name] = visibility
-			matched = true
-		}
-	}
-
-	if strict && !matched && !isWildcard(pattern) {
-		return staticError(errCodeXTSE3010, "xsl:expose: no attribute-set %q found in package", pattern)
-	}
-
-	return nil
-}
-
-func (c *compiler) applyExposeToModes(_ context.Context, pattern, visibility string, strict bool) error {
-	if c.stylesheet.modeDefs == nil {
-		c.stylesheet.modeDefs = make(map[string]*modeDef)
-	}
-
-	matched, err := c.exposeDeclaredModes(pattern, visibility)
-	if err != nil {
-		return err
-	}
-
-	if c.exposeImplicitModes(pattern, visibility) {
-		matched = true
-	}
-
-	if strict && !matched && !isWildcard(pattern) {
-		return staticError(errCodeXTSE3010, "xsl:expose: no mode %q found in package", pattern)
-	}
-
-	return nil
-}
-
-func (c *compiler) exposeDeclaredModes(pattern, visibility string) (bool, error) {
-	matched := false
-
-	isWild := isWildcard(pattern)
-	for _, md := range c.stylesheet.modeDefs {
-		if componentNameMatches(md.Name, pattern) {
-			allowed, err := exposeModeVisibilityAllowed(md.Name, visibility, c.declaredModeVis[md.Name], isWild)
-			if err != nil {
-				return false, err
-			}
-
-			if !allowed {
-				continue
-			}
-
-			md.Visibility = visibility
-			matched = true
-		}
-	}
-
-	return matched, nil
-}
-
-func exposeModeVisibilityAllowed(name, visibility, declared string, wildcard bool) (bool, error) {
-	code, message := checkExposeVisibility(name, visibility, declared)
-	if wildcard && code == errCodeXTSE3010 {
-		return false, nil
-	}
-
-	if code != "" {
-		return false, staticError(code, "%s", message)
-	}
-
-	return true, nil
-}
-
-func (c *compiler) exposeImplicitModes(pattern, visibility string) bool {
-	matched := false
-	// When declared-modes="false", also match implicit modes from templates
-	// that have no explicit xsl:mode declaration.
-	if !c.stylesheet.declaredModes {
-		for modeName := range c.stylesheet.modeTemplates {
-			if modeName == modeAll {
-				continue
-			}
-			// Skip modes already in modeDefs (including unnamed mode
-			// stored under "#default").
-			if _, exists := c.stylesheet.modeDefs[modeName]; exists {
-				continue
-			}
-
-			if modeName == "" {
-				if _, exists := c.stylesheet.modeDefs[modeDefault]; exists {
-					continue
-				}
-			}
-
-			if componentNameMatches(modeName, pattern) {
-				// Create a modeDef entry for this implicit mode so
-				// visibility is tracked. Only Visibility is set; other
-				// mode properties (on-no-match etc.) remain at defaults.
-				md := &modeDef{
-					Name:       modeName,
-					Visibility: visibility,
-				}
-				c.stylesheet.modeDefs[modeName] = md
-				matched = true
-			}
-		}
-	}
-
-	return matched
+	return inScopeNamespaces(elem)
 }
 
 // collectOverrideNames scans xsl:override children of xsl:use-package and returns
@@ -838,78 +612,50 @@ func overrideFunctionArity(elem *xdm.Element) int {
 	return arity
 }
 
-// visibilityLevel returns a numeric accessibility level for visibility.
-// Higher level = more accessible. Used to enforce the rule that xsl:expose
-// cannot make a component more accessible than its declared level.
-// "final" and "public" are at the same accessibility level.
-func visibilityLevel(vis string) int {
-	switch vis {
-	case visHidden:
-		return 0
-	case visPrivate:
-		return 1
-	case visPublic, visFinal, visAbstract:
-		return 2
-	default:
-		return 1 // treat unknown as private
-	}
-}
-
-// isVisibilityIncrease returns true if changing from 'from' to 'to' is
-// considered an increase in accessibility (which is not allowed by xsl:expose).
-// The ordering (from most restricted to most accessible) is:
-//
-//	hidden < private < final < public
-//
-// abstract is special and handled separately.
-func isVisibilityIncrease(from, to string) bool {
-	order := map[string]int{
-		visHidden:  0,
-		visPrivate: 1,
-		visFinal:   2,
-		visPublic:  3,
-	}
-	f, okF := order[from]
-
-	t, okT := order[to]
-	if !okF || !okT {
-		return false
-	}
-
-	return t > f
-}
-
-// checkExposeVisibility validates whether setting a component's visibility via
-// xsl:expose is allowed. Returns an error code and message, or "" if valid.
-// Rules:
-//   - XTSE3010: declared visibility is explicitly set and expose tries to change
-//     it to a different "kind" (e.g., public→abstract) or to a higher level.
+// checkExposeVisibility applies the explicit exposure/declaration table in 3.5.3.1.
 func checkExposeVisibility(name, newVis, declaredVis string) (string, string) {
-	effectiveVis := declaredVis
-	if effectiveVis == "" {
-		effectiveVis = visPrivate // default for package components
-	}
-	// XTSE3025: cannot make a non-abstract component abstract
-	if newVis == visAbstract && effectiveVis != visAbstract {
-		return errCodeXTSE3025, fmt.Sprintf(
-			"xsl:expose: cannot change visibility of %q from %s to abstract", name, effectiveVis)
-	}
-	// XTSE3010: cannot change an abstract component to non-abstract
-	if effectiveVis == visAbstract && newVis != visAbstract {
-		return errCodeXTSE3010, fmt.Sprintf(
-			"xsl:expose: cannot change visibility of abstract component %q to %s", name, newVis)
-	}
-	// XTSE3010: cannot increase visibility beyond declared level.
-	// public→final is allowed (restricting overridability is not an increase).
-	// final→public is NOT allowed (removing restriction is an increase).
-	if declaredVis != "" && newVis != declaredVis {
-		if isVisibilityIncrease(declaredVis, newVis) {
-			return errCodeXTSE3010, fmt.Sprintf(
-				"xsl:expose: cannot change visibility of %q from %s to %s", name, declaredVis, newVis)
+	if declaredVis != "" {
+		allowed := false
+
+		switch newVis {
+		case visPublic:
+			allowed = declaredVis == visPublic
+		case visPrivate:
+			allowed = declaredVis != visAbstract
+		case visFinal:
+			allowed = declaredVis == visPublic || declaredVis == visFinal
+		case visAbstract:
+			allowed = declaredVis == visAbstract
+		}
+
+		if !allowed {
+			return errCodeXTSE3010, fmt.Sprintf("xsl:expose: visibility %s is inconsistent with declared %s on %q", newVis, declaredVis, name)
 		}
 	}
 
+	if newVis == visAbstract && declaredVis != visAbstract {
+		return errCodeXTSE3025, fmt.Sprintf("xsl:expose: %q was not declared abstract", name)
+	}
+
 	return "", ""
+}
+
+// splitComponentArity ignores hashes inside an expanded namespace URI.
+func splitComponentArity(name string) (string, string, bool) {
+	start := 0
+
+	if strings.HasPrefix(name, "{") || strings.HasPrefix(name, "Q{") {
+		if end := strings.IndexByte(name, '}'); end >= 0 {
+			start = end + 1
+		}
+	}
+
+	if offset := strings.IndexByte(name[start:], '#'); offset >= 0 {
+		offset += start
+		return name[:offset], name[offset+1:], true
+	}
+
+	return name, "", false
 }
 
 // componentNameMatches checks if a component name matches a name pattern.
@@ -920,22 +666,10 @@ func componentNameMatches(compName, pattern string) bool {
 		return true
 	}
 
-	patternArity := ""
-	if idx := strings.LastIndex(pattern, "#"); idx >= 0 {
-		patternArity = pattern[idx:]
-		pattern = pattern[:idx]
-	}
-
-	compArity := ""
-
-	compNameBase := compName
-	if idx := strings.LastIndex(compName, "#"); idx >= 0 {
-		compArity = compName[idx:]
-		compNameBase = compName[:idx]
-	}
-
+	pattern, patternArity, hasArity := splitComponentArity(pattern)
+	compNameBase, compArity, _ := splitComponentArity(compName)
 	// If pattern has arity, it must match
-	if patternArity != "" && patternArity != compArity {
+	if hasArity && patternArity != compArity {
 		return false
 	}
 
@@ -965,46 +699,6 @@ func componentNameMatches(compName, pattern string) bool {
 
 	// Exact match
 	return compNameBase == pattern
-}
-
-func applyExposeVisibilityMap(values, declared map[string]string, pattern, visibility string) (bool, error) {
-	matched := false
-	wildcard := isWildcard(pattern)
-
-	for name := range values {
-		if !componentNameMatches(name, pattern) {
-			continue
-		}
-
-		allowed, err := exposeVisibilityAllowed(name, visibility, declared[name], wildcard)
-		if err != nil {
-			return false, err
-		}
-
-		if allowed {
-			values[name] = visibility
-			matched = true
-		}
-	}
-
-	return matched, nil
-}
-
-// exposeVisibilityAllowed reports declaration conflicts for explicit patterns;
-// wildcard patterns skip visibility increases, retaining hard abstract errors.
-func exposeVisibilityAllowed(name, visibility, declared string, wildcard bool) (bool, error) {
-	code, message := checkExposeVisibility(name, visibility, declared)
-	if !wildcard || code == errCodeXTSE3025 {
-		if code != "" {
-			return false, staticError(code, "%s", message)
-		}
-	}
-
-	if wildcard && declared != "" && isVisibilityIncrease(declared, visibility) {
-		return false, nil
-	}
-
-	return true, nil
 }
 
 func isWildcard(pattern string) bool {

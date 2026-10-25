@@ -3,6 +3,7 @@ package xslt
 import (
 	"context"
 	"io"
+	"unicode/utf8"
 
 	norm "github.com/skarm/xmlsec/internal/normalization"
 
@@ -108,7 +109,7 @@ func (w *textValueWriter) write(value string) error {
 			return err
 		}
 
-		start = offset + len(string(r))
+		start = offset + utf8.RuneLen(r)
 	}
 
 	return w.plain(value[start:])

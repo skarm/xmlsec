@@ -1,9 +1,9 @@
 package transform_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -56,7 +56,7 @@ func TestXSLTProfilePreflight(t *testing.T) {
 	}
 
 	got, _ := out.Bytes()
-	if !strings.Contains(string(got), `value="{}ok}"`) {
+	if !bytes.Contains(got, []byte(`value="{}ok}"`)) {
 		t.Fatalf("AVT quote/brace handling: %q", got)
 	}
 }

@@ -121,6 +121,32 @@ func canonicalSequenceTypeKey(as string, resolve nsResolver, defaultElemNS strin
 	return b.String()
 }
 
+// declarationTypeKey captures type identity in the declaration's static scope.
+func (c *compiler) declarationTypeKey(elem *xdm.Element, as string) string {
+	if strings.TrimSpace(as) == "" {
+		as = "item()*"
+	}
+
+	defaultNS, hasDefault := c.declarationDefaultNamespace(elem)
+
+	return canonicalSequenceTypeKey(as, nsResolverFromMap(inScopeNamespaces(elem)), defaultNS, hasDefault)
+}
+
+func (c *compiler) declarationDefaultNamespace(elem *xdm.Element) (string, bool) {
+	defaultNS, hasDefault := c.xpathDefaultNS, c.hasXPathDefaultNS
+
+	for node := xdm.Node(elem); node != nil; node = node.Parent() {
+		if e, ok := node.(*xdm.Element); ok {
+			if value, present := e.GetAttribute(nameXpathDefaultNamespace); present {
+				defaultNS, hasDefault = value, true
+				break
+			}
+		}
+	}
+
+	return defaultNS, hasDefault
+}
+
 // inScopeNamespaces returns the in-scope namespace bindings (prefix→URI) for
 // elem by walking the DOM tree from the element up through its ancestors.
 // Nearer declarations take precedence over more distant ones, matching XML
@@ -161,13 +187,13 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 
 	name := getAttr(elem, xslAttrName)
 	if name == "" {
-		return staticError(errCodeXTSE0110, "xsl:function requires name attribute")
+		return staticError(errCodeXTSE0010, "xsl:function requires name attribute")
 	}
 
 	c.collectNamespaces(ctx, elem)
 
 	// Resolve the prefixed name to a QualifiedName
-	qn, err := c.functionName(name)
+	qn, err := functionName(name, inScopeNamespaces(elem))
 	if err != nil {
 		return err
 	}
@@ -192,7 +218,19 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 		return err
 	}
 
-	// Compile function body (params + instructions)
+	// Validate the function-specific parameter vocabulary before compiling
+	// generic template parameters and their defaults.
+	for child := range xdm.Children(elem) {
+		childElem, ok := child.(*xdm.Element)
+		if !ok {
+			continue
+		}
+
+		if err := c.validateFunctionParameter(childElem); err != nil {
+			return err
+		}
+	}
+
 	_, body, params, err := c.compileTemplateBodyEx(ctx, elem, true)
 	c.expandText = savedExpandText
 
@@ -200,21 +238,8 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 		return err
 	}
 
-	// XTSE0020: xsl:param inside xsl:function must not have required="no"
-	// (function params are implicitly required; required="yes" is allowed as redundant)
-	for child := range xdm.Children(elem) {
-		childElem, ok := child.(*xdm.Element)
-		if !ok {
-			continue
-		}
-
-		if err := compileFunctionURI(childElem); err != nil {
-			return err
-		}
-	}
-
 	fnAs := getAttr(elem, "as")
-	if err := c.validateAsSequenceType(ctx, fnAs, "xsl:function "+name); err != nil {
+	if err := c.validateAsSequenceType(ctx, elem, fnAs, "xsl:function "+name); err != nil {
 		return err
 	}
 
@@ -241,7 +266,7 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 		Body:          body,
 		As:            fnAs,
 		Cache:         xsdBoolTrue(getAttr(elem, "cache")),
-		Streamability: getAttr(elem, "streamability"),
+		Streamability: streamability,
 		Visibility:    getAttr(elem, xslAttrVisibility),
 		NewEachTime:   getAttr(elem, "new-each-time"),
 		ImportPrec:    c.importPrec,
@@ -250,7 +275,11 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 		fn.OwnerPackage = c.stylesheet
 	}
 
-	fn.prepareCall()
+	fn.signatureTypeKey = c.declarationTypeKey(elem, fnAs)
+
+	if err := c.prepareCompiledFunction(ctx, fn, elem); err != nil {
+		return err
+	}
 
 	// XTSE0770: it is a static error if a stylesheet contains two or more
 	// functions with the same expanded QName, the same arity, and the same
@@ -258,6 +287,14 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 	// the one with the highest precedence wins.
 	fk := funcKey{Name: qn, Arity: len(fn.Params)}
 	if existing, ok := c.stylesheet.functions[fk]; ok {
+		if existing.AcceptedFrom != nil {
+			return staticError(errCodeXTSE3050, "local function %s#%d conflicts with an accepted component", name, len(fn.Params))
+		}
+
+		if existing.IsOverride {
+			return staticError(errCodeXTSE3055, "local function %s#%d conflicts with an overriding declaration", name, len(fn.Params))
+		}
+
 		if existing.ImportPrec == fn.ImportPrec {
 			return staticError(errCodeXTSE0770,
 				"duplicate xsl:function %s with arity %d", name, len(fn.Params))
@@ -335,31 +372,43 @@ func compileFunctionChildren(childElem *xdm.Element) error {
 	return nil
 }
 
-func compileFunctionURI(childElem *xdm.Element) error {
-	if childElem.URI() == lexicon.NamespaceXSLT && childElem.LocalName() == lexicon.XSLTElementParam {
-		if reqVal, hasReq := childElem.GetAttribute(ctxItemRequired); hasReq {
-			if reqVal != lexicon.ValueYes && reqVal != "1" && reqVal != lexicon.ValueTrue {
-				pname := getAttr(childElem, xslAttrName)
+func (c *compiler) validateFunctionParameter(childElem *xdm.Element) error {
+	if childElem.URI() != lexicon.NamespaceXSLT || childElem.LocalName() != lexicon.XSLTElementParam {
+		return nil
+	}
 
-				return staticError(errCodeXTSE0020,
-					"xsl:param %q in xsl:function must not have required=%q", pname, reqVal)
-			}
-		}
-		// XTSE0020: tunnel="yes" is not allowed on a function parameter
-		if getAttr(childElem, nameTunnel) == lexicon.ValueYes {
-			return staticError(errCodeXTSE0020,
-				"tunnel=\"yes\" is not allowed on a function parameter")
-		}
-		// XTSE0760: function params must not have a default value
-		if getAttr(childElem, xslAttrSelect) != "" {
-			return staticError(errCodeXTSE0760,
-				"xsl:param %q in xsl:function must not have a select attribute", getAttr(childElem, xslAttrName))
-		}
-
-		if childElem.FirstChild() != nil {
-			if err := compileFunctionChildren(childElem); err != nil {
+	if c.stylesheet.processorLanguage() == 20 {
+		if value, present := childElem.GetAttribute(ctxItemRequired); present {
+			if err := validateBooleanAttr("xsl:param", ctxItemRequired, value); err != nil {
 				return err
 			}
+
+			return staticError(errCodeXTSE0090, "xsl:function parameter must not specify @required in XSLT 2.0")
+		}
+	}
+
+	if reqVal, hasReq := childElem.GetAttribute(ctxItemRequired); hasReq {
+		if reqVal != lexicon.ValueYes && reqVal != "1" && reqVal != lexicon.ValueTrue {
+			pname := getAttr(childElem, xslAttrName)
+
+			return staticError(errCodeXTSE0020,
+				"xsl:param %q in xsl:function must not have required=%q", pname, reqVal)
+		}
+	}
+	// XTSE0020: tunnel="yes" is not allowed on a function parameter
+	if xsdBoolTrue(getAttr(childElem, nameTunnel)) {
+		return staticError(errCodeXTSE0020,
+			"tunnel=\"yes\" is not allowed on a function parameter")
+	}
+	// XTSE0760: function params must not have a default value
+	if _, present := childElem.GetAttribute(xslAttrSelect); present {
+		return staticError(errCodeXTSE0760,
+			"xsl:param %q in xsl:function must not have a select attribute", getAttr(childElem, xslAttrName))
+	}
+
+	if childElem.FirstChild() != nil {
+		if err := compileFunctionChildren(childElem); err != nil {
+			return err
 		}
 	}
 
@@ -441,7 +490,14 @@ func readModePolicies(elem *xdm.Element, md *modeDef) error {
 		return err
 	}
 
-	md.Visibility = strings.TrimSpace(getAttr(elem, xslAttrVisibility))
+	if raw, present := elem.GetAttribute(xslAttrVisibility); present {
+		md.Visibility = strings.Trim(raw, " \t\r\n")
+		switch md.Visibility {
+		case visPublic, visPrivate, visFinal:
+		default:
+			return staticError(errCodeXTSE0020, "invalid mode visibility %q", raw)
+		}
+	}
 	// XTSE0020: unnamed mode cannot have visibility="public" or "final"
 	if md.Name == modeDefault && (md.Visibility == visPublic || md.Visibility == visFinal) {
 		return staticError(errCodeXTSE0020, "unnamed mode cannot have visibility %q", md.Visibility)
@@ -585,24 +641,13 @@ func sameAccumulatorSet(a, b string) bool {
 	return true
 }
 
-func (c *compiler) modeDeclarationName(ctx context.Context, elem *xdm.Element) (string, error) {
-	name := strings.TrimSpace(getAttr(elem, xslAttrName))
-	if name == "" {
+func (c *compiler) modeDeclarationName(_ context.Context, elem *xdm.Element) (string, error) {
+	raw, present := elem.GetAttribute(xslAttrName)
+	if !present {
 		return modeDefault, nil
 	}
 
-	if name == modeUnnamed || name == modeAll || name == modeCurrent {
-		return "", staticError(errCodeXTSE0020, "invalid mode name %q on xsl:mode", name)
-	}
-
-	if name[0] != '#' {
-		// Resolve QName to Clark notation so mode declarations and mode
-		// references (on xsl:template/@mode, xsl:apply-templates/@mode)
-		// use the same key format.
-		name = c.resolveMode(ctx, name)
-	}
-
-	return name, nil
+	return modeQName(strings.Trim(raw, " \t\r\n"), elem, errCodeXTSE0020)
 }
 
 func (c *compiler) modeAccumulatorNames(elem *xdm.Element) *string {
@@ -681,21 +726,21 @@ func (c *compiler) mergeModeImportPrecedence(existing, md *modeDef, streamableSt
 }
 
 // functionName resolves a function's prefixed QName or EQName in its static context.
-func (c *compiler) functionName(name string) (xpath.QualifiedName, error) {
+func functionName(name string, namespaces map[string]string) (xpath.QualifiedName, error) {
 	var qn xpath.QualifiedName
+	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
+		return qn, staticError(errCodeXTSE0020, "xsl:function name %q is not a valid EQName", name)
+	}
 
 	if strings.HasPrefix(name, "Q{") {
 		// EQName: Q{uri}local
 		closeBrace := strings.IndexByte(name, '}')
-		if closeBrace < 0 {
-			return qn, staticError(errCodeXTSE0010, "malformed EQName in xsl:function name %q", name)
-		}
 
 		uri := name[2:closeBrace]
 
 		local := name[closeBrace+1:]
 		if uri == "" {
-			return qn, staticError(errCodeXTSE0010, "xsl:function name %q must be in a non-null namespace", name)
+			return qn, staticError(errCodeXTSE0740, "xsl:function name %q must be in a non-null namespace", name)
 		}
 
 		qn = xpath.QualifiedName{URI: uri, Name: local}
@@ -704,18 +749,15 @@ func (c *compiler) functionName(name string) (xpath.QualifiedName, error) {
 			return qn, staticError(errCodeXTSE0020, "xsl:function name %q is not a valid QName", name)
 		}
 
-		uri := c.nsBindings[prefix]
-		if uri == "" {
-			uri = c.stylesheet.namespaces[prefix]
-		}
+		uri := namespaces[prefix]
 
 		if uri == "" {
-			return qn, staticError(errCodeXTSE0010, "unresolved namespace prefix %q in xsl:function name %q", prefix, name)
+			return qn, staticError(errCodeXTSE0280, "unresolved namespace prefix %q in xsl:function name %q", prefix, name)
 		}
 
 		qn = xpath.QualifiedName{URI: uri, Name: local}
 	} else {
-		return qn, staticError(errCodeXTSE0010, "xsl:function name %q must have a namespace prefix", name)
+		return qn, staticError(errCodeXTSE0740, "xsl:function name %q must have a namespace prefix", name)
 	}
 
 	return qn, nil

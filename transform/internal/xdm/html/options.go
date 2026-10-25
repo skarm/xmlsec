@@ -12,20 +12,21 @@ type Writer struct {
 }
 
 type dumpConfig struct {
-	canEncode         func(rune) bool
-	contentType       string
-	foreignNamespaces bool
+	canEncode func(rune) bool
 	// charMap substitutes a mapped rune in text and attribute-value content with
 	// its literal replacement string (Serialization 3.1 character maps).
 	// Empty/nil disables the feature.
 	charMap               map[rune]string
+	contentType           string
 	normForm              norm.Form
+	foreignNamespaces     bool
 	noDefaultDTD          bool
 	noFormat              bool
 	preserveCase          bool
 	noEscapeURIAttributes bool
 	escapeControlChars    bool
 	nullNamespaceHTMLOnly bool
+	doeMarkers            bool
 	// normalize / normForm request Unicode normalization of text-node and
 	// attribute-value character content (the normalization-form serialization
 	// parameter, Serialization 3.1 §4). Scoped to text and attribute nodes; false
@@ -123,5 +124,13 @@ func (w Writer) ForeignNamespaces(value bool) Writer {
 // Repertoire identifies characters representable in the destination encoding.
 func (w Writer) Repertoire(check func(rune) bool) Writer {
 	w.canEncode = check
+	return w
+}
+
+// DOEMarkers honors the private disable/enable-output-escaping processing
+// instructions carried by XSLT result trees. Ordinary HTML writing leaves them
+// as processing instructions.
+func (w Writer) DOEMarkers(value bool) Writer {
+	w.doeMarkers = value
 	return w
 }

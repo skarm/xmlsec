@@ -162,6 +162,65 @@ func TestFragmentUsesProjectNodeIdentity(t *testing.T) {
 	}
 }
 
+func TestXMLIDViewAndMutation(t *testing.T) {
+	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<r xml:id=" old "/>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := doc.DocumentElement()
+	if value, _ := root.GetAttribute("xml:id"); value != "old" || doc.GetElementByID("old") != root {
+		t.Fatal("parsed value and ID index differ", value)
+	}
+	if value, _ := root.GetAttributeNS("id", tree.XMLNamespace); value != "old" {
+		t.Fatal("namespace-based getter lost normalization", value)
+	}
+	for _, copyDocument := range []bool{false, true} {
+		destination := xdm.NewDefaultDocument()
+		var copied *xdm.Element
+		if copyDocument {
+			destination, err = xdm.CopyDoc(doc)
+			if err == nil {
+				copied = destination.DocumentElement()
+			}
+		} else {
+			var node xdm.Node
+			node, err = xdm.CopyNode(root, destination)
+			if err == nil {
+				copied = node.(*xdm.Element)
+				err = destination.AddChild(copied)
+			}
+		}
+		if err != nil || destination.GetElementByID("old") != copied {
+			t.Fatal("copy lost the normalized ID", err)
+		}
+		if err := copied.SetAttributeNS("id", " new\t\r\n ", xdm.NewNamespace("xml", tree.XMLNamespace)); err != nil {
+			t.Fatal(err)
+		}
+		if destination.GetElementByID("old") != nil || destination.GetElementByID("new") != copied || copied.GetAttributeNodeNS("id", tree.XMLNamespace).Value() != "new" {
+			t.Fatal("replacement kept a stale ID")
+		}
+		if !copied.RemoveAttribute("xml:id") || destination.GetElementByID("new") != nil {
+			t.Fatal("removal kept a stale ID")
+		}
+		if err := copied.SetAttribute("xml:id", " third "); err != nil {
+			t.Fatal(err)
+		}
+		if value, _ := copied.GetAttribute("xml:id"); value != "third" || destination.GetElementByID("third") != copied {
+			t.Fatal("recreated attribute kept a stale value", value)
+		}
+	}
+	if root.GetAttributeNodeNS("id", tree.XMLNamespace).Value() != "old" || doc.GetElementByID("old") != root {
+		t.Fatal("mutating the copy changed the source")
+	}
+	var output bytes.Buffer
+	if err := (xdm.XMLSerialization{OmitDeclaration: true}).WriteTo(&output, doc); err != nil || output.String() != `<r xml:id="old"/>` {
+		t.Fatal("serialization disagrees with the XDM attribute", output.String(), err)
+	}
+	if value := tree.Root(doc.Snapshot()).Attrs[0].Value; value != " old " {
+		t.Fatal("view rewrote the original XML attribute", value)
+	}
+}
+
 func TestDoctypeIsOnlyOutputMetadata(t *testing.T) {
 	ctx := context.Background()
 

@@ -23,7 +23,12 @@ type Regex struct {
 // Flags follow the XPath F&O specification: 'i' (case-insensitive),
 // 'm' (multi-line), 's' (dot-all), 'x' (free-spacing), 'q' (literal).
 func CompileRegex(pattern, flags string) (*Regex, error) {
-	re, err := compileXPathRegexUncached(pattern, flags)
+	return CompileRegexContext(context.Background(), pattern, flags)
+}
+
+// CompileRegexContext applies the invocation's XML Schema edition and limits.
+func CompileRegexContext(ctx context.Context, source, flags string) (*Regex, error) {
+	re, err := compileXPathRegex(ctx, source, flags)
 	if err != nil {
 		return nil, err
 	}

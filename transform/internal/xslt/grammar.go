@@ -3,12 +3,14 @@
 
 package xslt
 
+import "github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+
 // elementDef describes XSLT element syntax from the normative XSLT 3.0
 // summaries (§2.2): allowed attributes, required fields, AVTs and closed values.
 // The table supports XTSE0010 (invalid element), XTSE0020 (invalid attribute
 // value) and XTSE0090 (invalid attribute). Expression, QName and URI semantics
 // require separate checks. Draft spellings marked removed30 remain explicit so
-// forwards-compatible processing cannot silently accept them.
+// current-version processing rejects them as unknown attributes.
 type elementDef struct {
 	// attrs maps an attribute name to what the summary says about it.
 	attrs map[string]attrDef
@@ -41,8 +43,8 @@ type attrDef struct {
 	// nmtoken checks the lexical form independently of processor support:
 	// an unsupported normalization form fails later with SESU0011.
 	nmtoken bool
-	// removed30 rejects withdrawn draft names even when forwards-compatible
-	// processing would ignore unknown attributes.
+	// removed30 marks withdrawn draft names; forwards-compatible processing
+	// may ignore them like other unknown attributes.
 	removed30 bool
 }
 
@@ -151,7 +153,7 @@ func lookupPackageXSLTElement(name string) (elementDef, bool) {
 		}}, true
 	case xslElemOverride:
 		return elementDef{since30: true, attrs: map[string]attrDef{}}, true
-	case "original":
+	case nameOriginal:
 		return elementDef{since30: true, attrs: map[string]attrDef{}}, true
 	}
 
@@ -317,7 +319,7 @@ func lookupDeclarationXSLTElement(name string) (elementDef, bool) {
 		}}, true
 
 	// XSLT 3.0 section 3.10, a top-level declaration.
-	case "global-context-item":
+	case lexicon.XSLTElementGlobalContextItem:
 		return elementDef{since30: true, attrs: map[string]attrDef{
 			"as":    {},
 			nameUse: {values: []string{ctxItemRequired, "optional", "absent"}},
@@ -612,8 +614,7 @@ func lookupSequenceControlXSLTElement(name string) (elementDef, bool) {
 				since30: true,
 				values:  []string{nameYes, "no", nameTrue, nameFalse, "1", "0"},
 			},
-			// Reject withdrawn binding attributes even under forwards-compatible
-			// processing; silently dropping them would leave their variables unbound.
+			// These withdrawn binding attributes are unknown in the published REC.
 			"bind-group":        {removed30: true},
 			"bind-grouping-key": {removed30: true},
 		}}, true

@@ -39,22 +39,10 @@ func ParseText(ctx context.Context, text string, limits Limits) (*Document, erro
 }
 
 func parseXMLReader(ctx context.Context, src io.Reader, limits Limits, characterInput, singleByteEncodings bool) (*Document, error) {
-	if ctx == nil || nilcheck.IsNil(src) {
-		return nil, ErrMalformed
-	}
-
-	if err := limits.Validate(); err != nil {
-		return nil, err
-	}
-
-	input, err := newXMLInputMode(ctx, src, int64(limits.MaxBytes), limits.MaxBytes, characterInput)
+	parser, err := newDocumentReader(ctx, src, limits, characterInput, singleByteEncodings)
 	if err != nil {
 		return nil, err
 	}
-
-	parser := readerParser(input, limits)
-	parser.characterInput = characterInput
-	parser.singleByteEncodings = singleByteEncodings
 
 	doc, err := parser.parse(ctx)
 	if err != nil {
@@ -65,9 +53,44 @@ func parseXMLReader(ctx context.Context, src io.Reader, limits Limits, character
 		return nil, err
 	}
 
-	doc.inputBytes = int(max(input.source.ReadBytes, input.decoded))
+	doc.inputBytes = int(max(parser.input.source.ReadBytes, parser.input.decoded))
 
 	return doc, nil
+}
+
+// CheckXMLProlog validates XML through the first complete element start tag.
+// It uses the document parser's encoding, namespace, DTD and resource policy.
+func CheckXMLProlog(ctx context.Context, src io.Reader, limits Limits, singleByteEncodings bool) error {
+	parser, err := newDocumentReader(ctx, src, limits, false, singleByteEncodings)
+	if err != nil {
+		return err
+	}
+
+	parser.stopAtRoot = true
+	_, err = parser.parse(ctx)
+
+	return err
+}
+
+func newDocumentReader(ctx context.Context, src io.Reader, limits Limits, characterInput, singleByteEncodings bool) (documentParser, error) {
+	if ctx == nil || nilcheck.IsNil(src) {
+		return documentParser{}, ErrMalformed
+	}
+
+	if err := limits.Validate(); err != nil {
+		return documentParser{}, err
+	}
+
+	input, err := newXMLInputMode(ctx, src, int64(limits.MaxBytes), limits.MaxBytes, characterInput)
+	if err != nil {
+		return documentParser{}, err
+	}
+
+	parser := readerParser(input, limits)
+	parser.characterInput = characterInput
+	parser.singleByteEncodings = singleByteEncodings
+
+	return parser, nil
 }
 
 func readerParser(input *xmlInput, limits Limits) documentParser {
@@ -85,6 +108,8 @@ type xmlInput struct {
 	unit             []byte
 	decoded, maximum int64
 	tokenLimit       int
+	lineBreaks       uint64
+	tokenLine        uint64
 	textTailLen      int
 	pending          rune
 	textTail         [2]byte
@@ -266,6 +291,8 @@ func (r *xmlInput) singleByteEncoding(label string) error {
 }
 
 func (r *xmlInput) nextUnit() ([]byte, error) {
+	r.tokenLine = r.lineBreaks + 1
+
 	first, err := r.rune()
 	if err != nil {
 		return nil, err
@@ -340,7 +367,30 @@ func (r *xmlInput) nextUnit() ([]byte, error) {
 		r.textTailLen = 0
 	}
 
+	// Count source line endings before lexical normalization rewrites attribute
+	// whitespace and CDATA. Units cannot split a CR/LF pair.
+	r.lineBreaks += sourceLineBreaks(unit)
+
 	return normalizeOwnedLexical(unit)
+}
+
+func sourceLineBreaks(data []byte) uint64 {
+	var count uint64
+
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
+		case '\r':
+			count++
+
+			if i+1 < len(data) && data[i+1] == '\n' {
+				i++
+			}
+		case '\n':
+			count++
+		}
+	}
+
+	return count
 }
 
 func lexicalUnitComplete(unit []byte, markup bool, quote rune, inReference bool) (bool, error) {

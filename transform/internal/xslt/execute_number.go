@@ -247,8 +247,6 @@ func numericOrdinalSuffixBig(num *big.Int, _ string) string {
 
 func lookupknownAlphabetLengths(key rune) (int, bool) {
 	switch key {
-	case 'α', 'Α':
-		return 25, true
 	case 'а', 'А':
 		return 32, true
 	}
@@ -260,8 +258,13 @@ func lookupknownAlphabetLengths(key rune) (int, bool) {
 
 // formatWithAlphaSystem formats using alphabetic numbering (like a-z but with
 // non-ASCII letters). Wraps at the end of the alphabet:
-// α=1, β=2, ..., ω=25, αα=26, αβ=27, etc.
+// Greek numbering uses the shared 24-letter alphabet; other alphabets use
+// their configured contiguous range.
 func formatWithAlphaSystem(num int64, start rune) string {
+	if start == 'α' || start == 'Α' {
+		return xpath.FormatGreekAlphabetic(big.NewInt(num), start == 'Α')
+	}
+
 	if num <= 0 {
 		return strconv.FormatInt(num, 10)
 	}
@@ -377,6 +380,9 @@ func parseNumberListPicture(format string) numberListPicture {
 }
 
 func formatNumberListToken(num *big.Int, token, groupSep string, groupSize int, lang, ordinal string) string {
+	if token == "α" || token == "Α" {
+		return xpath.FormatGreekAlphabetic(num, token == "Α")
+	}
 	// Word and alphabetic formats support all int64 values on any architecture.
 	// Other non-decimal formats require a native int.
 	if num.IsInt64() {
@@ -814,7 +820,7 @@ func (ec *execContext) resolveNumberNode(ctx context.Context, inst *numberInst) 
 
 		selected, ok := seq.Get(0).(xdm.NodeItem)
 		if !ok {
-			return nil, dynamicError(errCodeXTTE0990,
+			return nil, dynamicError(errCodeXTTE1000,
 				"xsl:number select expression did not return a node")
 		}
 

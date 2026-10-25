@@ -5,6 +5,7 @@ package xslt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"strconv"
@@ -24,6 +25,8 @@ type xslMultiArityFunc struct {
 func (f *xslMultiArityFunc) MinArity() int { return f.minArity }
 
 func (f *xslMultiArityFunc) MaxArity() int { return f.maxArity }
+
+func (f *xslMultiArityFunc) AcceptsArity(arity int) bool { return f.findVariant(arity) != nil }
 
 // DynamicRefSnapshot selects and captures only the requested overload.
 func (f *xslMultiArityFunc) DynamicRefSnapshot(ctx context.Context, arity int) (xdm.FunctionItem, bool) {
@@ -107,26 +110,34 @@ func (f *xslUserFunc) DynamicRefSnapshot(_ context.Context, arity int) (xdm.Func
 
 // FuncParamTypes returns the parameter types prepareCall parsed at compile
 // time. Callers share the slice and must not modify it.
-func (f *xslUserFunc) FuncParamTypes() []xdm.SequenceType { return f.def.paramTypes }
+func (f *xslUserFunc) FuncParamTypes() []xdm.SequenceType {
+	// The XSLT 2.0 call boundary performs conversion itself so that a mismatch
+	// raises XTTE0790. XPath's generic precheck would mask it with XPTY0004.
+	if f.ec.stylesheet.processorLanguage() == 20 {
+		return nil
+	}
+
+	return f.def.paramTypes
+}
 
 // FuncReturnType returns the return type prepareCall parsed at compile time.
 func (f *xslUserFunc) FuncReturnType() *xdm.SequenceType { return f.def.returnType }
 
 func (f *xslUserFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	// Retrieve the XSLT exec context from the context.Context
-	ec := getExecContext(ctx)
-	if ec == nil {
-		value := xpath.InvocationState(ctx, f.ec, func() any { return f.ec.functionInvocation(ctx) })
+	// The body has its own XSLT context. It clears inherited host state below,
+	// and its instructions may establish fresh groups, regex matches and merges.
+	ctx = xpath.WithoutDynamicCall(ctx)
 
-		var ok bool
-
-		ec, ok = value.(*execContext)
-		if !ok {
-			return nil, dynamicError(errCodeXTDE0820, "invalid XSLT function invocation state")
-		}
-
-		ctx = context.WithValue(ctx, execContextKey{}, ec)
+	if f.def.Visibility == visAbstract {
+		return nil, dynamicError(errCodeXTDE3052, "abstract function %s#%d was invoked without an implementation", f.def.Name.Name, len(f.def.Params))
 	}
+
+	ec, err := functionExecution(ctx, f.ec)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx = withExecContext(ctx, ec)
 
 	cacheKey, cacheable := ec.functionCacheKey(f.def, args)
 	if cacheable {
@@ -157,28 +168,48 @@ func (f *xslUserFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequen
 	// are NOT inherited (XSLT 2.0 erratum XT.E19).
 	savedContext := ec.contextNode
 	savedCurrent := ec.currentNode
+	savedItem := ec.contextItem
 	savedPos := ec.position
 	savedSize := ec.size
 	savedTunnel := ec.tunnelParams
-	savedMode := ec.currentMode
+	savedMode, savedModePackage := ec.currentMode, ec.currentModePackage
 	savedGroups := ec.regexGroups
 	savedInMerge := ec.inMergeAction
+	savedGroup, savedKey := ec.currentGroup, ec.currentGroupKey
+	savedInGroup, savedHasKey := ec.inGroupContext, ec.groupHasKey
+	savedOutputURI := ec.currentOutputURI
+	savedLocals := ec.localVars
+	savedTemplate := ec.currentTemplate
+	ec.setCurrentTemplate(nil)
+	ec.localVars = nil
+	ec.localVarsVer++
 	ec.contextNode = nil
 	ec.currentNode = nil
+	ec.contextItem = nil
+	ec.currentGroup, ec.currentGroupKey = nil, nil
+	ec.inGroupContext, ec.groupHasKey = false, false
+	ec.currentOutputURI = ""
 	ec.tunnelParams = nil
-	ec.currentMode = ec.stylesheet.defaultMode
+	ec.currentMode, ec.currentModePackage = "", ec.effectiveStylesheet()
 	ec.regexGroups = nil // regex-group() returns empty inside xsl:function
 
 	ec.inMergeAction = false // XTDE3480/XTDE3510: merge context not available in functions
 	defer func() {
 		ec.contextNode = savedContext
 		ec.currentNode = savedCurrent
+		ec.contextItem = savedItem
 		ec.position = savedPos
 		ec.size = savedSize
 		ec.tunnelParams = savedTunnel
-		ec.currentMode = savedMode
+		ec.currentMode, ec.currentModePackage = savedMode, savedModePackage
 		ec.regexGroups = savedGroups
 		ec.inMergeAction = savedInMerge
+		ec.currentGroup, ec.currentGroupKey = savedGroup, savedKey
+		ec.inGroupContext, ec.groupHasKey = savedInGroup, savedHasKey
+		ec.currentOutputURI = savedOutputURI
+		ec.localVars = savedLocals
+		ec.localVarsVer++
+		ec.setCurrentTemplate(savedTemplate)
 		ec.cachedFnsNS = savedFnsNS
 		ec.currentPackage = savedPackage
 	}()
@@ -196,7 +227,7 @@ func (f *xslUserFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequen
 	ec.pushVarScope()
 	defer ec.popVarScope()
 
-	// Bind parameters with type checking/coercion (XTTE0790)
+	// Bind parameters with XPath function conversion.
 	if err := callParams(ctx, f, args, ec); err != nil {
 		return nil, err
 	}
@@ -210,7 +241,6 @@ func (f *xslUserFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequen
 		return nil, err
 	}
 
-	atomicReturn := f.def.As != "" && isAtomicTypeName(f.def.As)
 	frame := &outputFrame{current: tmpRoot, doc: tmpDoc, captureItems: true, sequenceMode: true}
 	ec.outputStack = append(ec.outputStack, frame)
 
@@ -233,14 +263,14 @@ func (f *xslUserFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequen
 		frame.pendingItems = append(ec.collectNodeChildren(tmpRoot), frame.pendingItems...)
 	}
 
-	// Return captured items if any, otherwise collect from DOM.
-	// For atomic return types, atomize the captured items.
+	// Return captured items if any, otherwise collect from DOM. Declared atomic
+	// results are atomized by function conversion, preserving conversion errors.
 	// Per XSLT 3.0 §5.7.2, adjacent text nodes in a sequence are NOT
 	// merged (merging only applies to tree construction). Zero-length
 	// text nodes are preserved as distinct items.
 	var result xdm.ItemSlice
 
-	callPendingItems(frame, tmpRoot, atomicReturn, &result, ec)
+	callPendingItems(frame, tmpRoot, &result, ec)
 
 	// Strip DOE marker PIs — DOE is ignored in function return values
 	// (temporary output state per XSLT 3.0 §20.1).
@@ -249,15 +279,19 @@ func (f *xslUserFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequen
 
 	// Type check against the declared as type
 	if f.def.As != "" {
-		checked, err := checkSequenceType(ctx, result, f.def.returnCheckType, errCodeXTTE0780, "function "+f.def.Name.Name, ec)
+		checked, err := ec.convertFunctionArgument(ctx, result, *f.def.returnType)
 		if err != nil {
-			return nil, err
+			if failure := preserveControlFailure(ctx, err); failure != nil {
+				return nil, failure
+			}
+
+			return nil, dynamicError(errCodeXTTE0780, "function %s: %s", f.def.Name.Name, err)
 		}
 
 		result = xdm.Materialize(checked)
 	}
 
-	if cacheable {
+	if cacheable && f.def.cacheResult(result) {
 		ec.functionResultCache[cacheKey] = cloneXPathSequence(result)
 	}
 
@@ -272,37 +306,12 @@ func cloneXPathSequence(seq xdm.Sequence) xdm.Sequence {
 	return append(xdm.ItemSlice(nil), xdm.Materialize(seq)...)
 }
 
-// isAtomicTypeName returns true if the given type name (from an as="" attribute)
-// represents an atomic/simple type (not a node type or function type).
-// Handles occurrence indicators (?, *, +) and xs: prefixed types.
-func isAtomicTypeName(as string) bool {
-	// Strip occurrence indicator
-	name := strings.TrimRight(as, "?*+")
-	name = strings.TrimSpace(name)
-	// xs:string, xs:integer, xs:boolean, xs:double, etc.
-	if strings.HasPrefix(name, "xs:") {
-		return true
-	}
-	// unprefixed atomic types (rare but possible)
-	switch name {
-	case lexicon.TypeString, lexicon.TypeInteger, lexicon.TypeBoolean, lexicon.TypeDouble, lexicon.TypeFloat, nameDecimal,
-		lexicon.TypeDate, nameDateTime, lexicon.TypeTime, lexicon.TypeDuration, lexicon.TypeAnyURI:
-		return true
-	}
-
-	return false
-}
-
-// element-available(name) returns true if the named XSLT element is available.
-
 func callParams(ctx context.Context, f *xslUserFunc, args []xdm.Sequence, ec *execContext) error {
 	for i, param := range f.def.Params {
 		if i < len(args) {
 			val := args[i]
 			if param.As != "" {
-				st := f.def.paramCheckTypes[i]
-
-				checked, err := checkSequenceType(ctx, val, st, errCodeXTTE0790, "param $"+param.Name, ec)
+				checked, err := ec.convertFunctionArgument(ctx, val, f.def.paramTypes[i])
 				if err != nil {
 					return err
 				}
@@ -326,41 +335,107 @@ func callParams(ctx context.Context, f *xslUserFunc, args []xdm.Sequence, ec *ex
 	return nil
 }
 
+func (ec *execContext) convertSequenceType(ctx context.Context, value xdm.Sequence, st xdm.SequenceType) (xdm.Sequence, error) {
+	eval, _ := ec.baseXPathEvaluator()
+	if ec.typeAnnotations != nil {
+		eval = eval.TypeAnnotations(ec.typeAnnotations)
+	}
+
+	return eval.ConvertToSequenceType(ec.xpathContext(ctx), value, st, ec.stylesheet.processorLanguage())
+}
+
+func (ec *execContext) convertFunctionArgument(ctx context.Context, value xdm.Sequence, st xdm.SequenceType) (xdm.Sequence, error) {
+	converted, err := ec.convertSequenceType(ctx, value, st)
+	if err != nil && ec.stylesheet.processorLanguage() == 20 {
+		var detail *xdm.Error
+		if errors.As(err, &detail) && detail.Code == lexicon.ErrXPTY0004 {
+			return nil, dynamicError(errCodeXTTE0790, "function argument: %s", detail.Message)
+		}
+	}
+
+	return converted, err
+}
+
 func callIsOverride(f *xslUserFunc, ec *execContext) {
-	if f.def.IsOverride && ec.currentPackage != nil {
-		ec.cachedFnsNS = nil
-		ec.currentPackage = nil
-	} else if f.def.OwnerPackage != nil && f.def.OwnerPackage != ec.currentPackage {
+	if f.def.OwnerPackage != ec.currentPackage {
 		ec.cachedFnsNS = nil
 		ec.currentPackage = f.def.OwnerPackage
 	}
 }
 
-func callPendingItems(frame *outputFrame, tmpRoot *xdm.Element, atomicReturn bool, result *xdm.ItemSlice, ec *execContext) {
-	if len(frame.pendingItems) > 0 {
-		if tmpRoot.FirstChild() != nil {
-			var seq xdm.ItemSlice
-			for child := range xdm.Children(tmpRoot) {
-				seq = append(seq, xdm.NodeItem{Node: child})
-			}
-
-			seq = append(seq, frame.pendingItems...)
-			if atomicReturn {
-				(*result) = xdm.Materialize(atomizeSequence(seq))
-			} else {
-				(*result) = xdm.Materialize(seq)
-			}
-		} else if atomicReturn {
-			(*result) = xdm.Materialize(atomizeSequence(frame.pendingItems))
-		} else {
-			(*result) = xdm.Materialize(frame.pendingItems)
-		}
-	} else {
-		(*result) = ec.collectNodeChildren(tmpRoot)
-		if atomicReturn {
-			(*result) = xdm.Materialize(atomizeSequence((*result)))
-		}
+func callPendingItems(frame *outputFrame, tmpRoot *xdm.Element, result *xdm.ItemSlice, ec *execContext) {
+	if len(frame.pendingItems) == 0 {
+		*result = ec.collectNodeChildren(tmpRoot)
+		return
 	}
+
+	var seq xdm.ItemSlice
+	for child := range xdm.Children(tmpRoot) {
+		seq = append(seq, xdm.NodeItem{Node: child})
+	}
+
+	seq = append(seq, frame.pendingItems...)
+	*result = seq
+}
+
+type globalVariableResolver struct {
+	lexical  *execContext
+	owner    *Stylesheet
+	original globalBinding
+}
+
+func (ec *execContext) SnapshotVariableResolver() xpath.VariableResolver {
+	return &globalVariableResolver{lexical: ec.captureFunctionContext(), owner: ec.effectiveStylesheet(), original: ec.originalGlobal}
+}
+
+func (r *globalVariableResolver) ResolveVariable(ctx context.Context, name string) (xdm.Sequence, bool, error) {
+	ec, err := functionExecution(ctx, r.lexical)
+	if err != nil {
+		return nil, false, err
+	}
+	defer ec.pushPackage(r.owner)()
+
+	locals, original := ec.localVars, ec.originalGlobal
+	ec.localVars, ec.originalGlobal = nil, r.original
+
+	ec.localVarsVer++
+	defer func() { ec.localVars, ec.originalGlobal = locals, original; ec.localVarsVer++ }()
+
+	return ec.ResolveVariable(withExecContext(ctx, ec), name)
+}
+
+// Returned functions keep the producing transformation's global bindings,
+// even when called by another execution of the same compiled stylesheet.
+func functionExecution(ctx context.Context, lexical *execContext) (*execContext, error) {
+	caller := getExecContext(ctx)
+	if caller != nil && caller.execution != nil && caller.execution == lexical.execution {
+		return caller, nil
+	}
+
+	if lexical.functionLexical != nil {
+		lexical = lexical.functionLexical
+	}
+
+	value := xpath.InvocationState(ctx, lexical, func() any {
+		local := lexical.functionInvocation(ctx)
+		if caller != nil {
+			local.msgHandler = caller.msgHandler
+
+			local.resourceOwner = caller
+			if caller.resourceOwner != nil {
+				local.resourceOwner = caller.resourceOwner
+			}
+		}
+
+		return local
+	})
+
+	ec, ok := value.(*execContext)
+	if !ok {
+		return nil, dynamicError(errCodeXTDE0820, "invalid XSLT function invocation state")
+	}
+
+	return ec, nil
 }
 
 func (ec *execContext) captureFunctionContext() *execContext {
@@ -372,7 +447,7 @@ func (ec *execContext) captureFunctionContext() *execContext {
 		lexical.globalVars = ec.globalVars
 		lexical.globalVarDefs = ec.globalVarDefs
 		lexical.globalParamDefs = ec.globalParamDefs
-		lexical.packageVarCache = ec.packageVarCache
+		lexical.globalValueCache = ec.globalValueCache
 
 		if config := lexical.transformConfig; config != nil {
 			config.initialMatchSelection, config.initialFunctionParams = nil, nil
@@ -380,7 +455,10 @@ func (ec *execContext) captureFunctionContext() *execContext {
 			config.initialTemplateParams, config.initialTemplateTunnel = nil, nil
 			config.rawResultHandler, config.primaryItemsHandler = nil, nil
 			config.resultDocHandler, config.annotationHandler = nil, nil
+			config.msgHandler = nil
 		}
+
+		lexical.msgHandler = nil
 
 		lexical.functionLexical = lexical
 		ec.functionLexical = lexical
@@ -435,6 +513,9 @@ func (ec *execContext) functionInvocation(ctx context.Context) *execContext {
 
 	local := newTransformExecContext(ctx, ec.sourceDoc, ec.stylesheet, cfg)
 	local.functionLexical = ec.functionLexical
+	local.execution = ec.execution
+	local.currentTime = ec.currentTime
+	local.dynamicProperties = ec.dynamicProperties
 
 	if ec.globalVars != nil {
 		local.globalVars = maps.Clone(ec.globalVars)
@@ -442,8 +523,8 @@ func (ec *execContext) functionInvocation(ctx context.Context) *execContext {
 
 	local.globalVarDefs = maps.Clone(ec.globalVarDefs)
 	local.globalParamDefs = maps.Clone(ec.globalParamDefs)
-	local.globalEvaluating = make(map[string]struct{})
-	local.packageVarCache = maps.Clone(ec.packageVarCache)
+	local.globalEvaluating = make(map[globalBinding]struct{})
+	local.globalValueCache = maps.Clone(ec.globalValueCache)
 	local.globalContextItem, local.globalContextAbsent = ec.globalContextItem, ec.globalContextAbsent
 	local.currentPackage = ec.currentPackage
 	local.defaultCollation, local.defaultValidation = ec.defaultCollation, ec.defaultValidation
@@ -461,8 +542,9 @@ func (ec *execContext) functionCacheKey(def *xslFunction, args []xdm.Sequence) (
 	if ec == nil || def == nil {
 		return "", false
 	}
-	// Cache when cache="yes" or new-each-time="no" (deterministic function).
-	if !def.Cache && def.NewEachTime != lexicon.ValueNo {
+	// Proactive functions (including the default) retain fresh node identity.
+	// A cache hint does not change their evaluation contract.
+	if def.NewEachTime != lexicon.ValueNo && !(def.Cache && (def.NewEachTime == nameMaybe || proactiveSelfBinding(def))) {
 		return "", false
 	}
 
@@ -486,6 +568,25 @@ func (ec *execContext) functionCacheKey(def *xslFunction, args []xdm.Sequence) (
 	}
 
 	return b.String(), true
+}
+
+// A separately retrieved original function can still bind recursive calls to
+// an override. Its arithmetic body alone cannot establish that target's effects.
+func proactiveSelfBinding(def *xslFunction) bool {
+	if !def.cacheAtomicSelf {
+		return false
+	}
+
+	if def.OwnerPackage == nil {
+		return true
+	}
+
+	target := def.OwnerPackage.functions[funcKey{Name: def.Name, Arity: len(def.Params)}]
+	if target == nil || target.OwnerPackage != def.OwnerPackage || len(target.Body) != len(def.Body) {
+		return false
+	}
+
+	return len(def.Body) == 0 || &target.Body[0] == &def.Body[0]
 }
 
 func (ec *execContext) writeFunctionCacheSequence(b *strings.Builder, seq xdm.Sequence) bool {
@@ -624,22 +725,79 @@ func (ec *execContext) collectNodeChildren(node xdm.Node) xdm.ItemSlice {
 	return seq
 }
 
-// prepareCall derives the data every call needs from the compiled function, so
-// that a call parses no sequence type and inspects no body instruction. It runs
-// once, when the function is compiled.
-func (fn *xslFunction) prepareCall() {
-	fn.paramTypes = make([]xdm.SequenceType, 0, len(fn.Params))
+// prepareCompiledFunction recognizes a narrow scalar memoization case. A cache
+// hint alone cannot remove proactive node construction, messages or callbacks.
+func (c *compiler) prepareCompiledFunction(ctx context.Context, fn *xslFunction, elem *xdm.Element) error {
+	defaultNS, _ := c.declarationDefaultNamespace(elem)
+	if err := fn.prepareCall(ctx, inScopeNamespaces(elem), defaultNS); err != nil {
+		return err
+	}
 
-	fn.paramCheckTypes = make([]sequenceType, len(fn.Params))
-	for i, p := range fn.Params {
-		if p.As != "" {
-			fn.paramCheckTypes[i] = parseSequenceType(p.As)
-		}
+	if !fn.Cache || !fn.selectOnly {
+		return nil
+	}
 
-		if fn.paramTypes == nil {
+	namespaces := inScopeNamespaces(elem)
+	for child := range xdm.ChildElements(elem) {
+		if child.URI() != lexicon.NamespaceXSLT || child.LocalName() != lexicon.XSLTElementSequence {
 			continue
 		}
 
+		for prefix, uri := range inScopeNamespaces(child) {
+			if namespaces[prefix] != uri {
+				return nil
+			}
+		}
+	}
+
+	for _, inst := range fn.Body {
+		sequence, ok := inst.(*xslSequenceInst)
+		if !ok || sequence.Select == nil {
+			return nil
+		}
+
+		analysis, err := sequence.Select.Analyze(ctx, namespaces)
+		if err != nil {
+			return err
+		}
+
+		if analysis.DynamicCalls || analysis.ContextItem {
+			return nil
+		}
+
+		for _, reference := range analysis.Functions {
+			if reference.Name != fn.Name || reference.Arity != len(fn.Params) {
+				return nil
+			}
+		}
+	}
+
+	fn.cacheAtomicSelf = true
+
+	return nil
+}
+
+func (fn *xslFunction) cacheResult(result xdm.Sequence) bool {
+	if fn.NewEachTime == lexicon.ValueNo || fn.NewEachTime == nameMaybe {
+		return true
+	}
+
+	for item := range xdm.SequenceItems(result) {
+		if _, ok := item.(xdm.AtomicValue); !ok {
+			return false
+		}
+	}
+
+	return fn.cacheAtomicSelf
+}
+
+// prepareCall derives the data every call needs from the compiled function, so
+// that a call parses no sequence type and inspects no body instruction. It runs
+// once, when the function is compiled.
+func (fn *xslFunction) prepareCall(ctx context.Context, namespaces map[string]string, defaultNS string) error {
+	fn.paramTypes = make([]xdm.SequenceType, 0, len(fn.Params))
+
+	for _, p := range fn.Params {
 		as := p.As
 		if as == "" {
 			as = "item()*"
@@ -647,19 +805,30 @@ func (fn *xslFunction) prepareCall() {
 
 		st, err := xpath.ParseSequenceType(as)
 		if err != nil {
-			fn.paramTypes = nil
-			continue
+			return staticError(errCodeXPST0003, "invalid function parameter type %q: %s", as, err)
 		}
 
-		fn.paramTypes = append(fn.paramTypes, st)
+		bound, err := xpath.BindSequenceType(ctx, st, p.TypeNamespaces, p.XPathDefaultNS)
+		if err != nil {
+			return err
+		}
+
+		fn.paramTypes = append(fn.paramTypes, bound)
 	}
 
 	fn.returnType = nil
 	if fn.As != "" {
-		fn.returnCheckType = parseSequenceType(fn.As)
-		if st, err := xpath.ParseSequenceType(fn.As); err == nil {
-			fn.returnType = &st
+		st, err := xpath.ParseSequenceType(fn.As)
+		if err != nil {
+			return staticError(errCodeXPST0003, "invalid function return type %q: %s", fn.As, err)
 		}
+
+		bound, err := xpath.BindSequenceType(ctx, st, namespaces, defaultNS)
+		if err != nil {
+			return err
+		}
+
+		fn.returnType = &bound
 	}
 
 	// A body made only of select-form xsl:sequence instructions never adds a
@@ -676,4 +845,6 @@ func (fn *xslFunction) prepareCall() {
 			break
 		}
 	}
+
+	return nil
 }

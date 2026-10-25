@@ -27,7 +27,7 @@ func compileFromLexer(l *lexer) (*vmProgram, prefixValidationPlan, error) {
 }
 
 func parseWithLexer(l *lexer) (Expr, error) {
-	p := &parseOptions{lexer: l}
+	p := &parseOptions{lexer: l, version: l.version}
 
 	e, err := p.parseExpression()
 	if err != nil {
@@ -42,7 +42,7 @@ func parseWithLexer(l *lexer) (Expr, error) {
 }
 
 func tryCompileDirectFromLexer(l *lexer) (*vmProgram, prefixValidationPlan, bool, error) {
-	p := &parseOptions{lexer: l}
+	p := &parseOptions{lexer: l, version: l.version}
 
 	expr, ok, err := p.tryParseDirectExpr()
 	if err != nil || !ok {

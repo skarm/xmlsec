@@ -94,6 +94,9 @@ linters:
       - path: ^transform/internal/(xdm|xpath|xslt)/
         linters: [ staticcheck ]
         text: 'ST[0-9]+:'
+      # Test scenarios keep repeated fixtures and assertions together.
+      - path: _test\.go$
+        linters: [ dupl, gocognit, goconst, gocyclo, wsl_v5 ]
       # Test fixtures deliberately exercise weak algorithms and unchecked inputs.
       - path: _test\.go$
         linters: [ errcheck, forcetypeassert, gosec ]

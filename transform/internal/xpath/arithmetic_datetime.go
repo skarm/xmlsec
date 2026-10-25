@@ -4,6 +4,7 @@
 package xpath
 
 import (
+	"context"
 	"math"
 	"math/big"
 	"time"
@@ -57,6 +58,10 @@ func isDateTimeType(typeName string) bool {
 // xs:dayTimeDuration) carries a custom TypeName whose BaseType names the
 // built-in ancestor; arithmetic must treat it as that built-in type.
 func arithmeticType(a xdm.AtomicValue) string {
+	if a.TypeName == xdm.TypeDateTimeStamp || a.BaseType == xdm.TypeDateTimeStamp {
+		return xdm.TypeDateTime
+	}
+
 	if isDurationType(a.TypeName) || isDateTimeType(a.TypeName) {
 		return a.TypeName
 	}
@@ -82,7 +87,7 @@ func julianDayNumber(year, month, day int) int64 {
 // evalDateTimeArithmetic handles arithmetic involving durations and date/time values.
 // Returns (result, handled, error). If handled is false, the caller should fall through
 // to numeric arithmetic.
-func evalDateTimeArithmetic(ec *evalContext, op TokenType, la, ra xdm.AtomicValue) (xdm.Sequence, bool, error) {
+func evalDateTimeArithmetic(ctx context.Context, ec *evalContext, op TokenType, la, ra xdm.AtomicValue) (xdm.Sequence, bool, error) {
 	// Promote schema-derived duration/date/time operands to their built-in base
 	// type BEFORE classifying, so a restriction of e.g. xs:dayTimeDuration is
 	// recognized as a duration and the result carries the built-in type. The
@@ -105,7 +110,7 @@ func evalDateTimeArithmetic(ec *evalContext, op TokenType, la, ra xdm.AtomicValu
 	// / duration → decimal
 	if lDur && rDur {
 		if op == TokenDiv {
-			return arithmeticDurationDivDuration(la, ra)
+			return arithmeticDurationDivDuration(ctx, la, ra)
 		}
 
 		return arithmeticDurationDuration(op, la, ra)
@@ -113,12 +118,12 @@ func evalDateTimeArithmetic(ec *evalContext, op TokenType, la, ra xdm.AtomicValu
 
 	// duration * number → duration
 	if lDur && ra.IsNumeric() {
-		return arithmeticDurationNumber(op, la, ra)
+		return arithmeticDurationNumber(ctx, op, la, ra)
 	}
 	// number * duration → duration
 	if la.IsNumeric() && rDur {
 		if op == TokenStar {
-			return arithmeticDurationNumber(op, ra, la)
+			return arithmeticDurationNumber(ctx, op, ra, la)
 		}
 
 		return nil, false, nil
@@ -244,7 +249,7 @@ func arithmeticDurationDuration(op TokenType, la, ra xdm.AtomicValue) (xdm.Seque
 	}), true, nil
 }
 
-func arithmeticDurationNumber(op TokenType, dur, num xdm.AtomicValue) (xdm.Sequence, bool, error) {
+func arithmeticDurationNumber(ctx context.Context, op TokenType, dur, num xdm.AtomicValue) (xdm.Sequence, bool, error) {
 	if op != TokenStar && op != TokenDiv {
 		return nil, true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "invalid operator for duration*number"}
 	}
@@ -291,6 +296,13 @@ func arithmeticDurationNumber(op TokenType, dur, num xdm.AtomicValue) (xdm.Seque
 				resRat = new(big.Rat).Mul(secsRat, nRat)
 			} else {
 				resRat = new(big.Rat).Quo(secsRat, nRat)
+
+				var err error
+
+				resRat, err = finiteDecimalValue(ctx, resRat)
+				if err != nil {
+					return nil, true, err
+				}
 			}
 
 			negative := resRat.Sign() < 0
@@ -562,7 +574,7 @@ func arithmeticDateTimeDatetime(ec *evalContext, la, ra xdm.AtomicValue) (xdm.Se
 	}), true, nil
 }
 
-func arithmeticDurationDivDuration(la, ra xdm.AtomicValue) (xdm.Sequence, bool, error) {
+func arithmeticDurationDivDuration(ctx context.Context, la, ra xdm.AtomicValue) (xdm.Sequence, bool, error) {
 	// xs:duration (generic) does not support arithmetic
 	if la.TypeName == xdm.TypeDuration || ra.TypeName == xdm.TypeDuration {
 		return nil, true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: textXsDurationCannotBeUsedInArithmetic}
@@ -600,7 +612,9 @@ func arithmeticDurationDivDuration(la, ra xdm.AtomicValue) (xdm.Sequence, bool, 
 
 	r := new(big.Rat).Quo(lRat, rRat)
 
-	return xdm.SingleDecimal(r), true, nil
+	result, err := decimalQuotient(ctx, r)
+
+	return result, true, err
 }
 
 // numericToRat returns the exact rational value of an integer- or

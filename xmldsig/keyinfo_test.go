@@ -510,9 +510,9 @@ func TestKeyInfoResourceOrderAndInvalidPreflight(t *testing.T) {
 func testKeyInfoResourceOrderAndInvalidPreflightCase(t *testing.T, signed **document.Document, name *string, payload *[]byte, remoteBytes *[]byte, k **ecdsa.PrivateKey, ctx *context.Context, retrieval bool) {
 	var sequence []string
 
-	local := (*signed)
+	local := *signed
 
-	xml := coreXML(t, (*signed))
+	xml := coreXML(t, *signed)
 	if (*name) == nameUnknownAlgorithm {
 		local = coreParse(t, strings.Replace(xml, xmldsig.ECDSASHA256, "urn:unsupported", 1))
 	}
@@ -530,11 +530,11 @@ func testKeyInfoResourceOrderAndInvalidPreflightCase(t *testing.T, signed **docu
 
 	payloadResolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 		sequence = append(sequence, "payload")
-		return io.NopCloser(bytes.NewReader((*payload))), nil
+		return io.NopCloser(bytes.NewReader(*payload)), nil
 	})
 	keyResolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 		sequence = append(sequence, "key")
-		return io.NopCloser(bytes.NewReader((*remoteBytes))), nil
+		return io.NopCloser(bytes.NewReader(*remoteBytes)), nil
 	})
 	o := xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{uriUrnPayload}, External: &xmldsig.ExternalReferences{AllowedURIs: []string{uriUrnPayload}, Resolver: payloadResolver}}, KeyInfo: keyinfo.Options{External: &keyinfo.ExternalResources{AllowedURIs: []string{uriUrnKey}, Resolver: keyResolver}}, SelectTrustedKey: func(ctx context.Context, info *keyinfo.Result) (int, error) {
 		sequence = append(sequence, "trust")
@@ -551,7 +551,7 @@ func testKeyInfoResourceOrderAndInvalidPreflightCase(t *testing.T, signed **docu
 		o.KeyInfo.RetrievalProcessing = &processing
 	}
 
-	r, e := xmldsig.VerifySignatureWithKeyInfo((*ctx), local, xmldsig.Signatures(local)[0], o)
+	r, e := xmldsig.VerifySignatureWithKeyInfo(*ctx, local, xmldsig.Signatures(local)[0], o)
 
 	want := "key,trust"
 	if (*name) == "success" {
@@ -682,11 +682,11 @@ func TestTemplateKeyInfoRoot(t *testing.T) {
 				if doc != nil || !errors.Is(err, xmldsig.ErrStructure) {
 					t.Fatalf("got %v, %v; want ErrStructure", doc, err)
 				}
+				return
 			} else if err != nil {
 				t.Fatal(err)
-			} else {
-				assertTemplateKeyInfoCount(t, doc, tt.info != nil)
 			}
+			assertTemplateKeyInfoCount(t, doc, tt.info != nil)
 		})
 	}
 }

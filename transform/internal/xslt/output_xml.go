@@ -6,6 +6,7 @@ package xslt
 import (
 	"errors"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/tree"
@@ -197,16 +198,9 @@ func serializeXMLWithCharMapInner(w io.Writer, doc *xdm.Document, outDef *Output
 		}
 	}
 
-	// Add DOCTYPE if doctype-system is specified (doctype-public alone is ignored for xml).
+	doctype := doc.Doctype
 	if outDef.DoctypeSystem != "" {
-		rootName := methodHTML
-		if root := doc.DocumentElement(); root != nil {
-			rootName = root.Name()
-		}
-
-		if err := sw.WriteDTD(rootName, outDef.DoctypePublic, outDef.DoctypeSystem); err != nil {
-			return err
-		}
+		doctype = &xdm.Doctype{PublicID: outDef.DoctypePublic, SystemID: outDef.DoctypeSystem}
 	}
 
 	// Build CDATA section element set for fast lookup.
@@ -236,6 +230,7 @@ func serializeXMLWithCharMapInner(w io.Writer, doc *xdm.Document, outDef *Output
 	}
 
 	serializer := xmlTreeSerializer{
+		doctype:           doctype,
 		writer:            &sw,
 		charMap:           charMap,
 		cdataElems:        cdataSet,
@@ -282,6 +277,7 @@ func (ic *xmlIndentCtx) writeIndent(sw *stream.Writer) error {
 // xmlTreeSerializer keeps the output policy and indentation state together
 // while each recursive traversal owns its disable-output-escaping state.
 type xmlTreeSerializer struct {
+	doctype           *xdm.Doctype
 	writer            *stream.Writer
 	charMap           map[rune]string
 	cdataElems        map[string]struct{}
@@ -292,15 +288,9 @@ type xmlTreeSerializer struct {
 
 func (serializer xmlTreeSerializer) children(parent xdm.Node) error {
 	doeActive := false
+	doctypeEmitted := false
 	children := collectChildren(parent)
-	hasChildElements := false
-
-	for _, child := range children {
-		if child.Type() == xdm.ElementNode {
-			hasChildElements = true
-			break
-		}
-	}
+	hasChildElements := slices.ContainsFunc(children, func(child xdm.Node) bool { return child.Type() == xdm.ElementNode })
 
 	for _, child := range children {
 		// DOE markers affect only the remaining siblings in this traversal.
@@ -318,6 +308,14 @@ func (serializer xmlTreeSerializer) children(parent xdm.Node) error {
 		switch child.Type() {
 		case xdm.ElementNode:
 			elem, _ := xdm.AsNode[*xdm.Element](child)
+			if parent.Type() == xdm.DocumentNode && serializer.doctype != nil && !doctypeEmitted {
+				if err := serializer.writer.WriteDTD(elem.Name(), serializer.doctype.PublicID, serializer.doctype.SystemID); err != nil {
+					return err
+				}
+
+				doctypeEmitted = true
+			}
+
 			if err := serializer.element(elem); err != nil {
 				return err
 			}
@@ -407,15 +405,6 @@ func elemMatchesSuppressSet(elem *xdm.Element, suppressSet map[string]struct{}) 
 	}
 
 	if _, ok := suppressSet[expandedElemName(elem)]; ok {
-		return true
-	}
-
-	name := elem.Name()
-	if _, ok := suppressSet[name]; ok {
-		return true
-	}
-
-	if _, ok := suppressSet[elem.LocalName()]; ok {
 		return true
 	}
 

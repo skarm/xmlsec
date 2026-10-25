@@ -111,6 +111,7 @@ func lookupFunctionItem(ctx context.Context, qv xdm.QNameValue, arity int) (xdm.
 		return xdm.FunctionItem{}, false
 	}
 
+	fn = bindFunctionReference(fn)
 	if provider, ok := fn.(DynamicRefSnapshotProvider); ok {
 		if item, captured := provider.DynamicRefSnapshot(ctx, arity); captured {
 			return item, true
@@ -125,33 +126,12 @@ func lookupFunctionItem(ctx context.Context, qv xdm.QNameValue, arity int) (xdm.
 		capturedEC = &capturedECValue
 	}
 
-	var (
-		paramTypes []xdm.SequenceType
-		repeated   bool
-		returnType *xdm.SequenceType
-		sig        *functionSignature
-	)
-	// The built-in signature registry is consulted only when the resolved function
-	// is the built-in itself; a user override of a built-in name binds its own
-	// signature, mirroring the direct call path (lookupParamTypes).
-	if isBuiltin {
-		sig = lookupFunctionSignature(qv.URI, qv.Local, arity)
+	var signature functionSignature
+	if declared := resolvedFunctionSignature(capturedEC, resolvedFunction{fn: fn, isBuiltin: isBuiltin, uri: qv.URI, name: qv.Local}, arity); declared != nil {
+		signature = *declared
 	}
 
-	if sig != nil {
-		paramTypes = sig.ParamTypes
-		repeated = sig.RepeatParamType
-		returnType = sig.ReturnType
-	} else if tf, ok := fn.(TypedFunction); ok {
-		// User-defined typed functions expose their signature directly;
-		// mirror evalNamedFunctionRef so function-lookup enforces the same
-		// argument-type checks as the named-reference path (f#1).
-		paramTypes = tf.FuncParamTypes()
-		returnType = tf.FuncReturnType()
-	} else if tfa, ok := fn.(TypedFunctionByArity); ok {
-		paramTypes = tfa.FuncParamTypesForArity(arity)
-		returnType = tfa.FuncReturnTypeForArity(arity)
-	}
+	paramTypes, repeated, returnType := signature.ParamTypes, signature.RepeatParamType, signature.ReturnType
 
 	fi := xdm.FunctionItem{
 		Arity:           arity,
@@ -577,6 +557,8 @@ func extractFunctionItem(seq xdm.Sequence) (xdm.FunctionItem, error) {
 
 func lookupFunctionInvoker(capturedEC *evalContext, paramTypes []xdm.SequenceType, repeated bool, qv xdm.QNameValue, arity int, fn Function) func(context.Context, []xdm.Sequence) (xdm.Sequence, error) {
 	return func(ctx context.Context, callArgs []xdm.Sequence) (xdm.Sequence, error) {
+		ctx = withDynamicCall(ctx)
+
 		callEC := getFnContext(ctx)
 		if capturedEC != nil {
 			callEC = calleeContext(ctx, capturedEC)
@@ -591,7 +573,7 @@ func lookupFunctionInvoker(capturedEC *evalContext, paramTypes []xdm.SequenceTyp
 		// argument (e.g. xs:untypedAtomic -> xs:integer); the coerced value must
 		// be what the function observes, so store it back into a copy of the
 		// argument slice, discarding nothing and invoking with no original.
-		if paramTypes != nil {
+		if paramTypes != nil && !unavailableModuleFunction(fn) {
 			coerced := make([]xdm.Sequence, len(callArgs))
 			copy(coerced, callArgs)
 

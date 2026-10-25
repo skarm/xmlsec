@@ -43,20 +43,31 @@ func evalFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *evalContext
 		return nil, err
 	}
 
-	return callResolvedFunction(ctx, ec, r, args)
+	return callResolvedFunction(ctx, ec, r, args, e.Args)
 }
 
 // callResolvedFunction coerces args to the declared parameter types of r and
 // calls it. args holds evaluated, enriched arguments and no placeholders.
-func callResolvedFunction(ctx context.Context, ec *evalContext, r resolvedFunction, args []xdm.Sequence) (xdm.Sequence, error) {
+func callResolvedFunction(ctx context.Context, ec *evalContext, r resolvedFunction, args []xdm.Sequence, sourceArgs []Expr) (xdm.Sequence, error) {
 	if ec.version == 10 && r.isBuiltin {
 		return callXPath10Builtin(ctx, ec, r, args)
+	}
+
+	if ec.version == 20 && r.isBuiltin && r.uri == NSXS && r.name == nameQName && len(args) == 1 {
+		value, empty, err := atomizeConstructorArg(args[0], xdm.TypeQName)
+		if err != nil {
+			return nil, err
+		}
+
+		if !empty && !qnameCastOperandAllowed(ec, sourceArgs[0], value) {
+			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "XPath 2.0 QName construction requires a string literal or QName value"}
+		}
 	}
 	// Enforce declared parameter signatures, mirroring the function-item /
 	// named-function-reference path. Coerced values are stored back into args so
 	// typed functions observe the converted values (e.g. xs:integer→xs:double).
 
-	paramTypes, repeated := lookupParamTypes(r, len(args))
+	paramTypes, repeated := lookupParamTypes(ec, r, len(args))
 	if paramTypes != nil {
 		for i, arg := range args {
 			if parameter, declared := xdm.FunctionParameterType(paramTypes, repeated, i); declared {
@@ -78,22 +89,44 @@ func callResolvedFunction(ctx context.Context, ec *evalContext, r resolvedFuncti
 // the built-in; user/registered functions use their own TypedFunction metadata.
 // The second result marks a sole type repeated for every parameter.
 // A nil slice means no declared signature is available.
-func lookupParamTypes(r resolvedFunction, arity int) ([]xdm.SequenceType, bool) {
-	if r.isBuiltin {
-		if sig := lookupFunctionSignature(r.uri, r.name, arity); sig != nil {
-			return sig.ParamTypes, sig.RepeatParamType
-		}
+func lookupParamTypes(ec *evalContext, r resolvedFunction, arity int) ([]xdm.SequenceType, bool) {
+	if unavailableModuleFunction(r.fn) {
+		return nil, false
 	}
 
-	if tf, ok := r.fn.(TypedFunction); ok {
-		return tf.FuncParamTypes(), false
-	}
-
-	if tfa, ok := r.fn.(TypedFunctionByArity); ok {
-		return tfa.FuncParamTypesForArity(arity), false
+	if signature := resolvedFunctionSignature(ec, r, arity); signature != nil {
+		return signature.ParamTypes, signature.RepeatParamType
 	}
 
 	return nil, false
+}
+
+func resolvedFunctionSignature(ec *evalContext, r resolvedFunction, arity int) *functionSignature {
+	version := 0
+	if ec != nil {
+		version = ec.version
+	}
+
+	if r.isBuiltin && r.uri == NSFn && r.name == "current-dateTime" && arity == 0 && ec != nil && ec.xmlSchemaVersion == 10 {
+		// F&O permits xs:dateTime when XSD 1.1 datatypes are unavailable.
+		return lookupStandardSignature(20, sigKey{URI: NSFn, Name: r.name, Arity: arity})
+	}
+
+	if r.isBuiltin {
+		if signature := lookupFunctionSignature(version, r.uri, r.name, arity); signature != nil {
+			return signature
+		}
+	}
+
+	if typed, ok := r.fn.(TypedFunction); ok {
+		return &functionSignature{ParamTypes: typed.FuncParamTypes(), ReturnType: typed.FuncReturnType()}
+	}
+
+	if typed, ok := r.fn.(TypedFunctionByArity); ok {
+		return &functionSignature{ParamTypes: typed.FuncParamTypesForArity(arity), ReturnType: typed.FuncReturnTypeForArity(arity)}
+	}
+
+	return nil
 }
 
 func evalDynamicFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e DynamicFunctionCall) (xdm.Sequence, error) {
@@ -159,11 +192,27 @@ func evalDynamicFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *eval
 	}
 }
 
+func partialParameterTypes(parameters []xdm.SequenceType, repeated bool, indices []int) []xdm.SequenceType {
+	if parameters == nil {
+		return nil
+	}
+
+	result := make([]xdm.SequenceType, len(indices))
+	for i, index := range indices {
+		result[i], _ = xdm.FunctionParameterType(parameters, repeated, index)
+	}
+
+	return result
+}
+
 func partialFunctionItem(fn xdm.FunctionItem, args []xdm.Sequence, indices []int) xdm.Sequence {
 	fixed := append([]xdm.Sequence(nil), args...)
 
+	parameters := partialParameterTypes(fn.ParamTypes, fn.RepeatParamType, indices)
+
 	return xdm.ItemSlice{xdm.FunctionItem{
-		Arity: len(indices),
+		Arity:      len(indices),
+		ParamTypes: parameters, ReturnType: fn.ReturnType,
 		Invoke: func(ctx context.Context, partial []xdm.Sequence) (xdm.Sequence, error) {
 			if len(partial) != len(indices) {
 				return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("arity mismatch: expected %d arguments, got %d", len(indices), len(partial))}
@@ -183,17 +232,22 @@ func partialFunctionItem(fn xdm.FunctionItem, args []xdm.Sequence, indices []int
 // arrays are function items of arity 1 (the lookup function), so they support
 // both dynamic invocation and partial function application (e.g. $m(?), $a(?)).
 func asFunctionItem(item xdm.Item) (xdm.FunctionItem, bool) {
+	resultType := stItem(xdm.OccurrenceZeroOrMore)
+
 	switch v := item.(type) {
 	case xdm.FunctionItem:
 		return v, true
 	case xdm.MapItem:
 		return xdm.FunctionItem{
-			Arity:  1,
-			Invoke: func(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) { return mapLookup(v, args) },
+			Arity:      1,
+			ParamTypes: []xdm.SequenceType{stAtomic(xdm.TypeAnyAtomicType, xdm.OccurrenceExactlyOne)},
+			ReturnType: &resultType,
+			Invoke:     func(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) { return mapLookup(v, args) },
 		}, true
 	case xdm.ArrayItem:
 		return xdm.FunctionItem{
-			Arity:  1,
+			Arity:      1,
+			ParamTypes: []xdm.SequenceType{stAtomic(xdm.TypeInteger, xdm.OccurrenceExactlyOne)}, ReturnType: &resultType,
 			Invoke: func(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) { return arrayLookup(v, args) },
 		}, true
 	default:
@@ -256,31 +310,13 @@ func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionR
 		return nil, err
 	}
 
-	fn := r.fn
+	fn := bindFunctionReference(r.fn)
 
 	// Check if the function needs to capture state at reference creation time.
 	if sp, ok := fn.(DynamicRefSnapshotProvider); ok {
 		if fi, ok := sp.DynamicRefSnapshot(ctx, e.Arity); ok {
 			return xdm.ItemSlice{fi}, nil
 		}
-	}
-
-	// Check if the function restricts dynamic references (e.g. current-group#0).
-	// If so, create a function item that always raises the specified error.
-	if dr, ok := fn.(DynamicRefRestricted); ok && dr.NoDynamicRef() {
-		errCode := dr.DynRefErrorCode()
-		fnName := e.Name
-		ns, _ := resolvePrefix(ec, e.Prefix)
-		fi := xdm.FunctionItem{
-			Arity:     e.Arity,
-			Name:      fnName,
-			Namespace: ns,
-			Invoke: func(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
-				return nil, &xdm.Error{Code: errCode, Message: fmt.Sprintf("%s: dynamic call to %s is not allowed", errCode, fnName)}
-			},
-		}
-
-		return xdm.ItemSlice{fi}, nil
 	}
 
 	minArity := fn.MinArity()
@@ -296,27 +332,30 @@ func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionR
 	// when the resolved function is the built-in itself; a user override of a
 	// built-in name (e.g. abs#1) binds its own signature, mirroring the direct
 	// call path (lookupParamTypes).
-	var (
-		paramTypes []xdm.SequenceType
-		repeated   bool
-		returnType *xdm.SequenceType
-		sig        *functionSignature
-	)
-
-	if r.isBuiltin {
-		sig = lookupFunctionSignature(r.uri, r.name, e.Arity)
+	var signature functionSignature
+	if declared := resolvedFunctionSignature(ec, resolvedFunction{fn: fn, isBuiltin: r.isBuiltin, uri: r.uri, name: r.name}, e.Arity); declared != nil {
+		signature = *declared
 	}
 
-	if sig != nil {
-		paramTypes = sig.ParamTypes
-		repeated = sig.RepeatParamType
-		returnType = sig.ReturnType
-	} else if tf, ok := fn.(TypedFunction); ok {
-		paramTypes = tf.FuncParamTypes()
-		returnType = tf.FuncReturnType()
-	} else if tfa, ok := fn.(TypedFunctionByArity); ok {
-		paramTypes = tfa.FuncParamTypesForArity(e.Arity)
-		returnType = tfa.FuncReturnTypeForArity(e.Arity)
+	paramTypes, repeated, returnType := signature.ParamTypes, signature.RepeatParamType, signature.ReturnType
+
+	// Check if the function restricts dynamic references (e.g. current-group#0).
+	// If so, create a function item that always raises the specified error.
+	if dr, ok := fn.(DynamicRefRestricted); ok && dr.NoDynamicRef() {
+		errCode := dr.DynRefErrorCode()
+		fnName := e.Name
+		ns, _ := resolvePrefix(ec, e.Prefix)
+		fi := xdm.FunctionItem{
+			Arity:      e.Arity,
+			ParamTypes: paramTypes, RepeatParamType: repeated, ReturnType: returnType,
+			Name:      fnName,
+			Namespace: ns,
+			Invoke: func(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
+				return nil, &xdm.Error{Code: errCode, Message: fmt.Sprintf("%s: dynamic call to %s is not allowed", errCode, fnName)}
+			},
+		}
+
+		return xdm.ItemSlice{fi}, nil
 	}
 
 	fi := xdm.FunctionItem{
@@ -327,7 +366,9 @@ func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionR
 		RepeatParamType: repeated,
 		ReturnType:      returnType,
 		Invoke: func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+			ctx = withDynamicCall(ctx)
 			callEC := calleeContext(ctx, capturedEC)
+			ctx = withFnContext(ctx, callEC)
 
 			if len(args) < minArity {
 				return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("fn:%s requires at least %d arguments, got %d", e.Name, minArity, len(args))}
@@ -337,7 +378,7 @@ func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionR
 			// must be what the function observes, so store it back into a copy of the
 			// argument slice, discarding nothing and invoking with no original
 			// — mirroring the direct call path and fn:function-lookup.
-			if paramTypes != nil {
+			if paramTypes != nil && !unavailableModuleFunction(fn) {
 				coerced := make([]xdm.Sequence, len(args))
 				copy(coerced, args)
 
@@ -367,11 +408,46 @@ func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionR
 	return xdm.ItemSlice{fi}, nil
 }
 
-func evalInlineFunctionExpr(evalFn exprEvaluator, _ context.Context, ec *evalContext, e InlineFunctionExpr) (xdm.Sequence, error) {
+func evalInlineFunctionExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e InlineFunctionExpr) (xdm.Sequence, error) {
 	// Capture current variable scope snapshot
 	closedVars := ec.vars
 	captured := *ec
+
 	captured.invocation = nil
+
+	if provider, ok := ec.variableResolver.(VariableResolverSnapshotProvider); ok {
+		// XPath 3.1 §3.1.7 captures nonlocal values at the definition site.
+		// A host resolver can otherwise defer a private global until after the
+		// producing transformation, recreating its nodes in every invocation.
+		collector := staticRefCollector{bound: map[string]int{}, namespaces: ec.namespaces}
+
+		definition := e
+		if e.nonlocalBody != nil {
+			definition.Body = e.nonlocalBody
+		}
+
+		collector.walkInlineFunction(definition)
+
+		if err := fnCountOps(ctx, ec, max(collector.visits, 1)); err != nil {
+			return nil, err
+		}
+
+		for _, name := range collector.freeVars {
+			key := VariableKey(name, ec.namespaces)
+			if _, exists := closedVars.Lookup(key); exists {
+				continue
+			}
+
+			value, err := evalVariable(ctx, ec, VariableExpr{Name: name})
+			if err != nil {
+				return nil, err
+			}
+
+			closedVars = scopeWithBinding(closedVars, key, value)
+		}
+
+		captured.variableResolver = provider.SnapshotVariableResolver()
+	}
 	// Omitted annotations mean item()*, including in a mixed typed/untyped
 	// parameter list. Preserve these defaults for function subtype checks.
 	defaultType := stItem(xdm.OccurrenceZeroOrMore)
@@ -379,14 +455,27 @@ func evalInlineFunctionExpr(evalFn exprEvaluator, _ context.Context, ec *evalCon
 
 	for i, p := range e.Params {
 		paramTypes[i] = defaultType
+
 		if p.TypeHint != nil {
-			paramTypes[i] = *p.TypeHint
+			bound, err := BindSequenceType(ctx, *p.TypeHint, ec.namespaces, ec.namespaces[""])
+			if err != nil {
+				return nil, err
+			}
+
+			paramTypes[i] = bound
 		}
 	}
 
 	returnType := e.ReturnType
 	if returnType == nil {
 		returnType = &defaultType
+	} else {
+		bound, err := BindSequenceType(ctx, *returnType, ec.namespaces, ec.namespaces[""])
+		if err != nil {
+			return nil, err
+		}
+
+		returnType = &bound
 	}
 
 	fi := xdm.FunctionItem{
@@ -420,7 +509,7 @@ func partialApply(ctx context.Context, ec *evalContext, e FunctionCall, fixedArg
 		return nil, err
 	}
 
-	paramTypes, repeated := lookupParamTypes(r, len(e.Args))
+	paramTypes, repeated := lookupParamTypes(ec, r, len(e.Args))
 
 	// Coerce the fixed (curried) arguments now, before the placeholders are
 	// supplied: they are known at partial-application time, so the function body
@@ -435,6 +524,7 @@ func partialApply(ctx context.Context, ec *evalContext, e FunctionCall, fixedArg
 		}
 	}
 
+	r.fn = bindFunctionReference(r.fn)
 	if provider, ok := r.fn.(DynamicRefSnapshotProvider); ok {
 		if item, captured := provider.DynamicRefSnapshot(ctx, len(e.Args)); captured {
 			return partialFunctionItem(item, coercedFixed, placeholderIndices), nil
@@ -445,10 +535,23 @@ func partialApply(ctx context.Context, ec *evalContext, e FunctionCall, fixedArg
 	captured.invocation = nil
 
 	// Per XPath 3.1, partial applications are anonymous functions
+	partialTypes := partialParameterTypes(paramTypes, repeated, placeholderIndices)
+
+	var returnType *xdm.SequenceType
+	if signature := resolvedFunctionSignature(ec, r, len(e.Args)); signature != nil {
+		returnType = signature.ReturnType
+		if paramTypes == nil {
+			partialTypes = partialParameterTypes(signature.ParamTypes, signature.RepeatParamType, placeholderIndices)
+		}
+	}
+
 	fi := xdm.FunctionItem{
-		Arity: len(placeholderIndices),
+		Arity:      len(placeholderIndices),
+		ParamTypes: partialTypes, ReturnType: returnType,
 		Invoke: func(ctx context.Context, partialArgs []xdm.Sequence) (xdm.Sequence, error) {
+			ctx = withDynamicCall(ctx)
 			callEC := calleeContext(ctx, &captured)
+			ctx = withFnContext(ctx, callEC)
 
 			if len(partialArgs) != len(placeholderIndices) {
 				return nil, &xdm.Error{
@@ -502,7 +605,15 @@ func coerceFuncallArg(ctx context.Context, arg xdm.Sequence, st xdm.SequenceType
 			return nil, err
 		}
 
-		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("fn:%s: argument %d does not match required type %v", fnName, idx+1, st)}
+		message := fmt.Sprintf("fn:%s: argument %d does not match required type %v", fnName, idx+1, st)
+
+		if xdm.SequenceLen(arg) == 1 {
+			if actual, atomic := arg.Get(0).(xdm.AtomicValue); atomic {
+				message += "; got " + actual.TypeName
+			}
+		}
+
+		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: message}
 	}
 
 	return coerced, nil
@@ -622,9 +733,11 @@ func calleeContext(ctx context.Context, captured *evalContext) *evalContext {
 		local.docOrder, local.docCache = caller.docOrder, caller.docCache
 		local.invocation = caller.invocation
 		local.uriResolver, local.collectionResolver = caller.uriResolver, caller.collectionResolver
+		local.resourceReads = caller.resourceReads
 		local.httpClient, local.maxResourceBytes, local.parseOptions = caller.httpClient, caller.maxResourceBytes, caller.parseOptions
 		local.traceWriter = caller.traceWriter
 	} else {
+		local.resourceReads = nil
 		count := 0
 		local.opCount = &count
 		local.docCache = make(map[string]xdm.Node)
@@ -674,24 +787,20 @@ func partialApplyArgs(ctx context.Context, e *FunctionCall, paramTypes []xdm.Seq
 }
 
 func invokeInlineFunction(ctx context.Context, args []xdm.Sequence, ec *evalContext, closedVars *variableScope, e InlineFunctionExpr, evalFn exprEvaluator) (xdm.Sequence, error) {
+	ctx = withDynamicCall(ctx)
+
 	if len(args) != len(e.Params) {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("inline function requires %d arguments, got %d", len(e.Params), len(args))}
 	}
-	// Use caller's evalContext for mutable state (opCount, docOrder, docCache)
-	// if available, otherwise fall back to the captured context.
-	capturedECValue := *ec
-
-	baseEC := &capturedECValue
-	if callerEC := getFnContext(ctx); callerEC != nil {
-		baseEC = callerEC
-	}
-
-	innerCtx := *baseEC
+	// Inline functions retain their static context while borrowing the caller's
+	// live work/resource state, just like named and partially applied functions.
+	innerCtx := *calleeContext(ctx, ec)
 	innerCtx.node = nil
 	innerCtx.contextItem = nil
 	innerCtx.position = 0
 	innerCtx.size = 0
 	innerCtx.vars = closedVars
+	ctx = withFnContext(ctx, &innerCtx)
 
 	for i, param := range e.Params {
 		arg := args[i]

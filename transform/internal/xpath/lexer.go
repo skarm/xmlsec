@@ -35,16 +35,139 @@ func newLexer(input string) (*lexer, error) {
 }
 
 func newVersionLexer(input string, version int) (*lexer, error) {
+	return newVersionLexerSpans(input, version, nil)
+}
+
+type sourceSpan struct{ start, end int }
+
+func newVersionLexerSpans(input string, version int, spans *[]sourceSpan) (*lexer, error) {
 	l := &lexer{
 		input:   input,
 		version: version,
 		tokens:  make([]Token, 0, estimateTokenCapacity(input)),
 	}
-	if err := l.tokenize(); err != nil {
+	if err := l.tokenizeSpans(spans); err != nil {
 		return nil, err
 	}
 
 	return l, nil
+}
+
+// SplitUnion returns the outer union operands, using XPath's lexical rules.
+// Parentheses enclosing an entire union are stripped, as required by XSLT's
+// default-priority rules. Other expressions retain their original source.
+func SplitUnion(input string, version int) ([]string, error) {
+	return splitUnion(input, version, false)
+}
+
+// SplitPatternUnion retains the narrower XSLT 1.0/2.0 pattern grammar:
+// only a top-level pipe separates alternatives, and grouping parentheses
+// and explicit non-pattern axes remain forbidden outside predicates.
+func SplitPatternUnion(input string, version int) ([]string, error) {
+	return splitUnion(input, version, version == 10 || version == 20)
+}
+
+func splitUnion(input string, version int, legacyPattern bool) ([]string, error) {
+	if !legacyPattern && !strings.Contains(input, "|") && !strings.Contains(input, "union") {
+		return []string{input}, nil
+	}
+
+	var spans []sourceSpan
+
+	l, err := newVersionLexerSpans(input, version, &spans)
+	if err != nil {
+		return nil, err
+	}
+
+	lo, hi := 0, len(l.tokens)
+	if legacyPattern {
+		if err := validateLegacyPatternTokens(l.tokens); err != nil {
+			return nil, err
+		}
+	} else {
+		lo, hi = unionTokenBounds(l.tokens)
+	}
+
+	if lo == hi {
+		return []string{input}, nil
+	}
+
+	var parts []string
+
+	depth, start := 0, spans[lo].start
+	for i := lo; i < hi; i++ {
+		switch l.tokens[i].Type {
+		case TokenLParen, TokenLBracket, TokenLBrace:
+			depth++
+		case TokenRParen, TokenRBracket, TokenRBrace:
+			depth--
+		case TokenPipe, TokenUnion:
+			if depth == 0 && (!legacyPattern || l.tokens[i].Type == TokenPipe) {
+				if parts == nil {
+					parts = make([]string, 0, 2)
+				}
+
+				parts = append(parts, input[start:spans[i].start])
+				start = spans[i].end
+			}
+		}
+	}
+
+	if len(parts) == 0 {
+		return []string{input}, nil
+	}
+
+	return append(parts, input[start:spans[hi-1].end]), nil
+}
+
+func validateLegacyPatternTokens(tokens []Token) error {
+	brackets := 0
+
+	for i, token := range tokens {
+		switch token.Type {
+		case TokenLBracket:
+			brackets++
+		case TokenRBracket:
+			brackets--
+		case TokenLParen:
+			if brackets == 0 && (i == 0 || tokens[i-1].Type != TokenName) {
+				return fmt.Errorf("grouping parentheses require XSLT 3.0 patterns")
+			}
+		case TokenColonColon:
+			if brackets == 0 && (i == 0 || tokens[i-1].Value != "child" && tokens[i-1].Value != "attribute") {
+				return fmt.Errorf("axis is unavailable in XSLT 1.0/2.0 patterns")
+			}
+		}
+	}
+
+	return nil
+}
+
+func unionTokenBounds(tokens []Token) (int, int) {
+	lo, hi := 0, len(tokens)
+	if hi == 0 || tokens[0].Type != TokenLParen {
+		return lo, hi
+	}
+	// Build pairs once: repeatedly scanning nested parentheses is quadratic.
+	closing := make([]int, hi)
+
+	var opening []int
+	for i, token := range tokens {
+		if token.Type == TokenLParen {
+			opening = append(opening, i)
+		} else if token.Type == TokenRParen && len(opening) > 0 {
+			last := len(opening) - 1
+			closing[opening[last]] = i + 1
+			opening = opening[:last]
+		}
+	}
+
+	for lo < hi && tokens[lo].Type == TokenLParen && closing[lo] == hi {
+		lo++
+		hi--
+	}
+
+	return lo, hi
 }
 
 func estimateTokenCapacity(input string) int {
@@ -110,7 +233,7 @@ func (l *lexer) PrettyTokens() string {
 	return b.String()
 }
 
-func (l *lexer) tokenize() error {
+func (l *lexer) tokenizeSpans(spans *[]sourceSpan) error {
 	for l.pos < len(l.input) {
 		posBefore := l.pos
 		l.skipWhitespace()
@@ -121,8 +244,16 @@ func (l *lexer) tokenize() error {
 		}
 
 		tokenCount := len(l.tokens)
+
+		start := l.pos
 		if err := l.scanToken(); err != nil {
 			return err
+		}
+
+		if spans != nil {
+			for range len(l.tokens) - tokenCount {
+				*spans = append(*spans, sourceSpan{start, l.pos})
+			}
 		}
 		// A comment separates tokens just like whitespace. Keep that boundary
 		// until the next token is emitted, including across adjacent comments.

@@ -250,8 +250,8 @@ func TestSAMLRedirectReleasesQueryBuffer(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					state, present := results[i].RelayState()
-					if present != withRelay || withRelay && state != *relay || results[i].SignatureMethod() != xmldsig.ECDSASHA256 {
+					relayState, present := results[i].RelayState()
+					if present != withRelay || withRelay && relayState != *relay || results[i].SignatureMethod() != xmldsig.ECDSASHA256 {
 						t.Fatal("authenticated metadata changed")
 					}
 				}
@@ -577,7 +577,7 @@ func TestSAMLRedirectWorkingStorage(t *testing.T) {
 	allocated = allocatedDuring(t, func() error {
 		result, err := binding.VerifyRedirect(t.Context(), query, signer.Public(), options)
 		if err == nil && result.Kind() != binding.Request {
-			return errors.New("Redirect kind changed")
+			return errors.New("redirect kind changed")
 		}
 		return err
 	})

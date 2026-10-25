@@ -254,7 +254,7 @@ func TestResponseWriterCompatibilityAndErrors(t *testing.T) {
 
 		output.Reset()
 
-		dst = responseWriteFunc(func(p []byte) (int, error) { n, err := output.Write(p); cancel(); return n, err })
+		dst = func(p []byte) (int, error) { n, err := output.Write(p); cancel(); return n, err }
 		if n, err := timestamp.WriteResponse(ctx, dst, q.DER(), c.TSAKey, c.TSA.Raw, options); !errors.Is(err, context.Canceled) || n > 32<<10 {
 			t.Fatal("response cancellation", n, err)
 		}
@@ -287,17 +287,17 @@ func TestRoundTripAndBindings(t *testing.T) {
 }
 
 func testRoundTripAndBindingsCase(t *testing.T, h *crypto.Hash, omit *bool, c *testcert.Chain, a *time.Duration, v **timestamp.Verifier, ev *pki.Evidence) {
-	q, e := timestamp.CreateRequest(t.Context(), []byte("data"), timestamp.RequestOptions{Hash: (*h), Policy: policy(), OmitCertificates: (*omit)})
+	q, e := timestamp.CreateRequest(t.Context(), []byte("data"), timestamp.RequestOptions{Hash: *h, Policy: policy(), OmitCertificates: *omit})
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	raw, e := timestamp.IssueResponse(context.Background(), q.DER(), c.TSAKey, c.TSA.Raw, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(10), GenTime: testcert.Now().Add(-time.Second + 123456000*time.Nanosecond), Accuracy: a, Ordering: true, Hash: (*h), ExtraCertificates: [][]byte{c.Root.Raw}})
+	raw, e := timestamp.IssueResponse(context.Background(), q.DER(), c.TSAKey, c.TSA.Raw, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(10), GenTime: testcert.Now().Add(-time.Second + 123456000*time.Nanosecond), Accuracy: a, Ordering: true, Hash: *h, ExtraCertificates: [][]byte{c.Root.Raw}})
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	r, e := (*v).VerifyResponse(context.Background(), raw, q, testcert.Now(), (*ev))
+	r, e := (*v).VerifyResponse(context.Background(), raw, q, testcert.Now(), *ev)
 	if e != nil || r == nil {
 		t.Fatal(e)
 	}
@@ -321,7 +321,7 @@ func testRoundTripAndBindingsCase(t *testing.T, h *crypto.Hash, omit *bool, c *t
 		t.Fatal(e)
 	}
 
-	if r, e := (*v).VerifyResponse(context.Background(), raw, wrong, testcert.Now(), (*ev)); r != nil || !errors.Is(e, timestamp.ErrBinding) {
+	if r, e := (*v).VerifyResponse(context.Background(), raw, wrong, testcert.Now(), *ev); r != nil || !errors.Is(e, timestamp.ErrBinding) {
 		t.Fatal("wrong request", e)
 	}
 
@@ -330,7 +330,7 @@ func testRoundTripAndBindingsCase(t *testing.T, h *crypto.Hash, omit *bool, c *t
 		at   time.Time
 		e    pki.Evidence
 		want error
-	}{{"missing revocation", testcert.Now(), pki.Evidence{}, timestamp.ErrTrust}, {"revoked TSA", testcert.Now(), pki.Evidence{CRLs: [][]byte{testcert.CRL(t, (*c), c.TSA)}}, pki.ErrRevoked}, {"future token", testcert.Now().Add(-2 * time.Second), (*ev), timestamp.ErrPolicy}} {
+	}{{"missing revocation", testcert.Now(), pki.Evidence{}, timestamp.ErrTrust}, {"revoked TSA", testcert.Now(), pki.Evidence{CRLs: [][]byte{testcert.CRL(t, *c, c.TSA)}}, pki.ErrRevoked}, {"future token", testcert.Now().Add(-2 * time.Second), *ev, timestamp.ErrPolicy}} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, e := (*v).VerifyResponse(context.Background(), raw, q, tc.at, tc.e)
 			if r != nil || !errors.Is(e, tc.want) {

@@ -4,45 +4,44 @@
 package xslt
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
 func (ec *execContext) execMessage(ctx context.Context, inst *messageInst) error {
-	var (
-		value   string
-		bodySeq xdm.ItemSlice
-	)
+	return ec.execMessageWithDefaults(ctx, inst, false, errCodeXTMM9000)
+}
 
-	if inst.Select != nil {
-		result, err := ec.evalXPath(ctx, inst.Select, ec.contextNode)
-		if err != nil {
-			// Errors evaluating message content are recoverable
-			value = err.Error()
-		} else {
-			bodySeq = xdm.Materialize(result.Sequence())
+func (ec *execContext) execMessageWithDefaults(ctx context.Context, inst *messageInst, terminate bool, defaultCode string) error {
+	message, err := ec.messageDocument(ctx, inst)
+	if err != nil {
+		return err
+	}
 
-			s, serr := serializeMessageSequence(bodySeq)
-			if serr != nil {
-				return dynamicErrorCause(errCodeSERE0006, serr,
-					"xsl:message content could not be serialized: %s", serr)
-			}
+	message.Output = &OutputDef{Method: methodXML, MethodExplicit: true, OmitDeclaration: true}
 
-			value = s
+	var output messageWriter
+
+	output.ctx = ctx
+	if err := SerializeValue(ctx, &output, message); err != nil {
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return failure
+		}
+
+		output.Reset()
+
+		if _, failure := output.WriteString(err.Error()); failure != nil {
+			return failure
 		}
 	}
 
-	if returned0, matchedBranch := execMessageBody(ctx, inst, ec, &value, &bodySeq); matchedBranch {
-		return returned0
-	}
-
-	terminate := false
+	value := output.String()
 
 	if inst.Terminate != nil {
 		termStr, err := inst.Terminate.evaluate(ctx, ec.contextNode)
@@ -50,17 +49,17 @@ func (ec *execContext) execMessage(ctx context.Context, inst *messageInst) error
 			return err
 		}
 
-		termStr = strings.TrimSpace(termStr)
-		switch termStr {
-		case lexicon.ValueYes, lexicon.ValueTrue, "1":
-			terminate = true
-		case lexicon.ValueNo, lexicon.ValueFalse, "0":
-			terminate = false
-		default:
-			// XTDE0030: avt value is not a valid xs:boolean
-			return dynamicError(errCodeXTDE0030,
-				"xsl:message/@terminate value %q is not a valid boolean (yes|no|true|false|1|0)", termStr)
+		var valid bool
+
+		terminate, valid = parseMessageTerminate(termStr, ec.stylesheet.processorLanguage() >= 30)
+		if !valid {
+			return dynamicError(errCodeXTDE0030, "invalid xsl:message/@terminate value %q", termStr)
 		}
+	}
+
+	errorCode, err := ec.messageErrorCode(ctx, inst, defaultCode)
+	if err != nil {
+		return err
 	}
 
 	if ec.msgHandler != nil {
@@ -70,145 +69,152 @@ func (ec *execContext) execMessage(ctx context.Context, inst *messageInst) error
 	}
 
 	if terminate {
-		errorCode := errCodeXTMM9000
-
-		if inst.ErrorCode != nil {
-			code, err := inst.ErrorCode.evaluate(ctx, ec.contextNode)
-			if err == nil && code != "" {
-				errorCode = code
-			}
-		}
-
 		return &XSLTError{
-			Code:    errorCode,
-			Message: value,
-			Value:   bodySeq,
-			Cause:   ErrTerminated,
+			Code:          errorCode.Local,
+			QualifiedCode: errorCode,
+			Message:       value,
+			Value:         message.Items,
+			Cause:         ErrTerminated,
 		}
 	}
 
 	return nil
 }
 
-// serializeMessageSequence converts a sequence to a string suitable for
-// xsl:message output. Node items (elements, documents) are serialized as
-// XML so that the message preserves markup structure. Atomic values are
-// converted to their string representations and joined with spaces.
-func serializeMessageSequence(seq xdm.Sequence) (string, error) {
-	if seq == nil || xdm.SequenceLen(seq) == 0 {
-		return "", nil
+// Cancellation and exhausted budgets must terminate execution rather than
+// being converted into recoverable content or type errors.
+func preserveControlFailure(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
-	var sb strings.Builder
-
-	prevWasAtomic := false
-
-	for item := range xdm.SequenceItems(seq) {
-		ni, isNode := item.(xdm.NodeItem)
-		if !isNode {
-			// Atomic value — stringify and space-separate
-			av, err := xpath.AtomizeItem(item)
-			if err != nil {
-				continue
-			}
-
-			s, err := xpath.AtomicToString(av)
-			if err != nil {
-				continue
-			}
-
-			if prevWasAtomic && sb.Len() > 0 {
-				sb.WriteByte(' ')
-			}
-
-			sb.WriteString(s)
-
-			prevWasAtomic = true
-
-			continue
-		}
-
-		prevWasAtomic = false
-
-		var buf bytes.Buffer
-
-		switch n := ni.Node.(type) {
-		case *xdm.Document:
-			if err := (xdm.XMLSerialization{OmitDeclaration: true}).WriteTo(&buf, n); err != nil {
-				return "", err
-			}
-		case *xdm.Element:
-			if err := (xdm.XMLSerialization{}).WriteTo(&buf, n); err != nil {
-				return "", err
-			}
-		case *xdm.Comment:
-			// Serialize comments as XML so they roundtrip properly
-			buf.WriteString("<!--")
-			buf.WriteString(xdm.CharacterData(n))
-			buf.WriteString("-->")
-		case *xdm.ProcessingInstruction:
-			buf.WriteString("<?")
-			buf.WriteString(n.Name())
-
-			if c := xdm.CharacterData(n); len(c) > 0 {
-				buf.WriteByte(' ')
-				buf.WriteString(c)
-			}
-
-			buf.WriteString("?>")
-		default:
-			// Text, CDATA, etc. — use string value
-			sb.WriteString(xdm.CharacterData(ni.Node))
-			continue
-		}
-
-		sb.WriteString(buf.String())
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrResourceTooLarge) || errors.Is(err, xpath.ErrBudget) || errors.Is(err, xpath.ErrOpLimit) || errors.Is(err, xpath.ErrNodeSetLimit) || errors.Is(err, xpath.ErrRecursionLimit) {
+		return err
 	}
 
-	return sb.String(), nil
+	return nil
 }
 
-func execMessageBody(ctx context.Context, inst *messageInst, ec *execContext, value *string, bodySeq *xdm.ItemSlice) (returned0 error, matchedBranch bool) {
-	if len(inst.Body) > 0 {
-		// XSLT 2.0: message body is temporary output state (XTDE1480).
-		// XSLT 3.0 relaxes this restriction.
-		isV2TempOutput := ec.stylesheet.processorLanguage() < 30
-		if isV2TempOutput {
-			ec.temporaryOutputDepth++
-		}
+func (ec *execContext) messageErrorCode(ctx context.Context, inst *messageInst, fallback string) (xdm.QNameValue, error) {
+	defaultName := xdm.QNameValue{Prefix: lexicon.PrefixErr, URI: lexicon.NamespaceErr, Local: fallback}
+	if inst.ErrorCode == nil {
+		return defaultName, nil
+	}
+	// An invalid supplied code follows the xsl:message fallback; xsl:assert
+	// changes the default only when the attribute is omitted.
+	defaultName.Local = errCodeXTMM9000
 
-		val, err := ec.evaluateBody(ctx, inst.Body)
-		if isV2TempOutput {
-			ec.temporaryOutputDepth--
-		}
+	value, err := inst.ErrorCode.evaluate(ctx, ec.contextNode)
+	if err != nil {
+		return defaultName, preserveControlFailure(ctx, err)
+	}
 
-		if err != nil {
-			// XTDE1480 is a fatal error, not recoverable.
-			if isXSLTError(err, errCodeXTDE1480) {
-				return err, true
-			}
-			// Other errors evaluating message body are recoverable
-			(*value) += err.Error()
-		} else {
-			(*bodySeq) = append((*bodySeq), xdm.Materialize(val)...)
-
-			s, serr := serializeMessageSequence(val)
-			if serr != nil {
-				return dynamicErrorCause(errCodeSERE0006, serr,
-					"xsl:message content could not be serialized: %s", serr), true
-			}
-
-			(*value) += s
+	value = strings.Trim(value, " \t\r\n")
+	if isValidEQName(value) {
+		uri, local, _ := strings.Cut(value[2:], "}")
+		if !strings.ContainsAny(uri, "{}") {
+			return xdm.QNameValue{URI: uri, Local: local}, nil
 		}
 	}
 
-	return
+	if prefix, local, found := strings.Cut(value, ":"); found {
+		uri, bound := inst.ErrorNamespaces[prefix]
+		if bound && uri != "" && xmlchar.IsValidNCName(prefix) && xmlchar.IsValidNCName(local) {
+			return xdm.QNameValue{Prefix: prefix, URI: uri, Local: local}, nil
+		}
+	} else if xmlchar.IsValidNCName(value) {
+		return xdm.QNameValue{Local: value}, nil
+	}
+
+	return defaultName, nil
+}
+
+// The message is one constructed document, including select followed by body.
+// This supplies the document node required by $err:value after termination.
+func (ec *execContext) messageDocument(ctx context.Context, inst *messageInst) (ValueResult, error) {
+	body := inst.Body
+	if inst.Select != nil {
+		body = append([]instruction{&copyOfInst{Select: inst.Select, CopyNamespaces: true}}, body...)
+	}
+
+	temporary := ec.stylesheet.processorLanguage() < 30
+	if temporary {
+		ec.temporaryOutputDepth++
+		defer func() { ec.temporaryOutputDepth-- }()
+	}
+
+	items, err := ec.evaluateBodyAsSequence(ctx, body)
+	if err != nil {
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return ValueResult{}, failure
+		}
+
+		if temporary && isXSLTError(err, errCodeXTDE1480) {
+			return ValueResult{}, err
+		}
+
+		items = xdm.SingleString(err.Error())
+	}
+
+	normalized, err := normalizeValue(ctx, ValueResult{Items: items}, nil, "")
+	if err == nil {
+		return normalized, nil
+	}
+
+	if failure := preserveControlFailure(ctx, err); failure != nil {
+		return ValueResult{}, failure
+	}
+
+	normalized, err = normalizeValue(ctx, ValueResult{Items: xdm.SingleString(err.Error())}, nil, "")
+
+	return normalized, err
+}
+
+// Boolean synonyms are introduced by the XSLT 3.0 processor. XML whitespace
+// stripping must not silently admit NBSP or other non-XML separators.
+func parseMessageTerminate(value string, modern bool) (bool, bool) {
+	value = strings.Trim(value, " \t\r\n")
+	switch value {
+	case lexicon.ValueYes:
+		return true, true
+	case lexicon.ValueNo:
+		return false, true
+	case lexicon.ValueTrue, "1":
+		return true, modern
+	case lexicon.ValueFalse, "0":
+		return false, modern
+	default:
+		return false, false
+	}
+}
+
+type messageWriter struct {
+	strings.Builder
+	ctx context.Context
+}
+
+func (w *messageWriter) Write(p []byte) (int, error) {
+	if err := xpath.ChargeString(w.ctx, len(p)); err != nil {
+		return 0, err
+	}
+
+	return w.Builder.Write(p)
+}
+
+func (w *messageWriter) WriteString(value string) (int, error) {
+	if err := xpath.ChargeString(w.ctx, len(value)); err != nil {
+		return 0, err
+	}
+
+	return w.Builder.WriteString(value)
 }
 
 func (ec *execContext) execTryCatch(ctx context.Context, inst *tryCatchInst) error {
 	if !inst.RollbackOutput {
 		return ec.execTryCatchNoRollback(ctx, inst)
 	}
+
+	savedImplicitPrimary := ec.primaryClaimedImplicitly
 
 	root, err := ec.beginTryOutput()
 	if err != nil {
@@ -240,6 +246,8 @@ func (ec *execContext) execTryCatch(ctx context.Context, inst *tryCatchInst) err
 		return ec.commitTryOutput(root, tryFrame)
 	}
 
+	ec.primaryClaimedImplicitly = savedImplicitPrimary
+
 	return ec.executeMatchedCatch(ctx, inst.Catches, tryErr)
 }
 
@@ -257,7 +265,7 @@ func (ec *execContext) beginTryOutput() (*xdm.Element, error) {
 
 	// Inherit capture so maps, arrays and function items can flow through.
 	capture := ec.currentOutput().captureItems
-	ec.outputStack = append(ec.outputStack, &outputFrame{doc: doc, current: root, captureItems: capture})
+	ec.outputStack = append(ec.outputStack, &outputFrame{doc: doc, current: root, captureItems: capture, implicitPrimary: ec.currentOutput().implicitPrimary})
 
 	return root, nil
 }
@@ -269,7 +277,11 @@ func (ec *execContext) executeTryBody(ctx context.Context, inst *tryCatchInst) e
 			return err
 		}
 
-		return ec.outputSequence(result.Sequence())
+		if err := ec.outputSequence(result.Sequence()); err != nil {
+			return err
+		}
+
+		return ec.checkImplicitPrimaryOutput()
 	}
 
 	for _, child := range inst.Try {
@@ -295,6 +307,10 @@ func (ec *execContext) commitTryOutput(root *xdm.Element, frame *outputFrame) er
 }
 
 func (ec *execContext) executeMatchedCatch(ctx context.Context, clauses []*catchClause, tryErr error) error {
+	if failure := preserveControlFailure(ctx, tryErr); failure != nil {
+		return failure
+	}
+
 	namespace, code, description, qname := caughtErrorDetails(tryErr)
 
 	clause := matchingCatchClause(clauses, catchErrorClark(code, qname))
@@ -323,9 +339,19 @@ func (ec *execContext) bindCatchVariables(namespace, description string, code xd
 	ec.setVar(xdm.ClarkName(namespace, "code"), xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeQName, Value: code}})
 	ec.setVar(xdm.ClarkName(namespace, "description"), xdm.SingleString(description))
 	ec.setVar(xdm.ClarkName(namespace, "value"), value)
-	ec.setVar(xdm.ClarkName(namespace, "module"), xdm.SingleString(ec.errSourceModule))
-	ec.setVar(xdm.ClarkName(namespace, "line-number"), xdm.SingleInteger(int64(ec.errSourceLine)))
-	ec.setVar(xdm.ClarkName(namespace, "column-number"), xdm.SingleInteger(0))
+
+	var module, line xdm.Sequence
+	if ec.errSourceModule != "" {
+		module = xdm.SingleString(ec.errSourceModule)
+	}
+
+	if ec.errSourceLine > 0 {
+		line = xdm.SingleInteger(int64(ec.errSourceLine))
+	}
+
+	ec.setVar(xdm.ClarkName(namespace, "module"), module)
+	ec.setVar(xdm.ClarkName(namespace, "line-number"), line)
+	ec.setVar(xdm.ClarkName(namespace, "column-number"), xdm.EmptySequence())
 }
 
 // execTryCatchNoRollback writes directly to the parent output and rejects
@@ -346,23 +372,16 @@ func (ec *execContext) execTryCatchNoRollback(ctx context.Context, inst *tryCatc
 		return tryErr
 	}
 
+	if failure := preserveControlFailure(ctx, tryErr); failure != nil {
+		return failure
+	}
+
 	if out.outputSerial != serial {
 		return dynamicError(errCodeXTDE3530,
 			"xsl:try with rollback-output='no': output was written before error and cannot be rolled back")
 	}
 
-	// This path establishes catch variables even if no clause matches.
-	ec.pushVarScope()
-	defer ec.popVarScope()
-
-	namespace, code, description, qname := caughtErrorDetails(tryErr)
-	ec.bindCatchVariables(namespace, description, qname, xdm.EmptySequence())
-
-	if clause := matchingCatchClause(inst.Catches, catchErrorClark(code, qname)); clause != nil {
-		return ec.executeSequenceConstructor(ctx, clause.Body)
-	}
-
-	return tryErr
+	return ec.executeMatchedCatch(ctx, inst.Catches, tryErr)
 }
 
 func (ec *execContext) copyTryChildren(root *xdm.Element) error {
@@ -381,6 +400,10 @@ func (ec *execContext) copyTryChildren(root *xdm.Element) error {
 }
 
 func (ec *execContext) caughtTryValue(tryErr error) xdm.Sequence {
+	if xpathError, found := errors.AsType[*xdm.Error](tryErr); found && xpathError.Value != nil {
+		return xpathError.Value
+	}
+
 	xsltError, found := errors.AsType[*XSLTError](tryErr)
 	if !found {
 		return xdm.EmptySequence()
@@ -391,22 +414,7 @@ func (ec *execContext) caughtTryValue(tryErr error) xdm.Sequence {
 		return xdm.EmptySequence()
 	}
 
-	// Copy nodes into the result document; failed copies retain the item.
-	var copied xdm.ItemSlice
-
-	for item := range xdm.SequenceItems(value) {
-		if node, ok := item.(xdm.NodeItem); ok {
-			duplicate, err := xdm.CopyNode(node.Node, ec.resultDoc)
-			if err == nil {
-				copied = append(copied, xdm.NodeItem{Node: duplicate})
-				continue
-			}
-		}
-
-		copied = append(copied, item)
-	}
-
-	return copied
+	return value
 }
 
 func matchingCatchClause(clauses []*catchClause, code string) *catchClause {
@@ -484,7 +492,7 @@ func caughtErrorDetails(tryErr error) (string, string, string, xdm.QNameValue) {
 	if xErr, ok := errors.AsType[*XSLTError](tryErr); ok {
 		errCode = xErr.Code
 		errDesc = xErr.Message
-		errQName = xdm.QNameValue{Prefix: lexicon.PrefixErr, URI: errNS, Local: errCode}
+		errQName = xErr.CodeQName()
 		// If this is a wrapper error (like XTDE0045 for avt), check inner
 		// cause for a more specific error code.
 		if xErr.Cause != nil {
@@ -495,7 +503,7 @@ func caughtErrorDetails(tryErr error) (string, string, string, xdm.QNameValue) {
 			} else if innerXS, ok := errors.AsType[*XSLTError](xErr.Cause); ok {
 				errCode = innerXS.Code
 				errDesc = innerXS.Message
-				errQName = xdm.QNameValue{Prefix: lexicon.PrefixErr, URI: errNS, Local: innerXS.Code}
+				errQName = innerXS.CodeQName()
 			}
 		}
 	} else if xpErr, ok := errors.AsType[*xdm.Error](tryErr); ok {
@@ -508,5 +516,5 @@ func caughtErrorDetails(tryErr error) (string, string, string, xdm.QNameValue) {
 		errQName = xdm.QNameValue{Prefix: lexicon.PrefixErr, URI: errNS, Local: errCode}
 	}
 
-	return errNS, errCode, errDesc, errQName
+	return errNS, errQName.Local, errDesc, errQName
 }

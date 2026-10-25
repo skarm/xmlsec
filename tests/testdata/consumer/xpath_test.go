@@ -347,10 +347,10 @@ func TestSortPropagatesAtomizationErrors(t *testing.T) {
 	}
 }
 
-func TestFailedIntegerCastsPreserveInputType(t *testing.T) {
+func TestRejectedIntegerArgumentsPreserveInputType(t *testing.T) {
 	e := newEngine(t, transform.Config{})
 	for _, tc := range []struct{ source, diagnostic string }{
-		{`format-integer('bad', '1')`, "cannot cast xs:string to xs:integer"},
+		{`format-integer('bad', '1')`, "got xs:string"},
 		{`[1]?(xs:untypedAtomic('bad'))`, "got xs:untypedAtomic"},
 	} {
 		q, err := e.CompileXPath(t.Context(), tc.source, transform.XPathOptions{})

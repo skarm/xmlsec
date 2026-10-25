@@ -42,7 +42,56 @@ func BenchmarkEngineXPath(b *testing.B) {
 	}
 }
 
+// BenchmarkXPathEscaping measures repeated escapes through compiled public APIs.
+func BenchmarkXPathEscaping(b *testing.B) {
+	const uriInput = " é/😀"
+
+	for _, tc := range []struct{ name, expression, input string }{
+		{"URI", `encode-for-uri($source)`, uriInput},
+		{"IRI", `iri-to-uri($source)`, uriInput},
+		{"HTMLURI", `escape-html-uri($source)`, uriInput},
+		{"JSONASCII", `serialize($source, map{'method':'json', 'encoding':'US-ASCII'})`, "\x01é😀"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			e := engine(b, transform.Config{})
+			program := query(b, e, tc.expression, transform.XPath31)
+			input := strings.Repeat(tc.input, 2048)
+			ctx := transform.XPathContext{Variables: transform.Bindings{{Local: sourceName}: transform.Values(transform.String(input))}}
+
+			b.ReportAllocs()
+			b.SetBytes(int64(len(input)))
+
+			for b.Loop() {
+				if _, err := program.Evaluate(b.Context(), nil, ctx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkEngineXSLT(b *testing.B) {
+	b.Run("Compile", func(b *testing.B) {
+		for _, tc := range []struct{ name, pattern string }{
+			{"Simple", "n"},
+			{"Pipe", "n | r/m"},
+			{"Keyword", "n union r/m"},
+			{"Parenthesized", "(n | r/m)"},
+			{"Comments", "n (: ' :) | r/m"},
+		} {
+			b.Run(tc.name, func(b *testing.B) {
+				e := engine(b, transform.Config{})
+				source := []byte(sheet(version30, strings.Repeat(`<xsl:template match="`+tc.pattern+`"/>`, 50)))
+				b.ReportAllocs()
+				for b.Loop() {
+					if _, err := e.CompileXSLT(b.Context(), source, transform.XSLTOptions{}); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	})
+
 	for _, size := range []int{16, 1024} {
 		b.Run(strconv.Itoa(size), func(b *testing.B) {
 			e := engine(b, transform.Config{})

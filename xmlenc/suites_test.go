@@ -34,12 +34,12 @@ func testRSADataAlgorithmsCase(t *testing.T, algorithm *algorithmSpec, k **rsa.P
 
 	wrapped, _ := base64.StdEncoding.DecodeString(doc.Root().Children()[1].Children()[0].Children()[1].Children()[0].Text())
 
-	symmetric, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, (*k), wrapped, nil)
+	symmetric, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, *k, wrapped, nil)
 	if err != nil || len(symmetric) != algorithm.keyBytes {
 		t.Fatalf("wrong data-key size %d: %v", len(symmetric), err)
 	}
 
-	out, err := xmlenc.DecryptBytes(context.Background(), doc, (*k), options)
+	out, err := xmlenc.DecryptBytes(context.Background(), doc, *k, options)
 	if err != nil || string(out) != "payload" {
 		t.Fatal(err)
 	}
@@ -49,13 +49,13 @@ func testRSADataAlgorithmsCase(t *testing.T, algorithm *algorithmSpec, k **rsa.P
 			continue
 		}
 
-		if out, err := xmlenc.DecryptBytes(context.Background(), doc, (*k), xmlenc.Options{DataAlgorithm: other.uri}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+		if out, err := xmlenc.DecryptBytes(context.Background(), doc, *k, xmlenc.Options{DataAlgorithm: other.uri}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 			t.Fatalf("accepted different algorithm %s: %v", other.uri, err)
 		}
 	}
 
 	if algorithm.uri != xmlenc.AES256GCM {
-		if out, err := xmlenc.DecryptBytes(context.Background(), doc, (*k), xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+		if out, err := xmlenc.DecryptBytes(context.Background(), doc, *k, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 			t.Fatal("default policy weakened", err)
 		}
 	}
@@ -83,7 +83,7 @@ func testKeyWrapSuitesCase(t *testing.T, keyAlgorithm *algorithmSpec, dataAlgori
 
 	options := xmlenc.KeyWrapOptions{Data: xmlenc.Options{DataAlgorithm: dataAlgorithm.uri}, KeyAlgorithm: keyAlgorithm.uri}
 	for _, plaintext := range [][]byte{{}, []byte("binary\x00\xff"), bytes.Repeat([]byte{1, 2, 3}, 1000)} {
-		doc, err := xmlenc.EncryptBytesWithKeyWrap((*ctx), plaintext, kek, options)
+		doc, err := xmlenc.EncryptBytesWithKeyWrap(*ctx, plaintext, kek, options)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -91,7 +91,7 @@ func testKeyWrapSuitesCase(t *testing.T, keyAlgorithm *algorithmSpec, dataAlgori
 		wire, _ := doc.XML(t.Context())
 		doc = parse(t, wire)
 
-		out, err := xmlenc.DecryptBytesWithKeyWrap((*ctx), doc, kek, options)
+		out, err := xmlenc.DecryptBytesWithKeyWrap(*ctx, doc, kek, options)
 		if err != nil || !bytes.Equal(out, plaintext) {
 			t.Fatalf("roundtrip: %v", err)
 		}
@@ -102,12 +102,12 @@ func testKeyWrapSuitesCase(t *testing.T, keyAlgorithm *algorithmSpec, dataAlgori
 		}
 	}
 
-	doc, err := xmlenc.EncryptDocumentWithKeyWrap((*ctx), (*source), kek, options)
+	doc, err := xmlenc.EncryptDocumentWithKeyWrap(*ctx, *source, kek, options)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	out, err := xmlenc.DecryptDocumentWithKeyWrap((*ctx), doc, kek, options)
+	out, err := xmlenc.DecryptDocumentWithKeyWrap(*ctx, doc, kek, options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,12 +117,12 @@ func testKeyWrapSuitesCase(t *testing.T, keyAlgorithm *algorithmSpec, dataAlgori
 		t.Fatalf("element scope: %s", wire)
 	}
 
-	if out, err := xmlenc.DecryptBytesWithKeyWrap((*ctx), doc, kek, options); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+	if out, err := xmlenc.DecryptBytesWithKeyWrap(*ctx, doc, kek, options); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 		t.Fatal("type confusion", err)
 	}
 
 	after, _ := (*source).XML(t.Context())
-	if !bytes.Equal((*before), after) || !bytes.Equal(kek, originalKEK) {
+	if !bytes.Equal(*before, after) || !bytes.Equal(kek, originalKEK) {
 		t.Fatal("source document or KEK mutated")
 	}
 }

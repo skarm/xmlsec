@@ -75,7 +75,7 @@ func coreFixtureKey(t testing.TB, name string) crypto.PublicKey {
 func testCoreIndependentFixturesCase(t *testing.T, tc *coreFixtureCase, dir *string) {
 	key := coreFixtureKey(t, tc.PublicKey)
 
-	data, err := os.ReadFile(filepath.Join((*dir), tc.File))
+	data, err := os.ReadFile(filepath.Join(*dir, tc.File))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestIndependentFixtures(t *testing.T) {
 }
 
 func testIndependentFixturesCase(t *testing.T, name *string) {
-	prefix := filepath.Join("..", "..", "..", "testdata", "interop", (*name))
+	prefix := filepath.Join("..", "..", "..", "testdata", "interop", *name)
 
 	keyPEM, err := os.ReadFile(prefix + ".pub.pem")
 	if err != nil {

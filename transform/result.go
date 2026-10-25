@@ -2,6 +2,7 @@ package transform
 
 import (
 	"context"
+	"errors"
 	"io"
 	"maps"
 	"slices"
@@ -48,6 +49,33 @@ func (r *Result) Messages() []Message {
 	}
 
 	return slices.Clone(r.messages)
+}
+
+// OutputEncoding returns the effective encoding name for the primary result
+// (empty uri) or a named secondary result. An omitted encoding defaults to UTF-8.
+// Adaptive output ignores the encoding parameter and uses UTF-8.
+// It reads the completed output definition without serializing or validating it.
+func (r *Result) OutputEncoding(uri string) (string, error) {
+	if r == nil || r.native == nil {
+		return "", wrap("output encoding", ErrInput)
+	}
+
+	value := r.native.Primary
+
+	if uri != "" {
+		var ok bool
+
+		value, ok = r.native.Secondary[uri]
+		if !ok {
+			return "", wrap("output encoding", ErrInput)
+		}
+	}
+
+	if value.Output == nil || value.Output.Encoding == "" || value.Output.Method == "adaptive" {
+		return "UTF-8", nil
+	}
+
+	return value.Output.Encoding, nil
 }
 
 // Serialize applies the stylesheet's output definitions to a successful result.
@@ -187,16 +215,35 @@ func (r *Result) writeValue(ctx context.Context, dst io.Writer, value xslt.Value
 }
 
 // Execute runs the selected template or mode and returns typed XDM results.
-func (s *Stylesheet) Execute(ctx context.Context, d *Document, options XSLTContext) (*Result, error) {
+func (s *Stylesheet) Execute(ctx context.Context, d *Document, options XSLTContext) (_ *Result, returnedErr error) {
 	ctx, cancel, invocation, collector, err := s.prepare(ctx, d, options)
 	if err != nil {
 		return nil, err
 	}
 	defer cancel()
+	defer func() {
+		if failure, ok := errors.AsType[*Error](returnedErr); ok {
+			failure.messages = slices.Clone(collector.output.Messages)
+		}
+	}()
 
 	execution, err := invocation.Execute(ctx)
 	if err != nil {
 		return nil, xsltError("execute XSLT", err)
+	}
+
+	if options.ResultMode != ResultRaw {
+		var forceTree *bool
+
+		if options.ResultMode == ResultDocument {
+			value := true
+			forceTree = &value
+		}
+
+		execution, err = xslt.NormalizeExecution(ctx, execution, forceTree, options.BaseOutputURI)
+		if err != nil {
+			return nil, xsltError("normalize XSLT", err)
+		}
 	}
 
 	publication := nodePublication{ctx: ctx, limits: s.engine.limits}

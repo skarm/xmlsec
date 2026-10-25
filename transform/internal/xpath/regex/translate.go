@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // errCodeFORX0002 mirrors the XPath FORX0002 ("invalid regular expression")
@@ -46,6 +47,118 @@ const (
 // is not implicitly anchored.
 func Translate(pattern string, dotAll, ignoreCase bool) (string, error) {
 	return translateXPathRegex(pattern, dotAll, ignoreCase)
+}
+
+// ValidateXSD10 rejects the interior literal hyphens permitted by XSD 1.1
+// but excluded from XML Schema 1.0 character groups. Existing validation
+// independently checks escapes, endpoints and subtraction structure.
+func ValidateXSD10(pattern string) error {
+	var classes []xsd10Class
+
+	for i := 0; i < len(pattern); {
+		ch, width := utf8.DecodeRuneInString(pattern[i:])
+
+		i += width
+		if ch == '\\' {
+			next, single := xsd10Escape(pattern, i)
+			i = next
+
+			if len(classes) > 0 {
+				if err := classes[len(classes)-1].escaped(single); err != nil {
+					return err
+				}
+			}
+
+			continue
+		}
+
+		switch ch {
+		case '[':
+			classes = append(classes, xsd10Class{first: true})
+		case ']':
+			if len(classes) > 0 {
+				classes = classes[:len(classes)-1]
+			}
+		default:
+			if len(classes) == 0 {
+				continue
+			}
+
+			next := byte(0)
+			if i < len(pattern) {
+				next = pattern[i]
+			}
+
+			if err := classes[len(classes)-1].character(ch, next); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+type xsd10Class struct{ first, negated, single, endpoint bool }
+
+func xsd10Escape(pattern string, at int) (int, bool) {
+	if at >= len(pattern) {
+		return at, false
+	}
+
+	escaped, size := utf8.DecodeRuneInString(pattern[at:])
+	at += size
+
+	single := !strings.ContainsRune("pPdDsSwWiIcC", escaped)
+	if (escaped == 'p' || escaped == 'P') && at < len(pattern) && pattern[at] == '{' {
+		if end := strings.IndexByte(pattern[at:], '}'); end >= 0 {
+			at += end + 1
+		}
+	}
+
+	return at, single
+}
+
+func (c *xsd10Class) escaped(single bool) error {
+	if c.endpoint && !single {
+		return invalidXSD10Hyphen()
+	}
+
+	c.first = false
+	c.single, c.endpoint = single && !c.endpoint, false
+
+	return nil
+}
+
+func (c *xsd10Class) character(ch rune, next byte) error {
+	if ch == '^' && c.first && !c.negated {
+		c.negated = true
+		return nil
+	}
+
+	if ch == '-' {
+		if !c.first && next != 0 && next != ']' && next != '[' {
+			if !c.single {
+				return invalidXSD10Hyphen()
+			}
+
+			c.single, c.endpoint = false, true
+
+			return nil
+		}
+
+		c.first, c.single, c.endpoint = false, false, false
+
+		return nil
+	}
+
+	c.first = false
+	c.single, c.endpoint = !c.endpoint, false
+
+	return nil
+}
+
+func invalidXSD10Hyphen() error {
+	return &regexError{Code: errCodeFORX0002, Message: "interior literal hyphen is unavailable in XML Schema 1.0"}
 }
 
 // translateXPathRegex translates an XPath/XML Schema regex pattern into a
@@ -639,10 +752,7 @@ func translateUnicodeProperty(name string, neg bool) (string, error) {
 	return "", &regexError{Code: errCodeFORX0002, Message: fmt.Sprintf("unknown Unicode property: %s", name)}
 }
 
-func lookupUnicodeBlockRange(blockName string) (string, bool) {
-	// Block names are ASCII. These are the two non-ASCII members of ASCII
-	// Unicode simple-fold classes: long s folds to s, Kelvin sign to k.
-	name := strings.ToLower(strings.ReplaceAll(blockName, "ſ", "s"))
+func lookupUnicodeBlockRange(name string) (string, bool) {
 	if name == "" {
 		return "", false
 	}
@@ -650,468 +760,380 @@ func lookupUnicodeBlockRange(blockName string) (string, bool) {
 	return lookupUnicodeBlock(name)
 }
 
-// goSupportedScripts lists script names supported by Go's Unicode tables.
-func goSupportedScripts(key string) bool {
-	switch key {
-	case "Arabic", "Armenian", "Bengali", "Bopomofo", "Braille", "Buhid", "Canadian_Aboriginal", "Cherokee", "Common", "Cyrillic", "Devanagari", "Ethiopic", "Georgian", "Greek", "Gujarati", "Gurmukhi", "Han", "Hangul", "Hanunoo", "Hebrew", "Hiragana", "Inherited", "Kannada", "Katakana", "Khmer", "Lao", "Latin", "Limbu", "Malayalam", "Mongolian", "Myanmar", "Ogham", "Oriya", "Runic", "Sinhala", "Syriac", "Tagalog", "Tagbanwa", "Tamil", "Telugu", "Thaana", "Thai", "Tibetan", "Yi":
-		return true
-	}
-
-	return false
-}
-
+// XML Schema category escapes use general categories, not Unicode scripts.
 func isGoSupportedProperty(name string) bool {
-	// Single-letter categories
-	if len(name) == 1 || len(name) == 2 {
-		return true // L, Lu, Ll, M, Mn, N, Nd, P, S, Z, C, etc.
+	switch name {
+	case "L", "Lu", "Ll", "Lt", "Lm", "Lo", "M", "Mn", "Mc", "Me",
+		"N", "Nd", "Nl", "No", "P", "Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po",
+		"Z", "Zs", "Zl", "Zp", "S", "Sm", "Sc", "Sk", "So", "C", "Cc", "Cf", "Co", "Cn":
+		return true
+	default:
+		return false
 	}
-
-	ok := goSupportedScripts(name)
-
-	return ok
 }
 
-// lookupUnicodeBlock preserves the Unicode 6.0 blocks used by XML Schema
-// regexes. Name groups make the immutable lookup table easy to inspect.
+// Unicode 17.0.0 block ranges from the Unicode Character Database:
+// https://www.unicode.org/Public/17.0.0/ucd/Blocks.txt
+// Copyright © 2025 Unicode, Inc. See licenses/Unicode-3.0.txt.
+// XML Schema normalized names retain case and hyphens. Historical aliases
+// from Unicode 3.1 remain available. Surrogate blocks never match XML characters.
+//
+//nolint:gochecknoglobals // Read-only Unicode data avoids reconstructing the table for each compilation.
+var unicodeBlocks = map[string]string{
+	"Adlam":                                `\x{1E900}-\x{1E95F}`,
+	"AegeanNumbers":                        `\x{10100}-\x{1013F}`,
+	"Ahom":                                 `\x{11700}-\x{1174F}`,
+	"AlchemicalSymbols":                    `\x{1F700}-\x{1F77F}`,
+	"AlphabeticPresentationForms":          `\x{FB00}-\x{FB4F}`,
+	"AnatolianHieroglyphs":                 `\x{14400}-\x{1467F}`,
+	"AncientGreekMusicalNotation":          `\x{1D200}-\x{1D24F}`,
+	"AncientGreekNumbers":                  `\x{10140}-\x{1018F}`,
+	"AncientSymbols":                       `\x{10190}-\x{101CF}`,
+	"Arabic":                               `\x{0600}-\x{06FF}`,
+	"ArabicExtended-A":                     `\x{08A0}-\x{08FF}`,
+	"ArabicExtended-B":                     `\x{0870}-\x{089F}`,
+	"ArabicExtended-C":                     `\x{10EC0}-\x{10EFF}`,
+	"ArabicMathematicalAlphabeticSymbols":  `\x{1EE00}-\x{1EEFF}`,
+	"ArabicPresentationForms-A":            `\x{FB50}-\x{FDFF}`,
+	"ArabicPresentationForms-B":            `\x{FE70}-\x{FEFF}`,
+	"ArabicSupplement":                     `\x{0750}-\x{077F}`,
+	"Armenian":                             `\x{0530}-\x{058F}`,
+	"Arrows":                               `\x{2190}-\x{21FF}`,
+	"Avestan":                              `\x{10B00}-\x{10B3F}`,
+	"Balinese":                             `\x{1B00}-\x{1B7F}`,
+	"Bamum":                                `\x{A6A0}-\x{A6FF}`,
+	"BamumSupplement":                      `\x{16800}-\x{16A3F}`,
+	"BasicLatin":                           `\x{0000}-\x{007F}`,
+	"BassaVah":                             `\x{16AD0}-\x{16AFF}`,
+	"Batak":                                `\x{1BC0}-\x{1BFF}`,
+	"Bengali":                              `\x{0980}-\x{09FF}`,
+	"BeriaErfe":                            `\x{16EA0}-\x{16EDF}`,
+	"Bhaiksuki":                            `\x{11C00}-\x{11C6F}`,
+	"BlockElements":                        `\x{2580}-\x{259F}`,
+	"Bopomofo":                             `\x{3100}-\x{312F}`,
+	"BopomofoExtended":                     `\x{31A0}-\x{31BF}`,
+	"BoxDrawing":                           `\x{2500}-\x{257F}`,
+	"Brahmi":                               `\x{11000}-\x{1107F}`,
+	"BraillePatterns":                      `\x{2800}-\x{28FF}`,
+	"Buginese":                             `\x{1A00}-\x{1A1F}`,
+	"Buhid":                                `\x{1740}-\x{175F}`,
+	"ByzantineMusicalSymbols":              `\x{1D000}-\x{1D0FF}`,
+	"CJKCompatibility":                     `\x{3300}-\x{33FF}`,
+	"CJKCompatibilityForms":                `\x{FE30}-\x{FE4F}`,
+	"CJKCompatibilityIdeographs":           `\x{F900}-\x{FAFF}`,
+	"CJKCompatibilityIdeographsSupplement": `\x{2F800}-\x{2FA1F}`,
+	"CJKRadicalsSupplement":                `\x{2E80}-\x{2EFF}`,
+	"CJKStrokes":                           `\x{31C0}-\x{31EF}`,
+	"CJKSymbolsandPunctuation":             `\x{3000}-\x{303F}`,
+	"CJKUnifiedIdeographs":                 `\x{4E00}-\x{9FFF}`,
+	"CJKUnifiedIdeographsExtensionA":       `\x{3400}-\x{4DBF}`,
+	"CJKUnifiedIdeographsExtensionB":       `\x{20000}-\x{2A6DF}`,
+	"CJKUnifiedIdeographsExtensionC":       `\x{2A700}-\x{2B73F}`,
+	"CJKUnifiedIdeographsExtensionD":       `\x{2B740}-\x{2B81F}`,
+	"CJKUnifiedIdeographsExtensionE":       `\x{2B820}-\x{2CEAF}`,
+	"CJKUnifiedIdeographsExtensionF":       `\x{2CEB0}-\x{2EBEF}`,
+	"CJKUnifiedIdeographsExtensionG":       `\x{30000}-\x{3134F}`,
+	"CJKUnifiedIdeographsExtensionH":       `\x{31350}-\x{323AF}`,
+	"CJKUnifiedIdeographsExtensionI":       `\x{2EBF0}-\x{2EE5F}`,
+	"CJKUnifiedIdeographsExtensionJ":       `\x{323B0}-\x{3347F}`,
+	"Carian":                               `\x{102A0}-\x{102DF}`,
+	"CaucasianAlbanian":                    `\x{10530}-\x{1056F}`,
+	"Chakma":                               `\x{11100}-\x{1114F}`,
+	"Cham":                                 `\x{AA00}-\x{AA5F}`,
+	"Cherokee":                             `\x{13A0}-\x{13FF}`,
+	"CherokeeSupplement":                   `\x{AB70}-\x{ABBF}`,
+	"ChessSymbols":                         `\x{1FA00}-\x{1FA6F}`,
+	"Chorasmian":                           `\x{10FB0}-\x{10FDF}`,
+	"CombiningDiacriticalMarks":            `\x{0300}-\x{036F}`,
+	"CombiningDiacriticalMarksExtended":    `\x{1AB0}-\x{1AFF}`,
+	"CombiningDiacriticalMarksSupplement":  `\x{1DC0}-\x{1DFF}`,
+	"CombiningDiacriticalMarksforSymbols":  `\x{20D0}-\x{20FF}`,
+	"CombiningHalfMarks":                   `\x{FE20}-\x{FE2F}`,
+	"CombiningMarksforSymbols":             `\x{20D0}-\x{20FF}`,
+	"CommonIndicNumberForms":               `\x{A830}-\x{A83F}`,
+	"ControlPictures":                      `\x{2400}-\x{243F}`,
+	"Coptic":                               `\x{2C80}-\x{2CFF}`,
+	"CopticEpactNumbers":                   `\x{102E0}-\x{102FF}`,
+	"CountingRodNumerals":                  `\x{1D360}-\x{1D37F}`,
+	"Cuneiform":                            `\x{12000}-\x{123FF}`,
+	"CuneiformNumbersandPunctuation":       `\x{12400}-\x{1247F}`,
+	"CurrencySymbols":                      `\x{20A0}-\x{20CF}`,
+	"CypriotSyllabary":                     `\x{10800}-\x{1083F}`,
+	"Cypro-Minoan":                         `\x{12F90}-\x{12FFF}`,
+	"Cyrillic":                             `\x{0400}-\x{04FF}`,
+	"CyrillicExtended-A":                   `\x{2DE0}-\x{2DFF}`,
+	"CyrillicExtended-B":                   `\x{A640}-\x{A69F}`,
+	"CyrillicExtended-C":                   `\x{1C80}-\x{1C8F}`,
+	"CyrillicExtended-D":                   `\x{1E030}-\x{1E08F}`,
+	"CyrillicSupplement":                   `\x{0500}-\x{052F}`,
+	"Deseret":                              `\x{10400}-\x{1044F}`,
+	"Devanagari":                           `\x{0900}-\x{097F}`,
+	"DevanagariExtended":                   `\x{A8E0}-\x{A8FF}`,
+	"DevanagariExtended-A":                 `\x{11B00}-\x{11B5F}`,
+	"Dingbats":                             `\x{2700}-\x{27BF}`,
+	"DivesAkuru":                           `\x{11900}-\x{1195F}`,
+	"Dogra":                                `\x{11800}-\x{1184F}`,
+	"DominoTiles":                          `\x{1F030}-\x{1F09F}`,
+	"Duployan":                             `\x{1BC00}-\x{1BC9F}`,
+	"EarlyDynasticCuneiform":               `\x{12480}-\x{1254F}`,
+	"EgyptianHieroglyphFormatControls":     `\x{13430}-\x{1345F}`,
+	"EgyptianHieroglyphs":                  `\x{13000}-\x{1342F}`,
+	"EgyptianHieroglyphsExtended-A":        `\x{13460}-\x{143FF}`,
+	"Elbasan":                              `\x{10500}-\x{1052F}`,
+	"Elymaic":                              `\x{10FE0}-\x{10FFF}`,
+	"Emoticons":                            `\x{1F600}-\x{1F64F}`,
+	"EnclosedAlphanumericSupplement":       `\x{1F100}-\x{1F1FF}`,
+	"EnclosedAlphanumerics":                `\x{2460}-\x{24FF}`,
+	"EnclosedCJKLettersandMonths":          `\x{3200}-\x{32FF}`,
+	"EnclosedIdeographicSupplement":        `\x{1F200}-\x{1F2FF}`,
+	"Ethiopic":                             `\x{1200}-\x{137F}`,
+	"EthiopicExtended":                     `\x{2D80}-\x{2DDF}`,
+	"EthiopicExtended-A":                   `\x{AB00}-\x{AB2F}`,
+	"EthiopicExtended-B":                   `\x{1E7E0}-\x{1E7FF}`,
+	"EthiopicSupplement":                   `\x{1380}-\x{139F}`,
+	"Garay":                                `\x{10D40}-\x{10D8F}`,
+	"GeneralPunctuation":                   `\x{2000}-\x{206F}`,
+	"GeometricShapes":                      `\x{25A0}-\x{25FF}`,
+	"GeometricShapesExtended":              `\x{1F780}-\x{1F7FF}`,
+	"Georgian":                             `\x{10A0}-\x{10FF}`,
+	"GeorgianExtended":                     `\x{1C90}-\x{1CBF}`,
+	"GeorgianSupplement":                   `\x{2D00}-\x{2D2F}`,
+	"Glagolitic":                           `\x{2C00}-\x{2C5F}`,
+	"GlagoliticSupplement":                 `\x{1E000}-\x{1E02F}`,
+	"Gothic":                               `\x{10330}-\x{1034F}`,
+	"Grantha":                              `\x{11300}-\x{1137F}`,
+	"Greek":                                `\x{0370}-\x{03FF}`,
+	"GreekExtended":                        `\x{1F00}-\x{1FFF}`,
+	"GreekandCoptic":                       `\x{0370}-\x{03FF}`,
+	"Gujarati":                             `\x{0A80}-\x{0AFF}`,
+	"GunjalaGondi":                         `\x{11D60}-\x{11DAF}`,
+	"Gurmukhi":                             `\x{0A00}-\x{0A7F}`,
+	"GurungKhema":                          `\x{16100}-\x{1613F}`,
+	"HalfwidthandFullwidthForms":           `\x{FF00}-\x{FFEF}`,
+	"HangulCompatibilityJamo":              `\x{3130}-\x{318F}`,
+	"HangulJamo":                           `\x{1100}-\x{11FF}`,
+	"HangulJamoExtended-A":                 `\x{A960}-\x{A97F}`,
+	"HangulJamoExtended-B":                 `\x{D7B0}-\x{D7FF}`,
+	"HangulSyllables":                      `\x{AC00}-\x{D7AF}`,
+	"HanifiRohingya":                       `\x{10D00}-\x{10D3F}`,
+	"Hanunoo":                              `\x{1720}-\x{173F}`,
+	"Hatran":                               `\x{108E0}-\x{108FF}`,
+	"Hebrew":                               `\x{0590}-\x{05FF}`,
+	"HighPrivateUseSurrogates":             `\x{DB80}-\x{DBFF}`,
+	"HighSurrogates":                       `\x{D800}-\x{DB7F}`,
+	"Hiragana":                             `\x{3040}-\x{309F}`,
+	"IPAExtensions":                        `\x{0250}-\x{02AF}`,
+	"IdeographicDescriptionCharacters":     `\x{2FF0}-\x{2FFF}`,
+	"IdeographicSymbolsandPunctuation":     `\x{16FE0}-\x{16FFF}`,
+	"ImperialAramaic":                      `\x{10840}-\x{1085F}`,
+	"IndicSiyaqNumbers":                    `\x{1EC70}-\x{1ECBF}`,
+	"InscriptionalPahlavi":                 `\x{10B60}-\x{10B7F}`,
+	"InscriptionalParthian":                `\x{10B40}-\x{10B5F}`,
+	"Javanese":                             `\x{A980}-\x{A9DF}`,
+	"Kaithi":                               `\x{11080}-\x{110CF}`,
+	"KaktovikNumerals":                     `\x{1D2C0}-\x{1D2DF}`,
+	"KanaExtended-A":                       `\x{1B100}-\x{1B12F}`,
+	"KanaExtended-B":                       `\x{1AFF0}-\x{1AFFF}`,
+	"KanaSupplement":                       `\x{1B000}-\x{1B0FF}`,
+	"Kanbun":                               `\x{3190}-\x{319F}`,
+	"KangxiRadicals":                       `\x{2F00}-\x{2FDF}`,
+	"Kannada":                              `\x{0C80}-\x{0CFF}`,
+	"Katakana":                             `\x{30A0}-\x{30FF}`,
+	"KatakanaPhoneticExtensions":           `\x{31F0}-\x{31FF}`,
+	"Kawi":                                 `\x{11F00}-\x{11F5F}`,
+	"KayahLi":                              `\x{A900}-\x{A92F}`,
+	"Kharoshthi":                           `\x{10A00}-\x{10A5F}`,
+	"KhitanSmallScript":                    `\x{18B00}-\x{18CFF}`,
+	"Khmer":                                `\x{1780}-\x{17FF}`,
+	"KhmerSymbols":                         `\x{19E0}-\x{19FF}`,
+	"Khojki":                               `\x{11200}-\x{1124F}`,
+	"Khudawadi":                            `\x{112B0}-\x{112FF}`,
+	"KiratRai":                             `\x{16D40}-\x{16D7F}`,
+	"Lao":                                  `\x{0E80}-\x{0EFF}`,
+	"Latin-1Supplement":                    `\x{0080}-\x{00FF}`,
+	"LatinExtended-A":                      `\x{0100}-\x{017F}`,
+	"LatinExtended-B":                      `\x{0180}-\x{024F}`,
+	"LatinExtended-C":                      `\x{2C60}-\x{2C7F}`,
+	"LatinExtended-D":                      `\x{A720}-\x{A7FF}`,
+	"LatinExtended-E":                      `\x{AB30}-\x{AB6F}`,
+	"LatinExtended-F":                      `\x{10780}-\x{107BF}`,
+	"LatinExtended-G":                      `\x{1DF00}-\x{1DFFF}`,
+	"LatinExtendedAdditional":              `\x{1E00}-\x{1EFF}`,
+	"Lepcha":                               `\x{1C00}-\x{1C4F}`,
+	"LetterlikeSymbols":                    `\x{2100}-\x{214F}`,
+	"Limbu":                                `\x{1900}-\x{194F}`,
+	"LinearA":                              `\x{10600}-\x{1077F}`,
+	"LinearBIdeograms":                     `\x{10080}-\x{100FF}`,
+	"LinearBSyllabary":                     `\x{10000}-\x{1007F}`,
+	"Lisu":                                 `\x{A4D0}-\x{A4FF}`,
+	"LisuSupplement":                       `\x{11FB0}-\x{11FBF}`,
+	"LowSurrogates":                        `\x{DC00}-\x{DFFF}`,
+	"Lycian":                               `\x{10280}-\x{1029F}`,
+	"Lydian":                               `\x{10920}-\x{1093F}`,
+	"Mahajani":                             `\x{11150}-\x{1117F}`,
+	"MahjongTiles":                         `\x{1F000}-\x{1F02F}`,
+	"Makasar":                              `\x{11EE0}-\x{11EFF}`,
+	"Malayalam":                            `\x{0D00}-\x{0D7F}`,
+	"Mandaic":                              `\x{0840}-\x{085F}`,
+	"Manichaean":                           `\x{10AC0}-\x{10AFF}`,
+	"Marchen":                              `\x{11C70}-\x{11CBF}`,
+	"MasaramGondi":                         `\x{11D00}-\x{11D5F}`,
+	"MathematicalAlphanumericSymbols":      `\x{1D400}-\x{1D7FF}`,
+	"MathematicalOperators":                `\x{2200}-\x{22FF}`,
+	"MayanNumerals":                        `\x{1D2E0}-\x{1D2FF}`,
+	"Medefaidrin":                          `\x{16E40}-\x{16E9F}`,
+	"MeeteiMayek":                          `\x{ABC0}-\x{ABFF}`,
+	"MeeteiMayekExtensions":                `\x{AAE0}-\x{AAFF}`,
+	"MendeKikakui":                         `\x{1E800}-\x{1E8DF}`,
+	"MeroiticCursive":                      `\x{109A0}-\x{109FF}`,
+	"MeroiticHieroglyphs":                  `\x{10980}-\x{1099F}`,
+	"Miao":                                 `\x{16F00}-\x{16F9F}`,
+	"MiscellaneousMathematicalSymbols-A":   `\x{27C0}-\x{27EF}`,
+	"MiscellaneousMathematicalSymbols-B":   `\x{2980}-\x{29FF}`,
+	"MiscellaneousSymbols":                 `\x{2600}-\x{26FF}`,
+	"MiscellaneousSymbolsSupplement":       `\x{1CEC0}-\x{1CEFF}`,
+	"MiscellaneousSymbolsandArrows":        `\x{2B00}-\x{2BFF}`,
+	"MiscellaneousSymbolsandPictographs":   `\x{1F300}-\x{1F5FF}`,
+	"MiscellaneousTechnical":               `\x{2300}-\x{23FF}`,
+	"Modi":                                 `\x{11600}-\x{1165F}`,
+	"ModifierToneLetters":                  `\x{A700}-\x{A71F}`,
+	"Mongolian":                            `\x{1800}-\x{18AF}`,
+	"MongolianSupplement":                  `\x{11660}-\x{1167F}`,
+	"Mro":                                  `\x{16A40}-\x{16A6F}`,
+	"Multani":                              `\x{11280}-\x{112AF}`,
+	"MusicalSymbols":                       `\x{1D100}-\x{1D1FF}`,
+	"Myanmar":                              `\x{1000}-\x{109F}`,
+	"MyanmarExtended-A":                    `\x{AA60}-\x{AA7F}`,
+	"MyanmarExtended-B":                    `\x{A9E0}-\x{A9FF}`,
+	"MyanmarExtended-C":                    `\x{116D0}-\x{116FF}`,
+	"NKo":                                  `\x{07C0}-\x{07FF}`,
+	"Nabataean":                            `\x{10880}-\x{108AF}`,
+	"NagMundari":                           `\x{1E4D0}-\x{1E4FF}`,
+	"Nandinagari":                          `\x{119A0}-\x{119FF}`,
+	"NewTaiLue":                            `\x{1980}-\x{19DF}`,
+	"Newa":                                 `\x{11400}-\x{1147F}`,
+	"NumberForms":                          `\x{2150}-\x{218F}`,
+	"Nushu":                                `\x{1B170}-\x{1B2FF}`,
+	"NyiakengPuachueHmong":                 `\x{1E100}-\x{1E14F}`,
+	"Ogham":                                `\x{1680}-\x{169F}`,
+	"OlChiki":                              `\x{1C50}-\x{1C7F}`,
+	"OlOnal":                               `\x{1E5D0}-\x{1E5FF}`,
+	"OldHungarian":                         `\x{10C80}-\x{10CFF}`,
+	"OldItalic":                            `\x{10300}-\x{1032F}`,
+	"OldNorthArabian":                      `\x{10A80}-\x{10A9F}`,
+	"OldPermic":                            `\x{10350}-\x{1037F}`,
+	"OldPersian":                           `\x{103A0}-\x{103DF}`,
+	"OldSogdian":                           `\x{10F00}-\x{10F2F}`,
+	"OldSouthArabian":                      `\x{10A60}-\x{10A7F}`,
+	"OldTurkic":                            `\x{10C00}-\x{10C4F}`,
+	"OldUyghur":                            `\x{10F70}-\x{10FAF}`,
+	"OpticalCharacterRecognition":          `\x{2440}-\x{245F}`,
+	"Oriya":                                `\x{0B00}-\x{0B7F}`,
+	"OrnamentalDingbats":                   `\x{1F650}-\x{1F67F}`,
+	"Osage":                                `\x{104B0}-\x{104FF}`,
+	"Osmanya":                              `\x{10480}-\x{104AF}`,
+	"OttomanSiyaqNumbers":                  `\x{1ED00}-\x{1ED4F}`,
+	"PahawhHmong":                          `\x{16B00}-\x{16B8F}`,
+	"Palmyrene":                            `\x{10860}-\x{1087F}`,
+	"PauCinHau":                            `\x{11AC0}-\x{11AFF}`,
+	"Phags-pa":                             `\x{A840}-\x{A87F}`,
+	"PhaistosDisc":                         `\x{101D0}-\x{101FF}`,
+	"Phoenician":                           `\x{10900}-\x{1091F}`,
+	"PhoneticExtensions":                   `\x{1D00}-\x{1D7F}`,
+	"PhoneticExtensionsSupplement":         `\x{1D80}-\x{1DBF}`,
+	"PlayingCards":                         `\x{1F0A0}-\x{1F0FF}`,
+	"PrivateUse":                           `\x{E000}-\x{F8FF}\x{F0000}-\x{FFFFD}\x{100000}-\x{10FFFD}`,
+	"PrivateUseArea":                       `\x{E000}-\x{F8FF}`,
+	"PsalterPahlavi":                       `\x{10B80}-\x{10BAF}`,
+	"Rejang":                               `\x{A930}-\x{A95F}`,
+	"RumiNumeralSymbols":                   `\x{10E60}-\x{10E7F}`,
+	"Runic":                                `\x{16A0}-\x{16FF}`,
+	"Samaritan":                            `\x{0800}-\x{083F}`,
+	"Saurashtra":                           `\x{A880}-\x{A8DF}`,
+	"Sharada":                              `\x{11180}-\x{111DF}`,
+	"SharadaSupplement":                    `\x{11B60}-\x{11B7F}`,
+	"Shavian":                              `\x{10450}-\x{1047F}`,
+	"ShorthandFormatControls":              `\x{1BCA0}-\x{1BCAF}`,
+	"Siddham":                              `\x{11580}-\x{115FF}`,
+	"Sidetic":                              `\x{10940}-\x{1095F}`,
+	"Sinhala":                              `\x{0D80}-\x{0DFF}`,
+	"SinhalaArchaicNumbers":                `\x{111E0}-\x{111FF}`,
+	"SmallFormVariants":                    `\x{FE50}-\x{FE6F}`,
+	"SmallKanaExtension":                   `\x{1B130}-\x{1B16F}`,
+	"Sogdian":                              `\x{10F30}-\x{10F6F}`,
+	"SoraSompeng":                          `\x{110D0}-\x{110FF}`,
+	"Soyombo":                              `\x{11A50}-\x{11AAF}`,
+	"SpacingModifierLetters":               `\x{02B0}-\x{02FF}`,
+	"Specials":                             `\x{FFF0}-\x{FFFF}`,
+	"Sundanese":                            `\x{1B80}-\x{1BBF}`,
+	"SundaneseSupplement":                  `\x{1CC0}-\x{1CCF}`,
+	"Sunuwar":                              `\x{11BC0}-\x{11BFF}`,
+	"SuperscriptsandSubscripts":            `\x{2070}-\x{209F}`,
+	"SupplementalArrows-A":                 `\x{27F0}-\x{27FF}`,
+	"SupplementalArrows-B":                 `\x{2900}-\x{297F}`,
+	"SupplementalArrows-C":                 `\x{1F800}-\x{1F8FF}`,
+	"SupplementalMathematicalOperators":    `\x{2A00}-\x{2AFF}`,
+	"SupplementalPunctuation":              `\x{2E00}-\x{2E7F}`,
+	"SupplementalSymbolsandPictographs":    `\x{1F900}-\x{1F9FF}`,
+	"SupplementaryPrivateUseArea-A":        `\x{F0000}-\x{FFFFF}`,
+	"SupplementaryPrivateUseArea-B":        `\x{100000}-\x{10FFFF}`,
+	"SuttonSignWriting":                    `\x{1D800}-\x{1DAAF}`,
+	"SylotiNagri":                          `\x{A800}-\x{A82F}`,
+	"SymbolsandPictographsExtended-A":      `\x{1FA70}-\x{1FAFF}`,
+	"SymbolsforLegacyComputing":            `\x{1FB00}-\x{1FBFF}`,
+	"SymbolsforLegacyComputingSupplement":  `\x{1CC00}-\x{1CEBF}`,
+	"Syriac":                               `\x{0700}-\x{074F}`,
+	"SyriacSupplement":                     `\x{0860}-\x{086F}`,
+	"Tagalog":                              `\x{1700}-\x{171F}`,
+	"Tagbanwa":                             `\x{1760}-\x{177F}`,
+	"Tags":                                 `\x{E0000}-\x{E007F}`,
+	"TaiLe":                                `\x{1950}-\x{197F}`,
+	"TaiTham":                              `\x{1A20}-\x{1AAF}`,
+	"TaiViet":                              `\x{AA80}-\x{AADF}`,
+	"TaiXuanJingSymbols":                   `\x{1D300}-\x{1D35F}`,
+	"TaiYo":                                `\x{1E6C0}-\x{1E6FF}`,
+	"Takri":                                `\x{11680}-\x{116CF}`,
+	"Tamil":                                `\x{0B80}-\x{0BFF}`,
+	"TamilSupplement":                      `\x{11FC0}-\x{11FFF}`,
+	"Tangsa":                               `\x{16A70}-\x{16ACF}`,
+	"Tangut":                               `\x{17000}-\x{187FF}`,
+	"TangutComponents":                     `\x{18800}-\x{18AFF}`,
+	"TangutComponentsSupplement":           `\x{18D80}-\x{18DFF}`,
+	"TangutSupplement":                     `\x{18D00}-\x{18D7F}`,
+	"Telugu":                               `\x{0C00}-\x{0C7F}`,
+	"Thaana":                               `\x{0780}-\x{07BF}`,
+	"Thai":                                 `\x{0E00}-\x{0E7F}`,
+	"Tibetan":                              `\x{0F00}-\x{0FFF}`,
+	"Tifinagh":                             `\x{2D30}-\x{2D7F}`,
+	"Tirhuta":                              `\x{11480}-\x{114DF}`,
+	"Todhri":                               `\x{105C0}-\x{105FF}`,
+	"TolongSiki":                           `\x{11DB0}-\x{11DEF}`,
+	"Toto":                                 `\x{1E290}-\x{1E2BF}`,
+	"TransportandMapSymbols":               `\x{1F680}-\x{1F6FF}`,
+	"Tulu-Tigalari":                        `\x{11380}-\x{113FF}`,
+	"Ugaritic":                             `\x{10380}-\x{1039F}`,
+	"UnifiedCanadianAboriginalSyllabics":   `\x{1400}-\x{167F}`,
+	"UnifiedCanadianAboriginalSyllabicsExtended":   `\x{18B0}-\x{18FF}`,
+	"UnifiedCanadianAboriginalSyllabicsExtended-A": `\x{11AB0}-\x{11ABF}`,
+	"Vai":                          `\x{A500}-\x{A63F}`,
+	"VariationSelectors":           `\x{FE00}-\x{FE0F}`,
+	"VariationSelectorsSupplement": `\x{E0100}-\x{E01EF}`,
+	"VedicExtensions":              `\x{1CD0}-\x{1CFF}`,
+	"VerticalForms":                `\x{FE10}-\x{FE1F}`,
+	"Vithkuqi":                     `\x{10570}-\x{105BF}`,
+	"Wancho":                       `\x{1E2C0}-\x{1E2FF}`,
+	"WarangCiti":                   `\x{118A0}-\x{118FF}`,
+	"Yezidi":                       `\x{10E80}-\x{10EBF}`,
+	"YiRadicals":                   `\x{A490}-\x{A4CF}`,
+	"YiSyllables":                  `\x{A000}-\x{A48F}`,
+	"YijingHexagramSymbols":        `\x{4DC0}-\x{4DFF}`,
+	"ZanabazarSquare":              `\x{11A00}-\x{11A4F}`,
+	"ZnamennyMusicalNotation":      `\x{1CF00}-\x{1CFCF}`,
+}
+
 func lookupUnicodeBlock(name string) (string, bool) {
-	switch name[0] {
-	case 'a':
-		return lookupUnicodeBlockA(name)
-	case 'b':
-		return lookupUnicodeBlockB(name)
-	case 'c':
-		return lookupUnicodeBlockC(name)
-	case 'd':
-		return lookupUnicodeBlockD(name)
-	case 'e':
-		return lookupUnicodeBlockE(name)
-	case 'g':
-		return lookupUnicodeBlockG(name)
-	case 'h':
-		return lookupUnicodeBlockH(name)
-	case 'i':
-		return lookupUnicodeBlockI(name)
-	case 'k':
-		return lookupUnicodeBlockK(name)
-	case 'l':
-		return lookupUnicodeBlockL(name)
-	case 'm':
-		return lookupUnicodeBlockM(name)
-	case 'n':
-		return lookupUnicodeBlockN(name)
-	case 'o':
-		return lookupUnicodeBlockO(name)
-	case 'p':
-		return lookupUnicodeBlockP(name)
-	case 'r':
-		return lookupUnicodeBlockR(name)
-	case 's':
-		return lookupUnicodeBlockS(name)
-	case 't':
-		return lookupUnicodeBlockT(name)
-	case 'u':
-		return lookupUnicodeBlockU(name)
-	case 'v':
-		return lookupUnicodeBlockV(name)
-	case 'y':
-		return lookupUnicodeBlockY(name)
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockA(name string) (string, bool) {
-	switch name {
-	case "armenian":
-		return `\x{0530}-\x{058F}`, true
-	case "arabic":
-		return `\x{0600}-\x{06FF}`, true
-	case "arabicsupplement":
-		return `\x{0750}-\x{077F}`, true
-	case "arrows":
-		return `\x{2190}-\x{21FF}`, true
-	case "alphabeticpresentationforms":
-		return `\x{FB00}-\x{FB4F}`, true
-	case "arabicpresentationforms-a":
-		return `\x{FB50}-\x{FDFF}`, true
-	case "arabicpresentationforms-b":
-		return `\x{FE70}-\x{FEFF}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockB(name string) (string, bool) {
-	switch name {
-	case "basiclatin":
-		return `\x{0000}-\x{007F}`, true
-	case "bengali":
-		return `\x{0980}-\x{09FF}`, true
-	case "buhid":
-		return `\x{1740}-\x{175F}`, true
-	case "buginese":
-		return `\x{1A00}-\x{1A1F}`, true
-	case "boxdrawing":
-		return `\x{2500}-\x{257F}`, true
-	case "blockelements":
-		return `\x{2580}-\x{259F}`, true
-	case "braillepatterns":
-		return `\x{2800}-\x{28FF}`, true
-	case "bopomofo":
-		return `\x{3100}-\x{312F}`, true
-	case "bopomofoextended":
-		return `\x{31A0}-\x{31BF}`, true
-	case "byzantinemusicalsymbols":
-		return `\x{1D000}-\x{1D0FF}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockC(name string) (string, bool) {
-	switch name {
-	case "combiningdiacriticalmarks":
-		return `\x{0300}-\x{036F}`, true
-	case "cyrillic":
-		return `\x{0400}-\x{04FF}`, true
-	case "cyrillicsupplement":
-		return `\x{0500}-\x{052F}`, true
-	case "cherokee":
-		return `\x{13A0}-\x{13FF}`, true
-	case "combiningdiacriticalmarkssupplement":
-		return `\x{1DC0}-\x{1DFF}`, true
-	case "currencysymbols":
-		return `\x{20A0}-\x{20CF}`, true
-	case "combiningdiacriticalmarksforsymbols":
-		return `\x{20D0}-\x{20FF}`, true
-	case "combiningmarksforsymbols":
-		return `\x{20D0}-\x{20FF}`, true
-	case "controlpictures":
-		return `\x{2400}-\x{243F}`, true
-	case "cjkradicalssupplement":
-		return `\x{2E80}-\x{2EFF}`, true
-	case "cjksymbolsandpunctuation":
-		return `\x{3000}-\x{303F}`, true
-	case "cjkcompatibility":
-		return `\x{3300}-\x{33FF}`, true
-	case "cjkunifiedideographsextensiona":
-		return `\x{3400}-\x{4DBF}`, true
-	case "cjkunifiedideographs":
-		return `\x{4E00}-\x{9FFF}`, true
-	case "cjkcompatibilityideographs":
-		return `\x{F900}-\x{FAFF}`, true
-	case "combininghalfmarks":
-		return `\x{FE20}-\x{FE2F}`, true
-	case "cjkcompatibilityforms":
-		return `\x{FE30}-\x{FE4F}`, true
-	case "cjkunifiedideographsextensionb":
-		return `\x{20000}-\x{2A6DF}`, true
-	case "cjkcompatibilityideographssupplement":
-		return `\x{2F800}-\x{2FA1F}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockD(name string) (string, bool) {
-	switch name {
-	case "devanagari":
-		return `\x{0900}-\x{097F}`, true
-	case "dingbats":
-		return `\x{2700}-\x{27BF}`, true
-	case "deseret":
-		return `\x{10400}-\x{1044F}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockE(name string) (string, bool) {
-	switch name {
-	case "ethiopic":
-		return `\x{1200}-\x{137F}`, true
-	case "ethiopicsupplement":
-		return `\x{1380}-\x{139F}`, true
-	case "enclosedalphanumerics":
-		return `\x{2460}-\x{24FF}`, true
-	case "enclosedcjklettersandmonths":
-		return `\x{3200}-\x{32FF}`, true
-	case "emoticons":
-		return `\x{1F600}-\x{1F64F}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockG(name string) (string, bool) {
-	switch name {
-	case "greek":
-		return `\x{0370}-\x{03FF}`, true
-	case "greekandcoptic":
-		return `\x{0370}-\x{03FF}`, true
-	case "gurmukhi":
-		return `\x{0A00}-\x{0A7F}`, true
-	case "gujarati":
-		return `\x{0A80}-\x{0AFF}`, true
-	case "georgian":
-		return `\x{10A0}-\x{10FF}`, true
-	case "greekextended":
-		return `\x{1F00}-\x{1FFF}`, true
-	case "generalpunctuation":
-		return `\x{2000}-\x{206F}`, true
-	case "geometricshapes":
-		return `\x{25A0}-\x{25FF}`, true
-	case "gothic":
-		return `\x{10330}-\x{1034F}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockH(name string) (string, bool) {
-	switch name {
-	case "hebrew":
-		return `\x{0590}-\x{05FF}`, true
-	case "hanguljamo":
-		return `\x{1100}-\x{11FF}`, true
-	case "hanunoo":
-		return `\x{1720}-\x{173F}`, true
-	case "hiragana":
-		return `\x{3040}-\x{309F}`, true
-	case "hangulcompatibilityjamo":
-		return `\x{3130}-\x{318F}`, true
-	case "hangulsyllables":
-		return `\x{AC00}-\x{D7AF}`, true
-	case "highsurrogates":
-		return `\x{D800}-\x{DB7F}`, true
-	case "highprivateusesurrogates":
-		return `\x{DB80}-\x{DBFF}`, true
-	case "halfwidthandfullwidthforms":
-		return `\x{FF00}-\x{FFEF}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockI(name string) (string, bool) {
-	switch name {
-	case "ipaextensions":
-		return `\x{0250}-\x{02AF}`, true
-	case "ideographicdescriptioncharacters":
-		return `\x{2FF0}-\x{2FFF}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockK(name string) (string, bool) {
-	switch name {
-	case "kannada":
-		return `\x{0C80}-\x{0CFF}`, true
-	case "khmer":
-		return `\x{1780}-\x{17FF}`, true
-	case "khmersymbols":
-		return `\x{19E0}-\x{19FF}`, true
-	case "kangxiradicals":
-		return `\x{2F00}-\x{2FDF}`, true
-	case "katakana":
-		return `\x{30A0}-\x{30FF}`, true
-	case "kanbun":
-		return `\x{3190}-\x{319F}`, true
-	case "katakanaphoneticextensions":
-		return `\x{31F0}-\x{31FF}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockL(name string) (string, bool) {
-	switch name {
-	case "latin-1supplement":
-		return `\x{0080}-\x{00FF}`, true
-	case "latinextended-a":
-		return `\x{0100}-\x{017F}`, true
-	case "latinextended-b":
-		return `\x{0180}-\x{024F}`, true
-	case "lao":
-		return `\x{0E80}-\x{0EFF}`, true
-	case "limbu":
-		return `\x{1900}-\x{194F}`, true
-	case "latinextendedadditional":
-		return `\x{1E00}-\x{1EFF}`, true
-	case "letterlikesymbols":
-		return `\x{2100}-\x{214F}`, true
-	case "lowsurrogates":
-		return `\x{DC00}-\x{DFFF}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockM(name string) (string, bool) {
-	switch name {
-	case "malayalam":
-		return `\x{0D00}-\x{0D7F}`, true
-	case "myanmar":
-		return `\x{1000}-\x{109F}`, true
-	case "mongolian":
-		return `\x{1800}-\x{18AF}`, true
-	case "mathematicaloperators":
-		return `\x{2200}-\x{22FF}`, true
-	case "miscellaneoustechnical":
-		return `\x{2300}-\x{23FF}`, true
-	case "miscellaneoussymbols":
-		return `\x{2600}-\x{26FF}`, true
-	case "miscellaneousmathematicalsymbols-a":
-		return `\x{27C0}-\x{27EF}`, true
-	case "miscellaneousmathematicalsymbols-b":
-		return `\x{2980}-\x{29FF}`, true
-	case "miscellaneoussymbolsandarrows":
-		return `\x{2B00}-\x{2BFF}`, true
-	case "musicalsymbols":
-		return `\x{1D100}-\x{1D1FF}`, true
-	case "mathematicalalphanumericsymbols":
-		return `\x{1D400}-\x{1D7FF}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockN(name string) (string, bool) {
-	switch name {
-	case "nko":
-		return `\x{07C0}-\x{07FF}`, true
-	case "newtailue":
-		return `\x{1980}-\x{19DF}`, true
-	case "numberforms":
-		return `\x{2150}-\x{218F}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockO(name string) (string, bool) {
-	switch name {
-	case "oriya":
-		return `\x{0B00}-\x{0B7F}`, true
-	case "ogham":
-		return `\x{1680}-\x{169F}`, true
-	case "opticalcharacterrecognition":
-		return `\x{2440}-\x{245F}`, true
-	case "olditalic":
-		return `\x{10300}-\x{1032F}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockP(name string) (string, bool) {
-	switch name {
-	case "phoneticextensions":
-		return `\x{1D00}-\x{1D7F}`, true
-	case "phoneticextensionssupplement":
-		return `\x{1D80}-\x{1DBF}`, true
-	case "privateusearea":
-		return `\x{E000}-\x{F8FF}`, true
-	case "privateuse":
-		return `\x{E000}-\x{F8FF}\x{F0000}-\x{FFFFD}\x{100000}-\x{10FFFD}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockR(name string) (string, bool) {
-	switch name {
-	case "runic":
-		return `\x{16A0}-\x{16FF}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockS(name string) (string, bool) {
-	switch name {
-	case "spacingmodifierletters":
-		return `\x{02B0}-\x{02FF}`, true
-	case "syriac":
-		return `\x{0700}-\x{074F}`, true
-	case "sinhala":
-		return `\x{0D80}-\x{0DFF}`, true
-	case "superscriptsandsubscripts":
-		return `\x{2070}-\x{209F}`, true
-	case "supplementalarrows-a":
-		return `\x{27F0}-\x{27FF}`, true
-	case "supplementalarrows-b":
-		return `\x{2900}-\x{297F}`, true
-	case "supplementalmathematicaloperators":
-		return `\x{2A00}-\x{2AFF}`, true
-	case "smallformvariants":
-		return `\x{FE50}-\x{FE6F}`, true
-	case "specials":
-		return `\x{FFF0}-\x{FFFF}`, true
-	case "supplementaryprivateusearea-a":
-		return `\x{F0000}-\x{FFFFD}`, true
-	case "supplementaryprivateusearea-b":
-		return `\x{100000}-\x{10FFFD}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockT(name string) (string, bool) {
-	switch name {
-	case "thaana":
-		return `\x{0780}-\x{07BF}`, true
-	case "tamil":
-		return `\x{0B80}-\x{0BFF}`, true
-	case "telugu":
-		return `\x{0C00}-\x{0C7F}`, true
-	case "thai":
-		return `\x{0E00}-\x{0E7F}`, true
-	case "tibetan":
-		return `\x{0F00}-\x{0FFF}`, true
-	case "tagalog":
-		return `\x{1700}-\x{171F}`, true
-	case "tagbanwa":
-		return `\x{1760}-\x{177F}`, true
-	case "taile":
-		return `\x{1950}-\x{197F}`, true
-	case "tags":
-		return `\x{E0000}-\x{E007F}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockU(name string) (string, bool) {
-	switch name {
-	case "unifiedcanadianaboriginalsyllabics":
-		return `\x{1400}-\x{167F}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockV(name string) (string, bool) {
-	switch name {
-	case "variationselectors":
-		return `\x{FE00}-\x{FE0F}`, true
-	default:
-		return "", false
-	}
-}
-
-func lookupUnicodeBlockY(name string) (string, bool) {
-	switch name {
-	case "yijinghexagramsymbols":
-		return `\x{4DC0}-\x{4DFF}`, true
-	case "yisyllables":
-		return `\x{A000}-\x{A48F}`, true
-	case "yiradicals":
-		return `\x{A490}-\x{A4CF}`, true
-	default:
-		return "", false
-	}
+	ranges, ok := unicodeBlocks[name]
+	return ranges, ok
 }
 
 // validateXPathRegex checks for patterns that Go's regexp accepts but

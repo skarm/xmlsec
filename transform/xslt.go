@@ -22,6 +22,19 @@ const (
 	XSLT30 XSLTVersion = 30
 )
 
+// ResultMode selects post-processing of principal and secondary XSLT values.
+type ResultMode uint8
+
+const (
+	// ResultRaw preserves the raw XDM sequence, including types and node identity.
+	ResultRaw ResultMode = iota
+	// ResultDocument constructs document nodes through sequence normalization.
+	ResultDocument
+	// ResultDefault follows each output's effective build-tree setting. Without
+	// an explicit setting, JSON/adaptive keep raw values; other methods build trees.
+	ResultDefault
+)
+
 // XSLTOptions specifies the stylesheet's static context and language profile.
 // A 1.x declaration selects XSLT 1.0 with forwards processing.
 type XSLTOptions struct {
@@ -43,6 +56,9 @@ type XSLTOptions struct {
 // A named template that needs no source document accepts a nil source.
 type XSLTContext struct {
 	Context DynamicContext
+	// ResultMode defaults to ResultRaw. It affects Execute and all entry points;
+	// serialized Transform output still follows the stylesheet's output settings.
+	ResultMode ResultMode
 	// ContextItem selects the global context independently of the source and
 	// initial match selection. Nil uses the source document; a pointer to a zero
 	// Value explicitly leaves the global context absent.
@@ -116,6 +132,10 @@ func (s *Stylesheet) Write(ctx context.Context, w io.Writer, d *Document, option
 
 func (s *Stylesheet) prepare(ctx context.Context, d *Document, options XSLTContext) (context.Context, context.CancelFunc, xslt.Invocation, *outputCollector, error) {
 	if s == nil || s.native == nil {
+		return nil, nil, xslt.Invocation{}, nil, wrap("transform XSLT", ErrInput)
+	}
+
+	if options.ResultMode > ResultDefault {
 		return nil, nil, xslt.Invocation{}, nil, wrap("transform XSLT", ErrInput)
 	}
 
@@ -384,7 +404,7 @@ func xsltError(operation string, err error) error {
 	code := ""
 
 	if xs, ok := errors.AsType[*xslt.XSLTError](err); ok {
-		code = xs.Code
+		code = xs.CodeQName().Local
 	}
 
 	if errors.Is(err, xslt.ErrResourceTooLarge) {
@@ -396,6 +416,11 @@ func xsltError(operation string, err error) error {
 	var wrapped *Error
 	if errors.As(result, &wrapped) && code != "" {
 		wrapped.Code = code
+
+		if xs, ok := errors.AsType[*xslt.XSLTError](err); ok {
+			name := xs.CodeQName()
+			wrapped.name = Name{Space: name.URI, Local: name.Local}
+		}
 	}
 
 	return result

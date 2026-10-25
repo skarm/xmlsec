@@ -188,9 +188,7 @@ func transcodeToEncoding(w io.Writer, utf8Data []byte, encName string) error {
 			continue
 		}
 
-		s := string(utf8Data[:size])
-
-		encoded, err := encoder.Bytes([]byte(s))
+		encoded, err := encoder.Bytes(utf8Data[:size])
 		if err != nil {
 			// Character cannot be encoded — use character reference
 			ref := fmt.Sprintf("&#x%X;", r)
@@ -493,14 +491,9 @@ func inCDATAElement(parent xdm.Node, cdataElems map[string]struct{}) bool {
 		return true
 	}
 
-	name := elem.Name()
-	if _, ok := cdataElems[name]; ok {
-		return true
-	}
-
-	local := elem.LocalName()
-	if _, ok := cdataElems[local]; ok {
-		return true
+	if elem.URI() == "" {
+		_, ok := cdataElems[elem.LocalName()]
+		return ok
 	}
 
 	return false

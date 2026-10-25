@@ -35,19 +35,6 @@ type standardAttrScope struct {
 	hasXPathDefaultNS bool
 	expandText        bool
 	defaultCollation  string
-	defaultMode       string
-}
-
-// pendingOverrideTypeCheck is a deferred XTSE3070 same-type check for an
-// xsl:override of a global variable whose required type is a custom schema type.
-// It is resolved after all top-level declarations (including the using package's
-// own xsl:import-schema) are compiled, so c.stylesheet.schemas is populated.
-type pendingOverrideTypeCheck struct {
-	varName    string
-	overrideAs string
-	overrideNS map[string]string
-	baseAs     string
-	basePkg    *Stylesheet
 }
 
 // processOverrides handles xsl:override children of xsl:use-package.
@@ -86,11 +73,15 @@ func (c *compiler) processOverrides(ctx context.Context, usePackageElem *xdm.Ele
 // pushStandardAttrs brings elem's namespace declarations into scope and
 // applies the standard attributes of xsl:use-package, xsl:override, or an
 // overriding xsl:template ([xsl:]version, xpath-default-namespace,
-// expand-text, default-collation, default-mode; XSLT 3.0 §3.5) to the
+// expand-text, default-collation; XSLT 3.0 §3.5) to the
 // compiler settings the elements inside inherit, and returns the settings it
 // replaced. The namespace bindings are copied first, so neither these
 // declarations nor any an inner element adds outlive the scope.
 func (c *compiler) pushStandardAttrs(ctx context.Context, elem *xdm.Element) (standardAttrScope, error) {
+	if err := c.checkDefaultModeAttribute(ctx, elem); err != nil {
+		return standardAttrScope{}, err
+	}
+
 	saved := standardAttrScope{
 		nsBindings:        c.nsBindings,
 		version:           c.effectiveVersion,
@@ -98,7 +89,6 @@ func (c *compiler) pushStandardAttrs(ctx context.Context, elem *xdm.Element) (st
 		hasXPathDefaultNS: c.hasXPathDefaultNS,
 		expandText:        c.expandText,
 		defaultCollation:  c.defaultCollation,
-		defaultMode:       c.defaultMode,
 	}
 	c.nsBindings = maps.Clone(c.nsBindings)
 	c.pushElementNamespaces(ctx, elem)
@@ -128,10 +118,6 @@ func (c *compiler) pushStandardAttrs(ctx context.Context, elem *xdm.Element) (st
 		}
 	}
 
-	if dm := getAttr(elem, nameDefaultMode); dm != "" {
-		c.defaultMode = c.resolveMode(ctx, dm)
-	}
-
 	return saved, nil
 }
 
@@ -144,7 +130,6 @@ func (c *compiler) restoreStandardAttrs(s standardAttrScope) {
 	c.hasXPathDefaultNS = s.hasXPathDefaultNS
 	c.expandText = s.expandText
 	c.defaultCollation = s.defaultCollation
-	c.defaultMode = s.defaultMode
 }
 
 func (c *compiler) compileOverrideChildren(ctx context.Context, overrideElem *xdm.Element, pkg *Stylesheet, oset *overrideSet) error {
@@ -365,42 +350,6 @@ func (c *compiler) compileOverrideFunction(ctx context.Context, elem *xdm.Elemen
 		return nil, xpath.QualifiedName{}, staticError(errCodeXTSE0010, "xsl:function name %q must have a namespace prefix", name)
 	}
 
-	// Check that the function exists in the package (check by name, any arity)
-	var pkgFn *xslFunction
-
-	for fk, fn := range pkg.functions {
-		if fk.Name == qn {
-			pkgFn = fn
-			break
-		}
-	}
-
-	if pkgFn == nil {
-		return nil, xpath.QualifiedName{}, staticError(errCodeXTSE3058,
-			"xsl:override function %q not found in used package", name)
-	}
-
-	if pkgFn.Visibility == visFinal {
-		return nil, xpath.QualifiedName{}, staticError(errCodeXTSE3070,
-			"cannot override final function %q", name)
-	}
-
-	// XTSE3070: new-each-time on the override must match the base component.
-	// The base defaults to "maybe" (empty string) when not specified.
-	overrideNET := getAttr(elem, "new-each-time")
-	if overrideNET != "" {
-		baseNET := pkgFn.NewEachTime
-		if baseNET == "" {
-			baseNET = nameMaybe // default per spec
-		}
-
-		if overrideNET != baseNET {
-			return nil, xpath.QualifiedName{}, staticError(errCodeXTSE3070,
-				"override function %q: new-each-time=%q does not match base component value %q",
-				name, overrideNET, baseNET)
-		}
-	}
-
 	savedExpandText := c.expandText
 
 	if et, hasET := elem.GetAttribute(nameExpandText); hasET {
@@ -417,36 +366,83 @@ func (c *compiler) compileOverrideFunction(ctx context.Context, elem *xdm.Elemen
 	}
 
 	fn := &xslFunction{
-		Name:       qn,
-		Params:     params,
-		Body:       body,
-		As:         getAttr(elem, "as"),
-		Visibility: getAttr(elem, xslAttrVisibility),
-		IsOverride: true,
+		Name:         qn,
+		Params:       params,
+		Body:         body,
+		As:           getAttr(elem, "as"),
+		Visibility:   getAttr(elem, xslAttrVisibility),
+		IsOverride:   true,
+		OwnerPackage: c.stylesheet,
 	}
-	fn.prepareCall()
+	fn.signatureTypeKey = c.declarationTypeKey(elem, fn.As)
+	fn.NewEachTime = getAttr(elem, "new-each-time")
+	fn.Streamability = getAttr(elem, "streamability")
 
-	// Inherit the base component's visibility so that processExpose
-	// in the using package does not default it to private. Abstract
-	// becomes public since the override provides an implementation.
-	if pkgFn.Visibility != "" {
-		if pkgFn.Visibility == visAbstract {
-			fn.Visibility = visPublic
-		} else {
-			fn.Visibility = pkgFn.Visibility
+	pkgFn := pkg.functions[funcKey{Name: qn, Arity: len(params)}]
+	if pkgFn == nil {
+		return nil, xpath.QualifiedName{}, staticError(errCodeXTSE3058, "xsl:override function %q#%d not found in used package", name, len(params))
+	}
+
+	visibility := getComponentVisibility(pkg, xslElemFunction, functionVisKey(qn, len(params)))
+	if visibility != visPublic && visibility != visAbstract {
+		return nil, xpath.QualifiedName{}, staticError(errCodeXTSE3060, "cannot override %s function %q", visibility, name)
+	}
+
+	if err := checkOverrideFunctionSignature(fn, pkgFn); err != nil {
+		return nil, xpath.QualifiedName{}, err
+	}
+
+	if err := c.prepareCompiledFunction(ctx, fn, elem); err != nil {
+		return nil, xpath.QualifiedName{}, err
+	}
+
+	if fn.Visibility == "" {
+		fn.Visibility = visPublic
+		if visibility != visAbstract {
+			fn.Visibility = visibility
 		}
 	}
 
-	// Link the original function for xsl:original() calls.
-	// Try exact arity match first, then fall back to any match by name.
-	exactKey := funcKey{Name: qn, Arity: len(params)}
-	if orig, ok := pkg.functions[exactKey]; ok {
-		fn.OriginalFunc = orig
-	} else {
-		fn.OriginalFunc = pkgFn
-	}
+	fn.OriginalFunc = pkgFn
 
 	return fn, qn, nil
+}
+
+func defaultContextItemType(as string) string {
+	if as == "" {
+		return lexicon.NodeTestItem
+	}
+
+	return as
+}
+
+func checkOverrideFunctionSignature(override, base *xslFunction) error {
+	if override.signatureTypeKey != base.signatureTypeKey {
+		return staticError(errCodeXTSE3070, "override function %s has a different return type", override.Name.Name)
+	}
+
+	for i, p := range override.Params {
+		if p.signatureTypeKey != base.Params[i].signatureTypeKey {
+			return staticError(errCodeXTSE3070, "override function %s parameter %d has a different required type", override.Name.Name, i+1)
+		}
+	}
+
+	net := func(value string) string {
+		if value == "" {
+			return lexicon.ValueYes
+		}
+
+		return value
+	}
+	if net(override.NewEachTime) != net(base.NewEachTime) {
+		return staticError(errCodeXTSE3070, "override function %s has a different new-each-time value", override.Name.Name)
+	}
+
+	if base.Streamability != "" && base.Streamability != lexicon.StreamUnclassified && override.Streamability != base.Streamability {
+		return staticError(errCodeXTSE3070, "override function %s has incompatible streamability", override.Name.Name)
+	}
+
+	return nil
 }
 
 func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Element, pkg *Stylesheet) (*template, error) {
@@ -468,8 +464,8 @@ func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Elemen
 		DefaultCollation: c.defaultCollation,
 	}
 
-	matchAttr := getAttr(elem, nameMatch2)
-	if matchAttr != "" {
+	matchAttr, hasMatch := elem.GetAttribute(nameMatch2)
+	if hasMatch {
 		p, err := c.compilePattern(matchAttr, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
 		if err != nil {
 			return nil, err
@@ -487,17 +483,9 @@ func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Elemen
 
 	tmpl.Name = name
 
-	if err := c.checkTemplateMode(elem); err != nil {
+	tmpl.Mode, err = compileTemplateModes(ctx, elem)
+	if err != nil {
 		return nil, err
-	}
-
-	modeAttr := getAttr(elem, nameMode)
-	if modeAttr != "" {
-		tmpl.Mode = c.resolveMode(ctx, modeAttr)
-	} else if tmpl.Match != nil && c.defaultMode != "" {
-		// When no explicit mode is specified and a default-mode is active,
-		// match templates use the default mode.
-		tmpl.Mode = c.defaultMode
 	}
 
 	if prio := getAttr(elem, "priority"); prio != "" {
@@ -512,9 +500,8 @@ func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Elemen
 		tmpl.Priority = tmpl.Match.Alternatives[0].priority
 	}
 
-	// XTSE3440: override match template can only use modes that are public
-	// or abstract in the used package. Using a mode that doesn't exist in the
-	// package, or a private/final/hidden mode, is a static error.
+	// An overriding rule needs a public named mode; unnamed/#all modes are
+	// forbidden by XTSE3440 and private/final modes by XTSE3060.
 	if err := compileOverrideTemplateMatch(tmpl, pkg); err != nil {
 		return nil, err
 	}
@@ -528,16 +515,21 @@ func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Elemen
 		}
 
 		if existing.Visibility == visFinal {
-			return nil, staticError(errCodeXTSE3070,
+			return nil, staticError(errCodeXTSE3060,
 				"cannot override final template %q", tmpl.Name)
 		}
 
 		pkgVis := getComponentVisibility(pkg, xslElemTemplate, tmpl.Name)
 		if pkgVis == visPrivate || pkgVis == visHidden {
-			return nil, staticError(errCodeXTSE3050,
+			return nil, staticError(errCodeXTSE3060,
 				"cannot override %s template %q", pkgVis, tmpl.Name)
 		}
 	}
+
+	savedOverrideRule := c.inOverrideRule
+
+	c.inOverrideRule = tmpl.Match != nil
+	defer func() { c.inOverrideRule = savedOverrideRule }()
 
 	ctxDecl, body, params, err := c.compileTemplateBodyEx(ctx, elem, false)
 	if err != nil {
@@ -548,6 +540,9 @@ func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Elemen
 	tmpl.Body = body
 
 	tmpl.As = getAttr(elem, "as")
+	tmpl.signatureTypeKey = c.declarationTypeKey(elem, tmpl.As)
+
+	tmpl.contextTypeKey = c.declarationTypeKey(elem, lexicon.NodeTestItem)
 	if vis := getAttr(elem, xslAttrVisibility); vis != "" {
 		tmpl.Visibility = vis
 	}
@@ -555,6 +550,8 @@ func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Elemen
 	if ctxDecl != nil {
 		tmpl.ContextItemAs = ctxDecl.as
 		tmpl.ContextItemUse = ctxDecl.use
+		tmpl.contextTypeKey = ctxDecl.typeKey
+		tmpl.contextItemType = ctxDecl.itemType
 	}
 
 	// XTSE3070: check type compatibility of override against base template.
@@ -565,54 +562,46 @@ func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Elemen
 	return tmpl, nil
 }
 
-// checkOverrideTemplateCompat validates that an override template is compatible
-// with the base template it replaces. XTSE3070 is raised when parameter types
-// differ or new required parameters are added.
+// checkOverrideTemplateCompat applies the signature rules in XSLT 3.0 3.5.3.3.
 func checkOverrideTemplateCompat(override, base *template) error {
-	// XTSE3070: check return type compatibility.
-	// If both templates have 'as' attributes, they must be compatible
-	// (the override's return type must be a subtype of the base's).
-	if base.As != "" && override.As != "" && base.As != override.As {
-		return staticError(errCodeXTSE3070,
-			"override template %q return type %q does not match base type %q",
-			override.Name, override.As, base.As)
+	use := func(t *template) string {
+		if t.ContextItemUse != "" {
+			return t.ContextItemUse
+		}
+
+		return ctxItemOptional
+	}
+	if override.signatureTypeKey != base.signatureTypeKey || override.contextTypeKey != base.contextTypeKey || use(override) != use(base) {
+		return staticError(errCodeXTSE3070, "override template %q has an incompatible return or context-item type", override.Name)
 	}
 
-	// XTSE3070: check context-item compatibility.
-	// The override must have the same context-item type and use as the base.
-	if override.ContextItemAs != "" && override.ContextItemAs != base.ContextItemAs {
-		return staticError(errCodeXTSE3070,
-			"override template %q context-item type %q does not match base type %q",
-			override.Name, override.ContextItemAs, base.ContextItemAs)
-	}
-
-	if override.ContextItemUse != "" && override.ContextItemUse != base.ContextItemUse {
-		return staticError(errCodeXTSE3070,
-			"override template %q context-item use %q does not match base use %q",
-			override.Name, override.ContextItemUse, base.ContextItemUse)
-	}
-
-	baseParams := make(map[string]*param)
+	baseParams, overrideParams := make(map[string]*param), make(map[string]*param)
 	for _, p := range base.Params {
 		baseParams[p.Name] = p
 	}
 
-	for _, op := range override.Params {
-		bp, exists := baseParams[op.Name]
-		if !exists {
-			// New parameter in override that doesn't exist in base
-			if op.Required {
-				return staticError(errCodeXTSE3070,
-					"override template %q adds required parameter $%s not in base", override.Name, op.Name)
+	for _, p := range override.Params {
+		overrideParams[p.Name] = p
+	}
+
+	for name, bp := range baseParams {
+		op := overrideParams[name]
+		if op == nil {
+			if bp.Tunnel {
+				continue
 			}
 
-			continue
+			return staticError(errCodeXTSE3070, "override template %q omits parameter $%s", override.Name, name)
 		}
 
-		if bp.As != "" && op.As != "" && bp.As != op.As {
-			return staticError(errCodeXTSE3070,
-				"override template %q parameter $%s type %q does not match base type %q",
-				override.Name, op.Name, op.As, bp.As)
+		if op.Tunnel != bp.Tunnel || op.signatureTypeKey != bp.signatureTypeKey || !bp.Tunnel && op.Required != bp.Required {
+			return staticError(errCodeXTSE3070, "override template %q has incompatible parameter $%s", override.Name, name)
+		}
+	}
+
+	for name, op := range overrideParams {
+		if baseParams[name] == nil && op.Required {
+			return staticError(errCodeXTSE3070, "override template %q adds required parameter $%s", override.Name, name)
 		}
 	}
 
@@ -622,6 +611,10 @@ func checkOverrideTemplateCompat(override, base *template) error {
 // checkOverrideModeVisibility validates that a mode used by an override
 // template is public/abstract in the used package.
 func checkOverrideModeVisibility(mode, displayMode string, pkg *Stylesheet) error {
+	if mode == "" || mode == modeAll {
+		return staticError(errCodeXTSE3440, "override template cannot use the unnamed mode or #all")
+	}
+
 	if pkg.modeDefs != nil {
 		if md, ok := pkg.modeDefs[mode]; ok {
 			if md.Visibility == visFinal {
@@ -630,7 +623,7 @@ func checkOverrideModeVisibility(mode, displayMode string, pkg *Stylesheet) erro
 			}
 
 			if md.Visibility == visPrivate || md.Visibility == visHidden {
-				return staticError(errCodeXTSE3440,
+				return staticError(errCodeXTSE3060,
 					"cannot override templates in %s mode %q", md.Visibility, displayMode)
 			}
 
@@ -640,7 +633,7 @@ func checkOverrideModeVisibility(mode, displayMode string, pkg *Stylesheet) erro
 	// Mode not defined in the package — check default visibility
 	defVis := defaultComponentVisibility(pkg)
 	if defVis == visPrivate {
-		return staticError(errCodeXTSE3440,
+		return staticError(errCodeXTSE3060,
 			"mode %q is not defined in the used package (default visibility is private)", displayMode)
 	}
 
@@ -650,7 +643,7 @@ func checkOverrideModeVisibility(mode, displayMode string, pkg *Stylesheet) erro
 func compileOverrideTemplateModes(modes []string, tmpl *template, pkg *Stylesheet) error {
 	for _, m := range modes {
 		// Resolve special names to empty string for lookup
-		if m == "#unnamed" || m == "#default" {
+		if m == modeUnnamed || m == "#default" {
 			m = ""
 		}
 
@@ -687,7 +680,7 @@ func compileOverrideTemplateName(tmpl *template, pkg *Stylesheet) error {
 }
 
 func compileOverrideTemplateMatch(tmpl *template, pkg *Stylesheet) error {
-	if tmpl.Match != nil && tmpl.Mode != modeAll {
+	if tmpl.Match != nil {
 		modes := strings.Fields(tmpl.Mode)
 		if len(modes) == 0 {
 			// No explicit mode: check unnamed mode
@@ -703,6 +696,9 @@ func compileOverrideTemplateMatch(tmpl *template, pkg *Stylesheet) error {
 }
 
 func (c *compiler) compileOverrideVariable(ctx context.Context, elem *xdm.Element, pkg *Stylesheet) (*variable, error) {
+	if err := c.validateXSLTAttrs(ctx, elem, variableAllowedAttrs); err != nil {
+		return nil, err
+	}
 	// A static="yes" variable is a version-independent compile-time value (forced
 	// non-compat even in a < 2.0 module); otherwise honor its version attribute.
 	if xsdBoolTrue(getAttr(elem, nameStatic)) {
@@ -718,44 +714,38 @@ func (c *compiler) compileOverrideVariable(ctx context.Context, elem *xdm.Elemen
 
 	resolvedName := resolveQName(name, c.nsBindings)
 
-	pkgVar, found := lookupOverrideVariable(pkg, resolvedName)
-	if !found {
+	base := lookupOverrideGlobal(pkg, resolvedName)
+	if base == (globalBinding{}) {
 		return nil, staticError(errCodeXTSE3058,
 			"xsl:override variable %q not found in used package", name)
 	}
 
-	effectiveVis := overrideVariableVisibility(pkg, pkgVar, resolvedName)
+	effectiveVis := getComponentVisibility(pkg, xslElemVariable, resolvedName)
 	if err := checkOverrideVariableVisibility(name, effectiveVis); err != nil {
 		return nil, err
 	}
 
-	v := &variable{Name: resolvedName, As: getAttr(elem, "as"), Visibility: getAttr(elem, xslAttrVisibility)}
+	savedOriginal := c.originalVariableVisibility
 
-	// XTSE3070: the required type of the override must be the same as the base
-	// variable's required type. A standard XSD/keyword type pair is compared
-	// lexically. For a custom schema type (a named simpleType from
-	// xsl:import-schema) the comparison is STRUCTURAL: the override's type is
-	// resolved against the using package's schemas, the base's type against the
-	// declaring package's schemas, and the two definitions are compared for type
-	// identity (same builtin base, or same flattened union member-type set). This
-	// is what distinguishes override-v-005 (u2 = union{time,dateTime,date} is the
-	// same type as base u1 = union{date,time,dateTime}, accepted) from
-	// override-v-006 (u6 = union{dateTime,date} is a different type, rejected).
-	// The comparison only fires when BOTH names resolve to a definition we can
-	// compare confidently; anything else is left un-flagged to avoid a false
-	// XTSE3070.
-	if err := c.checkOverrideVariableType(pkgVar, v, name, pkg); err != nil {
+	c.originalVariableVisibility = effectiveVis
+	defer func() { c.originalVariableVisibility = savedOriginal }()
+
+	v := &variable{Name: resolvedName, As: getAttr(elem, "as"), Visibility: getAttr(elem, xslAttrVisibility), OwnerPackage: c.stylesheet}
+	if err := c.validateAsSequenceType(ctx, elem, v.As, "overriding variable"); err != nil {
 		return nil, err
 	}
 
-	inheritOverriddenVariable(v, pkgVar)
+	v.signatureTypeKey = c.declarationTypeKey(elem, v.As)
 
-	// The override's own visibility attribute takes precedence over the
-	// inherited base visibility. This allows e.g. visibility="private"
-	// on the override to hide the variable from the using package.
-	if overrideVis := getAttr(elem, xslAttrVisibility); overrideVis != "" {
-		v.Visibility = overrideVis
+	if err := checkOverrideGlobalType(base, v.signatureTypeKey, resolvedName); err != nil {
+		return nil, err
 	}
+
+	v.Original = base
+	v.StaticBaseURI = stylesheetBaseURI(elem, c.baseURI, c.moduleRoot)
+	v.XPathDefaultNS = c.xpathDefaultNS
+	v.TypeNamespaces = inScopeNamespaces(elem)
+	v.XPathDefaultNS, v.HasXPathDefaultNS = c.declarationDefaultNamespace(elem)
 
 	selectAttr := getAttr(elem, xslAttrSelect)
 	if selectAttr != "" {
@@ -777,39 +767,20 @@ func (c *compiler) compileOverrideVariable(ctx context.Context, elem *xdm.Elemen
 	return v, nil
 }
 
-func lookupOverrideVariable(pkg *Stylesheet, resolvedName string) (*variable, bool) {
+func lookupOverrideGlobal(pkg *Stylesheet, name string) globalBinding {
 	for _, v := range pkg.globalVars {
-		if v.Name == resolvedName {
-			return v, true
+		if v.Name == name {
+			return v.binding()
 		}
 	}
 
 	for _, p := range pkg.globalParams {
-		if p.Name == resolvedName {
-			return nil, true
+		if p.Name == name {
+			return p.binding()
 		}
 	}
 
-	return nil, false
-}
-
-func overrideVariableVisibility(pkg *Stylesheet, pkgVar *variable, resolvedName string) string {
-	effectiveVis := ""
-	if pkgVar != nil {
-		effectiveVis = pkgVar.Visibility
-	}
-
-	if v, ok := pkg.variableVisibility[resolvedName]; ok {
-		effectiveVis = v
-	}
-
-	if effectiveVis == "" {
-		if v, ok := pkg.globalParamVisibility[resolvedName]; ok {
-			effectiveVis = v
-		}
-	}
-
-	return effectiveVis
+	return globalBinding{}
 }
 
 func checkOverrideVariableVisibility(name, effectiveVis string) error {
@@ -825,56 +796,35 @@ func checkOverrideVariableVisibility(name, effectiveVis string) error {
 	return nil
 }
 
-func inheritOverriddenVariable(v, pkgVar *variable) {
-	// Link the original variable for $xsl:original references.
-	// Inherit the base component's visibility so that processExpose
-	// in the using package does not default it to private. Abstract
-	// becomes public since the override provides an implementation.
-	if pkgVar != nil {
-		v.OriginalVar = pkgVar
-		if pkgVar.Visibility != "" {
-			if pkgVar.Visibility == visAbstract {
-				v.Visibility = visPublic
-			} else {
-				v.Visibility = pkgVar.Visibility
-			}
-		}
-	}
-}
-
 func (c *compiler) compileOverrideParam(ctx context.Context, elem *xdm.Element, pkg *Stylesheet) (*param, error) {
-	// compileParamDef pushes the element version (exempting static="yes"), so no
-	// outer push here — that would compat-mark a static override param's select.
+	name := resolveQName(getAttr(elem, xslAttrName), c.nsBindings)
+
+	base := lookupOverrideGlobal(pkg, name)
+	if base == (globalBinding{}) {
+		return nil, staticError(errCodeXTSE3058, "xsl:override param %q not found in used package", name)
+	}
+
+	if err := checkOverrideVariableVisibility(name, getComponentVisibility(pkg, xslElemVariable, name)); err != nil {
+		return nil, err
+	}
+
+	savedOriginal := c.originalVariableVisibility
+
+	c.originalVariableVisibility = getComponentVisibility(pkg, xslElemVariable, name)
+	defer func() { c.originalVariableVisibility = savedOriginal }()
+
 	p, err := c.compileParamDef(ctx, elem)
 	if err != nil {
 		return nil, err
 	}
 
-	// Check that the param or variable exists in the package.
-	// In XSLT 3.0, variables and parameters share the same component
-	// namespace, so a param can override a variable (and vice versa).
-	found := false
-
-	for _, pp := range pkg.globalParams {
-		if pp.Name == p.Name {
-			found = true
-			break
-		}
+	if err := checkOverrideGlobalType(base, p.signatureTypeKey, p.Name); err != nil {
+		return nil, err
 	}
 
-	if !found {
-		for _, v := range pkg.globalVars {
-			if v.Name == p.Name {
-				found = true
-				break
-			}
-		}
-	}
-
-	if !found {
-		return nil, staticError(errCodeXTSE3058,
-			"xsl:override param %q not found in used package", p.Name)
-	}
+	p.OwnerPackage, p.Original, p.Visibility = c.stylesheet, base, visPublic
+	p.TypeNamespaces = inScopeNamespaces(elem)
+	p.XPathDefaultNS, p.HasXPathDefaultNS = c.declarationDefaultNamespace(elem)
 
 	return p, nil
 }
@@ -921,7 +871,7 @@ func (c *compiler) compileOverrideAttributeSet(ctx context.Context, elem *xdm.El
 			"cannot override %s attribute-set %q", effectiveVis, name)
 	}
 
-	asd := &attributeSetDef{Name: resolvedName}
+	asd := &attributeSetDef{Name: resolvedName, OwnerPackage: c.stylesheet, Visibility: getAttr(elem, xslAttrVisibility)}
 
 	var useAttrSets []string
 
@@ -957,58 +907,12 @@ func (c *compiler) compileOverrideAttributeSet(ctx context.Context, elem *xdm.El
 	return asd, nil
 }
 
-// isStandardType returns true if the type name is a well-known XSD type
-// (xs: prefix) or standard type keyword. Returns false for custom schema
-// types defined via xsl:import-schema.
-// checkPendingOverrideTypes runs the deferred XTSE3070 override-variable
-// same-type checks after all top-level declarations have been compiled, so the
-// using package's own xsl:import-schema types are available in
-// c.stylesheet.schemas.
-func (c *compiler) checkPendingOverrideTypes() error { return nil }
-
-// checkOverrideVariableType rejects incompatible built-in types and defers
-// structural comparison of user-defined types until the package is assembled.
-func (c *compiler) checkOverrideVariableType(pkgVar, v *variable, name string, pkg *Stylesheet) error {
-	if pkgVar != nil && v.As != "" && pkgVar.As != "" && v.As != pkgVar.As {
-		if isStandardType(v.As) && isStandardType(pkgVar.As) {
-			return staticError(errCodeXTSE3070,
-				"override variable %q type %q does not match base type %q",
-				name, v.As, pkgVar.As)
-		}
-		// Custom schema types are compared structurally, but the using package's
-		// own xsl:import-schema declarations are not yet compiled at this point in
-		// the pass (xsl:use-package precedes xsl:import-schema in the compile
-		// order). Defer the comparison to the end of compilation, when
-		// c.stylesheet.schemas is fully populated. The base package's schemas are
-		// already available via the stable pkg pointer.
-		c.pendingOverrideTypeChecks = append(c.pendingOverrideTypeChecks, pendingOverrideTypeCheck{
-			varName:    name,
-			overrideAs: v.As,
-			overrideNS: maps.Clone(c.nsBindings),
-			baseAs:     pkgVar.As,
-			basePkg:    pkg,
-		})
+// Schema-defined type identity belongs to the separate schema-aware profile.
+// Basic signatures compare the captured, namespace-resolved type keys.
+func checkOverrideGlobalType(base globalBinding, typeKey, name string) error {
+	if base.typeKey() != typeKey {
+		return staticError(errCodeXTSE3070, "override variable %q has a different required type", name)
 	}
 
 	return nil
-}
-
-func isStandardType(as string) bool {
-	// Strip occurrence indicator
-	name := strings.TrimRight(as, "?*+")
-
-	name = strings.TrimSpace(name)
-	if strings.HasPrefix(name, "xs:") {
-		return true
-	}
-	// Standard keywords
-	switch name {
-	case lexicon.NodeTestItem, lexicon.NodeTestNode, lexicon.NodeTestElement, lexicon.NodeTestAttribute, lexicon.NodeTestText,
-		lexicon.NodeTestComment, "processing-instruction()", lexicon.NodeTestDocumentNode,
-		"namespace-node()", "schema-element()", "schema-attribute()",
-		"function(*)", "map(*)", "array(*)":
-		return true
-	}
-
-	return false
 }

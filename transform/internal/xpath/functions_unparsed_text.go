@@ -13,9 +13,9 @@ import (
 
 func lookupFunctionsUnparsedText(name string) (*builtinFunc, bool) {
 	switch name {
-	case "unparsed-text":
+	case fnNameUnparsedText:
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnUnparsedText}, true
-	case "unparsed-text-available":
+	case fnNameUnparsedTextAvailable:
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnUnparsedTextAvailable}, true
 	case nameUnparsedTextLines:
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnUnparsedTextLines}, true
@@ -37,6 +37,7 @@ func unparsedTextConfig(ctx context.Context) *unparsedtext.Config {
 		HTTPClient: ec.httpClient,
 		MaxBytes:   ec.maxResourceBytes,
 		CheckBytes: func(n int) error { return ChargeString(ctx, n) },
+		ReadPolicy: ec.resourceReads,
 	}
 	if ec.uriResolver != nil {
 		cfg.URIResolver = ec.uriResolver
@@ -105,7 +106,10 @@ func fnUnparsedTextAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequ
 		}
 	}
 
-	available := unparsedtext.IsAvailable(ctx, unparsedTextConfig(ctx), href, encoding)
+	available, err := unparsedtext.CheckAvailability(ctx, unparsedTextConfig(ctx), href, encoding)
+	if err != nil {
+		return nil, err
+	}
 
 	return xdm.SingleBoolean(available), nil
 }

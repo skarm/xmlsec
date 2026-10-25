@@ -1,6 +1,9 @@
 package xslt
 
 const (
+	nameOriginal                       = "original"
+	processorProductName               = "xmlsec"
+	nameProductName                    = "product-name"
 	valueNaN                           = "NaN"
 	nameAccumulatorAfter               = "accumulator-after"
 	nameAccumulatorBefore              = "accumulator-before"

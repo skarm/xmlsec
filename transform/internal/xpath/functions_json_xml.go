@@ -47,6 +47,10 @@ func fnJSONToXML(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 		return nil, err
 	}
 
+	if ec := getFnContext(ctx); opts.validate && (ec == nil || ec.schemaDeclarations == nil) {
+		return nil, &xdm.Error{Code: errCodeFOJS0004, Message: "json-to-xml: schema validation and typed data are unavailable"}
+	}
+
 	s = strings.TrimPrefix(s, "\uFEFF")
 
 	s, invalidEsc, err := preprocessJSONStringLiterals(s)
@@ -977,7 +981,7 @@ func valueSeparator(indent bool) string {
 
 func buildJSONToXMLTreeMembersView(v *xdm.ArrayItem, doc *xdm.Document, opts *jsonOptions, annotations map[xdm.Node]string, elem *xdm.Element) error {
 	for _, member := range v.MembersView() {
-		child, err := buildJSONToXMLTree(doc, jsonSequenceToItem(member), (*opts), annotations)
+		child, err := buildJSONToXMLTree(doc, jsonSequenceToItem(member), *opts, annotations)
 		if err != nil {
 			return err
 		}

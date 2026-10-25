@@ -51,6 +51,18 @@ type DynamicRefSnapshotProvider interface {
 	DynamicRefSnapshot(ctx context.Context, arity int) (xdm.FunctionItem, bool)
 }
 
+// FunctionRefBinder captures adapter-specific lexical bindings while retaining
+// XPath's standard static-context/focus capture and live invocation budgets.
+type FunctionRefBinder interface{ BindFunctionReference() Function }
+
+func bindFunctionReference(fn Function) Function {
+	if binder, ok := fn.(FunctionRefBinder); ok {
+		return binder.BindFunctionReference()
+	}
+
+	return fn
+}
+
 // TypedFunction extends Function with type signature information.
 // Implementations that expose parameter and return types enable
 // correct instance-of checks and function coercion for user-defined functions.
@@ -66,6 +78,43 @@ type TypedFunctionByArity interface {
 	Function
 	FuncParamTypesForArity(arity int) []xdm.SequenceType
 	FuncReturnTypeForArity(arity int) *xdm.SequenceType
+}
+
+// HostBuiltin exposes a standard implementation and its signature to a host
+// library, including functions that the host defined before F&O adopted them.
+func HostBuiltin(version int, name string) TypedFunctionByArity {
+	function, ok := lookupBuiltin(QualifiedName{URI: NSFn, Name: name})
+	if !ok || isExtensionBuiltin(function) {
+		return nil
+	}
+
+	return &hostBuiltin{Function: function, version: version, name: name}
+}
+
+type hostBuiltin struct {
+	Function
+	version int
+	name    string
+}
+
+func (f *hostBuiltin) AcceptsArity(arity int) bool {
+	return checkArity(f.Function, f.name, arity) == nil
+}
+
+func (f *hostBuiltin) FuncParamTypesForArity(arity int) []xdm.SequenceType {
+	if signature := lookupFunctionSignature(f.version, NSFn, f.name, arity); signature != nil {
+		return signature.ParamTypes
+	}
+
+	return nil
+}
+
+func (f *hostBuiltin) FuncReturnTypeForArity(arity int) *xdm.SequenceType {
+	if signature := lookupFunctionSignature(f.version, NSFn, f.name, arity); signature != nil {
+		return signature.ReturnType
+	}
+
+	return nil
 }
 
 // PredeclaredNamespace resolves a standard XPath namespace prefix.
@@ -137,6 +186,13 @@ func StandardFunctionAcceptsArity(uri, name string, arity int) bool {
 func isExtensionBuiltin(fn Function) bool {
 	bf, ok := fn.(*builtinFunc)
 	return ok && bf.extension
+}
+
+// The optional XQuery entry point remains discoverable, but this profile
+// always raises FOQM0006, including calls with otherwise invalid parameters.
+func unavailableModuleFunction(fn Function) bool {
+	builtin, ok := fn.(*builtinFunc)
+	return ok && builtin.name == nameLoadXQueryModule
 }
 
 func namespacePrefixFor(uri string) string {
@@ -241,7 +297,12 @@ func resolveFunctionByURIInfo(ctx context.Context, ec *evalContext, uri, name st
 		}
 	}
 
-	return resolvedFunction{}, fmt.Errorf("%w: %s#%d", ErrUnknownFunction, name, arity)
+	cause := fmt.Errorf("%w: %s#%d", ErrUnknownFunction, name, arity)
+	if ec.version >= 20 {
+		return resolvedFunction{}, &xdm.Error{Code: errCodeXPST0017, Message: cause.Error(), Cause: cause}
+	}
+
+	return resolvedFunction{}, cause
 }
 
 func resolvePrefix(ec *evalContext, prefix string) (string, error) {
@@ -263,6 +324,10 @@ func resolvePrefix(ec *evalContext, prefix string) (string, error) {
 }
 
 func checkArity(fn Function, name string, arity int) error {
+	if set, ok := fn.(interface{ AcceptsArity(int) bool }); ok && !set.AcceptsArity(arity) {
+		return fmt.Errorf("%w: %s does not accept %d arguments", ErrArityMismatch, name, arity)
+	}
+
 	if builtin, ok := fn.(*builtinFunc); ok && len(builtin.arities) > 0 && !slices.Contains(builtin.arities, arity) {
 		return fmt.Errorf("%w: %s does not accept %d arguments", ErrArityMismatch, name, arity)
 	}
@@ -515,7 +580,7 @@ func coerceArgToInteger(ctx context.Context, seq xdm.Sequence) (int64, error) {
 
 // coerceArgToDoubleRequired applies XPath 3.1 function coercion rules for xs:double params.
 // Accepts any numeric type and xs:untypedAtomic after casting. Rejects empty and multi-item sequences.
-func coerceArgToDoubleRequired(seq xdm.Sequence) (float64, error) {
+func coerceArgToDoubleRequired(ctx context.Context, seq xdm.Sequence) (float64, error) {
 	a, err := extractSingleAtomicArg(seq, "xs:double")
 	if err != nil {
 		if xpErr, ok := errors.AsType[*xdm.Error](err); ok {
@@ -531,9 +596,9 @@ func coerceArgToDoubleRequired(seq xdm.Sequence) (float64, error) {
 	}
 
 	if a.TypeName == xdm.TypeUntypedAtomic {
-		casted, cerr := CastAtomic(a, xdm.TypeDouble)
+		casted, cerr := CastAtomicContext(ctx, a, xdm.TypeDouble)
 		if cerr != nil {
-			return 0, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("cannot cast %s to xs:double", a.TypeName)}
+			return 0, cerr
 		}
 
 		a = casted
@@ -661,7 +726,12 @@ func fnError(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		}
 	}
 
-	return nil, &xdm.Error{Code: code.Local, Message: msg, QualifiedCode: code}
+	var value xdm.Sequence
+	if len(args) > 2 {
+		value = args[2]
+	}
+
+	return nil, &xdm.Error{Code: code.Local, Message: msg, QualifiedCode: code, Value: value}
 }
 
 func coerceErrorCode(seq xdm.Sequence) (xdm.QNameValue, bool, error) {

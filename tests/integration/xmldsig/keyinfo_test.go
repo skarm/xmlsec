@@ -50,7 +50,7 @@ func testKeyInfoIndependentPythonFixturesCase(t *testing.T, dir *string, c *stru
 },
 ) {
 	read := func(name string) []byte {
-		b, e := os.ReadFile(filepath.Join((*dir), name))
+		b, e := os.ReadFile(filepath.Join(*dir, name))
 		if e != nil {
 			t.Fatal(e)
 		}

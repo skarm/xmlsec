@@ -297,7 +297,7 @@ func testCoreFormsCase(t *testing.T, tc *struct {
 	doc := coreParse(t, tc.xml)
 	before := coreXML(t, doc)
 
-	signed := coreSign(t, doc, (*key), xmldsig.SignatureOptions{})
+	signed := coreSign(t, doc, *key, xmldsig.SignatureOptions{})
 	if coreXML(t, doc) != before {
 		t.Fatal("input mutated")
 	}

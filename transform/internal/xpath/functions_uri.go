@@ -47,11 +47,19 @@ func encodeForURI(s string) string {
 		if isUnreservedChar(c) {
 			b.WriteByte(c)
 		} else {
-			fmt.Fprintf(&b, "%%%02X", c)
+			writePercentEncodedByte(&b, c)
 		}
 	}
 
 	return b.String()
+}
+
+func writePercentEncodedByte(b *strings.Builder, c byte) {
+	const hex = "0123456789ABCDEF"
+
+	b.WriteByte('%')
+	b.WriteByte(hex[c>>4])
+	b.WriteByte(hex[c&0x0F])
 }
 
 func isUnreservedChar(c byte) bool {
@@ -81,7 +89,7 @@ func fnIRIToURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 
 		if c > 0x7E || c <= 0x20 || c == '"' || c == '<' || c == '>' ||
 			c == '{' || c == '}' || c == '|' || c == '\\' || c == '^' || c == '`' {
-			fmt.Fprintf(&b, "%%%02X", c)
+			writePercentEncodedByte(&b, c)
 		} else {
 			b.WriteByte(c)
 		}
@@ -189,7 +197,7 @@ func fnEscapeHTMLURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 	for i := range len(s) {
 		c := s[i]
 		if c > 0x7E || c < 0x20 {
-			fmt.Fprintf(&b, "%%%02X", c)
+			writePercentEncodedByte(&b, c)
 		} else {
 			b.WriteByte(c)
 		}

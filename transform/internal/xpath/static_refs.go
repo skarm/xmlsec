@@ -88,6 +88,7 @@ func (e *Expression) StaticReferences(namespaces map[string]string) StaticRefere
 }
 
 type staticRefCollector struct {
+	visits int
 	// bound is a REFCOUNT of in-scope variable bindings keyed by expanded name, not a
 	// flat present/absent set: an inner for/let/quantified/inline-function binding may
 	// SHADOW an outer one of the same name, so binding increments and leaving scope
@@ -268,6 +269,8 @@ func derefNodeTest(it xdm.NodeTest) (xdm.NodeTest, bool) {
 }
 
 func (c *staticRefCollector) walk(node Expr) { //nolint:gocyclo
+	c.visits++
+
 	node, ok := derefExprNode(node)
 	if !ok {
 		return

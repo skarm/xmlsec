@@ -28,9 +28,16 @@ type CollectionResolver interface {
 
 // VariableResolver provides lazy variable resolution for variables not found
 // in the static variable scope. This is used by the XSLT executor to lazily
-// evaluate global variables on demand.
+// evaluate global variables on demand. Names use the expanded Clark form,
+// matching the keys in the static variable scope.
 type VariableResolver interface {
 	ResolveVariable(ctx context.Context, name string) (xdm.Sequence, bool, error)
+}
+
+// VariableResolverSnapshotProvider preserves host-language lexical bindings in
+// an inline function without retaining the producing invocation's mutable state.
+type VariableResolverSnapshotProvider interface {
+	SnapshotVariableResolver() VariableResolver
 }
 
 // FunctionResolver provides lazy function resolution for functions not found
@@ -143,11 +150,36 @@ func InvocationState(ctx context.Context, key any, create func() any) any {
 	return value
 }
 
-// IsDynamicCall returns true if the current function call was dispatched
-// through a dynamic function reference (NamedFunctionRef → FunctionItem).
+// IsDynamicCall reports evaluation inside an invoked function item, including
+// inline functions and higher-order calls.
 func IsDynamicCall(ctx context.Context) bool {
 	v, _ := ctx.Value(dynamicCallKey{}).(bool)
 	return v
+}
+
+// WithoutDynamicCall starts an independent host invocation. Its dynamic
+// context must not inherit the enclosing function item's host state.
+func WithoutDynamicCall(ctx context.Context) context.Context {
+	if !IsDynamicCall(ctx) {
+		return ctx
+	}
+
+	return context.WithValue(ctx, dynamicCallKey{}, false)
+}
+
+// FnContextItem returns the XPath focus item, preserving absent-focus errors.
+func FnContextItem(ctx context.Context) (xdm.Item, error) {
+	if ec := getFnContext(ctx); ec != nil {
+		if ec.contextItem != nil {
+			return ec.contextItem, nil
+		}
+
+		if !xdm.IsNilNode(ec.node) {
+			return xdm.NodeItem{Node: ec.node}, nil
+		}
+	}
+
+	return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
 }
 
 // FnContextNode returns the current XPath context node from a function call
@@ -163,6 +195,31 @@ func FnContextNode(ctx context.Context) xdm.Node {
 	return ec.node
 }
 
+// FnNamespace looks up a prefix in the static context of the function call.
+func FnNamespace(ctx context.Context, prefix string) (string, bool) {
+	if ec := getFnContext(ctx); ec != nil {
+		uri, ok := ec.namespaces[prefix]
+		return uri, ok
+	}
+
+	return "", false
+}
+
+// FnDefaultXMLNamespace returns the host's XML default namespace at the call
+// site. It is independent of XPath's default element/type namespace.
+func FnDefaultXMLNamespace(ctx context.Context) string {
+	if ec := getFnContext(ctx); ec != nil {
+		return ec.defaultXMLNamespace
+	}
+
+	return ""
+}
+
+// FnXPath10Compat reports the current call's backwards compatibility policy.
+func FnXPath10Compat(ctx context.Context) bool {
+	return getFnContext(ctx) != nil && getFnContext(ctx).xpath10Compat
+}
+
 // fnContextKey is used exclusively by the unexported withFnContext/getFnContext
 // pair to pass evalContext to built-in function implementations. It is never
 // exposed to external callers.
@@ -170,11 +227,35 @@ type fnContextKey struct{}
 
 type invocationState struct{ values map[any]any }
 
+type xmlSchemaVersionKey struct{}
+
+// WithXMLSchemaVersion selects lexical and regex rules for nested evaluations.
+func WithXMLSchemaVersion(ctx context.Context, version int) context.Context {
+	return context.WithValue(ctx, xmlSchemaVersionKey{}, version)
+}
+
+// XMLSchemaVersion returns the edition retained by the current function context.
+func XMLSchemaVersion(ctx context.Context) int {
+	if ec := getFnContext(ctx); ec != nil && ec.xmlSchemaVersion != 0 {
+		return ec.xmlSchemaVersion
+	}
+
+	if version, _ := ctx.Value(xmlSchemaVersionKey{}).(int); version != 0 {
+		return version
+	}
+
+	return 11
+}
+
 // dynamicCallKey marks a function call as originating from a dynamic
 // function reference (e.g. $f(args) where $f holds a named function ref).
 type dynamicCallKey struct{}
 
 func withDynamicCall(ctx context.Context) context.Context {
+	if IsDynamicCall(ctx) {
+		return ctx
+	}
+
 	return context.WithValue(ctx, dynamicCallKey{}, true)
 }
 

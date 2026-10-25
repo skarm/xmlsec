@@ -20,7 +20,7 @@ const maxTransformDepth = 10
 
 type transformProgramLimitKey struct{}
 
-// WithTransformProgramLimit bounds dynamically supplied stylesheet programs.
+// WithTransformProgramLimit bounds dynamically supplied XPath and stylesheet programs.
 // Nested fn:transform calls inherit the same limit and invocation budgets.
 func WithTransformProgramLimit(ctx context.Context, maxBytes int) context.Context {
 	if previous, ok := ctx.Value(transformProgramLimitKey{}).(int); ok && previous > 0 && (maxBytes <= 0 || previous < maxBytes) {
@@ -43,6 +43,12 @@ type TransformOption interface {
 // fail (FOXT0003 / FODC0002).
 func WithTransformURIResolver(r xpath.URIResolver) TransformOption {
 	return transformOptionFunc(func(c *transformFnConfig) { c.innerURIResolver = r })
+}
+
+// WithTransformCollectionResolver supplies the explicit collection policy used
+// by nested stylesheets, independently of their invocation-local caches.
+func WithTransformCollectionResolver(r xpath.CollectionResolver) TransformOption {
+	return transformOptionFunc(func(c *transformFnConfig) { c.collectionResolver = r })
 }
 
 // WithTransformPackageResolver sets the resolver used for the package-name /
@@ -85,7 +91,7 @@ func WithTransformParseOptions(p xdm.ParseOptions) TransformOption {
 // fn:transform. It shares its implementation with the in-stylesheet fn:transform
 // (ec.fnTransform); the deps the in-stylesheet path inherits from its execution
 // context are supplied here explicitly through TransformOption values.
-func TransformFunction(options ...TransformOption) xpath.Function {
+func TransformFunction(options ...TransformOption) xpath.TypedFunctionByArity {
 	cfg := &transformFnConfig{}
 	for _, o := range options {
 		o.applyTransform(cfg)
@@ -112,7 +118,7 @@ func TransformFunction(options ...TransformOption) xpath.Function {
 
 	cfg.nestedCompiler = c
 
-	return &xsltFunc{min: 1, max: 1, fn: cfg.run}
+	return &xsltFunc{min: 1, max: 1, fn: cfg.run, name: fnNameTransform, signature: xpath.HostBuiltin(31, fnNameTransform)}
 }
 
 // paramKeyToClark converts an XPath map key to the Clark notation string
@@ -142,27 +148,34 @@ func (ec *execContext) xsltFunctionsNS() map[xpath.QualifiedName]xpath.Function 
 
 	// Override fn:doc to preserve source document identity and apply
 	// xsl:strip-space rules to loaded documents.
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameDoc}] = &xsltFunc{min: 1, max: 1, fn: ec.fnDoc}
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameDoc}] = &xsltFunc{min: 1, max: 1, fn: ec.fnDoc, signature: xpath.HostBuiltin(ec.stylesheet.xpathVersion(), nameDoc)}
 
 	// Register XSLT built-in functions in the fn: namespace so they are
 	// discoverable via function-lookup with an explicit namespace.
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: funcSystemProperty}] = &xsltFunc{min: 1, max: 1, fn: ec.fnSystemProperty}
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: funcAvailableSystemProperties}] = &xsltFunc{min: 0, max: 0, fn: ec.fnAvailableSystemProperties}
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: funcSystemProperty}] = newIntrospectionFunc(funcSystemProperty, ec.fnSystemProperty)
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: funcAvailableSystemProperties}] = &xsltFunc{min: 0, max: 0, fn: fnAvailableSystemProperties}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameCurrentOutputURI}] = &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentOutputURI}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameStreamAvailable}] = &xsltFunc{min: 1, max: 1, fn: ec.fnStreamAvailable}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameUnparsedEntityUri}] = &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityURI}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameUnparsedEntityPublicId}] = &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityPublicID}
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameKey2}] = &xsltFunc{min: 2, max: 3, fn: ec.fnKey}
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameGenerateId}] = &xsltFunc{min: 0, max: 1, fn: ec.fnGenerateID}
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameElementAvailable}] = &xsltFunc{min: 1, max: 1, fn: ec.fnElementAvailable}
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameFunctionAvailable}] = &xsltFunc{min: 1, max: 2, fn: ec.fnFunctionAvailable}
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameTypeAvailable}] = &xsltFunc{min: 1, max: 1, fn: ec.fnTypeAvailable}
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameCurrent}] = &xsltFunc{min: 0, max: 0, fn: ec.fnCurrent}
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameKey2}] = &keyFunction{ec: ec, scope: ec.effectiveStylesheet()}
+
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameGenerateId}] = xpath.HostBuiltin(ec.stylesheet.xpathVersion(), nameGenerateId)
+	if ec.stylesheet.processorLanguage() <= 20 {
+		for _, name := range []string{fnNameFormatNumber, "format-date", "format-dateTime", "format-time"} {
+			ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: name}] = newLegacyFormatFunction(ec.stylesheet.xpathVersion(), name)
+		}
+	}
+
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameElementAvailable}] = newIntrospectionFunc(fnNameElementAvailable, ec.fnElementAvailable)
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameFunctionAvailable}] = newIntrospectionFunc(fnNameFunctionAvailable, ec.fnFunctionAvailable)
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameTypeAvailable}] = newIntrospectionFunc(fnNameTypeAvailable, fnTypeAvailable)
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameCurrent}] = &xsltFunc{min: 0, max: 0, fn: ec.fnCurrent, noDynRef: true, dynRefError: errCodeXTDE1360}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameCurrentGroup}] = &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentGroup, noDynRef: true, dynRefError: errCodeXTDE1061}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameCurrentGroupingKey}] = &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentGroupingKey, noDynRef: true, dynRefError: errCodeXTDE1071}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameCurrentMergeGroup}] = &xsltFunc{min: 0, max: 1, fn: ec.fnCurrentMergeGroup}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameCurrentMergeKey}] = &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentMergeKey}
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameRegexGroup}] = &regexGroupFunc{ec: ec}
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameRegexGroup}] = &xsltFunc{min: 1, max: 1, fn: ec.fnRegexGroup}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameAccumulatorBefore}] = &xsltFunc{min: 1, max: 1, fn: func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return ec.accumulatorLookup(ctx, args, nameAccumulatorBefore, func() (map[xdm.Node]map[string]xdm.Sequence, map[xdm.Node]map[string]error) {
 			return ec.accumulatorBeforeByNode, ec.accumulatorBeforeErrorByNode
@@ -177,31 +190,16 @@ func (ec *execContext) xsltFunctionsNS() map[xpath.QualifiedName]xpath.Function 
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: funcSnapshot}] = &xsltFunc{min: 0, max: 1, fn: ec.fnSnapshot}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameTransform}] = &xsltFunc{min: 1, max: 1, fn: ec.fnTransform}
 
-	// Per spec §20.3.3, function-lookup within a package must return the
-	// original (pre-override) function, not the override. Register a
-	// custom function-lookup that handles this when in a package context.
-	if ec.currentPackage != nil {
-		ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: "function-lookup"}] = &xsltFunc{min: 2, max: 2, fn: ec.fnFunctionLookupPackage}
-	}
+	// Dynamic lookup sees declarations in the calling package, excluding
+	// abstract declarations and components accepted from other packages.
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: "function-lookup"}] = &xsltFunc{min: 2, max: 2, fn: ec.fnFunctionLookupPackage}
 
 	if ec.currentPackage != nil {
 		// Per-package function scope: all functions from the current
 		// package (including private), plus public functions from
 		// packages it uses.
 		for _, def := range ec.currentPackage.functions {
-			if def.Visibility == visAbstract {
-				continue // abstract functions have no implementation
-			}
-
 			ec.registerUserFunc(def)
-		}
-
-		for _, usedPkg := range ec.currentPackage.usedPackages {
-			for _, def := range usedPkg.functions {
-				if def.Visibility == visPublic || def.Visibility == visFinal || def.Visibility == "" {
-					ec.registerUserFunc(def)
-				}
-			}
 		}
 	} else {
 		for _, def := range ec.stylesheet.functions {
@@ -217,38 +215,54 @@ func (ec *execContext) xsltFunctionsNS() map[xpath.QualifiedName]xpath.Function 
 		}
 	}
 
+	for name, function := range ec.cachedFnsNS {
+		if name.URI == xpath.NSFn {
+			if host, ok := function.(*xsltFunc); ok {
+				ec.prepareHostFunction(name.Name, host)
+			}
+		}
+	}
+
 	return ec.cachedFnsNS
 }
 
 // xsltEvaluateFunctionsNS returns the namespaced function map for use with
-// xsl:evaluate. Per XSLT 3.0 §20.3, user-defined stylesheet functions
-// (xsl:function) are NOT available in xsl:evaluate unless they are
-// explicitly declared as public or final.
+// xsl:evaluate (XSLT 3.0 section 10.4). Filter each overload independently:
+// private/hidden functions are unavailable without hiding public siblings.
 func (ec *execContext) xsltEvaluateFunctionsNS() map[xpath.QualifiedName]xpath.Function {
-	all := ec.xsltFunctionsNS()
-	excluded := make(map[xpath.QualifiedName]struct{})
+	result := make(map[xpath.QualifiedName]xpath.Function)
 
-	fns := ec.stylesheet.functions
-	if ec.currentPackage != nil {
-		fns = ec.currentPackage.functions
-	}
-
-	for _, def := range fns {
-		vis := def.Visibility
-		if vis == visPublic || vis == visFinal {
-			continue // explicitly public → available in xsl:evaluate
-		}
-
-		excluded[def.Name] = struct{}{}
-	}
-
-	result := make(map[xpath.QualifiedName]xpath.Function, len(all))
-	for k, v := range all {
-		if _, skip := excluded[k]; skip {
+	for name, function := range ec.xsltFunctionsNS() {
+		if name.URI == xpath.NSFn && !xpath.StandardFunctionAcceptsArity(name.URI, name.Name, function.MinArity()) {
 			continue
 		}
 
-		result[k] = v
+		switch fn := function.(type) {
+		case *xslUserFunc:
+			if fn.def.Visibility == visPublic || fn.def.Visibility == visFinal {
+				result[name] = fn
+			}
+		case *xslMultiArityFunc:
+			var visible *xslMultiArityFunc
+
+			for _, variant := range fn.variants {
+				if variant.def.Visibility != visPublic && variant.def.Visibility != visFinal {
+					continue
+				}
+
+				if visible == nil {
+					visible = &xslMultiArityFunc{minArity: variant.MinArity(), maxArity: variant.MaxArity()}
+				}
+
+				visible.addVariant(variant)
+			}
+
+			if visible != nil {
+				result[name] = visible
+			}
+		default:
+			result[name] = function
+		}
 	}
 
 	return result
@@ -277,20 +291,11 @@ func (ec *execContext) registerUserFunc(def *xslFunction) {
 	}
 }
 
-// fnFunctionLookupPackage is a package-aware implementation of function-lookup
-// per spec §20.3.3. Within a package, function-lookup must return the original
-// (pre-override) function definition, not the override. This implementation
-// looks up the function, and if it's an overridden xsl:function, substitutes
-// the original definition.
+// fnFunctionLookupPackage preserves the dynamic component scope in 3.5.3.6.
 func (ec *execContext) fnFunctionLookupPackage(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	// Delegate to the standard function-lookup implementation first
 	result, err := xpath.CallFunctionLookup(ctx, args)
-	if err != nil {
-		return nil, err
-	}
-
-	if result == nil || result.Len() == 0 {
-		return result, nil
+	if err != nil || result == nil || result.Len() == 0 {
+		return result, err
 	}
 
 	fi, ok := result.Get(0).(xdm.FunctionItem)
@@ -299,45 +304,75 @@ func (ec *execContext) fnFunctionLookupPackage(ctx context.Context, args []xdm.S
 	}
 
 	qn := xpath.QualifiedName{URI: fi.Namespace, Name: fi.Name}
-	fk := funcKey{Name: qn, Arity: fi.Arity}
-
-	pkgFn, exists := ec.currentPackage.functions[fk]
-	if !exists {
-		return result, nil // not a package function
+	if !ec.stylesheetFunctionDefined(qn, fi.Arity) {
+		return result, nil
 	}
 
-	if pkgFn.OriginalFunc == nil {
-		return result, nil // not overridden
+	def := ec.dynamicStylesheetFunction(qn, fi.Arity)
+	if def == nil {
+		return nil, nil
 	}
 
-	origDef := pkgFn.OriginalFunc
-	if origDef.Visibility == visAbstract {
-		// Original is abstract — no implementation to look up
-		return nil, nil //nolint:nilnil
-	}
+	fn := &xslUserFunc{def: def, ec: ec}
+	item, _ := fn.DynamicRefSnapshot(ctx, fi.Arity)
 
-	origUF := &xslUserFunc{def: origDef, ec: ec}
-	origFI, _ := origUF.DynamicRefSnapshot(ctx, fi.Arity)
-
-	return xdm.ItemSlice{origFI}, nil
+	return xdm.ItemSlice{item}, nil
 }
 
-// findXSLFunction finds an xsl:function by QName and arity (-1 = any).
-func (ec *execContext) findXSLFunction(qn xpath.QualifiedName, arity int) *xslFunction {
-	if arity < 0 {
-		// Any arity: just check if any overload exists
-		for fk, def := range ec.stylesheet.functions {
-			if fk.Name == qn {
-				return def
-			}
-		}
+func (ec *execContext) stylesheetFunctionDefined(qn xpath.QualifiedName, arity int) bool {
+	functions := ec.effectiveStylesheet().functions
+	if arity >= 0 {
+		return functions[funcKey{Name: qn, Arity: arity}] != nil
+	}
 
+	for key := range functions {
+		if key.Name == qn {
+			return true
+		}
+	}
+
+	return false
+}
+
+func dynamicDeclaration(scope *Stylesheet, def *xslFunction) *xslFunction {
+	if def == nil {
 		return nil
 	}
 
-	fk := funcKey{Name: qn, Arity: arity}
+	if def.AcceptedFrom != nil {
+		if def.Visibility == visAbstract {
+			return nil
+		}
 
-	return ec.stylesheet.functions[fk]
+		return def
+	}
+
+	for def.OriginalFunc != nil && def.OwnerPackage != scope {
+		def = def.OriginalFunc
+	}
+
+	if def.Visibility == visAbstract || def.AcceptedFrom != nil || def.OwnerPackage != nil && def.OwnerPackage != scope {
+		return nil
+	}
+
+	return def
+}
+
+func (ec *execContext) dynamicStylesheetFunction(qn xpath.QualifiedName, arity int) *xslFunction {
+	scope := ec.effectiveStylesheet()
+	if arity >= 0 {
+		return dynamicDeclaration(scope, scope.functions[funcKey{Name: qn, Arity: arity}])
+	}
+
+	for key, def := range scope.functions {
+		if key.Name == qn {
+			if own := dynamicDeclaration(scope, def); own != nil {
+				return own
+			}
+		}
+	}
+
+	return nil
 }
 
 func (ec *execContext) findXSLFunctionByArity(qn xpath.QualifiedName, arity int) *xslFunction {
@@ -345,23 +380,18 @@ func (ec *execContext) findXSLFunctionByArity(qn xpath.QualifiedName, arity int)
 	return ec.stylesheet.functions[fk]
 }
 
-// xsltEvaluateFunctions returns XSLT built-in functions available in
-// xsl:evaluate dynamic context. Per XSLT 3.0 section 20.3, current()
-// is excluded.
+// xsltEvaluateFunctions keeps only host overrides of standard F&O functions.
+// XSLT-specific functions are absent from the target expression's static library.
 func (ec *execContext) xsltEvaluateFunctions() map[string]xpath.Function {
-	fns := ec.xsltFunctions()
+	result := make(map[string]xpath.Function)
 
-	evalFns := make(map[string]xpath.Function, len(fns))
-	for k, v := range fns {
-		switch k {
-		case "current", funcSystemProperty, "current-output-uri", "available-system-properties":
-			continue
+	for name, function := range ec.xsltFunctions() {
+		if xpath.StandardFunctionAcceptsArity(xpath.NSFn, name, function.MinArity()) {
+			result[name] = function
 		}
-
-		evalFns[k] = v
 	}
 
-	return evalFns
+	return result
 }
 
 // fnTransform implements fn:transform() for the in-stylesheet path. It builds a
@@ -370,6 +400,8 @@ func (ec *execContext) xsltEvaluateFunctions() map[string]xpath.Function {
 // and delegates to the shared implementation (run), so the in-stylesheet and
 // standalone (TransformFunction) paths run identical logic.
 func (ec *execContext) fnTransform(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	ctx = ec.xpathContext(ctx)
+
 	cfg := &transformFnConfig{
 		// The static base URI of the fn:transform CALL — used to resolve a
 		// relative stylesheet-location, stylesheet-base-uri, and base-output-uri —
@@ -385,35 +417,11 @@ func (ec *execContext) fnTransform(ctx context.Context, args []xdm.Sequence) (xd
 	}
 	if ec.transformConfig != nil {
 		cfg.innerURIResolver = ec.transformConfig.uriResolver
+		cfg.collectionResolver = ec.transformConfig.collectionResolver
 		cfg.httpClient = ec.transformConfig.httpClient
 	}
 
 	return cfg.run(ctx, args)
-}
-
-// resultDocCollector implements ResultDocumentHandler for fn:transform,
-// collecting secondary result documents and their output definitions into maps.
-type resultDocCollector struct {
-	results map[string]*xdm.Document
-}
-
-func (c resultDocCollector) HandleResultDocument(href string, doc *xdm.Document, _ *OutputDef) error {
-	// Key by the fully-resolved absolute output URI captured during execution
-	// (SetURL on the result document), NOT the raw href. A nested
-	// xsl:result-document resolves its href against the DYNAMIC current output
-	// URI of the enclosing result document, not the top-level base output URI, so
-	// re-resolving the raw href against the base here would key it wrongly.
-	key := href
-
-	if doc != nil {
-		if u := doc.URL(); u != "" {
-			key = u
-		}
-	}
-
-	c.results[key] = doc
-
-	return nil
 }
 
 // newNestedCompiler creates a Compiler pre-configured with the same
@@ -464,7 +472,8 @@ type transformFnConfig struct {
 	// innerURIResolver serves fn:doc/document()/fn:unparsed-text evaluated
 	// inside the dynamically-run stylesheet, and external-entity loading during
 	// its parse.
-	innerURIResolver xpath.URIResolver
+	innerURIResolver   xpath.URIResolver
+	collectionResolver xpath.CollectionResolver
 	// httpClient is the opt-in HTTP client for the inner transform's resource
 	// retrieval.
 	httpClient *http.Client
@@ -495,9 +504,16 @@ func (cfg *transformFnConfig) run(ctx context.Context, args []xdm.Sequence) (xdm
 	}
 
 	request := newTransformRequest(options, cfg.baseURI)
-	if err := validateTransformOptions(options, request.deliveryFormat); err != nil {
+	if err := validateTransformOptions(ctx, options, request.deliveryFormat); err != nil {
 		return nil, err
 	}
+
+	assertions, err := transformBooleanOption(ctx, options, "enable-assertions")
+	if err != nil {
+		return nil, err
+	}
+
+	ctx = WithAssertions(ctx, assertions)
 
 	compiler, staticParams := transformStaticParameters(cfg.nestedCompiler, transformMapSeq(options, "static-params"))
 
@@ -517,8 +533,7 @@ func (cfg *transformFnConfig) run(ctx context.Context, args []xdm.Sequence) (xdm
 		return nil, dynamicError(errCodeFOXT0002, "fn:transform: no stylesheet specified (stylesheet-location, stylesheet-node, stylesheet-text, or package-name required)")
 	}
 
-	secondary := resultDocCollector{results: make(map[string]*xdm.Document)}
-	invocation := request.newInvocation(cfg, staticParams, secondary)
+	invocation := request.newInvocation(ctx, cfg, staticParams)
 	source := request.prepareSource(invocation)
 
 	resultDoc, err := executeTransform(ctx, source, stylesheet, invocation)
@@ -526,7 +541,7 @@ func (cfg *transformFnConfig) run(ctx context.Context, args []xdm.Sequence) (xdm
 		return nil, err
 	}
 
-	result, err := request.deliver(ctx, resultDoc, invocation, secondary)
+	result, err := request.deliver(ctx, resultDoc, invocation)
 	if err != nil {
 		return nil, err
 	}
@@ -611,11 +626,13 @@ func applyTransformPostProcess(ctx context.Context, fi xdm.FunctionItem, result 
 // transformCapabilities is helium's advertised value for each XSLT-namespace
 // requested-property that fn:transform can reason about. supports-streaming is
 // false: helium materializes source documents into a DOM, and streams nothing.
-func lookuptransformCapabilities(key string) (bool, bool) {
+func lookuptransformCapabilities(ctx context.Context, key string) (bool, bool) {
 	switch key {
-	case nameIsSchemaAware, nameSupportsSerialization, textSupportsBackwardsCompatibility, nameSupportsNamespaceAxis, nameSupportsDynamicEvaluation, textSupportsHigherOrderFunctions:
+	case nameSupportsDynamicEvaluation:
+		return !dynamicEvaluationDisabled(ctx), true
+	case nameSupportsSerialization, textSupportsBackwardsCompatibility, nameSupportsNamespaceAxis, textSupportsHigherOrderFunctions:
 		return true, true
-	case nameSupportsStreaming:
+	case nameSupportsStreaming, nameIsSchemaAware:
 		return false, true
 	}
 
@@ -630,7 +647,7 @@ func lookuptransformCapabilities(key string) (bool, bool) {
 // delivery-format, correctly-typed option values, and satisfiable requested
 // properties. The no-invocation check is applied post-compile in run(), because
 // it depends on the presence of an xsl:initial-template default template.
-func validateTransformOptions(m xdm.MapItem, deliveryFormat string) error {
+func validateTransformOptions(ctx context.Context, m xdm.MapItem, deliveryFormat string) error {
 	sources := 0
 
 	for _, k := range []string{"stylesheet-location", "stylesheet-node", "stylesheet-text", "package-name"} {
@@ -653,6 +670,12 @@ func validateTransformOptions(m xdm.MapItem, deliveryFormat string) error {
 
 	if entryPoints > 1 {
 		return dynamicError(errCodeFOXT0002, "fn:transform: at most one of initial-template, initial-mode, initial-function may be supplied")
+	}
+
+	if transformOptionPresent(transformMapSeq(m, "initial-function")) {
+		if _, present := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: "function-params"}); !present {
+			return dynamicError(errCodeFOXT0002, "fn:transform: initial-function requires function-params")
+		}
 	}
 
 	if transformOptionPresent(transformMapSeq(m, "source-node")) && transformOptionPresent(transformMapSeq(m, "initial-match-selection")) {
@@ -679,17 +702,36 @@ func validateTransformOptions(m xdm.MapItem, deliveryFormat string) error {
 		}
 	}
 
-	return checkTransformCapabilities(transformMapSeq(m, "requested-properties"))
+	return checkTransformCapabilities(ctx, transformMapSeq(m, "requested-properties"))
+}
+
+func transformBooleanOption(ctx context.Context, options xdm.MapItem, key string) (bool, error) {
+	seq, present := options.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: key})
+	if !present {
+		return false, nil
+	}
+
+	value, err := xpath.ConvertToSequenceType(ctx, seq, xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Prefix: "xs", Name: lexicon.TypeBoolean}})
+	if err != nil {
+		return false, err
+	}
+
+	atom, ok := value.Get(0).(xdm.AtomicValue)
+	if !ok {
+		return false, dynamicError(errCodeXPTY0004, "fn:transform: %s requires one boolean", key)
+	}
+
+	return atom.BooleanVal(), nil
 }
 
 // validateTransformGlobalContextItem enforces that the global-context-item
 // option, when the key is present in the map, holds EXACTLY ONE item (F&O 3.1
-// §14.8: its required type is item()). A present-but-empty or multi-item value
+// §16.3.2: its required type is item()). A present-but-empty or multi-item value
 // is an XPTY0004 type error — it must NOT be silently treated as absent or
 // truncated to its first item. An omitted key is fine (the global context item
 // then defaults to the source-node root, or is absent).
 func validateTransformGlobalContextItem(m xdm.MapItem) error {
-	seq, ok := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: "global-context-item"})
+	seq, ok := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: lexicon.XSLTElementGlobalContextItem})
 	if !ok {
 		return nil
 	}
@@ -710,7 +752,7 @@ func validateTransformXSLTVersion(m xdm.MapItem) error {
 func transformProcessorVersion(m xdm.MapItem) (int, error) {
 	seq, present := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: "xslt-version"})
 	if !present {
-		return 0, nil
+		return 30, nil
 	}
 
 	if xdm.SequenceLen(seq) != 1 {
@@ -722,17 +764,16 @@ func transformProcessorVersion(m xdm.MapItem) (int, error) {
 		return 0, dynamicError(errCodeXPTY0004, "fn:transform: xslt-version requires one numeric value")
 	}
 
-	for _, version := range []int{10, 20, 30} {
-		maximum := xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(version / 10)}
+	// The option requests a minimum, not an exact processor. Use the modern
+	// processor's backwards-compatible behavior for every supported
+	// minimum, consistently with an omitted option.
+	compatible, err := xpath.ValueCompare(xpath.TokenLe, av, xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(3)})
+	if err != nil {
+		return 0, err
+	}
 
-		compatible, err := xpath.ValueCompare(xpath.TokenLe, av, maximum)
-		if err != nil {
-			return 0, err
-		}
-
-		if compatible {
-			return version, nil
-		}
+	if compatible {
+		return 30, nil
 	}
 
 	text, err := xpath.AtomicToString(av)
@@ -770,7 +811,7 @@ func validateTransformParamMap(name string, seq xdm.Sequence) error {
 // FOXT0001 when a recognized XSLT-namespace property is requested with a value
 // helium cannot satisfy. Non-map values are XPTY0004; properties outside the
 // XSLT namespace, or ones helium does not model, are ignored.
-func checkTransformCapabilities(seq xdm.Sequence) error {
+func checkTransformCapabilities(ctx context.Context, seq xdm.Sequence) error {
 	if !transformOptionPresent(seq) {
 		return nil
 	}
@@ -786,7 +827,31 @@ func checkTransformCapabilities(seq xdm.Sequence) error {
 			continue
 		}
 
-		want, known := lookuptransformCapabilities(qv.Local)
+		if qv.Local == nameProductName {
+			value, _ := sm.Get(key)
+			if xdm.SequenceLen(value) != 1 {
+				return dynamicError(errCodeXPTY0004, "fn:transform: product-name must be one string")
+			}
+
+			atom, err := xpath.AtomizeItem(value.Get(0))
+			if err != nil {
+				return err
+			}
+
+			name, err := xpath.AtomicToString(atom)
+			if err != nil {
+				return err
+			}
+
+			if name != processorProductName {
+				return dynamicError(errCodeFOXT0001, "fn:transform: requested product %q is unavailable", name)
+			}
+
+			continue
+		}
+
+		want, known := lookuptransformCapabilities(ctx, qv.Local)
+
 		if !known {
 			continue
 		}
@@ -826,7 +891,11 @@ func (cfg *transformFnConfig) compileTransformStylesheet(ctx context.Context, co
 }
 
 func (cfg *transformFnConfig) programLimit(ctx context.Context) int64 {
-	limit := resolveResourceLimit(cfg.maxResourceBytes)
+	return dynamicProgramLimit(ctx, cfg.maxResourceBytes)
+}
+
+func dynamicProgramLimit(ctx context.Context, resourceBytes int64) int64 {
+	limit := resolveResourceLimit(resourceBytes)
 	if bound, ok := ctx.Value(transformProgramLimitKey{}).(int); ok && bound > 0 && (limit <= 0 || int64(bound) < limit) {
 		limit = int64(bound)
 	}
@@ -931,6 +1000,10 @@ func (cfg *transformFnConfig) compileTransformPackage(ctx context.Context, neste
 	ss, compileErr := compiler.Compile(ctx, doc)
 	if compileErr != nil {
 		return nil, transformFailure(compileErr, "fn:transform: cannot compile package %q: %v", packageName, compileErr)
+	}
+
+	if err := checkCompiledPackage(ss, packageName, packageVersion); err != nil {
+		return nil, err
 	}
 
 	return ss, nil
@@ -1115,7 +1188,7 @@ func newTransformRequest(options xdm.MapItem, baseURI string) transformRequest {
 		stylesheetBaseURI:     transformStringOption(options, "stylesheet-base-uri"),
 		initialMatchSelection: transformMapSeq(options, "initial-match-selection"),
 		sourceNode:            transformMapSeq(options, "source-node"),
-		globalContextItem:     transformMapSeq(options, "global-context-item"),
+		globalContextItem:     transformMapSeq(options, lexicon.XSLTElementGlobalContextItem),
 	}
 	if request.baseOutputURI != "" {
 		request.baseOutputURI = canonicalResultURIKey(request.baseOutputURI, baseURI)
@@ -1153,27 +1226,31 @@ func transformQNameOption(options xdm.MapItem, key string) string {
 	return text
 }
 
-func (request transformRequest) newInvocation(cfg *transformFnConfig, staticParamValues map[string]xdm.Sequence, secondary resultDocCollector) *transformConfig {
+func (request transformRequest) newInvocation(ctx context.Context, cfg *transformFnConfig, staticParamValues map[string]xdm.Sequence) *transformConfig {
 	outputBaseURI := request.baseOutputURI
 	if outputBaseURI == "" {
 		outputBaseURI = cfg.baseURI
 	}
 
 	invocation := &transformConfig{
-		initialTemplate:  request.initialTemplate,
-		initialMode:      request.initialMode,
-		initialFunction:  request.initialFunction,
-		baseOutputURI:    request.baseOutputURI,
-		outputBaseURI:    outputBaseURI,
-		resultDocHandler: secondary,
-		uriResolver:      cfg.innerURIResolver,
-		httpClient:       cfg.httpClient,
-		maxResourceBytes: cfg.maxResourceBytes,
-		parseOptions:     cfg.parseOptions,
-		rawCapture:       request.deliveryFormat == lexicon.OutputRaw || request.deliveryFormat == transformSerialized,
-		rawSequence:      request.deliveryFormat == transformSerialized,
-		valueResults:     make(map[string]ValueResult),
+		initialTemplate:    request.initialTemplate,
+		initialMode:        request.initialMode,
+		initialFunction:    request.initialFunction,
+		baseOutputURI:      request.baseOutputURI,
+		outputBaseURI:      outputBaseURI,
+		uriResolver:        cfg.innerURIResolver,
+		collectionResolver: cfg.collectionResolver,
+		httpClient:         cfg.httpClient,
+		maxResourceBytes:   cfg.maxResourceBytes,
+		parseOptions:       cfg.parseOptions,
+		rawCapture:         true,
+		rawSequence:        true,
+		valueResults:       make(map[string]ValueResult),
 	}
+	if invocation.collectionResolver == nil {
+		invocation.collectionResolver = xpath.EvaluationCollections(ctx)
+	}
+
 	if transformOptionPresent(request.globalContextItem) {
 		invocation.globalContextItem = request.globalContextItem.Get(0)
 	}
@@ -1281,52 +1358,37 @@ func (request transformRequest) prepareSource(invocation *transformConfig) *xdm.
 	return sourceDoc
 }
 
-func (request transformRequest) deliver(ctx context.Context, resultDoc *xdm.Document, fnTransformCfg *transformConfig, secondary resultDocCollector) (xdm.MapItem, error) {
-	baseOutputURI := request.baseOutputURI
-	deliveryFormat := request.deliveryFormat
-	secondaryResults := secondary.results
-	capturedItems := fnTransformCfg.rawCapturedItems
-
-	principalKey := xdm.AtomicValue{TypeName: xdm.TypeString, Value: nameOutput}
-	if baseOutputURI != "" {
-		principalKey = xdm.AtomicValue{TypeName: xdm.TypeString, Value: baseOutputURI}
+func (request transformRequest) deliver(ctx context.Context, resultDoc *xdm.Document, cfg *transformConfig) (xdm.MapItem, error) {
+	key := xdm.AtomicValue{TypeName: xdm.TypeString, Value: nameOutput}
+	if request.baseOutputURI != "" {
+		key.Value = request.baseOutputURI
 	}
 
-	result := xdm.MapItem{}
+	if request.deliveryFormat == transformSerialized {
+		return request.deliverSerialized(ctx, resultDoc, cfg, key)
+	}
 
-	switch deliveryFormat {
-	case "raw":
-		// Raw delivery: return the XDM items from the transformation. Merge DOM
-		// children with any captured non-node items (function items, maps, etc.
-		// that cannot be represented as DOM children).
-		var seq xdm.ItemSlice
-		for child := range xdm.Children(resultDoc) {
-			seq = append(seq, xdm.NodeItem{Node: child})
-		}
+	execution := &Execution{Primary: ValueResult{Document: resultDoc, Items: cfg.rawCapturedItems, Output: cfg.resolvedOutputDef}, Secondary: cfg.valueResults}
 
-		if capturedItems != nil && xdm.SequenceLen(capturedItems) > 0 {
-			seq = append(seq, xdm.Materialize(capturedItems)...)
+	if request.deliveryFormat != lexicon.OutputRaw {
+		var forceTree *bool
+
+		if request.deliveryFormat == fnNameDocument {
+			enabled := true
+			forceTree = &enabled
 		}
 
-		if len(seq) > 0 {
-			result = result.Put(principalKey, seq)
-		}
-		// Secondary results are returned as document nodes in raw mode.
-		for uri, doc := range secondaryResults {
-			result = result.Put(xdm.AtomicValue{TypeName: xdm.TypeString, Value: uri}, xdm.ItemSlice{xdm.NodeItem{Node: doc}})
-		}
-	case transformSerialized:
-		return request.deliverSerialized(ctx, resultDoc, fnTransformCfg, principalKey)
+		var err error
 
-	default:
-		// Default: return the result document
-		if documentHasChildren(resultDoc) {
-			result = result.Put(principalKey, xdm.ItemSlice{xdm.NodeItem{Node: resultDoc}})
+		execution, err = NormalizeExecution(ctx, execution, forceTree, request.baseOutputURI)
+		if err != nil {
+			return xdm.MapItem{}, err
 		}
+	}
 
-		for uri, doc := range secondaryResults {
-			result = result.Put(xdm.AtomicValue{TypeName: xdm.TypeString, Value: uri}, xdm.ItemSlice{xdm.NodeItem{Node: doc}})
-		}
+	result := xdm.MapItem{}.Put(key, execution.Primary.Items)
+	for uri, value := range execution.Secondary {
+		result = result.Put(xdm.AtomicValue{TypeName: xdm.TypeString, Value: uri}, value.Items)
 	}
 
 	return result, nil
@@ -1339,16 +1401,14 @@ func (request transformRequest) deliverSerialized(ctx context.Context, doc *xdm.
 	output := applySerializationParams(cfg.resolvedOutputDef, params)
 	result := xdm.MapItem{}
 
-	if documentHasChildren(doc) || xdm.SequenceLen(cfg.rawCapturedItems) > 0 || (output != nil && isItemSerializationMethod(output.Method)) {
-		value := ValueResult{Document: doc, Items: cfg.rawCapturedItems, Output: output}
+	value := ValueResult{Document: doc, Items: cfg.rawCapturedItems, Output: output}
 
-		s, err := serializeDeliveredValue(ctx, value)
-		if err != nil {
-			return xdm.MapItem{}, err
-		}
-
-		result = result.Put(key, xdm.SingleString(s))
+	s, err := serializeDeliveredValue(ctx, value)
+	if err != nil {
+		return xdm.MapItem{}, err
 	}
+
+	result = result.Put(key, xdm.SingleString(s))
 
 	for uri, value := range cfg.valueResults {
 		s, err := serializeDeliveredValue(ctx, value)
@@ -1369,21 +1429,6 @@ func serializeDeliveredValue(ctx context.Context, value ValueResult) (string, er
 	}
 
 	return buf.String(), nil
-}
-
-// documentHasChildren reports whether doc has any child nodes, i.e. whether the
-// transformation wrote any principal result content. An empty principal result
-// tree yields no principal entry in the fn:transform result map (W3C bug 30209).
-func documentHasChildren(doc *xdm.Document) bool {
-	if doc == nil {
-		return false
-	}
-
-	for range xdm.Children(doc) {
-		return true
-	}
-
-	return false
 }
 
 // applySerializationParams returns an OutputDef with the fn:transform

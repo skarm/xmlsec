@@ -85,9 +85,14 @@ type scopedEvalKey struct {
 }
 
 // execContext holds XSLT transformation state. Stored inside context.Context.
+type executionIdentity [1]byte
+
 type execContext struct {
-	scopeArena *scopeArena
-	budgetCtx  context.Context // xmlsec: invocation-local shared resource budget.
+	initialTemplateCall    bool // Consumed before matching, so recursive built-in rules are ordinary calls.
+	execution              *executionIdentity
+	attributeSetEvaluating map[*attributeSetDef]struct{}
+	scopeArena             *scopeArena
+	budgetCtx              context.Context // xmlsec: invocation-local shared resource budget.
 
 	stylesheet                   *Stylesheet // immutable after construction; do not reassign
 	sourceDoc                    *xdm.Document
@@ -99,11 +104,12 @@ type execContext struct {
 	size                         int
 	localVars                    *varScope
 	globalVars                   map[string]xdm.Sequence
-	globalVarDefs                map[string]*variable // unevaluated global variable definitions (lazy)
-	globalParamDefs              map[string]*param    // unevaluated global param definitions (lazy)
-	globalEvaluating             map[string]struct{}  // circular dependency detection
-	collectingVars               bool                 // reentrancy guard for collectAllVars
+	globalVarDefs                map[string]*variable       // unevaluated global variable definitions (lazy)
+	globalParamDefs              map[string]*param          // unevaluated global param definitions (lazy)
+	globalEvaluating             map[globalBinding]struct{} // circular dependency detection
+	collectingVars               bool                       // reentrancy guard for collectAllVars
 	currentMode                  string
+	currentModePackage           *Stylesheet             // bound mode identity, independent of the current component's lexical scope
 	currentTemplate              *template               // use setCurrentTemplate(); do not assign directly
 	currentPackage               *Stylesheet             // owning package of currently executing template/function
 	xpathDefaultNS               string                  // current xpath-default-namespace
@@ -119,12 +125,13 @@ type execContext struct {
 	depth                        int                     // recursion depth
 	outputStack                  []*outputFrame
 	keyTables                    map[string]*keyTable
-	keyBuildingDepth             int // >0 when inside buildKeyTable (use-expr may recurse)
-	keyUseExprDepth              int // >0 when evaluating a key's use-expression (self-ref returns empty)
 	docCache                     map[string]*xdm.Document
+	collectionCache              map[string]xdm.Sequence
+	uriCollectionCache           map[string][]string
 	functionResultCache          map[string]xdm.Sequence
-	functionLexical              *execContext                           // immutable environment shared by escaping function references
-	cachedFns                    map[string]xpath.Function              // cached xsltFunctions() result
+	functionLexical              *execContext              // immutable environment shared by escaping function references
+	cachedFns                    map[string]xpath.Function // cached xsltFunctions() result
+	cachedFnsPackage             *Stylesheet
 	cachedFnsNS                  map[xpath.QualifiedName]xpath.Function // cached xsltFunctionsNS() result
 	globalVarsGen                uint64                                 // incremented when globalVars changes
 	cachedVarsMap                map[string]xdm.Sequence                // cached result of collectAllVars; never mutated once built
@@ -138,7 +145,6 @@ type execContext struct {
 	accumulatorComputedDocs      map[xdm.Node]struct{}         // document roots for which accumulator states have been computed
 	accumulatorComputedPkgs      map[string]struct{}           // package-scoped accumulator computation tracking
 	activeAccumulators           map[string]struct{}           // accumulator names allowed in current source-document context
-	requireStreamableAccums      bool                          // require streamable="yes" for current accumulator access context
 	evaluatingAccumulator        bool
 	evaluatingMergeKey           bool
 	regexGroups                  []string                // captured groups for regex-group() inside xsl:matching-substring
@@ -149,7 +155,8 @@ type execContext struct {
 	errSourceModule              string                  // source module of last-executed instruction (for xsl:catch)
 	msgHandler                   MessageHandler
 	transformConfig              *transformConfig
-	currentTime                  time.Time                  // stable fn:current-* value for whole transformation
+	currentTime                  time.Time // stable fn:current-* value for whole transformation
+	dynamicProperties            xpath.DynamicProperties
 	typeAnnotations              map[xdm.Node]string        // node → xs:... type annotation (schema-aware)
 	preservedIDAnnotations       map[xdm.Node]string        // ID/IDREF annotations preserved after input-type-annotations="strip"
 	nilledElements               map[*xdm.Element]struct{}  // elements with xsi:nil="true" confirmed by XSD validation
@@ -159,37 +166,40 @@ type execContext struct {
 	resultDocOutputDefs          map[string]*OutputDef      // effective output definition per secondary result document, keyed by RESOLVED URI
 	resultDocHrefs               map[string]string          // RESOLVED URI → the raw href as written on xsl:result-document, for the public ResultDocumentHandler
 	usedResultURIs               map[string]struct{}        // URIs already written by xsl:result-document (includes "")
-	insideResultDocPrimary       bool                       // true while executing result-document body targeting primary URI
-	currentResultDocMethod       string                     // effective output method during result-document body execution
-	temporaryOutputDepth         int                        // >0 when inside a temporary output state (XTDE1480)
-	primaryClaimedImplicitly     bool                       // true when implicit content has been written to primary output
-	staticBaseURIOverride        string                     // non-empty when xml:base on an LRE overrides the template's base URI
-	staticBaseURIPinned          bool                       // true while evaluating a global var/param body: base is pinned to the declaration site, never the current template
-	currentOutputURI             string                     // current output URI for current-output-uri() function
-	canonicalPrimaryURI          string                     // canonical principal (base) output URI, tracked separately from the "" primary sentinel; seeded into usedResultURIs so a secondary href resolving to it raises XTDE1490
-	inPatternMatch               bool                       // true during pattern matching (current-output-uri() returns empty)
-	patternNamespaces            map[string]string          // the matching pattern's lexical xmlns snapshot (prefix→URI) during pattern matching
-	patternMatchErr              error                      // non-nil if a fatal error occurred during pattern matching
-	inSortKeyEval                bool                       // true during sort key evaluation (current-output-uri() returns empty)
-	patternCompat                bool                       // true while matching a backwards-compatible pattern (predicate XPath in 1.0 compat mode)
-	atomicTextNodes              map[xdm.Node]struct{}      // text nodes created from atomic item serialization
-	nodeMemoIDs                  map[xdm.Node]uint64        // stable per-transform node identities for function caching
+	readResourceURIs             map[string]struct{}
+	resourceOwner                *execContext          // live caller when an escaped stylesheet function runs
+	currentResultDocMethod       string                // effective output method during result-document body execution
+	temporaryOutputDepth         int                   // >0 when inside a temporary output state (XTDE1480)
+	primaryClaimedImplicitly     bool                  // true when implicit content has been written to primary output
+	staticBaseURIOverride        string                // non-empty when xml:base on an LRE overrides the template's base URI
+	staticBaseURIPinned          bool                  // true while evaluating a global var/param body: base is pinned to the declaration site, never the current template
+	currentOutputURI             string                // current output URI for current-output-uri() function
+	baseOutputURI                string                // fixed base for resolving all result-document hrefs
+	canonicalPrimaryURI          string                // canonical explicitly supplied principal output URI
+	inPatternMatch               bool                  // true during pattern matching (current-output-uri() returns empty)
+	patternNamespaces            map[string]string     // the matching pattern's lexical xmlns snapshot (prefix→URI) during pattern matching
+	patternMatchErr              error                 // non-nil if a fatal error occurred during pattern matching
+	inSortKeyEval                bool                  // true during sort key evaluation (current-output-uri() returns empty)
+	patternCompat                bool                  // true while matching a backwards-compatible pattern (predicate XPath in 1.0 compat mode)
+	atomicTextNodes              map[xdm.Node]struct{} // text nodes created from atomic item serialization
+	nodeMemoIDs                  map[xdm.Node]uint64   // stable per-transform node identities for function caching
 	nextNodeMemoID               uint64
-	fnScratchDoc                 *xdm.Document                            // output wrapper shared by every select-only xsl:function call
-	fnScratchRoot                *xdm.Element                             // fnScratchDoc's document element; always childless
-	paramDocOutputDefs           map[*resultDocumentInst]*OutputDef       // per-invocation cache for parameter-document output defs
-	paramDocPresences            map[*resultDocumentInst]paramDocPresence // per-invocation cache for parameter-document plain-boolean presence flags
+	fnScratchDoc                 *xdm.Document                      // output wrapper shared by every select-only xsl:function call
+	fnScratchRoot                *xdm.Element                       // fnScratchDoc's document element; always childless
+	paramDocOutputDefs           map[*resultDocumentInst]*OutputDef // scoped parameter-document output defs
+	paramDocCache                map[string]parameterDocumentResult
+	paramDocPresences            map[*resultDocumentInst]paramDocPresence // scoped parameter-document plain-boolean presence flags
 	primaryCharacterMaps         []string                                 // character map names from xsl:result-document targeting primary output
 	primaryResolvedCharMap       map[rune]string                          // resolved character map from parameter-document for primary output
 	primaryOutputOverrides       *OutputDef                               // serialization param overrides from primary xsl:result-document
 	rawResultSequence            xdm.Sequence                             // raw XDM result sequence (set when initial template has as="...")
 	nsFixupAllowed               map[*xdm.Element]struct{}                // elements whose prefix namespace is eligible for fixup
 	overridingTemplate           *template                                // currently executing overriding template (for xsl:original)
-	overridingVarDef             *variable                                // currently evaluating overriding variable (for $xsl:original)
+	originalGlobal               globalBinding                            // hidden original bound in the current global scope
 	originalFunc                 xpath.Function                           // current xsl:original function (set during overriding function call)
 	currentAttrSetOriginal       *attributeSetDef                         // original attribute-set for use-attribute-sets="xsl:original"
 	docOrderCache                *xpath.DocOrderCache                     // shared document-order cache for consistent cross-document ordering
-	packageVarCache              map[*variable]xdm.Sequence               // cache for package-scoped variable evaluations
+	globalValueCache             map[globalBinding]xdm.Sequence           // cached values by global declaration identity
 	globalContextAbsent          bool                                     // true when global context item is absent (select evaluated to empty)
 	globalContextItem            xdm.Item                                 // explicit global context item (overrides sourceDoc for global var/param eval); nil = use sourceDoc
 	traceWriter                  io.Writer                                // destination for fn:trace output (nil = os.Stderr)
@@ -249,11 +259,32 @@ type execContext struct {
 	patternPredicates map[*xpath.Expr]*patternPredicate
 }
 
+// Globals and key specifiers use the initial grouping/regex context.
+func (ec *execContext) pushAbsentGroupingContext() func() {
+	group, key, regex := ec.currentGroup, ec.currentGroupKey, ec.regexGroups
+	inGroup, hasKey, inMerge := ec.inGroupContext, ec.groupHasKey, ec.inMergeAction
+	ec.currentGroup, ec.currentGroupKey, ec.regexGroups = nil, nil, nil
+	ec.inGroupContext, ec.groupHasKey, ec.inMergeAction = false, false, false
+
+	return func() {
+		ec.currentGroup, ec.currentGroupKey, ec.regexGroups = group, key, regex
+		ec.inGroupContext, ec.groupHasKey, ec.inMergeAction = inGroup, hasKey, inMerge
+	}
+}
+
 // ResolveFunction implements xpath.FunctionResolver. It resolves
 // xsl:original() calls without exposing the function to function-lookup.
 func (ec *execContext) ResolveFunction(_ context.Context, uri, name string, arity int) (xpath.Function, bool, error) {
-	if uri == lexicon.NamespaceXSLT && name == "original" && ec.originalFunc != nil {
+	if uri == lexicon.NamespaceXSLT && name == nameOriginal && ec.originalFunc != nil {
 		return ec.originalFunc, true, nil
+	}
+	// Strict expressions reject missing functions during compilation. Calls
+	// deferred by compatibility processing bind an extension fallback instead;
+	// the resolver is deliberately excluded from function-lookup.
+	if !isReservedFunctionNS(uri) {
+		return &xsltFunc{min: arity, max: arity, fn: func(context.Context, []xdm.Sequence) (xdm.Sequence, error) {
+			return nil, dynamicError("XTDE1425", "extension function Q{%s}%s#%d is unavailable", uri, name, arity)
+		}}, true, nil
 	}
 
 	return nil, false, nil
@@ -268,8 +299,8 @@ func (ec *execContext) ResolveVariable(ctx context.Context, name string) (xdm.Se
 	// The name may come as either the expanded form "{uri}original" or the
 	// prefixed form "xsl:original" depending on whether namespace resolution
 	// happened in the XPath evaluator.
-	isXSLOriginal := name == xdm.ClarkName(lexicon.NamespaceXSLT, "original") || name == "xsl:original"
-	if isXSLOriginal && ec.overridingVarDef != nil && ec.overridingVarDef.OriginalVar != nil {
+	isXSLOriginal := name == xdm.ClarkName(lexicon.NamespaceXSLT, nameOriginal) || name == "xsl:original"
+	if isXSLOriginal && ec.originalGlobal != (globalBinding{}) {
 		return ec.resolveOriginalVariable(ctx)
 	}
 
@@ -280,31 +311,25 @@ func (ec *execContext) ResolveVariable(ctx context.Context, name string) (xdm.Se
 		lookupNames = append(lookupNames, expandedName)
 	}
 
-	if value, found, err := ec.resolveCachedGlobalVariable(ctx, lookupNames); found || err != nil {
-		return value, found, err
-	}
-
 	if value, found, err := ec.resolveLocalVariable(lookupNames); found || err != nil {
 		return value, found, err
 	}
 
-	if value, found, err := ec.resolveOwnPackageVariable(ctx, name); found || err != nil {
-		return value, found, err
+	if ec.currentPackage != nil && ec.currentPackage != ec.stylesheet {
+		return ec.resolveOwnPackageDeclaration(ctx, expandedName)
+	}
+
+	for _, lookup := range lookupNames {
+		if value, found := ec.globalVars[lookup]; found {
+			return value, true, nil
+		}
 	}
 
 	if value, found, err := ec.resolvePendingGlobalVariable(ctx, lookupNames); found || err != nil {
 		return value, found, err
 	}
 
-	if value, found, err := ec.resolveOwnPackageDeclaration(ctx, name); found || err != nil {
-		return value, found, err
-	}
-
-	if value, found, err := ec.resolvePendingGlobalParam(ctx, lookupNames); found || err != nil {
-		return value, found, err
-	}
-
-	return ec.resolveRecursivePackageVariable(ctx, expandedName)
+	return ec.resolvePendingGlobalParam(ctx, lookupNames)
 }
 
 func (ec *execContext) setCurrentTemplate(tmpl *template) {
@@ -975,11 +1000,6 @@ func (ec *execContext) addNode(node xdm.Node) error {
 		return err
 	}
 
-	skip, err := ec.claimImplicitPrimaryOutput(isText, isNonWhitespaceText)
-	if err != nil || skip {
-		return err
-	}
-
 	// Zero-length text nodes are discarded from the result tree
 	// (XSLT 3.0 §11.4.1: "If the result ... is a zero-length string,
 	// then no text node is created").
@@ -1042,26 +1062,6 @@ func (ec *execContext) prepareNodeSeparators(out *outputFrame, node xdm.Node, no
 	return nil
 }
 
-func (ec *execContext) claimImplicitPrimaryOutput(isText, isNonWhitespaceText bool) (bool, error) {
-	// XTRE1495: if the primary output was claimed by an xsl:result-document
-	// and we are writing implicit content to the base (primary) frame, error.
-	if len(ec.outputStack) == 1 && !ec.insideResultDocPrimary {
-		if _, claimed := ec.usedResultURIs[""]; claimed {
-			if isText && !isNonWhitespaceText {
-				return true, nil
-			}
-
-			return false, dynamicError(errCodeXTRE1495, "cannot write to primary output: URI already used by xsl:result-document")
-		}
-
-		if !isText || isNonWhitespaceText {
-			ec.primaryClaimedImplicitly = true
-		}
-	}
-
-	return false, nil
-}
-
 // deferAdaptiveMarkupSeparator keeps an adaptive item separator outside the
 // DOM while the current result document contains only top-level markup. A later
 // fallback restores every deferred separator at its original boundary.
@@ -1095,7 +1095,7 @@ func (ec *execContext) executeSequenceConstructor(ctx context.Context, body []in
 	out := ec.currentOutput()
 	out.seqConstructorGen++
 	scopeIdx := len(out.conditionalScopes)
-	out.conditionalScopes = append(out.conditionalScopes, conditionalScope{})
+	out.conditionalScopes = append(out.conditionalScopes, conditionalScope{pendingStart: len(out.pendingItems)})
 
 	for _, inst := range body {
 		_, isOnEmpty := inst.(*onEmptyInst)
@@ -1115,10 +1115,13 @@ func (ec *execContext) executeSequenceConstructor(ctx context.Context, body []in
 	scope := out.conditionalScopes[scopeIdx]
 	out.conditionalScopes = out.conditionalScopes[:scopeIdx]
 
-	return ec.resolveConditionalScope(scope)
+	return ec.resolveConditionalScope(ctx, scope)
 }
 
-func (ec *execContext) resolveConditionalScope(scope conditionalScope) error {
+func (ec *execContext) resolveConditionalScope(ctx context.Context, scope conditionalScope) error {
+	if ec.currentOutput().sequenceMode && len(scope.actions) > 0 {
+		return ec.resolveConditionalItems(ctx, scope)
+	}
 	// When on-empty fires (!scope.hasOutput), remove nodes that were added
 	// via addNodeUntracked. These are separator artifacts inserted between
 	// zero-length atomic values and must not appear in the output (XSLT 3.0:
@@ -1141,12 +1144,113 @@ func (ec *execContext) resolveConditionalScope(scope conditionalScope) error {
 			continue
 		}
 
-		if err := ec.spliceConditionalSequence(action.placeholder, action.content, action.prevWasAtomic); err != nil {
+		content, err := ec.evaluateConditionalAction(ctx, action)
+		if err != nil {
+			return err
+		}
+
+		if err := ec.spliceConditionalSequence(action.placeholder, content, action.prevWasAtomic); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+func (ec *execContext) evaluateConditionalAction(ctx context.Context, action conditionalAction) (xdm.Sequence, error) {
+	local, base, ns, hasNS := ec.localVars, ec.staticBaseURIOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS
+	ec.localVars, ec.staticBaseURIOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS = action.localVars, action.staticBaseURI, action.xpathDefaultNS, action.hasXPathDefaultNS
+	ec.localVarsVer++
+
+	ec.errSourceLine, ec.errSourceModule = action.sourceLine, action.sourceModule
+	defer func() {
+		ec.localVars, ec.staticBaseURIOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS = local, base, ns, hasNS
+		ec.localVarsVer++
+	}()
+
+	return ec.evaluateConditionalInstruction(ctx, action.selectExpr, action.body)
+}
+
+// resolveConditionalItems substitutes deferred actions in the raw sequence,
+// without converting atomics, arrays or parentless nodes to temporary DOM text.
+func (ec *execContext) resolveConditionalItems(ctx context.Context, scope conditionalScope) error {
+	out := ec.currentOutput()
+
+	actions := make(map[xdm.Node]conditionalAction, len(scope.actions))
+	for _, action := range scope.actions {
+		actions[action.placeholder] = action
+	}
+
+	items := out.pendingItems[scope.pendingStart:]
+
+	hasOnEmpty := false
+	for _, action := range scope.actions {
+		hasOnEmpty = hasOnEmpty || action.kind == conditionalOnEmpty
+	}
+
+	hasOutput, err := conditionalItemsNonVacuous(ctx, items, actions)
+	if err != nil {
+		return err
+	}
+	// Build separately: an action may expand, so appending over items while
+	// reading them could overwrite a later sibling before it is visited.
+	var result xdm.ItemSlice
+
+	for _, item := range items {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		if action, placeholder := conditionalActionForItem(actions, item); placeholder {
+			if (action.kind == conditionalOnEmpty && !hasOutput) || (action.kind == conditionalOnNonEmpty && hasOutput) {
+				content, err := ec.evaluateConditionalAction(ctx, action)
+				if err != nil {
+					return err
+				}
+
+				result = append(result, xdm.Materialize(content)...)
+			}
+
+			continue
+		}
+
+		if hasOutput || !hasOnEmpty {
+			result = append(result, item)
+		}
+	}
+
+	out.pendingItems = append(out.pendingItems[:scope.pendingStart], result...)
+	if len(result) > 0 {
+		out.noteOutput()
+	}
+
+	return nil
+}
+
+func conditionalActionForItem(actions map[xdm.Node]conditionalAction, item xdm.Item) (conditionalAction, bool) {
+	node, ok := item.(xdm.NodeItem)
+	if !ok {
+		return conditionalAction{}, false
+	}
+
+	action, ok := actions[node.Node]
+
+	return action, ok
+}
+
+func conditionalItemsNonVacuous(ctx context.Context, items xdm.ItemSlice, actions map[xdm.Node]conditionalAction) (bool, error) {
+	for _, item := range items {
+		if _, placeholder := conditionalActionForItem(actions, item); placeholder {
+			continue
+		}
+
+		empty, err := conditionalItemEmpty(ctx, item, vacuousItem, 0)
+		if err != nil || !empty {
+			return !empty, err
+		}
+	}
+
+	return false, nil
 }
 
 func (ec *execContext) spliceConditionalSequence(placeholder xdm.MutableNode, seq xdm.Sequence, prevWasAtomic bool) error {
@@ -1296,11 +1400,7 @@ func (ec *execContext) collectionResolver() xpath.CollectionResolver {
 		return nil
 	}
 
-	if len(ec.effectiveStripSpace()) == 0 && len(ec.effectivePreserveSpace()) == 0 {
-		return ec.transformConfig.collectionResolver
-	}
-
-	return strippingCollectionResolver{
+	return executionCollectionResolver{
 		base: ec.transformConfig.collectionResolver,
 		ec:   ec,
 	}
@@ -1355,6 +1455,10 @@ func (ec *execContext) sortXPathEvalState(ctx context.Context) *xpath.EvalState 
 // to ec (the transform attaches it at the start), ctx is returned as is
 // instead of wrapping it again on every evaluation.
 func (ec *execContext) xpathContext(ctx context.Context) context.Context {
+	if ec.stylesheet.dynamicEvaluationDisabled && !dynamicEvaluationDisabled(ctx) {
+		ctx = WithDynamicEvaluationDisabled(ctx)
+	}
+
 	if getExecContext(ctx) == ec {
 		return ctx
 	}
@@ -1417,12 +1521,19 @@ func (ec *execContext) buildBaseXPathEvaluator(baseURI string) xpath.Evaluator {
 		VariableResolver(ec).
 		FunctionResolver(ec).
 		CurrentTime(ec.currentTime).
-		ImplicitTimezone(ec.currentTime.Location()).
+		ImplicitTimezone(ec.dynamicProperties.Timezone).
 		AllowXML11Chars().
 		TraceWriter(ec.traceWriter)
+	if ec.stylesheet.processorLanguage() >= 30 {
+		eval = eval.ResourceReads(ec)
+	}
 
 	if ns := ec.effectiveXPathNamespaces(); ns != nil {
 		eval = eval.Namespaces(ns).StrictPrefixes()
+	}
+
+	if ec.inPatternMatch {
+		eval = eval.DefaultXMLNamespace(ec.patternNamespaces[""])
 	}
 
 	if baseURI != "" {
@@ -1590,15 +1701,48 @@ func (ec *execContext) effectiveStylesheet() *Stylesheet {
 	return ec.stylesheet
 }
 
-// effectiveModeDefs returns the mode definitions for the current execution
-// scope. When executing code from a used package, the package's own mode
-// definitions are used (package-scoped isolation).
+// effectiveModeDefs returns definitions from the package bound to the active
+// mode. A named helper can have a different lexical package without changing it.
 func (ec *execContext) effectiveModeDefs() map[string]*modeDef {
-	if ec.currentPackage != nil && ec.currentPackage != ec.stylesheet {
-		return ec.currentPackage.modeDefs
+	return ec.activeModePackage().modeDefs
+}
+
+func (ec *execContext) activeModePackage() *Stylesheet {
+	if ec.currentModePackage != nil {
+		return ec.currentModePackage
 	}
 
-	return ec.stylesheet.modeDefs
+	return ec.effectiveStylesheet().modePackage(ec.currentMode)
+}
+
+func (ec *execContext) pushMode(mode string) (string, func()) {
+	savedMode, savedPackage := ec.currentMode, ec.currentModePackage
+	pkg := ec.effectiveStylesheet()
+
+	switch mode {
+	case modeCurrent:
+		mode, pkg = ec.currentMode, ec.activeModePackage()
+	case modeUnnamed:
+		mode = ""
+	case modeDefault, "":
+		mode = pkg.defaultMode
+		if mode == modeUnnamed {
+			mode = ""
+		}
+	}
+
+	ec.currentMode, ec.currentModePackage = mode, pkg.modePackage(mode)
+
+	return mode, func() { ec.currentMode, ec.currentModePackage = savedMode, savedPackage }
+}
+
+func (ec *execContext) pushPackage(pkg *Stylesheet) func() {
+	savedPackage, savedFns := ec.currentPackage, ec.cachedFnsNS
+	if pkg != ec.currentPackage {
+		ec.currentPackage, ec.cachedFnsNS = pkg, nil
+	}
+
+	return func() { ec.currentPackage, ec.cachedFnsNS = savedPackage, savedFns }
 }
 
 // effectiveAttributeSets returns the attribute-set definitions for the
@@ -1816,7 +1960,9 @@ func (ec *execContext) collectAllVars(ctx context.Context) map[string]xdm.Sequen
 
 	vars := make(map[string]xdm.Sequence, len(ec.globalVars))
 	// Start with globals
-	maps.Copy(vars, ec.globalVars)
+	if !inPackage {
+		maps.Copy(vars, ec.globalVars)
+	}
 	// Walk from outermost to innermost scope so inner scopes override
 	var scopes []*varScope
 	for s := ec.localVars; s != nil; s = s.parent {
@@ -1825,18 +1971,6 @@ func (ec *execContext) collectAllVars(ctx context.Context) map[string]xdm.Sequen
 
 	for _, v := range slices.Backward(scopes) {
 		maps.Copy(vars, v.vars)
-	}
-
-	// When executing in a used package, remove variables that the
-	// package defines so they fall through to ResolveVariable which
-	// handles package-scoped isolation. This ensures that a package's
-	// own variables (including private ones and homonymous variables
-	// from different package instances) take precedence over the
-	// main stylesheet's global variable cache.
-	if inPackage {
-		for _, v := range ec.currentPackage.globalVars {
-			delete(vars, v.Name)
-		}
 	}
 
 	ec.cachedVarsMap = vars
@@ -1861,7 +1995,7 @@ func (ec *execContext) evaluatePendingGlobalPass(ctx context.Context) bool {
 	// Sorted names preserve document-order-cache registration deterministically.
 	for _, name := range slices.Sorted(maps.Keys(ec.globalVarDefs)) {
 		variable, ok := ec.globalVarDefs[name]
-		if !ok || variable.OwnerPackage != nil {
+		if !ok || variable.OwnerPackage != nil && variable.OwnerPackage != ec.stylesheet {
 			continue
 		}
 
@@ -1872,7 +2006,7 @@ func (ec *execContext) evaluatePendingGlobalPass(ctx context.Context) bool {
 
 	for _, name := range slices.Sorted(maps.Keys(ec.globalParamDefs)) {
 		param, ok := ec.globalParamDefs[name]
-		if !ok {
+		if !ok || param.OwnerPackage != nil && param.OwnerPackage != ec.stylesheet {
 			continue
 		}
 
@@ -1884,62 +2018,9 @@ func (ec *execContext) evaluatePendingGlobalPass(ctx context.Context) bool {
 	return progress
 }
 
-// evaluatePackageVar evaluates a variable from a used package. It first
-// checks if the variable has already been evaluated (in the package var
-// cache), then evaluates it fresh if needed. The result is NOT stored in
-// ec.globalVars to avoid poisoning the global scope — each package may
-// define the same variable name with different values.
-func (ec *execContext) evaluatePackageVar(ctx context.Context, v *variable) (xdm.Sequence, error) {
-	if ec.packageVarCache == nil {
-		ec.packageVarCache = make(map[*variable]xdm.Sequence)
-	}
-
-	if val, ok := ec.packageVarCache[v]; ok {
-		return val, nil
-	}
-	// Save the current value in globalVars (if any) so that evaluating
-	// this package variable doesn't overwrite an override from the main
-	// stylesheet.
-	savedVal, hadSaved := ec.globalVars[v.Name]
-	val, err := ec.evaluateGlobalVar(ctx, v)
-	// Restore the original globalVars entry, on error too. The restore
-	// changes globalVars, so bump globalVarsGen to drop the cached variable
-	// map collectAllVars may have built while the package value was present.
-	if hadSaved {
-		ec.globalVars[v.Name] = savedVal
-	} else {
-		delete(ec.globalVars, v.Name)
-	}
-
-	ec.globalVarsGen++
-
-	if err != nil {
-		return nil, err
-	}
-
-	ec.packageVarCache[v] = val
-
-	return val, nil
-}
-
 func (ec *execContext) resolveOriginalVariable(ctx context.Context) (xdm.Sequence, bool, error) {
-	// Temporarily clear the "evaluating" flag for the overriding
-	// variable so the original can be evaluated without triggering
-	// a false circular reference.
-	origName := ec.overridingVarDef.Name
-	_, wasEvaluating := ec.globalEvaluating[origName]
-	delete(ec.globalEvaluating, origName)
-
-	val, err := ec.evaluateGlobalVar(ctx, ec.overridingVarDef.OriginalVar)
-	if wasEvaluating {
-		ec.globalEvaluating[origName] = struct{}{}
-	}
-
-	if err != nil {
-		return nil, false, err
-	}
-
-	return val, true, nil
+	value, err := ec.evaluateGlobalBinding(ctx, ec.originalGlobal)
+	return value, err == nil, err
 }
 
 func (ec *execContext) expandVariableName(name string) string {
@@ -1960,37 +2041,6 @@ func (ec *execContext) expandVariableName(name string) string {
 	return expandedName
 }
 
-func (ec *execContext) resolveCachedGlobalVariable(ctx context.Context, lookupNames []string) (xdm.Sequence, bool, error) {
-	for _, n := range lookupNames {
-		if v, ok := ec.globalVars[n]; ok {
-			// When executing in a used package, check if the package has
-			// its own definition of this variable. Package-scoped variables
-			// may be homonymous with variables from other packages, so we
-			// must use the package's own definition to get the correct value.
-			if ec.currentPackage != nil && ec.currentPackage != ec.stylesheet {
-				if pkgVar := findPackageVar(ec.currentPackage, n, nil); pkgVar != nil {
-					// If the package variable's OwnerPackage differs from
-					// the current package, it was defined in a sub-package
-					// and should be evaluated in that sub-package's context.
-					// Use evaluatePackageVar to get the correct per-package value.
-					if pkgVar.OwnerPackage != nil && pkgVar.OwnerPackage != ec.stylesheet {
-						val, err := ec.evaluatePackageVar(ctx, pkgVar)
-						if err != nil {
-							return nil, false, err
-						}
-
-						return val, true, nil
-					}
-				}
-			}
-
-			return v, true, nil
-		}
-	}
-
-	return nil, false, nil
-}
-
 func (ec *execContext) resolveLocalVariable(lookupNames []string) (xdm.Sequence, bool, error) {
 	// Check local vars (in case the scope was pushed after the snapshot)
 	if ec.localVars != nil {
@@ -2001,27 +2051,6 @@ func (ec *execContext) resolveLocalVariable(lookupNames []string) (xdm.Sequence,
 				}
 
 				return v, true, nil
-			}
-		}
-	}
-
-	return nil, false, nil
-}
-
-func (ec *execContext) resolveOwnPackageVariable(ctx context.Context, name string) (xdm.Sequence, bool, error) {
-	// When evaluating in a package context, check the package's own
-	// global variables first (including private ones not merged into the
-	// stylesheet). This ensures that homonymous variables from different
-	// packages resolve to the correct package-scoped definition.
-	if ec.currentPackage != nil {
-		for _, v := range ec.currentPackage.globalVars {
-			if v.Name == name {
-				val, err := ec.evaluatePackageVar(ctx, v)
-				if err != nil {
-					return nil, false, err
-				}
-
-				return val, true, nil
 			}
 		}
 	}
@@ -2092,27 +2121,16 @@ func (ec *execContext) resolvePendingGlobalParam(ctx context.Context, lookupName
 	return nil, false, nil
 }
 
-func (ec *execContext) resolveRecursivePackageVariable(ctx context.Context, expandedName string) (xdm.Sequence, bool, error) {
-	// When executing in a used package, check the package's own variables
-	// as a fallback (package-scoped isolation). Variables that are private
-	// within the package chain may not be in the main stylesheet's
-	// globalVars but are accessible to package code.
-	if ec.currentPackage != nil && ec.currentPackage != ec.stylesheet {
-		if v := findPackageVar(ec.currentPackage, expandedName, nil); v != nil {
-			val, err := ec.evaluatePackageVar(ctx, v)
-			if err != nil {
-				return nil, false, err
-			}
-
-			return val, true, nil
-		}
-	}
-
-	return nil, false, nil
-}
-
 // executeInstruction dispatches execution of a compiled XSLT instruction.
-func (ec *execContext) executeInstruction(ctx context.Context, inst instruction) error {
+func (ec *execContext) executeInstruction(ctx context.Context, inst instruction) (err error) {
+	// Check at instruction boundaries so a collision caused by any output
+	// path (including raw item capture) can be caught by the enclosing xsl:try.
+	defer func() {
+		if err == nil {
+			err = ec.checkImplicitPrimaryOutput()
+		}
+	}()
+
 	if err := xpath.Charge(ctx, 1); err != nil {
 		return err
 	}
@@ -2121,10 +2139,8 @@ func (ec *execContext) executeInstruction(ctx context.Context, inst instruction)
 		getSourceLine() int
 		getSourceModule() string
 	}); ok {
-		if line := s.getSourceLine(); line > 0 {
-			ec.errSourceLine = line
-			ec.errSourceModule = s.getSourceModule()
-		}
+		ec.errSourceLine = s.getSourceLine()
+		ec.errSourceModule = s.getSourceModule()
 	}
 
 	// Apply per-instruction static base URI override from xml:base
@@ -2158,6 +2174,18 @@ func (ec *execContext) executeInstruction(ctx context.Context, inst instruction)
 	default:
 		return ec.executeControlInstruction(ctx, inst)
 	}
+}
+
+func (ec *execContext) checkImplicitPrimaryOutput() error {
+	if _, explicit := ec.usedResultURIs[""]; explicit && ec.primaryClaimedImplicitly {
+		return dynamicError(errCodeXTDE1490, "principal output URI already used by xsl:result-document")
+	}
+
+	if ec.primaryClaimedImplicitly {
+		return ec.checkResourceWrite(ec.canonicalPrimaryURI)
+	}
+
+	return nil
 }
 
 func (ec *execContext) executeTemplateInstruction(ctx context.Context, inst instruction) error {
@@ -2289,6 +2317,10 @@ func (ec *execContext) executeControlInstruction(ctx context.Context, inst instr
 // If fallback instructions are present, they are executed; otherwise XTDE1450.
 func (ec *execContext) execFallback(ctx context.Context, inst *fallbackInst) error {
 	if !inst.HasFallback {
+		if inst.ErrorCode != "" {
+			return dynamicError(inst.ErrorCode, "%s is disabled and has no xsl:fallback", inst.Name)
+		}
+
 		return dynamicError(errCodeXTDE1450,
 			"no xsl:fallback was found for forwards-compatible instruction %s", inst.Name)
 	}
@@ -2357,36 +2389,6 @@ func mapIdentity[M ~map[K]V, K comparable, V any](m M) uintptr {
 	return reflect.ValueOf(m).Pointer()
 }
 
-// findPackageVar searches for a global variable in a package and its
-// used packages recursively. This handles the case where a variable
-// from a sub-package was made private and thus not merged into the
-// top-level stylesheet, but is still accessible to code defined in
-// the package chain.
-func findPackageVar(pkg *Stylesheet, name string, visited map[*Stylesheet]struct{}) *variable {
-	if visited == nil {
-		visited = make(map[*Stylesheet]struct{})
-	}
-
-	if _, seen := visited[pkg]; seen {
-		return nil
-	}
-
-	visited[pkg] = struct{}{}
-	for _, v := range pkg.globalVars {
-		if v.Name == name {
-			return v
-		}
-	}
-
-	for _, sub := range pkg.usedPackages {
-		if v := findPackageVar(sub, name, visited); v != nil {
-			return v
-		}
-	}
-
-	return nil
-}
-
 func normalizeNode(node xdm.Node) xdm.Node {
 	if xdm.IsNilNode(node) {
 		return nil
@@ -2425,12 +2427,17 @@ func (vs *varScope) lookupDeferred(name string) error {
 	return nil
 }
 
-type strippingCollectionResolver struct {
+type executionCollectionResolver struct {
 	base xpath.CollectionResolver
 	ec   *execContext
 }
 
-func (r strippingCollectionResolver) ResolveCollection(ctx context.Context, uri string) (xdm.Sequence, error) {
+func (r executionCollectionResolver) ResolveCollection(ctx context.Context, uri string) (xdm.Sequence, error) {
+	key := r.ec.docCacheKey(uri)
+	if seq, found := r.ec.collectionCache[key]; found {
+		return seq, nil
+	}
+
 	seq, err := r.base.ResolveCollection(ctx, uri)
 	if err != nil {
 		return nil, err
@@ -2444,17 +2451,57 @@ func (r strippingCollectionResolver) ResolveCollection(ctx context.Context, uri 
 			continue
 		}
 
-		copied, err := r.ec.copyCollectionNode(ni.Node)
+		node, err := r.prepareNode(ctx, ni.Node)
 		if err != nil {
 			return nil, err
 		}
 
-		out = append(out, xdm.NodeItem{Node: copied})
+		out = append(out, xdm.NodeItem{Node: node})
 	}
+
+	r.ec.collectionCache[key] = out
 
 	return out, nil
 }
 
-func (r strippingCollectionResolver) ResolveURICollection(ctx context.Context, uri string) ([]string, error) {
-	return r.base.ResolveURICollection(ctx, uri)
+func (r executionCollectionResolver) prepareNode(ctx context.Context, node xdm.Node) (xdm.Node, error) {
+	if err := xpath.Charge(ctx, 1); err != nil {
+		return nil, err
+	}
+
+	if len(r.ec.effectiveStripSpace()) > 0 || len(r.ec.effectivePreserveSpace()) > 0 {
+		copied, err := r.ec.copyCollectionNode(node)
+		if err != nil {
+			return nil, err
+		}
+
+		node = copied
+	}
+
+	if doc, ok := xdm.DocumentRoot(node).(*xdm.Document); ok && !doc.HasProperty(xdm.DocInternal) && doc.URL() != "" {
+		cacheKey := r.ec.docCacheKey(doc.URL())
+		if previous, found := r.ec.docCache[cacheKey]; found && previous != doc {
+			return nil, &xdm.Error{Code: "FODC0003", Message: "collection supplied conflicting document identities for " + doc.URL()}
+		}
+
+		r.ec.docCache[cacheKey] = doc
+	}
+
+	return node, nil
+}
+
+func (r executionCollectionResolver) ResolveURICollection(ctx context.Context, uri string) ([]string, error) {
+	key := r.ec.docCacheKey(uri)
+	if values, found := r.ec.uriCollectionCache[key]; found {
+		return values, nil
+	}
+
+	values, err := r.base.ResolveURICollection(ctx, uri)
+	if err != nil {
+		return nil, err
+	}
+
+	r.ec.uriCollectionCache[key] = values
+
+	return values, nil
 }

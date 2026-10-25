@@ -20,12 +20,21 @@ no Java adapter is compiled. This run used the publisher's
 SHA-256 `1c7db9f726df835349c64edd631de0310eca31291100230064eba153f607b0be`,
 inside Docker with networking disabled. The archive and jars stay outside the
 repository. Known XSD 1.0/1.1 regex range differences are excluded from successful
-comparison evidence; they remain a separate profile gap.
+comparison evidence; local tests exercise the explicit `XMLSchemaVersion` selection.
 
 ```sh
 SAXON_CLASSPATH='/absolute/path/saxon-he-12.10.jar:/absolute/path/lib/*' \
   go test -tags=interop -count=1 -v ./transform -run '^TestCompareSaxonLanguageSemantics$'
 ```
+
+`TestCompareSaxon20CompilerContracts` additionally requires `SAXON20_CLASSPATH`
+pointing to the ready [Saxon HE 9.4.0-9 jar](https://repo.maven.apache.org/maven2/net/sf/saxon/Saxon-HE/9.4.0-9/Saxon-HE-9.4.0-9.jar),
+SHA-256 `c52862d33cd5bb34ed20d48a5ff62bc475e4279c16fd13460a19f726d1dcf62f`.
+It invokes the published CLI with `-xsltversion:2.0`, verifies the reported version
+and rejection of a 3.0 instruction, then checks decimal versions, import order and
+module namespace scope. A modern engine's 3.0 handling of a version 2.0 stylesheet
+does not establish strict 2.0 behavior. Keep this jar outside the repository; set
+both Saxon classpaths for a complete `-run '^TestCompare'` Docker run.
 
 [CI](../.github/workflows/ci.yml) defines tool versions and platform checks.
 The Go development runner also works without make:

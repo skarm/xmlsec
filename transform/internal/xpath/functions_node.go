@@ -21,13 +21,13 @@ func lookupFunctionsNode(name string) (*builtinFunc, bool) {
 	switch name {
 	case nameNodeName:
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnNodeName}, true
-	case "nilled":
+	case fnNameNilled:
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnNilled}, true
 	case "data":
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnData}, true
 	case "base-uri":
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnBaseURI}, true
-	case "document-uri":
+	case fnNameDocumentURI:
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnDocumentURI}, true
 	case "root":
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnRoot}, true
@@ -824,7 +824,7 @@ func fnNumber(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 			return xdm.SingleDouble(math.NaN()), nil
 		}
 
-		a, err := CastFromString(s, xdm.TypeDouble)
+		a, err := CastFromStringContext(ctx, s, xdm.TypeDouble)
 		if err != nil {
 			return xdm.SingleDouble(math.NaN()), nil //nolint:nilerr // fn:number returns NaN on cast failure per spec
 		}
@@ -847,7 +847,7 @@ func fnNumber(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return xdm.SingleDouble(math.NaN()), nil
 	}
 
-	dbl, err := CastAtomic(a, xdm.TypeDouble)
+	dbl, err := CastAtomicContext(ctx, a, xdm.TypeDouble)
 	if err != nil {
 		return xdm.SingleDouble(math.NaN()), nil //nolint:nilerr // fn:number returns NaN on cast failure per spec
 	}
@@ -1213,12 +1213,80 @@ func fnCollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 		return nil, &xdm.Error{Code: errCodeFODC0002, Message: "fn:collection: no collection resolver configured"}
 	}
 
+	cache := InvocationState(ctx, collectionCacheKey{}, func() any { return make(map[string]xdm.Sequence) }).(map[string]xdm.Sequence) //nolint:forcetypeassert
+	if seq, found := cache[uri]; found {
+		if ec.resourceReads != nil {
+			if err := registerCollectionDocuments(ctx, ec, seq); err != nil {
+				return nil, err
+			}
+		}
+
+		return seq, nil
+	}
+
 	seq, err := ec.collectionResolver.ResolveCollection(ctx, uri)
 	if err != nil {
+		var detail *xdm.Error
+		if errors.As(err, &detail) && detail.Code == "FODC0003" {
+			return nil, err
+		}
+
 		return nil, &xdm.Error{Code: errCodeFODC0002, Message: fmt.Sprintf("fn:collection: cannot resolve collection: %v", err), Cause: err}
 	}
 
+	if ec.version == 20 || ec.version == 30 {
+		required := xdm.SequenceType{ItemTest: xdm.TypeTest{Kind: xdm.NodeKindNode}, Occurrence: xdm.OccurrenceZeroOrMore}
+
+		seq, err = coerceFuncallArg(ctx, seq, required, "collection result", 0, ec)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := registerCollectionDocuments(ctx, ec, seq); err != nil {
+		return nil, err
+	}
+
+	cache[uri] = seq
+
 	return seq, nil
+}
+
+type collectionCacheKey struct{ uris bool }
+
+// Collection documents with a document URI are also available to fn:doc.
+// Reject inconsistent identities instead of silently substituting different data.
+func registerCollectionDocuments(ctx context.Context, ec *evalContext, seq xdm.Sequence) error {
+	for item := range xdm.SequenceItems(seq) {
+		if err := Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		node, ok := item.(xdm.NodeItem)
+		if !ok {
+			continue
+		}
+
+		doc, ok := xdm.DocumentRoot(node.Node).(*xdm.Document)
+		if !ok || doc.HasProperty(xdm.DocInternal) || doc.URL() == "" {
+			continue
+		}
+
+		uri := doc.URL()
+		if ec.resourceReads != nil {
+			if err := ec.resourceReads.RecordRead(ctx, uri); err != nil {
+				return &xdm.ResourceAccessError{Cause: err}
+			}
+		}
+
+		if previous, found := ec.docCache[uri]; found && previous != doc {
+			return &xdm.Error{Code: "FODC0003", Message: "collection supplied conflicting document identities for " + uri}
+		}
+
+		ec.docCache[uri] = doc
+	}
+
+	return nil
 }
 
 func fnURICollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -1241,6 +1309,11 @@ func fnURICollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 		return nil, &xdm.Error{Code: errCodeFODC0002, Message: "fn:uri-collection: no collection resolver configured"}
 	}
 
+	cache := InvocationState(ctx, collectionCacheKey{uris: true}, func() any { return make(map[string]xdm.Sequence) }).(map[string]xdm.Sequence) //nolint:forcetypeassert
+	if seq, found := cache[uri]; found {
+		return seq, nil
+	}
+
 	uris, err := ec.collectionResolver.ResolveURICollection(ctx, uri)
 	if err != nil {
 		return nil, &xdm.Error{Code: errCodeFODC0002, Message: fmt.Sprintf("fn:uri-collection: cannot resolve collection: %v", err), Cause: err}
@@ -1250,6 +1323,8 @@ func fnURICollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 	for _, uri := range uris {
 		result = append(result, xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: uri})
 	}
+
+	cache[uri] = result
 
 	return result, nil
 }
@@ -1288,39 +1363,78 @@ func fnDocAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 	}
 
 	_, err = loadDoc(ctx, uri)
+	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+		return nil, err
+	}
+
+	if ec := getFnContext(ctx); ec != nil && (ec.version == 20 || ec.version == 30) {
+		if detail, ok := errors.AsType[*xdm.Error](err); ok && detail.Code == errCodeFODC0005 {
+			return nil, err
+		}
+	}
 
 	return xdm.SingleBoolean(err == nil), nil
 }
 
 func loadDoc(ctx context.Context, uri string) (xdm.Node, error) {
+	resolved, err := ResolveDocumentURI(ctx, uri)
+	if err != nil {
+		return nil, err
+	}
+
+	return loadResolvedDoc(ctx, resolved)
+}
+
+// ResolveDocumentURI applies fn:doc's URI rules in the calling static context.
+// Hosts overriding retrieval must retain these rules, including fragment rejection.
+func ResolveDocumentURI(ctx context.Context, uri string) (string, error) {
 	if strings.Contains(uri, "#") {
-		return nil, &xdm.Error{Code: errCodeFODC0005, Message: "fn:doc: URI must not contain a fragment identifier"}
+		return "", &xdm.Error{Code: errCodeFODC0005, Message: "fn:doc: URI must not contain a fragment identifier"}
 	}
 
 	resolved, err := resolveDocURI(ctx, uri)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	// An empty argument resolves to the base URI verbatim, which may itself
 	// carry a fragment identifier. Re-check the resolved URI so doc("") with a
 	// fragmented base URI is rejected the same as a fragmented argument.
 	if strings.Contains(resolved, "#") {
-		return nil, &xdm.Error{Code: errCodeFODC0005, Message: "fn:doc: URI must not contain a fragment identifier"}
+		return "", &xdm.Error{Code: errCodeFODC0005, Message: "fn:doc: URI must not contain a fragment identifier"}
 	}
 
+	return resolved, nil
+}
+
+func loadResolvedDoc(ctx context.Context, resolved string) (xdm.Node, error) {
 	ec := getFnContext(ctx)
 
 	parseOptions := xdm.ParseOptions{}
 	if ec != nil {
 		parseOptions = ec.xmlParseOptions().WithByteLimit(ec.maxResourceBytes)
+		if ec.resourceReads != nil {
+			if err := ec.resourceReads.CheckRead(ctx, resolved); err != nil {
+				return nil, &xdm.ResourceAccessError{Cause: err}
+			}
+		}
 
 		if doc, ok := ec.docCache[resolved]; ok {
+			if ec.resourceReads != nil {
+				if err := ec.resourceReads.RecordRead(ctx, resolved); err != nil {
+					return nil, &xdm.ResourceAccessError{Cause: err}
+				}
+			}
+
 			return doc, nil
 		}
 	}
 
 	reader, err := unparsedtext.OpenURI(ctx, unparsedTextConfig(ctx), resolved)
 	if err != nil {
+		if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+			return nil, err
+		}
+
 		return nil, &xdm.Error{Code: errCodeFODC0002, Message: fmt.Sprintf("fn:doc: cannot retrieve resource: %v", err), Cause: err}
 	}
 

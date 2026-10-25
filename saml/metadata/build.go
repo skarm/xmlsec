@@ -148,7 +148,7 @@ func buildOrder(order []string, r *struct {
 }
 
 func buildIsZero(ctx context.Context, at *time.Time, s *EntityDescriptor) (returned1 error, matched bool) {
-	if ctx == nil || at.IsZero() || s.ValidUntil.IsZero() || !s.ValidUntil.After((*at)) || s.SP == nil && s.IDP == nil || !xmlutil.URI(s.EntityID) {
+	if ctx == nil || at.IsZero() || s.ValidUntil.IsZero() || !s.ValidUntil.After(*at) || s.SP == nil && s.IDP == nil || !xmlutil.URI(s.EntityID) {
 		return ErrMetadata, true
 	}
 

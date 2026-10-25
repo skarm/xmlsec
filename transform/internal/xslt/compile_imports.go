@@ -5,7 +5,6 @@ package xslt
 
 import (
 	"context"
-	"fmt"
 	"maps"
 	"path"
 	"slices"
@@ -105,7 +104,7 @@ func (c *compiler) compileImport(ctx context.Context, elem *xdm.Element) error {
 
 	href := getAttr(elem, nameHref)
 	if href == "" {
-		return staticError(errCodeXTSE0110, "xsl:import requires href attribute")
+		return staticError(errCodeXTSE0010, "xsl:import requires href attribute")
 	}
 
 	return c.loadExternalStylesheet(ctx, stylesheetBaseURI(elem, c.baseURI, c.moduleRoot), href, true)
@@ -114,7 +113,7 @@ func (c *compiler) compileImport(ctx context.Context, elem *xdm.Element) error {
 func (c *compiler) resolveIncludeURI(_ context.Context, elem *xdm.Element) (string, string, error) {
 	href := getAttr(elem, nameHref)
 	if href == "" {
-		return "", "", staticError(errCodeXTSE0110, "xsl:include requires href attribute")
+		return "", "", staticError(errCodeXTSE0010, "xsl:include requires href attribute")
 	}
 
 	baseURI := stylesheetBaseURI(elem, c.baseURI, c.moduleRoot)
@@ -146,7 +145,7 @@ func (c *compiler) collectIncludeImports(ctx context.Context, elem *xdm.Element)
 	// Check use-when before loading the included file (avoids loading
 	// non-existent files when use-when="false()").
 	if uw := getAttr(elem, xslAttrUseWhen); uw != "" {
-		include, err := c.evaluateUseWhen(ctx, uw)
+		include, err := c.evaluateDeclarationUseWhen(ctx, elem, uw)
 		if err != nil {
 			return err
 		}
@@ -161,12 +160,11 @@ func (c *compiler) collectIncludeImports(ctx context.Context, elem *xdm.Element)
 		return err
 	}
 
-	if _, ok := c.importStack[importKey]; ok {
-		return staticError(errCodeXTSE0210, "circular import/include: %s", importKey)
+	restore, err := c.enterModule(importKey, false)
+	if err != nil {
+		return err
 	}
-
-	c.importStack[importKey] = struct{}{}
-	defer delete(c.importStack, importKey)
+	defer restore()
 
 	root, err := c.loadAndCacheInclude(ctx, uri, importKey)
 	if err != nil {
@@ -203,6 +201,10 @@ func (c *compiler) collectIncludeImports(ctx context.Context, elem *xdm.Element)
 
 	c.collectNamespaces(ctx, root)
 
+	if err := c.validateModuleImportOrder(ctx, root); err != nil {
+		return err
+	}
+
 	if err := c.compileIncludedNamespaceAliases(ctx, root); err != nil {
 		return err
 	}
@@ -213,13 +215,8 @@ func (c *compiler) collectIncludeImports(ctx context.Context, elem *xdm.Element)
 			continue
 		}
 
-		switch ce.LocalName() {
-		case lexicon.XSLTElementImport:
-			if err := c.compileImport(ctx, ce); err != nil {
-				return err
-			}
-		case lexicon.XSLTElementInclude:
-			if err := c.collectIncludeImports(ctx, ce); err != nil {
+		if ce.LocalName() == nameImport || ce.LocalName() == nameInclude {
+			if err := c.collectTopLevelModule(ctx, ce); err != nil {
 				return err
 			}
 		}
@@ -256,29 +253,27 @@ func (c *compiler) loadModuleDoc(ctx context.Context, uri string) (*xdm.Document
 
 	rc, resolveErr := c.resolver.Resolve(ctx, uri)
 	if resolveErr != nil {
-		return nil, fmt.Errorf("cannot resolve %q: %w", uri, resolveErr)
+		return nil, staticErrorCause(errCodeXTSE0165, resolveErr, "cannot resolve %q: %v", uri, resolveErr)
 	}
 
 	doc, err := parseXMLResource(ctx, c.parseOptions, rc, uri, c.maxResourceBytes)
 	if err != nil {
-		return nil, fmt.Errorf("cannot parse %q: %w", uri, err)
+		return nil, staticErrorCause(errCodeXTSE0165, err, "cannot parse %q: %v", uri, err)
 	}
 
-	if c.stylesheet.processorLanguage() == 10 {
-		original := doc
+	original := doc
 
-		doc, err = prepareModule10(ctx, doc)
-		if err != nil {
-			return nil, err
+	doc, err = prepareModule(ctx, doc, c.stylesheet.processorLanguage())
+	if err != nil {
+		return nil, err
+	}
+
+	if doc != original {
+		if c.moduleSources == nil {
+			c.moduleSources = make(map[*xdm.Document]*xdm.Document)
 		}
 
-		if doc != original {
-			if c.moduleSources == nil {
-				c.moduleSources = make(map[*xdm.Document]*xdm.Document)
-			}
-
-			c.moduleSources[doc] = original
-		}
+		c.moduleSources[doc] = original
 	}
 
 	return doc, nil
@@ -362,10 +357,10 @@ func (c *compiler) loadAndCacheInclude(ctx context.Context, uri, importKey strin
 	// the module's effective static base (its root xml:base folded into the
 	// module URI) so doc-available()/doc() in the root use-when resolve like the
 	// module's own globals, not the including module's base.
-	if uw := getAttr(root, xslAttrUseWhen); uw != "" {
+	if uw, present := root.GetAttribute(xslAttrUseWhen); present {
 		savedBase := c.baseURI
 		c.baseURI = moduleEffectiveBaseURI(root, uri)
-		include, err := c.evaluateUseWhen(ctx, uw)
+		include, err := c.evaluateDeclarationUseWhen(ctx, root, uw)
 		c.baseURI = savedBase
 
 		if err != nil {
@@ -433,12 +428,6 @@ func (c *compiler) compileIncludeTemplates(ctx context.Context, elem *xdm.Elemen
 	// including module's) and its exclude-result-prefixes / extension-element-prefixes.
 	defer c.enterModuleNamespaceScope(root)()
 
-	savedDefaultMode := c.defaultMode
-	if dm := getAttr(root, nameDefaultMode); dm != "" {
-		c.defaultMode = resolveQName(dm, c.nsBindings)
-	}
-	defer func() { c.defaultMode = savedDefaultMode }()
-
 	// Apply xpath-default-namespace from included module root. Presence (even an
 	// empty value, which resets to no-namespace) overrides the importing
 	// module's default; absence inherits it.
@@ -477,7 +466,7 @@ func (c *compiler) compileIncludeTemplates(ctx context.Context, elem *xdm.Elemen
 		return err
 	}
 
-	if err := c.compileIncludedStaticValues(ctx, root); err != nil {
+	if err := c.evaluateStaticDeclarations(ctx, root, false, nil); err != nil {
 		return err
 	}
 
@@ -490,6 +479,10 @@ func (c *compiler) compileIncludedDeclarations(ctx context.Context, root *xdm.El
 	for child := range xdm.Children(root) {
 		ce, ok := child.(*xdm.Element)
 		if !ok || ce.URI() != lexicon.NamespaceXSLT {
+			continue
+		}
+
+		if c.ignoredTopLevelDeclaration(ce) {
 			continue
 		}
 
@@ -549,49 +542,6 @@ func (c *compiler) compileIncludedDeclaration(ctx context.Context, ce *xdm.Eleme
 	return nil
 }
 
-func (c *compiler) compileIncludedStaticValues(ctx context.Context, root *xdm.Element) error {
-	for child := range xdm.Children(root) {
-		elem, ok := child.(*xdm.Element)
-		if !ok || elem.URI() != lexicon.NamespaceXSLT {
-			continue
-		}
-
-		kind := elem.LocalName()
-		if kind != nameParam && kind != nameVariable {
-			continue
-		}
-
-		if !isStaticTopLevelDeclaration(elem) {
-			continue
-		}
-
-		supplied, err := c.bindExternalStaticParam(ctx, elem)
-		if err != nil {
-			return err
-		}
-
-		if supplied {
-			continue
-		}
-
-		name, selectExpr := resolveQName(getAttr(elem, xslAttrName), inScopeNamespaces(elem)), getAttr(elem, xslAttrSelect)
-		if name == "" || selectExpr == "" {
-			continue
-		}
-
-		value, evaluated, err := c.tryEvaluateStaticSelect(ctx, elem)
-		if err != nil || !evaluated {
-			continue
-		}
-
-		if err := c.setStaticVarWithKind(ctx, name, kind, value); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 // checkModuleInputAnnotations reconciles the shared strip/preserve setting,
 // retaining unspecified until a module supplies an explicit value.
 func (c *compiler) checkModuleInputAnnotations(root *xdm.Element, relation string) error {
@@ -640,12 +590,11 @@ func (c *compiler) loadExternalStylesheet(ctx context.Context, baseURI, href str
 		importKey = uri + "#" + fragment
 	}
 
-	if _, ok := c.importStack[importKey]; ok {
-		return staticError(errCodeXTSE0210, "circular import/include: %s", importKey)
+	restore, err := c.enterModule(importKey, isImport)
+	if err != nil {
+		return err
 	}
-
-	c.importStack[importKey] = struct{}{}
-	defer delete(c.importStack, importKey)
+	defer restore()
 
 	doc, err := c.loadModuleDoc(ctx, uri)
 	if err != nil {
@@ -771,7 +720,7 @@ func compileSimplified(ctx context.Context, doc *xdm.Document, root *xdm.Element
 			accumulatorOrder: make([]string, 0),
 		},
 		nsBindings:    make(map[string]string),
-		importStack:   make(map[string]struct{}),
+		importStack:   make(map[string]int),
 		localExcludes: make(map[string]struct{}),
 	}
 
@@ -852,10 +801,10 @@ func (c *compiler) compileExternalModule(ctx context.Context, doc *xdm.Document,
 	// already gives the module's full effective base (folding the embedded root's
 	// xml:base and any wrapper/document xml:base for a fragment-selected root), so
 	// c.baseURI is the correct base for the root use-when.
-	if uw := getAttr(importedRoot, xslAttrUseWhen); uw != "" {
+	if uw, present := importedRoot.GetAttribute(xslAttrUseWhen); present {
 		savedUseWhenBase := c.baseURI
 		c.baseURI = moduleEffectiveBaseURI(importedRoot, uri)
-		include, err := c.evaluateUseWhen(ctx, uw)
+		include, err := c.evaluateDeclarationUseWhen(ctx, importedRoot, uw)
 		c.baseURI = savedUseWhenBase
 
 		if err != nil {
@@ -866,14 +815,6 @@ func (c *compiler) compileExternalModule(ctx context.Context, doc *xdm.Document,
 			return nil
 		}
 	}
-
-	// Save/restore default-mode: included/imported stylesheets may have
-	// their own default-mode that affects only their templates.
-	savedDefaultMode := c.defaultMode
-	if dm := getAttr(importedRoot, nameDefaultMode); dm != "" {
-		c.defaultMode = resolveQName(dm, c.nsBindings)
-	}
-	defer func() { c.defaultMode = savedDefaultMode }()
 
 	// Save/restore expand-text: each stylesheet module has its own setting.
 	savedExpandText := c.expandText
@@ -1221,4 +1162,43 @@ func findElementByID(doc *xdm.Document, id string) *xdm.Element {
 	}
 
 	return walk(doc)
+}
+
+// moduleLoad records the edge entering a module; a cycle contains its closing
+// edge and the edges after the earlier occurrence of that module.
+type moduleLoad struct {
+	URI    string
+	Import bool
+}
+
+func (c *compiler) enterModule(uri string, imported bool) (func(), error) {
+	if position, found := c.importStack[uri]; found {
+		hasImport := imported
+
+		cycle := make([]string, 0, len(c.modulePath)-position+1)
+		for index, frame := range c.modulePath[position:] {
+			if index > 0 {
+				hasImport = hasImport || frame.Import
+			}
+
+			cycle = append(cycle, frame.URI)
+		}
+
+		cycle = append(cycle, uri)
+
+		code := errCodeXTSE0180
+		if hasImport {
+			code = errCodeXTSE0210
+		}
+
+		return nil, staticError(code, "circular import/include: %s", strings.Join(cycle, " -> "))
+	}
+
+	c.importStack[uri] = len(c.modulePath)
+	c.modulePath = append(c.modulePath, moduleLoad{URI: uri, Import: imported})
+
+	return func() {
+		c.modulePath = c.modulePath[:len(c.modulePath)-1]
+		delete(c.importStack, uri)
+	}, nil
 }

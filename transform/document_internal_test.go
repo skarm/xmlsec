@@ -15,7 +15,7 @@ import (
 func TestImportUsesProjectStorage(t *testing.T) {
 	ctx := context.Background()
 
-	source, err := document.Parse(ctx, []byte(`<r xmlns:p="urn:p" xml:id="root"><p:item a="&amp;">text</p:item></r>`), document.DefaultLimits())
+	source, err := document.Parse(ctx, []byte(`<r xmlns:p="urn:p" xml:id=" root "><p:item a="&amp;">text</p:item></r>`), document.DefaultLimits())
 	if err != nil {
 		t.Fatal(err)
 	}

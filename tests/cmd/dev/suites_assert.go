@@ -5,13 +5,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"strconv"
 	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/transform"
+
+	"golang.org/x/text/encoding/htmlindex"
+)
+
+const (
+	suiteUTF16BE = "utf-16be"
+	suiteUTF16LE = "utf-16le"
 )
 
 func checkSuiteAssertion(ctx context.Context, evaluation *suiteEvaluation, assertion *suiteNode) error {
@@ -23,6 +33,14 @@ func checkSuiteAssertion(ctx context.Context, evaluation *suiteEvaluation, asser
 	if errors.As(evaluation.err, &harness) {
 		return harness
 	}
+
+	// Assertion expressions have their own catalog namespace scope, including
+	// bindings inherited from all-of/any-of and shadowed by individual children.
+	scopedEnvironment := *evaluation.environment
+	scopedEnvironment.namespaces = suiteScopedNamespaces(evaluation.environment, assertion)
+	scopedEvaluation := *evaluation
+	scopedEvaluation.environment = &scopedEnvironment
+	evaluation = &scopedEvaluation
 
 	switch assertion.XMLName.Local {
 	case suiteResultVariable, "all-of":
@@ -91,6 +109,10 @@ func checkSuiteAssertion(ctx context.Context, evaluation *suiteEvaluation, asser
 }
 
 func suiteSecondaryAssertion(ctx context.Context, evaluation *suiteEvaluation, assertion *suiteNode) error {
+	if evaluation.err != nil {
+		return fmt.Errorf("unexpected execution error: %w", evaluation.err)
+	}
+
 	if evaluation.result == nil || len(assertion.Children) != 1 {
 		return suiteHarness("secondary assertion requires an XSLT result and one nested assertion")
 	}
@@ -113,11 +135,16 @@ func suiteSecondaryAssertion(ctx context.Context, evaluation *suiteEvaluation, a
 }
 
 func suiteMessageAssertion(ctx context.Context, evaluation *suiteEvaluation, assertion *suiteNode) error {
-	if evaluation.result == nil || len(assertion.Children) != 1 {
-		return suiteHarness("message assertion requires a successful XSLT result and one nested assertion; terminated-message capture is unavailable")
+	if len(assertion.Children) != 1 {
+		return suiteHarness("message assertion requires one nested assertion")
 	}
 
-	for _, message := range evaluation.result.Messages() {
+	messages := evaluation.result.Messages()
+	if failure, ok := errors.AsType[*transform.Error](evaluation.err); ok {
+		messages = failure.Messages()
+	}
+
+	for _, message := range messages {
 		value, err := evaluation.environment.query(ctx, "parse-xml-fragment($message)", transform.Bindings{{Local: "message"}: transform.Values(transform.String(message.Text))})
 		if err != nil {
 			return suiteHarness("message XML: %v", err)
@@ -349,39 +376,37 @@ func suiteXMLAssertion(ctx context.Context, e *suiteEvaluation, assertion *suite
 		return suiteHarness("expected XML comparison: %v", err)
 	}
 
-	if !bytes.Equal(leftBytes.Bytes(), rightBytes.Bytes()) {
-		return errors.New("XML fragment comparison failed")
-	}
-
-	return nil
+	return compareSuiteBytes("canonical XML", leftBytes.Bytes(), rightBytes.Bytes())
 }
 
 func parseSuiteXMLFragment(ctx context.Context, data []byte) (*document.Document, error) {
-	text := strings.TrimPrefix(string(data), "\uFEFF")
-	if strings.HasPrefix(text, "<?xml ") {
-		_, tail, ok := strings.Cut(text, "?>")
+	data = bytes.TrimPrefix(data, []byte("\uFEFF"))
+	if bytes.HasPrefix(data, []byte("<?xml ")) {
+		_, tail, ok := bytes.Cut(data, []byte("?>"))
 		if !ok {
 			return nil, errors.New("invalid XML declaration")
 		}
 
-		text = tail
+		data = tail
 	}
 
 	// The catalog defines comparison of parsed/canonical XML. Parse a complete
 	// document as such so whitespace outside its root is not content. A wrapper
 	// is needed only for results that are XML fragments rather than documents.
-	if parsed, err := document.Parse(ctx, []byte(text), document.DefaultLimits()); err == nil {
+	if parsed, err := document.Parse(ctx, data, document.DefaultLimits()); err == nil {
 		normalized, err := parsed.XML(ctx)
 		if err != nil {
 			return nil, err
 		}
 
-		text = string(normalized)
+		data = normalized
 	} else if errors.Is(err, document.ErrLimit) || ctx.Err() != nil {
 		return nil, err
 	}
 
-	return document.Parse(ctx, []byte("<_xmlsec_test_result>"+text+"</_xmlsec_test_result>"), document.DefaultLimits())
+	wrapped := io.MultiReader(strings.NewReader("<_xmlsec_test_result>"), bytes.NewReader(data), strings.NewReader("</_xmlsec_test_result>"))
+
+	return document.ParseReader(ctx, wrapped, document.DefaultLimits())
 }
 
 func suiteXMLDeepEqual(ctx context.Context, e *suiteEvaluation, left, right *document.Document) error {
@@ -410,12 +435,161 @@ func suiteSerializationAssertion(ctx context.Context, e *suiteEvaluation, assert
 	}
 
 	if assertion.XMLName.Local == "serialization-matches" {
-		return e.assertionTrue(ctx, "matches($serialized, $pattern, $flags)", transform.Bindings{{Local: "serialized"}: transform.Values(transform.String(string(actual))), {Local: "pattern"}: transform.Values(transform.String(string(expected))), {Local: "flags"}: transform.Values(transform.String(assertion.attr("flags")))})
+		encoding := "UTF-8"
+		if e.result != nil {
+			encoding, err = e.result.OutputEncoding(e.secondaryURI)
+			if err != nil {
+				return suiteHarness("serialized encoding: %v", err)
+			}
+		}
+
+		text, err := suiteSerializedText(actual, encoding)
+		if err != nil {
+			return suiteHarness("serialized text: %v", err)
+		}
+
+		return e.assertionTrue(ctx, "matches($serialized, $pattern, $flags)", transform.Bindings{{Local: "serialized"}: transform.Values(transform.String(text)), {Local: "pattern"}: transform.Values(transform.String(string(expected))), {Local: "flags"}: transform.Values(transform.String(assertion.attr("flags")))})
+	}
+	// The pinned publisher runner reads expected files as text and removes
+	// carriage returns. Accept file CRLF line endings conservatively, retaining
+	// bare CR data and every byte of the serializer's actual output.
+	encoding := strings.ToLower(assertion.attr("encoding"))
+
+	textFile := encoding == "" || encoding == "utf-8" || encoding == "utf8" || encoding == "iso-8859-1" || encoding == "us-ascii"
+	if assertion.attr(suiteFile) != "" && textFile && !bytes.HasPrefix(expected, []byte{0xff, 0xfe}) && !bytes.HasPrefix(expected, []byte{0xfe, 0xff}) {
+		expected = bytes.ReplaceAll(expected, []byte("\r\n"), []byte("\n"))
 	}
 
+	return compareSuiteBytes("serialized", actual, expected)
+}
+
+// Report one bounded excerpt, so large publisher fixtures stay out of reports.
+func compareSuiteBytes(kind string, actual, expected []byte) error {
 	if !bytes.Equal(actual, expected) {
-		return errors.New("serialized bytes differ from the expected serialization")
+		offset := 0
+		for offset < min(len(actual), len(expected)) && actual[offset] == expected[offset] {
+			offset++
+		}
+
+		start := max(0, offset-8)
+
+		return fmt.Errorf("%s bytes differ at offset %d (actual %d bytes, expected %d): got %q, want %q", kind, offset, len(actual), len(expected), actual[start:min(len(actual), offset+24)], expected[start:min(len(expected), offset+24)])
 	}
 
 	return nil
+}
+
+// Regex assertions operate on characters, unlike assert-serialization's octets.
+// Encoding comes from the result definition, not the serialized content.
+func suiteSerializedText(data []byte, encoding string) (string, error) {
+	label := strings.ToLower(encoding)
+	if label == "utf-16" || label == "utf16" || label == suiteUTF16BE || label == suiteUTF16LE {
+		return suiteSerializedUTF16(data, label)
+	}
+
+	if label == "" || label == "utf-8" || label == "utf8" {
+		if !utf8.Valid(data) {
+			return "", errors.New("serialized text is not UTF-8")
+		}
+
+		return string(data), nil
+	}
+
+	if label == "ascii" || label == "us-ascii" {
+		for _, c := range data {
+			if c >= utf8.RuneSelf {
+				return "", errors.New("non-ASCII serialized byte")
+			}
+		}
+
+		return string(data), nil
+	}
+
+	codec, err := htmlindex.Get(label)
+	if err != nil {
+		return "", err
+	}
+
+	decoded, err := codec.NewDecoder().Bytes(data)
+	if err != nil {
+		return "", err
+	}
+
+	if bytes.ContainsRune(decoded, utf8.RuneError) {
+		// Some codecs replace malformed bytes with U+FFFD without an error.
+		// A real U+FFFD is permitted only if it reconstructs these exact bytes.
+		roundtrip, err := codec.NewEncoder().Bytes(decoded)
+		if err != nil || !bytes.Equal(roundtrip, data) {
+			return "", errors.New("invalid serialized byte sequence")
+		}
+	}
+
+	return string(decoded), nil
+}
+
+func suiteSerializedUTF16(data []byte, encoding string) (string, error) {
+	littleBOM := bytes.HasPrefix(data, []byte{0xff, 0xfe})
+	bigBOM := bytes.HasPrefix(data, []byte{0xfe, 0xff})
+
+	little := encoding == suiteUTF16LE
+	switch encoding {
+	case "utf16", "utf-16":
+		if !littleBOM && !bigBOM {
+			return "", errors.New("missing UTF-16 BOM")
+		}
+
+		little = littleBOM
+	case suiteUTF16LE:
+		if bigBOM {
+			return "", errors.New("serialized encoding conflicts with UTF-16 BOM")
+		}
+	case suiteUTF16BE:
+		if littleBOM {
+			return "", errors.New("serialized encoding conflicts with UTF-16 BOM")
+		}
+	}
+
+	bom := littleBOM || bigBOM
+	if bom {
+		data = data[2:]
+	}
+
+	if len(data)%2 != 0 {
+		return "", errors.New("truncated UTF-16 serialization")
+	}
+
+	unit := func(data []byte) uint16 {
+		if little {
+			return uint16(data[0]) | uint16(data[1])<<8
+		}
+
+		return uint16(data[0])<<8 | uint16(data[1])
+	}
+
+	var text strings.Builder
+	if bom {
+		text.WriteRune('\uFEFF')
+	}
+
+	for len(data) > 0 {
+		r := rune(unit(data))
+
+		data = data[2:]
+		if utf16.IsSurrogate(r) {
+			if r >= 0xdc00 || len(data) == 0 {
+				return "", errors.New("unpaired UTF-16 surrogate")
+			}
+
+			r = utf16.DecodeRune(r, rune(unit(data)))
+			data = data[2:]
+
+			if r == utf8.RuneError {
+				return "", errors.New("unpaired UTF-16 surrogate")
+			}
+		}
+
+		text.WriteRune(r)
+	}
+
+	return text.String(), nil
 }

@@ -41,7 +41,7 @@ func evalVariable(ctx context.Context, ec *evalContext, e VariableExpr) (xdm.Seq
 	}
 	// Fallback to lazy variable resolver (e.g. for XSLT global variables)
 	if ec.variableResolver != nil {
-		v, ok, err := ec.variableResolver.ResolveVariable(ctx, e.Name)
+		v, ok, err := ec.variableResolver.ResolveVariable(ctx, VariableKey(e.Name, ec.namespaces))
 		if err != nil {
 			return nil, err
 		}
@@ -1288,43 +1288,10 @@ func resolveSchemaTestPrefix(prefix string, ec *evalContext) string {
 	return ""
 }
 
-// resolveTestTypeName normalizes a type name from an ElementTest/AttributeTest
-// to the canonical annotation format:
-//   - "xs:localName" for types in the XSD namespace
-//   - "Q{ns}localName" for types in any other namespace
-//   - the raw name for names without a prefix (treated as no-namespace)
+// resolveTestTypeName uses the same expanded-name rules as atomic types,
+// including declaration-bound EQNames in exported function signatures.
 func resolveTestTypeName(raw string, ec *evalContext) string {
-	if strings.HasPrefix(raw, "xs:") {
-		return raw
-	}
-
-	if prefix, local, ok := strings.Cut(raw, ":"); ok {
-		if prefix == "xsd" {
-			return "xs:" + local
-		}
-
-		if ec != nil && ec.namespaces != nil {
-			if uri, ok := ec.namespaces[prefix]; ok {
-				if uri == lexicon.NamespaceXSD {
-					return "xs:" + local
-				}
-
-				return xdm.QAnnotation(uri, local)
-			}
-		}
-	}
-	// Unprefixed type names: resolve using the default element namespace
-	// (same as unprefixed element names in XPath). This handles types like
-	// "addressType" in element(address, addressType) when xpath-default-namespace
-	// provides the namespace.
-	if ec != nil && ec.namespaces != nil {
-		if defNS, ok := ec.namespaces[""]; ok && defNS != "" {
-			return xdm.QAnnotation(defNS, raw)
-		}
-	}
-	// No namespace: use Q{} annotation form for consistency with
-	// xsdTypeNameFromDef which produces Q{}local for no-namespace types.
-	return "Q{}" + raw
+	return resolveAtomicTypeName(AtomicTypeName{Name: raw}, ec)
 }
 
 // predicateTrue evaluates a predicate result per XPath spec:

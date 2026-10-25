@@ -141,16 +141,28 @@ func ignoredOptional10(e *xdm.Element, a *xdm.Attribute) bool {
 	return true
 }
 
-// prepareModule10 hides future attributes from the shared compiler without
-// changing the source document exposed by document(""). Ordinary 1.0 modules
-// need no copy. The project tree remains the sole storage/clone implementation.
-func prepareModule10(ctx context.Context, doc *xdm.Document) (*xdm.Document, error) {
+// prepareModule privately expands modern shadow attributes or hides future
+// attributes from older processors, preserving the source seen by document("").
+// Modules needing neither preprocessing step reuse their original storage.
+func prepareModule(ctx context.Context, doc *xdm.Document, processor int) (*xdm.Document, error) {
 	root := doc.DocumentElement()
-	if err := validateModuleRoot10(root); err != nil {
-		return nil, err
+
+	ignored := unknownAttribute20
+	if processor >= 30 {
+		ignored = func(elem *xdm.Element, attr *xdm.Attribute) bool {
+			return elem.URI() == lexicon.NamespaceXSLT && attr.URI() == "" && strings.HasPrefix(attr.LocalName(), "_")
+		}
 	}
 
-	needed, err := inspectModuleAttributes10(ctx, root, false)
+	if processor == 10 {
+		if err := validateModuleRoot10(root); err != nil {
+			return nil, err
+		}
+
+		ignored = unknownAttribute10
+	}
+
+	needed, err := inspectModuleAttributes(ctx, root, false, ignored)
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +183,9 @@ func prepareModule10(ctx context.Context, doc *xdm.Document) (*xdm.Document, err
 
 	prepared.SetURL(doc.URL())
 
-	filterModuleAttributes10(prepared.DocumentElement())
+	if processor < 30 {
+		filterModuleAttributes(prepared.DocumentElement(), ignored)
+	}
 
 	return prepared, ctx.Err()
 }
@@ -190,19 +204,19 @@ func unknownAttribute10(elem *xdm.Element, attr *xdm.Attribute) bool {
 	return attr.URI() == lexicon.NamespaceXSLT && !contains10Word("version extension-element-prefixes exclude-result-prefixes use-attribute-sets", attr.LocalName())
 }
 
-func inspectModuleAttributes10(ctx context.Context, elem *xdm.Element, needed bool) (bool, error) {
+func inspectModuleAttributes(ctx context.Context, elem *xdm.Element, needed bool, ignored func(*xdm.Element, *xdm.Attribute) bool) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return needed, err
 	}
 
 	for _, attr := range elem.Attributes() {
-		needed = needed || unknownAttribute10(elem, attr)
+		needed = needed || ignored(elem, attr)
 	}
 
 	for child := range xdm.ChildElements(elem) {
 		var err error
 
-		needed, err = inspectModuleAttributes10(ctx, child, needed)
+		needed, err = inspectModuleAttributes(ctx, child, needed, ignored)
 		if err != nil {
 			return needed, err
 		}
@@ -211,15 +225,15 @@ func inspectModuleAttributes10(ctx context.Context, elem *xdm.Element, needed bo
 	return needed, nil
 }
 
-func filterModuleAttributes10(elem *xdm.Element) {
+func filterModuleAttributes(elem *xdm.Element, ignored func(*xdm.Element, *xdm.Attribute) bool) {
 	for _, attr := range elem.Attributes() {
-		if unknownAttribute10(elem, attr) {
+		if ignored(elem, attr) {
 			elem.RemoveAttributeNS(attr.LocalName(), attr.URI())
 		}
 	}
 
 	for child := range xdm.ChildElements(elem) {
-		filterModuleAttributes10(child)
+		filterModuleAttributes(child, ignored)
 	}
 }
 
@@ -334,12 +348,8 @@ func contains10Word(words, word string) bool {
 }
 
 func (c *compiler) forwardsCompatible(version string) bool {
-	if c.stylesheet.processorLanguage() == 10 {
-		v, err := strconv.ParseFloat(version, 64)
-		return err == nil && v > 1
-	}
-
-	return isForwardsCompatible(version)
+	comparison, valid := compareLanguageVersion(version, c.stylesheet.processorLanguage()/10)
+	return valid && comparison > 0
 }
 
 func lookupxslt10Functions(key string) ([2]int, bool) {
@@ -350,7 +360,7 @@ func lookupxslt10Functions(key string) ([2]int, bool) {
 		return [2]int{1, 2}, true
 	case nameKey2:
 		return [2]int{2, 2}, true
-	case "format-number":
+	case fnNameFormatNumber:
 		return [2]int{2, 3}, true
 	case nameGenerateId, nameUnparsedEntityUri, funcSystemProperty, "element-available", "function-available":
 		return [2]int{1, 1}, true
@@ -386,7 +396,7 @@ func (f function10) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence
 		if err := prepareGenerateIDArgument10(args); err != nil {
 			return nil, err
 		}
-	case "format-number":
+	case fnNameFormatNumber:
 		if err := prepareFormatNumberArguments10(ctx, args); err != nil {
 			return nil, err
 		}

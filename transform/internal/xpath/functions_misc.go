@@ -101,7 +101,13 @@ func fnEnvironmentVariable(ctx context.Context, args []xdm.Sequence) (xdm.Sequen
 
 func fnCurrentDateTime(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 	now := currentTimeFromCtx(ctx)
-	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeDateTime, Value: now}), nil
+
+	typeName := xdm.TypeDateTime
+	if XMLSchemaVersion(ctx) == 11 {
+		typeName = xdm.TypeDateTimeStamp
+	}
+
+	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: typeName, Value: now}), nil
 }
 
 func fnCurrentDate(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {

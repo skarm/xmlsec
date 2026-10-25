@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"iter"
+	"strings"
 
 	"github.com/skarm/xmlsec/internal/tree"
 )
@@ -18,7 +19,13 @@ type XMLItem struct {
 // Node storage is read-only for the duration of the call.
 func (w XMLSerialization) WriteSequence(ctx context.Context, dst io.Writer, items iter.Seq2[XMLItem, error]) error {
 	options := w.XMLWriteOptions
-	options.SelfClose, options.Reconcile = true, true
+
+	options.SelfClose, options.Reconcile, options.NormalizeXMLID = true, true, true
+	if strings.EqualFold(w.Encoding, "US-ASCII") {
+		options.ASCII = true
+	}
+
+	doctype := w.Doctype
 	nodes := func(yield func(*tree.Node, error) bool) {
 		for item, err := range items {
 			if err != nil {
@@ -27,7 +34,20 @@ func (w XMLSerialization) WriteSequence(ctx context.Context, dst io.Writer, item
 			}
 
 			var node *tree.Node
+
 			if item.Node != nil {
+				if doctype != nil && !w.OmitDoctype && item.Node.Type() == ElementNode {
+					declaration := *doctype
+
+					declaration.Name = item.Node.Name()
+					if err := writeDoctype(dst, &declaration); err != nil {
+						yield(nil, err)
+						return
+					}
+
+					doctype = nil
+				}
+
 				node = item.Node.view().raw
 			} else {
 				node = &tree.Node{Kind: tree.TextNode, Data: item.Text}

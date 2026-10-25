@@ -89,7 +89,10 @@ func fnSerialize(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 	case serializeMethodJSON:
 		result, err = serializeJSONSequence(args[0], opts)
 	case serializeMethodHTML:
-		result, err = serializeHTMLSequence(args[0], opts)
+		validator := htmlSequenceValidator{ctx: ctx, html5: serializeHTMLIsVersion5(opts), separator: opts.itemSeparator}
+		if err = validator.sequence(args[0], 0); err == nil {
+			result, err = serializeHTMLSequence(args[0], opts)
+		}
 	case serializeMethodText:
 		result, err = serializeTextSequence(args[0], opts)
 	default:
@@ -259,20 +262,20 @@ type serializeOptions struct {
 
 // effectiveSerializeVersion returns the effective output version, defaulting an
 // unspecified version to "1.0".
-func (o serializeOptions) effectiveSerializeVersion() string {
-	if o.xmlVersion == "" {
+func (so serializeOptions) effectiveSerializeVersion() string {
+	if so.xmlVersion == "" {
 		return version10
 	}
 
-	return o.xmlVersion
+	return so.xmlVersion
 }
 
 // methodEmitsXMLDeclaration reports whether the output method produces an XML
 // declaration (the xml and xhtml methods, and the unspecified default). The
 // omit-xml-declaration / standalone / SEPM0009 rules apply only to these; for
 // html/json/text/adaptive an XML declaration is never produced.
-func (o serializeOptions) methodEmitsXMLDeclaration() bool {
-	switch o.method {
+func (so serializeOptions) methodEmitsXMLDeclaration() bool {
+	switch so.method {
 	case "", serializeMethodXML, serializeMethodXHTML:
 		return true
 	}
@@ -285,8 +288,8 @@ func (o serializeOptions) methodEmitsXMLDeclaration() bool {
 // xhtml, and html methods, and the unspecified xml default). doctype-system is
 // applicable to these methods (Serialization 3.1 §5.1.7 for xml/xhtml, §7.4.6 for
 // html) and is ignored by the text/json/adaptive methods.
-func (o serializeOptions) methodEmitsDoctype() bool {
-	switch o.method {
+func (so serializeOptions) methodEmitsDoctype() bool {
+	switch so.method {
 	case "", serializeMethodXML, serializeMethodXHTML, serializeMethodHTML:
 		return true
 	}
@@ -295,13 +298,13 @@ func (o serializeOptions) methodEmitsDoctype() bool {
 }
 
 // validate checks method-specific parameter constraints before output starts.
-func (opts serializeOptions) validate() error {
+func (so serializeOptions) validate() error {
 	// An extension method (a prefixed QName) is a valid method-type value but
 	// helium implements no extension output methods, so it is an unsupported
 	// value (SEPM0016), with no silent fall-through to the xml method. The
 	// built-in methods and the unspecified default ("") are supported.
-	if opts.method != "" && !isBuiltinSerializeMethod(opts.method) {
-		return &xdm.Error{Code: errCodeSEPM0016, Message: fmt.Sprintf("output method %q is not supported", opts.method)}
+	if so.method != "" && !isBuiltinSerializeMethod(so.method) {
+		return &xdm.Error{Code: errCodeSEPM0016, Message: fmt.Sprintf("output method %q is not supported", so.method)}
 	}
 
 	// The version parameter, for the methods that emit an XML declaration, must
@@ -310,8 +313,8 @@ func (opts serializeOptions) validate() error {
 	// bogus version pseudo-attribute. It also drives the XML 1.1 escaping /
 	// undeclaration rules, so it must be validated even when the declaration is
 	// omitted.
-	if opts.methodEmitsXMLDeclaration() && opts.xmlVersion != "" && !isSupportedXMLOutputVersion(opts.xmlVersion) {
-		return &xdm.Error{Code: errCodeSESU0013, Message: fmt.Sprintf("XML output version %q is not supported", opts.xmlVersion)}
+	if so.methodEmitsXMLDeclaration() && so.xmlVersion != "" && !isSupportedXMLOutputVersion(so.xmlVersion) {
+		return &xdm.Error{Code: errCodeSESU0013, Message: fmt.Sprintf("XML output version %q is not supported", so.xmlVersion)}
 	}
 
 	// A doctype-system value MUST NOT contain BOTH an apostrophe (#x27) and a
@@ -321,7 +324,7 @@ func (opts serializeOptions) validate() error {
 	// to the xml, xhtml, and html output methods (§5.1.7 / §7.4.6) — text/json/
 	// adaptive ignore it — so the SystemLiteral check is gated to the methods that
 	// actually emit a DOCTYPE.
-	if opts.methodEmitsDoctype() && strings.ContainsRune(opts.doctypeSystem, '"') && strings.ContainsRune(opts.doctypeSystem, '\'') {
+	if so.methodEmitsDoctype() && strings.ContainsRune(so.doctypeSystem, '"') && strings.ContainsRune(so.doctypeSystem, '\'') {
 		return &xdm.Error{Code: errCodeSEPM0016, Message: "doctype-system must not contain both a quotation mark and an apostrophe"}
 	}
 
@@ -334,12 +337,12 @@ func (opts serializeOptions) validate() error {
 	// omit-xml-declaration (the map-form default of true) and the RESOLVED
 	// standalone value. A DOCTYPE without an XML declaration is well-formed in
 	// XML 1.0, so omit + doctype-system at version 1.0 is NOT an error.
-	if opts.methodEmitsXMLDeclaration() && opts.omitXMLDeclaration {
-		if opts.standalone == lexicon.ValueYes || opts.standalone == lexicon.ValueNo {
+	if so.methodEmitsXMLDeclaration() && so.omitXMLDeclaration {
+		if so.standalone == lexicon.ValueYes || so.standalone == lexicon.ValueNo {
 			return &xdm.Error{Code: errCodeSEPM0009, Message: "omit-xml-declaration=yes conflicts with standalone=yes/no"}
 		}
 
-		if opts.effectiveSerializeVersion() != version10 && opts.doctypeSystem != "" {
+		if so.effectiveSerializeVersion() != version10 && so.doctypeSystem != "" {
 			return &xdm.Error{Code: errCodeSEPM0009, Message: "omit-xml-declaration=yes conflicts with a doctype-system value at version other than 1.0"}
 		}
 	}
@@ -350,7 +353,7 @@ func (opts serializeOptions) validate() error {
 	// methods (and the unspecified xml default) — for html/text/json/adaptive it is
 	// silently ignored, no error — so SEPM0010 is gated to that method family
 	// (methodEmitsXMLDeclaration covers exactly {"", xml, xhtml}).
-	if opts.methodEmitsXMLDeclaration() && opts.undeclarePrefixes && opts.effectiveSerializeVersion() != version11 {
+	if so.methodEmitsXMLDeclaration() && so.undeclarePrefixes && so.effectiveSerializeVersion() != version11 {
 		return &xdm.Error{Code: errCodeSEPM0010, Message: "undeclare-prefixes requires output version 1.1"}
 	}
 
@@ -361,8 +364,8 @@ func (opts serializeOptions) validate() error {
 	// are applied later — inside the writer for the markup methods (scoped to
 	// text/attribute nodes), to the whole output for text/json (pure character
 	// data), or while adaptive serializes its string-like atomics.
-	if opts.methodAppliesNormalization() && serializeNormalizationActive(opts.normalizationForm) && !isSupportedSerializeNormForm(opts.normalizationForm) {
-		return &xdm.Error{Code: errCodeSESU0011, Message: fmt.Sprintf("normalization-form %q is not supported", opts.normalizationForm)}
+	if so.methodAppliesNormalization() && serializeNormalizationActive(so.normalizationForm) && !isSupportedSerializeNormForm(so.normalizationForm) {
+		return &xdm.Error{Code: errCodeSESU0011, Message: fmt.Sprintf("normalization-form %q is not supported", so.normalizationForm)}
 	}
 
 	return nil
@@ -408,8 +411,8 @@ func isBuiltinSerializeMethod(v string) bool {
 // normalization-form parameter. Per Serialization 3.1 it is a parameter of the
 // xml/xhtml/html/text, json, AND adaptive (§9.1.9) output methods and the
 // unspecified default.
-func (o serializeOptions) methodAppliesNormalization() bool {
-	switch o.method {
+func (so serializeOptions) methodAppliesNormalization() bool {
+	switch so.method {
 	case "", serializeMethodXML, serializeMethodXHTML, serializeMethodHTML, serializeMethodText, serializeMethodJSON, serializeMethodAdaptive:
 		return true
 	}
@@ -419,20 +422,20 @@ func (o serializeOptions) methodAppliesNormalization() bool {
 
 // booleanParam binds each boolean parameter to its option field. A recognized
 // nil target requests lexical validation only: UTF-8 output emits no BOM.
-func (opts *serializeOptions) booleanParam(name string) (*bool, bool) {
+func (so *serializeOptions) booleanParam(name string) (*bool, bool) {
 	switch name {
 	case "indent":
-		return &opts.indent, true
+		return &so.indent, true
 	case "omit-xml-declaration":
-		return &opts.omitXMLDeclaration, true
+		return &so.omitXMLDeclaration, true
 	case "allow-duplicate-names":
-		return &opts.allowDuplicateNames, true
+		return &so.allowDuplicateNames, true
 	case "undeclare-prefixes":
-		return &opts.undeclarePrefixes, true
+		return &so.undeclarePrefixes, true
 	case "escape-uri-attributes":
-		return &opts.escapeURIAttributes, true
+		return &so.escapeURIAttributes, true
 	case "include-content-type":
-		return &opts.includeContentType, true
+		return &so.includeContentType, true
 	case "byte-order-mark":
 		return nil, true
 	default:
@@ -440,30 +443,30 @@ func (opts *serializeOptions) booleanParam(name string) (*bool, bool) {
 	}
 }
 
-func (opts *serializeOptions) stringParam(name string) *string {
+func (so *serializeOptions) stringParam(name string) *string {
 	switch name {
 	case "method":
-		return &opts.method
+		return &so.method
 	case "item-separator":
-		return &opts.itemSeparator
+		return &so.itemSeparator
 	case "encoding":
-		return &opts.encoding
+		return &so.encoding
 	case serializeParamVersion:
-		return &opts.xmlVersion
+		return &so.xmlVersion
 	case "html-version":
-		return &opts.htmlVersion
+		return &so.htmlVersion
 	case "doctype-public":
-		return &opts.doctypePublic
+		return &so.doctypePublic
 	case "doctype-system":
-		return &opts.doctypeSystem
+		return &so.doctypeSystem
 	case "json-node-output-method":
-		return &opts.jsonNodeOutputMethod
+		return &so.jsonNodeOutputMethod
 	case "normalization-form":
-		return &opts.normalizationForm
+		return &so.normalizationForm
 	case "media-type":
-		return &opts.mediaType
+		return &so.mediaType
 	case nameStandalone:
-		return &opts.standalone
+		return &so.standalone
 	default:
 		return nil
 	}
@@ -1261,12 +1264,12 @@ func readSerializeParamYesNo(elem *xdm.Element) (bool, error) {
 		return false, err
 	}
 
-	norm, ok := serializeBooleanValue(value)
+	bv, ok := serializeBooleanValue(value)
 	if !ok {
 		return false, &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter %q must be a boolean (yes/no/true/false/1/0)", elem.LocalName())}
 	}
 
-	return norm == lexicon.ValueYes, nil
+	return bv == lexicon.ValueYes, nil
 }
 
 // readSerializeParamStandalone reads and normalizes the element-form
@@ -1284,8 +1287,8 @@ func readSerializeParamStandalone(elem *xdm.Element) (string, error) {
 		return serializeStandaloneOmit, nil
 	}
 
-	if norm, ok := serializeBooleanValue(value); ok {
-		return norm, nil
+	if bv, ok := serializeBooleanValue(value); ok {
+		return bv, nil
 	}
 
 	return "", &xdm.Error{Code: errCodeSEPM0017, Message: `serialize parameter "standalone" must be yes/no/omit or a boolean (true/false/1/0)`}
@@ -2504,11 +2507,16 @@ func writeDoctypeSystemLiteral(b *strings.Builder, sys string) {
 // HTML5 serialization (version ≥ 5). The default (unspecified) html-version is
 // 5.0; an unparseable value is treated permissively as HTML5.
 func serializeHTMLIsVersion5(opts serializeOptions) bool {
-	if opts.htmlVersion == "" {
+	version := opts.htmlVersion
+	if version == "" {
+		version = opts.xmlVersion
+	}
+
+	if version == "" {
 		return true
 	}
 
-	v, err := strconv.ParseFloat(opts.htmlVersion, 64)
+	v, err := strconv.ParseFloat(version, 64)
 	if err != nil {
 		return true
 	}
@@ -2952,10 +2960,11 @@ func encodeJSONStringRun(b *strings.Builder, run string, utf8Out bool) {
 		case utf8Out || r <= 0x7F:
 			appendSerializedJSONStringRune(b, r)
 		case r <= 0xFFFF:
-			fmt.Fprintf(b, `\u%04X`, r)
+			appendJSONCodeUnit(b, uint16(r), jsonHexUpper)
 		default:
 			hi, lo := utf16SurrogatePair(r)
-			fmt.Fprintf(b, `\u%04X\u%04X`, hi, lo)
+			appendJSONCodeUnit(b, hi, jsonHexUpper)
+			appendJSONCodeUnit(b, lo, jsonHexUpper)
 		}
 	}
 }
@@ -2966,4 +2975,143 @@ func utf16SurrogatePair(r rune) (uint16, uint16) {
 	lo := uint16(0xDC00 + (cp & 0x3FF))
 
 	return hi, lo
+}
+
+// ValidateHTMLItem checks the actual normalized item before HTML serialization.
+// It is shared with XSLT's streaming writer, which need not have a result DOM.
+func ValidateHTMLItem(ctx context.Context, item xdm.XMLItem, html5 bool) error {
+	if item.Node == nil {
+		return checkHTMLCharacters(ctx, item.Text, html5)
+	}
+
+	return validateHTMLNode(ctx, item.Node, html5, 0)
+}
+
+func validateHTMLNode(ctx context.Context, node xdm.Node, html5 bool, depth int) error {
+	if depth > DepthLimit(ctx, 512) {
+		return ErrBudget
+	}
+
+	if err := Charge(ctx, 1); err != nil {
+		return err
+	}
+
+	if node == nil {
+		return nil
+	}
+
+	if node.Type() == xdm.ProcessingInstructionNode {
+		content := xdm.CharacterData(node)
+		if err := Charge(ctx, 1+len(content)/64); err != nil {
+			return err
+		}
+
+		if strings.Contains(content, ">") {
+			return &xdm.Error{Code: "SERE0015", Message: "HTML processing instruction contains '>'"}
+		}
+	}
+
+	switch value := node.(type) {
+	case *xdm.Document:
+	case *xdm.Element:
+		for _, attribute := range value.Attributes() {
+			if err := checkHTMLCharacters(ctx, attribute.Value(), html5); err != nil {
+				return err
+			}
+		}
+	default:
+		if err := checkHTMLCharacters(ctx, xdm.CharacterData(node), html5); err != nil {
+			return err
+		}
+	}
+
+	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
+		if err := validateHTMLNode(ctx, child, html5, depth+1); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkHTMLCharacters(ctx context.Context, value string, html5 bool) error {
+	if html5 {
+		return ctx.Err()
+	}
+
+	if err := Charge(ctx, 1+len(value)/64); err != nil {
+		return err
+	}
+
+	for _, r := range value {
+		if r >= 0x7f && r <= 0x9f || r >= 1 && r <= 8 || r == 0xb || r == 0xc || r >= 0xe && r <= 0x1f {
+			return &xdm.Error{Code: "SERE0014", Message: fmt.Sprintf("character U+%04X is not permitted in HTML before version 5", r)}
+		}
+	}
+
+	return nil
+}
+
+type htmlSequenceValidator struct {
+	ctx       context.Context
+	separator string
+	html5     bool
+	seen      bool
+}
+
+func (v *htmlSequenceValidator) sequence(seq xdm.Sequence, depth int) error {
+	if depth > DepthLimit(v.ctx, 512) {
+		return ErrBudget
+	}
+
+	for item := range xdm.SequenceItems(seq) {
+		if err := Charge(v.ctx, 1); err != nil {
+			return err
+		}
+
+		if array, ok := item.(xdm.ArrayItem); ok {
+			for _, member := range array.MembersView() {
+				if err := v.sequence(member, depth+1); err != nil {
+					return err
+				}
+			}
+
+			continue
+		}
+
+		if v.seen && v.separator != "" {
+			if err := checkHTMLCharacters(v.ctx, v.separator, v.html5); err != nil {
+				return err
+			}
+		}
+
+		v.seen = true
+		if err := v.item(item); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (v *htmlSequenceValidator) item(item xdm.Item) error {
+	if err := serializeItemKindError(item); err != nil {
+		return err
+	}
+
+	if node, ok := item.(xdm.NodeItem); ok {
+		return ValidateHTMLItem(v.ctx, xdm.XMLItem{Node: node.Node}, v.html5)
+	}
+
+	atomic, err := AtomizeItem(item)
+	if err != nil {
+		return err
+	}
+
+	value, err := AtomicToString(atomic)
+	if err != nil {
+		return err
+	}
+
+	return checkHTMLCharacters(v.ctx, value, v.html5)
 }

@@ -42,7 +42,7 @@ type keyTable struct {
 func newKeyTable(defs []*keyDef) (*keyTable, error) {
 	table := &keyTable{
 		defs: defs, entries: make(map[string][]keyEntry),
-		compat: keyDefinitionsCompatible(defs), building: true,
+		compat: !defs[0].Composite && keyDefinitionsCompatible(defs), building: true,
 	}
 	if err := buildKeyTableCollation(defs, table); err != nil {
 		return nil, err
@@ -156,13 +156,18 @@ func canonicalKey(av xdm.AtomicValue) string {
 
 	s, _ := xpath.AtomicToString(av)
 	// Group numerics together so integer 4 and double 4.0 can be
-	// compared in the same bucket. Use the float64 representation as
-	// the canonical key so that cross-type comparisons (e.g.
-	// xs:float vs xs:double vs xs:decimal) use value equality.
+	// compared in the same bucket. The bucket deliberately loses precision;
+	// typed comparison must refine collisions before a node is selected.
 	if av.IsNumeric() {
-		f := av.ToFloat64()
+		// Value comparison can promote either operand to xs:float. Keep all
+		// potentially equal values together, then refine using their original types.
+		f := float64(float32(av.ToFloat64()))
 		if math.IsNaN(f) {
 			return "N:NaN"
+		}
+
+		if f == 0 {
+			return "N:0"
 		}
 
 		return "N:" + strconv.FormatFloat(f, 'g', -1, 64)
@@ -230,7 +235,7 @@ func (ec *execContext) buildKeyTable(ctx context.Context, name string, root xdm.
 
 	defs, ok := ec.effectiveKeys()[name]
 	if !ok || len(defs) == 0 {
-		return nil, dynamicError(errCodeXTDE1170, "unknown key %q", name)
+		return nil, dynamicError(errCodeXTDE1260, "unknown key %q", name)
 	}
 
 	table, err = newKeyTable(defs)
@@ -239,7 +244,32 @@ func (ec *execContext) buildKeyTable(ctx context.Context, name string, root xdm.
 	}
 
 	ec.keyTables[cacheKey] = table
-	ec.keyBuildingDepth++
+	defer ec.pushAbsentGroupingContext()()
+
+	ctx = xpath.WithoutDynamicCall(ctx)
+	savedOutputURI := ec.currentOutputURI
+
+	ec.currentOutputURI = ec.baseOutputURI
+	defer func() { ec.currentOutputURI = savedOutputURI }()
+
+	// A key declaration has global variable scope and singleton focus, with
+	// no current template rule or inherited mode from the calling template.
+	savedVars, savedTemplate := ec.localVars, ec.currentTemplate
+	savedMode, savedModePackage := ec.currentMode, ec.currentModePackage
+	savedPosition, savedSize := ec.position, ec.size
+	ec.localVars = nil
+	ec.localVarsVer++
+	ec.setCurrentTemplate(nil)
+	ec.currentMode, ec.currentModePackage = "", ec.effectiveStylesheet()
+
+	ec.position, ec.size = 1, 1
+	defer func() {
+		ec.localVars = savedVars
+		ec.localVarsVer++
+		ec.setCurrentTemplate(savedTemplate)
+		ec.currentMode, ec.currentModePackage = savedMode, savedModePackage
+		ec.position, ec.size = savedPosition, savedSize
+	}()
 
 	// Restore all focus fields, including an outer atomic context item.
 	savedContext, savedCurrent, savedItem := ec.contextNode, ec.currentNode, ec.contextItem
@@ -249,21 +279,18 @@ func (ec *execContext) buildKeyTable(ctx context.Context, name string, root xdm.
 
 	builder := keyIndexBuilder{
 		ec: ec, table: table, composite: defs[0].Composite,
-		seen: make(map[indexedKeyNode]struct{}),
+		seen: make(map[indexedKeyNode][][]xdm.AtomicValue),
 	}
 
 	err = indexKeyTree(ctx, root, keyDefinitionsMatchAttributes(defs), keyDefinitionsMatchNamespaces(defs), func(node xdm.Node) error {
 		return builder.indexNode(ctx, node)
 	})
 	if err != nil {
-		ec.keyBuildingDepth--
-
 		delete(ec.keyTables, cacheKey)
 
 		return nil, err
 	}
 
-	ec.keyBuildingDepth--
 	table.building, table.built = false, true
 
 	return table, nil
@@ -401,20 +428,11 @@ func (ec *execContext) cachedKeyTable(cacheKey, name string) (*keyTable, error) 
 		return nil, nil
 	}
 
-	isV3 := ec.stylesheet.processorLanguage() >= 30
-	if isV3 && ec.keyUseExprDepth > 0 {
-		// XSLT 3.0 use expressions may reference an index being built.
-		return &keyTable{built: true, entries: make(map[string][]keyEntry)}, nil
-	}
-
 	return nil, dynamicError(errCodeXTDE0640, "circular reference in key %q", name)
 }
 
 func (ec *execContext) evaluateKeyUse(ctx context.Context, def *keyDef, node xdm.Node) ([]xdm.Item, error) {
 	ec.contextNode, ec.currentNode, ec.contextItem = node, node, nil
-
-	ec.keyUseExprDepth++
-	defer func() { ec.keyUseExprDepth-- }()
 
 	if def.Use != nil {
 		result, err := ec.evalXPath(ctx, def.Use, node)
@@ -462,6 +480,9 @@ func (ec *execContext) lookupKey(ctx context.Context, name string, value xdm.Ato
 	}
 
 	ck := collationCanonicalKey(value, kt.collationKey)
+	if err := xpath.ChargeString(ctx, len(ck)); err != nil {
+		return nil, err
+	}
 
 	candidates := kt.entries[ck]
 	if len(candidates) == 0 {
@@ -472,12 +493,42 @@ func (ec *execContext) lookupKey(ctx context.Context, name string, value xdm.Ato
 	var result []xdm.Node
 
 	for _, entry := range candidates {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return nil, err
+		}
+
 		if collationAtomicEquals(value, entry.key, kt.collationCmp) {
 			result = append(result, entry.node)
 		}
 	}
 
 	return result, nil
+}
+
+func (ec *execContext) lookupKeyValues(ctx context.Context, name string, values []xdm.AtomicValue, root xdm.Node) ([]xdm.Node, error) {
+	var nodes []xdm.Node
+
+	seen := make(map[xdm.Node]struct{})
+
+	for _, value := range values {
+		found, err := ec.lookupKey(ctx, name, value, root)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, node := range found {
+			if err := xpath.Charge(ctx, 1); err != nil {
+				return nil, err
+			}
+
+			if _, duplicate := seen[node]; !duplicate {
+				seen[node] = struct{}{}
+				nodes = append(nodes, node)
+			}
+		}
+	}
+
+	return nodes, nil
 }
 
 // lookupCompositeKey looks up nodes by composite key (sequence of values).
@@ -491,17 +542,10 @@ func (ec *execContext) lookupCompositeKey(ctx context.Context, name string, valu
 		return nil, nil
 	}
 
-	// Backwards-compatible key: lookup values are compared as strings.
-	if kt.compat {
-		cast := make([]xdm.AtomicValue, len(values))
-		for i, v := range values {
-			cast[i] = keyCompatCast(v, ec.stylesheet.processorLanguage() == 10)
-		}
-
-		values = cast
-	}
-
 	ck := compositeCanonicalKey(values, kt.collationKey)
+	if err := xpath.ChargeString(ctx, len(ck)); err != nil {
+		return nil, err
+	}
 
 	candidates := kt.compositeEntry[ck]
 	if len(candidates) == 0 {
@@ -510,9 +554,18 @@ func (ec *execContext) lookupCompositeKey(ctx context.Context, name string, valu
 
 	var result []xdm.Node
 
+	seen := make(map[xdm.Node]struct{})
+
 	for _, entry := range candidates {
+		if err := xpath.Charge(ctx, len(values)+1); err != nil {
+			return nil, err
+		}
+
 		if compositeAtomicEquals(values, entry.keys, kt.collationCmp) {
-			result = append(result, entry.node)
+			if _, duplicate := seen[entry.node]; !duplicate {
+				seen[entry.node] = struct{}{}
+				result = append(result, entry.node)
+			}
 		}
 	}
 
@@ -527,7 +580,7 @@ func compositeAtomicEquals(a, b []xdm.AtomicValue, cmpFn func(string, string) in
 	}
 
 	for i := range a {
-		if !collationAtomicEquals(a[i], b[i], cmpFn) {
+		if !(a[i].IsNaN() && b[i].IsNaN()) && !collationAtomicEquals(a[i], b[i], cmpFn) {
 			return false
 		}
 	}
@@ -578,95 +631,107 @@ type keyIndexBuilder struct {
 	ec        *execContext
 	table     *keyTable
 	composite bool
-	seen      map[indexedKeyNode]struct{}
+	seen      map[indexedKeyNode][][]xdm.AtomicValue
 }
 
 func (b *keyIndexBuilder) indexNode(ctx context.Context, node xdm.Node) error {
 	for _, def := range b.table.defs {
-		if !def.Match.matchPattern(ctx, b.ec, node) {
-			// Consume a fatal match error before considering later definitions.
-			if b.ec.patternMatchErr != nil {
-				err := b.ec.patternMatchErr
-				b.ec.patternMatchErr = nil
-
-				return err
-			}
-
-			continue
-		}
-
-		items, err := b.ec.evaluateKeyUse(ctx, def, node)
-		if err != nil {
+		if err := b.indexDefinition(ctx, def, node); err != nil {
 			return err
-		}
-
-		if b.composite {
-			b.indexComposite(node, items)
-		} else {
-			b.indexValues(node, items)
 		}
 	}
 
 	return nil
 }
 
-func (b *keyIndexBuilder) atomize(item xdm.Item) (xdm.AtomicValue, bool) {
-	atom, err := xpath.AtomizeItem(item)
+func (b *keyIndexBuilder) indexDefinition(ctx context.Context, def *keyDef, node xdm.Node) error {
+	savedBase, savedPinned := b.ec.staticBaseURIOverride, b.ec.staticBaseURIPinned
+
+	b.ec.staticBaseURIOverride, b.ec.staticBaseURIPinned = def.StaticBaseURI, true
+	defer func() { b.ec.staticBaseURIOverride, b.ec.staticBaseURIPinned = savedBase, savedPinned }()
+
+	if !def.Match.matchPattern(ctx, b.ec, node) {
+		err := b.ec.patternMatchErr
+		b.ec.patternMatchErr = nil
+
+		return err
+	}
+
+	items, err := b.ec.evaluateKeyUse(ctx, def, node)
 	if err != nil {
-		return xdm.AtomicValue{}, false
+		return err
+	}
+
+	atoms, err := xpath.FnAtomize(ctx, xdm.ItemSlice(items))
+	if err != nil {
+		return err
 	}
 
 	if b.table.compat {
-		atom = keyCompatCast(atom, b.ec.stylesheet.processorLanguage() == 10)
-	}
-
-	return atom, true
-}
-
-func (b *keyIndexBuilder) indexComposite(node xdm.Node, items []xdm.Item) {
-	atoms := make([]xdm.AtomicValue, 0, len(items))
-	for _, item := range items {
-		if atom, ok := b.atomize(item); ok {
-			atoms = append(atoms, atom)
+		for i, atom := range atoms {
+			atoms[i] = keyCompatCast(atom, b.ec.stylesheet.processorLanguage() == 10)
 		}
 	}
 
-	if len(atoms) == 0 {
-		return
+	if b.composite {
+		key := compositeCanonicalKey(atoms, b.table.collationKey)
+		if record, err := b.record(ctx, key, node, atoms); err != nil {
+			return err
+		} else if record {
+			b.table.compositeEntry[key] = append(b.table.compositeEntry[key], compositeKeyEntry{keys: atoms, node: node})
+		}
+
+		return nil
 	}
 
-	key := compositeCanonicalKey(atoms, b.table.collationKey)
-	if !b.record(key, node) {
-		return
-	}
-
-	b.table.compositeEntry[key] = append(b.table.compositeEntry[key], compositeKeyEntry{keys: atoms, node: node})
-}
-
-func (b *keyIndexBuilder) indexValues(node xdm.Node, items []xdm.Item) {
-	for _, item := range items {
-		atom, ok := b.atomize(item)
-		if !ok || atom.IsNaN() {
+	for _, atom := range atoms {
+		if atom.IsNaN() {
 			continue
 		}
 
 		key := collationCanonicalKey(atom, b.table.collationKey)
-		if !b.record(key, node) {
-			continue
+		if record, err := b.record(ctx, key, node, []xdm.AtomicValue{atom}); err != nil {
+			return err
+		} else if record {
+			b.table.entries[key] = append(b.table.entries[key], keyEntry{key: atom, node: node})
 		}
-
-		b.table.entries[key] = append(b.table.entries[key], keyEntry{key: atom, node: node})
 	}
+
+	return nil
 }
 
-func (b *keyIndexBuilder) record(canonical string, node xdm.Node) bool {
-	key := indexedKeyNode{canonical: canonical, node: node}
+func (b *keyIndexBuilder) record(ctx context.Context, canonical string, node xdm.Node, atoms []xdm.AtomicValue) (bool, error) {
+	if err := xpath.ChargeString(ctx, len(canonical), 32); err != nil {
+		return false, err
+	}
 
-	if _, duplicate := b.seen[key]; duplicate {
+	key := indexedKeyNode{canonical: canonical, node: node}
+	for _, previous := range b.seen[key] {
+		if err := xpath.Charge(ctx, len(atoms)+1); err != nil {
+			return false, err
+		}
+		// Cross-type numeric equality is not transitive: removing an equal
+		// xs:float can lose a later integer match. Deduplicate equal types only.
+		if sameKeyValueTypes(atoms, previous) && compositeAtomicEquals(atoms, previous, b.table.collationCmp) {
+			return false, nil
+		}
+	}
+
+	b.seen[key] = append(b.seen[key], atoms)
+
+	return true, nil
+}
+
+func sameKeyValueTypes(a, b []xdm.AtomicValue) bool {
+	if len(a) != len(b) {
 		return false
 	}
 
-	b.seen[key] = struct{}{}
+	for i := range a {
+		if a[i].TypeName != b[i].TypeName {
+			return false
+		}
+	}
 
 	return true
 }

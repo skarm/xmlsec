@@ -197,7 +197,7 @@ func testBuildParsePublicKeysCase(t *testing.T, test *struct {
 	key  crypto.PublicKey
 }, format *keyinfo.KeyFormat,
 ) {
-	d, e := keyinfo.Build(context.Background(), keyinfo.Template{ID: "ki", Names: []string{"  significant name\n"}, Keys: []keyinfo.PublicKeyValue{{Key: test.key, Format: (*format)}}})
+	d, e := keyinfo.Build(context.Background(), keyinfo.Template{ID: "ki", Names: []string{"  significant name\n"}, Keys: []keyinfo.PublicKeyValue{{Key: test.key, Format: *format}}})
 	if test.name == "Ed25519" && (*format) == keyinfo.XMLKeyValue {
 		if !errors.Is(e, keyinfo.ErrUnsupported) {
 			t.Fatal(e)

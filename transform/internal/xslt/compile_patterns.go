@@ -761,15 +761,7 @@ func isTypedLaxMode(ec *execContext) bool {
 // currentModeDef returns the mode definition for the current mode, falling back
 // to the default (unnamed) mode definition when the current mode is unnamed.
 func currentModeDef(ec *execContext) *modeDef {
-	if md := ec.stylesheet.modeDefs[ec.currentMode]; md != nil {
-		return md
-	}
-
-	if ec.currentMode == "" {
-		return ec.stylesheet.modeDefs[modeDefault]
-	}
-
-	return nil
+	return ec.lookupModeDef(ec.currentMode)
 }
 
 // matchElementTest checks if a node matches an element() test.
@@ -1661,25 +1653,26 @@ func (c *compiler) compilePattern(s string, elem *xdm.Element, xpathDefaultNS st
 	nsBindings := c.internPatternNamespaces(inScopeNamespaces(elem))
 	compat := c.backwardsCompatible()
 	decls := c.schemaDeclsForValidation()
-	alts := splitPatternUnion(s)
 	p := &pattern{source: s, xpathDefaultNS: xpathDefaultNS, hasXPathDefaultNS: hasXPathDefaultNS, nsBindings: nsBindings, compat: compat}
 
-	version := 0
-	if c.stylesheet.processorLanguage() == 10 {
-		version = 10
-	}
+	version := c.stylesheet.xpathVersion()
 
 	validateNS := patternValidateNamespaces(nsBindings, xpathDefaultNS, hasXPathDefaultNS)
+
+	alts, err := xpath.SplitPatternUnion(s, version)
+	if err != nil {
+		return nil, patternCompilationError(c.invocation, s, err)
+	}
 
 	for _, alt := range alts {
 		alt = strings.TrimSpace(alt)
 		if alt == "" {
-			continue
+			return nil, staticError(errCodeXTSE0340, "empty pattern alternative in %q", s)
 		}
 
-		compiled, err := xpath.NewCompiler().Language(version, nsBindings).Compile(alt)
+		compiled, err := xpath.NewCompiler().Context(c.invocation).Language(version, nsBindings).HostFunctions(c.hostFunctionAvailable).Compile(alt)
 		if err != nil {
-			return nil, staticError(errCodeXTSE0500, "invalid pattern %q: %v", alt, err)
+			return nil, patternCompilationError(c.invocation, alt, err)
 		}
 		// Run static validation (prefix checks) against the stylesheet
 		// namespace bindings. Use the same sanitized map the runtime evaluator
@@ -1688,7 +1681,7 @@ func (c *compiler) compilePattern(s string, elem *xdm.Element, xpathDefaultNS st
 		// namespace for unprefixed names unless xpath-default-namespace is set.
 		// This keeps compile-time and runtime prefix resolution symmetric.
 		if valErr := compiled.ValidateWithSchema(validateNS, decls); valErr != nil {
-			return nil, staticError(errCodeXTSE0340, "invalid match pattern %q: %v", alt, valErr)
+			return nil, patternCompilationError(c.invocation, alt, valErr)
 		}
 
 		ast := compiled.AST()
@@ -1706,7 +1699,7 @@ func (c *compiler) compilePattern(s string, elem *xdm.Element, xpathDefaultNS st
 
 		compiledExpr, compErr := xpath.NewCompiler().CompileExpr(ast)
 		if compErr != nil {
-			return nil, staticError(errCodeXTSE0500, "pattern compile failed %q: %v", alt, compErr)
+			return nil, patternCompilationError(c.invocation, alt, compErr)
 		}
 
 		pa := &patternAlt{
@@ -1716,10 +1709,6 @@ func (c *compiler) compilePattern(s string, elem *xdm.Element, xpathDefaultNS st
 			neverMatches: isNeverMatchingPattern(alt),
 		}
 		p.Alternatives = append(p.Alternatives, pa)
-	}
-
-	if len(p.Alternatives) == 0 {
-		return nil, staticError(errCodeXTSE0500, "empty pattern %q", s)
 	}
 
 	collector := patternPredicateCollector{nsBindings: nsBindings, version: version}
@@ -1743,6 +1732,14 @@ func (c *compiler) compilePattern(s string, elem *xdm.Element, xpathDefaultNS st
 	}
 
 	return p, nil
+}
+
+func patternCompilationError(ctx context.Context, source string, cause error) error {
+	if failure := preserveControlFailure(ctx, cause); failure != nil {
+		return failure
+	}
+
+	return staticErrorCause(errCodeXTSE0340, cause, "invalid pattern %q: %v", source, cause)
 }
 
 // isNeverMatchingPattern detects patterns that are syntactically valid but
@@ -1774,6 +1771,12 @@ func isNeverMatchingPattern(alt string) bool {
 
 func validatePatternAlternative(compiled *xpath.Expression, alt string, nsBindings map[string]string, version int) error {
 	ast := compiled.AST()
+	if version == 20 {
+		if err := checkPattern20(ast); err != nil {
+			return err
+		}
+	}
+
 	if version == 10 {
 		if len(compiled.StaticReferences(nsBindings).FreeVariables) > 0 {
 			return staticError("XTSE0340", "variables are unavailable in XSLT 1.0 patterns")
@@ -1792,6 +1795,75 @@ func validatePatternAlternative(compiled *xpath.Expression, alt string, nsBindin
 	}
 
 	return nil
+}
+
+func checkPattern20(expr xpath.Expr) error {
+	switch e := expr.(type) {
+	case *xpath.LocationPath:
+		return checkPattern20(*e)
+	case xpath.LocationPath, xpath.RootExpr, *xpath.RootExpr:
+		return nil
+	case xpath.PathExpr:
+		if err := checkPattern20(e.Filter); err != nil {
+			return err
+		}
+
+		if e.Path != nil {
+			return checkPattern20(*e.Path)
+		}
+
+		return nil
+	case *xpath.PathExpr:
+		return checkPattern20(*e)
+	case xpath.FunctionCall:
+		return checkPatternFunction20(e)
+	case *xpath.FunctionCall:
+		return checkPatternFunction20(*e)
+	}
+
+	return staticError(errCodeXTSE0340, "invalid XSLT 2.0 match pattern")
+}
+
+func checkPatternFunction20(call xpath.FunctionCall) error {
+	if call.Prefix != "" || call.Name != "id" && call.Name != nameKey2 {
+		return staticError(errCodeXTSE0340, "only unprefixed id/key calls can start an XSLT 2.0 pattern")
+	}
+
+	argument := 0
+
+	if call.Name == nameKey2 {
+		if len(call.Args) != 2 {
+			return staticError(errCodeXTSE0340, "key pattern requires two arguments")
+		}
+
+		literal, ok := call.Args[0].(xpath.LiteralExpr)
+		if !ok {
+			return staticError(errCodeXTSE0340, "key pattern name must be a string literal")
+		}
+
+		if _, ok := literal.Value.(string); !ok {
+			return staticError(errCodeXTSE0340, "key pattern name must be a string literal")
+		}
+
+		argument = 1
+	} else if len(call.Args) != 1 {
+		return staticError(errCodeXTSE0340, "id pattern requires one argument")
+	}
+
+	switch value := call.Args[argument].(type) {
+	case xpath.VariableExpr:
+		return nil
+	case xpath.LiteralExpr:
+		if call.Name == nameKey2 {
+			return nil
+		}
+
+		if _, ok := value.Value.(string); ok {
+			return nil
+		}
+	}
+
+	return staticError(errCodeXTSE0340, "id/key pattern value must be a literal or variable")
 }
 
 func isContextPredicatePattern(expr xpath.Expr) bool {
@@ -2156,49 +2228,8 @@ func checkPatternForbiddenFunctions(ast xpath.Expr, nsBindings map[string]string
 	return walkErr
 }
 
-// splitPatternUnion splits a pattern string by | at the top level.
-// It respects brackets, parentheses and string literals.
-func splitPatternUnion(s string) []string {
-	var parts []string
-
-	depth := 0
-	inSingle := false
-	inDouble := false
-	start := 0
-
-	for i := range len(s) {
-		switch s[i] {
-		case '\'':
-			if !inDouble {
-				inSingle = !inSingle
-			}
-		case '"':
-			if !inSingle {
-				inDouble = !inDouble
-			}
-		case '(', '[':
-			if !inSingle && !inDouble {
-				depth++
-			}
-		case ')', ']':
-			if !inSingle && !inDouble {
-				depth--
-			}
-		case '|':
-			if !inSingle && !inDouble && depth == 0 {
-				parts = append(parts, s[start:i])
-				start = i + 1
-			}
-		}
-	}
-
-	parts = append(parts, s[start:])
-
-	return parts
-}
-
 // computeDefaultPriority computes the default priority for a pattern
-// alternative per XSLT 3.0 Section 6.4.
+// alternative per XSLT 3.0 Section 6.5.
 func computeDefaultPriority(expr xpath.Expr) float64 {
 	var steps []xpath.Step
 
@@ -2211,8 +2242,9 @@ func computeDefaultPriority(expr xpath.Expr) float64 {
 		// "/" matches document nodes; default priority is -0.5
 		return -0.5
 	case xpath.ContextItemExpr:
-		// "." (self::node()) — wildcard node test, priority -0.5
-		return -0.5
+		return -1
+	case xpath.IntersectExceptExpr:
+		return computeDefaultPriority(e.Left)
 	case xpath.UnionExpr:
 		// Union pattern (a|b): priority is max of operands' priorities.
 		lp := computeDefaultPriority(e.Left)
@@ -2224,10 +2256,9 @@ func computeDefaultPriority(expr xpath.Expr) float64 {
 
 		return rp
 	case xpath.FilterExpr:
-		// Predicate pattern: .[pred1][pred2]...
-		// Priority = 0.5 + (number of predicates * 0.25)
+		// PredicatePattern priority is one, independently of predicate count.
 		if _, ok := e.Expr.(xpath.ContextItemExpr); ok {
-			return 0.5 + float64(len(e.Predicates))*0.25
+			return 1
 		}
 
 		return 0.5
@@ -2243,7 +2274,7 @@ func computeDefaultPriority(expr xpath.Expr) float64 {
 
 		return 0.5
 	}
-	// Per XSLT 3.0 §6.4: path patterns with multiple steps get priority 0.5.
+	// Per XSLT 3.0 §6.5: path patterns with multiple steps get priority 0.5.
 	// An absolute path like "/doc" counts as multi-step (root + step).
 	if len(steps) > 1 || (len(steps) == 1 && isAbsolute(expr)) {
 		return 0.5
@@ -2271,11 +2302,11 @@ func isAbsolute(expr xpath.Expr) bool {
 
 func stepPriority(step xpath.Step) float64 {
 	switch nt := step.NodeTest.(type) {
-	case xdm.TypeTest:
+	case xdm.TypeTest, xdm.NamespaceNodeTest:
 		// node(), text(), comment(), processing-instruction()
 		return -0.5
 	case xdm.PITest:
-		if nt.Target != "" {
+		if nt.HasTarget {
 			return 0
 		}
 
@@ -2324,30 +2355,9 @@ func stepPriority(step xpath.Step) float64 {
 			return -0.5
 		}
 		// Priority of document-node(test) derives from the inner test
-		return nodeTestPriority(nt.Inner)
-	default:
-		return 0.5
-	}
-}
-
-// nodeTestPriority computes the default priority for a node test used inside
-// document-node() or similar container tests.
-func nodeTestPriority(test xdm.NodeTest) float64 {
-	switch nt := test.(type) {
-	case xdm.ElementTest:
-		if nt.Name == "" || nt.Name == "*" {
-			return -0.5
-		}
-
-		return 0
-	case xdm.AttributeTest:
-		if nt.Name == "" || nt.Name == "*" {
-			return -0.5
-		}
-
-		return 0
-	case xdm.TypeTest:
-		return -0.5
+		return stepPriority(xpath.Step{NodeTest: nt.Inner})
+	case xdm.SchemaElementTest, xdm.SchemaAttributeTest:
+		return 0.25
 	default:
 		return 0.5
 	}
@@ -2428,7 +2438,7 @@ func (c *compiler) validatePatternFunctions(ctx context.Context, p *pattern, sou
 			// rejecting. Functions forbidden in patterns (current-group,
 			// current-merge-key, ...) are caught separately by
 			// checkPatternForbiddenFunctions.
-			if nsURI == lexicon.NamespaceFn && xsltFunctionAcceptsArity(local, len(fc.Args)) {
+			if nsURI == lexicon.NamespaceFn && xsltFunctionAcceptsVersionArity(c.stylesheet.processorLanguage(), local, len(fc.Args)) {
 				return true
 			}
 
@@ -2437,10 +2447,8 @@ func (c *compiler) validatePatternFunctions(ctx context.Context, p *pattern, sou
 				return true
 			}
 
-			for fk := range c.stylesheet.functions {
-				if fk.Name == qn {
-					return true
-				}
+			if c.stylesheet.functions[funcKey{Name: qn, Arity: len(fc.Args)}] != nil {
+				return true
 			}
 
 			walkErr = staticError(errCodeXPST0017,

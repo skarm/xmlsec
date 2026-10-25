@@ -70,11 +70,11 @@ const (
 )
 
 type resolvedLevel struct {
+	compare   func(a, b string) int // collation comparator; nil = codepoint
+	floatRank int                   // 0: exact, 1: xs:float, 2: xs:double
 	mode      sortMode
 	exact     bool
-	floatRank int // 0: exact, 1: xs:float, 2: xs:double
 	desc      bool
-	compare   func(a, b string) int // collation comparator; nil = codepoint
 }
 
 // resolvedSort holds the fully resolved per-level sort configuration.
@@ -211,7 +211,7 @@ const (
 func (ec *execContext) selectedSortValue(ctx context.Context, sk *sortKey, node xdm.Node, dtMode *dataTypeMode, evalState *xpath.EvalState) (sortValue, error) {
 	result, err := ec.evaluateSortExpression(ctx, sk.Select, node, evalState)
 	if err != nil {
-		return sortValue{}, dynamicError(errCodeXTDE0700, "sort key evaluation error: %v", err)
+		return sortValue{}, err
 	}
 
 	seq := result.Sequence()
@@ -311,7 +311,7 @@ func (ec *execContext) bodySortValue(ctx context.Context, body []instruction, no
 
 	val, err := ec.evaluateSortBody(ctx, body, node)
 	if err != nil {
-		return sortValue{}, dynamicError(errCodeXTDE0700, "sort key evaluation error: %v", err)
+		return sortValue{}, err
 	}
 
 	implicitTZ := ec.currentTime.Location()

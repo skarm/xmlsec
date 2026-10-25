@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"maps"
 	"slices"
 	"sync"
 
@@ -15,12 +16,32 @@ import (
 
 // Expression is a compiled XPath 3.1 expression, reusable across evaluations.
 type Expression struct {
-	deferred   error
-	source     string
-	ast        Expr
-	program    *vmProgram
-	prefixPlan prefixValidationPlan
-	version    int // xmlsec: explicit 10, 20, 30 or 31; zero preserves upstream behavior.
+	staticNamespaces    map[string]string
+	defaultXMLNamespace string
+	deferred            error
+	source              string
+	ast                 Expr
+	program             *vmProgram
+	prefixPlan          prefixValidationPlan
+	version             int // xmlsec: explicit 10, 20, 30 or 31; zero preserves upstream behavior.
+}
+
+// BindNamespaces returns a copy bound to an immutable static namespace context.
+// Unbound expressions retain the evaluator-supplied namespace behavior.
+func (e *Expression) BindNamespaces(ns map[string]string) *Expression {
+	copyExpr := *e
+	copyExpr.staticNamespaces = maps.Clone(ns)
+
+	return &copyExpr
+}
+
+// BindNamespaceContext also captures the host language's XML default namespace,
+// which can differ from XPath's default element/type namespace.
+func (e *Expression) BindNamespaceContext(ns map[string]string, defaultXMLNamespace string) *Expression {
+	bound := e.BindNamespaces(ns)
+	bound.defaultXMLNamespace = defaultXMLNamespace
+
+	return bound
 }
 
 // DeferredExpression preserves an invalid expression for XSLT 1.0 forwards
@@ -40,7 +61,7 @@ func (e *Expression) Validate(namespaces map[string]string) error {
 		return err
 	}
 
-	return e.prefixPlan.Validate(namespaces, e.version == 10, nil)
+	return e.prefixPlan.Validate(namespaces, e.staticNamespaces != nil || e.version == 10, nil)
 }
 
 // ValidateWithSchema is like Validate but also supplies the in-scope schema
@@ -56,7 +77,7 @@ func (e *Expression) ValidateWithSchema(namespaces map[string]string, decls Sche
 		return err
 	}
 
-	return e.prefixPlan.Validate(namespaces, e.version == 10, decls)
+	return e.prefixPlan.Validate(namespaces, e.staticNamespaces != nil || e.version == 10, decls)
 }
 
 // String returns the original XPath expression string.
@@ -306,9 +327,10 @@ type Compiler struct {
 }
 
 type compilerCfg struct {
-	context    context.Context
-	version    int
-	namespaces map[string]string
+	context      context.Context
+	version      int
+	namespaces   map[string]string
+	hostFunction func(uri, name string, arity int) bool
 }
 
 // NewCompiler creates a new Compiler with default settings.
@@ -361,7 +383,7 @@ func (c Compiler) Compile(expr string) (*Expression, error) {
 			return nil, syntaxError(err, version)
 		}
 
-		if err := validateVersionExpr(ast, c.cfg.version, c.cfg.namespaces); err != nil {
+		if err := validateVersionExpr(ast, c.cfg.version, c.cfg.namespaces, c.cfg.hostFunction); err != nil {
 			return nil, err
 		}
 

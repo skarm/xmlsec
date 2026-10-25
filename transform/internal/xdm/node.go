@@ -1,6 +1,6 @@
 // Node views implement XDM identity and navigation over the project XML tree.
-// Node views own no XML content or child/attribute storage: all data lives in
-// internal/tree. Parsed documents are shared directly, without serialization.
+// Original XML content and child/attribute storage live in internal/tree.
+// Views can cache derived values; parsed documents are shared without serialization.
 package xdm
 
 import (
@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 )
 
 type ElementType int
@@ -355,7 +356,7 @@ func (d *Document) wrap(ctx context.Context, r *tree.Node, slot int) error {
 		return nil
 	}
 
-	v := nodeView{raw: r, doc: d, slot: slot}
+	v := nodeView{raw: r, doc: d, slot: slot, line: int(r.SourceLine)}
 
 	var n Node
 
@@ -384,7 +385,7 @@ func (d *Document) wrap(ctx context.Context, r *tree.Node, slot int) error {
 			d.attribute(e, a.Name)
 
 			if a.Name == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
-				d.ids[a.Value] = e
+				d.ids[d.attrs[attrKey{r, a.Name}].Value()] = e
 			}
 		}
 	}
@@ -412,7 +413,7 @@ func (d *Document) adopt(n Node) {
 	if e, ok := n.(*Element); ok {
 		for _, entry := range e.raw.Attrs {
 			if entry.Name == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
-				d.ids[entry.Value] = e
+				d.ids[xmlchar.CollapseSpace(entry.Value)] = e
 			}
 
 			key := attrKey{e.raw, entry.Name}
@@ -438,11 +439,14 @@ func (d *Document) attribute(e *Element, name tree.Name) {
 	key := attrKey{e.raw, name}
 	if a := d.attrs[key]; a != nil {
 		a.detached = false
+		a.refreshXMLID()
+
 		return
 	}
 
 	a := &Attribute{raw: e.raw, doc: d, kind: AttributeNode, slot: -1, parent: e, key: name, owner: e}
 	a.self = a
+	a.refreshXMLID()
 	d.attrs[key] = a
 }
 
@@ -555,17 +559,22 @@ func (e *Element) SetAttributeNS(local, value string, ns *Namespace) error {
 	}
 
 	name := tree.Name{Space: uri, Local: local}
+	if uri == tree.XMLNamespace && local == "id" {
+		value = xmlchar.CollapseSpace(value)
+	}
+
 	for i, a := range e.raw.Attrs {
 		if a.Name == name {
 			e.raw.Attrs[i].Value = value
 
 			e.raw.Attrs[i].Prefix = prefix
 			if uri == tree.XMLNamespace && local == "id" {
-				if e.doc.ids[a.Value] == e {
-					delete(e.doc.ids, a.Value)
+				if oldID := xmlchar.CollapseSpace(a.Value); e.doc.ids[oldID] == e {
+					delete(e.doc.ids, oldID)
 				}
 
 				e.doc.RegisterID(value, e)
+				e.doc.attrs[attrKey{e.raw, name}].xmlIDValue = value
 			}
 
 			return nil
@@ -594,7 +603,7 @@ func (e *Element) GetAttribute(n string) (string, bool) {
 	prefix, local := splitName(n)
 	for _, a := range e.raw.Attrs {
 		if a.Name.Local == local && a.Prefix == prefix {
-			return a.Value, true
+			return e.attributeValue(a), true
 		}
 	}
 
@@ -606,7 +615,7 @@ func (e *Element) HasAttribute(n string) bool { _, ok := e.GetAttribute(n); retu
 func (e *Element) GetAttributeNS(local, uri string) (string, bool) {
 	for _, a := range e.raw.Attrs {
 		if a.Name == (tree.Name{Space: uri, Local: local}) {
-			return a.Value, true
+			return e.attributeValue(a), true
 		}
 	}
 
@@ -656,8 +665,10 @@ func (e *Element) RemoveAttributeNS(local, uri string) bool {
 	for i, a := range e.raw.Attrs {
 		if a.Name == (tree.Name{Space: uri, Local: local}) {
 			e.raw.Attrs = slices.Delete(e.raw.Attrs, i, i+1)
-			if uri == tree.XMLNamespace && local == "id" && e.doc.ids[a.Value] == e {
-				delete(e.doc.ids, a.Value)
+			if uri == tree.XMLNamespace && local == "id" {
+				if id := xmlchar.CollapseSpace(a.Value); e.doc.ids[id] == e {
+					delete(e.doc.ids, id)
+				}
 			}
 
 			if view := e.doc.attrs[attrKey{e.raw, a.Name}]; view != nil {
@@ -683,10 +694,13 @@ func (e *Element) FindAttribute(p AttributePredicate) (*Attribute, bool) {
 
 type Attribute struct {
 	nodeView
-	key      tree.Name
-	owner    *Element
-	atype    AttributeIDType
-	detached bool
+	key   tree.Name
+	owner *Element
+	// Cache the derived value so repeated reads do not rescan or allocate for
+	// an immutable input attribute. Private mutations refresh it before publishing.
+	xmlIDValue string
+	atype      AttributeIDType
+	detached   bool
 }
 
 func (a *Attribute) Name() string { return tree.QName(a.Prefix(), a.LocalName()) }
@@ -697,7 +711,29 @@ func (a *Attribute) Prefix() string { return a.entry().Prefix }
 
 func (a *Attribute) URI() string { return a.key.Space }
 
-func (a *Attribute) Value() string { return a.entry().Value }
+// Value exposes the XDM-normalized xml:id while retaining the original snapshot
+// for references and export. Other attributes keep the XML parser's value.
+func (a *Attribute) Value() string {
+	if a.key == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
+		return a.xmlIDValue
+	}
+
+	return a.entry().Value
+}
+
+func (a *Attribute) refreshXMLID() {
+	if a.key == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
+		a.xmlIDValue = xmlchar.CollapseSpace(a.entry().Value)
+	}
+}
+
+func (e *Element) attributeValue(a tree.Attribute) string {
+	if a.Name == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
+		return e.doc.attrs[attrKey{e.raw, a.Name}].Value()
+	}
+
+	return a.Value
+}
 
 func (a *Attribute) Namespace() *Namespace {
 	if a.URI() == "" && a.Prefix() == "" {

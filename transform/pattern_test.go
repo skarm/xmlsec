@@ -68,7 +68,7 @@ func TestXPathPatternFunctions(t *testing.T) {
 		`matches('a.b', 'A.B', 'qi')`:                                                              nameTrue,
 		`matches(codepoints-to-string(13), '.')`:                                                   nameFalse,
 		`matches(codepoints-to-string(13), '.', 's')`:                                              nameTrue,
-		`matches(concat('a',codepoints-to-string(10)), '^$', 'm')`:                                 nameTrue,
+		`matches(concat('a',codepoints-to-string(10)), '^$', 'm')`:                                 nameFalse,
 		`replace('abracadabra', 'a.*a', '*')`:                                                      "*",
 		`replace('abracadabra', 'a.*?a', '*')`:                                                     "*c*bra",
 		`replace('abracadabra', 'a(.)', 'a$1$1')`:                                                  "abbraccaddabbra",
@@ -114,6 +114,40 @@ func TestXPathPatternFunctions(t *testing.T) {
 	}
 }
 
+func TestXPathUnicodeBlockEdition(t *testing.T) {
+	e := engine(t, transform.Config{})
+
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for source, want := range map[string]string{
+			`matches(codepoints-to-string(124608), '\p{IsTaiYo}')`: nameTrue,
+			`matches(codepoints-to-string(124607), '\p{IsTaiYo}')`: nameFalse,
+			`matches(codepoints-to-string(124671), '\p{IsTaiYo}')`: nameTrue,
+			`matches(codepoints-to-string(124672), '\p{IsTaiYo}')`: nameFalse,
+			`matches('Α', '\p{IsGreek}')`:                          nameTrue,
+			`matches('Α', '\p{IsGreekandCoptic}')`:                 nameTrue,
+			`matches('A', '\p{IsBasicLatin}')`:                     nameTrue,
+			`matches('A', '\p{IsBasicLatin}', 'i')`:                nameTrue,
+			`matches('K', '\p{IsBasicLatin}', 'i')`:                nameFalse,
+			`matches('', '\p{IsLowSurrogates}?')`:                  nameTrue,
+			`matches('A', '\p{IsHighSurrogates}')`:                 nameFalse,
+		} {
+			if got := text(t, evaluate(t, e, source, version)); got != want {
+				t.Fatal(version, source, got, want)
+			}
+		}
+
+		for _, property := range []string{"Isbasiclatin", "IsBaſicLatin", "IsNoSuchBlock", "Latin", "Greek", "Cs", "LC", "XX"} {
+			source := `matches('A', '\p{` + property + `}', 'i')`
+			_, err := query(t, e, source, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != errCodeFORX0002 {
+				t.Fatal(version, property, err)
+			}
+		}
+	}
+}
+
 func TestXSLTPatternGroups(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, version := range []string{version20, version30} {
@@ -147,6 +181,27 @@ func TestPatternBudgetErrors(t *testing.T) {
 	q := query(t, e, `matches('a','a{999999999999999999999999999999999999}')`, transform.XPath31)
 	if _, err := q.Evaluate(context.Background(), nil, transform.XPathContext{}); !errors.Is(err, transform.ErrLimit) {
 		t.Fatal("compile limit cause lost", err)
+	}
+
+	const largeLiteral = "1234567890123456789012345678901234567890123456789012345678901234"
+	for _, pattern := range []string{
+		"n[" + strings.Repeat(largeLiteral+" and ", 40) + "1]",
+		strings.Repeat("n["+largeLiteral+"] union ", 40) + "m",
+	} {
+		patternSource := sheet(version30, `<xsl:template name="start">ok</xsl:template><xsl:template match="`+pattern+`"/>`)
+		if _, err := engine(t, transform.Config{}).CompileXSLT(t.Context(), []byte(patternSource), transform.XSLTOptions{}); err != nil {
+			t.Fatal("valid pattern control", err)
+		}
+		for _, nested := range []bool{false, true} {
+			_, err := resourceStylesheetResult(t, e, patternSource, nested)
+			if !errors.Is(err, transform.ErrLimit) {
+				t.Fatal("pattern literals bypassed shared numeric budget", nested, err)
+			}
+			var detail *transform.Error
+			if errors.As(err, &detail) && detail.Code == "XTSE0340" {
+				t.Fatal("pattern compilation budget was disguised as syntax", nested, err)
+			}
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

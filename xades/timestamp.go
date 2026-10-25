@@ -499,7 +499,7 @@ func verifySignatureTimestampsModeProps(ctx context.Context, props []tree.Elemen
 			return e, true
 		}
 
-		if len(tokens) > o.MaxTimestamps-len((*out)) {
+		if len(tokens) > o.MaxTimestamps-len(*out) {
 			return ErrTimestamp, true
 		}
 
@@ -509,7 +509,7 @@ func verifySignatureTimestampsModeProps(ctx context.Context, props []tree.Elemen
 				return e, true
 			}
 
-			imprint, e := canonicalImprint(ctx, (*sig), method, 1<<20, token.UnverifiedInfo().Imprint().Hash)
+			imprint, e := canonicalImprint(ctx, *sig, method, 1<<20, token.UnverifiedInfo().Imprint().Hash)
 			if e != nil {
 				return e, true
 			}
@@ -519,7 +519,7 @@ func verifySignatureTimestampsModeProps(ctx context.Context, props []tree.Elemen
 				return fmt.Errorf("%w: %w", ErrTimestamp, e), true
 			}
 
-			(*out) = append((*out), r)
+			*out = append(*out, r)
 		}
 	}
 

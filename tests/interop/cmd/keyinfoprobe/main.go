@@ -109,7 +109,7 @@ func run(t task) (a answer, e error) {
 func runEntries(ctx context.Context, t *task, a *answer) (answer, error) {
 	key, e := x509.ParsePKIXPublicKey(t.SPKI)
 	if e != nil {
-		return (*a), e
+		return *a, e
 	}
 
 	spec := keyinfo.Template{ID: "key-info", Names: []string{"  exact key name  "}}
@@ -121,37 +121,37 @@ func runEntries(ctx context.Context, t *task, a *answer) (answer, error) {
 
 	ki, e := keyinfo.Build(ctx, spec)
 	if e != nil {
-		return (*a), e
+		return *a, e
 	}
 
 	if t.Mode == "build" {
 		a.Data, e = ki.XML(ctx)
-		return (*a), e
+		return *a, e
 	}
 
 	p, e := x509.ParsePKCS8PrivateKey(t.Private)
 	if e != nil {
-		return (*a), e
+		return *a, e
 	}
 
 	signer, ok := p.(crypto.Signer)
 	if !ok {
-		return (*a), errors.New("not a signer")
+		return *a, errors.New("not a signer")
 	}
 
 	text := "independent payload"
 
 	draft, selected, e := xmldsig.BuildTemplate(ctx, nil, document.Element{}, xmldsig.SignatureTemplate{ID: "s", SignatureMethod: t.Method, KeyInfo: ki, References: []xmldsig.ReferenceTemplate{{URI: "#data", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}}, Objects: []xmldsig.ObjectTemplate{{ID: "data", Text: &text}}})
 	if e != nil {
-		return (*a), e
+		return *a, e
 	}
 
 	signed, e := xmldsig.SignTemplate(ctx, draft, selected, signer, xmldsig.TemplateSignOptions{Validation: xmldsig.SignatureOptions{Policy: xmldsig.ModernPolicy()}})
 	if e != nil {
-		return (*a), e
+		return *a, e
 	}
 
 	a.Data, e = signed.XML(ctx)
 
-	return (*a), e
+	return *a, e
 }

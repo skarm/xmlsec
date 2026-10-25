@@ -106,7 +106,7 @@ func testPrivateAndPublicFormatsCase(t *testing.T, tc *keyFormatCase, pemEncodin
 		clear(input)
 
 		encoded, err := x509.MarshalPKCS8PrivateKey(parsed)
-		if err != nil || !bytes.Equal(encoded, (*private)) {
+		if err != nil || !bytes.Equal(encoded, *private) {
 			t.Fatalf("private key aliases input or differs: %v", err)
 		}
 	} else {
@@ -125,7 +125,7 @@ func testPrivateAndPublicFormatsCase(t *testing.T, tc *keyFormatCase, pemEncodin
 	}
 
 	got, err := x509.MarshalPKIXPublicKey(key)
-	if err != nil || !bytes.Equal(got, (*public)) {
+	if err != nil || !bytes.Equal(got, *public) {
 		t.Fatalf("key aliases input or differs: %v", err)
 	}
 }

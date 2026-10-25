@@ -58,7 +58,7 @@ func parseSequenceType(as string) sequenceType {
 // an empty sequence (zero items). Types ending with ? or * allow empty;
 // types without an occurrence indicator or with + require at least one item.
 func allowsEmptySequence(as string) bool {
-	s := strings.TrimSpace(as)
+	s := strings.TrimSpace(stripXPathComments(as))
 	if s == "" || s == nameEmptySequence {
 		return true
 	}
@@ -128,6 +128,10 @@ func checkSequenceType(ctx context.Context, seq xdm.Sequence, st sequenceType, e
 	for item := range xdm.SequenceItems(seq) {
 		coerced, err := coerceItem(ctx, item, st.ItemType, execCtx)
 		if err != nil {
+			if failure := preserveControlFailure(ctx, err); failure != nil {
+				return nil, failure
+			}
+
 			return nil, dynamicError(errCode, "%s: %v", context, err)
 		}
 
@@ -207,7 +211,7 @@ func coerceItemWithContext(ctx context.Context, item xdm.Item, itemType string, 
 		// Retain the existing permissive array test.
 		return item, nil
 	case strings.HasPrefix(itemType, "function("):
-		return coerceFunctionItemType(ctx, item, itemType)
+		return coerceFunctionItemType(ctx, item, itemType, ec)
 	case strings.HasPrefix(itemType, "element("):
 		return coerceElementNodeTest(item, itemType, ec)
 	case strings.HasPrefix(itemType, "schema-element("):
@@ -279,7 +283,7 @@ func coerceDocumentNodeTest(ctx context.Context, item xdm.Item, itemType string,
 	return item, nil
 }
 
-func coerceFunctionItemType(ctx context.Context, item xdm.Item, itemType string) (xdm.Item, error) {
+func coerceFunctionItemType(ctx context.Context, item xdm.Item, itemType string, ec *execContext) (xdm.Item, error) {
 	if itemType == "function(*)" {
 		switch item.(type) {
 		case xdm.FunctionItem, xdm.MapItem, *xdm.ArrayItem:
@@ -295,20 +299,19 @@ func coerceFunctionItemType(ctx context.Context, item xdm.Item, itemType string)
 	}
 
 	seq := xdm.ItemSlice{item}
-	if xpath.MatchesSequenceType(seq, st) {
-		return item, nil
+
+	var coerced xdm.Sequence
+	if ec != nil {
+		coerced, err = ec.convertFunctionArgument(ctx, seq, st)
+	} else {
+		coerced, err = xpath.ConvertToSequenceType(ctx, seq, st)
 	}
 
-	// Parameters are contravariant. Reject incompatible arguments before
-	// creating a wrapper that converts arguments and return values at call time.
-	if fn, ok := item.(xdm.FunctionItem); ok {
-		if !xpath.CheckFunctionParamCompat(fn, st) {
-			return nil, fmt.Errorf("function item does not match required type %s", itemType)
-		}
+	if err != nil {
+		return nil, err
 	}
 
-	coerced, ok := xpath.CoerceToSequenceTypeContext(ctx, seq, st)
-	if ok && coerced != nil && xdm.SequenceLen(coerced) == 1 {
+	if coerced != nil && xdm.SequenceLen(coerced) == 1 {
 		return coerced.Get(0), nil
 	}
 

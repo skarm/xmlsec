@@ -108,3 +108,16 @@ func TestXMLWhitespace(t *testing.T) {
 		}
 	}
 }
+
+func TestCollapseSpace(t *testing.T) {
+	for input, want := range map[string]string{
+		"": "", " \t\r\n": "", "id": "id", "  id \t": "id",
+		" one\t\r\ntwo  three ":  "one two three",
+		" \u00a0id\u0085\u2003 ": "\u00a0id\u0085\u2003",
+		"\xff \xfe":              "\xff \xfe",
+	} {
+		if got := xmlchar.CollapseSpace(input); got != want {
+			t.Errorf("CollapseSpace(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

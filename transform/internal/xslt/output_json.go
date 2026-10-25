@@ -4,9 +4,8 @@
 package xslt
 
 import (
-	"bytes"
-	"fmt"
 	"io"
+	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
@@ -69,33 +68,14 @@ func serializeItemJSON(item xdm.Item, outDef *OutputDef) (string, error) {
 
 // jsonEscapeString returns a JSON-escaped double-quoted string.
 func jsonEscapeString(s string) string {
-	var buf bytes.Buffer
+	var buf strings.Builder
 	buf.WriteByte('"')
 
 	for _, r := range s {
-		switch r {
-		case '"':
-			buf.WriteString("\\\"")
-		case '\\':
-			buf.WriteString("\\\\")
-		case '\n':
-			buf.WriteString("\\n")
-		case '\r':
-			buf.WriteString("\\r")
-		case '\t':
-			buf.WriteString("\\t")
-		case '\b':
-			buf.WriteString("\\b")
-		case '\f':
-			buf.WriteString("\\f")
-		case '/':
-			buf.WriteString("\\/")
-		default:
-			if r < 0x20 {
-				_, _ = fmt.Fprintf(&buf, "\\u%04x", r)
-			} else {
-				buf.WriteRune(r)
-			}
+		if escaped := jsonRuneEscape(r); escaped != "" {
+			buf.WriteString(escaped)
+		} else {
+			buf.WriteRune(r)
 		}
 	}
 

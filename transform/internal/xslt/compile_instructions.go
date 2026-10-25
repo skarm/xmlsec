@@ -5,6 +5,7 @@ package xslt
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"slices"
 	"strconv"
@@ -76,7 +77,11 @@ func attributeNames(names ...string) func(string) bool {
 // Standard attributes (use-when, expand-text, etc.) are always allowed per XSLT 3.0 §3.5.
 // In forwards-compatible mode (version > 3.0), unknown attributes are silently ignored
 // per XSLT 3.0 §3.8.
-func (c *compiler) validateXSLTAttrs(_ context.Context, elem *xdm.Element, allowed func(string) bool) error {
+func (c *compiler) validateXSLTAttrs(ctx context.Context, elem *xdm.Element, allowed func(string) bool) error {
+	if err := c.checkDefaultModeAttribute(ctx, elem); err != nil {
+		return err
+	}
+
 	fc := c.forwardsCompatible(c.effectiveVersion)
 	if !fc {
 		// Also check the element's own version attribute
@@ -102,7 +107,7 @@ func (c *compiler) validateXSLTAttrs(_ context.Context, elem *xdm.Element, allow
 
 		name := attr.LocalName()
 		// Shadow attributes (prefixed with _) are compile-time AVTs
-		if strings.HasPrefix(name, "_") {
+		if isShadowAttributeName(name) {
 			continue
 		}
 
@@ -188,6 +193,10 @@ func (c *compiler) compileInstruction(ctx context.Context, elem *xdm.Element) (i
 		return nil, err
 	}
 
+	if err := c.checkDefaultModeAttribute(ctx, elem); err != nil {
+		return nil, err
+	}
+
 	// Handle version inheritance. On an XSLT element this is the unqualified
 	// version attribute; on a literal result element it is xsl:version (an
 	// unqualified version there is a result attribute, not an XSLT version).
@@ -199,7 +208,7 @@ func (c *compiler) compileInstruction(ctx context.Context, elem *xdm.Element) (i
 
 	savedPreserve := c.preserveSpace
 	if xs := getAttr(elem, lexicon.QNameXMLSpace); xs != "" {
-		c.preserveSpace = (xs == lexicon.SpacePreserve)
+		c.preserveSpace = xs == lexicon.SpacePreserve
 	}
 	defer func() { c.preserveSpace = savedPreserve }()
 
@@ -230,16 +239,6 @@ func (c *compiler) compileInstruction(ctx context.Context, elem *xdm.Element) (i
 	c.setInstructionDefaultCollation(elem)
 
 	defer func() { c.defaultCollation = savedDefaultCollation }()
-
-	// Handle per-instruction default-mode (XSLT 3.0 standard attribute)
-	// On XSLT elements: default-mode="..."
-	// On LREs: xsl:default-mode="..."
-	// Mode names are stored as raw QNames (not Clark notation) for consistency
-	// with how template mode attributes are stored.
-	savedDefaultMode := c.defaultMode
-	c.setInstructionDefaultMode(elem)
-
-	defer func() { c.defaultMode = savedDefaultMode }()
 
 	// Handle extension-element-prefixes on both XSLT instructions and LREs.
 	// On XSLT elements: extension-element-prefixes="..."
@@ -287,6 +286,11 @@ func (c *compiler) compileInstructionPayload(ctx context.Context, elem *xdm.Elem
 			}
 		}
 
+		if c.stylesheet.processorLanguage() == 20 && unavailableInstruction(elem.LocalName(), 20) && c.forwardsCompatible(c.effectiveVersion) {
+			inst, err := c.compileForwardsCompat(ctx, elem)
+			return inst, false, err
+		}
+
 		inst, err := c.compileXSLTInstruction(ctx, elem)
 
 		return inst, true, err
@@ -321,14 +325,31 @@ func (c *compiler) prepareInstructionAttributes(ctx context.Context, elem *xdm.E
 		return nil
 	}
 
-	for _, attr := range elem.Attributes() {
-		if attr.URI() == lexicon.NamespaceXSLT {
-			return staticError(errCodeXTSE0090,
-				"attribute %q in the XSLT namespace is not allowed on xsl:%s", attr.LocalName(), elem.LocalName())
-		}
+	if err := c.resolveShadowAttributes(ctx, elem); err != nil {
+		return err
 	}
 
-	return c.resolveShadowAttributes(ctx, elem)
+	return c.validateKnownElementAttributes(ctx, elem)
+}
+
+// Validate the shared REC vocabulary at each compilation boundary, after
+// use-when exclusion and shadow evaluation. Unknown future instructions retain
+// their existing fallback path; unknown attributes obey forwards compatibility.
+func (c *compiler) validateKnownElementAttributes(ctx context.Context, elem *xdm.Element) error {
+	name := elem.LocalName()
+	if name == fnNameTransform {
+		name = nameStylesheet
+	}
+
+	definition, known := lookupXSLTElement(name)
+	if !known {
+		return nil
+	}
+
+	return c.validateXSLTAttrs(ctx, elem, func(attribute string) bool {
+		metadata, declared := definition.attrs[attribute]
+		return declared && !metadata.removed30
+	})
 }
 
 func (c *compiler) setInstructionExpandText(elem *xdm.Element) error {
@@ -378,14 +399,6 @@ func (c *compiler) setInstructionDefaultCollation(elem *xdm.Element) {
 		if uri := resolveDefaultCollation(dc); uri != "" {
 			c.defaultCollation = uri
 		}
-	}
-}
-
-func (c *compiler) setInstructionDefaultMode(elem *xdm.Element) {
-	if dm := getAttr(elem, nameDefaultMode); elem.URI() == lexicon.NamespaceXSLT && dm != "" {
-		c.defaultMode = dm
-	} else if dm, ok := elem.GetAttributeNS(nameDefaultMode, lexicon.NamespaceXSLT); ok {
-		c.defaultMode = dm
 	}
 }
 
@@ -510,13 +523,22 @@ func (c *compiler) validateDescendantUseWhen(ctx context.Context, parent *xdm.El
 // Provides XSLT static context functions: function-available, system-property,
 // type-available, element-available per XSLT 3.0 §3.14.
 func (c *compiler) evaluateUseWhen(ctx context.Context, expr string) (bool, error) {
-	compiled, err := xpath.NewCompiler().Compile(expr)
+	compiled, err := xpath.NewCompiler().Context(ctx).Language(c.stylesheet.xpathVersion(), c.xpathNamespaces(c.nsBindings)).Compile(expr)
 	if err != nil {
-		// XPST0003: invalid XPath in use-when is a static error
-		return false, staticError(errCodeXPST0003,
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return false, failure
+		}
+
+		code := errCodeXPST0003
+		if detail, ok := errors.AsType[*xdm.Error](err); ok {
+			code = detail.Code
+		}
+
+		return false, staticErrorCause(code, err,
 			"invalid XPath expression in use-when: %s: %v", expr, err)
 	}
 
+	compiled = compiled.BindNamespaceContext(c.xpathNamespaces(c.nsBindings), c.nsBindings[""])
 	eval := c.useWhenEvaluator(ctx)
 
 	result, err := eval.Evaluate(ctx, compiled, nil)
@@ -529,169 +551,42 @@ func (c *compiler) evaluateUseWhen(ctx context.Context, expr string) (bool, erro
 
 	b, err := result.EBV()
 	if err != nil {
-		return true, nil //nolint:nilerr // use-when defaults to true on EBV failure
+		return false, err
 	}
 
 	return b, nil
 }
 
-func (c *compiler) useWhenFunctionAvailable(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 || args[0] == nil || xdm.SequenceLen(args[0]) == 0 {
+func useWhenFunctionAvailable(ctx context.Context, args []xdm.Sequence, processor int) (xdm.Sequence, error) {
+	name, err := introspectionArgumentName(ctx, args, xpath.NSFn, errCodeXTDE1400)
+	if err != nil {
+		return nil, err
+	}
+
+	arity, valid := functionAvailableArity(args)
+	if !valid {
 		return xdm.SingleBoolean(false), nil
 	}
 
-	av, err := xpath.AtomizeItem(args[0].Get(0))
-	if err != nil {
-		return xdm.SingleBoolean(false), nil //nolint:nilerr // function-available returns false on atomization failure
-	}
-
-	name, _ := xpath.AtomicToString(av)
-
-	// XTDE1400: function name must be a valid QName
-	if !strings.HasPrefix(name, "Q{") && !xmlchar.IsValidQName(name) {
-		return nil, dynamicError(errCodeXTDE1400,
-			"function-available: %q is not a valid QName", name)
-	}
-
-	if prefix, _, ok := strings.Cut(name, ":"); ok {
-		if _, ok := c.nsBindings[prefix]; !ok {
-			return nil, dynamicError(errCodeXTDE1400,
-				"undeclared namespace prefix %q in function-available(%q)", prefix, name)
+	if name.URI == xpath.NSFn {
+		switch name.Local {
+		case fnNameFunctionAvailable, funcSystemProperty, fnNameTypeAvailable, fnNameElementAvailable:
+			return xdm.SingleBoolean(xsltFunctionAcceptsArity(name.Local, arity) || arity < 0), nil
+		case funcAvailableSystemProperties:
+			return xdm.SingleBoolean(processor >= 30 && (arity < 0 || arity == 0)), nil
 		}
 	}
 
-	// Only XSLT static context functions are available in use-when.
-	// Runtime-only functions (current, key, document, generate-id, etc.)
-	// are NOT available in the use-when static context per XSLT 3.0 spec 3.4.6.
-	switch name {
-	case fnNameFunctionAvailable, funcSystemProperty, fnNameTypeAvailable,
-		fnNameElementAvailable, funcAvailableSystemProperties:
-		return xdm.SingleBoolean(true), nil
+	version := 31
+	if processor == 20 {
+		version = 20
 	}
 
-	// XPath built-in functions: resolve prefixed names to namespace URI.
-	localName := name
-	ns := ""
-
-	if prefix, ln, ok := strings.Cut(name, ":"); ok {
-		localName = ln
-		ns = c.nsBindings[prefix] // already validated above
-	} else if strings.HasPrefix(name, "Q{") {
-		// EQName: Q{uri}local
-		end := strings.IndexByte(name, '}')
-		if end >= 0 {
-			ns = name[2:end]
-			localName = name[end+1:]
-		}
+	if processor == 10 {
+		version = 10
 	}
 
-	if ns != "" {
-		if xpath.IsBuiltinFunctionNS(ns, localName) {
-			return xdm.SingleBoolean(true), nil
-		}
-	} else {
-		if xpath.IsBuiltinFunction(localName) {
-			return xdm.SingleBoolean(true), nil
-		}
-	}
-
-	return xdm.SingleBoolean(false), nil
-}
-
-func (c *compiler) useWhenSystemProperty(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 || args[0] == nil || xdm.SequenceLen(args[0]) == 0 {
-		return xdm.SingleString(""), nil
-	}
-
-	av, err := xpath.AtomizeItem(args[0].Get(0))
-	if err != nil {
-		return xdm.SingleString(""), nil //nolint:nilerr // system-property returns "" on atomization failure
-	}
-
-	name, _ := xpath.AtomicToString(av)
-
-	resolved := resolveQName(name, c.nsBindings)
-	switch resolved {
-	case xdm.ClarkName(lexicon.NamespaceXSLT, paramVersion):
-		return xdm.SingleString("3.0"), nil
-	case xdm.ClarkName(lexicon.NamespaceXSLT, "vendor"):
-		return xdm.SingleString("xmlsec"), nil
-	case xdm.ClarkName(lexicon.NamespaceXSLT, "vendor-url"):
-		return xdm.SingleString("https://github.com/skarm/xmlsec"), nil
-	case xdm.ClarkName(lexicon.NamespaceXSLT, "product-name"):
-		return xdm.SingleString("xmlsec"), nil
-	case xdm.ClarkName(lexicon.NamespaceXSLT, "product-version"):
-		return xdm.SingleString("0.1"), nil
-	case xdm.ClarkName(lexicon.NamespaceXSLT, nameIsSchemaAware):
-		return xdm.SingleString(lexicon.ValueYes), nil
-	case xdm.ClarkName(lexicon.NamespaceXSLT, nameSupportsSerialization):
-		return xdm.SingleString(lexicon.ValueYes), nil
-	case xdm.ClarkName(lexicon.NamespaceXSLT, textSupportsBackwardsCompatibility):
-		return xdm.SingleString(lexicon.ValueYes), nil
-	case xdm.ClarkName(lexicon.NamespaceXSLT, nameSupportsNamespaceAxis):
-		return xdm.SingleString(lexicon.ValueYes), nil
-	case xdm.ClarkName(lexicon.NamespaceXSLT, nameSupportsStreaming):
-		return xdm.SingleString(lexicon.ValueNo), nil
-	case xdm.ClarkName(lexicon.NamespaceXSLT, nameSupportsDynamicEvaluation):
-		return xdm.SingleString(lexicon.ValueYes), nil
-	case xdm.ClarkName(lexicon.NamespaceXSLT, textSupportsHigherOrderFunctions):
-		return xdm.SingleString(lexicon.ValueYes), nil
-	case xdm.ClarkName(lexicon.NamespaceXSLT, "xpath-version"):
-		return xdm.SingleString("3.1"), nil
-	case xdm.ClarkName(lexicon.NamespaceXSLT, "xsd-version"):
-		return xdm.SingleString("1.1"), nil
-	}
-
-	return xdm.SingleString(""), nil
-}
-
-func (c *compiler) useWhenTypeAvailable(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 || args[0] == nil || xdm.SequenceLen(args[0]) == 0 {
-		return xdm.SingleBoolean(false), nil
-	}
-
-	av, err := xpath.AtomizeItem(args[0].Get(0))
-	if err != nil {
-		return xdm.SingleBoolean(false), nil //nolint:nilerr // type-available returns false on atomization failure
-	}
-
-	name, _ := xpath.AtomicToString(av)
-	resolved := resolveQName(name, c.nsBindings)
-
-	return xdm.SingleBoolean(xdm.IsKnownXSDType(resolved)), nil
-}
-
-func (c *compiler) useWhenElementAvailable(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 || args[0] == nil || xdm.SequenceLen(args[0]) == 0 {
-		return xdm.SingleBoolean(false), nil
-	}
-
-	av, err := xpath.AtomizeItem(args[0].Get(0))
-	if err != nil {
-		return xdm.SingleBoolean(false), nil //nolint:nilerr // element-available returns false on atomization failure
-	}
-
-	name, _ := xpath.AtomicToString(av)
-
-	resolved := resolveQName(name, c.nsBindings)
-	if strings.HasPrefix(resolved, "{"+lexicon.NamespaceXSLT+"}") {
-		local := resolved[len("{"+lexicon.NamespaceXSLT+"}"):]
-		switch local {
-		case lexicon.XSLTElementApplyTemplates, lexicon.XSLTElementCallTemplate, lexicon.XSLTElementApplyImports,
-			lexicon.XSLTElementForEach, lexicon.XSLTElementValueOf, lexicon.XSLTElementCopyOf, lexicon.XSLTElementNumber, lexicon.XSLTElementChoose,
-			lexicon.XSLTElementIf, lexicon.XSLTElementText, lexicon.XSLTElementCopy, lexicon.XSLTElementVariable, lexicon.XSLTElementMessage, lexicon.XSLTElementFallback,
-			lexicon.XSLTElementProcessingInstruction, lexicon.XSLTElementComment, lexicon.XSLTElementElement, lexicon.XSLTElementAttribute,
-			lexicon.XSLTElementSort, lexicon.XSLTElementOutput, lexicon.XSLTElementKey, lexicon.XSLTElementTemplate, lexicon.XSLTElementParam, lexicon.XSLTElementWithParam,
-			lexicon.XSLTElementForEachGroup, lexicon.XSLTElementSequence, lexicon.XSLTElementDocument, lexicon.XSLTElementResultDocument,
-			lexicon.XSLTElementAnalyzeString, lexicon.XSLTElementNamespace, lexicon.XSLTElementPerformSort, lexicon.XSLTElementNextMatch,
-			lexicon.XSLTElementTry, lexicon.XSLTElementIterate, lexicon.XSLTElementSourceDocument, lexicon.XSLTElementMerge, lexicon.XSLTElementOnEmpty,
-			lexicon.XSLTElementOnNonEmpty, lexicon.XSLTElementWherePopulated, lexicon.XSLTElementEvaluate, lexicon.XSLTElementAssert,
-			lexicon.XSLTElementMap, lexicon.XSLTElementMapEntry, lexicon.XSLTElementBreak, lexicon.XSLTElementNextIteration:
-			return xdm.SingleBoolean(true), nil
-		}
-	}
-
-	return xdm.SingleBoolean(false), nil
+	return xdm.SingleBoolean(xpath.BuiltinFunctionAvailable(version, name.URI, name.Local, arity)), nil
 }
 
 // pushElementNamespaces adds namespace declarations from elem to nsBindings
@@ -730,7 +625,7 @@ func (c *compiler) compileXSLTInstruction(ctx context.Context, elem *xdm.Element
 	switch elem.LocalName() {
 	case lexicon.XSLTElementApplyTemplates, lexicon.XSLTElementCallTemplate, lexicon.XSLTElementIf, lexicon.XSLTElementChoose,
 		lexicon.XSLTElementForEach, lexicon.XSLTElementVariable, lexicon.XSLTElementParam, lexicon.XSLTElementPerformSort,
-		lexicon.XSLTElementNextMatch, lexicon.XSLTElementApplyImports:
+		lexicon.XSLTElementNextMatch, lexicon.XSLTElementApplyImports, lexicon.XSLTElementImport, lexicon.XSLTElementInclude:
 		return c.compileTemplateControlInstruction(ctx, elem)
 	case lexicon.XSLTElementValueOf, lexicon.XSLTElementText, lexicon.XSLTElementElement, lexicon.XSLTElementAttribute,
 		lexicon.XSLTElementComment, lexicon.XSLTElementProcessingInstruction, lexicon.XSLTElementCopy, lexicon.XSLTElementCopyOf,
@@ -776,14 +671,23 @@ func (c *compiler) compileXSLTInstruction(ctx context.Context, elem *xdm.Element
 
 		return nil, nil //nolint:nilnil
 	case lexicon.XSLTElementContextItem:
-		// xsl:context-item declares the expected context item type.
-		// Currently a no-op — validation happens at the mode level.
-		return nil, nil //nolint:nilnil
+		return nil, staticError(errCodeXTSE0010, "xsl:context-item is only allowed as the first child of xsl:template")
 	case lexicon.XSLTElementAssert:
 		return c.compileAssert(ctx, elem)
 	case lexicon.XSLTElementAnalyzeString:
 		return c.compileAnalyzeString(ctx, elem)
 	case lexicon.XSLTElementEvaluate:
+		if c.stylesheet.dynamicEvaluationDisabled {
+			fallback, err := c.compileForwardsCompat(ctx, elem)
+			if err != nil {
+				return nil, err
+			}
+
+			fallback.ErrorCode = errCodeXTDE3175
+
+			return fallback, nil
+		}
+
 		return c.compileEvaluate(ctx, elem)
 	case lexicon.XSLTElementSourceDocument, lexicon.XSLTElementIterate, lexicon.XSLTElementFork, lexicon.XSLTElementBreak,
 		lexicon.XSLTElementNextIteration, lexicon.XSLTElementMerge:
@@ -877,6 +781,10 @@ func (c *compiler) compileTemplateControlInstruction(ctx context.Context, elem *
 		return c.compileForEach(ctx, elem)
 	case lexicon.XSLTElementVariable:
 		return c.compileLocalVariable(ctx, elem)
+	case lexicon.XSLTElementInclude:
+		return nil, staticError(errCodeXTSE0170, "xsl:include must be a top-level declaration")
+	case lexicon.XSLTElementImport:
+		return nil, staticError(errCodeXTSE0190, "xsl:import must be a top-level declaration")
 	case lexicon.XSLTElementParam:
 		// XTSE0010: xsl:param is only allowed at the top of xsl:template,
 		// xsl:function, or xsl:iterate. If we reach here, it means
@@ -917,17 +825,17 @@ func (c *compiler) compileUnknownXSLTInstruction(ctx context.Context, elem *xdm.
 	// Forwards-compatible processing (XSLT 3.0 §3.8): if the effective
 	// version > 3.0, unknown instructions are allowed and
 	// xsl:fallback children are used at runtime.
-	if c.effectiveVersion > "3.0" {
+	if c.forwardsCompatible(c.effectiveVersion) {
 		return c.compileForwardsCompat(ctx, elem)
 	}
 
-	return nil, staticError(errCodeXTSE0090, "unknown XSLT instruction xsl:%s", elem.LocalName())
+	return nil, staticError(errCodeXTSE0010, "unknown XSLT instruction xsl:%s", elem.LocalName())
 }
 
 func (c *compiler) compileResultDocument(ctx context.Context, elem *xdm.Element) (instruction, error) {
 	inst := &resultDocumentInst{}
 
-	if href := getAttr(elem, nameHref); href != "" {
+	if href, present := elem.GetAttribute(nameHref); present {
 		avt, err := c.compileAVT(href, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -972,7 +880,7 @@ func (c *compiler) compileResultDocument(ctx context.Context, elem *xdm.Element)
 			return nil, err
 		}
 
-		inst.Validation = v
+		inst.Validation = basicValidation(v)
 	}
 
 	if typeAttr := getAttr(elem, nameType); typeAttr != "" {
@@ -1158,18 +1066,79 @@ func (c *compiler) compileForwardsCompat(ctx context.Context, elem *xdm.Element)
 		}
 
 		if childElem.URI() == lexicon.NamespaceXSLT && childElem.LocalName() == lexicon.XSLTElementFallback {
-			inst.HasFallback = true
-
-			body, err := c.compileChildren(ctx, childElem)
+			body, include, err := c.compileFallbackBody(ctx, childElem)
 			if err != nil {
 				return nil, err
 			}
+
+			if !include {
+				continue
+			}
+
+			inst.HasFallback = true
 
 			inst.Body = append(inst.Body, body...)
 		}
 	}
 
 	return inst, nil
+}
+
+// Structural fallback elements have the same inherited static context as other
+// sequence constructors, even though they are not dispatched as instructions.
+func (c *compiler) compileFallbackBody(ctx context.Context, elem *xdm.Element) ([]instruction, bool, error) {
+	if len(elem.Namespaces()) > 0 {
+		if err := xpath.Charge(ctx, len(c.nsBindings)+len(elem.Namespaces())); err != nil {
+			return nil, false, err
+		}
+	}
+
+	savedNamespaces := c.pushElementNamespaces(ctx, elem)
+	defer func() { c.nsBindings = savedNamespaces }()
+
+	include, err := c.instructionUseWhen(ctx, elem)
+	if err != nil || !include {
+		return nil, include, err
+	}
+
+	if err := c.prepareInstructionAttributes(ctx, elem); err != nil {
+		return nil, false, err
+	}
+
+	_, restore := c.pushFlowClauseTextContext(elem)
+	defer restore()
+
+	if err := c.setInstructionExpandText(elem); err != nil {
+		return nil, false, err
+	}
+
+	preserve, collation, extensions := c.preserveSpace, c.defaultCollation, c.extensionURIs
+	defer func() { c.preserveSpace, c.defaultCollation, c.extensionURIs = preserve, collation, extensions }()
+
+	if space := getAttr(elem, lexicon.QNameXMLSpace); space != "" {
+		c.preserveSpace = space == lexicon.SpacePreserve
+	}
+
+	c.setInstructionDefaultCollation(elem)
+	c.setInstructionExtensionURIs(elem)
+
+	if err := c.checkDefaultModeAttribute(ctx, elem); err != nil {
+		return nil, false, err
+	}
+
+	body, err := c.compileChildren(ctx, elem)
+	if err != nil {
+		return nil, false, err
+	}
+
+	var block instruction = &fallbackInst{Name: "xsl:fallback", HasFallback: true, Body: body}
+	c.recordInstructionSource(elem, block)
+
+	if c.defaultCollation != collation {
+		block = &collationScopeInst{DefaultCollation: c.defaultCollation, Inner: block}
+	}
+
+	return []instruction{block}, true, nil
 }
 
 func (c *compiler) compileChildren(ctx context.Context, parent *xdm.Element) ([]instruction, error) {
@@ -1262,11 +1231,11 @@ func (c *compiler) compileLiteralText(text string) (*literalTextInst, error) {
 func (c *compiler) compileLocalVariable(ctx context.Context, elem *xdm.Element) (*variableInst, error) {
 	name := getAttr(elem, xslAttrName)
 	if name == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:variable requires name attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:variable requires name attribute")
 	}
 
 	asAttr := c.resolveAsType(ctx, getAttr(elem, "as"))
-	if err := c.validateAsSequenceType(ctx, asAttr, "xsl:variable "+name); err != nil {
+	if err := c.validateAsSequenceType(ctx, elem, asAttr, "xsl:variable "+name); err != nil {
 		return nil, err
 	}
 
@@ -1309,8 +1278,7 @@ func (c *compiler) compileLocalVariable(ctx context.Context, elem *xdm.Element) 
 func (c *compiler) compileMessage(ctx context.Context, elem *xdm.Element) (*messageInst, error) {
 	inst := &messageInst{}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
+	if selectAttr, present := elem.GetAttribute(xslAttrSelect); present {
 		expr, err := c.compileXPath(selectAttr, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -1326,15 +1294,14 @@ func (c *compiler) compileMessage(ctx context.Context, elem *xdm.Element) (*mess
 
 	inst.Body = body
 
-	termAttr := getAttr(elem, "terminate")
-	if termAttr != "" {
+	if termAttr, present := elem.GetAttribute("terminate"); present {
 		avt, err := c.compileAVT(termAttr, c.nsBindings)
 		if err != nil {
 			return nil, err
 		}
-		// If the avt is a static value, validate it is "yes" or "no"
+		// Validate literal values using the selected processor edition.
 		if sv, ok := avt.staticValue(); ok {
-			if sv != lexicon.ValueYes && sv != lexicon.ValueNo {
+			if _, valid := parseMessageTerminate(sv, c.stylesheet.processorLanguage() >= 30); !valid {
 				return nil, staticError(errCodeXTSE0020, "%q is not a valid value for xsl:message/@terminate", sv)
 			}
 		}
@@ -1342,17 +1309,37 @@ func (c *compiler) compileMessage(ctx context.Context, elem *xdm.Element) (*mess
 		inst.Terminate = avt
 	}
 
-	errorCodeAttr := getAttr(elem, "error-code")
-	if errorCodeAttr != "" {
-		avt, err := c.compileAVT(errorCodeAttr, c.nsBindings)
+	if errorCodeAttr, present := elem.GetAttribute("error-code"); present {
+		avt, err := c.compileMessageErrorCode(errorCodeAttr)
 		if err != nil {
 			return nil, err
 		}
 
 		inst.ErrorCode = avt
+		inst.ErrorNamespaces = maps.Clone(c.nsBindings)
 	}
 
 	return inst, nil
+}
+
+// Literal prefixed QNames still require a declaration under XSLT 3.0 §5.1.1.
+// Lexically invalid error codes retain the message-specific dynamic fallback.
+func (c *compiler) compileMessageErrorCode(value string) (*avt, error) {
+	code, err := c.compileAVT(value, c.nsBindings)
+	if err != nil {
+		return nil, err
+	}
+
+	if literal, known := code.staticValue(); known {
+		literal = strings.Trim(literal, " \t\r\n")
+		if xmlchar.IsValidQName(literal) {
+			if prefix, _, prefixed := strings.Cut(literal, ":"); prefixed && c.nsBindings[prefix] == "" {
+				return nil, staticError(errCodeXTSE0280, "undeclared error-code prefix %q", prefix)
+			}
+		}
+	}
+
+	return code, nil
 }
 
 func (c *compiler) compileMap(ctx context.Context, elem *xdm.Element) (*mapInst, error) {
@@ -1420,10 +1407,7 @@ func (c *compiler) compileAssert(ctx context.Context, elem *xdm.Element) (instru
 		return nil, err
 	}
 
-	inst := &assertInst{
-		Test:      testExpr,
-		ErrorCode: errCodeXTMM9001, // default error code per XSLT 3.0 spec
-	}
+	inst := &assertInst{Test: testExpr}
 
 	// xpath-default-namespace
 	if xdn := getAttr(elem, nameXpathDefaultNamespace); xdn != "" {
@@ -1432,12 +1416,18 @@ func (c *compiler) compileAssert(ctx context.Context, elem *xdm.Element) (instru
 	}
 
 	// error-code attribute
-	if ec := getAttr(elem, "error-code"); ec != "" {
-		inst.ErrorCode = resolveQName(ec, c.nsBindings)
+	if ec, present := elem.GetAttribute("error-code"); present {
+		code, err := c.compileMessageErrorCode(ec)
+		if err != nil {
+			return nil, err
+		}
+
+		inst.ErrorCode = code
+		inst.ErrorNamespaces = maps.Clone(c.nsBindings)
 	}
 
 	// select attribute
-	if sel := getAttr(elem, xslAttrSelect); sel != "" {
+	if sel, present := elem.GetAttribute(xslAttrSelect); present {
 		selExpr, err := c.compileXPath(sel, c.nsBindings)
 		if err != nil {
 			return nil, err

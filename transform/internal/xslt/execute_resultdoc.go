@@ -28,6 +28,32 @@ type paramDocPresence struct {
 	undeclarePrefixes   bool
 }
 
+type parameterDocumentResult struct {
+	output   *OutputDef
+	presence paramDocPresence
+}
+
+func (ec *execContext) pushResultParameterDocument(inst *resultDocumentInst) func() {
+	output, hadOutput := ec.paramDocOutputDefs[inst]
+	presence, hadPresence := ec.paramDocPresences[inst]
+	delete(ec.paramDocOutputDefs, inst)
+	delete(ec.paramDocPresences, inst)
+
+	return func() {
+		if hadOutput {
+			ec.paramDocOutputDefs[inst] = output
+		} else {
+			delete(ec.paramDocOutputDefs, inst)
+		}
+
+		if hadPresence {
+			ec.paramDocPresences[inst] = presence
+		} else {
+			delete(ec.paramDocPresences, inst)
+		}
+	}
+}
+
 // getParamDocOutputDef returns the effective parameter-document OutputDef for
 // a result-document instruction, checking the per-invocation cache on
 // execContext first, then falling back to the compiled instruction's field.
@@ -97,7 +123,7 @@ func (ec *execContext) emitConstructedDocument(doc *xdm.Document, preserveAnnota
 		if captureDocument {
 			out.pendingItems = append(out.pendingItems, xdm.NodeItem{Node: doc})
 			out.noteOutput()
-		} else if !out.wherePopulated {
+		} else {
 			out.prevWasAtomic = false
 		}
 
@@ -109,10 +135,6 @@ func (ec *execContext) emitConstructedDocument(doc *xdm.Document, preserveAnnota
 		out.noteOutput()
 
 		return nil
-	}
-
-	if out.wherePopulated {
-		return ec.addNode(doc)
 	}
 
 	if preserveAnnotations {
@@ -233,15 +255,13 @@ func (ec *execContext) commitPrimaryOutputState(inst *resultDocumentInst, effect
 	// maps from xsl:result-document itself (higher priority).
 	var allMaps []string
 
-	if effectiveFormat != "" {
-		if fmtDef, ok := ec.effectiveOutputs()[effectiveFormat]; ok {
-			allMaps = append(allMaps, fmtDef.UseCharacterMaps...)
-			// Also propagate resolved character maps from parameter-document.
-			// Clone the compiled map so the later maps.Copy merge below never
-			// mutates the compiled format's ResolvedCharMap.
-			if len(fmtDef.ResolvedCharMap) > 0 {
-				ec.primaryResolvedCharMap = maps.Clone(fmtDef.ResolvedCharMap)
-			}
+	if fmtDef, ok := ec.effectiveOutputs()[effectiveFormat]; ok {
+		allMaps = append(allMaps, fmtDef.UseCharacterMaps...)
+		// Also propagate resolved character maps from parameter-document.
+		// Clone the compiled map so the later maps.Copy merge below never
+		// mutates the compiled format's ResolvedCharMap.
+		if len(fmtDef.ResolvedCharMap) > 0 {
+			ec.primaryResolvedCharMap = maps.Clone(fmtDef.ResolvedCharMap)
 		}
 	}
 
@@ -274,6 +294,10 @@ func (ec *execContext) execResultDocument(ctx context.Context, inst *resultDocum
 		return dynamicError(errCodeXTDE1480, "xsl:result-document is not allowed while in temporary output state")
 	}
 
+	if inst.ParameterDocAVT != nil && inst.ParameterDocOutputDef == nil {
+		defer ec.pushResultParameterDocument(inst)()
+	}
+
 	href := ""
 
 	if inst.Href != nil {
@@ -285,16 +309,26 @@ func (ec *execContext) execResultDocument(ctx context.Context, inst *resultDocum
 		}
 	}
 
-	isPrimary := href == ""
+	// Resolve the effective format name (static or avt).
+	effectiveFormat, fmtErr := ec.resolveResultDocFormat(ctx, inst)
+	if fmtErr != nil {
+		return fmtErr
+	}
 
-	// XTDE1490 duplicate detection keys on the canonical (resolved) output URI,
-	// not the raw href: distinct hrefs that resolve to the same absolute URI
-	// (e.g. "a/../out.xml" and "out.xml" under the same base) target the same
-	// document and must collide. The primary output (empty href) always keys on
-	// "" so that the implicit-primary claim tracked elsewhere stays consistent.
-	dupKey := href
-	if !isPrimary {
-		dupKey = canonicalResultURIKey(href, ec.currentOutputURI)
+	// XTDE1460: the format attribute must reference a declared xsl:output.
+	if effectiveFormat != "" {
+		if _, ok := ec.effectiveOutputs()[effectiveFormat]; !ok {
+			return dynamicError(errCodeXTDE1460,
+				"xsl:result-document format %q does not match any declared xsl:output", effectiveFormat)
+		}
+	}
+
+	resolvedURI := canonicalResultURIKey(href, ec.baseOutputURI)
+	isPrimary := href == "" || ec.canonicalPrimaryURI != "" && resolvedURI == ec.canonicalPrimaryURI
+
+	dupKey := resolvedURI
+	if isPrimary {
+		dupKey = ""
 	}
 
 	if _, used := ec.usedResultURIs[dupKey]; used {
@@ -302,7 +336,11 @@ func (ec *execContext) execResultDocument(ctx context.Context, inst *resultDocum
 	}
 
 	if isPrimary && ec.primaryClaimedImplicitly {
-		return dynamicError(errCodeXTRE1495, "primary output URI already has implicit content")
+		return dynamicError(errCodeXTDE1490, "principal output URI already has implicit content")
+	}
+
+	if err := ec.checkResourceWrite(resolvedURI); err != nil {
+		return err
 	}
 
 	// Reserve the canonical URI so a concurrent/nested result-document targeting
@@ -322,20 +360,6 @@ func (ec *execContext) execResultDocument(ctx context.Context, inst *resultDocum
 		}
 	}()
 
-	// Resolve the effective format name (static or avt).
-	effectiveFormat, fmtErr := ec.resolveResultDocFormat(ctx, inst)
-	if fmtErr != nil {
-		return fmtErr
-	}
-
-	// XTDE1460: the format attribute must reference a declared xsl:output.
-	if effectiveFormat != "" {
-		if _, ok := ec.effectiveOutputs()[effectiveFormat]; !ok {
-			return dynamicError(errCodeXTDE1460,
-				"xsl:result-document format %q does not match any declared xsl:output", effectiveFormat)
-		}
-	}
-
 	if err := ec.resolveResultParameterDocument(ctx, inst); err != nil {
 		return err
 	}
@@ -345,20 +369,14 @@ func (ec *execContext) execResultDocument(ctx context.Context, inst *resultDocum
 		return err
 	}
 
-	// Track the current output URI for current-output-uri().
-	// For secondary outputs, resolve relative href against the current output URI
-	// using the SAME URI-preserving resolver as the XTDE1490 duplicate key
-	// (canonicalResultURIKey). xdm.BuildURI strips the file: scheme for file:
-	// bases, so a nested result-document inside a secondary output would compute a
-	// scheme-stripped base ("/base/dir/inner.xml") that no longer matches the
-	// duplicate key's scheme-preserving form ("file:///base/dir/inner.xml"),
-	// causing a relative href and its absolute file: equivalent to miss inside the
-	// secondary output. Canonicalizing here keeps both forms consistent.
+	// Every supplied href uses the invocation's fixed base. Section 25.3.1
+	// leaves current-output-uri unchanged when the attribute is absent.
 	savedOutputURI := ec.currentOutputURI
-	if href != "" {
-		ec.currentOutputURI = canonicalResultURIKey(href, savedOutputURI)
+
+	if inst.Href != nil {
+		ec.currentOutputURI = resolvedURI
 	}
-	// For primary output (href==""), currentOutputURI stays unchanged.
+
 	defer func() { ec.currentOutputURI = savedOutputURI }()
 
 	if isPrimary {
@@ -372,6 +390,159 @@ func (ec *execContext) execResultDocument(ctx context.Context, inst *resultDocum
 	}
 
 	committed = true
+
+	return nil
+}
+
+func (ec *execContext) recordInitialResources(ctx context.Context, selection xdm.Sequence) error {
+	if ec.stylesheet.processorLanguage() < 30 {
+		return nil
+	}
+
+	if _, err := ec.existingDocumentRead(ctx, ec.sourceDoc); err != nil {
+		return err
+	}
+
+	if item, ok := ec.globalContextItem.(xdm.NodeItem); ok {
+		if err := ec.recordInputNode(ctx, item.Node); err != nil {
+			return err
+		}
+	}
+
+	for item := range xdm.SequenceItems(selection) {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		if node, ok := item.(xdm.NodeItem); ok {
+			if err := ec.recordInputNode(ctx, node.Node); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (ec *execContext) recordInputNode(ctx context.Context, node xdm.Node) error {
+	if doc, ok := xdm.DocumentRoot(node).(*xdm.Document); ok && !doc.HasProperty(xdm.DocInternal) {
+		return ec.RecordRead(ctx, doc.URL())
+	}
+
+	return nil
+}
+
+func resourceURIKey(uri string) string {
+	if uri == "" {
+		return ""
+	}
+
+	ref, err := url.Parse(ensureFileURI(uri))
+	if err != nil || !ref.IsAbs() {
+		return ""
+	}
+
+	ref.Fragment, ref.RawFragment = "", ""
+
+	return canonicalResultURIKey(ref.String(), "")
+}
+
+func (ec *execContext) CheckRead(ctx context.Context, uri string) error {
+	if ec.resourceOwner != nil {
+		return ec.resourceOwner.CheckRead(ctx, uri)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if ec.stylesheet.processorLanguage() < 30 {
+		return nil
+	}
+
+	if len(ec.usedResultURIs) == 0 && (!ec.primaryClaimedImplicitly || ec.canonicalPrimaryURI == "") {
+		return nil
+	}
+
+	key := resourceURIKey(uri)
+	if key == "" {
+		return nil
+	}
+
+	if key == ec.canonicalPrimaryURI {
+		if ec.primaryClaimedImplicitly {
+			return dynamicError("XTDE1500", "resource %q is both read and written", key)
+		}
+
+		key = ""
+	}
+
+	if _, written := ec.usedResultURIs[key]; written {
+		return dynamicError("XTDE1500", "resource %q is both read and written", uri)
+	}
+
+	return nil
+}
+
+func (ec *execContext) RecordRead(ctx context.Context, uri string) error {
+	if uri == "" {
+		return ctx.Err()
+	}
+
+	if ec.resourceOwner != nil {
+		return ec.resourceOwner.RecordRead(ctx, uri)
+	}
+
+	if err := ec.CheckRead(ctx, uri); err != nil {
+		return err
+	}
+
+	if ec.stylesheet.processorLanguage() < 30 {
+		return nil
+	}
+
+	key := resourceURIKey(uri)
+	if key == "" {
+		return nil
+	}
+
+	if _, read := ec.readResourceURIs[key]; read {
+		return nil
+	}
+
+	if err := xpath.ChargeString(ctx, len(key)+32); err != nil {
+		return err
+	}
+
+	if ec.readResourceURIs == nil {
+		ec.readResourceURIs = make(map[string]struct{})
+	}
+
+	ec.readResourceURIs[key] = struct{}{}
+
+	return nil
+}
+
+func (ec *execContext) checkResourceWrite(uri string) error {
+	if uri == "" {
+		return nil
+	}
+
+	if ec.resourceOwner != nil {
+		return ec.resourceOwner.checkResourceWrite(uri)
+	}
+
+	if ec.stylesheet.processorLanguage() < 30 {
+		return nil
+	}
+
+	if len(ec.readResourceURIs) == 0 {
+		return nil
+	}
+
+	if _, read := ec.readResourceURIs[resourceURIKey(uri)]; read {
+		return dynamicError("XTDE1500", "resource %q is both read and written", uri)
+	}
 
 	return nil
 }
@@ -418,43 +589,51 @@ func canonicalResultURIKey(href, base string) string {
 }
 
 func (ec *execContext) resolveResultParameterDocument(ctx context.Context, inst *resultDocumentInst) error {
-	// Resolve parameter-document if specified as avt. Store the resolved
-	// output def on execContext (not on the compiled instruction) to avoid
-	// mutating the stylesheet's instruction tree.
-	if inst.ParameterDocAVT != nil && inst.ParameterDocOutputDef == nil {
-		if _, cached := ec.paramDocOutputDefs[inst]; !cached {
-			pdHref, pdErr := inst.ParameterDocAVT.evaluate(ctx, ec.contextNode)
-			if pdErr != nil {
-				return pdErr
-			}
-
-			if pdHref != "" {
-				outDef := &OutputDef{}
-				baseURI := ec.effectiveStaticBaseURI()
-				// runtime=true so the helper classifies a load/parse failure as
-				// a dynamic error (FODC0002), never a static one. A failure must
-				// not be silently dropped: the transformation has to fail so
-				// callers can observe it, and an over-cap read keeps
-				// [ErrResourceTooLarge] in the chain (matched via errors.Is)
-				// while errors.Is(err, ErrStaticError) stays false.
-				_, presence, loadErr := loadParameterDocumentFromFile(ctx, ec.inputParseOptions(), outDef, baseURI, pdHref, ec.retrieveDocumentReader, true, false, ec.resourceLimit())
-				if loadErr != nil {
-					return loadErr
-				}
-
-				if ec.paramDocOutputDefs == nil {
-					ec.paramDocOutputDefs = make(map[*resultDocumentInst]*OutputDef)
-				}
-
-				ec.paramDocOutputDefs[inst] = outDef
-				if ec.paramDocPresences == nil {
-					ec.paramDocPresences = make(map[*resultDocumentInst]paramDocPresence)
-				}
-
-				ec.paramDocPresences[inst] = presence
-			}
-		}
+	if inst.ParameterDocAVT == nil || inst.ParameterDocOutputDef != nil {
+		return nil
 	}
+
+	href, err := inst.ParameterDocAVT.evaluate(ctx, ec.contextNode)
+	if err != nil {
+		return err
+	}
+
+	if href == "" {
+		return nil
+	}
+
+	baseURI := ec.effectiveStaticBaseURI()
+	key := parameterDocumentURI(baseURI, href)
+
+	value, cached := ec.paramDocCache[key]
+	if cached {
+		if err := ec.RecordRead(ctx, key); err != nil {
+			return err
+		}
+	} else {
+		value.output = &OutputDef{}
+
+		_, value.presence, err = loadParameterDocumentFromFile(ctx, ec.inputParseOptions(), value.output, baseURI, href, ec.retrieveDocumentReader, true, false, ec.resourceLimit())
+		if err != nil {
+			return err
+		}
+
+		if ec.paramDocCache == nil {
+			ec.paramDocCache = make(map[string]parameterDocumentResult)
+		}
+
+		ec.paramDocCache[key] = value
+	}
+
+	if ec.paramDocOutputDefs == nil {
+		ec.paramDocOutputDefs = make(map[*resultDocumentInst]*OutputDef)
+	}
+
+	if ec.paramDocPresences == nil {
+		ec.paramDocPresences = make(map[*resultDocumentInst]paramDocPresence)
+	}
+
+	ec.paramDocOutputDefs[inst], ec.paramDocPresences[inst] = value.output, value.presence
 
 	return nil
 }
@@ -519,20 +698,12 @@ func (ec *execContext) execPrimaryResultDocument(ctx context.Context, inst *resu
 	return nil
 }
 
-func (ec *execContext) executeResultDocFrame(ctx context.Context, body []instruction, frame *outputFrame, method string, primary bool) error {
+func (ec *execContext) executeResultDocFrame(ctx context.Context, body []instruction, frame *outputFrame, method string) error {
 	savedMethod := ec.currentResultDocMethod
 	ec.currentResultDocMethod = method
 
 	ec.outputStack = append(ec.outputStack, frame)
-	if primary {
-		ec.insideResultDocPrimary = true
-	}
-
 	err := ec.executeSequenceConstructor(ctx, body)
-	if primary {
-		ec.insideResultDocPrimary = false
-	}
-
 	ec.currentResultDocMethod = savedMethod
 	ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
 
@@ -543,7 +714,7 @@ func (ec *execContext) execPrimaryValidatedDocument(ctx context.Context, inst *r
 	doc := xdm.NewDefaultDocument()
 
 	frame := &outputFrame{doc: doc, current: doc, itemSeparator: itemSep}
-	if err := ec.executeResultDocFrame(ctx, inst.Body, frame, method, false); err != nil {
+	if err := ec.executeResultDocFrame(ctx, inst.Body, frame, method); err != nil {
 		return err
 	}
 
@@ -588,7 +759,7 @@ func (ec *execContext) execPrimaryItemDocument(ctx context.Context, inst *result
 	}
 
 	frame := &outputFrame{doc: tmpDoc, current: tmpRoot, itemSeparator: itemSep, captureItems: true, sequenceMode: true}
-	if err := ec.executeResultDocFrame(ctx, inst.Body, frame, effectiveMethod, true); err != nil {
+	if err := ec.executeResultDocFrame(ctx, inst.Body, frame, effectiveMethod); err != nil {
 		return err
 	}
 
@@ -611,16 +782,12 @@ func (ec *execContext) execPrimaryBufferedDocument(ctx context.Context, inst *re
 	// that writes another primary result document does not produce a
 	// double-primary result.
 	//
-	// The buffer frame stands IN for the base frame: it temporarily replaces
-	// ec.outputStack[0], and is never pushed on top, so that the body
-	// observes the same outputStack depth (1) and the same insideResultDocPrimary
-	// state as a true direct write. This keeps every depth-sensitive branch
-	// (XTRE1495 suppression, rawResultSequence capture, etc.) behaving exactly
-	// as before; only the destination tree changes, and only until commit.
+	// Replace the base frame while evaluating explicit principal output.
+	// Its items must not also claim an implicit principal result.
 	realBase := ec.outputStack[0]
 	bufDoc := xdm.NewDefaultDocument()
 	// Clone the REAL base frame so every output flag (captureItems,
-	// sequenceMode, documentConstructor, mapConstructor, wherePopulated,
+	// sequenceMode, documentConstructor,
 	// separateTextNodes, …) and accumulator (prevWasAtomic, prevHadOutput,
 	// outputSerial, …) is preserved. If the real primary frame captures items
 	// (raw delivery via cfg.rawCapture, or a json/adaptive default output
@@ -631,6 +798,7 @@ func (ec *execContext) execPrimaryBufferedDocument(ctx context.Context, inst *re
 	// seqPlaceholders, conditionalScopes). Everything else carries over.
 	bufFrameVal := *realBase
 	bufFrame := &bufFrameVal
+	bufFrame.implicitPrimary = nil
 	bufFrame.doc = bufDoc
 	bufFrame.current = bufDoc
 	bufFrame.itemSeparator = itemSep
@@ -642,13 +810,11 @@ func (ec *execContext) execPrimaryBufferedDocument(ctx context.Context, inst *re
 	copy(bufferedStack, ec.outputStack)
 	bufferedStack[0] = bufFrame
 	ec.outputStack = bufferedStack[:1] // keep only the (buffered) base frame
-	ec.insideResultDocPrimary = true
 	savedMethod := ec.currentResultDocMethod
 	ec.currentResultDocMethod = effectiveMethod
 
 	savedRawResult := ec.rawResultSequence
 	if err := ec.executeSequenceConstructor(ctx, inst.Body); err != nil {
-		ec.insideResultDocPrimary = false
 		ec.currentResultDocMethod = savedMethod
 		ec.rawResultSequence = savedRawResult
 		ec.outputStack = savedStack
@@ -657,7 +823,6 @@ func (ec *execContext) execPrimaryBufferedDocument(ctx context.Context, inst *re
 	}
 
 	if err := ec.validatePrimaryResultItems(bufFrame.pendingItems, effectiveMethod, primaryOverrides); err != nil {
-		ec.insideResultDocPrimary = false
 		ec.currentResultDocMethod = savedMethod
 		ec.rawResultSequence = savedRawResult
 		ec.outputStack = savedStack
@@ -665,7 +830,6 @@ func (ec *execContext) execPrimaryBufferedDocument(ctx context.Context, inst *re
 		return err
 	}
 
-	ec.insideResultDocPrimary = false
 	ec.currentResultDocMethod = savedMethod
 	ec.outputStack = savedStack
 	// Body and all post-body checks succeeded: splice the buffered content
@@ -731,7 +895,7 @@ func (ec *execContext) execSecondaryResultDocument(ctx context.Context, inst *re
 	raw := ec.transformConfig != nil && ec.transformConfig.rawSequence
 
 	frame := &outputFrame{doc: tmpDoc, current: tmpDoc, itemSeparator: itemSep, captureItems: isItemSerializationMethod(effectiveMethod) || raw, sequenceMode: raw}
-	if err := ec.executeResultDocFrame(ctx, inst.Body, frame, effectiveMethod, false); err != nil {
+	if err := ec.executeResultDocFrame(ctx, inst.Body, frame, effectiveMethod); err != nil {
 		return err
 	}
 
@@ -784,11 +948,9 @@ func (ec *execContext) execSecondaryResultDocument(ctx context.Context, inst *re
 	// COMMIT POINT: body and every post-body validation step succeeded. Publish
 	// all staged per-URI state atomically, then mark the transaction committed so
 	// the deferred rollback leaves the usedResultURIs reservation in place. Storage
-	// keys on the RESOLVED canonical absolute output URI (dupKey == tmpDoc.URL() ==
-	// ec.currentOutputURI), NOT the raw href: two NESTED xsl:result-documents with
-	// the same relative href under different enclosing output URIs resolve to
-	// distinct absolute URIs and must not overwrite each other. The raw href is
-	// preserved separately for the public ResultDocumentHandler.
+	// keys on the resolved canonical output URI. Nested instructions use the
+	// same base output URI, so identical relative hrefs must still collide.
+	// Preserve the raw href separately for ResultDocumentHandler.
 	if stagedItems != nil {
 		ec.resultDocItems[dupKey] = stagedItems
 	}
@@ -1104,7 +1266,7 @@ func (ec *execContext) evalResultDocMarkupParams(ctx context.Context, inst *resu
 			}
 
 			for name := range strings.FieldsSeq(v) {
-				resolved := resolveQName(name, inst.NSBindings)
+				resolved := resolveOutputName(name, inst.NSBindings)
 				if _, ok := existing[resolved]; !ok {
 					base.CDATASections = append(base.CDATASections, resolved)
 				}
@@ -1256,10 +1418,8 @@ func (ec *execContext) buildEffectiveOutputDef(ctx context.Context, inst *result
 	// Resolve character maps from the format and instruction.
 	var allMaps []string
 
-	if formatName != "" {
-		if fmtDef, ok := ec.effectiveOutputs()[formatName]; ok {
-			allMaps = append(allMaps, fmtDef.UseCharacterMaps...)
-		}
+	if fmtDef, ok := ec.effectiveOutputs()[formatName]; ok {
+		allMaps = append(allMaps, fmtDef.UseCharacterMaps...)
 	}
 
 	allMaps = append(allMaps, inst.UseCharacterMaps...)

@@ -1,11 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"maps"
-	"path/filepath"
-	"strings"
 
 	"github.com/skarm/xmlsec/transform"
 )
@@ -43,15 +42,6 @@ func (e *suiteEvaluation) prepareOutput(ctx context.Context) error {
 		return err
 	}
 
-	if e.environment.output.attr("tree") == suiteYes {
-		value, err := e.assertionValue(ctx, `parse-xml-fragment(serialize($result, map{'method':'xml','omit-xml-declaration':true(),'indent':false()}))`, nil)
-		if err != nil {
-			return err
-		}
-
-		e.sequence = value
-	}
-
 	return nil
 }
 
@@ -79,7 +69,7 @@ func evaluateQT3(ctx context.Context, options suiteOptions, item suiteCase, envi
 		version = transform.XPath30
 	}
 
-	query, err := environment.engine.CompileXPath(ctx, expression, transform.XPathOptions{Version: version, Namespaces: environment.namespaces, BaseURI: environment.baseURI, DefaultCollation: environment.collation, DecimalFormats: environment.decimalFormats})
+	query, err := environment.engine.CompileXPath(ctx, expression, transform.XPathOptions{Version: version, XPath10Compatibility: options.xpath10Compatibility, Namespaces: environment.namespaces, BaseURI: environment.baseURI, DefaultCollation: environment.collation, DecimalFormats: environment.decimalFormats})
 	if err != nil {
 		return transform.Sequence{}, err
 	}
@@ -107,6 +97,17 @@ func evaluateXSLTSuite(ctx context.Context, options suiteOptions, item suiteCase
 	environment.executionVersion = fmt.Sprintf("%d.%d", compiled.Version()/10, compiled.Version()%10)
 
 	invocation := transform.XSLTContext{Parameters: environment.variables, Context: suiteDynamicContext(environment.currentTime), BaseOutputURI: environment.baseOutputURI}
+	if environment.output.attr("serialize") != suiteYes {
+		invocation.ResultMode = transform.ResultDefault
+
+		switch environment.output.attr("tree") {
+		case suiteYes:
+			invocation.ResultMode = transform.ResultDocument
+		case "no":
+			invocation.ResultMode = transform.ResultRaw
+		}
+	}
+
 	if environment.contextSpecified {
 		invocation.ContextItem = &environment.contextItem
 	}
@@ -154,6 +155,10 @@ func evaluateXSLTSuite(ctx context.Context, options suiteOptions, item suiteCase
 
 	if initial := test.child("initial-function"); initial != nil {
 		return suiteFunctionInvocation(ctx, compiled, environment, initial, invocation)
+	}
+
+	if environment.contextSpecified && invocation.Template.Local == "" {
+		return compiled.ApplyTemplates(ctx, environment.document, transform.Values(environment.contextItem), invocation)
 	}
 
 	if environment.document == nil && invocation.Template.Local == "" && test.child("initial-mode") == nil {
@@ -263,10 +268,6 @@ func compileSuiteStylesheet(ctx context.Context, options suiteOptions, environme
 		return nil, suiteHarness("stylesheet: %v", err)
 	}
 
-	if err := checkSuiteStylesheetVersion(options, path); err != nil {
-		return nil, err
-	}
-
 	baseURI := suiteFileURI(path)
 	if stylesheet.attr("uri") != "" {
 		baseURI, err = resolveSuiteURI(environment.baseURI, stylesheet.attr("uri"))
@@ -283,34 +284,6 @@ func compileSuiteStylesheet(ctx context.Context, options suiteOptions, environme
 	return environment.engine.CompileXSLT(ctx, raw, transform.XSLTOptions{ProcessorVersion: processor, BaseURI: baseURI, StaticParameters: environment.staticParameters})
 }
 
-func checkSuiteStylesheetVersion(options suiteOptions, path string) error {
-	if options.version != suiteVersion20 {
-		return nil
-	}
-
-	node, _, err := readSuiteNode(options.directory, filepath.Dir(path), filepath.Base(path))
-	if err != nil {
-		return suiteHarness("stylesheet declaration: %v", err)
-	}
-
-	version := node.attr(suiteVersion)
-	if node.XMLName.Space != suiteStylesheetNS {
-		version = ""
-
-		for _, attribute := range node.Attributes {
-			if attribute.Name.Space == suiteStylesheetNS && attribute.Name.Local == suiteVersion {
-				version = attribute.Value
-			}
-		}
-	}
-
-	if strings.HasPrefix(version, "3") {
-		return suiteHarness("forcing XSLT 2.0 forwards-compatible processing of a 3.0 declaration is not implemented by the harness")
-	}
-
-	return nil
-}
-
 func (e *suiteEvaluation) serialized(ctx context.Context) ([]byte, error) {
 	if e.err != nil {
 		return nil, e.err
@@ -318,11 +291,11 @@ func (e *suiteEvaluation) serialized(ctx context.Context) ([]byte, error) {
 
 	if e.result != nil {
 		if e.secondaryURI != "" {
-			var output strings.Builder
+			var output bytes.Buffer
 
 			_, err := e.result.WriteSecondary(ctx, e.secondaryURI, &output)
 
-			return []byte(output.String()), err
+			return output.Bytes(), err
 		}
 
 		output, err := e.result.Serialize(ctx)

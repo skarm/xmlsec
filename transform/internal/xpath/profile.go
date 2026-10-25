@@ -105,7 +105,7 @@ func checkStandaloneCall(version int, prefix, name string, arity int, namespaces
 	for _, registry := range extensions {
 		if fn := registry[xdm.ClarkName(uri, name)]; fn != nil {
 			if err := checkArity(fn, name, arity); err != nil {
-				return &xdm.Error{Code: "XPST0017", Message: "invalid application function arity: " + name, Cause: err}
+				return &xdm.Error{Code: errCodeXPST0017, Message: "invalid application function arity: " + name, Cause: err}
 			}
 
 			return nil
@@ -113,7 +113,16 @@ func checkStandaloneCall(version int, prefix, name string, arity int, namespaces
 	}
 
 	if version == 10 && (prefix != "" || !xpath10FunctionArity(name, arity)) || !StandardFunctionAcceptsArity(uri, name, arity) {
-		return &xdm.Error{Code: "XPST0017", Message: "unknown function or arity: " + name}
+		return &xdm.Error{Code: errCodeXPST0017, Message: "unknown function or arity: " + name}
+	}
+
+	// These functions belonged to the XSLT 2.0 host library before F&O 3.0
+	// added them to standalone XPath. XSLT performs its own host checks.
+	if version == 20 && uri == NSFn {
+		switch name {
+		case fnNameUnparsedText, fnNameUnparsedTextAvailable, fnNameFormatNumber, fnNameFormatDate, fnNameFormatDateTime, fnNameFormatTime:
+			return profileError(errCodeXPST0017, name+" function", version)
+		}
 	}
 
 	return nil
@@ -122,12 +131,27 @@ func checkStandaloneCall(version int, prefix, name string, arity int, namespaces
 // Language pins the grammar and function library to XPath 1.0, 2.0, 3.0 or 3.1.
 // Zero selects the engine default profile.
 func (c Compiler) Language(version int, namespaces map[string]string) Compiler {
-	ctx := context.Context(nil)
+	cfg := compilerCfg{}
 	if c.cfg != nil {
-		ctx = c.cfg.context
+		cfg = *c.cfg
 	}
 
-	return Compiler{cfg: &compilerCfg{context: ctx, version: version, namespaces: maps.Clone(namespaces)}}
+	cfg.version, cfg.namespaces = version, maps.Clone(namespaces)
+
+	return Compiler{cfg: &cfg}
+}
+
+// HostFunctions augments the selected library without changing its grammar.
+// The host still validates declarations and arities in its own static context.
+func (c Compiler) HostFunctions(available func(uri, name string, arity int) bool) Compiler {
+	cfg := compilerCfg{}
+	if c.cfg != nil {
+		cfg = *c.cfg
+	}
+
+	cfg.hostFunction = available
+
+	return Compiler{cfg: &cfg}
 }
 
 func validateVersionTokens(tokens []Token, version int) error {
@@ -206,13 +230,13 @@ func walkProfile(value reflect.Value, visit func(any) error) error {
 	return nil
 }
 
-func validateVersionExpr(ast Expr, version int, namespaces map[string]string) error {
+func validateVersionExpr(ast Expr, version int, namespaces map[string]string, hostFunction func(string, string, int) bool) error {
 	if version == 10 {
 		return validateXPath10Expr(ast)
 	}
 
 	return walkProfile(reflect.ValueOf(ast), func(node any) error {
-		return validateProfileNode(node, version, namespaces)
+		return validateProfileNode(node, version, namespaces, hostFunction)
 	})
 }
 
@@ -271,8 +295,15 @@ func functionVisible(version int, uri, name string, arity int) bool {
 		return false
 	}
 
-	if version < 30 && (name == nameRound && arity == 2 || name == "string-join" && arity == 1) {
+	if version < 30 && (name == nameRound && arity == 2 || name == fnNameStringJoin && arity == 1) {
 		return false
+	}
+
+	if version < 30 && arity == 0 {
+		switch name {
+		case "data", fnNameDocumentURI, fnNameNilled, nameNodeName:
+			return false
+		}
 	}
 
 	if version < 31 && (name == "tokenize" && arity == 1 || name == "trace" && arity == 1) {
@@ -327,7 +358,7 @@ func checkVersionRegex(ctx context.Context, pattern, flags string) error {
 	return nil
 }
 
-func validateProfileNode(node any, version int, namespaces map[string]string) error {
+func validateProfileNode(node any, version int, namespaces map[string]string, hostFunction func(string, string, int) bool) error {
 	if err := validateFunctionSyntax(node, version, namespaces); err != nil {
 		return err
 	}
@@ -359,6 +390,10 @@ func validateProfileNode(node any, version int, namespaces map[string]string) er
 		return &xdm.Error{Code: errCodeXPST0003, Message: "positional for variables are XQuery syntax"}
 	}
 
+	return validateProfileFunction(node, version, namespaces, hostFunction)
+}
+
+func validateProfileFunction(node any, version int, namespaces map[string]string, hostFunction func(string, string, int) bool) error {
 	var prefix, name string
 
 	arity := -1
@@ -388,8 +423,8 @@ func validateProfileNode(node any, version int, namespaces map[string]string) er
 			}
 		}
 
-		if !functionVisible(version, uri, name, arity) {
-			return profileError("XPST0017", name+" function", version)
+		if !functionVisible(version, uri, name, arity) && (hostFunction == nil || !hostFunction(uri, name, arity)) {
+			return profileError(errCodeXPST0017, name+" function", version)
 		}
 	}
 

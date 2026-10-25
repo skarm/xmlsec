@@ -40,6 +40,8 @@
 // [Config] supplies bounded defaults and an optional application-approved [Resolver].
 // There is no implicit file/network lookup or process-environment access. Resolver
 // readers are closed; callbacks and blocking I/O must honor cancellation.
+// [Config.DisableXSLTDynamicEvaluation] statically disables xsl:evaluate and
+// selects standard fallback processing, including nested compilation.
 // [Limits] bounds program/input/output bytes, operations, nodes and recursion.
 // A zero Timeout selects the default timeout; it does not disable it. These are
 // cooperative in-process controls, not OS memory or CPU isolation.

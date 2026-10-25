@@ -77,9 +77,9 @@ func testElementPlaintextProfileCase(t *testing.T, rsaTransport *bool, ctx *cont
 		err       error
 	)
 	if *rsaTransport {
-		encrypted, err = xmlenc.EncryptBytes((*ctx), []byte(tc.xml), &(*rsaKey).PublicKey, xmlenc.Options{})
+		encrypted, err = xmlenc.EncryptBytes(*ctx, []byte(tc.xml), &(*rsaKey).PublicKey, xmlenc.Options{})
 	} else {
-		encrypted, err = xmlenc.EncryptBytesWithKeyWrap((*ctx), []byte(tc.xml), (*kek), xmlenc.KeyWrapOptions{})
+		encrypted, err = xmlenc.EncryptBytesWithKeyWrap(*ctx, []byte(tc.xml), *kek, xmlenc.KeyWrapOptions{})
 	}
 
 	if err != nil {
@@ -95,9 +95,9 @@ func testElementPlaintextProfileCase(t *testing.T, rsaTransport *bool, ctx *cont
 
 	var result *document.Document
 	if *rsaTransport {
-		result, err = xmlenc.DecryptDocument((*ctx), labeled, (*rsaKey), xmlenc.Options{})
+		result, err = xmlenc.DecryptDocument(*ctx, labeled, *rsaKey, xmlenc.Options{})
 	} else {
-		result, err = xmlenc.DecryptDocumentWithKeyWrap((*ctx), labeled, (*kek), xmlenc.KeyWrapOptions{})
+		result, err = xmlenc.DecryptDocumentWithKeyWrap(*ctx, labeled, *kek, xmlenc.KeyWrapOptions{})
 	}
 
 	if tc.valid && (err != nil || result == nil) || !tc.valid && (result != nil || !errors.Is(err, xmlenc.ErrDecrypt)) {

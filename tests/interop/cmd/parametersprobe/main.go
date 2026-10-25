@@ -184,22 +184,22 @@ func runMode(ctx context.Context, t *task, a *answer, isMAC bool, opt *xmldsig.S
 	if t.Mode == "verify" {
 		doc, e := document.Parse(ctx, t.Input, document.DefaultLimits())
 		if e != nil {
-			return (*a), e, true
+			return *a, e, true
 		}
 
 		if isMAC {
-			r, report, e := xmldsig.VerifyHMACSignatureDetailed(ctx, doc, doc.Root(), t.Secret, (*opt))
+			r, report, e := xmldsig.VerifyHMACSignatureDetailed(ctx, doc, doc.Root(), t.Secret, *opt)
 			a.Valid = r != nil && e == nil
 			a.Report = report
 
-			return (*a), e, true
+			return *a, e, true
 		}
 
-		r, report, e := xmldsig.VerifySignatureDetailed(ctx, doc, doc.Root(), key, (*opt))
+		r, report, e := xmldsig.VerifySignatureDetailed(ctx, doc, doc.Root(), key, *opt)
 		a.Valid = r != nil && e == nil
 		a.Report = report
 
-		return (*a), e, true
+		return *a, e, true
 	}
 
 	return

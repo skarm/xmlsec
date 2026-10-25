@@ -34,15 +34,15 @@ const input = `<app:Root xmlns:app="urn:app" xmlns:q="urn:q" ID="root"><app:Item
 const nameOne = "one"
 
 func TestAlgorithmsAndReferences(t *testing.T) {
-	rsa := rsaKey(t)
+	key := rsaKey(t)
 
 	tests := []struct {
 		name, method, digest string
 		key                  crypto.Signer
 	}{
-		{"RSA256", xmldsig.RSASHA256, xmldsig.SHA256, rsa},
-		{"RSA384", xmldsig.RSASHA384, xmldsig.SHA384, rsa},
-		{"RSA512", xmldsig.RSASHA512, xmldsig.SHA512, rsa},
+		{"RSA256", xmldsig.RSASHA256, xmldsig.SHA256, key},
+		{"RSA384", xmldsig.RSASHA384, xmldsig.SHA384, key},
+		{"RSA512", xmldsig.RSASHA512, xmldsig.SHA512, key},
 		{"EC256", xmldsig.ECDSASHA256, xmldsig.SHA256, ecKey(t, elliptic.P256())},
 		{"EC384", xmldsig.ECDSASHA384, xmldsig.SHA384, ecKey(t, elliptic.P384())},
 		{"EC521", xmldsig.ECDSASHA512, xmldsig.SHA512, ecKey(t, elliptic.P521())},
@@ -445,7 +445,7 @@ func testModernSignatureMethodsCase(t *testing.T, tc *struct {
 			t.Fatal(e)
 		}
 
-		wrongSalt, e := rsa.SignPSS(rand.Reader, (*rsaKey), tc.hash, h.Sum(nil), &rsa.PSSOptions{Hash: tc.hash, SaltLength: 8})
+		wrongSalt, e := rsa.SignPSS(rand.Reader, *rsaKey, tc.hash, h.Sum(nil), &rsa.PSSOptions{Hash: tc.hash, SaltLength: 8})
 		if e != nil {
 			t.Fatal(e)
 		}

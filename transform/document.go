@@ -146,6 +146,8 @@ func (e *Engine) ParseReader(ctx context.Context, src io.Reader) (*Document, err
 
 // Import creates a read-only XPath/XSLT view of the existing snapshot. It
 // preserves the project's node storage and never serializes or reparses XML.
+// The XDM view normalizes xml:id values; references and Export retain the
+// original XML snapshot.
 func (e *Engine) Import(ctx context.Context, d *document.Document) (*Document, error) {
 	ctx, cancel, err := e.invocation(ctx)
 	if err != nil {

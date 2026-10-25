@@ -6,6 +6,8 @@ package xslt
 import (
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/xmlchar"
+	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
@@ -14,6 +16,32 @@ import (
 // resolveSequenceTypeQName itself (predeclared), so a resolver need not special
 // case it, though an explicit binding it returns takes precedence.
 type nsResolver func(prefix string) (string, bool)
+
+// resolveIntrospectionName expands an EQName supplied as a string argument.
+// Unlike sequence-type syntax, these strings have no predeclared xs alias and
+// strip only leading and trailing XML whitespace (XSLT 3.0 section 5.1.1).
+func resolveIntrospectionName(name, defaultNS, code string, resolve nsResolver) (xdm.QNameValue, error) {
+	name = strings.TrimFunc(name, xmlchar.IsSpace)
+	if isValidEQName(name) {
+		end := strings.IndexByte(name, '}')
+		return xdm.QNameValue{URI: strings.Join(strings.FieldsFunc(name[2:end], xmlchar.IsSpace), " "), Local: name[end+1:]}, nil
+	}
+
+	if !xmlchar.IsValidQName(name) {
+		return xdm.QNameValue{}, dynamicError(code, "%q is not a valid EQName", name)
+	}
+
+	if prefix, local, ok := strings.Cut(name, ":"); ok {
+		uri, bound := resolvePrefixWithXML(prefix, resolve)
+		if !bound || uri == "" {
+			return xdm.QNameValue{}, dynamicError(code, "undeclared namespace prefix %q in %q", prefix, name)
+		}
+
+		return xdm.QNameValue{URI: uri, Local: local, Prefix: prefix}, nil
+	}
+
+	return xdm.QNameValue{URI: defaultNS, Local: name}, nil
+}
 
 func nsResolverFromMap(m map[string]string) nsResolver {
 	return func(prefix string) (string, bool) {

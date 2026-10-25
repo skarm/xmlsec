@@ -1,6 +1,17 @@
 package xpath
 
 const (
+	fnNameStringJoin            = "string-join"
+	fnNameFormatNumber          = "format-number"
+	fnNameFormatDate            = "format-date"
+	fnNameFormatDateTime        = "format-dateTime"
+	fnNameFormatTime            = "format-time"
+	fnNameUnparsedText          = "unparsed-text"
+	fnNameUnparsedTextAvailable = "unparsed-text-available"
+	fnNameNilled                = "nilled"
+	fnNameDocumentURI           = "document-uri"
+
+	errCodeXPST0017                           = "XPST0017"
 	nameUnparsedTextLines                     = "unparsed-text-lines"
 	nameLoadXQueryModule                      = "load-xquery-module"
 	nameEmptySequence                         = "empty-sequence"

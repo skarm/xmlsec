@@ -278,11 +278,11 @@ func TestRegexCacheConcurrentWeightAndOversizedAdmission(t *testing.T) {
 }
 
 func TestCollationCacheBoundsDynamicURIs(t *testing.T) {
-	var runtime evaluationRuntime
+	var r evaluationRuntime
 
 	const prefix = "http://www.w3.org/2013/collation/UCA?lang=en;fallback=yes;unused="
 	for i := range collationCacheCapacity * 3 {
-		coll, err := runtime.resolveCollation(fmt.Sprintf("%s%d", prefix, i), "")
+		coll, err := r.resolveCollation(fmt.Sprintf("%s%d", prefix, i), "")
 		if err != nil || coll.compare("a", "b") >= 0 {
 			t.Fatalf("comparison %d: %v", i, err)
 		}
@@ -290,42 +290,42 @@ func TestCollationCacheBoundsDynamicURIs(t *testing.T) {
 
 	count := 0
 
-	runtime.collations.Range(func(_, _ any) bool { count++; return true })
+	r.collations.Range(func(_, _ any) bool { count++; return true })
 
 	if count != collationCacheCapacity {
 		t.Fatalf("retained %d collations", count)
 	}
 
 	first := prefix + "0"
-	if _, ok := runtime.collations.Load([2]string{first, ""}); ok {
+	if _, ok := r.collations.Load([2]string{first, ""}); ok {
 		t.Fatal("oldest URI was not evicted")
 	}
 
-	if coll, err := runtime.resolveCollation(first, ""); err != nil || coll.compare("b", "a") <= 0 {
+	if coll, err := r.resolveCollation(first, ""); err != nil || coll.compare("b", "a") <= 0 {
 		t.Fatalf("evicted URI: %v", err)
 	}
 
 	oversized := prefix + strings.Repeat("x", collationCacheKeyBytes)
-	if coll, err := runtime.resolveCollation(oversized, ""); err != nil || coll.compare("a", "b") >= 0 {
+	if coll, err := r.resolveCollation(oversized, ""); err != nil || coll.compare("a", "b") >= 0 {
 		t.Fatalf("uncached URI: %v", err)
 	}
 
-	if _, ok := runtime.collations.Load([2]string{oversized, ""}); ok {
+	if _, ok := r.collations.Load([2]string{oversized, ""}); ok {
 		t.Fatal("oversized URI retained")
 	}
 }
 
 func TestCollationCacheConcurrentEviction(t *testing.T) {
 	var (
-		runtime evaluationRuntime
-		wg      sync.WaitGroup
+		r  evaluationRuntime
+		wg sync.WaitGroup
 	)
 	for worker := range 8 {
 		wg.Go(func() {
 			for i := range collationCacheCapacity {
 				uri := fmt.Sprintf("http://www.w3.org/2013/collation/UCA?fallback=yes;unused=%d-%d", worker, i)
 
-				coll, err := runtime.resolveCollation(uri, "")
+				coll, err := r.resolveCollation(uri, "")
 				if err != nil {
 					t.Error(err)
 					return
@@ -342,7 +342,7 @@ func TestCollationCacheConcurrentEviction(t *testing.T) {
 
 	count := 0
 
-	runtime.collations.Range(func(_, _ any) bool { count++; return true })
+	r.collations.Range(func(_, _ any) bool { count++; return true })
 
 	if count != collationCacheCapacity {
 		t.Fatalf("retained %d collations after concurrent insertion", count)
@@ -455,6 +455,50 @@ func evaluateRuntimeAST(ctx context.Context, ec *evalContext, expr Expr) (xdm.Se
 	return evalWith(func(ctx context.Context, ec *evalContext, expr Expr) (xdm.Sequence, error) {
 		return dispatchExpr(evaluateRuntimeAST, ctx, ec, expr)
 	}, ctx, ec, expr)
+}
+
+func TestVersionedContractsASTAndVM(t *testing.T) {
+	for _, version := range []int{20, 30, 31} {
+		for _, tc := range []struct{ source, oldCode, modernCode string }{
+			{`string-join((1,2),'')`, errCodeXPTY0004, ""},
+			{`error(())`, errCodeXPTY0004, "FOER0000"},
+			{`error((),'description')`, "FOER0000", "FOER0000"},
+			{`xs:QName(xs:untypedAtomic('local'))`, errCodeXPTY0004, ""},
+			{`xs:untypedAtomic('local') cast as xs:QName`, errCodeXPTY0004, ""},
+			{`'local' cast as xs:QName`, "", ""},
+		} {
+			want := tc.modernCode
+			if version < 31 && (strings.HasPrefix(tc.source, "string-join") || tc.source == `error(())`) || version == 20 {
+				want = tc.oldCode
+			}
+
+			ast, err := Parse(tc.source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, mode := range []string{runtimeASTMode, "VM"} {
+				t.Run(fmt.Sprint(version, mode, tc.source), func(t *testing.T) {
+					var evalErr error
+					if mode == runtimeASTMode {
+						ec := NewEvaluator(DefaultEvaluatorOptions).newEvalCtx(nil)
+						ec.version = version
+						_, evalErr = evaluateRuntimeAST(t.Context(), ec, ast)
+					} else {
+						compiled, compileErr := NewCompiler().Language(version, nil).CompileExpr(ast)
+						if compileErr != nil {
+							t.Fatal(compileErr)
+						}
+						_, evalErr = NewEvaluator(DefaultEvaluatorOptions).Evaluate(t.Context(), compiled, nil)
+					}
+
+					var detail *xdm.Error
+					if want == "" && evalErr != nil || want != "" && (!errors.As(evalErr, &detail) || detail.Code != want) {
+						t.Fatalf("%v, want %s", evalErr, want)
+					}
+				})
+			}
+		}
+	}
 }
 
 func TestEvaluationErrorCodesASTAndVM(t *testing.T) {
@@ -764,5 +808,43 @@ func TestNamedFunctionArityCapacity(t *testing.T) {
 	var detail *xdm.Error
 	if !errors.As(err, &detail) || detail.Code != errCodeFOAR0002 {
 		t.Fatal("arity overflow was narrowed or misclassified", err)
+	}
+}
+
+func TestErrorObjectASTAndVM(t *testing.T) {
+	source := `error(QName('urn:application','e:FAIL'),'details',(42,map{'n':7},[1,2],upper-case#1))`
+	ast, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{runtimeASTMode, "VM"} {
+		t.Run(mode, func(t *testing.T) {
+			var raised error
+			if mode == runtimeASTMode {
+				ec := NewEvaluator(DefaultEvaluatorOptions).newEvalCtx(nil)
+				ec.version = 31
+				_, raised = evaluateRuntimeAST(t.Context(), ec, ast)
+			} else {
+				expression, err := NewCompiler().Language(31, nil).CompileExpr(ast)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, raised = NewEvaluator(DefaultEvaluatorOptions).Evaluate(t.Context(), expression, nil)
+			}
+			var detail *xdm.Error
+			if !errors.As(raised, &detail) || detail.CodeQName().URI != "urn:application" || xdm.SequenceLen(detail.Value) != 4 {
+				t.Fatal(raised)
+			}
+			check, err := Parse(`$err:value[1] eq 42 and $err:value[2]?n eq 7 and $err:value[3]?2 eq 2 and $err:value[4]('mixed') eq 'MIXED'`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ec := NewEvaluator(DefaultEvaluatorOptions).newEvalCtx(nil)
+			ec.version = 31
+			result, err := evaluateRuntimeAST(t.Context(), buildCatchContext(ec, detail), check)
+			if err != nil || xdm.SequenceLen(result) != 1 || result.Get(0).(xdm.AtomicValue).Value != true {
+				t.Fatal(result, err)
+			}
+		})
 	}
 }

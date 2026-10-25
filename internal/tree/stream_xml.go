@@ -22,12 +22,15 @@ import (
 type XMLWriteOptions struct {
 	// CanEncode reports the output character repertoire. Unrepresentable content
 	// is written as numeric references; markup names still have to be encodable.
-	CanEncode                                                 func(rune) bool
+	CanEncode                            func(rune) bool
+	CharacterMap                         map[rune]string
+	CDATA, SuppressIndent                map[string]struct{}
+	InheritedNamespaces                  map[string]string
+	IndentString, Version, Normalization string
+	// NormalizeXMLID applies the XDM xml:id string value during serialization,
+	// without changing the original XML snapshot. Ordinary XML output leaves it off.
+	NormalizeXMLID                                            bool
 	Indent, SelfClose, ASCII, PrefixUndeclarations, Reconcile bool
-	IndentString, Version, Normalization                      string
-	CharacterMap                                              map[rune]string
-	CDATA, SuppressIndent                                     map[string]struct{}
-	InheritedNamespaces                                       map[string]string
 }
 
 // WriteXMLFragment serializes a private content sequence, including empty or
@@ -192,7 +195,12 @@ func (w *xmlStream) normalized(s string, emit func(string)) {
 }
 
 func (w *xmlStream) cdata(s string) {
+	// SER31 section 11 excludes text selected for CDATA from character maps,
+	// including characters emitted outside CDATA as numeric references.
+	charMap := w.options.CharacterMap
+	w.options.CharacterMap = nil
 	w.normalized(s, w.cdataPart)
+	w.options.CharacterMap = charMap
 }
 
 func (w *xmlStream) cdataPart(s string) {
@@ -244,7 +252,40 @@ func (w *xmlStream) escaped(s string, attribute bool) {
 		return
 	}
 
-	w.normalized(s, func(value string) { w.escapedPart(value, attribute) })
+	emit := func(value string) { w.escapedPart(value, attribute) }
+
+	charMap := w.options.CharacterMap
+	if len(charMap) == 0 {
+		w.normalized(s, emit)
+		return
+	}
+
+	if !utf8.ValidString(s) {
+		w.err = ErrMalformed
+		return
+	}
+
+	// Match original characters before normalization. Neither replacements
+	// nor characters introduced by normalization may be mapped again.
+	w.options.CharacterMap = nil
+	defer func() { w.options.CharacterMap = charMap }()
+
+	start := 0
+
+	for at, r := range s {
+		if replacement, mapped := charMap[r]; mapped {
+			w.normalized(s[start:at], emit)
+			w.text(replacement)
+
+			start = at + utf8.RuneLen(r)
+
+			if w.err != nil {
+				return
+			}
+		}
+	}
+
+	w.normalized(s[start:], emit)
 }
 
 func (w *xmlStream) escapedPart(s string, attribute bool) {
@@ -350,7 +391,11 @@ func (w *xmlStream) writeElement(n *Node) {
 			return
 		}
 
-		if w.options.Reconcile && prefix == "" && uri == "" && scope[""] == "" {
+		if prefix != "" && uri == "" && !w.options.PrefixUndeclarations {
+			return
+		}
+
+		if w.options.Reconcile && scope[prefix] == uri {
 			emitted[prefix] = true
 			return
 		}
@@ -365,7 +410,11 @@ func (w *xmlStream) writeElement(n *Node) {
 		}
 
 		w.text("=\"")
-		w.escaped(uri, true)
+		// Namespace nodes are markup, outside the character-expansion phase.
+		charMap := w.options.CharacterMap
+		w.options.CharacterMap = nil
+		w.escapedPart(uri, true)
+		w.options.CharacterMap = charMap
 		w.text("\"")
 	}
 	for _, ns := range n.NS {
@@ -378,7 +427,13 @@ func (w *xmlStream) writeElement(n *Node) {
 		w.text(" ")
 		w.text(QName(a.Prefix, a.Name.Local))
 		w.text("=\"")
-		w.escaped(a.Value, true)
+
+		value := a.Value
+		if w.options.NormalizeXMLID && a.Name == (Name{Space: XMLNamespace, Local: "id"}) {
+			value = xmlchar.CollapseSpace(value)
+		}
+
+		w.escaped(value, true)
 		w.text("\"")
 	}
 

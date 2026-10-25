@@ -6,34 +6,14 @@ package xslt
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
-	xpathstream "github.com/skarm/xmlsec/transform/internal/xslt/internal/stream"
 )
-
-// checkGlobalVarsStreamingContext raises XPDY0002 if any global variable has
-// a select expression that depends on the implicit document context. When the
-// initial mode is streamable, the principal source document is not available
-// for random access in global variable initialisers.
-func checkGlobalVarsStreamingContext(ss *Stylesheet) error {
-	for _, v := range ss.globalVars {
-		if v.Select == nil {
-			continue
-		}
-
-		if xpathstream.ExprHasDownwardStep(v.Select) || xpathstream.ExprUsesContextItem(v.Select) || xpathstream.ExprUsesDescendantOrSelf(v.Select) {
-			return dynamicError(errCodeXPDY0002,
-				"global variable $%s references the document context, which is absent when the initial mode is streamable",
-				v.Name)
-		}
-	}
-
-	return nil
-}
 
 // Params with caller-provided values are set immediately; all others are
 // evaluated on first access to support arbitrary declaration order.
@@ -41,12 +21,15 @@ func (ec *execContext) initGlobalVars(ctx context.Context, cfg *transformConfig)
 	ec.transformConfig = cfg
 	ec.globalVarDefs = make(map[string]*variable, len(ec.stylesheet.globalVars))
 	ec.globalParamDefs = make(map[string]*param, len(ec.stylesheet.globalParams))
-	ec.globalEvaluating = make(map[string]struct{})
+	ec.globalEvaluating = make(map[globalBinding]struct{})
+	ec.globalValueCache = make(map[globalBinding]xdm.Sequence)
 
 	// Register params — set immediately if caller provided a value
 	for _, p := range ec.stylesheet.globalParams {
 		if p.IsStatic {
 			ec.globalVars[p.Name] = p.StaticValue
+			ec.globalValueCache[p.binding()] = p.StaticValue
+
 			continue
 		}
 
@@ -56,7 +39,11 @@ func (ec *execContext) initGlobalVars(ctx context.Context, cfg *transformConfig)
 					if p.As != "" {
 						st := parseSequenceType(p.As)
 
+						restore := ec.pushGlobalScope(p.binding())
 						checked, err := checkSequenceType(ctx, seq, st, errCodeXTTE0590, "param $"+p.Name, ec)
+
+						restore()
+
 						if err != nil {
 							return err
 						}
@@ -65,6 +52,7 @@ func (ec *execContext) initGlobalVars(ctx context.Context, cfg *transformConfig)
 					}
 
 					ec.globalVars[p.Name] = seq
+					ec.globalValueCache[p.binding()] = seq
 
 					continue
 				}
@@ -77,7 +65,7 @@ func (ec *execContext) initGlobalVars(ctx context.Context, cfg *transformConfig)
 	// XTDE0050: required stylesheet parameters that were not supplied by
 	// the caller must raise an error immediately, even if never referenced.
 	for _, p := range ec.globalParamDefs {
-		if p.Required {
+		if p.Required || p.implicitlyMandatory() {
 			return dynamicError(errCodeXTDE0050, "required stylesheet parameter $%s was not supplied", p.Name)
 		}
 	}
@@ -199,16 +187,9 @@ func (ec *execContext) evaluateAllGlobals(ctx context.Context) error {
 		progress := false
 		// Evaluate in sorted key order for deterministic temporary tree
 		// creation order (see collectAllVars for rationale).
-		paramNames := make([]string, 0, len(ec.globalParamDefs))
-		for name := range ec.globalParamDefs {
-			paramNames = append(paramNames, name)
-		}
-
-		slices.Sort(paramNames)
-
-		for _, name := range paramNames {
+		for _, name := range slices.Sorted(maps.Keys(ec.globalParamDefs)) {
 			p, ok := ec.globalParamDefs[name]
-			if !ok {
+			if !ok || p.OwnerPackage != nil && p.OwnerPackage != ec.stylesheet {
 				continue
 			}
 
@@ -219,14 +200,7 @@ func (ec *execContext) evaluateAllGlobals(ctx context.Context) error {
 			progress = true
 		}
 
-		varNames := make([]string, 0, len(ec.globalVarDefs))
-		for name := range ec.globalVarDefs {
-			varNames = append(varNames, name)
-		}
-
-		slices.Sort(varNames)
-
-		for _, name := range varNames {
+		for _, name := range slices.Sorted(maps.Keys(ec.globalVarDefs)) {
 			v, ok := ec.globalVarDefs[name]
 			if !ok {
 				continue // already evaluated as a dependency
@@ -236,7 +210,7 @@ func (ec *execContext) evaluateAllGlobals(ctx context.Context) error {
 			// Also skip variables from used packages: they may reference
 			// abstract components that have not been overridden, and should
 			// only be evaluated when actually referenced (lazy semantics).
-			if v.Visibility == visAbstract || v.OwnerPackage != nil {
+			if v.Visibility == visAbstract || v.OwnerPackage != nil && v.OwnerPackage != ec.stylesheet {
 				continue
 			}
 
@@ -307,6 +281,10 @@ func (ec *execContext) invokeInitialFunction(ctx context.Context, cfg *transform
 // evaluating global variables and params, or nil when the global context
 // item is absent (XPDY0002).
 func (ec *execContext) globalSourceNode() xdm.Node {
+	if ec.currentPackage != nil && ec.currentPackage != ec.stylesheet {
+		return nil
+	}
+
 	if ec.globalContextAbsent {
 		return nil
 	}
@@ -324,82 +302,157 @@ func (ec *execContext) globalSourceNode() xdm.Node {
 	return normalizeNode(ec.sourceDoc)
 }
 
-// evaluateGlobalVar evaluates a global variable on first access.
 func (ec *execContext) evaluateGlobalVar(ctx context.Context, v *variable) (xdm.Sequence, error) {
-	if _, ok := ec.globalEvaluating[v.Name]; ok {
-		return nil, fmt.Errorf("%w: global variable %q", ErrCircularRef, v.Name)
+	return ec.evaluateGlobalBinding(ctx, v.binding())
+}
+
+func (ec *execContext) evaluateGlobalParam(ctx context.Context, p *param) (xdm.Sequence, error) {
+	return ec.evaluateGlobalBinding(ctx, p.binding())
+}
+
+func (ec *execContext) evaluateGlobalBinding(ctx context.Context, binding globalBinding) (xdm.Sequence, error) {
+	if value, ok := ec.globalValueCache[binding]; ok {
+		ec.publishGlobalValue(binding, value)
+		return value, nil
 	}
 
-	ec.globalEvaluating[v.Name] = struct{}{}
-	defer delete(ec.globalEvaluating, v.Name)
+	if _, active := ec.globalEvaluating[binding]; active {
+		return nil, dynamicErrorCause(errCodeXTDE0640, ErrCircularRef, "circular global declaration")
+	}
 
+	if err := xpath.Charge(ctx, 1); err != nil {
+		return nil, err
+	}
+
+	if len(ec.globalEvaluating) >= xpath.DepthLimit(ctx, 128) {
+		return nil, xpath.ErrBudget
+	}
+
+	ctx = xpath.WithDynamicProperties(ctx, ec.dynamicProperties)
+
+	ec.globalEvaluating[binding] = struct{}{}
+	defer delete(ec.globalEvaluating, binding)
+	// Resolve only dependencies while evaluating a global. Starting another
+	// eager pass here retries unrelated declarations and can hide depth failures.
+	savedCollecting := ec.collectingVars
+
+	ec.collectingVars = true
+	defer func() { ec.collectingVars = savedCollecting }()
+	defer ec.pushGlobalScope(binding)()
+
+	var (
+		value xdm.Sequence
+		err   error
+	)
+	if binding.variable != nil {
+		value, err = ec.computeGlobalVar(ctx, binding.variable)
+	} else {
+		value, err = ec.computeGlobalParam(ctx, binding.param)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if ec.globalValueCache == nil {
+		ec.globalValueCache = make(map[globalBinding]xdm.Sequence)
+	}
+
+	ec.globalValueCache[binding] = value
+	ec.publishGlobalValue(binding, value)
+
+	return value, nil
+}
+
+// Only the active declaration may publish a value under its symbolic name.
+// Hidden originals and homonyms keep their own cached values without replacing it.
+func (ec *execContext) publishGlobalValue(binding globalBinding, value xdm.Sequence) {
+	var name string
+	if binding.variable != nil {
+		name = binding.variable.Name
+		if active := ec.globalVarDefs[name]; active == nil || active.binding() != binding {
+			return
+		}
+
+		delete(ec.globalVarDefs, name)
+	} else {
+		name = binding.param.Name
+		if active := ec.globalParamDefs[name]; active == nil || active.binding() != binding {
+			return
+		}
+
+		delete(ec.globalParamDefs, name)
+	}
+
+	ec.globalVars[name] = value
+	ec.globalVarsGen++
+}
+
+// A global declaration cannot inherit a caller's locals, template rule or focus.
+// Library globals have no global context item, including when the package declares one.
+func (ec *execContext) pushGlobalScope(binding globalBinding) func() {
+	var (
+		owner      *Stylesheet
+		original   globalBinding
+		namespaces map[string]string
+		defaultNS  string
+		hasDefault bool
+	)
+	if v := binding.variable; v != nil {
+		owner, original, namespaces, defaultNS, hasDefault = v.OwnerPackage, v.Original, v.TypeNamespaces, v.XPathDefaultNS, v.HasXPathDefaultNS
+	} else {
+		p := binding.param
+		owner, original, namespaces, defaultNS, hasDefault = p.OwnerPackage, p.Original, p.TypeNamespaces, p.XPathDefaultNS, p.HasXPathDefaultNS
+	}
+
+	savedNS, savedDefault, savedHas := ec.nsOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS
+
+	ec.nsOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS = namespaces, defaultNS, hasDefault
+	if owner == nil {
+		owner = ec.stylesheet
+	}
+
+	restorePackage := ec.pushPackage(owner)
+	locals, tmpl, originalBefore := ec.localVars, ec.currentTemplate, ec.originalGlobal
+	mode, modePackage := ec.currentMode, ec.currentModePackage
+	node, current, item, pos, size := ec.contextNode, ec.currentNode, ec.contextItem, ec.position, ec.size
+	outputURI := ec.currentOutputURI
+	restoreGrouping := ec.pushAbsentGroupingContext()
+	ec.currentOutputURI = ""
+	ec.localVars, ec.currentTemplate, ec.originalGlobal = nil, nil, original
+	ec.localVarsVer++
+	ec.currentMode, ec.currentModePackage = "", nil
+
+	ec.contextNode, ec.currentNode, ec.contextItem = ec.globalSourceNode(), ec.globalSourceNode(), nil
+	if owner == ec.stylesheet && !ec.globalContextAbsent {
+		ec.contextItem = ec.globalContextItem
+	}
+
+	ec.position, ec.size = 0, 0
+	if ec.contextNode != nil || ec.contextItem != nil {
+		ec.position, ec.size = 1, 1
+	}
+
+	return func() {
+		ec.localVars, ec.currentTemplate, ec.originalGlobal = locals, tmpl, originalBefore
+		ec.localVarsVer++
+		ec.currentMode, ec.currentModePackage = mode, modePackage
+		ec.contextNode, ec.currentNode, ec.contextItem, ec.position, ec.size = node, current, item, pos, size
+		ec.currentOutputURI = outputURI
+
+		restoreGrouping()
+
+		ec.nsOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS = savedNS, savedDefault, savedHas
+
+		restorePackage()
+	}
+}
+
+// computeGlobalVar evaluates a global variable in its declaration scope.
+func (ec *execContext) computeGlobalVar(ctx context.Context, v *variable) (xdm.Sequence, error) {
 	var val xdm.Sequence
 
 	ctx = withExecContext(ctx, ec)
-
-	// XSLT 2.0 erratum XT.E19: mode="#current" in a global variable
-	// must use the default mode, not whatever mode happens to be active
-	// when the variable is lazily evaluated.
-	savedMode := ec.currentMode
-
-	ec.currentMode = ec.stylesheet.defaultMode
-	defer func() { ec.currentMode = savedMode }()
-
-	// Switch to the variable's owning package so that private functions
-	// from that package are visible during evaluation. Invalidate the
-	// cached function maps so they are rebuilt for the new package scope.
-	savedPackage := ec.currentPackage
-	if v.OwnerPackage != nil && v.OwnerPackage != ec.currentPackage {
-		ec.currentPackage = v.OwnerPackage
-		ec.cachedFns = nil
-		ec.cachedFnsNS = nil
-	}
-	defer func() {
-		if ec.currentPackage != savedPackage {
-			ec.currentPackage = savedPackage
-			ec.cachedFns = nil
-			ec.cachedFnsNS = nil
-		}
-	}()
-
-	// XPDY0002: when a variable belongs to a library package that does not
-	// declare xsl:global-context-item (or declares use="absent"), the global
-	// context item is absent during evaluation. Temporarily clear the context
-	// node so XPath expressions that depend on it raise XPDY0002.
-	savedContextNode := ec.contextNode
-
-	savedContextItem := ec.contextItem
-
-	savedSourceDoc := ec.sourceDoc
-
-	evaluateGlobalVarOwnerPackage(v, ec)
-	defer func() {
-		ec.contextNode = savedContextNode
-		ec.contextItem = savedContextItem
-		ec.sourceDoc = savedSourceDoc
-	}()
-
-	// Track overriding variable for $xsl:original support
-	savedOverridingVarDef := ec.overridingVarDef
-	if v.OriginalVar != nil {
-		ec.overridingVarDef = v
-	}
-	defer func() { ec.overridingVarDef = savedOverridingVarDef }()
-
-	// Restore xpath-default-namespace from the variable's definition site
-	// so that XPath expressions in the body (e.g. xsl:sequence select)
-	// resolve unprefixed element names against the correct namespace.
-	savedXPathDefaultNS := ec.xpathDefaultNS
-
-	savedHasXPathDefaultNS := ec.hasXPathDefaultNS
-	if v.XPathDefaultNS != "" {
-		ec.xpathDefaultNS = v.XPathDefaultNS
-		ec.hasXPathDefaultNS = true
-	}
-	defer func() {
-		ec.xpathDefaultNS = savedXPathDefaultNS
-		ec.hasXPathDefaultNS = savedHasXPathDefaultNS
-	}()
 
 	// Abstract variables have no implementation — raise XTDE3052.
 	if v.Visibility == visAbstract {
@@ -427,10 +480,6 @@ func (ec *execContext) evaluateGlobalVar(ctx context.Context, v *variable) (xdm.
 	// Static variables use their pre-computed compile-time value.
 	if v.StaticValue != nil {
 		val = v.StaticValue
-		delete(ec.globalVarDefs, v.Name)
-		ec.globalVars[v.Name] = val
-		ec.globalVarsGen++
-
 		return val, nil
 	}
 
@@ -493,44 +542,18 @@ func (ec *execContext) evaluateGlobalVar(ctx context.Context, v *variable) (xdm.
 		val = checked
 	}
 
-	ec.globalVars[v.Name] = val
-	ec.globalVarsGen++
-	delete(ec.globalVarDefs, v.Name)
-
 	return val, nil
 }
 
-func evaluateGlobalVarOwnerPackage(v *variable, ec *execContext) {
-	if v.OwnerPackage != nil && v.OwnerPackage != ec.stylesheet {
-		gci := v.OwnerPackage.globalContextItem
-		if gci == nil || gci.Use == ctxItemAbsent {
-			ec.contextNode = nil
-			ec.contextItem = nil
-			ec.sourceDoc = nil
-		}
+// computeGlobalParam evaluates the declaration default in its global scope.
+func (ec *execContext) computeGlobalParam(ctx context.Context, p *param) (xdm.Sequence, error) {
+	if p.IsStatic {
+		return p.StaticValue, nil
 	}
-}
-
-// evaluateGlobalParam evaluates a global param on first access.
-func (ec *execContext) evaluateGlobalParam(ctx context.Context, p *param) (xdm.Sequence, error) {
-	if _, ok := ec.globalEvaluating[p.Name]; ok {
-		return nil, fmt.Errorf("%w: global param %q", ErrCircularRef, p.Name)
-	}
-
-	ec.globalEvaluating[p.Name] = struct{}{}
-	defer delete(ec.globalEvaluating, p.Name)
 
 	var val xdm.Sequence
 
 	ctx = withExecContext(ctx, ec)
-
-	// XSLT 2.0 erratum XT.E19: mode="#current" in a global param
-	// must use the default mode, not whatever mode happens to be active
-	// when the param is lazily evaluated.
-	savedMode := ec.currentMode
-
-	ec.currentMode = ec.stylesheet.defaultMode
-	defer func() { ec.currentMode = savedMode }()
 
 	// Pin the static base URI to the param's declaration site so that
 	// static-base-uri() (and any xsl:evaluate / unparsed-text in the body)
@@ -550,7 +573,7 @@ func (ec *execContext) evaluateGlobalParam(ctx context.Context, p *param) (xdm.S
 
 	// XTDE0050: required stylesheet parameter not supplied by the caller.
 	// If we reach here (not set in initGlobalVars), no external value was given.
-	if p.Required {
+	if p.Required || p.implicitlyMandatory() {
 		return nil, dynamicError(errCodeXTDE0050, "required stylesheet parameter $%s was not supplied", p.Name)
 	}
 
@@ -597,17 +620,13 @@ func (ec *execContext) evaluateGlobalParam(ctx context.Context, p *param) (xdm.S
 	if p.As != "" {
 		st := parseSequenceType(p.As)
 
-		checked, err := checkSequenceType(ctx, val, st, errCodeXTTE0570, "param $"+p.Name, ec)
+		checked, err := checkSequenceType(ctx, val, st, ec.parameterDefaultErrorCode(), "param $"+p.Name, ec)
 		if err != nil {
 			return nil, err
 		}
 
 		val = checked
 	}
-
-	ec.globalVars[p.Name] = val
-	ec.globalVarsGen++
-	delete(ec.globalParamDefs, p.Name)
 
 	return val, nil
 }

@@ -64,11 +64,11 @@ func lookupFunctionsDatetime(name string) (*builtinFunc, bool) {
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnAdjustDateToTimezone}, true
 	case "adjust-time-to-timezone":
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnAdjustTimeToTimezone}, true
-	case "format-dateTime":
+	case fnNameFormatDateTime:
 		return &builtinFunc{name: name, min: 2, max: 5, arities: []int{2, 5}, fn: fnFormatDateTime}, true
-	case "format-date":
+	case fnNameFormatDate:
 		return &builtinFunc{name: name, min: 2, max: 5, arities: []int{2, 5}, fn: fnFormatDate}, true
-	case "format-time":
+	case fnNameFormatTime:
 		return &builtinFunc{name: name, min: 2, max: 5, arities: []int{2, 5}, fn: fnFormatTime}, true
 	}
 

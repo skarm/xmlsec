@@ -210,7 +210,7 @@ func testCMSRoundTripCase(t *testing.T, tc *struct {
 ) {
 	m := []byte("exact\x00binary\r\ncontent")
 
-	raw, e := cms.Sign(context.Background(), m, []cms.Signer{{Key: tc.key, CertificateDER: tc.cert, Hash: tc.h, RSAPSS: tc.pss, SubjectKeyIdentifier: tc.ski}}, cms.SignOptions{Detached: (*detached), ExtraCertificates: [][]byte{c.Root.Raw}})
+	raw, e := cms.Sign(context.Background(), m, []cms.Signer{{Key: tc.key, CertificateDER: tc.cert, Hash: tc.h, RSAPSS: tc.pss, SubjectKeyIdentifier: tc.ski}}, cms.SignOptions{Detached: *detached, ExtraCertificates: [][]byte{c.Root.Raw}})
 	if e != nil {
 		t.Fatal(e)
 	}

@@ -13,6 +13,8 @@ import (
 	"path"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/nilcheck"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
@@ -23,6 +25,7 @@ import (
 // alongside xsltFunctionArities (the single source of truth for arities) so the
 // repeated literals stay consistent across the package.
 const (
+	fnNameFormatNumber       = "format-number"
 	fnNameCurrent            = "current"
 	fnNameDocument           = "document"
 	fnNameElementAvailable   = "element-available"
@@ -39,22 +42,23 @@ const (
 // registered with the XPath evaluator by local name (no namespace prefix).
 // The map is cached on ec after the first call.
 func (ec *execContext) xsltFunctions() map[string]xpath.Function {
-	if ec.cachedFns != nil {
+	if ec.cachedFns != nil && ec.cachedFnsPackage == ec.effectiveStylesheet() {
 		return ec.cachedFns
 	}
 
+	ec.cachedFnsPackage = ec.effectiveStylesheet()
+
 	ec.cachedFns = map[string]xpath.Function{
-		"nilled":                   &xsltFunc{min: 0, max: 1, fn: ec.fnNilled},
 		fnNameCurrent:              &xsltFunc{min: 0, max: 0, fn: ec.fnCurrent, noDynRef: true, dynRefError: errCodeXTDE1360},
 		fnNameDocument:             &xsltFunc{min: 1, max: 2, fn: ec.fnDocument},
-		nameKey2:                   &xsltFunc{min: 2, max: 3, fn: ec.fnKey},
-		nameGenerateId:             &xsltFunc{min: 0, max: 1, fn: ec.fnGenerateID},
-		funcSystemProperty:         &xsltFunc{min: 1, max: 1, fn: ec.fnSystemProperty},
+		nameKey2:                   &keyFunction{ec: ec, scope: ec.effectiveStylesheet()},
+		nameGenerateId:             xpath.HostBuiltin(ec.stylesheet.xpathVersion(), nameGenerateId),
+		funcSystemProperty:         newIntrospectionFunc(funcSystemProperty, ec.fnSystemProperty),
 		nameUnparsedEntityUri:      &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityURI},
 		nameUnparsedEntityPublicId: &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityPublicID},
-		fnNameElementAvailable:     &xsltFunc{min: 1, max: 1, fn: ec.fnElementAvailable},
-		fnNameFunctionAvailable:    &xsltFunc{min: 1, max: 2, fn: ec.fnFunctionAvailable},
-		fnNameTypeAvailable:        &xsltFunc{min: 1, max: 1, fn: ec.fnTypeAvailable},
+		fnNameElementAvailable:     newIntrospectionFunc(fnNameElementAvailable, ec.fnElementAvailable),
+		fnNameFunctionAvailable:    newIntrospectionFunc(fnNameFunctionAvailable, ec.fnFunctionAvailable),
+		fnNameTypeAvailable:        newIntrospectionFunc(fnNameTypeAvailable, fnTypeAvailable),
 		fnNameCurrentGroup:         &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentGroup, noDynRef: true, dynRefError: errCodeXTDE1061},
 		fnNameCurrentGroupingKey:   &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentGroupingKey, noDynRef: true, dynRefError: errCodeXTDE1071},
 		nameAccumulatorBefore: &xsltFunc{min: 1, max: 1, fn: func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -69,14 +73,19 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 		}},
 		fnNameCopyOf:                  &xsltFunc{min: 0, max: 1, fn: ec.fnCopyOf},
 		funcSnapshot:                  &xsltFunc{min: 0, max: 1, fn: ec.fnSnapshot},
-		nameRegexGroup:                &regexGroupFunc{ec: ec},
+		nameRegexGroup:                &xsltFunc{min: 1, max: 1, fn: ec.fnRegexGroup},
 		fnNameTransform:               &xsltFunc{min: 1, max: 1, fn: ec.fnTransform},
-		funcAvailableSystemProperties: &xsltFunc{min: 0, max: 0, fn: ec.fnAvailableSystemProperties},
+		funcAvailableSystemProperties: &xsltFunc{min: 0, max: 0, fn: fnAvailableSystemProperties},
 		nameStreamAvailable:           &xsltFunc{min: 1, max: 1, fn: ec.fnStreamAvailable},
 		fnNameCurrentOutputURI:        &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentOutputURI},
 	}
+	if ec.stylesheet.processorLanguage() <= 20 {
+		for _, name := range []string{fnNameFormatNumber, "format-date", "format-dateTime", "format-time"} {
+			ec.cachedFns[name] = newLegacyFormatFunction(ec.stylesheet.xpathVersion(), name)
+		}
+	}
+
 	if ec.stylesheet.processorLanguage() == 10 {
-		ec.cachedFns["format-number"] = &xsltFunc{min: 2, max: 3, fn: xpath.FormatNumber}
 		for name, fn := range ec.cachedFns {
 			if _, ok := lookupxslt10Functions(name); ok {
 				ec.cachedFns[name] = function10{name, fn}
@@ -94,7 +103,78 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 		}
 	}
 
+	for name, function := range ec.cachedFns {
+		if host, ok := function.(*xsltFunc); ok {
+			ec.prepareHostFunction(name, host)
+		}
+	}
+
 	return ec.cachedFns
+}
+
+func (ec *execContext) prepareHostFunction(name string, function *xsltFunc) {
+	function.name = name
+	if ec.stylesheet.processorLanguage() < 30 && (name == nameUnparsedEntityUri || name == nameUnparsedEntityPublicId) {
+		function.max = 1
+	}
+
+	if function.signature == nil {
+		function.signature = xpath.HostBuiltin(ec.stylesheet.xpathVersion(), name)
+	}
+}
+
+// Preserve the XSLT 2.0 error vocabulary while reusing F&O conversion and
+// formatting. A 3.0 processor uses the F&O codes even for a 2.0 declaration.
+type legacyFormatFunction struct {
+	xpath.TypedFunctionByArity
+	name string
+}
+
+func newLegacyFormatFunction(version int, name string) xpath.Function {
+	return &legacyFormatFunction{TypedFunctionByArity: xpath.HostBuiltin(version, name), name: name}
+}
+
+func (f *legacyFormatFunction) AcceptsArity(arity int) bool {
+	return xpath.BuiltinFunctionAcceptsArity(xpath.NSFn, f.name, arity)
+}
+
+func (f *legacyFormatFunction) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	if f.name == fnNameFormatNumber && len(args) == 3 {
+		name, err := xpath.XPath10String(args[2])
+		if err != nil {
+			return nil, err
+		}
+
+		if !xmlchar.IsValidQName(name) {
+			return nil, dynamicError("XTDE1280", "invalid decimal format QName %q", name)
+		}
+	}
+
+	value, err := f.TypedFunctionByArity.Call(ctx, args)
+	if failure := preserveControlFailure(ctx, err); failure != nil {
+		return nil, failure
+	}
+
+	if detail, ok := errors.AsType[*xdm.Error](err); ok && detail.CodeQName().URI == lexicon.NamespaceErr {
+		code := ""
+
+		switch detail.Code {
+		case "FODF1280":
+			code = "XTDE1280"
+		case "FODF1310":
+			code = "XTDE1310"
+		case "FOFD1340":
+			code = "XTDE1340"
+		case "FOFD1350":
+			code = "XTDE1350"
+		}
+
+		if code != "" {
+			return nil, dynamicErrorCause(code, err, "%s: %s", f.name, detail.Message)
+		}
+	}
+
+	return value, err
 }
 
 func xslt30Function(name string) bool {
@@ -106,52 +186,6 @@ func xslt30Function(name string) bool {
 	default:
 		return false
 	}
-}
-
-// fnNilled overrides the XPath nilled() function to support schema-aware
-// nilled checking via the exec context's type annotations and schema registry.
-func (ec *execContext) fnNilled(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	var node xdm.Node
-	if len(args) == 0 {
-		// nilled() with no arguments: use context node.
-		node = ec.contextNode
-	} else {
-		if args[0] == nil || xdm.SequenceLen(args[0]) == 0 {
-			// nilled(()) or empty sequence argument: return empty sequence.
-			return nil, nil //nolint:nilnil
-		}
-
-		ni, ok := args[0].Get(0).(xdm.NodeItem)
-		if !ok {
-			return nil, nil //nolint:nilnil
-		}
-
-		node = ni.Node
-	}
-
-	if node == nil || node.Type() != xdm.ElementNode {
-		return nil, nil //nolint:nilnil
-	}
-
-	elem, ok := node.(*xdm.Element)
-	if !ok {
-		return xdm.SingleBoolean(false), nil
-	}
-	// When input-type-annotations="strip", nilled is always false.
-	if ec.stylesheet.inputTypeAnnotations == validationStrip {
-		return xdm.SingleBoolean(false), nil
-	}
-	// nilled() returns true only when the element was confirmed nilled during
-	// schema validation (tracked in nilledElements). Documents loaded via
-	// doc() get type annotations but are not tracked as nilled since fn:nilled()
-	// should only return true for explicitly schema-validated source documents.
-	if ec.nilledElements != nil {
-		if _, ok := ec.nilledElements[elem]; ok {
-			return xdm.SingleBoolean(true), nil
-		}
-	}
-
-	return xdm.SingleBoolean(false), nil
 }
 
 // current() returns the current item (node or atomic value being processed).
@@ -180,36 +214,79 @@ func (ec *execContext) fnCurrent(_ context.Context, _ []xdm.Sequence) (xdm.Seque
 //   - Second argument (optional) is a node whose base URI is used for
 //     resolving relative URIs instead of the stylesheet base URI.
 func (ec *execContext) fnDocument(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 || (args[0] == nil || xdm.SequenceLen(args[0]) == 0) {
-		return xdm.EmptySequence(), nil
+	if xdm.SequenceLen(args[0]) == 0 {
+		return nil, nil
 	}
 
-	// Determine the base URI for resolving relative URIs.
-	// Default: the base URI of the current template's module, falling
-	// back to the main stylesheet base URI.
-	// If a second argument is provided, use that node's document's URL
-	// as the base URI instead.
 	baseDir, err := documentFunctionBaseDir(args, ec.baseDir())
 	if err != nil {
 		return nil, err
 	}
 
-	seen := make(map[string]struct{})
-
-	var result xdm.ItemSlice
+	var nodes []xdm.Node
 
 	for item := range xdm.SequenceItems(args[0]) {
-		itemBaseDir, err := documentArgumentBase(item, baseDir, len(args) < 2)
+		selected, err := ec.documentItemNodes(ctx, item, baseDir, len(args) < 2)
 		if err != nil {
 			return nil, err
 		}
 
-		av, err := xpath.AtomizeItem(item)
+		if len(selected) > xpath.NodeLimit(ctx, xdm.DefaultMaxNodeSetLength)-len(nodes) {
+			return nil, xpath.ErrNodeSetLimit
+		}
+
+		nodes = append(nodes, selected...)
+	}
+
+	// Different fragments may select different nodes in the same document.
+	// Deduplicate the selected nodes, then return them in document order.
+	if ec.docOrderCache == nil {
+		ec.docOrderCache = xpath.NewDocOrderCache()
+	}
+
+	nodes, err = xdm.DeduplicateNodes(nodes, ec.docOrderCache, xpath.NodeLimit(ctx, xdm.DefaultMaxNodeSetLength))
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(xdm.ItemSlice, len(nodes))
+	for i, node := range nodes {
+		result[i] = xdm.NodeItem{Node: node}
+	}
+
+	return result, nil
+}
+
+func (ec *execContext) documentItemNodes(ctx context.Context, item xdm.Item, baseDir string, implicitBase bool) ([]xdm.Node, error) {
+	var nodes []xdm.Node
+
+	switch item.(type) {
+	case xdm.AtomicValue, xdm.NodeItem:
+	default:
+		return nil, dynamicError(errCodeXPTY0004, "document() requires string-like values or nodes")
+	}
+
+	atoms, err := xpath.FnAtomize(ctx, xdm.ItemSlice{item})
+	if err != nil {
+		return nil, err
+	}
+
+	for _, atom := range atoms {
+		if !isStringLikeType(atom.TypeName) {
+			return nil, dynamicError(errCodeXPTY0004, "document() requires string-like URI values")
+		}
+
+		atom, err = xpath.CastAtomic(atom, xdm.TypeAnyURI)
 		if err != nil {
 			return nil, err
 		}
 
-		uri, err := xpath.AtomicToString(av)
+		uri, err := xpath.AtomicToString(atom)
+		if err != nil {
+			return nil, err
+		}
+
+		itemBaseDir, err := documentArgumentBase(item, baseDir, implicitBase)
 		if err != nil {
 			return nil, err
 		}
@@ -219,32 +296,26 @@ func (ec *execContext) fnDocument(ctx context.Context, args []xdm.Sequence) (xdm
 			return nil, err
 		}
 
-		// Deduplicate by resolved URI (same document returned once).
-		resolvedKey := ec.resolveDocumentURI(uri, itemBaseDir)
-		if _, dup := seen[resolvedKey]; dup {
-			continue
-		}
-
-		seen[resolvedKey] = struct{}{}
-
-		// If the URI has a fragment identifier, select the element with
-		// that ID from the loaded document (XSLT spec 14.1).
-		var resultNode xdm.Node = doc
-
-		if _, frag, ok := strings.Cut(uri, "#"); ok {
-			if frag != "" {
-				if elem := findElementByID(doc, frag); elem != nil {
-					resultNode = elem
-				} else {
-					continue
-				}
+		var node xdm.Node = doc
+		if _, fragment, found := strings.Cut(uri, "#"); found && fragment != "" {
+			node = findElementByID(doc, fragment)
+			if xdm.IsNilNode(node) {
+				continue
 			}
 		}
 
-		result = append(result, xdm.NodeItem{Node: resultNode})
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return nil, err
+		}
+
+		if len(nodes) >= xpath.NodeLimit(ctx, xdm.DefaultMaxNodeSetLength) {
+			return nil, xpath.ErrNodeSetLimit
+		}
+
+		nodes = append(nodes, node)
 	}
 
-	return result, nil
+	return nodes, nil
 }
 
 // documentBaseURI walks up a node to its owning Document and returns its URL.
@@ -330,6 +401,11 @@ func (ec *execContext) fnDoc(ctx context.Context, args []xdm.Sequence) (xdm.Sequ
 		return nil, err
 	}
 
+	uri, err = xpath.ResolveDocumentURI(ctx, uri)
+	if err != nil {
+		return nil, err
+	}
+
 	baseDir := ec.baseDir()
 
 	doc, err := ec.loadDocument(ctx, uri, baseDir)
@@ -346,7 +422,7 @@ func (ec *execContext) loadDocument(ctx context.Context, uri string, baseDir str
 	// Fragment-only URI ("#id") refers to the source document.
 	if strings.HasPrefix(uri, "#") {
 		if ec.sourceDoc != nil {
-			return ec.sourceDoc, nil
+			return ec.existingDocumentRead(ctx, ec.sourceDoc)
 		}
 
 		return nil, dynamicError(errCodeFODC0002, "cannot load document %q: no source document", uri)
@@ -365,13 +441,13 @@ func (ec *execContext) loadDocument(ctx context.Context, uri string, baseDir str
 				// matches the template's module. If xml:base overrides,
 				// fall through to load the overridden URI.
 				if effectiveBase == ec.currentTemplate.BaseURI || effectiveBase == "" {
-					return modDoc, nil
+					return ec.existingDocumentRead(ctx, modDoc)
 				}
 			} else if effectiveBase == ec.currentTemplate.BaseURI || effectiveBase == "" {
-				return ec.stylesheet.sourceDoc, nil
+				return ec.existingDocumentRead(ctx, ec.stylesheet.sourceDoc)
 			}
 		} else if effectiveBase == "" || effectiveBase == ec.stylesheet.baseURI {
-			return ec.stylesheet.sourceDoc, nil
+			return ec.existingDocumentRead(ctx, ec.stylesheet.sourceDoc)
 		}
 		// xml:base overrides the base URI — resolve the empty string
 		// against the effective base URI to load the target document.
@@ -386,25 +462,24 @@ func (ec *execContext) loadDocument(ctx context.Context, uri string, baseDir str
 	}
 
 	resolvedURI := ec.resolveDocumentURI(cleanURI, baseDir)
+	if err := ec.CheckRead(ctx, resolvedURI); err != nil {
+		return nil, err
+	}
 
 	// If the resolved URI matches the source document, return it directly
 	// to preserve node identity (spec: doc(document-uri(X)) is X).
-	if ec.sourceDoc != nil && ec.sourceDoc.URL() == resolvedURI {
-		return ec.sourceDoc, nil
+	if ec.sourceDoc != nil && ec.resolveDocumentURI(ec.sourceDoc.URL(), "") == resolvedURI {
+		return ec.existingDocumentRead(ctx, ec.sourceDoc)
 	}
 
 	cacheKey := ec.docCacheKey(resolvedURI)
 	if doc, ok := ec.docCache[cacheKey]; ok {
-		return doc, nil
+		return ec.existingDocumentRead(ctx, doc)
 	}
 
 	reader, err := ec.retrieveDocumentReader(ctx, resolvedURI)
 	if err != nil {
-		if strings.ContainsRune(uri, '#') {
-			return nil, dynamicErrorCause(errCodeXTDE1160, err, "cannot load document %q with fragment identifier: %v", uri, err)
-		}
-
-		return nil, dynamicErrorCause(errCodeFODC0002, err, "cannot load document %q: %v", uri, err)
+		return nil, documentRetrievalError(uri, err)
 	}
 
 	doc, err := parseXMLResource(ctx, ec.inputParseOptions(), reader, resolvedURI, ec.resourceLimit())
@@ -454,12 +529,55 @@ func loadDocumentEffectiveAccumulators(ctx context.Context, ec *execContext, doc
 	return nil
 }
 
+func documentRetrievalError(uri string, err error) error {
+	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+		return err
+	}
+
+	if strings.ContainsRune(uri, '#') {
+		return dynamicErrorCause(errCodeXTDE1160, err, "cannot load document %q with fragment identifier: %v", uri, err)
+	}
+
+	return dynamicErrorCause(errCodeFODC0002, err, "cannot load document %q: %v", uri, err)
+}
+
+func (ec *execContext) existingDocumentRead(ctx context.Context, doc *xdm.Document) (*xdm.Document, error) {
+	if doc != nil {
+		if err := ec.RecordRead(ctx, doc.URL()); err != nil {
+			return nil, err
+		}
+	}
+
+	return doc, nil
+}
+
 func (ec *execContext) retrieveDocumentReader(ctx context.Context, uri string) (io.ReadCloser, error) {
+	if err := ec.CheckRead(ctx, uri); err != nil {
+		return nil, &xdm.ResourceAccessError{Cause: err}
+	}
+
 	if ec.transformConfig == nil {
 		return nil, fmt.Errorf("no URIResolver configured for %q", uri)
 	}
 
-	return openDocumentVia(ctx, uri, ec.transformConfig.uriResolver, ec.transformConfig.httpClient)
+	reader, err := openDocumentVia(ctx, uri, ec.transformConfig.uriResolver, ec.transformConfig.httpClient)
+	if err != nil {
+		if !nilcheck.IsNil(reader) {
+			err = errors.Join(err, reader.Close())
+		}
+
+		return nil, err
+	}
+
+	if nilcheck.IsNil(reader) {
+		return nil, fmt.Errorf("resource %q returned a nil reader", uri)
+	}
+
+	if err := ec.RecordRead(ctx, uri); err != nil {
+		return nil, errors.Join(&xdm.ResourceAccessError{Cause: err}, reader.Close())
+	}
+
+	return reader, nil
 }
 
 func openDocumentVia(ctx context.Context, uri string, resolver xpath.URIResolver, client *http.Client) (io.ReadCloser, error) {
@@ -506,85 +624,6 @@ func (ec *execContext) inputParseOptions() *xdm.ParseOptions {
 	}
 
 	return nil
-}
-
-// retrieveDocumentPrefix opens the resource through the configured
-// URIResolver / HTTPClient and reads at most n leading bytes before
-// closing. It exists so availability/format probes (e.g. fn:stream-available)
-// can avoid a full io.ReadAll of large or remote documents. The
-// default-deny posture matches XML retrieval: with no resolver /
-// HTTPClient configured, retrieval is refused.
-func (ec *execContext) retrieveDocumentPrefix(ctx context.Context, resolvedURI string, n int) ([]byte, error) {
-	var (
-		resolver   xpath.URIResolver
-		httpClient *http.Client
-	)
-
-	if ec.transformConfig != nil {
-		resolver = ec.transformConfig.uriResolver
-		httpClient = ec.transformConfig.httpClient
-	}
-
-	if isHTTPURI(resolvedURI) {
-		if httpClient != nil {
-			return fetchHTTPPrefix(ctx, httpClient, resolvedURI, n)
-		}
-
-		if resolver != nil {
-			return fetchPrefixViaResolver(ctx, resolver, resolvedURI, n)
-		}
-
-		return nil, fmt.Errorf("no HTTPClient or URIResolver configured for %q", resolvedURI)
-	}
-
-	if resolver != nil {
-		return fetchPrefixViaResolver(ctx, resolver, resolvedURI, n)
-	}
-
-	return nil, fmt.Errorf("no URIResolver configured for %q", resolvedURI)
-}
-
-// readPrefix reads at most n bytes from r. A short read (io.EOF before n
-// bytes) is not an error — it just means the resource is smaller than n.
-func readPrefix(r io.Reader, n int) ([]byte, error) {
-	buf := make([]byte, n)
-
-	read, err := io.ReadFull(r, buf)
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return nil, err
-	}
-
-	return buf[:read], nil
-}
-
-func fetchPrefixViaResolver(ctx context.Context, r xpath.URIResolver, uri string, n int) ([]byte, error) {
-	rc, err := r.Resolve(ctx, uri)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rc.Close() }()
-
-	return readPrefix(rc, n)
-}
-
-func fetchHTTPPrefix(ctx context.Context, client *http.Client, uri string, n int) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %d for %q", resp.StatusCode, uri)
-	}
-
-	return readPrefix(resp.Body, n)
 }
 
 // resolveDocumentURI resolves a URI against a base directory.
@@ -706,7 +745,7 @@ func documentBaseDir(base string) string {
 // against drift.
 func lookupxsltFunctionArities(key string) ([2]int, bool) {
 	switch key {
-	case "nilled", nameGenerateId, nameCurrentMergeGroup, fnNameCopyOf, funcSnapshot:
+	case nameGenerateId, nameCurrentMergeGroup, fnNameCopyOf, funcSnapshot:
 		return [2]int{0, 1}, true
 	case fnNameCurrent, fnNameCurrentGroup, fnNameCurrentGroupingKey, nameCurrentMergeKey, funcAvailableSystemProperties, fnNameCurrentOutputURI:
 		return [2]int{0, 0}, true
@@ -723,6 +762,14 @@ func lookupxsltFunctionArities(key string) ([2]int, bool) {
 	return zero, false
 }
 
+func xsltFunctionAcceptsVersionArity(version int, name string, arity int) bool {
+	if version < 30 && (name == nameUnparsedEntityUri || name == nameUnparsedEntityPublicId) && arity > 1 {
+		return false
+	}
+
+	return xsltFunctionAcceptsArity(name, arity)
+}
+
 // xsltFunctionAcceptsArity reports whether an XSLT-defined function (fn:
 // namespace) with the given local name exists and accepts the given arity.
 func xsltFunctionAcceptsArity(name string, arity int) bool {
@@ -735,12 +782,60 @@ func xsltFunctionAcceptsArity(name string, arity int) bool {
 }
 
 type xsltFunc struct {
+	name        string
 	min         int
 	max         int
 	fn          func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 	noDynRef    bool   // true if the function must not be called via dynamic function reference
 	dynRefError string // error code to raise on dynamic call
+	signature   xpath.TypedFunctionByArity
 }
+
+func (f *xsltFunc) FuncParamTypesForArity(arity int) []xdm.SequenceType {
+	if f.signature != nil {
+		return f.signature.FuncParamTypesForArity(arity)
+	}
+
+	return xsltFunctionTypes()[functionTypeKey{f.name, arity}].params
+}
+
+func (f *xsltFunc) FuncReturnTypeForArity(arity int) *xdm.SequenceType {
+	if f.signature != nil {
+		return f.signature.FuncReturnTypeForArity(arity)
+	}
+
+	return xsltFunctionTypes()[functionTypeKey{f.name, arity}].result
+}
+
+type introspectionFunc struct {
+	*xsltFunc
+	params []xdm.SequenceType
+	result xdm.SequenceType
+}
+
+func newIntrospectionFunc(name string, call func(context.Context, []xdm.Sequence) (xdm.Sequence, error)) xpath.Function {
+	atomic := func(local string) xdm.SequenceType {
+		return xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: "Q{" + lexicon.NamespaceXSD + "}" + local}}
+	}
+
+	params := []xdm.SequenceType{atomic("string")}
+	if name == fnNameFunctionAvailable {
+		params = append(params, atomic("integer"))
+	}
+
+	result := atomic("boolean")
+	if name == funcSystemProperty {
+		result = atomic("string")
+	}
+
+	return &introspectionFunc{xsltFunc: &xsltFunc{min: 1, max: len(params), fn: call}, params: params, result: result}
+}
+
+func (f *introspectionFunc) FuncParamTypesForArity(arity int) []xdm.SequenceType {
+	return f.params[:arity]
+}
+
+func (f *introspectionFunc) FuncReturnTypeForArity(_ int) *xdm.SequenceType { return &f.result }
 
 func (f *xsltFunc) MinArity() int { return f.min }
 
@@ -759,37 +854,7 @@ func (f *xsltFunc) NoDynamicRef() bool { return f.noDynRef }
 func (f *xsltFunc) DynRefErrorCode() string { return f.dynRefError }
 
 // regexGroupFunc implements xpath.Function and DynamicRefSnapshotProvider
-// for the regex-group() XSLT function. When used as a function reference
-// (regex-group#1), it captures the current regex groups as a closure.
-type regexGroupFunc struct {
-	ec *execContext
-}
-
-func (f *regexGroupFunc) MinArity() int { return 1 }
-
-func (f *regexGroupFunc) MaxArity() int { return 1 }
-
-func (f *regexGroupFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return f.ec.fnRegexGroup(ctx, args)
-}
-
-func (f *regexGroupFunc) DynamicRefSnapshot(_ context.Context, arity int) (xdm.FunctionItem, bool) {
-	// Per XSLT 3.0 §5.3.4, a dynamic function reference regex-group#1
-	// does NOT capture the regex context. When called dynamically it
-	// always returns a zero-length string, because the call is not
-	// lexically within xsl:matching-substring.
-	fi := xdm.FunctionItem{
-		Arity:     arity,
-		Name:      nameRegexGroup,
-		Namespace: "http://www.w3.org/1999/XSL/Transform",
-		Invoke: func(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-			return xdm.SingleString(""), nil
-		},
-	}
-
-	return fi, true
-}
-
+// for regex-group(). Dynamic references clear the captured-substring context.
 // resolveAgainstBaseURI resolves a relative URI against an effective base URI.
 // The base URI may be a file path (e.g., /a/b/style.xsl) or a directory-like
 // path from xml:base processing (e.g., /a/b). For file paths (containing a

@@ -10,6 +10,7 @@ import (
 	"io"
 	"iter"
 	"maps"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -101,19 +102,18 @@ func (w Writer) dumper() htmlDumper {
 		charMap:               cfg.charMap,
 		normalize:             cfg.normalize,
 		normForm:              cfg.normForm,
+		doeMarkers:            cfg.doeMarkers,
 	}
 }
 
 type htmlDumper struct {
-	ctx               context.Context
-	canEncode         func(rune) bool
-	contentType       string
-	foreignNamespaces bool
+	ctx context.Context
 	// err is a sticky serialization error. Once set, all checked write
 	// helpers become no-ops and terminal methods return it. This mirrors
 	// the writeSession sticky-error pattern in writer.go so that a writer
 	// failing mid-stream surfaces an error instead of silently truncating.
-	err error
+	err       error
+	canEncode func(rune) bool
 	// charMap substitutes a mapped rune in text and attribute-value content with
 	// its literal (unescaped) replacement string (Serialization 3.1 character
 	// maps). Empty/nil disables the feature.
@@ -128,13 +128,17 @@ type htmlDumper struct {
 	// elements, including those suppressed on non-root HTML elements.
 	// Used to find URIs for attribute namespace prefixes.
 	nsAvailable           map[string]string
+	contentType           string
 	normForm              norm.Form
+	foreignNamespaces     bool
 	format                bool
 	preserveCase          bool
 	noDefaultDTD          bool
 	noEscapeURIAttributes bool
 	escapeControlChars    bool
 	nullNamespaceHTMLOnly bool
+	doeMarkers            bool
+	doeActive             bool
 	// normalize / normForm request Unicode normalization of text-node and
 	// attribute-value character content (Serialization 3.1 §4), scoped to text and
 	// attribute nodes. false keeps output byte-identical.
@@ -354,6 +358,17 @@ func (d *htmlDumper) dumpNode(out io.Writer, n xdm.Node) error {
 
 		return d.err
 	case xdm.ProcessingInstructionNode:
+		if d.doeMarkers {
+			switch n.Name() {
+			case "disable-output-escaping":
+				d.doeActive = true
+				return d.err
+			case "enable-output-escaping":
+				d.doeActive = false
+				return d.err
+			}
+		}
+
 		d.writeString(out, "<?")
 		d.writeString(out, n.Name())
 
@@ -438,7 +453,7 @@ func (d *htmlDumper) normalizedContent(s string, emit func(string, bool) error) 
 // dumpText outputs text content, escaping &, <, > unless inside a raw text element.
 func (d *htmlDumper) dumpText(out io.Writer, n xdm.Node) error {
 	content := xdm.CharacterData(n)
-	rawText := false
+	rawText := d.doeActive
 
 	parent := n.Parent()
 	if parent != nil && parent.Type() == xdm.ElementNode {
@@ -701,11 +716,16 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 		d.writeString(out, `">`)
 	}
 
+	savedDOE := d.doeActive
+
+	d.doeActive = false
 	for child := range xdm.Children(e) {
 		if err := d.dumpNode(out, child); err != nil {
 			return err
 		}
 	}
+
+	d.doeActive = savedDOE
 
 	// Restore namespace scope
 	if d.preserveCase {
@@ -1404,7 +1424,9 @@ func utf8ToLatin1WithAlign(data []byte, strict bool) ([]byte, []alignPoint) {
 		if r >= 0x80 && r <= 0xFF {
 			buf.WriteByte(byte(r))
 		} else if strict {
-			fmt.Fprintf(&buf, "&#%d;", r)
+			ref := append(buf.AvailableBuffer(), '&', '#')
+			ref = strconv.AppendInt(ref, int64(r), 10)
+			buf.Write(append(ref, ';'))
 		} else if wb, ok := windows1252Byte(r); ok {
 			buf.WriteByte(wb)
 		} else {

@@ -40,7 +40,7 @@ func TestUnifiedEngineModernAndV1(t *testing.T) {
 		t.Fatal(out, err)
 	}
 
-	if err := e.Validate(ctx, xp(`true()`)); !errors.Is(err, reference.ErrPolicy) {
+	if err := e.Validate(ctx, xp(trueExpression)); !errors.Is(err, reference.ErrPolicy) {
 		t.Fatal("modern compilation must not approve XMLDSig programs", err)
 	}
 
@@ -52,7 +52,7 @@ func TestUnifiedEngineModernAndV1(t *testing.T) {
 func TestXPathImmutableFocus(t *testing.T) {
 	d := parse(t, `<?p before?><r xmlns:p="urn:p" xml:lang="ru-RU"><p:a ID="a">1<!--c--><?q x?></p:a><p:a ID="b">2</p:a></r><?p after?>`)
 
-	for _, query := range []string{`true()`, `position() = 1 and last() = 1`, `lang('ru') or not(ancestor-or-self::*)`, `count(//p:a)=2 and //p:a[2]/preceding-sibling::p:a[1]/@ID='a'`, `count(//p:a[1]/following-sibling::p:a)=1`, `count(//p:a[2]/ancestor::*)=1`, `count(/processing-instruction('p'))=2`, `count(//p:a[1]/namespace::p)=1`} {
+	for _, query := range []string{trueExpression, `position() = 1 and last() = 1`, `lang('ru') or not(ancestor-or-self::*)`, `count(//p:a)=2 and //p:a[2]/preceding-sibling::p:a[1]/@ID='a'`, `count(//p:a[1]/following-sibling::p:a)=1`, `count(//p:a[2]/ancestor::*)=1`, `count(/processing-instruction('p'))=2`, `count(//p:a[1]/namespace::p)=1`} {
 		tr := xp(query)
 		tr.XPath[0].Namespaces = map[string]string{"p": namespaceP}
 		p := newProcessor(t, tr)
@@ -178,7 +178,7 @@ func TestFilter2ExpansionAndOrder(t *testing.T) {
 		t.Fatal("namespace owner identity")
 	}
 
-	nonset := reference.Transform{Algorithm: reference.XPathFilter2, XPath: []reference.XPathExpression{filter("intersect", "true()")}}
+	nonset := reference.Transform{Algorithm: reference.XPathFilter2, XPath: []reference.XPathExpression{filter("intersect", trueExpression)}}
 	if _, e := newProcessor(t, nonset).Apply(context.Background(), nonset, input(t, d), reference.ExtensionContext{}); !errors.Is(e, reference.ErrInput) {
 		t.Fatal("non-node-set", e)
 	}
@@ -196,7 +196,7 @@ func TestApprovalAndLimits(t *testing.T) {
 		}
 	}
 
-	tr := xp(`true()`)
+	tr := xp(trueExpression)
 	p := newProcessor(t, tr)
 
 	changed := xp(` true()`)
@@ -343,7 +343,7 @@ func FuzzApprovedXPath(f *testing.F) {
 }
 
 func FuzzXPathCompilation(f *testing.F) {
-	for _, query := range []string{`true()`, `not(ancestor-or-self::p:hidden)`, `false() and unknown()`, `/r/a[2]/preceding::*[1]`, `string(0 div 0)`, `$external`, `(((((`} {
+	for _, query := range []string{trueExpression, `not(ancestor-or-self::p:hidden)`, `false() and unknown()`, `/r/a[2]/preceding::*[1]`, `string(0 div 0)`, `$external`, `(((((`} {
 		f.Add(query)
 	}
 

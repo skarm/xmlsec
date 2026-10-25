@@ -971,9 +971,10 @@ const (
 // faster than MergeMaps for large merges because it avoids
 // per-entry cloneSequence calls and builds the index incrementally.
 type MapBuilder struct {
-	entries []EntryView
-	index   map[MapKey]int
-	policy  MergePolicy
+	entries  []EntryView
+	index    map[MapKey]int
+	policy   MergePolicy
+	combined map[int]ItemSlice
 }
 
 // NewMapBuilder creates a builder for accumulating map entries.
@@ -1007,11 +1008,7 @@ func (b *MapBuilder) Add(key AtomicValue, value Sequence) error {
 				Message: fmt.Sprintf("duplicate key in map merge: %v", key.Value),
 			}
 		case MergeCombine:
-			existing := b.entries[idx].Value
-			b.entries[idx] = EntryView{
-				key:   b.entries[idx].key,
-				Value: ItemSlice(append(Materialize(existing), Materialize(value)...)),
-			}
+			b.combineValue(idx, value)
 
 			return nil
 		}
@@ -1022,6 +1019,32 @@ func (b *MapBuilder) Add(key AtomicValue, value Sequence) error {
 
 	return nil
 }
+
+func (b *MapBuilder) combineValue(idx int, value Sequence) {
+	items, owned := b.combined[idx]
+	if !owned {
+		existing := b.entries[idx].Value
+
+		items = make(ItemSlice, 0, SequenceLen(existing)+SequenceLen(value))
+		for item := range SequenceItems(existing) {
+			items = append(items, item)
+		}
+
+		if b.combined == nil {
+			b.combined = make(map[int]ItemSlice)
+		}
+	}
+
+	for item := range SequenceItems(value) {
+		items = append(items, item)
+	}
+
+	b.combined[idx] = items
+	b.entries[idx].Value = items
+}
+
+// Size returns the number of distinct keys accumulated so far.
+func (b *MapBuilder) Size() int { return len(b.entries) }
 
 // Build returns the accumulated MapItem. The builder should not be used
 // after calling Build.

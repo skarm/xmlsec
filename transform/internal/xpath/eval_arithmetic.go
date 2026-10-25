@@ -69,13 +69,13 @@ func evalArithmetic(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 	// Duration/date/time arithmetic — handle before numeric promotion.
 	// Contract: evalDateTimeArithmetic returns handled==false only when both
 	// operands are non-duration/non-datetime, in which case err is always nil.
-	if result, handled, err := evalDateTimeArithmetic(ec, e.Op, la, ra); err != nil || handled {
+	if result, handled, err := evalDateTimeArithmetic(ctx, ec, e.Op, la, ra); err != nil || handled {
 		return result, err
 	}
 
 	// Promote xs:untypedAtomic to xs:double for arithmetic
 	if la.TypeName == xdm.TypeUntypedAtomic {
-		castVal, err := CastAtomic(la, xdm.TypeDouble)
+		castVal, err := CastAtomicContext(ctx, la, xdm.TypeDouble)
 		if err != nil {
 			return nil, err
 		}
@@ -84,7 +84,7 @@ func evalArithmetic(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 	}
 
 	if ra.TypeName == xdm.TypeUntypedAtomic {
-		castVal, err := CastAtomic(ra, xdm.TypeDouble)
+		castVal, err := CastAtomicContext(ctx, ra, xdm.TypeDouble)
 		if err != nil {
 			return nil, err
 		}
@@ -165,7 +165,7 @@ func integerArithInt64(ctx context.Context, op TokenType, a, b int64) (xdm.Seque
 
 		r := new(big.Rat).SetFrac64(a, b)
 
-		return xdm.SingleDecimal(r), nil
+		return decimalQuotient(ctx, r)
 	case TokenIdiv:
 		if b == 0 {
 			return nil, &xdm.Error{Code: errCodeFOAR0001, Message: textIntegerDivisionByZero}
@@ -248,7 +248,7 @@ func integerArith(ctx context.Context, op TokenType, a, b *big.Int) (xdm.Sequenc
 
 		r := new(big.Rat).SetFrac(new(big.Int).Set(a), new(big.Int).Set(b))
 
-		return xdm.SingleDecimal(r), nil
+		return decimalQuotient(ctx, r)
 	case TokenIdiv:
 		if b.Sign() == 0 {
 			return nil, &xdm.Error{Code: errCodeFOAR0001, Message: textIntegerDivisionByZero}
@@ -288,6 +288,8 @@ func decimalArith(ctx context.Context, op TokenType, a, b *big.Rat) (xdm.Sequenc
 		}
 
 		result.Quo(a, b)
+
+		return decimalQuotient(ctx, result)
 	case TokenIdiv:
 		if b.Sign() == 0 {
 			return nil, &xdm.Error{Code: errCodeFOAR0001, Message: textIntegerDivisionByZero}
@@ -351,6 +353,68 @@ func decimalArith(ctx context.Context, op TokenType, a, b *big.Rat) (xdm.Sequenc
 	}
 
 	return xdm.SingleDecimal(result), nil
+}
+
+// decimalQuotient materializes recurring fractions in the finite xs:decimal
+// value space. Preserve terminating results exactly; otherwise retain at least
+// twenty significant digits and twenty fractional places, rounding half away
+// from zero. A small quotient must not disappear merely because its leading
+// fractional zeros exhaust the precision used for values near one.
+func decimalQuotient(ctx context.Context, value *big.Rat) (xdm.Sequence, error) {
+	number, err := finiteDecimalValue(ctx, value)
+	if err != nil {
+		return nil, err
+	}
+
+	return xdm.SingleDecimal(number), nil
+}
+
+func finiteDecimalValue(ctx context.Context, value *big.Rat) (*big.Rat, error) {
+	if err := Charge(ctx, value.Denom().BitLen()); err != nil {
+		return nil, err
+	}
+
+	if _, exact := value.FloatPrec(); exact {
+		return value, nil
+	}
+
+	if err := ChargeNumber(ctx, xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: value}); err != nil {
+		return nil, err
+	}
+
+	numerator := value.Num().Text(10)
+
+	denominator := value.Denom().Text(10)
+	if err := ChargeString(ctx, len(numerator)+len(denominator)); err != nil {
+		return nil, err
+	}
+
+	digits := len(numerator)
+	if value.Sign() < 0 {
+		digits--
+	}
+
+	places := 20 + max(0, len(denominator)-digits)
+	if err := preflightNumeric(ctx, value.Num().BitLen()+places*4, places*4+1); err != nil {
+		return nil, err
+	}
+
+	if err := ChargeString(ctx, digits+places+3); err != nil {
+		return nil, err
+	}
+
+	text := value.FloatString(places)
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	result, ok := new(big.Rat).SetString(text)
+	if !ok {
+		return nil, &xdm.Error{Code: errCodeFOAR0002, Message: "decimal division cannot be represented"}
+	}
+
+	return result, nil
 }
 
 func floatArith(op TokenType, la, ra xdm.AtomicValue) (xdm.Sequence, error) {
@@ -451,7 +515,7 @@ func evalUnaryExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e
 	a := rAtoms[0]
 	// Promote xs:untypedAtomic to xs:double per XPath 3.1 spec
 	if a.TypeName == xdm.TypeUntypedAtomic {
-		castVal, err := CastAtomic(a, xdm.TypeDouble)
+		castVal, err := CastAtomicContext(ctx, a, xdm.TypeDouble)
 		if err != nil {
 			return nil, err
 		}

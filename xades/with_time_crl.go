@@ -38,8 +38,8 @@ func refuseCRLRecovery(ctx context.Context, trust *pki.Result, raw [][]byte, at 
 
 func refuseCRLRecoveryRaw(ctx context.Context, raw [][]byte, e *error, issuer *x509.Certificate, at *time.Time, cert *x509.Certificate) (returned0 error, matchedBranch bool) {
 	for _, der := range raw {
-		if (*e) = ctx.Err(); (*e) != nil {
-			return (*e), true
+		if *e = ctx.Err(); (*e) != nil {
+			return *e, true
 		}
 
 		list, e := x509.ParseRevocationList(der)
@@ -61,7 +61,7 @@ func refuseCRLRecoveryRaw(ctx context.Context, raw [][]byte, e *error, issuer *x
 			continue
 		}
 
-		if list.ThisUpdate.After((*at)) {
+		if list.ThisUpdate.After(*at) {
 			return fmt.Errorf("%w: issuer CRL from the future", pki.ErrEvidence), true
 		}
 

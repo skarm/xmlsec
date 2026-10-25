@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	value "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
@@ -396,37 +397,7 @@ func collapseWhitespace(s string) string {
 	return normalizeWhitespace(collapseXMLWhitespace(s))
 }
 
-func collapseXMLWhitespace(s string) string {
-	var (
-		b     strings.Builder
-		first string
-	)
-	for field := range strings.FieldsFuncSeq(s, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == '\n' || r == '\r'
-	}) {
-		if first == "" {
-			first = field
-			continue
-		}
-
-		if b.Len() == 0 {
-			b.WriteString(first)
-		}
-
-		b.WriteByte(' ')
-		b.WriteString(field)
-	}
-
-	if b.Len() != 0 {
-		return b.String()
-	}
-
-	if len(first) == len(s) {
-		return s
-	}
-
-	return strings.Clone(first)
-}
+func collapseXMLWhitespace(s string) string { return xmlchar.CollapseSpace(s) }
 
 // parseXPathDouble parses an XML Schema double, using infinity on overflow.
 func parseXPathDouble(s string) (float64, error) {

@@ -68,6 +68,7 @@ const (
 // Node is mutable only inside this module. Public Documents never expose it.
 type Node struct {
 	Kind       Kind
+	SourceLine uint32 // 1-based start-tag line; zero when unavailable
 	Name       Name
 	Prefix     string
 	Attrs      []Attribute
@@ -197,6 +198,7 @@ func Clone(ctx context.Context, d *Document) (*Document, error) {
 		x := &Node{
 			Kind: n.Kind, Name: n.Name, Prefix: n.Prefix, Data: n.Data, Parent: p,
 			Attrs: append([]Attribute(nil), n.Attrs...), NS: append([]Namespace(nil), n.NS...),
+			SourceLine: n.SourceLine,
 		}
 		if len(n.Children) != 0 {
 			x.Children = make([]*Node, len(n.Children))

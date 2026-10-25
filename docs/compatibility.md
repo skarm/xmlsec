@@ -57,8 +57,9 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
   Basic XSLT conformance remains open; [suite results](language-baseline.md)
   record the current failures. Package/collection resolvers and application
   functions are explicit. XMLDSig XPath 1.0, Filter2
-  and restricted XSLT 1.0 need approved programs. Schema awareness and W3C
-  streamable modes are unsupported; independent-record processing is available.
+  and restricted XSLT 1.0 need approved programs. Schema awareness and normative
+  W3C streaming are unsupported. Streaming annotations use materialized trees;
+  independent-record processing is available separately.
   XPath 3.0/3.1 resource limits preserve `transform.ErrLimit` and report
   `XPDY0130` when no more specific standard code applies. Pinned
   [suite diagnostics](language-suites.md) retain mandatory and harness failures.
@@ -68,8 +69,12 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
   input limits. Default XML byte parsing remains UTF-8/UTF-16 and DTD-free.
   `XSLTOptions.ProcessorVersion` selects a modern processor independently of lower
   stylesheet declarations, preserving local backwards-compatible behavior and
-  module semantics. Complete forwards-compatible processing remains open; a 2.0
-  processor with a principal 3.0 declaration is still rejected.
+  module semantics. Higher/future declarations enable fallback and deferred-error
+  behavior, including a 3.0 principal declaration with a 2.0 processor. Complete
+  forwards-compatible processing remains open. `Config.XMLSchemaVersion` selects
+  builtin datatype/regex rules (default 1.1), independently of schema awareness.
+  Recurring decimal results use at least twenty fractional places/significant
+  digits; terminating decimals remain exact.
 - PKIX with explicit roots/time, direct complete offline CRLs and restricted
   OCSP; definite-length CMS SignedData and RFC 3161/5816 timestamps. Explicit
   CMS `ParseBER`/`ParseBERReader` also accept indefinite envelope/SignedData/
@@ -160,9 +165,10 @@ and assert these differences separately:
   a separate diagnostic, excluded from successful query agreement counts.
 - Saxon HE 12.10 and two QT3 case-conversion expectations retain older Greek
   U+037F/U+03F3 mappings. The native Unicode 17.0 mappings agree with the
-  Unicode 7.0 data selected by those catalog cases. Their official failures and
-  the separate Saxon diagnostic remain visible; no engine workaround or fixture
-  rewrite is used to produce agreement.
+  Unicode 7.0 data selected by those catalog cases. The corrected catalog dependency matcher treats a Unicode edition as exact:
+  those 7.0-only cases are inapplicable to the selected 17.0 data. Their historical
+  failures remain in the earlier baseline; the Saxon diagnostic still runs.
+  No publisher fixture is rewritten.
 
 The libxml2 adapter translates empty default-namespace markers without changing
 Go selections or expected output. JDK arbitrary DOM namespace-axis selections
@@ -175,3 +181,31 @@ trusted time or historical evidence validity. Configure coverage, trust and
 resource access, then consume verified handles. Transform execution has
 cooperative in-process limits rather than OS isolation. Memory state/replay
 stores coordinate one process. Native libraries are optional test dependencies.
+
+## Assertion and compatibility controls
+
+`Config.EnableXSLTAssertions` now selects assertion checking explicitly. The
+default disables `xsl:assert`, as XSLT 3.0 requires. Applications that relied on
+the earlier unconditional checking must enable it for direct invocations.
+Nested `fn:transform` calls independently use `enable-assertions`, defaulting to
+false as required by F&O 3.1. Disabled assertions do not evaluate their test/message.
+Application error namespaces survive public error reporting and `xsl:catch`.
+
+`Config.DisableXSLTDynamicEvaluation` selects static disabling of `xsl:evaluate`.
+It defaults to false. The setting applies to direct and nested compilation and
+package loading; availability queries report false/no, and `xsl:fallback` runs.
+An invoked disabled instruction without fallback reports `XTDE3175`.
+
+
+`Execute` still defaults to raw XDM values. `XSLTContext.ResultMode` additionally
+offers explicit document normalization or stylesheet-directed `build-tree`.
+`fn:transform` now retains mixed item order and raw secondary values, constructs
+normalized documents on request, and includes an empty principal result map
+entry under the published F&O 3.1 contract. Callers that tested map-key absence
+to detect empty output should inspect its value instead.
+
+`XPathOptions.XPath10Compatibility` selects the compatibility property without
+changing the modern grammar. Function values retain their originating static
+context across invocations. Native Greek alphabetic numbering consistently uses
+24 letters in XPath and XSLT; the publisher's older lowercase 25-letter choice
+is an implementation-defined difference, retained in suite diagnostics.

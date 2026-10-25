@@ -9,7 +9,6 @@ import (
 	"math"
 	"math/big"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -148,7 +147,7 @@ func fnAvg(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 			}
 		}
 
-		a, err = promoteForAggregate(a)
+		a, err = promoteForAggregate(ctx, a)
 		if err != nil {
 			return nil, err
 		}
@@ -183,7 +182,7 @@ func fnAvg(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 			atomSeq[i] = a
 		}
 
-		return avgDurations(atomSeq, family)
+		return avgDurations(ctx, atomSeq, family)
 	}
 
 	count := len(atoms)
@@ -194,7 +193,7 @@ func fnAvg(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 			return nil, err
 		}
 
-		return xdm.SingleDecimal(new(big.Rat).Quo(sumRat, countRat)), nil
+		return decimalQuotient(ctx, new(big.Rat).Quo(sumRat, countRat))
 	}
 	// Float/double path
 	avg := sumFloat / float64(count)
@@ -223,7 +222,7 @@ func addAverageNumber(ctx context.Context, sum *big.Rat, value xdm.AtomicValue) 
 	return value.ToFloat64(), exact, nil
 }
 
-func avgDurations(seq xdm.Sequence, family string) (xdm.Sequence, error) {
+func avgDurations(ctx context.Context, seq xdm.Sequence, family string) (xdm.Sequence, error) {
 	count := xdm.SequenceLen(seq)
 
 	if family == xdm.FamilyDurationDT {
@@ -236,7 +235,11 @@ func avgDurations(seq xdm.Sequence, family string) (xdm.Sequence, error) {
 			totalSecs.Add(totalSecs, xdm.DurationToRat(a.DurationVal(), false))
 		}
 
-		avgSecs := new(big.Rat).Quo(totalSecs, new(big.Rat).SetInt64(int64(count)))
+		avgSecs, err := finiteDecimalValue(ctx, new(big.Rat).Quo(totalSecs, new(big.Rat).SetInt64(int64(count))))
+		if err != nil {
+			return nil, err
+		}
+
 		negative := avgSecs.Sign() < 0
 
 		absSecs := avgSecs
@@ -298,15 +301,12 @@ func avgDurations(seq xdm.Sequence, family string) (xdm.Sequence, error) {
 }
 
 // promoteForAggregate promotes an atomic value for aggregate operations.
-func promoteForAggregate(a xdm.AtomicValue) (xdm.AtomicValue, error) {
+func promoteForAggregate(ctx context.Context, a xdm.AtomicValue) (xdm.AtomicValue, error) {
 	if a.TypeName == xdm.TypeDecimal {
 		if s, ok := a.Value.(string); ok {
-			dec, err := CastFromString(s, xdm.TypeDecimal)
+			dec, err := CastFromStringContext(ctx, s, xdm.TypeDecimal)
 			if err != nil {
-				return xdm.AtomicValue{}, &xdm.Error{
-					Code:    errCodeFORG0001,
-					Message: fmt.Sprintf("cannot promote %q to xs:decimal", s),
-				}
+				return xdm.AtomicValue{}, err
 			}
 
 			return dec, nil
@@ -314,12 +314,9 @@ func promoteForAggregate(a xdm.AtomicValue) (xdm.AtomicValue, error) {
 	}
 
 	if a.TypeName == xdm.TypeUntypedAtomic {
-		f, err := castToDouble(a)
+		f, err := CastAtomicContext(ctx, a, xdm.TypeDouble)
 		if err != nil {
-			return xdm.AtomicValue{}, &xdm.Error{
-				Code:    errCodeFORG0001,
-				Message: fmt.Sprintf("cannot promote %q to xs:double", a.StringVal()),
-			}
+			return xdm.AtomicValue{}, err
 		}
 
 		return f, nil
@@ -383,7 +380,7 @@ func fnMax(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		coll = nil
 	}
 
-	return maxMinCommon(atoms, true, coll)
+	return maxMinCommon(ctx, atoms, true, coll)
 }
 
 func fnMin(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -405,22 +402,22 @@ func fnMin(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		coll = nil
 	}
 
-	return maxMinCommon(atoms, false, coll)
+	return maxMinCommon(ctx, atoms, false, coll)
 }
 
-func maxMinCommon(atoms []xdm.AtomicValue, isMax bool, coll *collationImpl) (xdm.Sequence, error) {
+func maxMinCommon(ctx context.Context, atoms []xdm.AtomicValue, isMax bool, coll *collationImpl) (xdm.Sequence, error) {
 	fnName := "fn:min"
 	if isMax {
 		fnName = "fn:max"
 	}
 
 	if len(atoms) == 1 {
-		return maxMinSingle(atoms[0], fnName)
+		return maxMinSingle(ctx, atoms[0], fnName)
 	}
 
 	state := maxMinAccumulator{fnName: fnName, isMax: isMax, coll: coll, widest: xdm.TypeInteger, first: true}
 	for _, original := range atoms {
-		if err := state.add(original); err != nil {
+		if err := state.add(ctx, original); err != nil {
 			return nil, err
 		}
 	}
@@ -428,12 +425,12 @@ func maxMinCommon(atoms []xdm.AtomicValue, isMax bool, coll *collationImpl) (xdm
 	return state.result(), nil
 }
 
-func maxMinSingle(value xdm.AtomicValue, fnName string) (xdm.Sequence, error) {
+func maxMinSingle(ctx context.Context, value xdm.AtomicValue, fnName string) (xdm.Sequence, error) {
 	// Validate the single item while retaining derived types.
 	if value.TypeName == xdm.TypeUntypedAtomic {
 		var err error
 
-		value, err = promoteForAggregate(value)
+		value, err = promoteForAggregate(ctx, value)
 		if err != nil {
 			return nil, err
 		}
@@ -457,8 +454,8 @@ type maxMinAccumulator struct {
 	sawNonURIString bool
 }
 
-func (s *maxMinAccumulator) add(original xdm.AtomicValue) error {
-	value, err := promoteForAggregate(original)
+func (s *maxMinAccumulator) add(ctx context.Context, original xdm.AtomicValue) error {
+	value, err := promoteForAggregate(ctx, original)
 	if err != nil {
 		return err
 	}
@@ -606,7 +603,7 @@ func fnSum(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	}
 
 	if len(atoms) == 1 {
-		return sumSingle(atoms[0])
+		return sumSingle(ctx, atoms[0])
 	}
 
 	sum := aggregateSum{
@@ -638,12 +635,12 @@ func fnSum(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	return sum.numericResult(), nil
 }
 
-func sumSingle(value xdm.AtomicValue) (xdm.Sequence, error) {
+func sumSingle(ctx context.Context, value xdm.AtomicValue) (xdm.Sequence, error) {
 	// Promote untypedAtomic but preserve derived integer types.
 	if value.TypeName == xdm.TypeUntypedAtomic {
 		var err error
 
-		value, err = promoteForAggregate(value)
+		value, err = promoteForAggregate(ctx, value)
 		if err != nil {
 			return nil, err
 		}
@@ -667,10 +664,10 @@ type aggregateSum struct {
 func (s *aggregateSum) add(ctx context.Context, value xdm.AtomicValue) error {
 	// Untyped node values promote straight to IEEE double.
 	if value.TypeName == xdm.TypeUntypedAtomic {
-		return s.addUntyped(value)
+		return s.addUntyped(ctx, value)
 	}
 
-	value, err := promoteForAggregate(value)
+	value, err := promoteForAggregate(ctx, value)
 	if err != nil {
 		return err
 	}
@@ -722,10 +719,10 @@ func checkSumAvgType(a xdm.AtomicValue) error {
 	}
 }
 
-func (s *aggregateSum) addUntyped(value xdm.AtomicValue) error {
-	number, err := parseXPathDouble(strings.Trim(value.StringVal(), " \t\r\n"))
+func (s *aggregateSum) addUntyped(ctx context.Context, value xdm.AtomicValue) error {
+	converted, err := CastAtomicContext(ctx, value, xdm.TypeDouble)
 	if err != nil {
-		return &xdm.Error{Code: errCodeFORG0001, Message: fmt.Sprintf("cannot promote %q to xs:double", value.StringVal())}
+		return err
 	}
 
 	s.family, err = checkAggregateHomogeneity(s.family, xdm.FamilyNumeric)
@@ -735,7 +732,7 @@ func (s *aggregateSum) addUntyped(value xdm.AtomicValue) error {
 
 	s.widest = xdm.TypeDouble
 	s.allInt, s.allDecOrInt = false, false
-	s.sumFloat += number
+	s.sumFloat += converted.ToFloat64()
 
 	return nil
 }

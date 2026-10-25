@@ -90,7 +90,10 @@ func (ec *execContext) evaluateValueOfSelect(ctx context.Context, inst *valueOfI
 			return "", false, err
 		}
 	} else {
-		value = stringifySequenceWithSep(filtered, separator)
+		value, err = stringifySimpleContent(ctx, filtered, separator)
+		if err != nil {
+			return "", false, err
+		}
 	}
 
 	return value, emptySequence, nil
@@ -146,7 +149,6 @@ func filterZeroLengthTextNodes(seq xdm.Sequence) xdm.Sequence {
 }
 
 func (ec *execContext) evaluateValueOfBody(ctx context.Context, inst *valueOfInst) (string, error) {
-	var value string
 	// Default separator for body content is "" (zero-length string)
 	separator := ""
 
@@ -176,9 +178,8 @@ func (ec *execContext) evaluateValueOfBody(ctx context.Context, inst *valueOfIns
 	// XSLT spec §11.3: adjacent text nodes in the result are merged
 	// before the separator is applied.
 	val = mergeAdjacentTextNodes(val)
-	value = stringifySequenceWithSep(val, separator)
 
-	return value, nil
+	return stringifySimpleContent(ctx, val, separator)
 }
 
 // writeConstructedText surrounds DOE text with serializer markers only when its
@@ -228,9 +229,7 @@ func (ec *execContext) execText(ctx context.Context, inst *textInst) error {
 				return ec.addNode(text)
 			}
 
-			if !out.wherePopulated {
-				out.prevWasAtomic = false
-			}
+			out.prevWasAtomic = false
 
 			return nil
 		}
@@ -247,12 +246,8 @@ func (ec *execContext) execText(ctx context.Context, inst *textInst) error {
 			text := ec.resultDoc.CreateText("")
 			return ec.addNode(text)
 		}
-		// Inside xsl:where-populated, zero-length text nodes are removed
-		// before the constructing complex content rules apply (XSLT 3.0
-		// §8.4), so they must not break atomic adjacency chains.
-		if !out.wherePopulated {
-			out.prevWasAtomic = false
-		}
+
+		out.prevWasAtomic = false
 
 		return nil
 	}
@@ -290,9 +285,7 @@ func (ec *execContext) execLiteralText(ctx context.Context, inst *literalTextIns
 			return ec.addNode(text)
 		}
 
-		if !out.wherePopulated {
-			out.prevWasAtomic = false
-		}
+		out.prevWasAtomic = false
 
 		return nil
 	}
@@ -322,7 +315,7 @@ func (ec *execContext) execXSLSequence(ctx context.Context, inst *xslSequenceIns
 			state.prevWasAtomic = false
 			state.hadAtomic = false
 
-			emitted, err := ec.writeXSLSequenceNode(out, value.Node)
+			emitted, err := ec.writeXSLSequenceNode(value.Node)
 			if err != nil {
 				return err
 			}
@@ -353,17 +346,18 @@ func (ec *execContext) execXSLSequence(ctx context.Context, inst *xslSequenceIns
 	return nil
 }
 
-func (ec *execContext) writeXSLSequenceNode(out *outputFrame, node xdm.Node) (bool, error) {
+func (ec *execContext) writeXSLSequenceNode(node xdm.Node) (bool, error) {
 	if normalizeNode(node) == nil {
 		return false, nil
 	}
 
 	switch node.Type() {
 	case xdm.AttributeNode:
-		return false, ec.writeXSLSequenceAttribute(out, node)
+		attr, _ := xdm.AsNode[*xdm.Attribute](node)
+		return false, ec.copyAttributeNodeToOutput(attr)
 	case xdm.NamespaceNode:
-		writeXSLSequenceNamespace(out, node)
-		return false, nil
+		ns, _ := xdm.AsNode[*xdm.NamespaceNodeWrapper](node)
+		return false, ec.copyNamespaceNodeToOutput(ns)
 	case xdm.DocumentNode:
 		return true, ec.copySequenceDocumentChildren(node)
 	}
@@ -385,58 +379,13 @@ func (ec *execContext) writeXSLSequenceNode(out *outputFrame, node xdm.Node) (bo
 	return true, nil
 }
 
-func writeXSLSequenceNamespace(out *outputFrame, node xdm.Node) {
-	namespace, ok := node.(*xdm.NamespaceNodeWrapper)
-	if !ok {
-		return
-	}
-
-	elem, ok := out.current.(*xdm.Element)
-	if !ok {
-		return
-	}
-
-	prefix := namespace.Name()
-
-	uri := xdm.CharacterData(namespace)
-	if !hasNSDecl(elem, prefix, uri) {
-		_ = elem.DeclareNamespace(prefix, uri)
-	}
-
-	out.noteOutput()
-}
-
-func (ec *execContext) writeXSLSequenceAttribute(out *outputFrame, node xdm.Node) error {
-	attr, _ := xdm.AsNode[*xdm.Attribute](node)
-
-	elem, ok := out.current.(*xdm.Element)
-	if !ok {
-		return nil
-	}
-
-	if !out.wherePopulated && out.hasChildContent(elem) {
-		return dynamicError(errCodeXTDE0410,
-			"cannot add attribute %s after child nodes have been added", attr.Name())
-	}
-
-	copyAttributeToElement(elem, attr)
-	out.noteOutput()
-
-	return nil
-}
-
 func (ec *execContext) copySequenceDocumentChildren(doc xdm.Node) error {
-	for child := doc.FirstChild(); child != nil; child = child.NextSibling() {
+	for child := range xdm.Children(doc) {
 		if !xdm.IsXDMChild(child) {
 			continue
 		}
 
-		copied, err := xdm.CopyNode(child, ec.resultDoc)
-		if err != nil {
-			return err
-		}
-
-		if err := ec.addNode(copied); err != nil {
+		if _, err := ec.writeXSLSequenceNode(child); err != nil {
 			return err
 		}
 	}
@@ -453,7 +402,7 @@ func (ec *execContext) writeXSLSequenceAtomic(out *outputFrame, state *sequenceO
 	if value == "" {
 		// Empty atomics separate across constructor generations, but do not
 		// create tracked output or separators within one expression.
-		if state.prevWasAtomic && !out.wherePopulated && out.emptyAtomicGen != out.seqConstructorGen {
+		if state.prevWasAtomic && out.emptyAtomicGen != out.seqConstructorGen {
 			if err := ec.writeSequenceSeparator(out, false); err != nil {
 				return err
 			}
@@ -526,7 +475,7 @@ func (ec *execContext) outputSequence(seq xdm.Sequence) error {
 		case xdm.NodeItem:
 			prevWasAtomic = false
 
-			if err := ec.writeOutputSequenceNode(out, value.Node); err != nil {
+			if _, err := ec.writeXSLSequenceNode(value.Node); err != nil {
 				return err
 			}
 		case xdm.AtomicValue:
@@ -541,47 +490,11 @@ func (ec *execContext) outputSequence(seq xdm.Sequence) error {
 			}
 
 			out.pendingItems = append(out.pendingItems, item)
+			out.noteOutput()
 		}
 	}
 
 	out.prevWasAtomic = prevWasAtomic
-
-	return nil
-}
-
-func (ec *execContext) writeOutputSequenceNode(out *outputFrame, node xdm.Node) error {
-	if node.Type() == xdm.DocumentNode {
-		return ec.copySequenceDocumentChildren(node)
-	}
-
-	if node.Type() == xdm.AttributeNode {
-		if attr, ok := node.(*xdm.Attribute); ok {
-			if elem, ok := out.current.(*xdm.Element); ok {
-				return ec.setOutputSequenceAttribute(elem, attr)
-			}
-		}
-	}
-
-	copied, err := xdm.CopyNode(node, ec.resultDoc)
-	if err != nil {
-		return err
-	}
-
-	return ec.addNode(copied)
-}
-
-func (ec *execContext) setOutputSequenceAttribute(elem *xdm.Element, attr *xdm.Attribute) error {
-	if attr.URI() == "" {
-		_ = elem.SetAttribute(attr.Name(), attr.Value())
-		return nil
-	}
-
-	namespace, err := ec.resultDoc.CreateNamespace(attr.Prefix(), attr.URI())
-	if err != nil {
-		return err
-	}
-
-	_ = elem.SetAttributeNS(attr.LocalName(), attr.Value(), namespace)
 
 	return nil
 }

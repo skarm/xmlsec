@@ -5,6 +5,7 @@ package xpath
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -19,6 +20,21 @@ type atomicTypeRequirement struct {
 type prefixValidationPlan struct {
 	prefixes    []string
 	atomicTypes []atomicTypeRequirement
+}
+
+// ValidateSequenceType checks type names and namespace bindings at a declaration
+// site, using the same static rules as an XPath instance-of expression.
+func ValidateSequenceType(st xdm.SequenceType, namespaces map[string]string, defaultNS string, decls SchemaDeclarations) error {
+	namespaces = maps.Clone(namespaces)
+	if namespaces == nil {
+		namespaces = make(map[string]string, 1)
+	}
+
+	namespaces[""] = defaultNS
+	plan := newPrefixPlanBuilder()
+	appendSequenceTypePrefixChecks(&plan, st)
+
+	return plan.plan().Validate(namespaces, true, decls)
 }
 
 func (p prefixValidationPlan) Validate(namespaces map[string]string, strict bool, decls SchemaDeclarations) error {

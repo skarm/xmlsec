@@ -11,7 +11,6 @@ import (
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
-	xpathstream "github.com/skarm/xmlsec/transform/internal/xslt/internal/stream"
 )
 
 type iterateCompileState struct {
@@ -30,7 +29,7 @@ type iterateBodyChild struct {
 func (c *compiler) compileSourceDocument(ctx context.Context, elem *xdm.Element) (instruction, error) {
 	hrefAttr := getAttr(elem, nameHref)
 	if hrefAttr == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:source-document requires href attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:source-document requires href attribute")
 	}
 
 	hrefAVT, err := c.compileAVT(hrefAttr, c.nsBindings)
@@ -42,7 +41,7 @@ func (c *compiler) compileSourceDocument(ctx context.Context, elem *xdm.Element)
 		Href:       hrefAVT,
 		Streamable: xsdBoolTrue(getAttr(elem, nameStreamable)),
 		BaseURI:    stylesheetBaseURI(elem, c.baseURI, c.moduleRoot),
-		Validation: getAttr(elem, nameValidation),
+		Validation: basicValidation(getAttr(elem, nameValidation)),
 	}
 	if typeName := getAttr(elem, nameType); typeName != "" {
 		inst.TypeName = resolveQName(typeName, c.nsBindings)
@@ -68,7 +67,7 @@ func (c *compiler) compileSourceDocument(ctx context.Context, elem *xdm.Element)
 func (c *compiler) compileIterate(ctx context.Context, elem *xdm.Element) (instruction, error) {
 	selectAttr := getAttr(elem, xslAttrSelect)
 	if selectAttr == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:iterate requires select attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:iterate requires select attribute")
 	}
 
 	expr, err := c.compileXPath(selectAttr, c.nsBindings)
@@ -351,7 +350,7 @@ func (c *compiler) compileIterateParam(ctx context.Context, elem *xdm.Element) (
 
 	name := getAttr(elem, xslAttrName)
 	if name == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:param requires name attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:param requires name attribute")
 	}
 
 	p := &iterateParam{
@@ -543,7 +542,7 @@ func (c *compiler) compileAccumulator(ctx context.Context, elem *xdm.Element) er
 
 	name := getAttr(elem, xslAttrName)
 	if name == "" {
-		return staticError(errCodeXTSE0110, "xsl:accumulator requires name attribute")
+		return staticError(errCodeXTSE0010, "xsl:accumulator requires name attribute")
 	}
 
 	expandedName := resolveQName(name, c.nsBindings)
@@ -626,9 +625,9 @@ func (c *compiler) compileAccumulator(ctx context.Context, elem *xdm.Element) er
 func (c *compiler) compileAccumulatorRule(ctx context.Context, parent *accumulatorDef, elem *xdm.Element) error {
 	defer c.pushElementVersion(elem)()
 
-	matchAttr := getAttr(elem, nameMatch2)
-	if matchAttr == "" {
-		return staticError(errCodeXTSE0110, "xsl:accumulator-rule requires match attribute")
+	matchAttr, hasMatch := elem.GetAttribute(nameMatch2)
+	if !hasMatch {
+		return staticError(errCodeXTSE0010, "xsl:accumulator-rule requires match attribute")
 	}
 
 	// XPST0008: $value is only in scope in the select expression/body of
@@ -769,11 +768,11 @@ func (c *compiler) compileMerge(ctx context.Context, elem *xdm.Element) (instruc
 
 func validateMergeComponents(inst *mergeInst) error {
 	if len(inst.Sources) == 0 {
-		return staticError(errCodeXTSE0110, "xsl:merge requires at least one xsl:merge-source child")
+		return staticError(errCodeXTSE0010, "xsl:merge requires at least one xsl:merge-source child")
 	}
 
 	if len(inst.Action) == 0 {
-		return staticError(errCodeXTSE0110, "xsl:merge requires an xsl:merge-action child")
+		return staticError(errCodeXTSE0010, "xsl:merge requires an xsl:merge-action child")
 	}
 
 	// XTSE2200: all merge-sources must have the same number of merge-keys.
@@ -848,25 +847,6 @@ func mergeStreamCheck(inst *mergeInst) error {
 			}
 		}
 	}
-	// XTSE3430: when a streamable merge-source select uses descendant-or-self
-	// axis (//), the merge-key must not navigate upward.
-	// Fall back to non-streaming, raising no fatal error.
-	for _, src := range inst.Sources {
-		if !src.StreamableAttr || src.Select == nil {
-			continue
-		}
-
-		if !xpathstream.ExprUsesDescendantOrSelf(src.Select) {
-			continue
-		}
-
-		for _, mk := range src.Keys {
-			if xpathstream.ExprUsesUpwardAxis(mk.Select) {
-				src.StreamableAttr = false
-				break
-			}
-		}
-	}
 
 	return nil
 }
@@ -881,7 +861,7 @@ func (c *compiler) compileMergeSource(ctx context.Context, elem *xdm.Element) (*
 	src := &mergeSource{
 		Name:       getAttr(elem, xslAttrName),
 		BaseURI:    stylesheetBaseURI(elem, c.baseURI, c.moduleRoot),
-		Validation: getAttr(elem, nameValidation),
+		Validation: basicValidation(getAttr(elem, nameValidation)),
 	}
 	// The type attribute names a schema type against which each source
 	// document is validated; the resulting PSVI type annotations flow onto

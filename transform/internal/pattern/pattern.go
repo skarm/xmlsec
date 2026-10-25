@@ -18,6 +18,8 @@ var ErrLimit = errors.New("pattern: resource limit exceeded")
 // Options selects matching semantics; it is copied during compilation.
 type Options struct {
 	IgnoreCase, Multiline, DotAll, Literal bool
+	// XPathAnchors excludes the position after a final newline from multiline ^.
+	XPathAnchors bool
 	// Property resolves additional Unicode properties during compilation only.
 	Property func(string) *unicode.RangeTable
 }
@@ -34,6 +36,7 @@ type Program struct {
 	code                    []instruction
 	start, groups, counters int
 	backrefs                bool
+	xpathAnchors            bool
 }
 
 // Compile parses a pattern without expanding counted repetitions.
@@ -67,7 +70,7 @@ func Compile(source string, options Options) (*Program, error) {
 		return nil, errors.New("unbalanced pattern")
 	}
 
-	program := &Program{groups: p.groups, code: []instruction{{op: opMatch}}}
+	program := &Program{groups: p.groups, code: []instruction{{op: opMatch}}, xpathAnchors: options.XPathAnchors}
 
 	program.start, err = program.emit(root, 0)
 	if err != nil {
@@ -657,7 +660,7 @@ func (m *machine) anchor(pos int, i instruction) bool {
 		return pos == len(m.source) || !i.absolute && i.multiline && pos < len(m.source) && m.source[pos] == '\n'
 	}
 
-	return pos == 0 || !i.absolute && i.multiline && pos > 0 && m.source[pos-1] == '\n'
+	return pos == 0 || !i.absolute && i.multiline && pos > 0 && m.source[pos-1] == '\n' && (!m.program.xpathAnchors || pos < len(m.source))
 }
 
 func (m *machine) reference(s *state, i instruction) (bool, error) {

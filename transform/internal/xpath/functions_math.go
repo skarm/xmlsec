@@ -53,12 +53,12 @@ func fnMathPi(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 // (0, false, nil) so the caller can return an empty result; otherwise the
 // argument is required to be a single numeric/untypedAtomic item, rejecting
 // multi-item and non-numeric values with XPTY0004.
-func coerceMathArg(seq xdm.Sequence) (float64, bool, error) {
+func coerceMathArg(ctx context.Context, seq xdm.Sequence) (float64, bool, error) {
 	if xdm.SequenceLen(seq) == 0 {
 		return 0, false, nil
 	}
 
-	f, err := coerceArgToDoubleRequired(seq)
+	f, err := coerceArgToDoubleRequired(ctx, seq)
 	if err != nil {
 		return 0, false, err
 	}
@@ -66,8 +66,8 @@ func coerceMathArg(seq xdm.Sequence) (float64, bool, error) {
 	return f, true, nil
 }
 
-func mathUnary(args []xdm.Sequence, fn func(float64) float64) (xdm.Sequence, error) {
-	a, ok, err := coerceMathArg(args[0])
+func mathUnary(ctx context.Context, args []xdm.Sequence, fn func(float64) float64) (xdm.Sequence, error) {
+	a, ok, err := coerceMathArg(ctx, args[0])
 	if err != nil {
 		return nil, err
 	}
@@ -79,33 +79,33 @@ func mathUnary(args []xdm.Sequence, fn func(float64) float64) (xdm.Sequence, err
 	return xdm.SingleDouble(fn(a)), nil
 }
 
-func fnMathExp(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return mathUnary(args, math.Exp)
+func fnMathExp(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return mathUnary(ctx, args, math.Exp)
 }
 
-func fnMathExp10(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return mathUnary(args, func(x float64) float64 { return math.Pow(10, x) })
+func fnMathExp10(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return mathUnary(ctx, args, func(x float64) float64 { return math.Pow(10, x) })
 }
 
-func fnMathLog(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return mathUnary(args, math.Log)
+func fnMathLog(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return mathUnary(ctx, args, math.Log)
 }
 
-func fnMathLog10(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return mathUnary(args, math.Log10)
+func fnMathLog10(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return mathUnary(ctx, args, math.Log10)
 }
 
-func fnMathPow(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnMathPow(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	// math:pow($x as xs:double?, $y as xs:numeric): empty $x yields empty, but
 	// only once $y has been validated. $y is a required single numeric value,
 	// so a malformed or empty $y must raise XPTY0004 even when $x is empty —
 	// function-conversion validates each argument independently of the others.
-	b, err := coerceArgToDoubleRequired(args[1])
+	b, err := coerceArgToDoubleRequired(ctx, args[1])
 	if err != nil {
 		return nil, err
 	}
 
-	a, aOK, err := coerceMathArg(args[0])
+	a, aOK, err := coerceMathArg(ctx, args[0])
 	if err != nil {
 		return nil, err
 	}
@@ -117,43 +117,43 @@ func fnMathPow(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	return xdm.SingleDouble(math.Pow(a, b)), nil
 }
 
-func fnMathSqrt(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return mathUnary(args, math.Sqrt)
+func fnMathSqrt(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return mathUnary(ctx, args, math.Sqrt)
 }
 
-func fnMathSin(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return mathUnary(args, math.Sin)
+func fnMathSin(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return mathUnary(ctx, args, math.Sin)
 }
 
-func fnMathCos(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return mathUnary(args, math.Cos)
+func fnMathCos(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return mathUnary(ctx, args, math.Cos)
 }
 
-func fnMathTan(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return mathUnary(args, math.Tan)
+func fnMathTan(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return mathUnary(ctx, args, math.Tan)
 }
 
-func fnMathAsin(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return mathUnary(args, math.Asin)
+func fnMathAsin(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return mathUnary(ctx, args, math.Asin)
 }
 
-func fnMathAcos(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return mathUnary(args, math.Acos)
+func fnMathAcos(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return mathUnary(ctx, args, math.Acos)
 }
 
-func fnMathAtan(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return mathUnary(args, math.Atan)
+func fnMathAtan(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return mathUnary(ctx, args, math.Atan)
 }
 
-func fnMathAtan2(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnMathAtan2(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	// math:atan2($y as xs:double, $x as xs:double): both required, exactly one
 	// numeric value each.
-	a, err := coerceArgToDoubleRequired(args[0])
+	a, err := coerceArgToDoubleRequired(ctx, args[0])
 	if err != nil {
 		return nil, err
 	}
 
-	b, err := coerceArgToDoubleRequired(args[1])
+	b, err := coerceArgToDoubleRequired(ctx, args[1])
 	if err != nil {
 		return nil, err
 	}

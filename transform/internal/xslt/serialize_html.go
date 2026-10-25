@@ -9,6 +9,8 @@ import (
 	"github.com/skarm/xmlsec/internal/xmloutput"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	htmlpkg "github.com/skarm/xmlsec/transform/internal/xdm/html"
+	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
 func streamHTMLValue(ctx context.Context, w io.Writer, result ValueResult, definition *OutputDef) error {
@@ -35,37 +37,34 @@ func streamHTMLValue(ctx context.Context, w io.Writer, result ValueResult, defin
 		writer = writer.ContentType(media + "; charset=" + encoding)
 	}
 
-	root := firstSerializationElement(result.Items)
-
 	explicitDoctype := definition.DoctypePublic != "" || definition.DoctypeSystem != ""
-	if explicitDoctype {
-		name := "html"
-		if root != nil {
-			name = root.Name()
-		}
-
-		if err := xmloutput.WriteHTMLDoctype(w, name, definition.DoctypePublic, definition.DoctypeSystem); err != nil {
-			return err
-		}
-
-		if err := writeFullString(w, "\n"); err != nil {
-			return err
-		}
-	}
-
 	buffer := bufio.NewWriterSize(w, 4096)
 	sequence := serializationSequence{ctx: ctx, definition: definition}
 	items := func(yield func(xdm.XMLItem, error) bool) {
-		emitted := explicitDoctype || !isHTMLVersion5(definition.HTMLVersion)
+		emitted := false
+		automatic := isHTMLVersion5(definition.HTMLVersion)
+
 		for item, err := range sequence.items(result.Items) {
+			if err == nil {
+				err = xpath.ValidateHTMLItem(ctx, item, effectiveHTMLVersion5(definition))
+			}
+
+			if !emitted && serializationHasNonWhitespaceText(item) {
+				automatic = false
+			}
+
 			if err == nil && !emitted && item.Node != nil && item.Node.Type() == xdm.ElementNode {
-				err = writeFullString(buffer, "<!DOCTYPE html>")
+				err = writeHTMLResultDoctype(buffer, item.Node, definition, explicitDoctype, automatic)
 				emitted = true
 			}
 
 			if !yield(item, err) || err != nil {
 				return
 			}
+		}
+
+		if err := writeRootlessHTMLDoctype(buffer, definition, emitted); err != nil {
+			yield(xdm.XMLItem{}, err)
 		}
 	}
 
@@ -78,8 +77,14 @@ func streamHTMLValue(ctx context.Context, w io.Writer, result ValueResult, defin
 
 func effectiveStreamMethod(result ValueResult, definition *OutputDef) string {
 	root := firstSerializationElement(result.Items)
-	if !definition.MethodExplicit && root != nil && strings.EqualFold(root.LocalName(), methodHTML) && root.URI() == "" && allowsHTMLAutoDetection(definition, result.Document) {
-		return methodHTML
+	if !definition.MethodExplicit && root != nil && root.LocalName() == methodHTML {
+		if root.URI() == "" && allowsHTMLAutoDetection(definition, result.Document) {
+			return methodHTML
+		}
+
+		if definition.languageVersion != 10 && !definition.implicitXMLMethod && root.URI() == lexicon.NamespaceXHTML {
+			return methodXHTML
+		}
 	}
 
 	if definition.Method == "" {
@@ -87,4 +92,37 @@ func effectiveStreamMethod(result ValueResult, definition *OutputDef) string {
 	}
 
 	return definition.Method
+}
+
+func serializationHasNonWhitespaceText(item xdm.XMLItem) bool {
+	if item.Node == nil {
+		return !isXMLWhitespaceOnly(item.Text)
+	}
+
+	return item.Node.Type() == xdm.TextNode && !isXMLWhitespaceOnly(xdm.CharacterData(item.Node))
+}
+
+func writeHTMLResultDoctype(w io.Writer, node xdm.Node, definition *OutputDef, explicit, automatic bool) error {
+	if explicit {
+		if err := xmloutput.WriteHTMLDoctype(w, methodHTML, definition.DoctypePublic, definition.DoctypeSystem); err != nil {
+			return err
+		}
+
+		return writeFullString(w, "\n")
+	}
+
+	element, ok := node.(*xdm.Element)
+	if automatic && ok && strings.EqualFold(element.LocalName(), methodHTML) && (element.URI() == "" || element.URI() == lexicon.NamespaceXHTML) {
+		return writeFullString(w, "<!DOCTYPE html>")
+	}
+
+	return nil
+}
+
+func writeRootlessHTMLDoctype(w io.Writer, definition *OutputDef, emitted bool) error {
+	if emitted || definition.DoctypePublic == "" && definition.DoctypeSystem == "" {
+		return nil
+	}
+
+	return writeHTMLResultDoctype(w, nil, definition, true, false)
 }

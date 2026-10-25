@@ -18,7 +18,11 @@ func (c *compiler) compileValueOf(ctx context.Context, elem *xdm.Element) (*valu
 
 	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
 	if !hasSelect && c.stylesheet.processorLanguage() == 10 {
-		return nil, staticError(errCodeXTSE0110, "xsl:value-of requires select in XSLT 1.0")
+		return nil, staticError(errCodeXTSE0010, "xsl:value-of requires select in XSLT 1.0")
+	}
+
+	if !hasSelect && c.stylesheet.processorLanguage() == 20 && !c.hasEffectiveContent(ctx, elem) {
+		return nil, staticError(errCodeXTSE0870, "XSLT 2.0 xsl:value-of requires select or non-empty content")
 	}
 
 	if hasSelect {
@@ -136,7 +140,7 @@ func (c *compiler) compileElement(ctx context.Context, elem *xdm.Element) (*elem
 
 	nameAttr := getAttr(elem, xslAttrName)
 	if nameAttr == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:element requires name attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:element requires name attribute")
 	}
 
 	nameAVT, err := c.compileAVT(nameAttr, c.nsBindings)
@@ -176,7 +180,7 @@ func (c *compiler) compileElement(ctx context.Context, elem *xdm.Element) (*elem
 			return nil, err
 		}
 
-		inst.Validation = validation
+		inst.Validation = basicValidation(validation)
 	}
 
 	if nsAttr, hasNS := elem.GetAttribute(nameNamespace); hasNS {
@@ -215,7 +219,7 @@ func (c *compiler) compileElement(ctx context.Context, elem *xdm.Element) (*elem
 func (c *compiler) compileAttribute(ctx context.Context, elem *xdm.Element) (*attributeInst, error) {
 	nameAttr := getAttr(elem, xslAttrName)
 	if nameAttr == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:attribute requires name attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:attribute requires name attribute")
 	}
 
 	nameAVT, err := c.compileAVT(nameAttr, c.nsBindings)
@@ -242,7 +246,7 @@ func (c *compiler) compileAttribute(ctx context.Context, elem *xdm.Element) (*at
 			return nil, staticError(errCodeXTSE0220, "validation attribute requires schema-aware processing")
 		}
 
-		inst.Validation = valAttr
+		inst.Validation = basicValidation(valAttr)
 	}
 
 	if nsAttr, hasNS := elem.GetAttribute(nameNamespace); hasNS {
@@ -319,7 +323,7 @@ func (c *compiler) compileComment(ctx context.Context, elem *xdm.Element) (*comm
 func (c *compiler) compilePI(ctx context.Context, elem *xdm.Element) (*piInst, error) {
 	nameAttr := getAttr(elem, xslAttrName)
 	if nameAttr == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:processing-instruction requires name attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:processing-instruction requires name attribute")
 	}
 
 	nameAVT, err := c.compileAVT(nameAttr, c.nsBindings)
@@ -333,7 +337,7 @@ func (c *compiler) compilePI(ctx context.Context, elem *xdm.Element) (*piInst, e
 	if selectAttr != "" {
 		// XTSE0940: select and non-empty content are mutually exclusive.
 		if err := c.validateEmptyElement(ctx, elem, "xsl:processing-instruction"); err != nil {
-			return nil, staticError(errCodeXTSE0940, "xsl:processing-instruction has both @select and content")
+			return nil, staticError("XTSE0880", "xsl:processing-instruction has both @select and content")
 		}
 
 		expr, err := c.compileXPath(selectAttr, c.nsBindings)
@@ -400,7 +404,7 @@ func (c *compiler) compileCopy(ctx context.Context, elem *xdm.Element) (*copyIns
 			return nil, err
 		}
 
-		inst.Validation = v
+		inst.Validation = basicValidation(v)
 	}
 
 	if typeAttr := getAttr(elem, nameType); typeAttr != "" {
@@ -445,7 +449,7 @@ func (c *compiler) compileCopyOf(_ context.Context, elem *xdm.Element) (*copyOfI
 
 	selectAttr := getAttr(elem, xslAttrSelect)
 	if selectAttr == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:copy-of requires select attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:copy-of requires select attribute")
 	}
 
 	expr, err := c.compileXPath(selectAttr, c.nsBindings)
@@ -478,7 +482,7 @@ func (c *compiler) compileCopyOf(_ context.Context, elem *xdm.Element) (*copyOfI
 			return nil, err
 		}
 
-		inst.Validation = v
+		inst.Validation = basicValidation(v)
 	}
 
 	if typeAttr := getAttr(elem, nameType); typeAttr != "" {
@@ -571,7 +575,7 @@ func (c *compiler) compileNumber(_ context.Context, elem *xdm.Element) (*numberI
 }
 
 func (c *compiler) compileNumberCounting(elem *xdm.Element, inst *numberInst) error {
-	if countAttr := getAttr(elem, "count"); countAttr != "" {
+	if countAttr, present := elem.GetAttribute("count"); present {
 		p, err := c.compilePattern(countAttr, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
 		if err != nil {
 			return err
@@ -580,7 +584,7 @@ func (c *compiler) compileNumberCounting(elem *xdm.Element, inst *numberInst) er
 		inst.Count = p
 	}
 
-	if fromAttr := getAttr(elem, "from"); fromAttr != "" {
+	if fromAttr, present := elem.GetAttribute("from"); present {
 		p, err := c.compilePattern(fromAttr, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
 		if err != nil {
 			return err
@@ -684,7 +688,7 @@ func (c *compiler) compileNumberFormatting(elem *xdm.Element, inst *numberInst) 
 func (c *compiler) compileNamespace(ctx context.Context, elem *xdm.Element) (*namespaceInst, error) {
 	nameAttr, hasName := elem.GetAttribute(xslAttrName)
 	if !hasName {
-		return nil, staticError(errCodeXTSE0110, "xsl:namespace requires name attribute")
+		return nil, staticError(errCodeXTSE0010, "xsl:namespace requires name attribute")
 	}
 	// name="" is valid: it sets the default namespace
 
@@ -733,7 +737,7 @@ func (c *compiler) compileDocument(ctx context.Context, elem *xdm.Element) (*doc
 			return nil, err
 		}
 
-		inst.Validation = v
+		inst.Validation = basicValidation(v)
 	}
 
 	if typeAttr := getAttr(elem, nameType); typeAttr != "" {
@@ -777,7 +781,7 @@ func (c *compiler) compileSequence(ctx context.Context, elem *xdm.Element) (inst
 
 	inst := &sequenceInst{Body: body}
 	if dvAttr := getAttr(elem, nameDefaultValidation); dvAttr != "" {
-		inst.DefaultValidation = dvAttr
+		inst.DefaultValidation = basicValidation(dvAttr)
 	}
 
 	return inst, nil
@@ -1035,7 +1039,7 @@ func (c *compiler) compileLiteralResultAttrs(elem *xdm.Element, lre *literalResu
 			if ok := lreAllowedXSLTAttrs(attr.LocalName()); !ok {
 				// In forwards-compatible mode (version > 3.0), unknown
 				// XSLT attributes on LREs are silently ignored.
-				if c.effectiveVersion > "3.0" {
+				if c.forwardsCompatible(c.effectiveVersion) {
 					continue
 				}
 
@@ -1146,7 +1150,7 @@ func (c *compiler) compileLiteralResultOptions(ctx context.Context, elem *xdm.El
 			return staticError(errCodeXTSE0220, "xsl:validation requires schema-aware processing")
 		}
 
-		lre.Validation = valAttr
+		lre.Validation = basicValidation(valAttr)
 	}
 
 	if typeAttr, ok := elem.GetAttributeNS(nameType, lexicon.NamespaceXSLT); ok {
@@ -1159,7 +1163,7 @@ func (c *compiler) compileLiteralResultOptions(ctx context.Context, elem *xdm.El
 
 	// Handle xsl:default-validation on LRE (XSLT 3.0 §3.6)
 	if dvAttr, ok := elem.GetAttributeNS(nameDefaultValidation, lexicon.NamespaceXSLT); ok {
-		lre.DefaultValidation = dvAttr
+		lre.DefaultValidation = basicValidation(dvAttr)
 	}
 
 	// Compute effective static base URI: if any ancestor stylesheet element

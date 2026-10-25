@@ -89,9 +89,9 @@ func testDetachedAlgorithmsAndTransformsCase(t *testing.T, cms *[]string, k *str
 ) {
 	for _, cm := range *cms {
 		t.Run(cm, func(t *testing.T) {
-			sig := signDetached(t, k.key, (*refs), sourceMap((*resources)), xmldsig.DetachedSignOptions{SignatureMethod: k.method, Canonicalization: reference.Transform{Algorithm: cm}, Policy: xmldsig.ModernPolicy()})
+			sig := signDetached(t, k.key, *refs, sourceMap(*resources), xmldsig.DetachedSignOptions{SignatureMethod: k.method, Canonicalization: reference.Transform{Algorithm: cm}, Policy: xmldsig.ModernPolicy()})
 
-			result, err := xmldsig.VerifyDetached(context.Background(), sig, k.key.Public(), sourceMap((*resources)), xmldsig.DetachedVerifyOptions{ExpectedURIs: (*expected), AllowedCanonicalizationMethods: []string{cm}, Policy: xmldsig.ModernPolicy()})
+			result, err := xmldsig.VerifyDetached(context.Background(), sig, k.key.Public(), sourceMap(*resources), xmldsig.DetachedVerifyOptions{ExpectedURIs: *expected, AllowedCanonicalizationMethods: []string{cm}, Policy: xmldsig.ModernPolicy()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -101,7 +101,7 @@ func testDetachedAlgorithmsAndTransformsCase(t *testing.T, cms *[]string, k *str
 			}
 
 			checked := result.References()
-			if checked[0].Target().Valid() || checked[0].IsCanonicalXML() || checked[0].Type() != "urn:example:binary" || !bytes.Equal(digestInput(t, checked[0]), (*raw)) {
+			if checked[0].Target().Valid() || checked[0].IsCanonicalXML() || checked[0].Type() != "urn:example:binary" || !bytes.Equal(digestInput(t, checked[0]), *raw) {
 				t.Fatal("raw reference metadata")
 			}
 

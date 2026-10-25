@@ -45,9 +45,27 @@ the input limit before any declaration is removed.
 
 ## Contexts and values
 
+The XDM view applies [xml:id normalization](https://www.w3.org/TR/xml-id/#processing)
+to ID lookup, attribute string values and XPath/XSLT serialization. Only XML
+whitespace is collapsed; other Unicode spaces and other attributes are preserved.
+Imports retain the original immutable XML storage and node identities. `Reference`
+and `Export` return that original snapshot, including its original attribute
+values; XDM normalization does not rewrite it. This bounded behavior does not
+establish complete xml:id error reporting or general XML processor conformance.
+
 `CompileXPath` snapshots namespace bindings and the static base URI; the default
 version is 3.1. An empty prefix sets the default element namespace in XPath 2.0+.
 XPath 1.0 accepts only node context items and has no default element namespace.
+`XPathOptions.XPath10Compatibility` enables the 1.0 compatibility property with
+modern grammar and functions; the default retains strict conversions. It changes
+numeric/string conversion and singleton argument handling, independently of the
+language version. Returned inline/named/partial/lookup function values retain
+their originating static datatype/compatibility context while borrowing the
+caller's current resource policy and budgets.
+XPath keywords remain legal names where the grammar requires a name: for
+example, `6 * div` multiplies by the value of a child named `div`. The parser
+resolves the role from the expression grammar, including keyword prefixes and
+following operators or clause delimiters.
 `XPathContext` supplies variables, focus and `DynamicContext`; `ContextItem`
 overrides the document argument. Context-free expressions need neither.
 
@@ -64,17 +82,112 @@ with the same expanded name.
 principal declaration. Selected processors 1.0/2.0/3.0 use XPath 1.0/2.0/3.1.
 A modern processor accepts lower stylesheet declarations while preserving local
 backwards-compatible behavior across principal, imported and included modules.
-`Stylesheet.Version()` reports the selected processor. A 2.0 processor with a
-principal 3.0 declaration and future 4.0 declarations remain unsupported; this
-option does not establish complete forwards-compatible processing.
+`Stylesheet.Version()` reports the selected processor. Higher declarations, including 3.0 with a selected 2.0 processor and future
+4.0 declarations, enable forwards-compatible processing: unavailable
+instructions use their fallback, unknown future attributes are ignored and
+unused unknown function calls can be deferred. Complete forwards-compatible
+semantics remain subject to the suite backlog. Serialization `version` on
+`xsl:output`/`xsl:result-document` does not change the language mode.
+
+The 2.0 host library includes `generate-id` without enabling newer XPath syntax.
+Node functions retain their argument types and cardinality. Number/date formatters
+use the selected processor's signatures and error QNames, including the 2.0
+`XTDE1280`/`XTDE1310` and `XTDE1340`/`XTDE1350` codes. Match patterns use the
+selected grammar: 2.0 permits pipe alternatives, child/attribute steps and its
+restricted `id`/`key` roots; 3.0 adds grouped patterns and other supported roots.
+Predicates retain the selected XPath expression grammar.
+
+In 2.0, an absent current group or grouping key is empty; 3.0 raises
+`XTDE1061`/`XTDE1071`. Ordinary template calls preserve grouping independently
+of the focus. Stylesheet functions clear both grouping and the focus. A 2.0
+initial template cannot declare a required parameter (`XTDE0060`), even if the
+caller supplies it. The 3.0 processor permits supplied required parameters.
+Basic 2.0 rejects `validation="lax"` and `validation="preserve"`; Basic 3.0
+applies untyped stripping.
+
+Stylesheet functions resolve global bindings independently of caller-local
+variables. A 3.0 `xsl:copy` with `select` evaluates its body with the selected
+node's singleton focus and clears the current template rule; an implicit
+context-node copy preserves that rule. The caller's focus is restored afterward.
+Loading the initial document through its document URI preserves its identity,
+including `file:` URIs converted to resolver-local paths.
+
+`type-available()` uses the selected datatype edition in both static and runtime
+contexts: `xs:dateTimeStamp` is unavailable under XSD 1.0. A 2.0 `use-when`
+context has no available documents; a 3.0 context may use the configured resolver.
+
+Result-document hrefs, including nested instructions, resolve against the
+invocation's fixed base output URI. A supplied `href`, including `href=""`,
+changes `current-output-uri()` during the body; an absent attribute leaves the
+current value unchanged. The previous value is restored afterward. Equivalent
+resolved URIs share a reservation, including an explicit href equal to the
+principal URI. Implicit
+principal output claims its URI in raw and normalized delivery alike; a
+duplicate is `XTDE1490`. Empty sequences do not claim an implicit result, while
+explicit whitespace does. Failed result-document construction releases its
+reservation, and rolled-back implicit output releases its claim. This does not
+promise transaction-wide rollback of already completed secondary results.
+XSLT 3.0 rejects reading and writing the same resolved absolute resource URI
+with `XTDE1500`, in either order. XML, text, JSON, availability checks, collection
+documents and runtime serialization-parameter documents share that check. Source
+document URIs participate; `uri-collection` returns names without reading their
+resources. Successful opens remain reads even if parsing fails; failed retrievals
+do not reserve a read URI. Escaped functions use the live caller's resource state,
+while nested transformations have separate state. Physical URI aliases are not
+exhaustively identified. Dynamic `parameter-document` AVTs are evaluated on each
+execution, with parsed parameters cached by resolved URI and scoped across recursion.
+`Config.EnableXSLTAssertions` enables assertion checking for direct invocations.
+Nested `fn:transform` uses its `enable-assertions` option. Assertions default to disabled. A failed assertion (including a
+dynamic error in its test) follows message processing with `XTMM9001` as the
+default code. Error-code AVTs preserve application QNames in `Error.CodeName()`
+and `xsl:catch`. An invalid supplied code follows the message fallback
+`XTMM9000`; an omitted assertion code uses `XTMM9001`. A literal error-code
+QName with an undeclared prefix is a static `XTSE0280`; an explicitly empty code
+uses the message fallback. Cancellation and resource exhaustion propagate through
+message/assertion processing. Message content is one constructed document,
+including `select` followed by its body; terminating messages and failed assertions
+supply that document as `$err:value`. XSLT 3.0 accepts all boolean `terminate`
+synonyms, with XML whitespace stripping. Local namespaces on `xsl:catch` apply
+to its expressions as well as its error-name filters. Parsed instructions expose
+their start-tag line through `$err:line-number`, including included/imported
+modules and UTF-16 stylesheets. Column numbers and locations without source
+metadata remain empty sequences.
 Static parameters bind during
 compilation; `XSLTContext.Parameters` supplies globals during execution.
 `InitialParameters` and `TunnelParameters` supply initial template/mode arguments.
+Template parameter defaults and supplied values share binding rules for named,
+node and atomic template invocations. Untyped empty defaults are zero-length
+strings; untyped nonempty bodies construct document nodes. Typed explicit empty
+defaults still undergo conversion. A missing implicitly mandatory template
+parameter uses `XTDE0610` in the 2.0 processor and `XTDE0700` in 3.0; visible
+mandatory stylesheet parameters are checked when execution starts with `XTDE0050`.
+Default conversion uses the selected edition (`XTTE0600` in 2.0, `XTTE0590` in
+3.0); supplied parameter conversion uses `XTTE0590`. Local type namespaces and
+default element namespaces come from the parameter declaration.
+Named-template references are bound after imports and declarations; missing
+visible targets fail compilation with `XTSE0650`, including unused ordinary
+branches. A component accepted with private visibility is callable inside the
+accepting package; hidden components are unavailable. Higher-version forwards mode retains deferred checks. Duplicate names
+at the effective import precedence use `XTSE0660`; a higher-precedence declaration
+may override both. Function names and template calls resolve their declaration
+namespace scope, with `XTSE0280` for an unbound prefix and `XTSE0740` for a
+function in no namespace. Include/import cycles retain their path and use
+`XTSE0180`/`XTSE0210`; global variable/parameter cycles use `XTDE0640`.
+A required absent template context uses `XTTE3090`. An explicit initial mode
+without a match selection uses `XTDE0044`; an ineligible mode uses `XTDE0045`.
+When neither a source nor an explicit selection is supplied, an available global
+context item supplies the default selection for a mode invocation.
 
 Names use `document.Name{Space, Local}` (also `transform.Name`), independently of
-prefixes. `Bindings` contains typed `Sequence` values: exact integers/decimals,
+prefixes. `Bindings` contains typed `Sequence` values: arbitrary-precision integers and finite decimals,
 other atomics, nodes, maps, arrays and functions. Go accessors use zero-based
 indices; XPath array lookup is one-based. Mutable numeric getters return copies.
+
+Simple-content constructors and AVTs propagate atomization and conversion errors,
+including `FOTY0013` for maps/functions nested in arrays. Outer text-node merging
+precedes array atomization; array-member text nodes are separate atomic values.
+Backwards-compatible AVTs select the first atomized value. Singleton text reuses
+immutable storage; combined strings charge the shared work/byte budget.
 
 Both invocation contexts expose `Context DynamicContext` for stable current time,
 implicit timezone, default language and trace output. The timezone is a fixed
@@ -105,17 +218,161 @@ resource-load budgets. It has no implicit network or filesystem access.
 Dynamic stylesheet sources are bounded by `MaxProgramBytes`; for node sources,
 the bound is measured by streaming XML serialization without retaining a buffer.
 `xslt-version` requests a minimum processor version using exact numeric comparison:
-for example 2.5 or a decimal just above 2 selects 3.0;
-an unavailable version reports `FOXT0001`. Without that option, the principal
-stylesheet declaration selects the processor. Complete option conversion,
+the 3.0 processor handles every supported minimum, including 1.0 and 2.0.
+An omitted option also selects 3.0. Values above 3.0 or an unavailable requested
+product/capability report `FOXT0001`. `initial-function` requires `function-params`
+(`FOXT0002` when absent). Complete option conversion,
 forwards-compatible processing and Basic language conformance remain open; see
 [suite diagnostics](language-suites.md).
+
+Package exposure uses the winning explicit, declared or wildcard visibility
+in that priority order, with the last rule winning only within one priority.
+Only locally declared components can be exposed; parameters remain public.
+Component names and function arities are validated in their declaration's
+namespace scope. The pinned 2017 Recommendation permits function NameTests
+without arity; the later E36 behavior in Saxon and some suite cases is recorded
+separately from exact agreement. Initial modes made private by declaration or exposure follow §6.6.1;
+the contradictory broader wording in §2.3.3 is tracked by W3C bug 30405.
+
+Root shadow attributes precede package identity/version and ordinary root
+attribute checks. Their expression errors retain their language codes.
+Shadow expansion uses a private module copy so `document('')` retains the
+original stylesheet tree; a shadow attribute cannot itself be shadowed.
+Resolved package identity is checked against the effective compiled metadata.
+
+Accepted components have their own visibility without changing the declaring
+package's objects. Public/final components default to private in the using
+package; abstract components default to hidden. Incompatible wildcard accepts
+are ignored, while explicit names are checked for existence and visibility.
+Hidden abstract calls report `XTDE3052`; a visible abstract component in an
+executable top-level package reports `XTSE3080`. Template/function/variable
+signature checks retain declaration-site type names and default types.
+
+Stylesheet function arguments use XPath function conversion, including numeric
+and URI promotion, atomization and typed cast errors. Function signature names
+retain the namespaces of their declarations across static calls, function items,
+lookup and initial invocation. Function results use the same conversion rules
+with XSLT's `XTTE0780` result error. A converted function checks arguments against
+the requested signature before converting them for the original function;
+incompatible calls fail when invoked. Returned adapters keep static type names
+and borrow the caller's current cancellation and work limits. Their native and
+Saxon atomization-code differences are recorded separately in the baseline.
+
+`xsl:evaluate` uses its explicitly supplied variables and public/final stylesheet
+functions. Private overloads do not hide public siblings, and XSLT-specific
+functions are absent from the target's static library. The target always uses
+ordinary XPath conversion; local backwards compatibility does not enable XPath
+1.0 conversion. Namespace-context nodes replace stylesheet bindings, including
+the default namespace. Source and result conversion, explicit map types and
+changes to supplied variable names are checked per invocation. Dynamic source
+text observes program/work limits before compilation, and `doc()` shares the
+transformation's document identity. `with-param` types retain declaration names
+and apply conversion before binding the receiving parameter.
+
+`Config.DisableXSLTDynamicEvaluation` statically disables `xsl:evaluate` for
+programs compiled by the engine. The default enables it. Static and runtime
+`element-available`/`system-property` then report the feature unavailable;
+`xsl:fallback` is evaluated, and an invoked instruction without fallback raises
+`XTDE3175`. Nested transformations and package compilation inherit the setting.
+Returned functions retain the producing stylesheet's feature setting for nested
+compilation and introspection. Fallback bodies retain their own namespaces,
+default element namespace, collation, text expansion, whitespace and `use-when`.
+Unsatisfied requested processor properties produce `FOXT0001`; F&O also permits
+implementations such as Saxon to ignore such requests.
+
+XSLT availability and system-property functions resolve string QNames using the
+expression's lexical declarations, including local prefix rebindings. Element
+and type availability use the XML default namespace; function availability uses
+the standard function namespace, and system-property uses no default namespace.
+The XML default is independent of `xpath-default-namespace`. Shared argument
+conversion applies to static, named and lookup calls; invalid EQNames and unbound
+prefixes retain their prescribed XSLT codes. Static declarations, `use-when`,
+shadow attributes, node/atomic template patterns and returned functions retain
+those contexts. Full schema and extension inventories remain outside this claim.
+
+`xsl:map` requires a sequence of maps (`XTTE3375`) and rejects duplicate keys
+with `XTDE3365`, including matching `xsl:catch` dispatch. `xsl:map-entry` works
+independently and atomizes its key to one atomic value through the shared type
+conversion path. Map construction uses one builder; duplicate-value combination
+in `map:merge` appends to builder-owned storage and preserves its inputs. Shared
+work and collection limits apply while merging entries and before combining
+value sequences, including intermediate maps whose final result is a scalar.
+
+
+
+Package-local names retain their scope across calls and overrides. Dynamic
+function lookup retains original declarations when another package overrides
+them; abstract declarations are unavailable dynamically. Static named references
+to an unimplemented abstract function still fail with `XTDE3052` when invoked.
+Modes retain package identity independently of a component's lexical scope.
+Private or hidden template names do not remove their match rules from a public
+mode. Unnamed/private modes stay local, while accepted modes retain their rule
+lists through re-export and further overrides. Rules in the using package take
+precedence before pattern priority; `next-match`, named helpers and built-in
+rules retain the bound mode. Atomic rules and predicates use their declaring
+package's functions. Compilation charges rule-list extension to the shared work
+budget and rebuilds the dispatch index. Direct `apply-imports` in an overriding
+match rule reports `XTSE3460`.
+
+`#default` and omitted mode attributes use the nearest ancestor-or-self
+`default-mode`, resolved with that attribute's namespace bindings. A child
+prefix redefinition does not change the ancestor's mode name. Includes/imports
+without a default select the unnamed mode. Invalid mode tokens, visibility and
+unbound prefixes are static errors; default-mode references participate in
+`declared-modes` checks. Resolving ancestor defaults charges the shared work
+budget. The suite adapter honors singleton `source/@select` for the initial
+context and default match selection, independently of explicit initial-mode
+selection.
+
+Complete component/import graphs, local-rule placement and signature combinations
+remain open. Indirect `apply-imports` across packages remains an independent-engine
+difference under investigation. The baseline records diagnostics separately.
+
+Attribute-set cycle detection tracks component identity across constructors and
+callbacks. XSLT 3.0 reports an evaluated circularity as `XTDE0640`; unused cycles
+are permitted. The 2.0 processor retains its static `XTSE0720` rule. Graph work
+and recursion use the shared invocation budgets. Function cache hints preserve
+proactive node identity and callbacks; a narrow scalar/self-recursion proof
+allows memoization without changing those effects. Key indexes also reject
+evaluated cycles in `match`, `use` and body expressions with `XTDE0640`, across
+function calls. Failed indexes are removed so a caught error cannot leave an
+incomplete cached index. Distinct documents and packages retain separate indexes.
+
+Function items clear the XSLT grouping, merge, regex and output-URI context,
+including inline and higher-order calls. Globals and key specifiers use their
+initial group context. Stylesheet functions and key bodies can establish fresh
+groups, matches and merges; nested transformations start their own context.
+Local variable construction retains the current output URI.
+`json-to-xml` with a nonempty input and `validate=true()` raises `FOJS0004`
+in the public Basic processor; selecting XSD 1.1 datatype rules does not enable
+schema validation.
 
 ## XSLT results and XML identity
 
 `Execute`, `ApplyTemplates`, `CallTemplate` and `CallFunction` return immutable
 `Result` values. They select ordinary execution, an explicit sequence, a named
 template or a public function. A named template can run without a source document.
+
+`XSLTContext.ResultMode` selects delivery of each primary and secondary value.
+The zero value, `ResultRaw`, preserves the XDM sequence's order, types and node
+identity. `ResultDocument` constructs document nodes through sequence
+normalization; arrays are flattened, adjacent atomic values use spaces unless an
+`item-separator` is supplied, adjacent text is merged and empty text disappears.
+An empty result becomes an empty document. Free attributes, namespaces, maps and
+functions raise `SENR0001`. `ResultDefault` follows each effective `build-tree`
+setting, defaulting to raw values for JSON/adaptive and trees for other methods.
+The copy uses the same work/storage budget and preserves source nodes; it does
+not serialize and reparse XML. The selected mode also precedes serialization in
+`Transform` and `Write`.
+
+`fn:transform` applies the corresponding raw/document/default delivery to each
+output. Raw secondary results retain their types and order. The principal map
+entry is present even for an empty sequence, following the published F&O 3.1
+Recommendation; W3C bug 30209 proposed a change but was not adopted into that
+edition. Post-processing receives the value after the selected delivery step.
+Its `enable-assertions` option uses function conversion to `xs:boolean`, defaults
+to false, and independently controls each nested call. Direct invocations use
+`Config.EnableXSLTAssertions`.
 
 `XSLTContext.ContextItem` sets the global context independently of the source
 document and initial match selection. Nil retains the source-document default;
@@ -134,9 +391,36 @@ These options do not modify unrelated compiled programs or engine defaults.
 Secondary URIs resolve against `BaseOutputURI` when supplied and never write files.
 `Serialize(ctx)` returns owned `Output` bytes using effective output definitions;
 `Transform` combines execution and serialization. These return no partial `Output`
-on error. `Result.WriterTo(ctx)`, `WriteSecondary` and `Stylesheet.Write` write
+on error. After an execution failure, `errors.As` can retrieve `*transform.Error`;
+its `Messages()` returns an owned copy of diagnostics already emitted, including
+the terminating message. `Message.Text` contains serialized XML, with text escaped.
+No partial primary or secondary result is published. `Result.WriterTo(ctx)`,
+`WriteSecondary` and `Stylesheet.Write` write
 with byte counts and permit partial output. `Stylesheet.Write` rejects secondary
 results. See [streaming](streaming.md) for memory requirements and record execution.
+
+`Result.OutputEncoding(uri)` reads the completed output's encoding without
+serialization; an empty URI selects the primary result. It preserves dynamic
+result-document settings independently for each invocation. An omitted encoding
+defaults to UTF-8; adaptive output ignores that parameter and uses UTF-8.
+Unknown secondary URIs and an absent result return `ErrInput`.
+
+XML/XHTML doctypes follow leading comments and processing instructions and use
+the first element's qualified name. HTML doctypes use `html` and the same
+position; automatic HTML5/XHTML5 doctypes require an HTML root without preceding
+non-whitespace text. Explicit HTML doctypes are retained even for an empty or
+element-free result. XHTML5 retains the XML-declaration default unless explicitly
+overridden. An implicit result from a 1.0 principal module defaults to XML for
+an XHTML root; an explicit result-document retains XHTML auto-selection. The
+root name must be lowercase `html` for method auto-selection.
+CDATA and suppress-indentation name lists combine across output
+declarations and imports. Unprefixed names use the declaration's XML default
+namespace; matching uses expanded names. Character maps apply to attributes and
+ordinary text, excluding CDATA-selected text, in primary and secondary results.
+Maps match original characters before Unicode normalization. Replacements stay
+unchanged, and characters introduced by normalization are not mapped again.
+Element/attribute names, namespace URIs, comments and PIs stay outside character
+expansion.
 
 The JSON method preserves arrays and maps without sequence normalization. Empty
 sequences become `null`; multiple items at the top level, in a map value or in
@@ -168,6 +452,10 @@ unrelated ancestors or siblings.
   resource budgets. No lookup is implicit.
 - `Config.CollectionResolver` supplies `collection` / `uri-collection` through
   callbacks returning public values. An empty URI identifies the default collection.
+  Results are stable within an XPath invocation or XSLT execution/package. Collection
+  document URIs resolve to the same document through `doc`; conflicting document
+  identities for one URI fail with `FODC0003`. Nested transforms inherit the explicit
+  resolver and create their own caches/whitespace views.
 - `Config.Resolver` supplies byte resources for imports and URI functions through
   the shared [resource contract](usage.md#common-contracts). Files and HTTP are
   available only through explicitly configured adapters. XML resources obey parser
@@ -195,6 +483,21 @@ and message bytes. Each writer call gets a fresh budget for its selected result.
 Temporary strings and trees also consume budgets. Execution and serialization
 have separate invocation budgets. Individual limits do not specify a combined
 heap or RSS ceiling.
+
+`Config.XMLSchemaVersion` chooses `XMLSchema10` or `XMLSchema11`; zero selects
+1.1. It controls the edition-sensitive builtin lexical rules (`+INF`, year zero,
+URI escapes) and regex range grammar on direct, function-item, arithmetic,
+aggregate and XSLT paths. Function values retain their originating static
+edition. This option does not supply schema validation or type annotations.
+Static and dynamic processor properties consistently report no schema awareness
+and the selected datatype/XPath editions.
+
+Integer/decimal division and numeric/duration averages materialize recurring
+fractions as finite decimal values. Terminating fractions remain exact. Recurring
+results retain at least twenty fractional places and twenty significant digits,
+rounding half away from zero; leading fractional zeros do not erase tiny
+quotients. Duration division uses the same rule. These temporaries and their
+rounding work obey the invocation's budgets.
 
 Numeric intermediates also use `MaxOutputBytes`. An integer costs
 `max(1, ceil(bitlen(abs(value))/8))` bytes, independently of sign; zero costs one
@@ -225,7 +528,16 @@ Checks are cooperative: an individual `math/big` operation cannot necessarily be
 interrupted, and these limits do not promise an exact heap or RSS ceiling.
 
 The compiler enforces version-specific grammar and function arities. Schema
-awareness, W3C streamable execution and shadow version attributes are unsupported.
+awareness and W3C streamable execution are unsupported. The Basic processor
+reports `XTSE1650` for schema imports and `XTSE1660` for schema-only constructors,
+typed modes and sequence types requiring annotated nodes. `validation="lax"`
+and `"preserve"` follow the non-schema-aware rules and act as `"strip"`.
+Streaming annotations are accepted and run on materialized trees, with the same
+resource limits and explicit accumulator applicability. They do not enable a
+streamability analysis or bounded-memory execution; `xsl:supports-streaming`
+remains `"no"`. See [XSLT 3.0 processor conformance](https://www.w3.org/TR/xslt-30/#conformance).
+XSLT 3.0 shadow
+attributes, including `_version`, are evaluated during compilation.
 Source schema-location hints do not trigger loading. Complete W3C conformance
 has not been established; supported scope is in [compatibility](compatibility.md).
 
@@ -236,7 +548,13 @@ including the namespace of application errors. Use `errors.Is` for `ErrInput`,
 structured errors.
 
 Pattern functions share an immutable bounded engine supporting Unicode classes,
-subtraction, captures and back-references. Work/storage limits and cancellation
+subtraction, captures and back-references. Category/case/normalization data and
+block ranges use Unicode 17.0; block data comes from the
+[Unicode database](https://www.unicode.org/Public/17.0.0/ucd/Blocks.txt) under the
+[Unicode license](../licenses/Unicode-3.0.txt). Block names retain XSD case and
+hyphens; historical Unicode 3.1 aliases remain recognized. Script names are not
+XSD category escapes. Unknown names report `FORX0002` even with `i`. Multiline
+`^` does not match the position after a terminal newline. Work/storage limits and cancellation
 apply; there is no linear-time guarantee for back-references or nested counted
 repetitions. Patterns are capped at 64 KiB of source, 8192 instructions and 128 captures,
 counted loops and nesting levels. Each match also caps work at 2000000 units
@@ -273,3 +591,15 @@ Approval must include the complete namespace context of the parameter in the
 signature (for example, the signature's `ds` binding and Filter2's `xf` binding).
 Detached signing preflights all serialized recipes before resolving resources or
 generating SignatureValue. Building XML does not add programs to the allowlist.
+
+Greek alphabetic numbering uses a shared 24-letter alphabet for `format-integer`
+and `xsl:number`, excluding the lowercase final sigma and the unused capital
+U+03A2 slot. Greek numbering is implementation-defined; publisher cases assuming
+a 25-letter lowercase sequence retain a visible diagnostic difference.
+
+HTML serialization validates the normalized items actually written, including raw
+sequences and item separators. Invalid processing instructions give `SERE0015`;
+XML characters forbidden before HTML5 give `SERE0014`, including DEL, NEL and
+attribute values. `html-version` takes priority over `version`. These checks share
+live cancellation and work/depth limits. Unsupported HTML versions use
+`SESU0013`. Full serialization conformance remains subject to the language backlog.

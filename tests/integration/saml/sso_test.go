@@ -38,7 +38,7 @@ func TestEndToEndSolicitedLogin(t *testing.T) {
 
 func testEndToEndSolicitedLoginCase(t *testing.T, kind *string) {
 	s := setup(t)
-	out, req, browser := begin(t, s, (*kind))
+	out, req, browser := begin(t, s, *kind)
 	a := auth()
 	bad := a
 

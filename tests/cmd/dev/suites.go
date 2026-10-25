@@ -21,15 +21,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/text/encoding/charmap"
 
 	"github.com/skarm/xmlsec/transform"
 )
 
+const suiteXSLTNamespace = "http://www.w3.org/2012/10/xslt-test-catalog"
+
 const (
+	suiteVersion10          = "1.0"
+	suiteVersion11          = "1.1"
 	suiteCatalog            = "catalog.xml"
 	suiteHarnessFailure     = "harness"
+	suiteResourceLimit      = "resource-limit"
 	suiteSecondary          = "secondary"
 	suiteQT3                = "qt3"
 	suiteXSLT               = "xslt30"
@@ -69,6 +75,9 @@ type suitePin struct {
 type suiteOptions struct {
 	kind, directory, version, report string
 	limitsProfile                    string
+	xsdVersion                       string
+	xpath10Compatibility             bool
+	xsltAssertions                   bool
 	setMatch, caseMatch              *regexp.Regexp
 	limit                            int
 	timeout                          time.Duration
@@ -303,6 +312,9 @@ func parseSuiteOptions(args []string, stderr io.Writer) (suiteOptions, error) {
 	flags.StringVar(&options.version, suiteVersion, suiteVersion31, "XPath 2.0/3.0/3.1 or XSLT 2.0/3.0")
 	flags.StringVar(&options.report, "report", "", "JSON report file; empty writes stdout")
 	flags.StringVar(&options.limitsProfile, "limits", "default", "default or language; explicit development budgets, never unbounded")
+	flags.StringVar(&options.xsdVersion, "xsd-version", suiteVersion10, "builtin datatype and regex edition: 1.0 or 1.1; schema validation stays disabled")
+	flags.BoolVar(&options.xsltAssertions, "assertions", false, "enable XSLT assertion checking in direct and nested transforms")
+	flags.BoolVar(&options.xpath10Compatibility, "xpath10-compatibility", false, "enable the XPath 1.0 compatibility property for modern QT3 expressions")
 	setPattern := flags.String("sets", ".*", "test-set name pattern")
 	casePattern := flags.String("match", ".*", "test-case name pattern")
 	flags.IntVar(&options.limit, "limit", 0, "selected-case limit; remaining cases are explicitly skipped")
@@ -324,6 +336,14 @@ func parseSuiteOptions(args []string, stderr io.Writer) (suiteOptions, error) {
 
 	if options.limitsProfile != "default" && options.limitsProfile != suiteLanguage {
 		return options, errors.New("limits must be default or language")
+	}
+
+	if options.xsdVersion != suiteVersion10 && options.xsdVersion != suiteVersion11 {
+		return options, errors.New("xsd-version must be 1.0 or 1.1")
+	}
+
+	if options.kind != suiteQT3 && options.xpath10Compatibility {
+		return options, errors.New("xpath10-compatibility applies only to QT3; XSLT uses stylesheet-local version modes")
 	}
 
 	var err error
@@ -517,6 +537,10 @@ func executeSuite(ctx context.Context, options suiteOptions, pin suitePin) (*sui
 			"default_language":            "en",
 			"default_collation":           "Unicode codepoint",
 			"schema_aware":                false,
+			"xsd_version":                 suiteXSDVersionName(options),
+			"xpath_1_0_compatibility":     options.xpath10Compatibility,
+			"xslt_assertions":             options.xsltAssertions,
+			"unicode_version":             unicode.Version,
 			"w3c_streaming":               false,
 			"assertion_language":          "XPath 3.1 through the public engine",
 			"network":                     false,
@@ -602,19 +626,34 @@ func executeSuiteCase(parent context.Context, options suiteOptions, item suiteCa
 	environment, err := prepareSuiteEnvironment(ctx, options, item)
 	if err != nil {
 		result.Status, result.Kind, result.Reason = suiteFailed, suiteHarnessFailure, err.Error()
+		if suiteBudgetFailure(ctx, err) != nil {
+			result.Kind = suiteResourceLimit
+		}
+
 		return result
 	}
 
 	evaluation := evaluateSuiteCase(ctx, options, item, environment)
 
 	result.ExecutionVersion = environment.executionVersion
-	if err := checkSuiteAssertion(ctx, evaluation, item.node.child(suiteResultVariable)); err != nil {
+	if failure := suiteDeadlineFailure(ctx, evaluation.err); failure != nil {
+		result.Status, result.Kind, result.Reason = suiteFailed, suiteResourceLimit, failure.Error()
+		return result
+	}
+
+	assertionErr := checkSuiteAssertion(ctx, evaluation, item.node.child(suiteResultVariable))
+	if failure := suiteDeadlineFailure(ctx, assertionErr); failure != nil {
+		result.Status, result.Kind, result.Reason = suiteFailed, suiteResourceLimit, failure.Error()
+		return result
+	}
+
+	if err := assertionErr; err != nil {
 		result.Status, result.Kind, result.Reason = suiteFailed, "assertion", err.Error()
 
 		if _, ok := errors.AsType[*suiteHarnessError](err); ok {
 			result.Kind = suiteHarnessFailure
-		} else if errors.Is(evaluation.err, transform.ErrLimit) {
-			result.Kind = "resource-limit"
+		} else if errors.Is(evaluation.err, transform.ErrLimit) || errors.Is(err, transform.ErrLimit) {
+			result.Kind = suiteResourceLimit
 		} else if errors.Is(evaluation.err, transform.ErrUnsupported) {
 			result.Kind = "unsupported-profile"
 		}
@@ -623,6 +662,29 @@ func executeSuiteCase(parent context.Context, options suiteOptions, item suiteCa
 	}
 
 	return result
+}
+
+// Deadline expiry is a runner failure, even if an error assertion would match
+// a surrounding language code. Explicit standard resource-limit alternatives
+// such as XPDY0130 remain eligible for normal assertion matching.
+func suiteDeadlineFailure(ctx context.Context, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return ctx.Err()
+	}
+
+	return nil
+}
+
+func suiteBudgetFailure(ctx context.Context, err error) error {
+	if errors.Is(err, transform.ErrLimit) {
+		return err
+	}
+
+	return suiteDeadlineFailure(ctx, err)
 }
 
 type suiteHarnessError struct{ message string }

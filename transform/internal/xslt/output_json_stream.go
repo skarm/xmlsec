@@ -1,7 +1,6 @@
 package xslt
 
 import (
-	"fmt"
 	"io"
 	"unicode/utf8"
 
@@ -180,7 +179,11 @@ func jsonRuneEscape(r rune) string {
 		return `\/`
 	default:
 		if r < 0x20 {
-			return fmt.Sprintf(`\u%04x`, r)
+			const hex = "0123456789abcdef"
+
+			escaped := [6]byte{'\\', 'u', '0', '0', hex[(r>>4)&0x0F], hex[r&0x0F]}
+
+			return string(escaped[:])
 		}
 
 		return ""
