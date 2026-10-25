@@ -1545,7 +1545,7 @@ func p7Proofs(t *testing.T, now time.Time, objects [][]byte, roles []string, at 
 	source := sha256.Sum256([]byte("published historical building-block vector"))
 	facts := make([]historicalproof.Fact, 0, len(objects))
 	for index, object := range objects {
-		facts = append(facts, historicalproof.Fact{Digest: sha256.Sum256(object), Source: source, At: at, Kind: roles[index]})
+		facts = append(facts, historicalproof.Fact{Digest: sha256.Sum256(object), Source: source, At: at, Kind: historicalproof.Kind(roles[index])})
 	}
 	set, err := historicalproof.New(t.Context(), now, facts)
 	if err != nil {
@@ -2656,7 +2656,7 @@ func TestHistoricalFreshnessDependenciesAreTargetBound(t *testing.T) {
 	objects := make([]historical.Object, 0, len(protected)+1)
 	children := make([][32]byte, 0, len(protected))
 	for index, raw := range protected {
-		objects = append(objects, historical.Object{Bytes: raw, Kind: roles[index]})
+		objects = append(objects, historical.Object{Bytes: raw, Kind: historicalproof.Kind(roles[index])})
 		children = append(children, sha256.Sum256(raw))
 	}
 	bundle := bytes.Join(protected, nil)

@@ -3,14 +3,16 @@ package keyinfo
 import (
 	"context"
 	"crypto"
-
-	// #nosec G406 -- Explicit bounded legacy compatibility only.
-	"crypto/dsa" //nolint:staticcheck // XMLDSig 1.1 requires legacy DSA verification; generation is disabled.
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
 	"fmt"
 	"math/big"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+
+	// #nosec G406 -- Explicit bounded legacy compatibility only.
+	"crypto/dsa" //nolint:staticcheck // XMLDSig 1.1 requires legacy DSA verification; generation is disabled.
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/signature"
@@ -103,7 +105,7 @@ func Build(ctx context.Context, t Template) (*document.Document, error) {
 		return nil, ErrLimit
 	}
 
-	root := element(Namespace, "ds", "KeyInfo")
+	root := element(Namespace, "ds", lexicon.DSigElementKeyInfo)
 
 	root.NS = []tree.Namespace{{Prefix: "ds", URI: Namespace}, {Prefix: "dsig11", URI: Namespace11}}
 	if t.ID != "" {
@@ -117,7 +119,7 @@ func Build(ctx context.Context, t Template) (*document.Document, error) {
 			return nil, ErrLimit
 		}
 
-		v := element(Namespace, "ds", "KeyName")
+		v := element(Namespace, "ds", lexicon.DSigElementKeyName)
 		addText(v, name)
 		add(root, v)
 	}
@@ -274,9 +276,9 @@ func buildRetrieval(ctx context.Context, root *tree.Node, method RetrievalMethod
 	}
 
 	if len(method.Transforms) != 0 {
-		transforms := element(Namespace, "ds", "Transforms")
+		transforms := element(Namespace, "ds", lexicon.DSigElementTransforms)
 		for _, transform := range method.Transforms {
-			child := element(Namespace, "ds", "Transform")
+			child := element(Namespace, "ds", lexicon.DSigElementTransform)
 			set(child, "Algorithm", transform.Algorithm)
 
 			if err := transformxml.AppendParameters(ctx, child, transform); err != nil {
@@ -431,7 +433,7 @@ func buildPublicKey(ctx context.Context, value PublicKeyValue) (*tree.Node, erro
 
 		return node, nil
 	case "", XMLKeyValue:
-		node := element(Namespace, "ds", "KeyValue")
+		node := element(Namespace, "ds", lexicon.DSigElementKeyValue)
 
 		child, err := buildXMLKey(ctx, value.Key)
 		if err != nil {

@@ -148,7 +148,7 @@ func (p *processor) apply(ctx context.Context, in Data, tr Transform) (Data, err
 		p.out.canonicalization = ""
 	case EnvelopedSignature:
 		signature := p.opt.Signature
-		if !signature.Valid() || signature.Name() != (document.Name{Space: lexicon.NamespaceDSig, Local: "Signature"}) || signature.Node().Document() != in.nodes.Document() {
+		if !signature.Valid() || signature.Name() != (document.Name{Space: lexicon.NamespaceDSig, Local: lexicon.DSigElementSignature}) || signature.Node().Document() != in.nodes.Document() {
 			return Data{}, fmt.Errorf("%w: enveloped transform requires its containing Signature in the SAME snapshot", ErrInput)
 		}
 

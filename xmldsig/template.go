@@ -8,6 +8,8 @@ import (
 	"io"
 	"slices"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -219,7 +221,7 @@ func checkPreservation(ctx context.Context, doc *document.Document, selected doc
 	_, own := tree.Unwrap(selected)
 	for _, req := range requirements {
 		d, n := tree.Unwrap(req.Signature)
-		if d != doc || n == nil || n == own || !isDS(n, "Signature") {
+		if d != doc || n == nil || n == own || !isDS(n, lexicon.DSigElementSignature) {
 			return fmt.Errorf("%w: invalid preservation selection", ErrPolicy)
 		}
 
@@ -241,7 +243,7 @@ func checkPreservation(ctx context.Context, doc *document.Document, selected doc
 		}
 
 		req, hasRequirement := required[n]
-		if emptyValue(sv, "SignatureValue", "Id") == nil {
+		if emptyValue(sv, lexicon.DSigElementSignatureValue, "Id") == nil {
 			if hasRequirement {
 				return fmt.Errorf("%w: cannot preserve an unsigned template", ErrPolicy)
 			}

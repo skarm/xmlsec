@@ -12,7 +12,6 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
-	"github.com/skarm/xmlsec/transform/internal/xslt/internal/elements"
 )
 
 // collectNamespaces gathers namespace declarations from an element.
@@ -614,7 +613,7 @@ func (c *compiler) topLevelDeclarationIncluded(ctx context.Context, elem *xdm.El
 		return include, nil
 	}
 
-	if !elements.IsKnown(ln) || !elements.IsTopLevel(ln) {
+	if !isKnownXSLTElement(ln) || !isTopLevelXSLTElement(ln) {
 		elemVer := getAttr(elem, lexicon.SerializationVersion)
 		if c.forwardsCompatible(c.effectiveVersion) || c.forwardsCompatible(elemVer) {
 			return false, nil

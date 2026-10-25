@@ -5,13 +5,16 @@ import (
 	"context"
 	"crypto"
 	"crypto/aes"
-	"crypto/des" // #nosec G502 -- Explicit legacy XMLENC key-wrap policy only.
 	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/subtle"
 	"errors"
 	"strings"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+
+	"crypto/des" // #nosec G502 -- Explicit legacy XMLENC key-wrap policy only.
 
 	"github.com/skarm/xmlsec/document"
 
@@ -56,7 +59,7 @@ func graphEncrypted(node graphNode) (graphEncryptedFields, error) {
 	}
 
 	positions := map[document.Name]int{
-		elementName(Namespace, "EncryptionMethod"): 0, elementName(SignatureNamespace, "KeyInfo"): 1,
+		elementName(Namespace, "EncryptionMethod"): 0, elementName(SignatureNamespace, lexicon.DSigElementKeyInfo): 1,
 		elementName(Namespace, "CipherData"): 2, elementName(Namespace, "EncryptionProperties"): 3,
 		elementName(Namespace, "ReferenceList"): 4, elementName(Namespace, "CarriedKeyName"): 5,
 	}
@@ -263,7 +266,7 @@ func (b *graphSources) keyInfo(info document.Element) error {
 
 	for _, child := range info.Children() {
 		switch child.Name() {
-		case elementName(SignatureNamespace, "KeyName"):
+		case elementName(SignatureNamespace, lexicon.DSigElementKeyName):
 			name, err := graphNameText(child)
 			if err != nil {
 				return err
@@ -495,7 +498,7 @@ func (g *keyGraph) encryptionAlgorithm(fields graphEncryptedFields) (string, err
 		names = nil
 
 		for _, child := range fields.keyInfo.Children() {
-			if child.Name() == elementName(SignatureNamespace, "KeyName") {
+			if child.Name() == elementName(SignatureNamespace, lexicon.DSigElementKeyName) {
 				name, err := graphNameText(child)
 				if err != nil {
 					return "", err
@@ -564,7 +567,7 @@ func (g *keyGraph) rsaMaterial(info document.Element, algorithm string) (KeyGrap
 		names = nil
 
 		for _, child := range info.Children() {
-			if child.Name() != elementName(SignatureNamespace, "KeyName") {
+			if child.Name() != elementName(SignatureNamespace, lexicon.DSigElementKeyName) {
 				return KeyGraphKey{}, ErrFormat
 			}
 
@@ -658,8 +661,8 @@ func (g *keyGraph) derivedPlan(node graphNode, size, depth int) (*graphKeyPlan, 
 
 	key, err := g.namedMaterial(master, ConcatKDF, 0)
 	if errors.Is(err, errGraphKeyUnavailable) {
-		info := newElement(SignatureNamespace, "ds", "KeyInfo")
-		name := newElement(SignatureNamespace, "ds", "KeyName")
+		info := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyInfo)
+		name := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyName)
 		appendChild(name, &tree.Node{Kind: tree.TextNode, Data: master})
 		appendChild(info, name)
 		key, err = g.consumerKey(node, tree.Wrap(node.document.doc, info), ConcatKDF, g.options.MasterKeyBytes, depth+1)

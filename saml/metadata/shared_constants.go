@@ -1,10 +1,8 @@
 package metadata
 
 const (
-	nameArtifactResolutionService = "ArtifactResolutionService"
-	nameAssertionConsumerService  = "AssertionConsumerService"
-	nameNameIDFormat              = "NameIDFormat"
-	nameCacheDuration             = "cacheDuration"
+	nameNameIDFormat  = "NameIDFormat"
+	nameCacheDuration = "cacheDuration"
 )
 
 const (

@@ -22,7 +22,7 @@ const Namespace = lexicon.NamespaceDSig
 func ParseProgram(ctx context.Context, n *tree.Node, doc *document.Document) (reference.Transform, error) {
 	var t reference.Transform
 
-	children, err := structure(n, "Transform", "Algorithm")
+	children, err := structure(n, lexicon.DSigElementTransform, "Algorithm")
 	if err != nil {
 		return t, err
 	}
@@ -339,10 +339,10 @@ func Parse(ctx context.Context, doc *document.Document, n *tree.Node) (reference
 	}
 
 	if canonicalAlgorithm(algorithm) {
-		return ParseCanonical(n, "Transform")
+		return ParseCanonical(n, lexicon.DSigElementTransform)
 	}
 
-	children, err := structure(n, "Transform", "Algorithm")
+	children, err := structure(n, lexicon.DSigElementTransform, "Algorithm")
 	if err != nil {
 		return reference.Transform{}, err
 	}
@@ -369,7 +369,7 @@ func AppendParameters(ctx context.Context, n *tree.Node, t reference.Transform) 
 		setAttr(child, "PrefixList", strings.Join(t.InclusivePrefixes, " "))
 		add(n, child)
 
-		if _, err := ParseCanonical(n, "Transform"); err != nil {
+		if _, err := ParseCanonical(n, lexicon.DSigElementTransform); err != nil {
 			return err
 		}
 	}

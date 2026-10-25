@@ -1033,10 +1033,6 @@ func (ec *execContext) dynamicXPathEvaluator(vars map[string]xdm.Sequence, nsBin
 			eval = eval.URIResolver(resourceURIResolver{r})
 		}
 
-		if c := ec.transformConfig.httpClient; c != nil {
-			eval = eval.HTTPClient(c)
-		}
-
 		eval = eval.MaxResourceBytes(resolveResourceLimit(ec.resourceLimit()))
 	}
 

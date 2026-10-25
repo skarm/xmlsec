@@ -12,6 +12,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
@@ -425,7 +427,7 @@ func graphIDRules(extra []reference.IDAttributeRule) []reference.IDAttributeRule
 	rules = append(rules, reference.IDAttributeRule{
 		Attribute: document.Name{Local: "Id"}, Elements: []document.Name{
 			elementName(Namespace, "EncryptedData"), elementName(Namespace, "EncryptedKey"), elementName(Namespace11, "DerivedKey"),
-			elementName(Namespace, "EncryptionProperties"), elementName(Namespace, "EncryptionProperty"), elementName(SignatureNamespace, "KeyInfo"),
+			elementName(Namespace, "EncryptionProperties"), elementName(Namespace, "EncryptionProperty"), elementName(SignatureNamespace, lexicon.DSigElementKeyInfo),
 			elementName(Namespace, "OriginatorKeyInfo"), elementName(Namespace, "RecipientKeyInfo"),
 		},
 	}, reference.IDAttributeRule{Attribute: document.Name{Space: document.XMLNamespace, Local: "id"}})

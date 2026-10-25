@@ -277,8 +277,8 @@ func TestSAMLServiceAndIdentityProvider(t *testing.T) {
 	)
 	spKey, idpKey := signingIdentity(t, at, 1), signingIdentity(t, at, 2)
 	specs := []metadata.EntityDescriptor{
-		{ID: "_sp", EntityID: spID, ValidUntil: at.Add(time.Hour), SP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{Use: "signing", CertificateDER: spKey.CertificateDER}}, Endpoints: map[string][]metadata.Endpoint{"AssertionConsumerService": {{Binding: metadata.HTTPPost, Location: acs, Indexed: true, Default: true}}}, NameIDFormats: []string{protocol.NameIDPersistent}, AuthnRequestsSigned: true, WantAssertionsSigned: true}},
-		{ID: "_idp", EntityID: idpID, ValidUntil: at.Add(time.Hour), IDP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{Use: "signing", CertificateDER: idpKey.CertificateDER}}, Endpoints: map[string][]metadata.Endpoint{"SingleSignOnService": {{Binding: metadata.HTTPRedirect, Location: sso}}}, NameIDFormats: []string{protocol.NameIDPersistent}, WantAuthnRequestsSigned: true}},
+		{ID: "_sp", EntityID: spID, ValidUntil: at.Add(time.Hour), SP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{Use: "signing", CertificateDER: spKey.CertificateDER}}, Endpoints: map[string][]metadata.Endpoint{metadata.AssertionConsumerService: {{Binding: metadata.HTTPPost, Location: acs, Indexed: true, Default: true}}}, NameIDFormats: []string{protocol.NameIDPersistent}, AuthnRequestsSigned: true, WantAssertionsSigned: true}},
+		{ID: "_idp", EntityID: idpID, ValidUntil: at.Add(time.Hour), IDP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{Use: "signing", CertificateDER: idpKey.CertificateDER}}, Endpoints: map[string][]metadata.Endpoint{metadata.SingleSignOnService: {{Binding: metadata.HTTPRedirect, Location: sso}}}, NameIDFormats: []string{protocol.NameIDPersistent}, WantAuthnRequestsSigned: true}},
 	}
 	var aggregate bytes.Buffer
 	aggregate.WriteString(`<md:EntitiesDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" ID="_partners" validUntil="2026-01-02T04:04:05Z">`)
@@ -496,7 +496,7 @@ func TestSAMLWritersBoundWorkingStorage(t *testing.T) {
 
 func TestMetadataReaderUsesXMLParserStorage(t *testing.T) {
 	now := time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC)
-	spec := metadata.EntityDescriptor{EntityID: "urn:stream:idp", ValidUntil: now.Add(time.Hour), IDP: &metadata.RoleDescriptor{Endpoints: map[string][]metadata.Endpoint{"SingleSignOnService": {{Binding: metadata.HTTPRedirect, Location: "https://idp.example.test/sso"}}}}}
+	spec := metadata.EntityDescriptor{EntityID: "urn:stream:idp", ValidUntil: now.Add(time.Hour), IDP: &metadata.RoleDescriptor{Endpoints: map[string][]metadata.Endpoint{metadata.SingleSignOnService: {{Binding: metadata.HTTPRedirect, Location: "https://idp.example.test/sso"}}}}}
 	doc, err := metadata.Build(t.Context(), spec, now, metadata.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -611,7 +611,7 @@ func TestMetadataCertificateWorkingStorage(t *testing.T) {
 		keys[i] = metadata.KeyDescriptor{CertificateDER: certificate}
 	}
 	options := metadata.Options{MaxKeysPerRole: 16}
-	spec := metadata.EntityDescriptor{EntityID: "urn:stream:certificates", ValidUntil: now.Add(time.Hour), IDP: &metadata.RoleDescriptor{Keys: keys, Endpoints: map[string][]metadata.Endpoint{"SingleSignOnService": {{Binding: metadata.HTTPRedirect, Location: "https://idp.example.test/sso"}}}}}
+	spec := metadata.EntityDescriptor{EntityID: "urn:stream:certificates", ValidUntil: now.Add(time.Hour), IDP: &metadata.RoleDescriptor{Keys: keys, Endpoints: map[string][]metadata.Endpoint{metadata.SingleSignOnService: {{Binding: metadata.HTTPRedirect, Location: "https://idp.example.test/sso"}}}}}
 	doc, err := metadata.Build(t.Context(), spec, now, options)
 	if err != nil {
 		t.Fatal(err)

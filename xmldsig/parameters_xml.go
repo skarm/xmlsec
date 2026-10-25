@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
 )
@@ -50,7 +52,7 @@ func xmlInteger(n *tree.Node) (int, error) {
 }
 
 func parseSignatureMethod(n *tree.Node, p Policy) (signatureSpec, error) {
-	children, err := structure(n, "SignatureMethod", "Algorithm")
+	children, err := structure(n, lexicon.DSigElementSignatureMethod, "Algorithm")
 	if err != nil {
 		return signatureSpec{}, err
 	}
@@ -117,8 +119,8 @@ func parsePSS(n *tree.Node) (*PSSParameters, error) {
 	p := PSSParameters{Hash: crypto.SHA256, TrailerField: 1}
 
 	pos := 0
-	if pos < len(children) && isDS(children[pos], "DigestMethod") {
-		uri, err := simpleAlgorithm(children[pos], "DigestMethod")
+	if pos < len(children) && isDS(children[pos], lexicon.DSigElementDigestMethod) {
+		uri, err := simpleAlgorithm(children[pos], lexicon.DSigElementDigestMethod)
 		if err != nil {
 			return nil, err
 		}
@@ -179,7 +181,7 @@ func signatureMethodNode(method string, params SignatureParameters) (*tree.Node,
 		return nil, err
 	}
 
-	sm := newDS("SignatureMethod")
+	sm := newDS(lexicon.DSigElementSignatureMethod)
 	setAttr(sm, "Algorithm", method)
 	// Keep omission vs explicit defaults stable in a caller's template. When
 	// supplied, emit every effective PSS parameter to avoid ambiguous output.
@@ -187,7 +189,7 @@ func signatureMethodNode(method string, params SignatureParameters) (*tree.Node,
 		p := spec.pss
 		root := newPSS("RSAPSSParams")
 		root.NS = []tree.Namespace{{Prefix: "pss", URI: PSSNamespace}}
-		dm := newDS("DigestMethod")
+		dm := newDS(lexicon.DSigElementDigestMethod)
 		uri, _ := digestURI(p.Hash)
 		setAttr(dm, "Algorithm", uri)
 		add(root, dm)
@@ -195,7 +197,7 @@ func signatureMethodNode(method string, params SignatureParameters) (*tree.Node,
 		mgf := newPSS("MaskGenerationFunction")
 		setAttr(mgf, "Algorithm", MGF1)
 
-		md := newDS("DigestMethod")
+		md := newDS(lexicon.DSigElementDigestMethod)
 		uri, _ = digestURI(p.MGFHash)
 		setAttr(md, "Algorithm", uri)
 		add(mgf, md)
@@ -240,7 +242,7 @@ func parseMGFHash(mgf *tree.Node, fallback crypto.Hash) (crypto.Hash, error) {
 	}
 
 	if len(inner) == 1 {
-		uri, err := simpleAlgorithm(inner[0], "DigestMethod")
+		uri, err := simpleAlgorithm(inner[0], lexicon.DSigElementDigestMethod)
 		if err != nil {
 			return fallback, err
 		}

@@ -7,7 +7,6 @@ import (
 	"context"
 	"io"
 	"maps"
-	"net/http"
 	"time"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -37,26 +36,26 @@ type Evaluator struct {
 }
 
 type evaluatorCfg struct {
-	uriResolver            URIResolver
-	resourceReads          xdm.ResourceReadPolicy
-	collectionResolver     CollectionResolver
-	contextItem            xdm.Item
-	variableResolver       VariableResolver
-	functionResolver       FunctionResolver
-	schemaDeclarations     SchemaDeclarations
-	traceWriter            io.Writer
-	runtime                *evaluationRuntime
-	namespaces             map[string]string
-	defaultXMLNamespace    string
-	variables              map[string]xdm.Sequence
-	varScope               *variableScope             // root scope built once from variables by Variables(); shared read-only by every evaluation
-	functions              map[string]Function        // unqualified calls
-	functionsNS            map[QualifiedName]Function // namespaced calls
-	currentTime            *time.Time
-	implicitTimezone       *time.Location
-	defaultDecimal         *DecimalFormat
-	decimalFormats         map[QualifiedName]DecimalFormat
-	httpClient             *http.Client
+	uriResolver         URIResolver
+	resourceReads       xdm.ResourceReadPolicy
+	collectionResolver  CollectionResolver
+	contextItem         xdm.Item
+	variableResolver    VariableResolver
+	functionResolver    FunctionResolver
+	schemaDeclarations  SchemaDeclarations
+	traceWriter         io.Writer
+	runtime             *evaluationRuntime
+	namespaces          map[string]string
+	defaultXMLNamespace string
+	variables           map[string]xdm.Sequence
+	varScope            *variableScope             // root scope built once from variables by Variables(); shared read-only by every evaluation
+	functions           map[string]Function        // unqualified calls
+	functionsNS         map[QualifiedName]Function // namespaced calls
+	currentTime         *time.Time
+	implicitTimezone    *time.Location
+	defaultDecimal      *DecimalFormat
+	decimalFormats      map[QualifiedName]DecimalFormat
+
 	typeAnnotations        map[xdm.Node]string
 	nilledElements         map[xdm.Node]struct{} // elements whose xsi:nil="true" was confirmed by XSD validation
 	preservedIDAnnotations map[xdm.Node]string   // ID/IDREF annotations preserved after input-type-annotations="strip"
@@ -284,16 +283,8 @@ func (e Evaluator) CollectionResolver(r CollectionResolver) Evaluator {
 	return e
 }
 
-// HTTPClient sets the HTTP client used for fetching resources.
-func (e Evaluator) HTTPClient(client *http.Client) Evaluator {
-	e = e.clone()
-	e.cfg.httpClient = client
-
-	return e
-}
-
 // MaxResourceBytes sets the maximum number of bytes read from a single
-// external resource fetched through the URIResolver or HTTPClient by
+// external resource fetched through the URIResolver by
 // fn:unparsed-text, fn:unparsed-text-lines, fn:unparsed-text-available,
 // fn:doc, fn:doc-available, and fn:json-doc. A value of 0 selects the default cap; a
 // negative value disables the bound. Reads exceeding the cap fail before an unbounded body is
@@ -694,7 +685,6 @@ func (e Evaluator) newEvalCtx(node xdm.Node) *evalContext {
 	ec.uriResolver = cfg.uriResolver
 	ec.resourceReads = cfg.resourceReads
 	ec.collectionResolver = cfg.collectionResolver
-	ec.httpClient = cfg.httpClient
 	ec.maxResourceBytes = cfg.maxResourceBytes
 	ec.parseOptions = cfg.parseOptions
 

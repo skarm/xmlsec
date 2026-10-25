@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
@@ -89,7 +91,7 @@ func Verify(ctx context.Context, d *document.Document, key crypto.PublicKey, opt
 		return nil, err
 	}
 
-	children, err := structure(sig, "Signature", "Id")
+	children, err := structure(sig, lexicon.DSigElementSignature, "Id")
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +102,7 @@ func Verify(ctx context.Context, d *document.Document, key crypto.PublicKey, opt
 
 	si, sv := children[0], children[1]
 
-	signed, err := structure(si, "SignedInfo", "Id")
+	signed, err := structure(si, lexicon.DSigElementSignedInfo, "Id")
 	if err != nil {
 		return nil, err
 	}
@@ -109,12 +111,12 @@ func Verify(ctx context.Context, d *document.Document, key crypto.PublicKey, opt
 		return nil, err
 	}
 
-	prefixes, err := parseCanonicalization(signed[0], "CanonicalizationMethod")
+	prefixes, err := parseCanonicalization(signed[0], lexicon.DSigElementCanonicalizationMethod)
 	if err != nil {
 		return nil, err
 	}
 
-	algorithm, err := simpleAlgorithm(signed[1], "SignatureMethod")
+	algorithm, err := simpleAlgorithm(signed[1], lexicon.DSigElementSignatureMethod)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +129,7 @@ func Verify(ctx context.Context, d *document.Document, key crypto.PublicKey, opt
 		return nil, fmt.Errorf("%w: signature algorithm", ErrPolicy)
 	}
 
-	signatureValue, err := base64Value(ctx, sv, "SignatureValue", 2048, "Id")
+	signatureValue, err := base64Value(ctx, sv, lexicon.DSigElementSignatureValue, 2048, "Id")
 	if err != nil {
 		return nil, err
 	}
@@ -367,12 +369,12 @@ func base64Value(ctx context.Context, n *tree.Node, local string, maxBytes int, 
 func parseReference(ctx context.Context, n *tree.Node, ids map[string]*tree.Node, root, sig *tree.Node, p Policy) (parsedReference, error) {
 	var ref parsedReference
 
-	children, err := structure(n, "Reference", "URI", "Id")
+	children, err := structure(n, lexicon.DSigElementReference, "URI", "Id")
 	if err != nil {
 		return ref, err
 	}
 
-	if len(children) != 3 || !isDS(children[0], "Transforms") || !isDS(children[1], "DigestMethod") || !isDS(children[2], "DigestValue") {
+	if len(children) != 3 || !isDS(children[0], lexicon.DSigElementTransforms) || !isDS(children[1], lexicon.DSigElementDigestMethod) || !isDS(children[2], lexicon.DSigElementDigestValue) {
 		return ref, fmt.Errorf("%w: Reference children", ErrStructure)
 	}
 
@@ -392,7 +394,7 @@ func parseReference(ctx context.Context, n *tree.Node, ids map[string]*tree.Node
 		return ref, fmt.Errorf("%w: unresolved or signature-internal target", ErrReference)
 	}
 
-	transforms, err := structure(children[0], "Transforms")
+	transforms, err := structure(children[0], lexicon.DSigElementTransforms)
 	if err != nil {
 		return ref, err
 	}
@@ -402,7 +404,7 @@ func parseReference(ctx context.Context, n *tree.Node, ids map[string]*tree.Node
 			return ref, fmt.Errorf("%w: root needs exactly enveloped then exclusive transforms", ErrPolicy)
 		}
 
-		alg, err := simpleAlgorithm(transforms[0], "Transform")
+		alg, err := simpleAlgorithm(transforms[0], lexicon.DSigElementTransform)
 		if err != nil {
 			return ref, err
 		}
@@ -419,14 +421,14 @@ func parseReference(ctx context.Context, n *tree.Node, ids map[string]*tree.Node
 		return ref, fmt.Errorf("%w: transform count", ErrPolicy)
 	}
 
-	ref.prefixes, err = parseCanonicalization(transforms[0], "Transform")
+	ref.prefixes, err = parseCanonicalization(transforms[0], lexicon.DSigElementTransform)
 	if err != nil {
 		return ref, err
 	}
 
 	ref.transforms = strictReferenceTransforms(ref.target == root, ref.prefixes)
 
-	ref.digestMethod, err = simpleAlgorithm(children[1], "DigestMethod")
+	ref.digestMethod, err = simpleAlgorithm(children[1], lexicon.DSigElementDigestMethod)
 	if err != nil {
 		return ref, err
 	}
@@ -440,7 +442,7 @@ func parseReference(ctx context.Context, n *tree.Node, ids map[string]*tree.Node
 		return ref, fmt.Errorf("%w: digest method", ErrPolicy)
 	}
 
-	ref.digest, err = base64Value(ctx, children[2], "DigestValue", h.Size())
+	ref.digest, err = base64Value(ctx, children[2], lexicon.DSigElementDigestValue, h.Size())
 	if err != nil {
 		return ref, err
 	}
@@ -455,7 +457,7 @@ func parseReference(ctx context.Context, n *tree.Node, ids map[string]*tree.Node
 // validateSimpleSignatureChildren restricts this profile to SignedInfo,
 // SignatureValue, and an optional untrusted KeyInfo.
 func validateSimpleSignatureChildren(children []*tree.Node) error {
-	if len(children) < 2 || len(children) > 3 || !isDS(children[0], "SignedInfo") || !isDS(children[1], "SignatureValue") || len(children) == 3 && !isDS(children[2], "KeyInfo") {
+	if len(children) < 2 || len(children) > 3 || !isDS(children[0], lexicon.DSigElementSignedInfo) || !isDS(children[1], lexicon.DSigElementSignatureValue) || len(children) == 3 && !isDS(children[2], lexicon.DSigElementKeyInfo) {
 		return fmt.Errorf("%w: Signature children", ErrStructure)
 	}
 
@@ -498,7 +500,7 @@ func verifyEnvelopedReferences(ctx context.Context, refs []parsedReference, reso
 }
 
 func validateEnvelopedSignedInfo(signed []*tree.Node, maximum int) error {
-	if len(signed) < 3 || len(signed)-2 > maximum || !isDS(signed[0], "CanonicalizationMethod") || !isDS(signed[1], "SignatureMethod") {
+	if len(signed) < 3 || len(signed)-2 > maximum || !isDS(signed[0], lexicon.DSigElementCanonicalizationMethod) || !isDS(signed[1], lexicon.DSigElementSignatureMethod) {
 		return fmt.Errorf("%w: SignedInfo children or reference count", ErrStructure)
 	}
 

@@ -152,7 +152,7 @@ func (e *pastEvaluation) slideCertificate(ctx context.Context, path *HistoricalP
 	}
 
 	certificate := path.chain[index]
-	if !historicalProofAt(e.proofs, sha256.Sum256(certificate.Raw), "certificate", control) {
+	if !historicalProofAt(e.proofs, sha256.Sum256(certificate.Raw), historicalproof.Certificate, control) {
 		return time.Time{}, ErrUnavailable
 	}
 
@@ -200,7 +200,7 @@ func (e *pastEvaluation) slideExemptCertificate(certificate, issuer *x509.Certif
 		return control, nil
 	}
 
-	proof, found := e.proofs.EarliestKind(sha256.Sum256(certificate.Raw), "certificate")
+	proof, found := e.proofs.EarliestKind(sha256.Sum256(certificate.Raw), historicalproof.Certificate)
 	if !found || !proof.Before(cutoff) {
 		return time.Time{}, ErrUnavailable
 	}
@@ -261,7 +261,7 @@ func (e *pastEvaluation) slideStatus(certificate *x509.Certificate, status histo
 	return control, nil
 }
 
-func historicalProofAt(proofs *historicalproof.Set, digest [32]byte, kind string, at time.Time) bool {
+func historicalProofAt(proofs *historicalproof.Set, digest [32]byte, kind historicalproof.Kind, at time.Time) bool {
 	proof, found := proofs.EarliestKind(digest, kind)
 	return found && !proof.After(at)
 }
@@ -369,7 +369,7 @@ func eligibleHistoricalClaims(ctx context.Context, certificate *x509.Certificate
 			continue
 		}
 
-		if proofs != nil && !historicalProofAt(proofs, claim.fact.fingerprint, string(claim.fact.kind), control) {
+		if proofs != nil && !historicalProofAt(proofs, claim.fact.fingerprint, historicalproof.Kind(claim.fact.kind), control) {
 			continue
 		}
 
@@ -633,7 +633,7 @@ func (e *pastEvaluation) cryptoBoundary(certificate *x509.Certificate, status hi
 func (e *pastEvaluation) protectCrypto(certificate *x509.Certificate, status historicalStatus) error {
 	issuer := status.primary.issuer
 	if cutoff := e.materialCutoff(certificate.SignatureAlgorithm, issuer); !cutoff.IsZero() && !e.session.now.Before(cutoff) {
-		proof, found := e.proofs.EarliestKind(sha256.Sum256(certificate.Raw), "certificate")
+		proof, found := e.proofs.EarliestKind(sha256.Sum256(certificate.Raw), historicalproof.Certificate)
 		if !found || !proof.Before(cutoff) {
 			return ErrUnavailable
 		}
@@ -648,7 +648,7 @@ func (e *pastEvaluation) protectCrypto(certificate *x509.Certificate, status his
 		}
 
 		if cutoff := e.materialCutoff(algorithm, certificate); !cutoff.IsZero() && !e.session.now.Before(cutoff) {
-			proof, found := e.proofs.EarliestKind(claim.fact.fingerprint, string(claim.fact.kind))
+			proof, found := e.proofs.EarliestKind(claim.fact.fingerprint, historicalproof.Kind(claim.fact.kind))
 			if !found || !proof.Before(cutoff) {
 				return ErrUnavailable
 			}

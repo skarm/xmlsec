@@ -1068,16 +1068,16 @@ func (ec *execContext) resultDocOutputBase(effectiveFormat string) OutputDef {
 // output-definition and local instruction values. The two element-name lists
 // are unions; every other present parameter replaces its prior value.
 func foldParamDocOverrides(base, pd *OutputDef, pres paramDocPresence) {
-	if pres["method"] {
+	if pres[lexicon.SerializationMethod] {
 		base.Method = pd.Method
 		base.MethodExplicit = pd.MethodExplicit
 	}
 
-	if pres["encoding"] {
+	if pres[lexicon.SerializationEncoding] {
 		base.Encoding = pd.Encoding
 	}
 
-	if pres["standalone"] {
+	if pres[lexicon.SerializationStandalone] {
 		base.Standalone = pd.Standalone
 	}
 
@@ -1085,31 +1085,31 @@ func foldParamDocOverrides(base, pd *OutputDef, pres paramDocPresence) {
 		base.CDATASections = unionOutputNames(base.CDATASections, pd.CDATASections)
 	}
 
-	if pres["doctype-public"] {
+	if pres[lexicon.SerializationDoctypePublic] {
 		base.DoctypePublic = pd.DoctypePublic
 	}
 
-	if pres["doctype-system"] {
+	if pres[lexicon.SerializationDoctypeSystem] {
 		base.DoctypeSystem = pd.DoctypeSystem
 	}
 
-	if pres["media-type"] {
+	if pres[lexicon.SerializationMediaType] {
 		base.MediaType = pd.MediaType
 	}
 
-	if pres["version"] {
+	if pres[lexicon.SerializationVersion] {
 		base.Version = pd.Version
 	}
 
-	if pres["normalization-form"] {
+	if pres[lexicon.SerializationNormalizationForm] {
 		base.NormalizationForm = pd.NormalizationForm
 	}
 
-	if pres["html-version"] {
+	if pres[lexicon.SerializationHTMLVersion] {
 		base.HTMLVersion = pd.HTMLVersion
 	}
 
-	if pres["json-node-output-method"] {
+	if pres[lexicon.SerializationJSONNodeOutputMethod] {
 		base.JSONNodeOutputMethod = pd.JSONNodeOutputMethod
 	}
 
@@ -1148,19 +1148,19 @@ func foldParamDocOverrides(base, pd *OutputDef, pres paramDocPresence) {
 		base.OmitDeclarationExplicit = true
 	}
 
-	if pres["indent"] {
+	if pres[lexicon.SerializationIndent] {
 		base.Indent = pd.Indent
 	}
 
-	if pres["byte-order-mark"] {
+	if pres[lexicon.SerializationByteOrderMark] {
 		base.ByteOrderMark = pd.ByteOrderMark
 	}
 
-	if pres["allow-duplicate-names"] {
+	if pres[lexicon.SerializationAllowDuplicateNames] {
 		base.AllowDuplicateNames = pd.AllowDuplicateNames
 	}
 
-	if pres["undeclare-prefixes"] {
+	if pres[lexicon.SerializationUndeclarePrefixes] {
 		base.UndeclarePrefixes = pd.UndeclarePrefixes
 	}
 }

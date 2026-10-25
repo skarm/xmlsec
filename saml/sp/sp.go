@@ -272,7 +272,7 @@ func beginNameIDFormat(o *BeginOptions, own *metadata.Role, other *metadata.Role
 }
 
 func beginEndpoints(other *metadata.Role, o *BeginOptions, destination *string) (returned1Value error, matchedBranch bool) {
-	for _, ep := range other.Endpoints("SingleSignOnService") {
+	for _, ep := range other.Endpoints(metadata.SingleSignOnService) {
 		if ep.Binding == o.Binding {
 			if (*destination) != "" {
 				return ErrPolicy, true
@@ -328,7 +328,7 @@ func (s *ServiceProvider) ConsumePOST(ctx context.Context, form []byte, o Consum
 
 	allowedACS := false
 
-	for _, ep := range own.Endpoints("AssertionConsumerService") {
+	for _, ep := range own.Endpoints(metadata.AssertionConsumerService) {
 		if ep.Binding == metadata.HTTPPost && ep.Location == pending.ACS {
 			allowedACS = true
 		}

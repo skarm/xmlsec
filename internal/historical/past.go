@@ -23,7 +23,7 @@ const (
 	revocationBounds = "REVOCATION_OUT_OF_BOUNDS_NO_POE"
 	cryptoFailure    = "CRYPTO_CONSTRAINTS_FAILURE_NO_POE"
 	tryLater         = "TRY_LATER"
-	proofCertificate = "certificate"
+	proofCertificate = historicalproof.Certificate
 	assertedRevoked  = "revoked"
 )
 

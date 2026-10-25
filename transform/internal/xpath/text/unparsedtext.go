@@ -5,13 +5,9 @@
 // XPath 3.1 fn:unparsed-text, fn:unparsed-text-available, fn:unparsed-text-lines,
 // and the document retrieval that backs fn:doc / fn:json-doc.
 //
-// Resource loading is opt-in. With no URIResolver and no HTTPClient supplied,
-// every retrieval attempt fails with ErrCodeRetrieval — there is no implicit
-// network access and no implicit filesystem access. Callers who want network
-// access must either pass an explicit *http.Client via Config.HTTPClient
-// (caller owns the transport, timeouts, and redirect policy) or supply a
-// URIResolver that accepts http(s) schemes. Callers who want filesystem
-// access must supply a URIResolver from the public resource package.
+// Resource loading is opt-in: without a URIResolver every retrieval fails.
+// Network and filesystem access belong to explicit adapters from the public
+// resource package; this pipeline owns decoding, read policy and byte limits.
 package unparsedtext
 
 import (
@@ -23,7 +19,6 @@ import (
 	"io"
 	"math"
 	"mime"
-	"net/http"
 	"net/url"
 	"strings"
 	"unicode/utf8"
@@ -32,7 +27,6 @@ import (
 
 	"golang.org/x/text/transform"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -73,12 +67,11 @@ type URIResolver = xdm.URIResolver
 
 // Config holds the external dependencies needed by the loading pipeline.
 type Config struct {
-	BaseURI     string
-	HTTPClient  *http.Client
+	BaseURI string
+
 	URIResolver URIResolver
 	ReadPolicy  xdm.ResourceReadPolicy
-	// MaxBytes bounds the number of bytes read from a single resolver- or
-	// HTTP-backed resource. Reads larger than MaxBytes fail with an
+	// MaxBytes bounds the number of bytes read from a single resolver-backed resource. Reads larger than MaxBytes fail with an
 	// ErrCodeRetrieval error before an unbounded body is buffered. A value
 	// of 0 selects DefaultMaxBytes; a negative value disables the bound.
 	MaxBytes int64
@@ -692,7 +685,7 @@ func openURI(ctx context.Context, cfg *Config, uri string) (io.ReadCloser, strin
 		return nil, "", err
 	}
 
-	parsed, err := url.Parse(uri)
+	_, err := url.Parse(uri)
 	if err != nil {
 		return nil, "", err
 	}
@@ -707,15 +700,11 @@ func openURI(ctx context.Context, cfg *Config, uri string) (io.ReadCloser, strin
 
 	hint := ""
 
-	switch {
-	case (parsed.Scheme == lexicon.SchemeHTTP || parsed.Scheme == lexicon.SchemeHTTPS) && cfg != nil && cfg.HTTPClient != nil:
-		rc, hint, err = openHTTP(ctx, cfg.HTTPClient, uri)
-	case cfg != nil && cfg.URIResolver != nil:
-		rc, err = cfg.URIResolver.Resolve(ctx, uri)
-	default:
+	if cfg == nil || cfg.URIResolver == nil {
 		return nil, "", fmt.Errorf("retrieval of %q requires an explicit resolver or HTTP client", uri)
 	}
 
+	rc, err = cfg.URIResolver.Resolve(ctx, uri)
 	if err != nil {
 		if !nilcheck.IsNil(rc) {
 			err = errors.Join(err, rc.Close())
@@ -728,7 +717,7 @@ func openURI(ctx context.Context, cfg *Config, uri string) (io.ReadCloser, strin
 		return nil, "", errors.New("resolver returned a nil reader")
 	}
 
-	if cfg != nil && cfg.ReadPolicy != nil {
+	if cfg.ReadPolicy != nil {
 		if err := cfg.ReadPolicy.RecordRead(ctx, uri); err != nil {
 			return nil, "", errors.Join(&xdm.ResourceAccessError{Cause: err}, rc.Close())
 		}
@@ -747,10 +736,7 @@ func openURI(ctx context.Context, cfg *Config, uri string) (io.ReadCloser, strin
 		maximum = math.MaxInt64
 	}
 
-	var observe func(int)
-	if cfg != nil {
-		observe = cfg.ReadBytes
-	}
+	observe := cfg.ReadBytes
 
 	limited := &streamio.Reader{Context: ctx, Source: &retrievalReader{Reader: rc, observe: observe}, Limit: maximum, LimitError: textLimitError()}
 
@@ -789,24 +775,6 @@ func retrievalError(err error) error {
 
 func textLimitError() error {
 	return &Error{Code: ErrCodeRetrieval, Message: "resource exceeds maximum allowed byte size", Cause: tree.ErrLimit}
-}
-
-func openHTTP(ctx context.Context, client *http.Client, uri string) (io.ReadCloser, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
-	if err != nil {
-		return nil, "", err
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, "", err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", errors.Join(fmt.Errorf("HTTP %d for %s", resp.StatusCode, uri), resp.Body.Close())
-	}
-
-	return resp.Body, resp.Header.Get("Content-Type"), nil
 }
 
 func textMediaType(contentType string) (string, bool, error) {

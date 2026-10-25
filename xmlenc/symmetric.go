@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 )
 
@@ -157,7 +159,7 @@ func symmetricProfile(ctx context.Context, key []byte, options SymmetricOptions)
 func decodeDirectProfile(ctx context.Context, root document.Element, p profile) ([]byte, []byte, error) {
 	names := []document.Name{elementName(Namespace, "EncryptionMethod")}
 	if p.keyName != "" {
-		names = append(names, elementName(SignatureNamespace, "KeyInfo"))
+		names = append(names, elementName(SignatureNamespace, lexicon.DSigElementKeyInfo))
 	}
 
 	names = append(names, elementName(Namespace, "CipherData"))
@@ -174,7 +176,7 @@ func decodeDirectProfile(ctx context.Context, root document.Element, p profile) 
 	if p.keyName != "" {
 		info := children[1]
 
-		hints, err := childElements(info, elementName(SignatureNamespace, "KeyName"))
+		hints, err := childElements(info, elementName(SignatureNamespace, lexicon.DSigElementKeyName))
 		if err != nil || !exactAttributes(info) || !exactAttributes(hints[0]) || len(hints[0].Children()) != 0 || hints[0].Text() != p.keyName {
 			return nil, nil, ErrFormat
 		}

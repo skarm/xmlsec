@@ -1,10 +1,8 @@
-package xslt_test
+package xslt //nolint:testpackage // Exercises private XSLT element metadata ownership.
 
 import (
 	"strings"
 	"testing"
-
-	"github.com/skarm/xmlsec/transform/internal/xslt"
 )
 
 const version10 = "1.0"
@@ -20,7 +18,7 @@ func TestPackageVersionComparison(t *testing.T) {
 		{"1.0-alpha", "1.0-beta", -1},
 		{strings.Repeat("9", 100), "100000000000000000000", 1},
 	} {
-		a, b := xslt.ParsePackageVersion(tc.a), xslt.ParsePackageVersion(tc.b)
+		a, b := ParsePackageVersion(tc.a), ParsePackageVersion(tc.b)
 		if got := a.Compare(b); got != tc.want || b.Compare(a) != -tc.want {
 			t.Errorf("Compare(%q,%q) = %d, want %d", tc.a, tc.b, got, tc.want)
 		}
@@ -48,8 +46,26 @@ func TestVersionConstraintMatches(t *testing.T) {
 		{"*", "1..0", false},
 		{"*", "1.0-1bad", false},
 	} {
-		if got := xslt.ParseVersionConstraint(tc.constraint).Matches(xslt.ParsePackageVersion(tc.version)); got != tc.want {
+		if got := ParseVersionConstraint(tc.constraint).Matches(ParsePackageVersion(tc.version)); got != tc.want {
 			t.Errorf("%q matches %q = %v, want %v", tc.constraint, tc.version, got, tc.want)
 		}
+	}
+}
+
+func TestElementContexts(t *testing.T) {
+	for _, tc := range []struct {
+		name, version         string
+		topLevel, instruction bool
+	}{
+		{"template", "1.0", true, false},
+		{"value-of", "1.0", false, true},
+		{"iterate", "3.0", false, true},
+		{"not-an-xslt-element", "", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if minXSLTElementVersion(tc.name) != tc.version || isTopLevelXSLTElement(tc.name) != tc.topLevel || isXSLTInstruction(tc.name) != tc.instruction {
+				t.Fatal("incorrect version or permitted context")
+			}
+		})
 	}
 }

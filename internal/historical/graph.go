@@ -55,7 +55,7 @@ func newGraph(ctx context.Context, c Config, in Input, now time.Time) (*graph, e
 }
 
 func (g *graph) admitObject(item Object, remaining, edges *int, maximum int) error {
-	if len(item.Bytes) == 0 && item.Kind != objectData || len(item.Bytes) > *remaining || !objectKind(item.Kind) {
+	if len(item.Bytes) == 0 && item.Kind != objectData || len(item.Bytes) > *remaining || !item.Kind.Valid() {
 		return ErrInput
 	}
 
@@ -131,10 +131,6 @@ func (g *graph) checkHashReference(ref HashReference) error {
 	}
 
 	return nil
-}
-
-func objectKind(kind string) bool {
-	return kind == "certificate" || kind == "crl" || kind == objectOCSP || kind == "signature" || kind == "timestamp" || kind == objectData || kind == "digest"
 }
 
 func (g *graph) checkAcyclic(ctx context.Context, maximum int) error {
@@ -280,7 +276,7 @@ func (g *graph) extractReference(ctx context.Context, set *historicalproof.Set, 
 	}
 
 	digestKey := sha256.Sum256(ref.Digest)
-	if err := g.add(historicalproof.Fact{Digest: digestKey, Source: source, At: at, Kind: "digest"}); err != nil {
+	if err := g.add(historicalproof.Fact{Digest: digestKey, Source: source, At: at, Kind: historicalproof.Digest}); err != nil {
 		return false, err
 	}
 

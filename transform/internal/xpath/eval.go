@@ -9,7 +9,6 @@ import (
 	"io"
 	"maps"
 	"math"
-	"net/http"
 	"time"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -54,12 +53,7 @@ type evalContext struct {
 	decimalFormats       map[QualifiedName]DecimalFormat
 	docCache             map[string]xdm.Node
 	documentSnapshots    *documentSnapshotStore
-	// httpClient is intentionally stored here (not only in Context) so that
-	// built-in functions can access it through getFnContext without an extra
-	// indirection. It is pointer-sized and nil when unused, so copies via
-	// withNode/withContextItem are negligible. The net/http dependency is
-	// already transitively required by golang.org/x/text.
-	httpClient             *http.Client
+
 	typeAnnotations        map[xdm.Node]string   // node → xs:... type (from xslt schema awareness)
 	nilledElements         map[xdm.Node]struct{} // elements confirmed nilled (xsi:nil="true") by XSD validation
 	preservedIDAnnotations map[xdm.Node]string   // ID/IDREF annotations preserved after input-type-annotations="strip"

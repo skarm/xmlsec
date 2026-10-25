@@ -159,7 +159,8 @@ see [normative traceability](docs/conformance.md) and the pinned
   [transform examples](examples/transforms) and [streaming and memory](docs/streaming.md).
 - **SAML:** [WebSSO example](examples/sso) and [Redirect binding](examples/redirect).
 - **Reference:** [API guide](docs/usage.md), [all examples](examples),
-  [CLI](docs/cli.md) and [security policy](SECURITY.md).
+  [CLI](docs/cli.md), [package architecture](docs/architecture.md) and
+  [security policy](SECURITY.md).
 
 ### Development
 

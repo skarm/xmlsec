@@ -134,6 +134,12 @@ set -- run --rm --init --network none --memory 3g --cpus 2 \
     --env GIT_CONFIG_COUNT=1 --env GIT_CONFIG_KEY_0=safe.directory --env GIT_CONFIG_VALUE_0=/source \
     --env XMLSEC_DSS_CA_PEM="$XMLSEC_DSS_CA_PEM" --env XMLSEC_DSS_MANIFEST_NAME="$XMLSEC_DSS_MANIFEST_NAME" \
     --workdir /source
+if [ -f "$workspace/.git" ]; then
+    # A worktree's .git file points outside its source mount. Keep the common
+    # repository metadata available read-only for source-bound proof capture.
+    git_common=$(git -C "$workspace" rev-parse --path-format=absolute --git-common-dir)
+    set -- "$@" --volume "$git_common:$git_common:ro"
+fi
 if [ -n "${XMLSEC_DSS_GOMODCACHE:-}" ]; then
     modcache=$(CDPATH='' cd -- "$XMLSEC_DSS_GOMODCACHE" && pwd -P)
     set -- "$@" --volume "$modcache:/go/pkg/mod:ro" --env GOMODCACHE=/go/pkg/mod

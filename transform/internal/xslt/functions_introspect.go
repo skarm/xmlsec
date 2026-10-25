@@ -12,7 +12,6 @@ import (
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
-	"github.com/skarm/xmlsec/transform/internal/xslt/internal/elements"
 )
 
 func (ec *execContext) fnElementAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -47,7 +46,7 @@ func introspectionArgumentName(ctx context.Context, args []xdm.Sequence, default
 }
 
 func elementAvailable(name xdm.QNameValue, processor int, disabled bool) bool {
-	if name.URI != lexicon.NamespaceXSLT || !elements.IsImplemented(name.Local) {
+	if name.URI != lexicon.NamespaceXSLT || !isImplementedXSLTElement(name.Local) {
 		return false
 	}
 
@@ -55,11 +54,11 @@ func elementAvailable(name xdm.QNameValue, processor int, disabled bool) bool {
 		return false
 	}
 
-	if processor < 30 && !elements.IsInstruction(name.Local) {
+	if processor < 30 && !isXSLTInstruction(name.Local) {
 		return false
 	}
 
-	switch elements.MinVersion(name.Local) {
+	switch minXSLTElementVersion(name.Local) {
 	case "3.0":
 		return processor >= 30
 	case "2.0":

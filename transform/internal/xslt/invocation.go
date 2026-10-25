@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net/http"
 	"strings"
 	"sync"
 
@@ -66,8 +65,8 @@ type invocationConfig struct {
 	// xsl:with-param values for the initial template/mode invocation.
 	initialTemplateParams *Parameters
 	initialModeParams     *Parameters
-	httpClient            *http.Client
-	parseOptions          *xdm.ParseOptions
+
+	parseOptions *xdm.ParseOptions
 	// resolved holds the effective output definition for the primary result
 	// after a terminal method (Do/Serialize/WriteTo) completes. It is stored
 	// behind a pointer with its own mutex so that concurrent terminal-method
@@ -263,42 +262,12 @@ func (inv Invocation) CollectionResolver(r xpath.CollectionResolver) Invocation 
 
 // URIResolver sets a custom URI resolver used by fn:doc, fn:unparsed-text,
 // fn:unparsed-text-lines, fn:unparsed-text-available, fn:doc-available,
-// and fn:json-doc during the transformation. Without this (and without an
-// HTTPClient) those functions cannot reach the filesystem or network and
-// return their spec-mandated retrieval errors.
-//
-// The resolver also fetches the schemas named by xsi:schemaLocation and
-// xsi:noNamespaceSchemaLocation on the source document's root element. Every
-// transform fetches them, even for a stylesheet that is not schema-aware. An
-// http or https schema URI goes to the [Invocation.HTTPClient] when one is set,
-// and to this resolver otherwise; any other schema URI goes only to this
-// resolver. A resolver can therefore return a local copy of a remote schema.
-// When a schema URI reaches neither, the transform fails with an error that
-// names the schema. A resolver error that satisfies errors.Is(err,
-// fs.ErrNotExist) skips that schema instead, unless the stylesheet's
-// default-validation is strict.
+// and fn:json-doc during the transformation. Without a resolver, retrieval
+// fails. Explicit adapters own filesystem and network policy; the processor
+// owns decoding, operation-local resource accounting and cancellation checks.
 func (inv Invocation) URIResolver(r xpath.URIResolver) Invocation {
 	inv = inv.clone()
 	inv.cfg.uriResolver = r
-
-	return inv
-}
-
-// HTTPClient sets the HTTP client used to fetch http/https URIs for
-// fn:doc / fn:unparsed-text / fn:json-doc when no URIResolver is supplied.
-// The caller owns the client's transport, timeouts, and redirect policy.
-// Without this (and without a URIResolver), network retrieval is refused.
-//
-// The client also fetches http and https schema URIs named by
-// xsi:schemaLocation and xsi:noNamespaceSchemaLocation on the source
-// document's root element, ahead of any [Invocation.URIResolver]. Every
-// transform fetches them, even for a stylesheet that is not schema-aware. With
-// neither this client nor a URIResolver set, the transform fails with an error
-// that names the schema URL. An HTTP 404 or 410 response skips that schema
-// instead, unless the stylesheet's default-validation is strict.
-func (inv Invocation) HTTPClient(client *http.Client) Invocation {
-	inv = inv.clone()
-	inv.cfg.httpClient = client
 
 	return inv
 }
@@ -359,8 +328,8 @@ func (inv Invocation) GlobalContextItem(item xdm.Item) Invocation {
 }
 
 // MaxResourceBytes sets the maximum number of bytes read from a single
-// external resource fetched at runtime through the configured URIResolver /
-// HTTPClient. It governs the resource reads performed by XSLT's own loader —
+// external resource fetched at runtime through the configured URIResolver.
+// It governs the resource reads performed by XSLT's own loader —
 // fn:doc / document(), fn:doc-available, xsl:source-document, xsl:merge,
 // xsl:result-document parameter documents, xsi:schemaLocation source schemas,
 // and fn:transform stylesheet / package sources — which fail with
@@ -566,7 +535,6 @@ func (inv Invocation) toTransformConfig() *transformConfig {
 	tcfg := &transformConfig{
 		collectionResolver: c.collectionResolver,
 		uriResolver:        c.uriResolver,
-		httpClient:         c.httpClient,
 		baseOutputURI:      c.baseOutputURI,
 
 		onMultipleMatch: c.onMultipleMatch.String(),

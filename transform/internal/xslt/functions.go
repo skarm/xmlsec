@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"path"
 	"strings"
@@ -640,7 +639,7 @@ func (ec *execContext) retrieveDocumentReader(ctx context.Context, uri string) (
 		return nil, fmt.Errorf("no URIResolver configured for %q", uri)
 	}
 
-	reader, err := openDocumentVia(ctx, uri, ec.transformConfig.uriResolver, ec.transformConfig.httpClient)
+	reader, err := openDocumentVia(ctx, uri, ec.transformConfig.uriResolver)
 	if err != nil {
 		if !nilcheck.IsNil(reader) {
 			err = errors.Join(err, reader.Close())
@@ -668,35 +667,16 @@ func (r resourceURIResolver) Resolve(ctx context.Context, reference string) (io.
 	return r.URIResolver.Resolve(ctx, uripath.EscapeResourceReference(reference))
 }
 
-func openDocumentVia(ctx context.Context, uri string, resolver xpath.URIResolver, client *http.Client) (io.ReadCloser, error) {
+func openDocumentVia(ctx context.Context, uri string, resolver xpath.URIResolver) (io.ReadCloser, error) {
 	uri = uripath.EscapeResourceReference(uri)
-
-	if !isHTTPURI(uri) || client == nil {
-		if resolver == nil {
-			return nil, fmt.Errorf("no URIResolver configured for %q", uri)
-		}
-
-		return resolver.Resolve(ctx, uri)
+	if resolver == nil {
+		return nil, fmt.Errorf("no URIResolver configured for %q", uri)
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, errors.Join(fmt.Errorf("HTTP %d for %q", response.StatusCode, uri), response.Body.Close())
-	}
-
-	return response.Body, nil
+	return resolver.Resolve(ctx, uri)
 }
 
-// resourceLimit returns the per-resource read cap for runtime resolver/HTTP
+// resourceLimit returns the per-resource read cap for runtime resolver
 // reads, taken from the transformConfig (0 = MaxResourceBytes default).
 func (ec *execContext) resourceLimit() int64 {
 	if ec != nil && ec.transformConfig != nil {
@@ -767,19 +747,6 @@ func (ec *execContext) resolveDocumentURI(uri string, baseDir string) string {
 	}
 
 	return cleanURI
-}
-
-// isHTTPURI reports whether uri has an http or https scheme. Such a URI is
-// fetched through the configured HTTPClient when one is set, and otherwise
-// through the URIResolver. URI schemes are case-insensitive per RFC 3986;
-// url.Parse lowercases .Scheme, so "HTTP" and "Https" also match.
-func isHTTPURI(uri string) bool {
-	u, err := url.Parse(uri)
-	if err != nil {
-		return false
-	}
-
-	return u.Scheme == lexicon.SchemeHTTP || u.Scheme == lexicon.SchemeHTTPS
 }
 
 // documentBaseDir derives the base passed to resolveDocumentURI /

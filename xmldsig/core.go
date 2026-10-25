@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/signature"
@@ -139,7 +141,7 @@ func coreOptions(doc *document.Document, opt SignatureOptions) (SignatureOptions
 
 func coreIDRules(opt SignatureOptions) []reference.IDAttributeRule {
 	names := make([]document.Name, 0, 9)
-	for _, local := range []string{"Signature", "SignedInfo", "SignatureValue", "Reference", "KeyInfo", "Object", "Manifest", "SignatureProperties", "SignatureProperty"} {
+	for _, local := range []string{lexicon.DSigElementSignature, lexicon.DSigElementSignedInfo, lexicon.DSigElementSignatureValue, lexicon.DSigElementReference, lexicon.DSigElementKeyInfo, "Object", "Manifest", "SignatureProperties", "SignatureProperty"} {
 		names = append(names, document.Name{Space: Namespace, Local: local})
 	}
 
@@ -150,17 +152,17 @@ func coreIDRules(opt SignatureOptions) []reference.IDAttributeRule {
 }
 
 func signatureParts(sig *tree.Node) (si, sv *tree.Node, err error) {
-	children, err := structure(sig, "Signature", "Id")
+	children, err := structure(sig, lexicon.DSigElementSignature, "Id")
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if len(children) < 2 || !isDS(children[0], "SignedInfo") || !isDS(children[1], "SignatureValue") {
+	if len(children) < 2 || !isDS(children[0], lexicon.DSigElementSignedInfo) || !isDS(children[1], lexicon.DSigElementSignatureValue) {
 		return nil, nil, fmt.Errorf("%w: Signature children", ErrStructure)
 	}
 
 	rest := children[2:]
-	if len(rest) > 0 && isDS(rest[0], "KeyInfo") {
+	if len(rest) > 0 && isDS(rest[0], lexicon.DSigElementKeyInfo) {
 		if err := attributes(rest[0], "Id"); err != nil {
 			return nil, nil, err
 		}
@@ -196,7 +198,7 @@ func prepareCore(ctx context.Context, doc *document.Document, selected document.
 	}
 
 	sd, sig := tree.Unwrap(selected)
-	if sd != doc || sig == nil || !isDS(sig, "Signature") {
+	if sd != doc || sig == nil || !isDS(sig, lexicon.DSigElementSignature) {
 		return nil, fmt.Errorf("%w: explicit Signature handle from this snapshot required", ErrPolicy)
 	}
 
@@ -214,12 +216,12 @@ func prepareCore(ctx context.Context, doc *document.Document, selected document.
 		return nil, err
 	}
 
-	signed, err := structure(si, "SignedInfo", "Id")
+	signed, err := structure(si, lexicon.DSigElementSignedInfo, "Id")
 	if err != nil {
 		return nil, err
 	}
 
-	if len(signed) < 3 || len(signed)-2 > p.MaxReferences || !isDS(signed[0], "CanonicalizationMethod") || !isDS(signed[1], "SignatureMethod") {
+	if len(signed) < 3 || len(signed)-2 > p.MaxReferences || !isDS(signed[0], lexicon.DSigElementCanonicalizationMethod) || !isDS(signed[1], lexicon.DSigElementSignatureMethod) {
 		return nil, fmt.Errorf("%w: SignedInfo children/reference count", ErrStructure)
 	}
 
@@ -227,7 +229,7 @@ func prepareCore(ctx context.Context, doc *document.Document, selected document.
 	plan.processing.Signature = selected // caller cannot override the containing Signature
 	plan.processing.IDRules = coreIDRules(opt)
 
-	plan.cm, err = parseCanonicalTransform(signed[0], "CanonicalizationMethod")
+	plan.cm, err = parseCanonicalTransform(signed[0], lexicon.DSigElementCanonicalizationMethod)
 	if err != nil {
 		return nil, err
 	}
@@ -245,9 +247,9 @@ func prepareCore(ctx context.Context, doc *document.Document, selected document.
 	report.SignatureMethod = plan.method
 
 	if template {
-		err = emptyValue(sv, "SignatureValue", "Id")
+		err = emptyValue(sv, lexicon.DSigElementSignatureValue, "Id")
 	} else {
-		plan.value, err = base64Value(ctx, sv, "SignatureValue", 2048, "Id")
+		plan.value, err = base64Value(ctx, sv, lexicon.DSigElementSignatureValue, 2048, "Id")
 	}
 
 	if err != nil {
@@ -606,7 +608,7 @@ func (plan *corePlan) prepareReferences(ctx context.Context, nodes []*tree.Node,
 func parseCoreReference(ctx context.Context, n *tree.Node, p Policy, opt reference.Options, template bool) (coreReference, error) {
 	var ref coreReference
 
-	children, err := structure(n, "Reference", "URI", "Id", "Type")
+	children, err := structure(n, lexicon.DSigElementReference, "URI", "Id", "Type")
 	if err != nil {
 		return ref, err
 	}
@@ -618,7 +620,7 @@ func parseCoreReference(ctx context.Context, n *tree.Node, p Policy, opt referen
 
 	ref.typeURI, _ = getAttr(n, document.Name{Local: "Type"})
 
-	if len(children) > 0 && isDS(children[0], "Transforms") {
+	if len(children) > 0 && isDS(children[0], lexicon.DSigElementTransforms) {
 		ref.transforms, err = parseCoreTransforms(ctx, children[0], opt)
 		if err != nil {
 			return ref, err
@@ -627,7 +629,7 @@ func parseCoreReference(ctx context.Context, n *tree.Node, p Policy, opt referen
 		children = children[1:]
 	}
 
-	if len(children) != 2 || !isDS(children[0], "DigestMethod") || !isDS(children[1], "DigestValue") {
+	if len(children) != 2 || !isDS(children[0], lexicon.DSigElementDigestMethod) || !isDS(children[1], lexicon.DSigElementDigestValue) {
 		return ref, fmt.Errorf("%w: Reference children", ErrStructure)
 	}
 
@@ -635,7 +637,7 @@ func parseCoreReference(ctx context.Context, n *tree.Node, p Policy, opt referen
 		return ref, processingError(err)
 	}
 
-	ref.method, err = simpleAlgorithm(children[0], "DigestMethod")
+	ref.method, err = simpleAlgorithm(children[0], lexicon.DSigElementDigestMethod)
 	if err != nil {
 		return ref, err
 	}
@@ -651,10 +653,10 @@ func parseCoreReference(ctx context.Context, n *tree.Node, p Policy, opt referen
 
 	ref.digestNode = children[1]
 	if template {
-		return ref, emptyValue(ref.digestNode, "DigestValue")
+		return ref, emptyValue(ref.digestNode, lexicon.DSigElementDigestValue)
 	}
 
-	ref.digest, err = base64Value(ctx, ref.digestNode, "DigestValue", h.Size())
+	ref.digest, err = base64Value(ctx, ref.digestNode, lexicon.DSigElementDigestValue, h.Size())
 	if err == nil && len(ref.digest) != h.Size() {
 		err = fmt.Errorf("%w: digest size", ErrStructure)
 	}
@@ -663,7 +665,7 @@ func parseCoreReference(ctx context.Context, n *tree.Node, p Policy, opt referen
 }
 
 func parseCoreTransforms(ctx context.Context, n *tree.Node, opt reference.Options) ([]reference.Transform, error) {
-	ts, err := structure(n, "Transforms")
+	ts, err := structure(n, lexicon.DSigElementTransforms)
 	if err != nil {
 		return nil, err
 	}
@@ -701,12 +703,12 @@ func parseTransform(ctx context.Context, tr *tree.Node, doc *document.Document) 
 	}
 
 	if canonicalAlgorithm(algorithm) {
-		return parseCanonicalTransform(tr, "Transform")
+		return parseCanonicalTransform(tr, lexicon.DSigElementTransform)
 	}
 
 	var method reference.Transform
 
-	method.Algorithm, err = simpleAlgorithm(tr, "Transform")
+	method.Algorithm, err = simpleAlgorithm(tr, lexicon.DSigElementTransform)
 
 	return method, err
 }

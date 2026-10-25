@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
@@ -37,7 +39,7 @@ func VerifyBaseline(ctx context.Context, doc *document.Document, selected docume
 	}
 
 	owner, _ := tree.Unwrap(selected)
-	if owner != doc || selected.Name() != ds("Signature") {
+	if owner != doc || selected.Name() != ds(lexicon.DSigElementSignature) {
 		return nil, ErrProfile
 	}
 

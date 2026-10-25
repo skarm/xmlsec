@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	objectData                  = "data"
-	objectOCSP                  = "ocsp"
+	objectData                  = historicalproof.Data
+	objectOCSP                  = historicalproof.OCSP
 	signatureConstraintsFailure = "SIG_CONSTRAINTS_FAILURE"
 	timestampOrderFailure       = "TIMESTAMP_ORDER_FAILURE"
 )
@@ -210,7 +210,7 @@ func (w *validationWorkflow) initialize() error {
 
 // admit records an exact object at the explicit present time. Neither source
 // provenance times nor SigningTime establish its earlier existence.
-func (w *validationWorkflow) admit(raw []byte, kind string) {
+func (w *validationWorkflow) admit(raw []byte, kind historicalproof.Kind) {
 	digest := sha256.Sum256(raw)
 	for index, object := range w.input.Objects {
 		if sha256.Sum256(object.Bytes) == digest {
@@ -227,7 +227,7 @@ func (w *validationWorkflow) admit(raw []byte, kind string) {
 
 func (w *validationWorkflow) containCertificates(parent [32]byte, certificates [][]byte) {
 	for _, raw := range certificates {
-		w.admit(raw, "certificate")
+		w.admit(raw, historicalproof.Certificate)
 	}
 
 	for index, object := range w.input.Objects {
@@ -248,11 +248,11 @@ func (w *validationWorkflow) containCertificates(parent [32]byte, certificates [
 
 func (w *validationWorkflow) admitEvidence() error {
 	w.input.Objects = slices.Clone(w.input.Objects)
-	w.admit(w.input.Certificate, "certificate")
+	w.admit(w.input.Certificate, historicalproof.Certificate)
 
 	for _, ev := range []pki.Evidence{w.signerEvidence, w.tsaEvidence} {
 		for index, group := range [][][]byte{ev.Intermediates, ev.CRLs, ev.OCSPResponses} {
-			kind := []string{"certificate", "crl", objectOCSP}[index]
+			kind := []historicalproof.Kind{historicalproof.Certificate, historicalproof.CRL, objectOCSP}[index]
 			for _, raw := range group {
 				w.admit(raw, kind)
 
@@ -292,7 +292,7 @@ func (w *validationWorkflow) prepareTimestamps() error {
 		}
 
 		coverageEdges += len(candidate.Covered)
-		w.admit(candidate.Token.DER(), "timestamp")
+		w.admit(candidate.Token.DER(), historicalproof.Timestamp)
 		w.containCertificates(sha256.Sum256(candidate.Token.DER()), candidate.Token.Certificates())
 
 		stamp, err := w.prepareTimestamp(candidate)
@@ -314,10 +314,10 @@ func (w *validationWorkflow) prepareTimestamp(candidate Candidate) (*preparedSta
 		return nil, w.rejectTimestampAuthentication(candidate, err)
 	}
 
-	w.admit(assertion.CertificateDER(), "certificate")
+	w.admit(assertion.CertificateDER(), historicalproof.Certificate)
 
 	for _, raw := range candidate.Token.Certificates() {
-		w.admit(raw, "certificate")
+		w.admit(raw, historicalproof.Certificate)
 		w.tsaEvidence.Intermediates = uniqueDER(w.tsaEvidence.Intermediates, raw)
 	}
 
@@ -418,7 +418,7 @@ func (w *validationWorkflow) admitPaths(session *pki.HistoricalSession, raw []by
 
 	for _, path := range paths {
 		for _, certificate := range path.ChainDER() {
-			w.admit(certificate, "certificate")
+			w.admit(certificate, historicalproof.Certificate)
 		}
 	}
 

@@ -7,6 +7,8 @@ import (
 	"io"
 	"slices"
 
+	"github.com/skarm/xmlsec/internal/historicalproof"
+
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/historical"
@@ -43,7 +45,7 @@ func appendHistoricalDataTimestamps(ctx context.Context, baseline *BaselineResul
 				return err
 			}
 
-			key, err := objects.add(raw, "data", children)
+			key, err := objects.add(raw, historicalproof.Data, children)
 			if err != nil {
 				return err
 			}

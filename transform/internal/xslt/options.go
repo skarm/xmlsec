@@ -6,7 +6,6 @@ package xslt
 import (
 	"context"
 	"io"
-	"net/http"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
@@ -112,8 +111,8 @@ type transformConfig struct {
 	initialModeTunnel     map[string]xdm.Sequence
 	initialTemplateParams map[string]xdm.Sequence
 	initialTemplateTunnel map[string]xdm.Sequence
-	httpClient            *http.Client // explicit HTTP client for fn:doc/fn:unparsed-text — opt-in network
-	resolvedOutputDef     *OutputDef   // resolved primary output def (set by executeTransform)
+
+	resolvedOutputDef     *OutputDef // resolved primary output def (set by executeTransform)
 	parseOptions          *xdm.ParseOptions
 	initialTemplate       string
 	initialMode           string

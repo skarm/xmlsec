@@ -198,7 +198,7 @@ func (r *HistoricalReport) Proofs() []HistoricalProof {
 			source = hex.EncodeToString(fact.Source[:])
 		}
 
-		out = append(out, HistoricalProof{ObjectSHA256: hex.EncodeToString(fact.Digest[:]), SourceSHA256: source, Kind: fact.Kind, At: fact.At})
+		out = append(out, HistoricalProof{ObjectSHA256: hex.EncodeToString(fact.Digest[:]), SourceSHA256: source, Kind: string(fact.Kind), At: fact.At})
 	}
 
 	return out

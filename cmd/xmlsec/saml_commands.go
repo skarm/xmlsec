@@ -430,7 +430,7 @@ func metadataDescription(snapshot *metadata.Snapshot, at time.Time) any {
 
 			endpoints := map[string]any{}
 
-			for _, name := range []string{"AssertionConsumerService", "SingleSignOnService", "SingleLogoutService", "ArtifactResolutionService", "ManageNameIDService"} {
+			for _, name := range []string{metadata.AssertionConsumerService, metadata.SingleSignOnService, metadata.SingleLogoutService, metadata.ArtifactResolutionService, metadata.ManageNameIDService} {
 				if list := role.Endpoints(name); len(list) > 0 {
 					endpoints[name] = list
 				}

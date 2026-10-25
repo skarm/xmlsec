@@ -1,5 +1,7 @@
 package xslt
 
+import "github.com/skarm/xmlsec/internal/lexicon"
+
 const (
 	nameFormat                         = "format"
 	nameLetterValue                    = "letter-value"
@@ -11,11 +13,11 @@ const (
 	nameAccumulatorAfter               = "accumulator-after"
 	nameAccumulatorBefore              = "accumulator-before"
 	nameAcht                           = "acht"
-	nameAttributeSet                   = "attribute-set"
+	nameAttributeSet                   = lexicon.XSLTElementAttributeSet
 	nameCaseOrder                      = "case-order"
 	nameCollation                      = "collation"
 	nameComposite                      = "composite"
-	nameContextItem                    = "context-item"
+	nameContextItem                    = lexicon.XSLTElementContextItem
 	nameCurrentMergeGroup              = "current-merge-group"
 	nameCurrentMergeKey                = "current-merge-key"
 	nameDataType                       = "data-type"
@@ -32,44 +34,44 @@ const (
 	nameExpandText                     = "expand-text"
 	nameExponentSeparator              = "exponent-separator"
 	nameExtensionElementPrefixes       = "extension-element-prefixes"
-	nameFallback                       = "fallback"
+	nameFallback                       = lexicon.XSLTElementFallback
 	nameGroupingSeparator              = "grouping-separator"
-	nameImport                         = "import"
-	nameInclude                        = "include"
+	nameImport                         = lexicon.XSLTElementImport
+	nameInclude                        = lexicon.XSLTElementInclude
 	nameInfinity                       = "infinity"
 	nameInheritNamespaces              = "inherit-namespaces"
 	nameInputTypeAnnotations           = "input-type-annotations"
 	nameIsSchemaAware                  = "is-schema-aware"
-	nameKey2                           = "key"
+	nameKey2                           = lexicon.XSLTElementKey
 	nameLowerFirst                     = "lower-first"
 	nameMaybe                          = "maybe"
 	nameMinusSign                      = "minus-sign"
 	textNameSelect                     = "name select"
-	nameNamespace                      = "namespace"
+	nameNamespace                      = lexicon.XSLTElementNamespace
 	nameOrder                          = "order"
-	nameOutput                         = "output"
-	namePackage                        = "package"
+	nameOutput                         = lexicon.XSLTElementOutput
+	namePackage                        = lexicon.XSLTElementPackage
 	namePackageVersion                 = "package-version"
-	nameParam                          = "param"
+	nameParam                          = lexicon.XSLTElementParam
 	namePatternSeparator               = "pattern-separator"
 	namePerMille                       = "per-mille"
 	namePercent                        = "percent"
-	namePreserveSpace                  = "preserve-space"
+	namePreserveSpace                  = lexicon.XSLTElementPreserveSpace
 	nameRegexGroup                     = "regex-group"
 	nameSingle                         = "single"
-	nameSort                           = "sort"
+	nameSort                           = lexicon.XSLTElementSort
 	nameStatic                         = "static"
 	nameStreamAvailable                = "stream-available"
 	nameStreamable                     = "streamable"
-	nameStripSpace                     = "strip-space"
-	nameStylesheet                     = "stylesheet"
+	nameStripSpace                     = lexicon.XSLTElementStripSpace
+	nameStylesheet                     = lexicon.XSLTElementStylesheet
 	textSupportsBackwardsCompatibility = "supports-backwards-compatibility"
 	nameSupportsDynamicEvaluation      = "supports-dynamic-evaluation"
 	textSupportsHigherOrderFunctions   = "supports-higher-order-functions"
 	nameSupportsNamespaceAxis          = "supports-namespace-axis"
 	nameSupportsSerialization          = "supports-serialization"
 	nameSupportsStreaming              = "supports-streaming"
-	nameTemplate                       = "template"
+	nameTemplate                       = lexicon.XSLTElementTemplate
 	nameTunnel                         = "tunnel"
 	nameTyped                          = "typed"
 	nameUnparsedEntityPublicId         = "unparsed-entity-public-id"
@@ -77,10 +79,10 @@ const (
 	nameUpperFirst                     = "upper-first"
 	nameUseAccumulators                = "use-accumulators"
 	nameUseAttributeSets               = "use-attribute-sets"
-	nameUsePackage                     = "use-package"
+	nameUsePackage                     = lexicon.XSLTElementUsePackage
 	nameUtf16                          = "utf16"
 	nameValidation                     = "validation"
-	nameVariable                       = "variable"
+	nameVariable                       = lexicon.XSLTElementVariable
 	nameXpathDefaultNamespace          = "xpath-default-namespace"
 	nameXsd                            = "xsd"
 	nameZeroDigit                      = "zero-digit"

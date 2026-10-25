@@ -11,6 +11,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
@@ -355,7 +357,7 @@ func SignDetached(ctx context.Context, refs []DetachedReference, signer crypto.S
 		return nil, err
 	}
 
-	sv := newDS("SignatureValue")
+	sv := newDS(lexicon.DSigElementSignatureValue)
 	text(sv, base64.StdEncoding.EncodeToString(value))
 	add(draft.sig, sv)
 
@@ -476,18 +478,18 @@ func normalizeDetachedReferences(refs []DetachedReference, p Policy, processing 
 
 // buildDetachedSignature validates all serialized metadata before resource I/O.
 func buildDetachedSignature(ctx context.Context, p *detachedSigningPlan) (*detachedSignatureDraft, error) {
-	sig := newDS("Signature")
+	sig := newDS(lexicon.DSigElementSignature)
 	sig.NS = []tree.Namespace{{Prefix: "ds", URI: Namespace}}
 	doc := tree.FromNodes([]*tree.Node{sig}, p.xmlLimits)
-	si := newDS("SignedInfo")
+	si := newDS(lexicon.DSigElementSignedInfo)
 	add(sig, si)
 
-	methodNode := newDS("CanonicalizationMethod")
+	methodNode := newDS(lexicon.DSigElementCanonicalizationMethod)
 	setAttr(methodNode, "Algorithm", p.cm.Algorithm)
 	addInclusive(methodNode, p.cm.InclusivePrefixes)
 	add(si, methodNode)
 
-	sm := newDS("SignatureMethod")
+	sm := newDS(lexicon.DSigElementSignatureMethod)
 	setAttr(sm, "Algorithm", p.method)
 	add(si, sm)
 	// Build ALL metadata before resolving any data. Reparse the temporary template
@@ -509,7 +511,7 @@ func buildDetachedSignature(ctx context.Context, p *detachedSigningPlan) (*detac
 	processing.Signature = tree.Wrap(checked, sig)
 
 	for i, n := range si.Children[2:] {
-		if isDS(n.Children[0], "Transforms") {
+		if isDS(n.Children[0], lexicon.DSigElementTransforms) {
 			transforms, err := parseCoreTransforms(ctx, n.Children[0], processing)
 			if err != nil {
 				return nil, &ReferenceError{i, p.refs[i].URI, nameTransform, err}
@@ -651,11 +653,11 @@ type detachedVerificationPlan struct {
 
 func (p *detachedVerificationPlan) parseSignature(ctx context.Context, doc *document.Document) error {
 	sig := tree.Root(doc)
-	if !isDS(sig, "Signature") || len(findSignatures(doc)) != 1 {
+	if !isDS(sig, lexicon.DSigElementSignature) || len(findSignatures(doc)) != 1 {
 		return fmt.Errorf("%w: standalone Signature required", ErrStructure)
 	}
 
-	children, err := structure(sig, "Signature", "Id")
+	children, err := structure(sig, lexicon.DSigElementSignature, "Id")
 	if err != nil {
 		return err
 	}
@@ -666,7 +668,7 @@ func (p *detachedVerificationPlan) parseSignature(ctx context.Context, doc *docu
 
 	si := children[0]
 
-	signed, err := structure(si, "SignedInfo", "Id")
+	signed, err := structure(si, lexicon.DSigElementSignedInfo, "Id")
 	if err != nil {
 		return err
 	}
@@ -675,7 +677,7 @@ func (p *detachedVerificationPlan) parseSignature(ctx context.Context, doc *docu
 		return err
 	}
 
-	cm, err := parseCanonicalTransform(signed[0], "CanonicalizationMethod")
+	cm, err := parseCanonicalTransform(signed[0], lexicon.DSigElementCanonicalizationMethod)
 	if err != nil {
 		return err
 	}
@@ -684,7 +686,7 @@ func (p *detachedVerificationPlan) parseSignature(ctx context.Context, doc *docu
 		return fmt.Errorf("%w: SignedInfo canonicalization", ErrPolicy)
 	}
 
-	method, err := simpleAlgorithm(signed[1], "SignatureMethod")
+	method, err := simpleAlgorithm(signed[1], lexicon.DSigElementSignatureMethod)
 	if err != nil {
 		return err
 	}
@@ -697,7 +699,7 @@ func (p *detachedVerificationPlan) parseSignature(ctx context.Context, doc *docu
 		return fmt.Errorf("%w: signature method", ErrPolicy)
 	}
 
-	value, err := base64Value(ctx, children[1], "SignatureValue", 2048, "Id")
+	value, err := base64Value(ctx, children[1], lexicon.DSigElementSignatureValue, 2048, "Id")
 	if err != nil {
 		return err
 	}
@@ -719,7 +721,7 @@ func (p *detachedVerificationPlan) parseSignature(ctx context.Context, doc *docu
 func parseDetachedReference(ctx context.Context, doc *document.Document, n *tree.Node, p Policy, processing reference.Options) (parsedDetachedReference, error) {
 	var ref parsedDetachedReference
 
-	children, err := structure(n, "Reference", "URI", "Id", "Type")
+	children, err := structure(n, lexicon.DSigElementReference, "URI", "Id", "Type")
 	if err != nil {
 		return ref, err
 	}
@@ -735,8 +737,8 @@ func parseDetachedReference(ctx context.Context, doc *document.Document, n *tree
 
 	ref.Type, _ = getAttr(n, document.Name{Local: "Type"})
 
-	if len(children) != 0 && isDS(children[0], "Transforms") {
-		transforms, err := structure(children[0], "Transforms")
+	if len(children) != 0 && isDS(children[0], lexicon.DSigElementTransforms) {
+		transforms, err := structure(children[0], lexicon.DSigElementTransforms)
 		if err != nil {
 			return ref, err
 		}
@@ -757,7 +759,7 @@ func parseDetachedReference(ctx context.Context, doc *document.Document, n *tree
 		children = children[1:]
 	}
 
-	if len(children) != 2 || !isDS(children[0], "DigestMethod") || !isDS(children[1], "DigestValue") {
+	if len(children) != 2 || !isDS(children[0], lexicon.DSigElementDigestMethod) || !isDS(children[1], lexicon.DSigElementDigestValue) {
 		return ref, fmt.Errorf("%w: Reference children", ErrStructure)
 	}
 
@@ -765,7 +767,7 @@ func parseDetachedReference(ctx context.Context, doc *document.Document, n *tree
 		return ref, err
 	}
 
-	ref.DigestMethod, err = simpleAlgorithm(children[0], "DigestMethod")
+	ref.DigestMethod, err = simpleAlgorithm(children[0], lexicon.DSigElementDigestMethod)
 	if err != nil {
 		return ref, err
 	}
@@ -779,7 +781,7 @@ func parseDetachedReference(ctx context.Context, doc *document.Document, n *tree
 		return ref, fmt.Errorf("%w: digest method", ErrPolicy)
 	}
 
-	ref.digest, err = base64Value(ctx, children[1], "DigestValue", h.Size())
+	ref.digest, err = base64Value(ctx, children[1], lexicon.DSigElementDigestValue, h.Size())
 	if err != nil {
 		return ref, err
 	}
@@ -817,7 +819,7 @@ func parseDetachedReferenceSet(ctx context.Context, doc *document.Document, node
 }
 
 func validateDetachedSignedInfo(signed []*tree.Node, maximum int) error {
-	if len(signed) < 3 || len(signed)-2 > maximum || !isDS(signed[0], "CanonicalizationMethod") || !isDS(signed[1], "SignatureMethod") {
+	if len(signed) < 3 || len(signed)-2 > maximum || !isDS(signed[0], lexicon.DSigElementCanonicalizationMethod) || !isDS(signed[1], lexicon.DSigElementSignatureMethod) {
 		return fmt.Errorf("%w: SignedInfo children", ErrStructure)
 	}
 

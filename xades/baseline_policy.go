@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/transformxml"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -57,7 +59,7 @@ func parseBaselinePolicy(ctx context.Context, element document.Element, options 
 	}
 
 	at := 1
-	if values[at].Name() == ds("Transforms") {
+	if values[at].Name() == ds(lexicon.DSigElementTransforms) {
 		policy.Transforms, err = parsePolicyTransforms(ctx, values[at])
 		if err != nil {
 			return nil, err
@@ -138,9 +140,9 @@ func buildBaselinePolicy(ctx context.Context, policy SignaturePolicy, options Ba
 	add(explicit, identifier)
 
 	if len(policy.Transforms) > 0 {
-		transforms := dsnode("Transforms")
+		transforms := dsnode(lexicon.DSigElementTransforms)
 		for _, tr := range policy.Transforms {
-			n := dsnode("Transform")
+			n := dsnode(lexicon.DSigElementTransform)
 			attr(n, "Algorithm", tr.Algorithm)
 
 			if tr.Algorithm == PolicyDocumentDigestAsSpecified {
@@ -158,11 +160,11 @@ func buildBaselinePolicy(ctx context.Context, policy SignaturePolicy, options Ba
 	}
 
 	hash := xnode("SigPolicyHash")
-	method := dsnode("DigestMethod")
+	method := dsnode(lexicon.DSigElementDigestMethod)
 	attr(method, "Algorithm", policy.DigestMethod)
 	add(hash, method)
 
-	dv := dsnode("DigestValue")
+	dv := dsnode(lexicon.DSigElementDigestValue)
 	text(dv, base64.StdEncoding.EncodeToString(sum))
 	add(hash, dv)
 	add(explicit, hash)
@@ -461,7 +463,7 @@ func parsePolicyTransforms(ctx context.Context, element document.Element) ([]ref
 
 	out := make([]reference.Transform, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Name() != ds("Transform") {
+		if entry.Name() != ds(lexicon.DSigElementTransform) {
 			return nil, ErrProfile
 		}
 

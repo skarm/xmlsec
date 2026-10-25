@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -48,7 +50,7 @@ func encodeProfile(ctx context.Context, wrapped, encrypted []byte, p profile, ty
 	appendChild(root, method)
 
 	if p.direct == nil {
-		keyInfo := newElement(SignatureNamespace, "ds", "KeyInfo")
+		keyInfo := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyInfo)
 		encryptedKey := encryptedElement("EncryptedKey")
 		keyMethod := encryptedElement("EncryptionMethod")
 		setAttribute(keyMethod, "Algorithm", p.transport.algorithm)
@@ -72,8 +74,8 @@ func encodeProfile(ctx context.Context, wrapped, encrypted []byte, p profile, ty
 		appendChild(keyInfo, encryptedKey)
 		appendChild(root, keyInfo)
 	} else if p.keyName != "" {
-		keyInfo := newElement(SignatureNamespace, "ds", "KeyInfo")
-		name := newElement(SignatureNamespace, "ds", "KeyName")
+		keyInfo := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyInfo)
+		name := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyName)
 		appendChild(name, &tree.Node{Kind: tree.TextNode, Data: p.keyName})
 		appendChild(keyInfo, name)
 		appendChild(root, keyInfo)
@@ -239,7 +241,7 @@ func decodeProfile(ctx context.Context, doc *document.Document, typ string, p pr
 		return decodeDirectProfile(ctx, root, p)
 	}
 
-	children, err := childElements(root, elementName(Namespace, "EncryptionMethod"), elementName(SignatureNamespace, "KeyInfo"), elementName(Namespace, "CipherData"))
+	children, err := childElements(root, elementName(Namespace, "EncryptionMethod"), elementName(SignatureNamespace, lexicon.DSigElementKeyInfo), elementName(Namespace, "CipherData"))
 	if err != nil {
 		return nil, nil, ErrFormat
 	}
@@ -255,7 +257,7 @@ func decodeProfile(ctx context.Context, doc *document.Document, typ string, p pr
 
 	keyNames := []document.Name{elementName(Namespace, "EncryptionMethod")}
 	if p.transport.checkKeyInfo != nil {
-		keyNames = append(keyNames, elementName(SignatureNamespace, "KeyInfo"))
+		keyNames = append(keyNames, elementName(SignatureNamespace, lexicon.DSigElementKeyInfo))
 	}
 
 	keyNames = append(keyNames, elementName(Namespace, "CipherData"))

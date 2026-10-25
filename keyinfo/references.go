@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/nilcheck"
@@ -318,7 +320,7 @@ func (p *parser) acceptRetrievalTarget(target *tree.Node, scope *scope, typ stri
 		return fmt.Errorf("%w: RetrievalMethod Type does not match target", ErrInput)
 	}
 
-	if is(target, Namespace, "KeyInfo") {
+	if is(target, Namespace, lexicon.DSigElementKeyInfo) {
 		return p.keyInfo(scope, target, depth+1)
 	}
 
@@ -343,7 +345,7 @@ func retrievalTransform(c []*tree.Node, typ string) (bool, error) {
 			return false, ErrInput
 		}
 
-		tc, err := structure(c[0], Namespace, "Transforms")
+		tc, err := structure(c[0], Namespace, lexicon.DSigElementTransforms)
 		if err != nil {
 			return false, err
 		}
@@ -352,7 +354,7 @@ func retrievalTransform(c []*tree.Node, typ string) (bool, error) {
 			return false, fmt.Errorf("%w: RetrievalMethod transform chain", ErrUnsupported)
 		}
 
-		body, err := structure(tc[0], Namespace, "Transform", "Algorithm")
+		body, err := structure(tc[0], Namespace, lexicon.DSigElementTransform, "Algorithm")
 		if err != nil {
 			return false, err
 		}

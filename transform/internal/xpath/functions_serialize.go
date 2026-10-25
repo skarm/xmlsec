@@ -391,19 +391,19 @@ func (opts serializeOptions) methodAppliesNormalization() bool {
 // nil target requests lexical validation only: UTF-8 output emits no BOM.
 func (opts *serializeOptions) booleanParam(name string) (*bool, bool) {
 	switch name {
-	case "indent":
+	case lexicon.SerializationIndent:
 		return &opts.indent, true
-	case "omit-xml-declaration":
+	case lexicon.SerializationOmitXMLDeclaration:
 		return &opts.omitXMLDeclaration, true
-	case "allow-duplicate-names":
+	case lexicon.SerializationAllowDuplicateNames:
 		return &opts.allowDuplicateNames, true
-	case "undeclare-prefixes":
+	case lexicon.SerializationUndeclarePrefixes:
 		return &opts.undeclarePrefixes, true
-	case "escape-uri-attributes":
+	case lexicon.SerializationEscapeURIAttributes:
 		return &opts.escapeURIAttributes, true
-	case "include-content-type":
+	case lexicon.SerializationIncludeContentType:
 		return &opts.includeContentType, true
-	case "byte-order-mark":
+	case lexicon.SerializationByteOrderMark:
 		return nil, true
 	default:
 		return nil, false
@@ -414,23 +414,23 @@ func (opts *serializeOptions) stringParam(name string) *string {
 	switch name {
 	case lexicon.SerializationMethod:
 		return &opts.method
-	case "item-separator":
+	case lexicon.SerializationItemSeparator:
 		return &opts.itemSeparator
-	case "encoding":
+	case lexicon.SerializationEncoding:
 		return &opts.encoding
 	case lexicon.SerializationVersion:
 		return &opts.xmlVersion
-	case "html-version":
+	case lexicon.SerializationHTMLVersion:
 		return &opts.htmlVersion
-	case "doctype-public":
+	case lexicon.SerializationDoctypePublic:
 		return &opts.doctypePublic
-	case "doctype-system":
+	case lexicon.SerializationDoctypeSystem:
 		return &opts.doctypeSystem
 	case lexicon.SerializationJSONNodeOutputMethod:
 		return &opts.jsonNodeOutputMethod
-	case "normalization-form":
+	case lexicon.SerializationNormalizationForm:
 		return &opts.normalizationForm
-	case "media-type":
+	case lexicon.SerializationMediaType:
 		return &opts.mediaType
 	case lexicon.SerializationStandalone:
 		return &opts.standalone
@@ -513,7 +513,7 @@ func parseSerializeMapOutputOptions(ctx context.Context, opts serializeOptions, 
 		opts.method = method
 	}
 
-	sep, found, err := readSerializeStringOption(ctx, m, "item-separator")
+	sep, found, err := readSerializeStringOption(ctx, m, lexicon.SerializationItemSeparator)
 	if err != nil {
 		return opts, err
 	}
@@ -523,7 +523,7 @@ func parseSerializeMapOutputOptions(ctx context.Context, opts serializeOptions, 
 		opts.itemSeparatorSet = true
 	}
 
-	indent, found, err := readSerializeBooleanOption(ctx, m, "indent")
+	indent, found, err := readSerializeBooleanOption(ctx, m, lexicon.SerializationIndent)
 	if err != nil {
 		return opts, err
 	}
@@ -537,7 +537,7 @@ func parseSerializeMapOutputOptions(ctx context.Context, opts serializeOptions, 
 	// (F&O 3.1 §14.7.3; W3C serialize-xml-127a).
 	opts.omitXMLDeclaration = true
 
-	omit, found, err := readSerializeBooleanOption(ctx, m, "omit-xml-declaration")
+	omit, found, err := readSerializeBooleanOption(ctx, m, lexicon.SerializationOmitXMLDeclaration)
 	if err != nil {
 		return opts, err
 	}
@@ -546,7 +546,7 @@ func parseSerializeMapOutputOptions(ctx context.Context, opts serializeOptions, 
 		opts.omitXMLDeclaration = omit
 	}
 
-	allow, found, err := readSerializeBooleanOption(ctx, m, "allow-duplicate-names")
+	allow, found, err := readSerializeBooleanOption(ctx, m, lexicon.SerializationAllowDuplicateNames)
 	if err != nil {
 		return opts, err
 	}
@@ -555,7 +555,7 @@ func parseSerializeMapOutputOptions(ctx context.Context, opts serializeOptions, 
 		opts.allowDuplicateNames = allow
 	}
 
-	encoding, found, err := readSerializeStringOption(ctx, m, "encoding")
+	encoding, found, err := readSerializeStringOption(ctx, m, lexicon.SerializationEncoding)
 	if err != nil {
 		return opts, err
 	}
@@ -572,7 +572,7 @@ func parseSerializeMapOutputOptions(ctx context.Context, opts serializeOptions, 
 }
 
 func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, m xdm.MapItem) (serializeOptions, error) {
-	undeclare, found, err := readSerializeBooleanOption(ctx, m, "undeclare-prefixes")
+	undeclare, found, err := readSerializeBooleanOption(ctx, m, lexicon.SerializationUndeclarePrefixes)
 	if err != nil {
 		return opts, err
 	}
@@ -581,7 +581,7 @@ func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, 
 		opts.undeclarePrefixes = undeclare
 	}
 
-	include, found, err := readSerializeBooleanOption(ctx, m, "include-content-type")
+	include, found, err := readSerializeBooleanOption(ctx, m, lexicon.SerializationIncludeContentType)
 	if err != nil {
 		return opts, err
 	}
@@ -590,7 +590,7 @@ func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, 
 		opts.includeContentType = include
 	}
 
-	escape, found, err := readSerializeBooleanOption(ctx, m, "escape-uri-attributes")
+	escape, found, err := readSerializeBooleanOption(ctx, m, lexicon.SerializationEscapeURIAttributes)
 	if err != nil {
 		return opts, err
 	}
@@ -608,7 +608,7 @@ func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, 
 		opts.xmlVersion = version
 	}
 
-	hv, found, err := readSerializeNumberOption(ctx, m, "html-version")
+	hv, found, err := readSerializeNumberOption(ctx, m, lexicon.SerializationHTMLVersion)
 	if err != nil {
 		return opts, err
 	}
@@ -617,7 +617,7 @@ func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, 
 		opts.htmlVersion = hv
 	}
 
-	pub, found, err := readSerializeStringOption(ctx, m, "doctype-public")
+	pub, found, err := readSerializeStringOption(ctx, m, lexicon.SerializationDoctypePublic)
 	if err != nil {
 		return opts, err
 	}
@@ -626,7 +626,7 @@ func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, 
 		opts.doctypePublic = pub
 	}
 
-	sys, found, err := readSerializeStringOption(ctx, m, "doctype-system")
+	sys, found, err := readSerializeStringOption(ctx, m, lexicon.SerializationDoctypeSystem)
 	if err != nil {
 		return opts, err
 	}
@@ -635,7 +635,7 @@ func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, 
 		opts.doctypeSystem = sys
 	}
 
-	mt, found, err := readSerializeStringOption(ctx, m, "media-type")
+	mt, found, err := readSerializeStringOption(ctx, m, lexicon.SerializationMediaType)
 	if err != nil {
 		return opts, err
 	}
@@ -646,7 +646,7 @@ func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, 
 	// Validation parity with the element form for the recognized-but-unapplied
 	// (or limitation) parameters, so an invalid value is rejected consistently.
 	// Validate the boolean value; UTF-8 output does not emit a BOM.
-	if _, _, err := readSerializeBooleanOption(ctx, m, "byte-order-mark"); err != nil {
+	if _, _, err := readSerializeBooleanOption(ctx, m, lexicon.SerializationByteOrderMark); err != nil {
 		return opts, err
 	}
 
@@ -663,7 +663,7 @@ func parseSerializeMapContentOptions(ctx context.Context, opts serializeOptions,
 		opts.jsonNodeOutputMethod = jn
 	}
 
-	nf, found, err := readSerializeStringOption(ctx, m, "normalization-form")
+	nf, found, err := readSerializeStringOption(ctx, m, lexicon.SerializationNormalizationForm)
 	if err != nil {
 		return opts, err
 	}
@@ -685,7 +685,7 @@ func parseSerializeMapContentOptions(ctx context.Context, opts serializeOptions,
 		opts.standalone = standalone
 	}
 
-	if v, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: "use-character-maps"}); found {
+	if v, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: lexicon.SerializationUseCharacterMaps}); found {
 		charMap, err := resolveSerializeCharacterMaps(ctx, v)
 		if err != nil {
 			return opts, err
@@ -703,8 +703,8 @@ func parseSerializeMapContentOptions(ctx context.Context, opts serializeOptions,
 		opts.cdataElements = names
 	}
 
-	if v, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: "suppress-indentation"}); found {
-		names, err := resolveSerializeQNameNames(ctx, v, "suppress-indentation")
+	if v, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: lexicon.SerializationSuppressIndentation}); found {
+		names, err := resolveSerializeQNameNames(ctx, v, lexicon.SerializationSuppressIndentation)
 		if err != nil {
 			return opts, err
 		}
@@ -828,13 +828,13 @@ func readSerializeAtomicStringOption(ctx context.Context, m xdm.MapItem, name, t
 // carried as an EQName so it is never mistaken for a built-in token). found is
 // false only when the "method" key is absent.
 func resolveSerializeMethodMap(ctx context.Context, m xdm.MapItem) (string, bool, error) {
-	return resolveSerializeMethodOption(ctx, m, "method", serializeMethodValid)
+	return resolveSerializeMethodOption(ctx, m, lexicon.SerializationMethod, serializeMethodValid)
 }
 
 // resolveSerializeJSONNodeMethodMap uses the narrower xml/html/xhtml/text domain
 // for nodes embedded in JSON, retaining extension QNames for later validation.
 func resolveSerializeJSONNodeMethodMap(ctx context.Context, m xdm.MapItem) (string, bool, error) {
-	return resolveSerializeMethodOption(ctx, m, "json-node-output-method", serializeJSONNodeOutputMethodValid)
+	return resolveSerializeMethodOption(ctx, m, lexicon.SerializationJSONNodeOutputMethod, serializeJSONNodeOutputMethodValid)
 }
 
 // resolveSerializeMethodOption preserves namespaced QName values as EQNames and
@@ -1105,7 +1105,7 @@ func applySerializeNodeParam(opts serializeOptions, param *xdm.Element) (seriali
 
 		*target = value
 
-		if name == "item-separator" {
+		if name == lexicon.SerializationItemSeparator {
 			opts.itemSeparatorSet = true
 		}
 
@@ -1113,7 +1113,7 @@ func applySerializeNodeParam(opts serializeOptions, param *xdm.Element) (seriali
 	}
 
 	switch name {
-	case lexicon.SerializationCDATASectionElements, "suppress-indentation":
+	case lexicon.SerializationCDATASectionElements, lexicon.SerializationSuppressIndentation:
 		names, err := readSerializeParamQNameNames(param, opts.edition)
 		if err != nil {
 			return opts, err
@@ -1124,7 +1124,7 @@ func applySerializeNodeParam(opts serializeOptions, param *xdm.Element) (seriali
 		} else {
 			opts.suppressIndent = names
 		}
-	case "use-character-maps":
+	case lexicon.SerializationUseCharacterMaps:
 		charMap, err := resolveSerializeCharacterMapsElement(opts, param, true)
 		if err != nil {
 			return opts, err
@@ -1575,17 +1575,17 @@ func readSerializeNodeStringParam(param *xdm.Element, edition int) (string, erro
 	token := strings.Trim(value, lexicon.XMLWhitespace)
 
 	switch name {
-	case "encoding":
+	case lexicon.SerializationEncoding:
 		if !xmlchar.IsValidEncName(token) || edition == 30 && value != token {
 			return "", &xdm.Error{Code: errCodeSEPM0017, Message: "invalid serialization encoding name"}
 		}
 	case lexicon.SerializationMethod, lexicon.SerializationJSONNodeOutputMethod:
 		return readSerializeNodeMethod(param, value, token, edition)
-	case "normalization-form":
+	case lexicon.SerializationNormalizationForm:
 		if !serializeNormalizationFormValid(token) {
 			return "", &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter normalization-form has an invalid value %q", value)}
 		}
-	case "html-version":
+	case lexicon.SerializationHTMLVersion:
 		if !isValidXSDecimal(token) {
 			return "", &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter html-version must be an xs:decimal, got %q", value)}
 		}

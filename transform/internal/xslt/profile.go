@@ -12,7 +12,6 @@ import (
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
-	"github.com/skarm/xmlsec/transform/internal/xslt/internal/elements"
 )
 
 // ErrLanguageUnsupported identifies features outside the modern Basic profile.
@@ -242,7 +241,7 @@ func checkExtensionNamespaceAttribute(elem *xdm.Element, selected int) error {
 
 func unavailableInstruction(name string, selected int) bool {
 	def, known := lookupXSLTElement(name)
-	minimum := elements.MinVersion(name)
+	minimum := minXSLTElementVersion(name)
 
 	return !known || selected < 30 && (def.since30 || minimum == lexicon.XSLTVersion30) || selected < 20 && minimum == lexicon.XSLTVersion20
 }
@@ -255,7 +254,7 @@ func checkModernElementLanguage(elem *xdm.Element, effective int) error {
 	name := elem.LocalName()
 
 	def, known := lookupXSLTElement(name)
-	if known && (def.since30 || elements.MinVersion(name) == lexicon.XSLTVersion30) && effective < 30 {
+	if known && (def.since30 || minXSLTElementVersion(name) == lexicon.XSLTVersion30) && effective < 30 {
 		return staticError("XTSE0010", "xsl:%s requires XSLT 3.0", name)
 	}
 

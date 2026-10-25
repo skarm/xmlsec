@@ -6,6 +6,8 @@ import (
 	"crypto/x509"
 	"errors"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
@@ -72,18 +74,18 @@ func Verify(ctx context.Context, d *document.Document, target document.Element, 
 		return nil, ErrSignature
 	}
 
-	sig, e := xmlutil.Direct(target, xmlutil.Name(xmlutil.DS, "Signature"))
+	sig, e := xmlutil.Direct(target, xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature))
 	if e != nil {
 		return nil, e
 	}
 
-	si, e := xmlutil.Direct(sig, xmlutil.Name(xmlutil.DS, "SignedInfo"))
+	si, e := xmlutil.Direct(sig, xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignedInfo))
 	if e != nil {
 		return nil, e
 	}
 
 	cs, e := xmlutil.Children(si)
-	if e != nil || len(cs) != 3 || cs[0].Name() != xmlutil.Name(xmlutil.DS, "CanonicalizationMethod") || cs[1].Name() != xmlutil.Name(xmlutil.DS, "SignatureMethod") || cs[2].Name() != xmlutil.Name(xmlutil.DS, "Reference") {
+	if e != nil || len(cs) != 3 || cs[0].Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementCanonicalizationMethod) || cs[1].Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignatureMethod) || cs[2].Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementReference) {
 		return nil, ErrSignature
 	}
 
@@ -96,13 +98,13 @@ func Verify(ctx context.Context, d *document.Document, target document.Element, 
 		return nil, ErrSignature
 	}
 
-	trs, e := xmlutil.Direct(ref, xmlutil.Name(xmlutil.DS, "Transforms"))
+	trs, e := xmlutil.Direct(ref, xmlutil.Name(xmlutil.DS, lexicon.DSigElementTransforms))
 	if e != nil {
 		return nil, e
 	}
 
 	ts := trs.Children()
-	if len(ts) != 2 || ts[0].Name() != xmlutil.Name(xmlutil.DS, "Transform") || ts[1].Name() != xmlutil.Name(xmlutil.DS, "Transform") || xmlutil.Attr(ts[0], "Algorithm") != xmldsig.EnvelopedSignature || xmlutil.Attr(ts[1], "Algorithm") != c14n.Exclusive || len(ts[0].Children()) != 0 || len(ts[1].Children()) != 0 {
+	if len(ts) != 2 || ts[0].Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementTransform) || ts[1].Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementTransform) || xmlutil.Attr(ts[0], "Algorithm") != xmldsig.EnvelopedSignature || xmlutil.Attr(ts[1], "Algorithm") != c14n.Exclusive || len(ts[0].Children()) != 0 || len(ts[1].Children()) != 0 {
 		return nil, ErrSignature
 	}
 

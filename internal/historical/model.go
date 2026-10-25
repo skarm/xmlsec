@@ -36,7 +36,7 @@ const (
 // Contains is populated only by a format parser, not by application assertions.
 type Object struct {
 	Bytes    []byte
-	Kind     string
+	Kind     historicalproof.Kind
 	Contains [][32]byte
 	Refs     []HashReference
 }

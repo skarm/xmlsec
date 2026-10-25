@@ -3,13 +3,16 @@ package xmlenc
 import (
 	"context"
 	"crypto/aes"
-	"crypto/des" // #nosec G502 -- Explicit legacy XMLENC key-wrap policy.
 	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
 	"io"
 	"unicode/utf8"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+
+	"crypto/des" // #nosec G502 -- Explicit legacy XMLENC key-wrap policy.
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -75,8 +78,8 @@ func EncryptKey(ctx context.Context, rawKey []byte, recipient KeyGraphKey, optio
 	if info != nil {
 		appendChild(root, info)
 	} else if recipient.Name != "" {
-		info := newElement(SignatureNamespace, "ds", "KeyInfo")
-		name := newElement(SignatureNamespace, "ds", "KeyName")
+		info := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyInfo)
+		name := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyName)
 		appendChild(name, &tree.Node{Kind: tree.TextNode, Data: recipient.Name})
 		appendChild(info, name)
 		appendChild(root, info)

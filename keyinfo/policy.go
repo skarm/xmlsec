@@ -3,6 +3,8 @@ package keyinfo
 import (
 	"fmt"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
 )
@@ -20,7 +22,7 @@ func (p *parser) configureKeyData() error {
 	p.keyData = make(map[document.Name]bool)
 	for _, name := range p.options.AllowedKeyData {
 		switch name {
-		case document.Name{Space: Namespace, Local: "KeyName"},
+		case document.Name{Space: Namespace, Local: lexicon.DSigElementKeyName},
 			document.Name{Space: Namespace, Local: nameDSAKeyValue},
 			document.Name{Space: Namespace, Local: nameRSAKeyValue},
 			document.Name{Space: Namespace11, Local: nameECKeyValue},
@@ -50,8 +52,8 @@ func (p *parser) requireKeyData(name document.Name) error {
 }
 
 func (p *parser) checkKeyData(node *tree.Node) error {
-	if is(node, Namespace, "KeyValue") {
-		children, err := structure(node, Namespace, "KeyValue")
+	if is(node, Namespace, lexicon.DSigElementKeyValue) {
+		children, err := structure(node, Namespace, lexicon.DSigElementKeyValue)
 		if err != nil || len(children) != 1 {
 			return ErrInput
 		}

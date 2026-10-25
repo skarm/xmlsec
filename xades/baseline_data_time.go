@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
@@ -148,10 +150,10 @@ func parseBaselineDataTimestamp(ctx context.Context, element document.Element, v
 		return out, ErrProfile
 	}
 
-	if at < len(values) && values[at].Name() == ds("CanonicalizationMethod") {
+	if at < len(values) && values[at].Name() == ds(lexicon.DSigElementCanonicalizationMethod) {
 		_, node := tree.Unwrap(values[at])
 
-		out.method, err = transformxml.ParseCanonical(node, "CanonicalizationMethod")
+		out.method, err = transformxml.ParseCanonical(node, lexicon.DSigElementCanonicalizationMethod)
 		if err != nil {
 			return out, errors.Join(ErrProfile, err)
 		}
@@ -219,14 +221,14 @@ func buildBaselineDataTimestamp(ctx context.Context, value DataTimestampProperty
 
 	method := value.Canonicalization
 	if method.Algorithm != "" {
-		canonical := dsnode("CanonicalizationMethod")
+		canonical := dsnode(lexicon.DSigElementCanonicalizationMethod)
 		attr(canonical, "Algorithm", method.Algorithm)
 
 		if err := transformxml.AppendParameters(ctx, canonical, method); err != nil {
 			return nil, err
 		}
 
-		if _, err := transformxml.ParseCanonical(canonical, "CanonicalizationMethod"); err != nil {
+		if _, err := transformxml.ParseCanonical(canonical, lexicon.DSigElementCanonicalizationMethod); err != nil {
 			return nil, err
 		}
 
@@ -261,7 +263,7 @@ func (value *DataTimestamp) bindReferences(verified *xmldsig.SignatureResult, in
 			value.references = append(value.references, ref.result)
 		}
 	} else {
-		si, err := childNamed(verified.Signature(), ds("SignedInfo"))
+		si, err := childNamed(verified.Signature(), ds(lexicon.DSigElementSignedInfo))
 		if err != nil {
 			return err
 		}
@@ -269,7 +271,7 @@ func (value *DataTimestamp) bindReferences(verified *xmldsig.SignatureResult, in
 		index := 0
 
 		for _, element := range si.Children() {
-			if element.Name() != ds("Reference") {
+			if element.Name() != ds(lexicon.DSigElementReference) {
 				continue
 			}
 

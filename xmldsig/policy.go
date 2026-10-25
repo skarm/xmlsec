@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
 )
@@ -236,7 +238,7 @@ func findSignatures(d *document.Document) []*tree.Node {
 	)
 
 	walk = func(n *tree.Node) {
-		if n.Kind == tree.ElementNode && n.Name == (document.Name{Space: Namespace, Local: "Signature"}) {
+		if n.Kind == tree.ElementNode && n.Name == (document.Name{Space: Namespace, Local: lexicon.DSigElementSignature}) {
 			out = append(out, n)
 		}
 

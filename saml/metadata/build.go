@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
@@ -26,7 +28,7 @@ type KeyDescriptor struct {
 // RoleDescriptor supplies supported metadata keys, endpoints and SAML role requirements.
 type RoleDescriptor struct {
 	Keys []KeyDescriptor
-	// Endpoints maps metadata element local names, such as AssertionConsumerService,
+	// Endpoints maps metadata element local names, such as [AssertionConsumerService],
 	// to their endpoint declarations.
 	Endpoints     map[string][]Endpoint
 	NameIDFormats []string
@@ -134,7 +136,7 @@ func buildOrder(order []string, r *struct {
 				xmlutil.Set(n2, "ResponseLocation", ep.ResponseLocation)
 			}
 
-			if kind == nameAssertionConsumerService || kind == nameArtifactResolutionService {
+			if kind == AssertionConsumerService || kind == ArtifactResolutionService {
 				xmlutil.Set(n2, "index", strconv.Itoa(int(ep.Index)))
 
 				if ep.DefaultSet || ep.Default {
@@ -217,9 +219,9 @@ func buildEntries(ctx context.Context, s *EntityDescriptor, root *tree.Node, max
 				xmlutil.Set(kd, "use", k.Use)
 			}
 
-			ki := xmlutil.Node("ds", xmlutil.DS, "KeyInfo")
-			xd := xmlutil.Node("ds", xmlutil.DS, "X509Data")
-			xc := xmlutil.Node("ds", xmlutil.DS, "X509Certificate")
+			ki := xmlutil.Node("ds", xmlutil.DS, lexicon.DSigElementKeyInfo)
+			xd := xmlutil.Node("ds", xmlutil.DS, lexicon.DSigElementX509Data)
+			xc := xmlutil.Node("ds", xmlutil.DS, lexicon.DSigElementX509Certificate)
 			xmlutil.Text(xc, encoded)
 			xmlutil.Add(xd, xc)
 			xmlutil.Add(ki, xd)
@@ -227,11 +229,11 @@ func buildEntries(ctx context.Context, s *EntityDescriptor, root *tree.Node, max
 			xmlutil.Add(n, kd)
 		}
 
-		order := []string{nameArtifactResolutionService, "SingleLogoutService", "ManageNameIDService", nameNameIDFormat}
+		order := []string{ArtifactResolutionService, SingleLogoutService, ManageNameIDService, nameNameIDFormat}
 		if r.kind == IdentityProvider {
-			order = append(order, "SingleSignOnService", "NameIDMappingService")
+			order = append(order, SingleSignOnService, NameIDMappingService)
 		} else {
-			order = append(order, nameAssertionConsumerService)
+			order = append(order, AssertionConsumerService)
 		}
 
 		used := map[string]bool{}

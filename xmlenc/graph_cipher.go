@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
@@ -163,7 +165,7 @@ func graphCipherTransforms(child document.Element) ([]reference.Transform, error
 		return nil, nil
 	}
 
-	containers, err := childElements(child, elementName(Namespace, "Transforms"))
+	containers, err := childElements(child, elementName(Namespace, lexicon.DSigElementTransforms))
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +189,7 @@ func graphCipherTransforms(child document.Element) ([]reference.Transform, error
 }
 
 func graphCipherTransform(item document.Element) (reference.Transform, error) {
-	if item.Name() != elementName(SignatureNamespace, "Transform") || !exactAttributes(item, "Algorithm") || !graphStructuralText(item) {
+	if item.Name() != elementName(SignatureNamespace, lexicon.DSigElementTransform) || !exactAttributes(item, "Algorithm") || !graphStructuralText(item) {
 		return reference.Transform{}, ErrFormat
 	}
 

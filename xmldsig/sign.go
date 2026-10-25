@@ -8,6 +8,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
@@ -103,18 +105,18 @@ func SignEnveloped(ctx context.Context, d *document.Document, signer crypto.Sign
 		return nil, err
 	}
 
-	signature := newDS("Signature")
+	signature := newDS(lexicon.DSigElementSignature)
 	signature.NS = []tree.Namespace{{Prefix: "ds", URI: Namespace}}
 	signature.Parent = root
-	si := newDS("SignedInfo")
+	si := newDS(lexicon.DSigElementSignedInfo)
 	add(signature, si)
 
-	cm := newDS("CanonicalizationMethod")
+	cm := newDS(lexicon.DSigElementCanonicalizationMethod)
 	setAttr(cm, "Algorithm", c14n.Exclusive)
 	addInclusive(cm, opt.InclusivePrefixes)
 	add(si, cm)
 
-	sm := newDS("SignatureMethod")
+	sm := newDS(lexicon.DSigElementSignatureMethod)
 	setAttr(sm, "Algorithm", opt.SignatureMethod)
 	add(si, sm)
 
@@ -145,27 +147,27 @@ func SignEnveloped(ctx context.Context, d *document.Document, signer crypto.Sign
 			return nil, &ReferenceError{i, "#" + id, nameTransform, err}
 		}
 
-		ref := newDS("Reference")
+		ref := newDS(lexicon.DSigElementReference)
 		setAttr(ref, "URI", "#"+id)
 
-		ts := newDS("Transforms")
+		ts := newDS(lexicon.DSigElementTransforms)
 		if target == root {
-			tr := newDS("Transform")
+			tr := newDS(lexicon.DSigElementTransform)
 			setAttr(tr, "Algorithm", EnvelopedSignature)
 			add(ts, tr)
 		}
 
-		tr := newDS("Transform")
+		tr := newDS(lexicon.DSigElementTransform)
 		setAttr(tr, "Algorithm", c14n.Exclusive)
 		addInclusive(tr, opt.InclusivePrefixes)
 		add(ts, tr)
 		add(ref, ts)
 
-		dm := newDS("DigestMethod")
+		dm := newDS(lexicon.DSigElementDigestMethod)
 		setAttr(dm, "Algorithm", opt.DigestMethod)
 		add(ref, dm)
 
-		dv := newDS("DigestValue")
+		dv := newDS(lexicon.DSigElementDigestValue)
 		text(dv, base64.StdEncoding.EncodeToString(digest.Sum(nil)))
 		add(ref, dv)
 		add(si, ref)
@@ -204,7 +206,7 @@ func SignEnveloped(ctx context.Context, d *document.Document, signer crypto.Sign
 		return nil, err
 	}
 
-	sv := newDS("SignatureValue")
+	sv := newDS(lexicon.DSigElementSignatureValue)
 	text(sv, base64.StdEncoding.EncodeToString(value))
 	add(signature, sv)
 	// Reparse to enforce the same XML and resource limits as incoming documents.

@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/saml/binding"
@@ -244,7 +246,7 @@ func authenticateAuthnRequest(ctx context.Context, d *document.Document, root do
 		return 1, nil
 	}
 
-	if signingCount(d, 1) != nil || len(children) < 2 || children[1].Name() != xmlutil.Name(xmlutil.DS, "Signature") {
+	if signingCount(d, 1) != nil || len(children) < 2 || children[1].Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature) {
 		return 0, ErrProfile
 	}
 

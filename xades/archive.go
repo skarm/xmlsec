@@ -7,6 +7,8 @@ import (
 	"io"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/streamio"
@@ -304,7 +306,7 @@ func (v *Validator) appendArchive(ctx context.Context, doc *document.Document, s
 
 	archive := node141("ArchiveTimeStamp")
 	archive.NS = append(archive.NS, tree.Namespace{Prefix: "ds", URI: xmldsig.Namespace}, tree.Namespace{Prefix: nameXades, URI: Namespace})
-	cm := dsnode("CanonicalizationMethod")
+	cm := dsnode(lexicon.DSigElementCanonicalizationMethod)
 	attr(cm, "Algorithm", method)
 	add(archive, cm)
 
@@ -352,7 +354,7 @@ func writeArchiveInput(ctx context.Context, dst io.Writer, basic *BasicResult, u
 	}
 
 	sig := basic.Signature().Signature()
-	for _, local := range []string{"SignedInfo", "SignatureValue", "KeyInfo"} {
+	for _, local := range []string{lexicon.DSigElementSignedInfo, lexicon.DSigElementSignatureValue, lexicon.DSigElementKeyInfo} {
 		n, e := childNamed(sig, ds(local))
 		if e != nil {
 			return e

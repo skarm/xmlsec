@@ -322,7 +322,7 @@ func encodeAgreement(ctx context.Context, originator, recipient *ecdh.PublicKey,
 		return nil, err
 	}
 
-	info := newElement(SignatureNamespace, "ds", "KeyInfo")
+	info := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyInfo)
 	method := encryptedElement("AgreementMethod")
 	setAttribute(method, "Algorithm", ECDHES)
 	appendChild(method, kdf)
@@ -334,7 +334,7 @@ func encodeAgreement(ctx context.Context, originator, recipient *ecdh.PublicKey,
 	receiver := encryptedElement("RecipientKeyInfo")
 
 	if p.options.RecipientKeyName != "" {
-		name := newElement(SignatureNamespace, "ds", "KeyName")
+		name := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyName)
 		appendChild(name, &tree.Node{Kind: tree.TextNode, Data: p.options.RecipientKeyName})
 		appendChild(receiver, name)
 	}
@@ -347,7 +347,7 @@ func encodeAgreement(ctx context.Context, originator, recipient *ecdh.PublicKey,
 }
 
 func agreementKeyValue(public *ecdh.PublicKey, uri string) *tree.Node {
-	value := newElement(SignatureNamespace, "ds", "KeyValue")
+	value := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyValue)
 	ec := newElement(SignatureNamespace11, "dsig11", "ECKeyValue")
 	ec.NS = []tree.Namespace{{Prefix: "dsig11", URI: SignatureNamespace11}}
 	curve := newElement(SignatureNamespace11, "dsig11", "NamedCurve")
@@ -364,7 +364,7 @@ func agreementKeyValue(public *ecdh.PublicKey, uri string) *tree.Node {
 
 func decodeAgreement(ctx context.Context, info document.Element, recipient *ecdh.PublicKey, p agreementParameters) (*ecdh.PublicKey, error) {
 	children, err := childElements(info, elementName(Namespace, "AgreementMethod"))
-	if err != nil || info.Name() != elementName(SignatureNamespace, "KeyInfo") || !exactAttributes(info) {
+	if err != nil || info.Name() != elementName(SignatureNamespace, lexicon.DSigElementKeyInfo) || !exactAttributes(info) {
 		return nil, ErrFormat
 	}
 
@@ -440,7 +440,7 @@ func decodeAgreementKey(ctx context.Context, info document.Element, p agreementP
 
 	for _, child := range children {
 		switch child.Name() {
-		case elementName(SignatureNamespace, "KeyValue"):
+		case elementName(SignatureNamespace, lexicon.DSigElementKeyValue):
 			if point != nil {
 				return nil, ErrFormat
 			}
@@ -451,7 +451,7 @@ func decodeAgreementKey(ctx context.Context, info document.Element, p agreementP
 			if err != nil {
 				return nil, err
 			}
-		case elementName(SignatureNamespace, "KeyName"):
+		case elementName(SignatureNamespace, lexicon.DSigElementKeyName):
 			if nameSeen || !exactAttributes(child) || len(child.Children()) != 0 || !agreementKeyName(child.Text()) {
 				return nil, ErrFormat
 			}
@@ -520,7 +520,7 @@ func checkAgreementRecipient(ctx context.Context, info document.Element, recipie
 
 	for _, child := range children {
 		switch child.Name() {
-		case elementName(SignatureNamespace, "KeyValue"):
+		case elementName(SignatureNamespace, lexicon.DSigElementKeyValue):
 			if keySeen {
 				return ErrFormat
 			}
@@ -535,7 +535,7 @@ func checkAgreementRecipient(ctx context.Context, info document.Element, recipie
 			if !bytes.Equal(public.Bytes(), recipient.Bytes()) {
 				return ErrFormat
 			}
-		case elementName(SignatureNamespace, "KeyName"):
+		case elementName(SignatureNamespace, lexicon.DSigElementKeyName):
 			if nameSeen || p.options.RecipientKeyName == "" || !exactAttributes(child) || len(child.Children()) != 0 || child.Text() != p.options.RecipientKeyName {
 				return ErrFormat
 			}

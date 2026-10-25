@@ -1529,9 +1529,6 @@ func (ec *execContext) buildBaseXPathEvaluator(baseURI string) xpath.Evaluator {
 			eval = eval.URIResolver(resourceURIResolver{r})
 		}
 
-		if c := ec.transformConfig.httpClient; c != nil {
-			eval = eval.HTTPClient(c)
-		}
 		// Forward the injected base parseOptions so fn:doc / fn:parse-xml inside XPath
 		// expressions parse under the same policy as the rest of the engine.
 		if p := ec.transformConfig.parseOptions; p != nil {

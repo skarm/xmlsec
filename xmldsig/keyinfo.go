@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/keyinfo"
@@ -66,7 +68,7 @@ func VerifySignatureWithKeyInfo(ctx context.Context, doc *document.Document, sel
 	var ki *tree.Node
 
 	for _, n := range plan.sig.Children {
-		if isDS(n, "KeyInfo") {
+		if isDS(n, lexicon.DSigElementKeyInfo) {
 			ki = n
 			break
 		}

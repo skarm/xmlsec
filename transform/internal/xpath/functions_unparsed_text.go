@@ -35,8 +35,8 @@ func unparsedTextConfig(ctx context.Context) *unparsedtext.Config {
 	}
 
 	cfg := &unparsedtext.Config{
-		BaseURI:        ec.baseURI,
-		HTTPClient:     ec.httpClient,
+		BaseURI: ec.baseURI,
+
 		MaxBytes:       ec.maxResourceBytes,
 		CheckBytes:     func(n int) error { return ChargeString(ctx, n) },
 		ReadPolicy:     ec.resourceReads,

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/signature"
@@ -466,11 +468,11 @@ func baselineDigestNode(ctx context.Context, local, method string, data []byte, 
 	}
 
 	node := xnode(local)
-	dm := dsnode("DigestMethod")
+	dm := dsnode(lexicon.DSigElementDigestMethod)
 	attr(dm, "Algorithm", method)
 	add(node, dm)
 
-	dv := dsnode("DigestValue")
+	dv := dsnode(lexicon.DSigElementDigestValue)
 	text(dv, base64.StdEncoding.EncodeToString(sum))
 	add(node, dv)
 
@@ -482,7 +484,7 @@ func parseBaselineDigest(ctx context.Context, element document.Element, options 
 		return "", nil, ErrProfile
 	}
 
-	elements, err := children(element, ds("DigestMethod"), ds("DigestValue"))
+	elements, err := children(element, ds(lexicon.DSigElementDigestMethod), ds(lexicon.DSigElementDigestValue))
 	if err != nil {
 		return "", nil, err
 	}
@@ -732,7 +734,7 @@ func parseProductionPlace(element document.Element) (*ProductionPlace, error) {
 }
 
 func baselineEmbeddedCertificates(ctx context.Context, sig document.Element, signer []byte) ([][]byte, error) {
-	keyInfo, err := childNamed(sig, ds("KeyInfo"))
+	keyInfo, err := childNamed(sig, ds(lexicon.DSigElementKeyInfo))
 	if err != nil {
 		return nil, ErrProfile
 	}
@@ -743,14 +745,14 @@ func baselineEmbeddedCertificates(ctx context.Context, sig document.Element, sig
 	found := false
 
 	for _, data := range keyInfo.Children() {
-		if data.Name() != ds("X509Data") {
+		if data.Name() != ds(lexicon.DSigElementX509Data) {
 			continue
 		}
 
 		dataCount++
 
 		for _, value := range data.Children() {
-			if value.Name() != ds("X509Certificate") {
+			if value.Name() != ds(lexicon.DSigElementX509Certificate) {
 				continue
 			}
 

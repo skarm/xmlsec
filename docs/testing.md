@@ -459,6 +459,8 @@ interop build. Offline runs may supply `XMLSEC_DSS_GOMODCACHE` and
 source-bound capture. The runner imports only the explicit fixture CA, disables
 trust-list loading, starts DSS and Go in one `--network none` container, and
 stops the server afterward. It creates no Java/C adapter or persistent job.
+For a Git worktree, it also mounts the common Git metadata read-only so that
+source-bound capture can resolve the checkout's `.git` file.
 
 The main pair requires the same primary signature, intact references and exact
 best-signature times. A sufficient archive must recover the old timestamp's

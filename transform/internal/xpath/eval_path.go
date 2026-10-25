@@ -1389,14 +1389,14 @@ func vmPositionFromLiteral(expr LiteralExpr) (int, bool) {
 func positionCall(expr Expr) bool {
 	switch e := expr.(type) {
 	case FunctionCall:
-		local, isFn := lexicon.StreamFnLocalName(e.Name, e.Prefix)
+		local, isFn := lexicalFnLocalName(e.Name, e.Prefix)
 		return len(e.Args) == 0 && isFn && local == lexicon.FnPosition
 	case *FunctionCall:
 		if e == nil {
 			return false
 		}
 
-		local, isFn := lexicon.StreamFnLocalName(e.Name, e.Prefix)
+		local, isFn := lexicalFnLocalName(e.Name, e.Prefix)
 
 		return len(e.Args) == 0 && isFn && local == lexicon.FnPosition
 	default:

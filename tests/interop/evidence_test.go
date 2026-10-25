@@ -450,7 +450,9 @@ func archiveInput(t *testing.T, fixture *interopFixture, d *tree.Document, stamp
 		}
 	}
 
-	out = append(out, externalCanonical(t, fixture, d, si, attr(one(t, si, ds, "CanonicalizationMethod"), "Algorithm"))...)
+	// EN 319 132-1 5.5.2.3 uses the archive method for SignedInfo too.
+	// Keep this input independent of the Go archive implementation.
+	out = append(out, externalCanonical(t, fixture, d, si, algorithm)...)
 	for _, name := range []string{"SignatureValue", "KeyInfo"} {
 		out = append(out, externalCanonical(t, fixture, d, one(t, sig, ds, name), algorithm)...)
 	}

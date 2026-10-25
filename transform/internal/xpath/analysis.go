@@ -21,7 +21,7 @@ type ExpressionAnalysis struct {
 // evaluates the expression nor promises streamability or absence of effects.
 func (e *Expression) Analyze(ctx context.Context, namespaces map[string]string) (ExpressionAnalysis, error) {
 	a := expressionAnalyzer{ctx: ctx, namespaces: namespaces, seen: make(map[FunctionReference]bool)}
-	walkExpr(e.astExpr(), a.visit)
+	WalkExpr(e.astExpr(), a.visit)
 
 	if a.err != nil {
 		return ExpressionAnalysis{}, a.err
@@ -109,7 +109,7 @@ func (a *expressionAnalyzer) predicates(predicates []Expr) {
 			return
 		}
 
-		walkExpr(predicate, func(expr Expr) bool {
+		WalkExpr(predicate, func(expr Expr) bool {
 			if a.err != nil || a.result.NonMotionlessPredicates {
 				return false
 			}

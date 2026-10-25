@@ -93,7 +93,7 @@ func VerifyResponse(ctx context.Context, d *document.Document, keys []crypto.Pub
 	pos := 1
 	responseSigned := false
 
-	if children[pos].Name() == xmlutil.Name(xmlutil.DS, "Signature") {
+	if children[pos].Name() == xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature) {
 		if e = targetSignature(ctx, d, root, keys, o.Policy); e != nil {
 			return nil, e
 		}
@@ -195,7 +195,7 @@ func parseAssertion(a document.Element, o ResponseOptions, l Limits) (*VerifiedA
 	}
 
 	cs, e := xmlutil.Children(a)
-	if e != nil || len(cs) < 5 || len(cs) > 6 || issuer(cs[0], o.Issuer) != nil || cs[1].Name() != xmlutil.Name(xmlutil.DS, "Signature") || cs[2].Name() != xmlutil.Name(AssertionNamespace, "Subject") || cs[3].Name() != xmlutil.Name(AssertionNamespace, "Conditions") || cs[4].Name() != xmlutil.Name(AssertionNamespace, "AuthnStatement") {
+	if e != nil || len(cs) < 5 || len(cs) > 6 || issuer(cs[0], o.Issuer) != nil || cs[1].Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature) || cs[2].Name() != xmlutil.Name(AssertionNamespace, "Subject") || cs[3].Name() != xmlutil.Name(AssertionNamespace, "Conditions") || cs[4].Name() != xmlutil.Name(AssertionNamespace, "AuthnStatement") {
 		return nil, ErrProfile
 	}
 

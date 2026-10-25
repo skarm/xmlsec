@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/transformxml"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -136,7 +138,7 @@ func (p *parser) prepareRetrieval(s *scope, n *tree.Node) (retrievalPlan, error)
 		plan.processing.IDRules = append(DefaultIDRules(), p.options.AdditionalIDRules...)
 
 		for parent := n.Parent; parent != nil; parent = parent.Parent {
-			if is(parent, Namespace, "Signature") {
+			if is(parent, Namespace, lexicon.DSigElementSignature) {
 				plan.processing.Signature = tree.Wrap(s.doc, parent)
 				break
 			}
@@ -181,7 +183,7 @@ func (p *parser) parseRetrievalTransforms(s *scope, children []*tree.Node, opt r
 			return nil, ErrInput
 		}
 
-		nodes, err := structure(children[0], Namespace, "Transforms")
+		nodes, err := structure(children[0], Namespace, lexicon.DSigElementTransforms)
 		if err != nil {
 			return nil, err
 		}

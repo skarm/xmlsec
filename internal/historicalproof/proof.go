@@ -13,6 +13,33 @@ import (
 // ErrProof reports an invalid or over-budget proof set.
 var ErrProof = errors.New("invalid historical proof set")
 
+// Kind identifies the exact role established by a validation workflow.
+// It is separate from untrusted evidence observation categories.
+type Kind string
+
+const (
+	// Certificate identifies an exact certificate encoding.
+	Certificate Kind = "certificate"
+	// CRL identifies an exact certificate revocation list encoding.
+	CRL Kind = "crl"
+	// OCSP identifies an exact OCSP response encoding.
+	OCSP Kind = "ocsp"
+	// Signature identifies an exact document signature value.
+	Signature Kind = "signature"
+	// Timestamp identifies an exact timestamp token encoding.
+	Timestamp Kind = "timestamp"
+	// Digest identifies an authenticated hash-reference value.
+	Digest Kind = "digest"
+	// Data identifies exact application or transformed reference bytes.
+	Data Kind = "data"
+)
+
+// Valid reports whether the role belongs to the closed proof vocabulary.
+// A Kind converted from arbitrary text must still pass this check.
+func (k Kind) Valid() bool {
+	return k == Certificate || k == CRL || k == OCSP || k == Signature || k == Timestamp || k == Digest || k == Data
+}
+
 // Fact binds one exact object's SHA-256 to its proven existence upper bound.
 // Source is the exact validating timestamp; zero denotes observation at Now.
 // Kind distinguishes certificate, crl, ocsp, signature, timestamp and digest.
@@ -20,7 +47,7 @@ type Fact struct {
 	Digest [32]byte
 	Source [32]byte
 	At     time.Time
-	Kind   string
+	Kind   Kind
 }
 
 // Set is an immutable, bounded proof snapshot. A zero value is invalid.
@@ -44,7 +71,7 @@ func New(ctx context.Context, now time.Time, facts []Fact) (*Set, error) {
 			return nil, err
 		}
 
-		if fact.Digest == ([32]byte{}) || fact.At.IsZero() || fact.At.After(now) || !validKind(fact.Kind) || fact.Source == ([32]byte{}) && !fact.At.Equal(now) {
+		if fact.Digest == ([32]byte{}) || fact.At.IsZero() || fact.At.After(now) || !fact.Kind.Valid() || fact.Source == ([32]byte{}) && !fact.At.Equal(now) {
 			return nil, ErrProof
 		}
 
@@ -61,10 +88,6 @@ func New(ctx context.Context, now time.Time, facts []Fact) (*Set, error) {
 	owned = slices.Compact(owned)
 
 	return &Set{now: now.UTC(), facts: owned}, nil
-}
-
-func validKind(kind string) bool {
-	return kind == "certificate" || kind == "crl" || kind == "ocsp" || kind == "signature" || kind == "timestamp" || kind == "digest" || kind == "data"
 }
 
 func compare(a, b Fact) int {
@@ -114,7 +137,7 @@ func (s *Set) Earliest(digest [32]byte) (time.Time, bool) {
 }
 
 // EarliestKind also requires the named object role when kind is nonempty.
-func (s *Set) EarliestKind(digest [32]byte, kind string) (time.Time, bool) {
+func (s *Set) EarliestKind(digest [32]byte, kind Kind) (time.Time, bool) {
 	if !s.Valid() {
 		return time.Time{}, false
 	}

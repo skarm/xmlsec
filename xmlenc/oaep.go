@@ -7,6 +7,8 @@ import (
 	"crypto/fips140"
 	"encoding/base64"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
 )
@@ -77,7 +79,7 @@ func encodeOAEP(method *tree.Node, p OAEPParameters) {
 	}
 
 	digestURI, _ := oaepURIs(p.Hash)
-	digest := newElement(SignatureNamespace, "ds", "DigestMethod")
+	digest := newElement(SignatureNamespace, "ds", lexicon.DSigElementDigestMethod)
 	setAttribute(digest, "Algorithm", digestURI)
 
 	appendChild(method, digest)
@@ -109,7 +111,7 @@ func checkOAEP(ctx context.Context, method document.Element, expected OAEPParame
 		case elementName(Namespace, "KeySize"):
 			// The common EncryptionMethod checker validated value and order.
 			continue
-		case elementName(SignatureNamespace, "DigestMethod"):
+		case elementName(SignatureNamespace, lexicon.DSigElementDigestMethod):
 			if digest || !matchesMethod(child, digestURI, true) {
 				return ErrFormat
 			}

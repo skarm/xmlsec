@@ -744,7 +744,7 @@ func calleeContext(ctx context.Context, captured *evalContext) *evalContext {
 		local.invocation = caller.invocation
 		local.uriResolver, local.collectionResolver = caller.uriResolver, caller.collectionResolver
 		local.resourceReads = caller.resourceReads
-		local.httpClient, local.maxResourceBytes, local.parseOptions = caller.httpClient, caller.maxResourceBytes, caller.parseOptions
+		local.maxResourceBytes, local.parseOptions = caller.maxResourceBytes, caller.parseOptions
 		local.traceWriter = caller.traceWriter
 	} else {
 		local.resourceReads = nil

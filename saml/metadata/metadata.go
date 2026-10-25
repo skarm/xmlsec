@@ -40,6 +40,21 @@ const HTTPArtifact = lexicon.SAMLBindingHTTPArtifact
 // SOAP is the SAML SOAP binding URI; SOAP processing is unsupported.
 const SOAP = lexicon.SAMLBindingSOAP
 
+const (
+	// AssertionConsumerService selects assertion consumer endpoints in Role.Endpoints.
+	AssertionConsumerService = lexicon.SAMLAssertionConsumerService
+	// SingleSignOnService selects IdP sign-on endpoints in Role.Endpoints.
+	SingleSignOnService = lexicon.SAMLSingleSignOnService
+	// SingleLogoutService selects logout declarations; logout processing is unsupported.
+	SingleLogoutService = lexicon.SAMLSingleLogoutService
+	// ArtifactResolutionService selects artifact declarations; artifact processing is unsupported.
+	ArtifactResolutionService = lexicon.SAMLArtifactResolutionService
+	// ManageNameIDService selects name identifier management declarations, without enabling processing.
+	ManageNameIDService = lexicon.SAMLManageNameIDService
+	// NameIDMappingService selects name identifier mapping declarations, without enabling processing.
+	NameIDMappingService = lexicon.SAMLNameIDMappingService
+)
+
 // ErrMetadata reports SAML metadata rejected.
 var ErrMetadata = errors.New("SAML metadata rejected")
 
@@ -210,7 +225,7 @@ func (r *Role) ACS(binding string, index *uint16) (Endpoint, error) {
 		return Endpoint{}, ErrMetadata
 	}
 
-	return SelectACS(r.endpoints[nameAssertionConsumerService], binding, index)
+	return SelectACS(r.endpoints[AssertionConsumerService], binding, index)
 }
 
 // Entity is an immutable metadata entity with supported roles and an effective expiration.
@@ -566,7 +581,7 @@ func (p *metadataParser) visitGroup(element document.Element, expires time.Time,
 			}
 
 			count++
-		case xmlutil.Name(xmlutil.DS, "Signature"), xmlutil.Name(Namespace, "Extensions"):
+		case xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature), xmlutil.Name(Namespace, "Extensions"):
 			// Protected metadata content is not interpreted or fetched.
 		default:
 			return ErrMetadata
@@ -632,7 +647,7 @@ func (p *metadataParser) readEntityRoles(entity *Entity, children []document.Ele
 			if role != nil {
 				entity.roles[kind] = role
 			}
-		case xmlutil.Name(xmlutil.DS, "Signature"), xmlutil.Name(Namespace, "Extensions"), xmlutil.Name(Namespace, "Organization"), xmlutil.Name(Namespace, "ContactPerson"), xmlutil.Name(Namespace, "AdditionalMetadataLocation"):
+		case xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature), xmlutil.Name(Namespace, "Extensions"), xmlutil.Name(Namespace, "Organization"), xmlutil.Name(Namespace, "ContactPerson"), xmlutil.Name(Namespace, "AdditionalMetadataLocation"):
 			// Protected metadata content is not interpreted or fetched.
 		default:
 			return fmt.Errorf("%w: unsupported role/content %s", ErrMetadata, child.Name().Local)
@@ -674,7 +689,7 @@ func parseRole(ctx context.Context, element document.Element, at, parent time.Ti
 		return nil, err
 	}
 
-	if role.kind == IdentityProvider && len(role.endpoints["SingleSignOnService"]) == 0 || role.kind == ServiceProvider && len(role.endpoints[nameAssertionConsumerService]) == 0 {
+	if role.kind == IdentityProvider && len(role.endpoints[SingleSignOnService]) == 0 || role.kind == ServiceProvider && len(role.endpoints[AssertionConsumerService]) == 0 {
 		return nil, ErrMetadata
 	}
 
@@ -717,7 +732,7 @@ func readRoleContent(ctx context.Context, role *Role, children []document.Elemen
 			return err
 		}
 
-		if child.Name().Space != Namespace && child.Name() != xmlutil.Name(xmlutil.DS, "Signature") {
+		if child.Name().Space != Namespace && child.Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature) {
 			return ErrMetadata
 		}
 
@@ -730,7 +745,7 @@ func readRoleContent(ctx context.Context, role *Role, children []document.Elemen
 			if err := appendRoleNameIDFormat(role, child); err != nil {
 				return err
 			}
-		case "SingleSignOnService", "SingleLogoutService", nameAssertionConsumerService, nameArtifactResolutionService, "ManageNameIDService", "NameIDMappingService":
+		case SingleSignOnService, SingleLogoutService, AssertionConsumerService, ArtifactResolutionService, ManageNameIDService, NameIDMappingService:
 			endpointCount++
 			if endpointCount > o.MaxEndpointsPerRole {
 				return ErrMetadata
@@ -742,7 +757,7 @@ func readRoleContent(ctx context.Context, role *Role, children []document.Elemen
 			}
 
 			role.endpoints[child.Name().Local] = append(role.endpoints[child.Name().Local], endpoint)
-		case "Signature", "Extensions", "Organization", "ContactPerson", "AttributeConsumingService", "AttributeProfile", "Attribute":
+		case lexicon.DSigElementSignature, "Extensions", "Organization", "ContactPerson", "AttributeConsumingService", "AttributeProfile", "Attribute":
 			// Protected role content is not interpreted.
 		default:
 			return ErrMetadata
@@ -785,7 +800,7 @@ func appendRoleNameIDFormat(role *Role, element document.Element) error {
 }
 
 func parseEndpoint(c document.Element, o Options) (Endpoint, error) {
-	indexed := c.Name().Local == nameAssertionConsumerService || c.Name().Local == nameArtifactResolutionService
+	indexed := c.Name().Local == AssertionConsumerService || c.Name().Local == ArtifactResolutionService
 	required := []string{"Binding", "Location"}
 	optional := []string{"ResponseLocation"}
 
@@ -832,7 +847,7 @@ func parseKey(ctx context.Context, c document.Element) ([]key, error) {
 	}
 
 	cs, e := xmlutil.Children(c)
-	if e != nil || len(cs) == 0 || cs[0].Name() != xmlutil.Name(xmlutil.DS, "KeyInfo") {
+	if e != nil || len(cs) == 0 || cs[0].Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementKeyInfo) {
 		return nil, ErrMetadata
 	}
 
@@ -847,7 +862,7 @@ func parseKey(ctx context.Context, c document.Element) ([]key, error) {
 	}
 
 	ks := cs[0].Children()
-	if len(ks) != 1 || ks[0].Name() != xmlutil.Name(xmlutil.DS, "X509Data") {
+	if len(ks) != 1 || ks[0].Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementX509Data) {
 		return nil, ErrMetadata
 	}
 
@@ -859,7 +874,7 @@ func parseKey(ctx context.Context, c document.Element) ([]key, error) {
 	}
 
 	for _, x := range ks[0].Children() {
-		if x.Name() != xmlutil.Name(xmlutil.DS, "X509Certificate") {
+		if x.Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementX509Certificate) {
 			return nil, ErrMetadata
 		}
 

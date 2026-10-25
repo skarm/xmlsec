@@ -145,7 +145,7 @@ func (i *IdentityProvider) Issue(ctx context.Context, request *Request, a Authen
 
 	found := false
 
-	for _, ep := range other.Endpoints("AssertionConsumerService") {
+	for _, ep := range other.Endpoints(metadata.AssertionConsumerService) {
 		if ep.Binding == metadata.HTTPPost && ep.Location == r.ACS() {
 			found = true
 		}
@@ -284,7 +284,7 @@ func (i *IdentityProvider) requestPolicy(ctx context.Context, sp, destination, b
 
 	found := false
 
-	for _, ep := range own.Endpoints("SingleSignOnService") {
+	for _, ep := range own.Endpoints(metadata.SingleSignOnService) {
 		if ep.Binding == bindingURI && ep.Location == destination {
 			found = true
 		}
@@ -294,7 +294,7 @@ func (i *IdentityProvider) requestPolicy(ctx context.Context, sp, destination, b
 		return protocol.RequestOptions{}, nil, ErrPolicy
 	}
 
-	return protocol.RequestOptions{Issuer: sp, Destination: destination, ACS: other.Endpoints("AssertionConsumerService"), At: at, Limits: i.c.Limits, Policy: i.c.VerificationPolicy}, other, nil
+	return protocol.RequestOptions{Issuer: sp, Destination: destination, ACS: other.Endpoints(metadata.AssertionConsumerService), At: at, Limits: i.c.Limits, Policy: i.c.VerificationPolicy}, other, nil
 }
 
 func (i *IdentityProvider) wrap(r *protocol.VerifiedRequest, relay string, present bool, at time.Time) (*Request, error) {

@@ -40,7 +40,7 @@ func Parse(ctx context.Context, doc *document.Document, selected document.Elemen
 	}
 
 	d, n := tree.Unwrap(selected)
-	if d != doc || n == nil || !is(n, Namespace, "KeyInfo") {
+	if d != doc || n == nil || !is(n, Namespace, lexicon.DSigElementKeyInfo) {
 		return nil, ErrInput
 	}
 	// Freeze nested ID-rule slices before any application resolver can run.
@@ -92,7 +92,7 @@ func Parse(ctx context.Context, doc *document.Document, selected document.Elemen
 // DefaultIDRules returns a fresh copy of the supported default ID attribute rules.
 func DefaultIDRules() []reference.IDAttributeRule {
 	return []reference.IDAttributeRule{{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{
-		{Space: Namespace, Local: "KeyInfo"},
+		{Space: Namespace, Local: lexicon.DSigElementKeyInfo},
 		{Space: Namespace11, Local: nameECKeyValue},
 		{Space: Namespace11, Local: nameDEREncodedKeyValue},
 		{Space: Namespace11, Local: nameKeyInfoReference},
@@ -178,7 +178,7 @@ func (p *parser) keyInfo(s *scope, n *tree.Node, depth int) error {
 	}
 	defer leave()
 
-	children, err := structure(n, Namespace, "KeyInfo", "Id")
+	children, err := structure(n, Namespace, lexicon.DSigElementKeyInfo, "Id")
 	if err != nil {
 		return err
 	}
@@ -227,7 +227,7 @@ func (p *parser) item(s *scope, n *tree.Node, depth int) error {
 	defer leave()
 
 	switch n.Name {
-	case document.Name{Space: Namespace, Local: "KeyName"}:
+	case document.Name{Space: Namespace, Local: lexicon.DSigElementKeyName}:
 		value, err := p.stringValue(n)
 		if err != nil {
 			return err
@@ -236,8 +236,8 @@ func (p *parser) item(s *scope, n *tree.Node, depth int) error {
 		p.result.names = append(p.result.names, value)
 
 		return nil
-	case document.Name{Space: Namespace, Local: "KeyValue"}:
-		c, err := structure(n, Namespace, "KeyValue")
+	case document.Name{Space: Namespace, Local: lexicon.DSigElementKeyValue}:
+		c, err := structure(n, Namespace, lexicon.DSigElementKeyValue)
 		if err != nil {
 			return err
 		}
@@ -270,7 +270,7 @@ func (p *parser) item(s *scope, n *tree.Node, depth int) error {
 			return err
 		}
 
-		if !is(target, Namespace, "KeyInfo") {
+		if !is(target, Namespace, lexicon.DSigElementKeyInfo) {
 			return fmt.Errorf("%w: KeyInfoReference target is not KeyInfo", ErrInput)
 		}
 

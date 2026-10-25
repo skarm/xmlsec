@@ -1,6 +1,8 @@
 package xmlenc
 
 import (
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -68,7 +70,7 @@ func graphAgreementName(info document.Element) (string, error) {
 		}
 
 		for _, hint := range child.Children() {
-			if hint.Name() == elementName(SignatureNamespace, "KeyName") {
+			if hint.Name() == elementName(SignatureNamespace, lexicon.DSigElementKeyName) {
 				return graphNameText(hint)
 			}
 		}

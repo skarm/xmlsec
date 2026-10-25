@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -374,7 +376,7 @@ type baselineDataReference struct {
 func baselineDataReferences(verified *xmldsig.SignatureResult) (map[string]baselineDataReference, error) {
 	out := make(map[string]baselineDataReference)
 
-	si, err := childNamed(verified.Signature(), ds("SignedInfo"))
+	si, err := childNamed(verified.Signature(), ds(lexicon.DSigElementSignedInfo))
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +385,7 @@ func baselineDataReferences(verified *xmldsig.SignatureResult) (map[string]basel
 		index := 0
 
 		for _, element := range parent.Children() {
-			if element.Name() != ds("Reference") {
+			if element.Name() != ds(lexicon.DSigElementReference) {
 				continue
 			}
 
@@ -458,13 +460,13 @@ func checkBaselineDataBindings(layout baselineLayout, verified *xmldsig.Signatur
 	// EN319132-1 6.3(k) requires a DataObjectFormat for every directly signed
 	// data Reference, excluding properties and the special countersignature target.
 
-	si, err := childNamed(verified.Signature(), ds("SignedInfo"))
+	si, err := childNamed(verified.Signature(), ds(lexicon.DSigElementSignedInfo))
 	if err != nil {
 		return err
 	}
 
 	for _, element := range si.Children() {
-		if element.Name() != ds("Reference") {
+		if element.Name() != ds(lexicon.DSigElementReference) {
 			continue
 		}
 

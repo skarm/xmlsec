@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net/http"
 	"path"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -59,12 +58,6 @@ func WithTransformPackageResolver(r PackageResolver) TransformOption {
 	return transformOptionFunc(func(c *transformFnConfig) { c.packageResolver = r })
 }
 
-// WithTransformHTTPClient sets an opt-in HTTP client for retrieving http(s)
-// resources inside the transformed stylesheet.
-func WithTransformHTTPClient(client *http.Client) TransformOption {
-	return transformOptionFunc(func(c *transformFnConfig) { c.httpClient = client })
-}
-
 // WithTransformBaseURI sets the base URI against which a relative
 // stylesheet-location (and stylesheet-text base) is resolved.
 func WithTransformBaseURI(uri string) TransformOption {
@@ -107,7 +100,7 @@ func TransformFunction(options ...TransformOption) xpath.TypedFunctionByArity {
 	if cfg.parseOptions != nil && cfg.parseOptions.AllowDTD {
 		opts := *cfg.parseOptions
 		opts.DTDOpen = func(ctx context.Context, uri string) (io.ReadCloser, error) {
-			return openDocumentVia(ctx, uri, cfg.stylesheetResolver, cfg.httpClient)
+			return openDocumentVia(ctx, uri, cfg.stylesheetResolver)
 		}
 		cfg.parseOptions = &opts
 	}
@@ -436,7 +429,6 @@ func (ec *execContext) fnTransform(ctx context.Context, args []xdm.Sequence) (xd
 	if ec.transformConfig != nil {
 		cfg.innerURIResolver = ec.transformConfig.uriResolver
 		cfg.collectionResolver = ec.transformConfig.collectionResolver
-		cfg.httpClient = ec.transformConfig.httpClient
 	}
 
 	return cfg.run(ctx, args)
@@ -492,9 +484,7 @@ type transformFnConfig struct {
 	// its parse.
 	innerURIResolver   xpath.URIResolver
 	collectionResolver xpath.CollectionResolver
-	// httpClient is the opt-in HTTP client for the inner transform's resource
-	// retrieval.
-	httpClient *http.Client
+
 	// maxResourceBytes is the per-resource read cap (0 = default, <0 = unbounded).
 	maxResourceBytes int64
 
@@ -1314,7 +1304,6 @@ func (request transformRequest) newInvocation(ctx context.Context, cfg *transfor
 		outputBaseURI:      outputBaseURI,
 		uriResolver:        cfg.innerURIResolver,
 		collectionResolver: cfg.collectionResolver,
-		httpClient:         cfg.httpClient,
 		maxResourceBytes:   cfg.maxResourceBytes,
 		parseOptions:       cfg.parseOptions,
 		rawCapture:         true,

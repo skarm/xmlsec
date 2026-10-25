@@ -364,6 +364,12 @@ POST decoding is unauthenticated. Redirect verification authenticates the raw
 query before inflation; protocol checks still establish issuer, audience,
 destination, correlation, time and authentication conditions.
 
+Use named metadata service constants for endpoint map keys and selection, for
+example `role.Endpoints(metadata.SingleSignOnService)` or
+`map[string][]metadata.Endpoint{metadata.AssertionConsumerService: endpoints}`.
+Existing string arguments remain accepted. Service declarations do not enable
+unsupported logout, artifact or name identifier workflows.
+
 SP requests bind to unpredictable browser/session secrets. Acceptance atomically
 consumes request/assertion IDs after validation. IdP authentication, HTTP handlers,
 cookies and endpoints belong to the application. Multiple instances need shared

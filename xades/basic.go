@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
@@ -249,7 +251,7 @@ func verifyBasicEnveloped(ctx context.Context, doc *document.Document, selected 
 		return nil, ErrProfile
 	}
 
-	sc, err := children(selected, ds("SignedInfo"), ds("SignatureValue"), ds("KeyInfo"), ds("Object"))
+	sc, err := children(selected, ds(lexicon.DSigElementSignedInfo), ds(lexicon.DSigElementSignatureValue), ds(lexicon.DSigElementKeyInfo), ds("Object"))
 	if err != nil {
 		return nil, err
 	}
@@ -335,7 +337,7 @@ func xmlSpace(s string) bool {
 func validateBasicTransforms(refs []tree.Element) error {
 	for i, r := range refs {
 		a := r.Children()
-		if len(a) != 3 || a[0].Name() != ds("Transforms") {
+		if len(a) != 3 || a[0].Name() != ds(lexicon.DSigElementTransforms) {
 			return ErrProfile
 		}
 
@@ -351,7 +353,7 @@ func validateBasicTransforms(refs []tree.Element) error {
 		}
 
 		for j, t := range trs {
-			if t.Name() != ds("Transform") || attrs(t, "Algorithm") != nil || len(t.Children()) != 0 || localAttribute(t, "Algorithm") != want[j] {
+			if t.Name() != ds(lexicon.DSigElementTransform) || attrs(t, "Algorithm") != nil || len(t.Children()) != 0 || localAttribute(t, "Algorithm") != want[j] {
 				return ErrProfile
 			}
 		}
@@ -361,12 +363,12 @@ func validateBasicTransforms(refs []tree.Element) error {
 }
 
 func verifyEmbeddedCertificate(ctx context.Context, keyInfo document.Element, certificate *x509.Certificate) error {
-	ki, err := children(keyInfo, ds("X509Data"))
+	ki, err := children(keyInfo, ds(lexicon.DSigElementX509Data))
 	if err != nil || attrs(keyInfo) != nil {
 		return ErrProfile
 	}
 
-	xc, err := children(ki[0], ds("X509Certificate"))
+	xc, err := children(ki[0], ds(lexicon.DSigElementX509Certificate))
 	if err != nil || attrs(ki[0]) != nil {
 		return ErrProfile
 	}
@@ -400,7 +402,7 @@ func verifySigningCertificate(ctx context.Context, property document.Element, ce
 		return ErrProfile
 	}
 
-	cvd, err := children(cd[0], ds("DigestMethod"), ds("DigestValue"))
+	cvd, err := children(cd[0], ds(lexicon.DSigElementDigestMethod), ds(lexicon.DSigElementDigestValue))
 	if err != nil || attrs(cd[0]) != nil {
 		return ErrProfile
 	}
@@ -675,10 +677,10 @@ func SignBasicEnveloped(ctx context.Context, doc *document.Document, signer cryp
 	sc := xnode("SigningCertificateV2")
 	ce := xnode("Cert")
 	cd := xnode("CertDigest")
-	dm := dsnode("DigestMethod")
+	dm := dsnode(lexicon.DSigElementDigestMethod)
 	attr(dm, "Algorithm", xmldsig.SHA256)
 
-	dv := dsnode("DigestValue")
+	dv := dsnode(lexicon.DSigElementDigestValue)
 	sum := sha256.Sum256(c.Raw)
 	text(dv, base64.StdEncoding.EncodeToString(sum[:]))
 	add(cd, dm)

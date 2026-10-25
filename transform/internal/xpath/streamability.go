@@ -6,15 +6,14 @@ package xpath
 import (
 	"maps"
 	"math/big"
+	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
-// StreamInfo exposes precomputed streamability properties for use by
-// internal packages (e.g. xslt streamability analysis). This struct
-// is not intended for end-user consumption; it lives in an internal
-// package that re-exports query helpers.
+// StreamInfo exposes precomputed expression properties to internal consumers,
+// including XSLT pattern analysis. It grants no W3C streamability claim.
 type StreamInfo struct {
 	UsedFunctions   map[string]struct{}
 	AxisUsed        uint16
@@ -24,7 +23,7 @@ type StreamInfo struct {
 }
 
 // AST returns the root AST node of the compiled expression.
-// This is used by streamability analysis in xslt via internal/xpathstream.
+// XSLT pattern analysis traverses it with WalkExpr.
 func (e *Expression) AST() Expr {
 	return e.astExpr()
 }
@@ -62,14 +61,14 @@ func computeStreamInfo(ast Expr) streamInfo {
 		computeStreamInfoAbsolute(&v, &si)
 	}
 
-	walkExpr(ast, si.observe)
+	WalkExpr(ast, si.observe)
 
 	return si
 }
 
-// walkExpr walks an XPath 3.1 AST, calling fn for each Expr node.
+// WalkExpr walks an XPath 3.1 AST, calling fn for each Expr node.
 // If fn returns false, children of that node are not visited.
-func walkExpr(expr Expr, fn func(Expr) bool) {
+func WalkExpr(expr Expr, fn func(Expr) bool) {
 	if expr == nil {
 		return
 	}
@@ -136,7 +135,7 @@ func walkPathChildren(expr Expr, fn func(Expr) bool) bool {
 	case LocationPath:
 		for _, step := range e.Steps {
 			for _, pred := range step.Predicates {
-				walkExpr(pred, fn)
+				WalkExpr(pred, fn)
 			}
 		}
 
@@ -145,53 +144,53 @@ func walkPathChildren(expr Expr, fn func(Expr) bool) bool {
 	case vmLocationPathExpr:
 		for _, step := range e.Steps {
 			for _, pred := range step.Predicates {
-				walkExpr(pred, fn)
+				WalkExpr(pred, fn)
 			}
 		}
 
 		return true
 
 	case FilterExpr:
-		walkExpr(e.Expr, fn)
+		WalkExpr(e.Expr, fn)
 
 		for _, pred := range e.Predicates {
-			walkExpr(pred, fn)
+			WalkExpr(pred, fn)
 		}
 
 		return true
 
 	case PathExpr:
-		walkExpr(e.Filter, fn)
+		WalkExpr(e.Filter, fn)
 
 		if e.Path != nil {
-			walkExpr(*e.Path, fn)
+			WalkExpr(*e.Path, fn)
 		}
 
 		return true
 
 	case vmPathExpr:
-		walkExpr(e.Filter, fn)
+		WalkExpr(e.Filter, fn)
 
 		if e.Path != nil {
-			walkExpr(*e.Path, fn)
+			WalkExpr(*e.Path, fn)
 		}
 
 		return true
 
 	case PathStepExpr:
-		walkExpr(e.Left, fn)
-		walkExpr(e.Right, fn)
+		WalkExpr(e.Left, fn)
+		WalkExpr(e.Right, fn)
 
 		return true
 
 	case LookupExpr:
-		walkExpr(e.Expr, fn)
-		walkExpr(e.Key, fn)
+		WalkExpr(e.Expr, fn)
+		WalkExpr(e.Key, fn)
 
 		return true
 
 	case UnaryLookupExpr:
-		walkExpr(e.Key, fn)
+		WalkExpr(e.Key, fn)
 
 		return true
 	}
@@ -205,43 +204,43 @@ func walkBindingChildren(expr Expr, fn func(Expr) bool) bool {
 		for _, clause := range e.Clauses {
 			switch c := clause.(type) {
 			case ForClause:
-				walkExpr(c.Expr, fn)
+				WalkExpr(c.Expr, fn)
 			case LetClause:
-				walkExpr(c.Expr, fn)
+				WalkExpr(c.Expr, fn)
 			}
 		}
 
-		walkExpr(e.Return, fn)
+		WalkExpr(e.Return, fn)
 
 		return true
 
 	case QuantifiedExpr:
 		for _, b := range e.Bindings {
-			walkExpr(b.Domain, fn)
+			WalkExpr(b.Domain, fn)
 		}
 
-		walkExpr(e.Satisfies, fn)
+		WalkExpr(e.Satisfies, fn)
 
 		return true
 
 	case IfExpr:
-		walkExpr(e.Cond, fn)
-		walkExpr(e.Then, fn)
-		walkExpr(e.Else, fn)
+		WalkExpr(e.Cond, fn)
+		WalkExpr(e.Then, fn)
+		WalkExpr(e.Else, fn)
 
 		return true
 
 	case TryCatchExpr:
-		walkExpr(e.Try, fn)
+		WalkExpr(e.Try, fn)
 
 		for _, cc := range e.Catches {
-			walkExpr(cc.Expr, fn)
+			WalkExpr(cc.Expr, fn)
 		}
 
 		return true
 
 	case InlineFunctionExpr:
-		walkExpr(e.Body, fn)
+		WalkExpr(e.Body, fn)
 
 		return true
 	}
@@ -255,54 +254,54 @@ func walkValueChildren(expr Expr, fn func(Expr) bool) {
 		// leaf nodes
 
 	case BinaryExpr:
-		walkExpr(e.Left, fn)
-		walkExpr(e.Right, fn)
+		WalkExpr(e.Left, fn)
+		WalkExpr(e.Right, fn)
 
 	case UnaryExpr:
-		walkExpr(e.Operand, fn)
+		WalkExpr(e.Operand, fn)
 
 	case ConcatExpr:
-		walkExpr(e.Left, fn)
-		walkExpr(e.Right, fn)
+		WalkExpr(e.Left, fn)
+		WalkExpr(e.Right, fn)
 
 	case SimpleMapExpr:
-		walkExpr(e.Left, fn)
-		walkExpr(e.Right, fn)
+		WalkExpr(e.Left, fn)
+		WalkExpr(e.Right, fn)
 
 	case RangeExpr:
-		walkExpr(e.Start, fn)
-		walkExpr(e.End, fn)
+		WalkExpr(e.Start, fn)
+		WalkExpr(e.End, fn)
 
 	case UnionExpr:
-		walkExpr(e.Left, fn)
-		walkExpr(e.Right, fn)
+		WalkExpr(e.Left, fn)
+		WalkExpr(e.Right, fn)
 
 	case IntersectExceptExpr:
-		walkExpr(e.Left, fn)
-		walkExpr(e.Right, fn)
+		WalkExpr(e.Left, fn)
+		WalkExpr(e.Right, fn)
 
 	case InstanceOfExpr:
-		walkExpr(e.Expr, fn)
+		WalkExpr(e.Expr, fn)
 
 	case CastExpr:
-		walkExpr(e.Expr, fn)
+		WalkExpr(e.Expr, fn)
 
 	case CastableExpr:
-		walkExpr(e.Expr, fn)
+		WalkExpr(e.Expr, fn)
 
 	case TreatAsExpr:
-		walkExpr(e.Expr, fn)
+		WalkExpr(e.Expr, fn)
 
 	case FunctionCall:
 		for _, arg := range e.Args {
-			walkExpr(arg, fn)
+			WalkExpr(arg, fn)
 		}
 
 	case DynamicFunctionCall:
-		walkExpr(e.Func, fn)
+		WalkExpr(e.Func, fn)
 
 		for _, arg := range e.Args {
-			walkExpr(arg, fn)
+			WalkExpr(arg, fn)
 		}
 
 	case NamedFunctionRef:
@@ -310,18 +309,18 @@ func walkValueChildren(expr Expr, fn func(Expr) bool) {
 
 	case MapConstructorExpr:
 		for _, pair := range e.Pairs {
-			walkExpr(pair.Key, fn)
-			walkExpr(pair.Value, fn)
+			WalkExpr(pair.Key, fn)
+			WalkExpr(pair.Value, fn)
 		}
 
 	case ArrayConstructorExpr:
 		for _, item := range e.Items {
-			walkExpr(item, fn)
+			WalkExpr(item, fn)
 		}
 
 	case SequenceExpr:
 		for _, item := range e.Items {
-			walkExpr(item, fn)
+			WalkExpr(item, fn)
 		}
 	}
 }
@@ -384,10 +383,10 @@ func (si *streamInfo) observe(e Expr) bool {
 }
 
 // streamFnLocalName resolves a FunctionCall to its streamability local name via
-// the shared lexicon.StreamFnLocalName helper, normalizing the EQName
+// the lexicalFnLocalName helper, normalizing the EQName
 // (Q{...}local) spelling the parseOptions keeps in FunctionCall.Name.
 func streamFnLocalName(fc FunctionCall) (string, bool) {
-	return lexicon.StreamFnLocalName(fc.Name, fc.Prefix)
+	return lexicalFnLocalName(fc.Name, fc.Prefix)
 }
 
 func (si *streamInfo) observeStep(axis AxisType) {
@@ -450,4 +449,48 @@ func inspectPredicateMotion(e, pred Expr, step *Step) (bool, bool) {
 	}
 
 	return false, true
+}
+
+// isFnNamespacePrefix reports whether a function-call prefix names the XPath
+// functions namespace (http://www.w3.org/2005/xpath-functions) for the purpose
+// of streamability analysis. For function calls an empty prefix defaults to that
+// namespace, and "fn" is the conventional reserved prefix bound to it, so both
+// lexical forms name the same built-in. Streamability special-cases functions
+// such as position()/last() by (namespace, local-name) and must therefore treat
+// the unprefixed and "fn:"-prefixed spellings identically.
+//
+// This is a deliberately lexical check, not a namespace-resolved one: the
+// analysis runs over the static AST with no access to a prefix->URI map (the map
+// only exists at eval time, via the xpath evaluator's namespace bindings). We
+// make the same assumption the xpath evaluator's own static-shape recognition
+// already makes (eval_path.go positionCall: Prefix == "" || Prefix == "fn").
+// Edge case: a caller that rebinds "fn" to a custom namespace and then calls
+// fn:position() would have it resolve to a user function at eval time while
+// streamability still treats it as the built-in. Rebinding the reserved "fn"
+// prefix is pathological and unsupported here; consistency with the evaluator is
+// preferred.
+func isFnNamespacePrefix(prefix string) bool {
+	return prefix == "" || prefix == "fn"
+}
+
+// lexicalFnLocalName resolves a function call's lexical (name, prefix) to its
+// local name for streamability analysis, reporting whether the call names the
+// XPath functions namespace.
+//
+// The parseOptions keeps an EQName function call's whole braced spelling in the name
+// (e.g. "Q{http://www.w3.org/2005/xpath-functions}position"), so a bare lexical
+// comparison against "position"/"last" would miss it. This normalizes that form
+// to its local part when the braced URI is the functions namespace. For the
+// lexical (unprefixed or "fn:") forms it defers to isFnNamespacePrefix and
+// returns name unchanged.
+func lexicalFnLocalName(name, prefix string) (string, bool) {
+	if strings.HasPrefix(name, "Q{") {
+		if idx := strings.Index(name, "}"); idx >= 0 {
+			return name[idx+1:], name[2:idx] == lexicon.NamespaceFn
+		}
+
+		return name, false
+	}
+
+	return name, isFnNamespacePrefix(prefix)
 }

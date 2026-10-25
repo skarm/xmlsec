@@ -8,7 +8,7 @@ import (
 )
 
 // MaxResourceBytes is the default maximum number of bytes read from a single
-// external resource loaded through the configured URIResolver / HTTPClient /
+// external resource loaded through the configured URIResolver or
 // PackageResolver — fn:doc / document(), xsl:import / xsl:include, xsl:use-package
 // package loads, xsl:import-schema, fn:transform stylesheet sources, and
 // serialization parameter documents. It guards against a hostile or pathological

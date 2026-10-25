@@ -14,6 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/historicalproof"
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/historical"
@@ -26,10 +29,10 @@ import (
 )
 
 const (
-	historicalSignedInfoElement     = "SignedInfo"
-	historicalSignatureValueElement = "SignatureValue"
-	historicalDataObject            = "data"
-	historicalKeyInfoElement        = "KeyInfo"
+	historicalSignedInfoElement     = lexicon.DSigElementSignedInfo
+	historicalSignatureValueElement = lexicon.DSigElementSignatureValue
+	historicalDataObject            = historicalproof.Data
+	historicalKeyInfoElement        = lexicon.DSigElementKeyInfo
 )
 
 type historicalObjects struct {
@@ -42,7 +45,7 @@ type historicalObjects struct {
 	signedInfoOptions  c14n.Options
 }
 
-func (b *historicalObjects) add(raw []byte, kind string, contains [][32]byte) ([32]byte, error) {
+func (b *historicalObjects) add(raw []byte, kind historicalproof.Kind, contains [][32]byte) ([32]byte, error) {
 	key := sha256.Sum256(raw)
 	if previous, ok := b.index[key]; ok {
 		object := &b.objects[previous]
@@ -143,18 +146,18 @@ func (b *historicalObjects) contained(raw []byte) ([][32]byte, error) {
 	return out, nil
 }
 
-func historicalContainedKind(node document.Element) string {
+func historicalContainedKind(node document.Element) historicalproof.Kind {
 	switch node.Name() {
 	case ds(historicalSignatureValueElement):
-		return "signature"
-	case ds("X509Certificate"), name("EncapsulatedX509Certificate"):
-		return "certificate"
+		return historicalproof.Signature
+	case ds(lexicon.DSigElementX509Certificate), name("EncapsulatedX509Certificate"):
+		return historicalproof.Certificate
 	case name("EncapsulatedCRLValue"):
-		return "crl"
+		return historicalproof.CRL
 	case name("EncapsulatedOCSPValue"):
-		return "ocsp"
+		return historicalproof.OCSP
 	case name("EncapsulatedTimeStamp"):
-		return "timestamp"
+		return historicalproof.Timestamp
 	}
 
 	return ""
@@ -180,7 +183,7 @@ func (b *historicalObjects) containedNode(node document.Element) ([32]byte, bool
 	var children [][32]byte
 
 	for _, raw := range certificates {
-		key, err := b.add(raw, "certificate", nil)
+		key, err := b.add(raw, historicalproof.Certificate, nil)
 		if err != nil {
 			return [32]byte{}, false, err
 		}
@@ -193,22 +196,22 @@ func (b *historicalObjects) containedNode(node document.Element) ([32]byte, bool
 	return key, err == nil, err
 }
 
-func (b *historicalObjects) containedCertificates(kind string, value []byte) ([][]byte, bool, error) {
+func (b *historicalObjects) containedCertificates(kind historicalproof.Kind, value []byte) ([][]byte, bool, error) {
 	switch kind {
-	case "timestamp":
+	case historicalproof.Timestamp:
 		token, err := timestamp.ParseToken(b.ctx, value)
 		if err == nil {
 			return token.Certificates(), true, nil
 		}
 
 		return nil, false, nil
-	case "certificate":
+	case historicalproof.Certificate:
 		_, err := x509cert.ParseWithMaxBytes(value, len(value))
 
 		return nil, err == nil, nil
-	case "crl":
+	case historicalproof.CRL:
 		return nil, validateMaterialObject(1, value) == nil, nil
-	case "ocsp":
+	case historicalproof.OCSP:
 		if validateEmbeddedOCSP(value) == nil {
 			certificates, err := pki.InspectOCSPCertificates(b.ctx, value)
 			if err != nil {
@@ -309,7 +312,7 @@ func (b *historicalInputBuilder) initializeSignature() error {
 		return err
 	}
 
-	b.result.Signature, err = b.objects.add(signatureValue, "signature", nil)
+	b.result.Signature, err = b.objects.add(signatureValue, historicalproof.Signature, nil)
 	if err != nil {
 		return err
 	}
@@ -481,7 +484,7 @@ func (b *historicalInputBuilder) recordUnsignedMaterial() error {
 
 func (b *historicalInputBuilder) recordCertificateReferences() error {
 	for _, reference := range b.baseline.CertificateReferences() {
-		key, err := b.objects.add(reference.CertificateDER(), "certificate", nil)
+		key, err := b.objects.add(reference.CertificateDER(), historicalproof.Certificate, nil)
 		if err != nil {
 			return err
 		}
@@ -558,7 +561,7 @@ func (b *historicalInputBuilder) signatureTimestampInput(method string, hash cry
 }
 
 func historicalSignedInfoOptions(element document.Element, maximum int) (c14n.Options, error) {
-	cm, err := childNamed(element, ds("CanonicalizationMethod"))
+	cm, err := childNamed(element, ds(lexicon.DSigElementCanonicalizationMethod))
 	if err != nil {
 		return c14n.Options{}, err
 	}
@@ -834,7 +837,7 @@ func parseHistoricalTimeStamp(ctx context.Context, element document.Element, max
 	children := element.Children()
 	method := c14n.Canonical10
 
-	if len(children) > 0 && children[0].Name() == ds("CanonicalizationMethod") {
+	if len(children) > 0 && children[0].Name() == ds(lexicon.DSigElementCanonicalizationMethod) {
 		if attrs(children[0], "Algorithm") != nil || len(children[0].Children()) != 0 || !xmlSpace(children[0].Text()) {
 			return "", nil, ErrTimestamp
 		}

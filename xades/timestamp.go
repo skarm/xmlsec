@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/streamio"
@@ -277,7 +279,7 @@ func timestampCanonicalization(s string) bool {
 }
 
 func writeCanonicalValue(ctx context.Context, dst io.Writer, sig document.Element, method string, maximum int) error {
-	v, e := childNamed(sig, ds("SignatureValue"))
+	v, e := childNamed(sig, ds(lexicon.DSigElementSignatureValue))
 	if e != nil {
 		return e
 	}
@@ -320,7 +322,7 @@ func parseTimeStamp(ctx context.Context, e document.Element, maximum int) (strin
 	}
 
 	cs := e.Children()
-	if len(cs) < 2 || len(cs) > 33 || cs[0].Name() != ds("CanonicalizationMethod") || attrs(cs[0], "Algorithm") != nil || len(cs[0].Children()) != 0 || !xmlSpace(cs[0].Text()) {
+	if len(cs) < 2 || len(cs) > 33 || cs[0].Name() != ds(lexicon.DSigElementCanonicalizationMethod) || attrs(cs[0], "Algorithm") != nil || len(cs[0].Children()) != 0 || !xmlSpace(cs[0].Text()) {
 		return "", nil, ErrTimestamp
 	}
 
@@ -456,7 +458,7 @@ func appendVerifiedTimestamp(ctx context.Context, doc *document.Document, select
 	}
 
 	stamp := xnode("SignatureTimeStamp")
-	canonical := dsnode("CanonicalizationMethod")
+	canonical := dsnode(lexicon.DSigElementCanonicalizationMethod)
 	attr(canonical, "Algorithm", method)
 
 	enc := xnode("EncapsulatedTimeStamp")

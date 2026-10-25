@@ -14,7 +14,6 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
-	xpathstream "github.com/skarm/xmlsec/transform/internal/xslt/internal/stream"
 )
 
 type predicateOutcome int
@@ -286,7 +285,7 @@ func matchPathStepPattern(ctx context.Context, ec *execContext, e xpath.PathStep
 func rightPartUsesDescendantAxis(expr xpath.Expr) bool {
 	found := false
 
-	xpathstream.WalkExpr(expr, func(e xpath.Expr) bool {
+	xpath.WalkExpr(expr, func(e xpath.Expr) bool {
 		if found {
 			return false
 		}
@@ -1575,7 +1574,7 @@ type patternPredicateCollector struct {
 	predicates map[*xpath.Expr]*patternPredicate
 }
 
-// visit is the xpathstream.WalkExpr callback. It records the predicates of
+// visit is the xpath.WalkExpr callback. It records the predicates of
 // every step of a location path and does not descend into them: a path nested
 // inside a predicate is evaluated as an expression, never matched step by
 // step.
@@ -1728,7 +1727,7 @@ func (c *compiler) compilePattern(s string, elem *xdm.Element, xpathDefaultNS st
 
 	collector := patternPredicateCollector{nsBindings: nsBindings, version: version}
 	for _, pa := range p.Alternatives {
-		xpathstream.WalkExpr(pa.expr, collector.visit)
+		xpath.WalkExpr(pa.expr, collector.visit)
 	}
 
 	p.predicates = collector.predicates
@@ -2201,7 +2200,7 @@ func validatePredicateExpr(_ xpath.Expr) error {
 func checkPatternForbiddenFunctions(ast xpath.Expr, nsBindings map[string]string) error {
 	var walkErr error
 
-	xpathstream.WalkExpr(ast, func(e xpath.Expr) bool {
+	xpath.WalkExpr(ast, func(e xpath.Expr) bool {
 		if walkErr != nil {
 			return false
 		}
@@ -2416,7 +2415,7 @@ func (c *compiler) validatePatternFunctions(ctx context.Context, p *pattern, sou
 	for _, alt := range p.Alternatives {
 		var walkErr error
 
-		xpathstream.WalkExpr(alt.expr, func(e xpath.Expr) bool {
+		xpath.WalkExpr(alt.expr, func(e xpath.Expr) bool {
 			if walkErr != nil {
 				return false
 			}

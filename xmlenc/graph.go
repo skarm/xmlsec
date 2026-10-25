@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
 )
@@ -49,7 +51,7 @@ func encodeConcatKDFParameters(ctx context.Context, parameters ConcatKDFParamete
 		}
 	}
 
-	digest := newElement(SignatureNamespace, "ds", "DigestMethod")
+	digest := newElement(SignatureNamespace, "ds", lexicon.DSigElementDigestMethod)
 	setAttribute(digest, "Algorithm", algorithm)
 	appendChild(params, digest)
 	appendChild(method, params)
@@ -76,7 +78,7 @@ func decodeConcatKDFParameters(ctx context.Context, method document.Element) (Co
 		return parameters, ErrFormat
 	}
 
-	digests, err := childElements(children[0], elementName(SignatureNamespace, "DigestMethod"))
+	digests, err := childElements(children[0], elementName(SignatureNamespace, lexicon.DSigElementDigestMethod))
 	if err != nil || !exactAttributes(digests[0], "Algorithm") || len(digests[0].Children()) != 0 || !xmlSpace(digests[0].Text()) {
 		return parameters, ErrFormat
 	}

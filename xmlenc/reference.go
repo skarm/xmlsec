@@ -10,6 +10,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
@@ -163,12 +165,12 @@ func decodeCipherData(ctx context.Context, data document.Element, maxBytes int, 
 			return nil, ErrFormat
 		}
 	} else {
-		children, err := childElements(child, elementName(Namespace, "Transforms"))
+		children, err := childElements(child, elementName(Namespace, lexicon.DSigElementTransforms))
 		if err != nil || !exactAttributes(children[0]) {
 			return nil, ErrFormat
 		}
 
-		transforms, err := childElements(children[0], elementName(SignatureNamespace, "Transform"))
+		transforms, err := childElements(children[0], elementName(SignatureNamespace, lexicon.DSigElementTransform))
 		if err != nil || !matchesMethod(transforms[0], SignatureNamespace+"base64", true) {
 			return nil, ErrFormat
 		}

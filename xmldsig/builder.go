@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"fmt"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/x509cert"
@@ -125,17 +127,17 @@ func BuildTemplate(ctx context.Context, doc *document.Document, parent document.
 
 // signatureTemplateNode builds in validation order: SignedInfo, KeyInfo, Objects.
 func signatureTemplateNode(ctx context.Context, spec SignatureTemplate, cm reference.Transform) (*tree.Node, error) {
-	sig := newDS("Signature")
+	sig := newDS(lexicon.DSigElementSignature)
 
 	sig.NS = []tree.Namespace{{Prefix: "ds", URI: Namespace}}
 	if err := templateID(sig, spec.ID); err != nil {
 		return nil, err
 	}
 
-	si := newDS("SignedInfo")
+	si := newDS(lexicon.DSigElementSignedInfo)
 	add(sig, si)
 
-	c := newDS("CanonicalizationMethod")
+	c := newDS(lexicon.DSigElementCanonicalizationMethod)
 	setAttr(c, "Algorithm", cm.Algorithm)
 	addInclusive(c, cm.InclusivePrefixes)
 	add(si, c)
@@ -156,7 +158,7 @@ func signatureTemplateNode(ctx context.Context, spec SignatureTemplate, cm refer
 		add(si, n)
 	}
 
-	add(sig, newDS("SignatureValue"))
+	add(sig, newDS(lexicon.DSigElementSignatureValue))
 
 	if err := appendTemplateKeyInfo(ctx, sig, spec); err != nil {
 		return nil, err
@@ -185,11 +187,11 @@ func appendTemplateKeyInfo(ctx context.Context, sig *tree.Node, spec SignatureTe
 		}
 
 		n := tree.Root(spec.KeyInfo)
-		if !isDS(n, "KeyInfo") {
+		if !isDS(n, lexicon.DSigElementKeyInfo) {
 			return fmt.Errorf("%w: expected a KeyInfo document", ErrStructure)
 		}
 
-		if _, err := structure(n, "KeyInfo", "Id"); err != nil {
+		if _, err := structure(n, lexicon.DSigElementKeyInfo, "Id"); err != nil {
 			return err
 		}
 
@@ -204,8 +206,8 @@ func appendTemplateKeyInfo(ctx context.Context, sig *tree.Node, spec SignatureTe
 		return nil
 	}
 
-	ki := newDS("KeyInfo")
-	xd := newDS("X509Data")
+	ki := newDS(lexicon.DSigElementKeyInfo)
+	xd := newDS(lexicon.DSigElementX509Data)
 
 	total := 0
 	for _, der := range spec.Certificates {
@@ -218,7 +220,7 @@ func appendTemplateKeyInfo(ctx context.Context, sig *tree.Node, spec SignatureTe
 			return fmt.Errorf("%w: invalid embedded certificate: %w", ErrStructure, err)
 		}
 
-		xc := newDS("X509Certificate")
+		xc := newDS(lexicon.DSigElementX509Certificate)
 
 		encoded, err := tree.EncodeBase64(ctx, der)
 		if err != nil {
@@ -461,7 +463,7 @@ func referenceTemplateNode(ctx context.Context, r ReferenceTemplate) (*tree.Node
 		}
 	}
 
-	n := newDS("Reference")
+	n := newDS(lexicon.DSigElementReference)
 	if err := templateID(n, r.ID); err != nil {
 		return nil, err
 	}
@@ -473,9 +475,9 @@ func referenceTemplateNode(ctx context.Context, r ReferenceTemplate) (*tree.Node
 	}
 
 	if len(r.Transforms) > 0 {
-		ts := newDS("Transforms")
+		ts := newDS(lexicon.DSigElementTransforms)
 		for _, tr := range r.Transforms {
-			t := newDS("Transform")
+			t := newDS(lexicon.DSigElementTransform)
 			setAttr(t, "Algorithm", tr.Algorithm)
 			addInclusive(t, tr.InclusivePrefixes)
 
@@ -491,10 +493,10 @@ func referenceTemplateNode(ctx context.Context, r ReferenceTemplate) (*tree.Node
 		add(n, ts)
 	}
 
-	dm := newDS("DigestMethod")
+	dm := newDS(lexicon.DSigElementDigestMethod)
 	setAttr(dm, "Algorithm", r.DigestMethod)
 	add(n, dm)
-	add(n, newDS("DigestValue"))
+	add(n, newDS(lexicon.DSigElementDigestValue))
 
 	return n, nil
 }

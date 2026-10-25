@@ -3,6 +3,8 @@ package xades
 import (
 	"context"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -79,7 +81,7 @@ func VerifyCounterSignature(ctx context.Context, enclosing *BasicResult, counter
 		return ErrProfile
 	}
 
-	target, err := childNamed(parent, ds("SignatureValue"))
+	target, err := childNamed(parent, ds(lexicon.DSigElementSignatureValue))
 	if err != nil {
 		return err
 	}
@@ -102,7 +104,7 @@ func checkCounterContainer(element document.Element) error {
 		return ErrProfile
 	}
 
-	_, err := children(element, ds("Signature"))
+	_, err := children(element, ds(lexicon.DSigElementSignature))
 
 	return err
 }
@@ -116,7 +118,7 @@ func checkBaselineCounterReferences(signature *xmldsig.SignatureResult) error {
 		target := ref.Target()
 
 		_, node := tree.Unwrap(target)
-		if target.Name() != ds("SignatureValue") || node.Parent == nil || node.Parent.Name != ds("Signature") || !ref.CoversElement(target) {
+		if target.Name() != ds(lexicon.DSigElementSignatureValue) || node.Parent == nil || node.Parent.Name != ds(lexicon.DSigElementSignature) || !ref.CoversElement(target) {
 			return ErrProfile
 		}
 	}
