@@ -1,5 +1,6 @@
 // Package transform compiles and runs XPath 1.0/2.0/3.0/3.1, XSLT 1.0 and
-// Basic XSLT 2.0/3.0 with one Go engine and a shared immutable data model.
+// selected Basic XSLT 2.0/3.0 features with one Go engine and a shared immutable
+// data model. Full Basic-profile conformance has not been established.
 //
 // # Compile once, invoke independently
 //

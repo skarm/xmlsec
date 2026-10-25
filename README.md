@@ -136,8 +136,10 @@ SLO, Artifact/ECP or encrypted assertions.
 
 Check [supported profiles and compatibility](docs/compatibility.md) for the full
 scope, exclusions and known interoperability differences. The
-[conformance register](docs/conformance.json) maps supported requirements to
-tests; [standards](docs/standards.md) lists the source specifications.
+[conformance register](docs/conformance.json) separates supported capabilities,
+normative obligations, policy and remaining gaps. Its clause inventory is partial;
+see [normative traceability](docs/conformance.md) and the pinned
+[standards](docs/standards.md).
 
 ## Documentation and examples
 

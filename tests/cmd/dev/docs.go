@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -200,7 +199,7 @@ func checkDocs(root string, out io.Writer) error {
 		return err
 	}
 
-	_, err = fmt.Fprintf(out, "Documentation links and %d conformance entries checked\n", count)
+	_, err = fmt.Fprintf(out, "Documentation links and normative traceability checked (%d capability entries)\n", count)
 
 	return err
 }
@@ -253,40 +252,6 @@ func checkMarkdownTarget(root, path, target string) error {
 	}
 
 	return nil
-}
-
-func checkConformanceRegister(root string, data []byte) (int, []error, error) {
-	var problems []error
-
-	var register struct {
-		Requirements []struct {
-			ID    string   `json:"id"`
-			Tests []string `json:"tests"`
-		} `json:"requirements"`
-	}
-	if err := json.Unmarshal(data, &register); err != nil {
-		return 0, nil, fmt.Errorf("conformance register: %w", err)
-	}
-
-	if len(register.Requirements) == 0 {
-		return 0, nil, errors.New("conformance register has no requirements")
-	}
-
-	ids := make(map[string]bool)
-	for _, entry := range register.Requirements {
-		if entry.ID == "" || ids[entry.ID] {
-			problems = append(problems, fmt.Errorf("empty/duplicate conformance id: %q", entry.ID))
-		}
-
-		ids[entry.ID] = true
-		for _, name := range entry.Tests {
-			if err := checkConformanceTest(root, name); err != nil {
-				problems = append(problems, fmt.Errorf("%s: missing/nonportable test %q: %w", entry.ID, name, err))
-			}
-		}
-	}
-
-	return len(ids), problems, nil
 }
 
 func checkConformanceTest(root, name string) error {

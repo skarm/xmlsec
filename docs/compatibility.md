@@ -2,7 +2,9 @@
 
 The library implements bounded profiles. Full standards conformance and an
 independent security audit have not been established. The [conformance register](conformance.json)
-maps supported requirements to tests; [standards](standards.md) lists primary sources.
+separates capabilities from a partial normative clause matrix, tracking implementation,
+policy and applicability independently. See [normative traceability](conformance.md)
+for review rules and remaining gaps; [standards](standards.md) lists primary sources.
 
 ## Supported scope
 

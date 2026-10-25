@@ -1,5 +1,1113 @@
 {
-  "completeness": "Scope register, not an exhaustive clause-by-clause matrix or audited conformance claim.",
+  "schema_version": 2,
+  "reviewed_on": "2026-10-22",
+  "completeness": "Capability inventory plus a partial clause-level normative matrix. Every selected profile records its remaining inventory/implementation/evidence gaps. No full conformance claim or coverage percentage is derived from passing tests.",
+  "scope": "Experimental XML security toolkit with bounded signatures, encryption, key containers, XPath/XSLT, offline trust/evidence verification, closed XAdES profiles and solicited SAML WebSSO; not a full standards conformance claim.",
+  "stage": "experimental-bounded-profiles",
+  "documents": [
+    {
+      "id": "XML10",
+      "title": "Extensible Markup Language",
+      "edition": "XML 1.0 Fifth Edition, Recommendation 2008-11-26",
+      "source": "https://www.w3.org/TR/2008/REC-xml-20081126/",
+      "errata": {
+        "sources": [
+          "https://www.w3.org/XML/xml-V10-5e-errata"
+        ],
+        "review": "partial",
+        "notes": "E01 does not require Unicode normalization by a parser; S01 is proposed substantive text, not treated as an adopted new requirement. DTD obligations remain open."
+      }
+    },
+    {
+      "id": "NS10",
+      "title": "Namespaces in XML",
+      "edition": "1.0 Third Edition, Recommendation 2009-12-08",
+      "source": "https://www.w3.org/TR/2009/REC-xml-names-20091208/",
+      "errata": {
+        "sources": [
+          "https://www.w3.org/XML/2009/xml-names-errata"
+        ],
+        "review": "reviewed",
+        "notes": "Publisher errata page lists no errata as checked on 2026-10-22; earlier corrections are incorporated in the Third Edition."
+      }
+    },
+    {
+      "id": "C14N10",
+      "title": "Canonical XML",
+      "edition": "1.0, Recommendation 2001-03-15",
+      "source": "https://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "C14N11",
+      "title": "Canonical XML",
+      "edition": "1.1, Recommendation 2008-05-02",
+      "source": "https://www.w3.org/TR/2008/REC-xml-c14n11-20080502/",
+      "errata": {
+        "sources": [
+          "https://www.w3.org/2008/05/xml-c14n11-errata"
+        ],
+        "review": "reviewed",
+        "notes": "E11-01 corrected example has a local test; E11-02 permits node-set input independently of the well-formed-document condition on octet input."
+      }
+    },
+    {
+      "id": "EXCC14N",
+      "title": "Exclusive XML Canonicalization",
+      "edition": "1.0, Recommendation 2002-07-18",
+      "source": "https://www.w3.org/TR/2002/REC-xml-exc-c14n-20020718/",
+      "errata": {
+        "sources": [
+          "https://www.w3.org/2002/07/xml-exc-c14n-errata"
+        ],
+        "review": "partial",
+        "notes": "E02/E04/E07/E08 affect PrefixList/default namespaces and selected attributes; remaining clause-to-test mapping is open."
+      }
+    },
+    {
+      "id": "DSIG11",
+      "title": "XML Signature Syntax and Processing",
+      "edition": "1.1, Recommendation 2013-04-11; reference update 2013-04-23",
+      "source": "https://www.w3.org/TR/2013/REC-xmldsig-core1-20130411/",
+      "errata": {
+        "sources": [
+          "https://www.w3.org/2008/xmlsec/errata/xmldsig-core-11-errata.html"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "XMLENC11",
+      "title": "XML Encryption Syntax and Processing",
+      "edition": "1.1, Recommendation 2013-04-11",
+      "source": "https://www.w3.org/TR/2013/REC-xmlenc-core1-20130411/",
+      "errata": {
+        "sources": [
+          "https://www.w3.org/2008/xmlsec/errata/xmlenc-core-11-errata.html"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "FILTER2",
+      "title": "XML-Signature XPath Filter 2.0",
+      "edition": "Recommendation 2002-11-08",
+      "source": "https://www.w3.org/TR/2002/REC-xmldsig-filter2-20021108/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "XP10",
+      "title": "XML Path Language",
+      "edition": "1.0, Recommendation 1999-11-16",
+      "source": "https://www.w3.org/TR/1999/REC-xpath-19991116/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "XP20",
+      "title": "XML Path Language",
+      "edition": "2.0 Second Edition, Recommendation 2010-12-14",
+      "source": "https://www.w3.org/TR/2010/REC-xpath20-20101214/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "XP30",
+      "title": "XML Path Language",
+      "edition": "3.0, Recommendation 2014-04-08",
+      "source": "https://www.w3.org/TR/2014/REC-xpath-30-20140408/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "XP31",
+      "title": "XML Path Language",
+      "edition": "3.1, Recommendation 2017-03-21",
+      "source": "https://www.w3.org/TR/2017/REC-xpath-31-20170321/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "FO20",
+      "title": "XPath and XQuery Functions and Operators",
+      "edition": "1.0 Second Edition (XPath 2.0), Recommendation 2010-12-14",
+      "source": "https://www.w3.org/TR/2010/REC-xpath-functions-20101214/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "FO30",
+      "title": "XPath and XQuery Functions and Operators",
+      "edition": "3.0, Recommendation 2014-04-08",
+      "source": "https://www.w3.org/TR/2014/REC-xpath-functions-30-20140408/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "FO31",
+      "title": "XPath and XQuery Functions and Operators",
+      "edition": "3.1, Recommendation 2017-03-21",
+      "source": "https://www.w3.org/TR/2017/REC-xpath-functions-31-20170321/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "SER20",
+      "title": "XSLT 2.0 and XQuery 1.0 Serialization",
+      "edition": "Second Edition, Recommendation 2010-12-14",
+      "source": "https://www.w3.org/TR/2010/REC-xslt-xquery-serialization-20101214/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "SER30",
+      "title": "XSLT and XQuery Serialization",
+      "edition": "3.0, Recommendation 2014-04-08",
+      "source": "https://www.w3.org/TR/2014/REC-xslt-xquery-serialization-30-20140408/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "SER31",
+      "title": "XSLT and XQuery Serialization",
+      "edition": "3.1, Recommendation 2017-03-21",
+      "source": "https://www.w3.org/TR/2017/REC-xslt-xquery-serialization-31-20170321/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "XSLT10",
+      "title": "XSL Transformations",
+      "edition": "1.0, Recommendation 1999-11-16",
+      "source": "https://www.w3.org/TR/1999/REC-xslt-19991116/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "XSLT20",
+      "title": "XSL Transformations",
+      "edition": "2.0, Recommendation 2007-01-23",
+      "source": "https://www.w3.org/TR/2007/REC-xslt20-20070123/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "XSLT30",
+      "title": "XSL Transformations",
+      "edition": "3.0, Recommendation 2017-06-08",
+      "source": "https://www.w3.org/TR/2017/REC-xslt-30-20170608/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "XSD2",
+      "title": "XML Schema Part 2: Datatypes",
+      "edition": "Second Edition, Recommendation 2004-10-28",
+      "source": "https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC2045",
+      "title": "MIME Part One",
+      "edition": "RFC 2045",
+      "source": "https://www.rfc-editor.org/rfc/rfc2045.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc2045"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC3161",
+      "title": "Time-Stamp Protocol",
+      "edition": "RFC 3161",
+      "source": "https://www.rfc-editor.org/rfc/rfc3161.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc3161"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC3394",
+      "title": "AES Key Wrap",
+      "edition": "RFC 3394",
+      "source": "https://www.rfc-editor.org/rfc/rfc3394.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc3394"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC3986",
+      "title": "URI Generic Syntax",
+      "edition": "RFC 3986",
+      "source": "https://www.rfc-editor.org/rfc/rfc3986.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc3986"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC5035",
+      "title": "ESSCertIDv2",
+      "edition": "RFC 5035",
+      "source": "https://www.rfc-editor.org/rfc/rfc5035.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc5035"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC5208",
+      "title": "PKCS #8 Private-Key Information",
+      "edition": "RFC 5208",
+      "source": "https://www.rfc-editor.org/rfc/rfc5208.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc5208"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC5280",
+      "title": "PKIX Certificate and CRL Profile",
+      "edition": "RFC 5280",
+      "source": "https://www.rfc-editor.org/rfc/rfc5280.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc5280"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC5652",
+      "title": "Cryptographic Message Syntax",
+      "edition": "RFC 5652",
+      "source": "https://www.rfc-editor.org/rfc/rfc5652.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc5652"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC5816",
+      "title": "ESSCertIDv2 Update for RFC 3161",
+      "edition": "RFC 5816",
+      "source": "https://www.rfc-editor.org/rfc/rfc5816.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc5816"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC5915",
+      "title": "Elliptic Curve Private Key Structure",
+      "edition": "RFC 5915",
+      "source": "https://www.rfc-editor.org/rfc/rfc5915.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc5915"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC6211",
+      "title": "CMS Algorithm Identifier Protection",
+      "edition": "RFC 6211",
+      "source": "https://www.rfc-editor.org/rfc/rfc6211.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc6211"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC6960",
+      "title": "Online Certificate Status Protocol",
+      "edition": "RFC 6960",
+      "source": "https://www.rfc-editor.org/rfc/rfc6960.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc6960"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC7292",
+      "title": "PKCS #12",
+      "edition": "RFC 7292",
+      "source": "https://www.rfc-editor.org/rfc/rfc7292.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc7292"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC7468",
+      "title": "Textual Encodings for PKIX, PKCS, and CMS",
+      "edition": "RFC 7468",
+      "source": "https://www.rfc-editor.org/rfc/rfc7468.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc7468"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC8017",
+      "title": "PKCS #1 v2.2",
+      "edition": "RFC 8017",
+      "source": "https://www.rfc-editor.org/rfc/rfc8017.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc8017"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC8018",
+      "title": "PKCS #5 v2.1",
+      "edition": "RFC 8018",
+      "source": "https://www.rfc-editor.org/rfc/rfc8018.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc8018"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC9231",
+      "title": "Additional XML Security Uniform Resource Identifiers",
+      "edition": "RFC 9231",
+      "source": "https://www.rfc-editor.org/rfc/rfc9231.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc9231"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC9654",
+      "title": "OCSP Nonce Extension",
+      "edition": "RFC 9654",
+      "source": "https://www.rfc-editor.org/rfc/rfc9654.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc9654"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "RFC9879",
+      "title": "Use of PBMAC1 in PKCS #12",
+      "edition": "RFC 9879",
+      "source": "https://www.rfc-editor.org/rfc/rfc9879.html",
+      "errata": {
+        "sources": [
+          "https://www.rfc-editor.org/errata/rfc9879"
+        ],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "SAMLCORE",
+      "title": "SAML Assertions and Protocols",
+      "edition": "2.0, OASIS Standard 2005-03-15",
+      "source": "https://docs.oasis-open.org/security/saml/v2.0/saml-core-2.0-os.pdf",
+      "errata": {
+        "sources": [
+          "https://docs.oasis-open.org/security/saml/v2.0/errata05/os/saml-v2.0-errata05-os.html"
+        ],
+        "review": "partial",
+        "notes": "Approved Errata 05, 2012-05-01, is the selected correction set; individual E-number applicability still needs a complete role matrix."
+      }
+    },
+    {
+      "id": "SAMLBIND",
+      "title": "SAML Bindings",
+      "edition": "2.0, OASIS Standard 2005-03-15",
+      "source": "https://docs.oasis-open.org/security/saml/v2.0/saml-bindings-2.0-os.pdf",
+      "errata": {
+        "sources": [
+          "https://docs.oasis-open.org/security/saml/v2.0/errata05/os/saml-v2.0-errata05-os.html"
+        ],
+        "review": "partial",
+        "notes": "Approved Errata 05, 2012-05-01, is the selected correction set; individual E-number applicability still needs a complete role matrix."
+      }
+    },
+    {
+      "id": "SAMLPROF",
+      "title": "SAML Profiles",
+      "edition": "2.0, OASIS Standard 2005-03-15",
+      "source": "https://docs.oasis-open.org/security/saml/v2.0/saml-profiles-2.0-os.pdf",
+      "errata": {
+        "sources": [
+          "https://docs.oasis-open.org/security/saml/v2.0/errata05/os/saml-v2.0-errata05-os.html"
+        ],
+        "review": "partial",
+        "notes": "Approved Errata 05, 2012-05-01, is the selected correction set; individual E-number applicability still needs a complete role matrix."
+      }
+    },
+    {
+      "id": "SAMLMD",
+      "title": "SAML Metadata",
+      "edition": "2.0, OASIS Standard 2005-03-15",
+      "source": "https://docs.oasis-open.org/security/saml/v2.0/saml-metadata-2.0-os.pdf",
+      "errata": {
+        "sources": [
+          "https://docs.oasis-open.org/security/saml/v2.0/errata05/os/saml-v2.0-errata05-os.html"
+        ],
+        "review": "partial",
+        "notes": "Approved Errata 05, 2012-05-01, is the selected correction set; individual E-number applicability still needs a complete role matrix."
+      }
+    },
+    {
+      "id": "SAMLCONF",
+      "title": "SAML Conformance Requirements",
+      "edition": "2.0, OASIS Standard 2005-03-15",
+      "source": "https://docs.oasis-open.org/security/saml/v2.0/saml-conformance-2.0-os.pdf",
+      "errata": {
+        "sources": [
+          "https://docs.oasis-open.org/security/saml/v2.0/errata05/os/saml-v2.0-errata05-os.html"
+        ],
+        "review": "partial",
+        "notes": "Approved Errata 05, 2012-05-01, is the selected correction set; individual E-number applicability still needs a complete role matrix."
+      }
+    },
+    {
+      "id": "SAMLMDIOP",
+      "title": "SAML V2.0 Metadata Interoperability Profile",
+      "edition": "Version 1.0, OASIS Standard 2019-10-24",
+      "source": "https://docs.oasis-open.org/security/saml/Post2.0/sstc-metadata-iop-os.html",
+      "errata": {
+        "sources": [],
+        "review": "pending",
+        "notes": "Edition pinned; clause-level errata applicability remains to be reviewed."
+      }
+    },
+    {
+      "id": "XADES1321",
+      "title": "XAdES building blocks and baseline signatures",
+      "edition": "ETSI EN 319 132-1 V1.3.1 (2024-07)",
+      "source": "https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf",
+      "errata": {
+        "sources": [
+          "https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/"
+        ],
+        "review": "partial",
+        "notes": "Published V1.3.1 selected; publisher directory checked 2026-10-22. Draft V1.3.0 is not the normative baseline. Property applicability remains partial."
+      }
+    },
+    {
+      "id": "ADES1021",
+      "title": "Procedures for Creation and Validation of AdES Digital Signatures",
+      "edition": "ETSI EN 319 102-1 V1.4.1 (2024-06)",
+      "source": "https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf",
+      "errata": {
+        "sources": [
+          "https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/"
+        ],
+        "review": "partial",
+        "notes": "Published V1.4.1 selected for future historical validation. Publisher directory checked 2026-10-22; its newest listed published edition is V1.4.1. V1.4.0 is a draft, not this baseline."
+      }
+    }
+  ],
+  "profiles": [
+    {
+      "id": "xml-security",
+      "title": "DTD-free XML snapshots",
+      "role": "XML processor",
+      "modes": [
+        "parse",
+        "serialize"
+      ],
+      "documents": [
+        "XML10",
+        "NS10"
+      ],
+      "scope_ids": [
+        "XML-PARSE",
+        "XML-LIMITS"
+      ],
+      "package_docs": [
+        "document/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "DTD/entity declarations, defaults and processor obligations are not implemented; no full XML processor claim.",
+      "closure": "Inventory XML 1.0 section 5.1 and dependent normalization obligations; implement a separate bounded resolver-driven mode before a processor claim."
+    },
+    {
+      "id": "canonicalization",
+      "title": "Canonicalization of retained node models",
+      "role": "canonicalizer",
+      "modes": [
+        "document",
+        "subtree",
+        "node-set"
+      ],
+      "documents": [
+        "C14N10",
+        "C14N11",
+        "EXCC14N",
+        "NS10"
+      ],
+      "scope_ids": [
+        "EXC-DOC",
+        "EXC-SUBTREE",
+        "EXC-PREFIXLIST",
+        "EXC-COMMENTS",
+        "C14N-10",
+        "C14N-11",
+        "NODESET"
+      ],
+      "package_docs": [
+        "c14n/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Exact bytes have selected independent checks; a complete normative fixture inventory and preprocessing contract remain to be mapped.",
+      "closure": "Map all applicable clauses/errata to exact positive and negative byte fixtures, independent document/subtree/sparse checks and writer-error tests."
+    },
+    {
+      "id": "xmldsig",
+      "title": "Bounded XMLDSig and KeyInfo",
+      "role": "signature implementation",
+      "modes": [
+        "generate",
+        "verify",
+        "keyinfo"
+      ],
+      "documents": [
+        "DSIG11",
+        "FILTER2",
+        "RFC9231"
+      ],
+      "scope_ids": [
+        "DSIG-CREATE",
+        "DSIG-VERIFY",
+        "DSIG-FULL",
+        "TRANSFORMS",
+        "DETACHED",
+        "MANIFEST-GRAPH",
+        "KEYINFO-ALLOWED-DATA",
+        "HMAC-SHA2",
+        "PSS-PARAMETERS"
+      ],
+      "package_docs": [
+        "xmldsig/doc.go",
+        "keyinfo/doc.go",
+        "reference/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Required SHA-1 digest/HMAC and DSA verification are missing. External Manifests and additional RetrievalMethod chains remain open.",
+      "closure": "Complete role-specific algorithm/processing inventory; add missing implementations behind explicit policies, graph limits and independent exchanges."
+    },
+    {
+      "id": "xmlenc",
+      "title": "Authenticated XML Encryption profile",
+      "role": "encryption implementation",
+      "modes": [
+        "encrypt",
+        "decrypt"
+      ],
+      "documents": [
+        "XMLENC11",
+        "RFC3394",
+        "RFC8017"
+      ],
+      "scope_ids": [
+        "XMLENC",
+        "XMLENC-GCM-OAEP",
+        "XMLENC-AES-KEY-WRAP",
+        "XMLENC-ELEMENT",
+        "XMLENC-CONTENT",
+        "XMLENC-CIPHER-REFERENCE"
+      ],
+      "package_docs": [
+        "xmlenc/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Required CBC/TripleDES, legacy OAEP, ConcatKDF, ECDH-ES, TripleDES wrap and SHA-1 are not implemented. Existing GCM support is not full XMLENC 1.1.",
+      "closure": "Close all applicable section 5.1.1 requirements with explicit legacy policy, documented security properties and independent vectors/exchanges."
+    },
+    {
+      "id": "xpath10",
+      "title": "XPath 1.0",
+      "role": "XPath evaluator",
+      "modes": [
+        "evaluate"
+      ],
+      "documents": [
+        "XP10"
+      ],
+      "scope_ids": [
+        "MODERN-TRANSFORMS"
+      ],
+      "package_docs": [
+        "transform/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Official suite revision, feature applicability and mandatory failures have not been fully inventoried.",
+      "closure": "Run a pinned QT3 adapter for applicable versions; map signatures, types, errors, contexts and implementation-defined settings; keep mandatory failures visible."
+    },
+    {
+      "id": "xpath20",
+      "title": "XPath 2.0",
+      "role": "XPath evaluator",
+      "modes": [
+        "evaluate"
+      ],
+      "documents": [
+        "XP20",
+        "FO20"
+      ],
+      "scope_ids": [
+        "MODERN-TRANSFORMS"
+      ],
+      "package_docs": [
+        "transform/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Official suite revision, feature applicability and mandatory failures have not been fully inventoried.",
+      "closure": "Run a pinned QT3 adapter for applicable versions; map signatures, types, errors, contexts and implementation-defined settings; keep mandatory failures visible."
+    },
+    {
+      "id": "xpath30",
+      "title": "XPath 3.0",
+      "role": "XPath evaluator",
+      "modes": [
+        "evaluate"
+      ],
+      "documents": [
+        "XP30",
+        "FO30"
+      ],
+      "scope_ids": [
+        "MODERN-TRANSFORMS"
+      ],
+      "package_docs": [
+        "transform/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Official suite revision, feature applicability and mandatory failures have not been fully inventoried.",
+      "closure": "Run a pinned QT3 adapter for applicable versions; map signatures, types, errors, contexts and implementation-defined settings; keep mandatory failures visible."
+    },
+    {
+      "id": "xpath31",
+      "title": "XPath 3.1",
+      "role": "XPath evaluator",
+      "modes": [
+        "evaluate"
+      ],
+      "documents": [
+        "XP31",
+        "FO31"
+      ],
+      "scope_ids": [
+        "MODERN-TRANSFORMS"
+      ],
+      "package_docs": [
+        "transform/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Official suite revision, feature applicability and mandatory failures have not been fully inventoried.",
+      "closure": "Run a pinned QT3 adapter for applicable versions; map signatures, types, errors, contexts and implementation-defined settings; keep mandatory failures visible."
+    },
+    {
+      "id": "xslt10",
+      "title": "XSLT 1.0",
+      "role": "XSLT processor",
+      "modes": [
+        "compile",
+        "execute"
+      ],
+      "documents": [
+        "XSLT10"
+      ],
+      "scope_ids": [
+        "MODERN-TRANSFORMS",
+        "TRANSFORMS"
+      ],
+      "package_docs": [
+        "transform/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Complete Basic-profile requirements and official-suite results are unverified; schema awareness and W3C streamability have separate unsupported requirements.",
+      "closure": "Pin official suites, classify dependencies and all applicable Basic obligations, fix mandatory failures and publish reproducible results before a full Basic claim."
+    },
+    {
+      "id": "xslt20",
+      "title": "XSLT 2.0 Basic",
+      "role": "XSLT processor",
+      "modes": [
+        "compile",
+        "execute"
+      ],
+      "documents": [
+        "XSLT20",
+        "SER20"
+      ],
+      "scope_ids": [
+        "MODERN-TRANSFORMS",
+        "TRANSFORMS"
+      ],
+      "package_docs": [
+        "transform/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Complete Basic-profile requirements and official-suite results are unverified; schema awareness and W3C streamability have separate unsupported requirements.",
+      "closure": "Pin official suites, classify dependencies and all applicable Basic obligations, fix mandatory failures and publish reproducible results before a full Basic claim."
+    },
+    {
+      "id": "xslt30",
+      "title": "XSLT 3.0 Basic",
+      "role": "XSLT processor",
+      "modes": [
+        "compile",
+        "execute"
+      ],
+      "documents": [
+        "XSLT30",
+        "SER31"
+      ],
+      "scope_ids": [
+        "MODERN-TRANSFORMS",
+        "TRANSFORMS"
+      ],
+      "package_docs": [
+        "transform/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Complete Basic-profile requirements and official-suite results are unverified; schema awareness and W3C streamability have separate unsupported requirements.",
+      "closure": "Pin official suites, classify dependencies and all applicable Basic obligations, fix mandatory failures and publish reproducible results before a full Basic claim."
+    },
+    {
+      "id": "pki",
+      "title": "Offline PKIX/CRL and OCSP",
+      "role": "certificate verifier",
+      "modes": [
+        "pkix",
+        "crl",
+        "ocsp"
+      ],
+      "documents": [
+        "RFC5280",
+        "RFC6960",
+        "RFC9654"
+      ],
+      "scope_ids": [
+        "CRL-DIRECT",
+        "OCSP-CURRENT-TIME",
+        "OCSP-NONCE-REQUESTER"
+      ],
+      "package_docs": [
+        "pki/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Delta/indirect/scoped CRLs and some OCSP forms/extensions are unsupported; no network evidence collector.",
+      "closure": "Map issuer/scope/time/critical-extension requirements, implement missing evidence processing and keep offline policy failures reproducible."
+    },
+    {
+      "id": "cms",
+      "title": "Bounded SignedData",
+      "role": "CMS implementation",
+      "modes": [
+        "parse",
+        "generate",
+        "verify"
+      ],
+      "documents": [
+        "RFC5652",
+        "RFC6211",
+        "RFC5035"
+      ],
+      "scope_ids": [
+        "CMS-BOUNDED-SIGNEDDATA",
+        "CMS-ALGORITHM-PROTECTION",
+        "CMS-ATTRIBUTE-PROFILE"
+      ],
+      "package_docs": [
+        "cms/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "General BER constructed/indefinite forms, countersignatures and full CMS inventory are open.",
+      "closure": "Implement selected BER forms with bounded EOC/depth/length processing while retaining exact DER signedAttrs; independently test signer/content/certificate bindings."
+    },
+    {
+      "id": "timestamp",
+      "title": "RFC 3161/5816 tokens",
+      "role": "timestamp verifier",
+      "modes": [
+        "verify",
+        "issue"
+      ],
+      "documents": [
+        "RFC3161",
+        "RFC5816",
+        "RFC5035"
+      ],
+      "scope_ids": [
+        "RFC3161-TSA"
+      ],
+      "package_docs": [
+        "timestamp/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Selected current-time token profile only; full request/response/algorithm inventory and historical evidence processing are open.",
+      "closure": "Map all selected role obligations, validate imprint/request/nonce/policy/TSA bindings with independent fixtures and preserve explicit verification time."
+    },
+    {
+      "id": "keys",
+      "title": "Bounded key and password containers",
+      "role": "key codec",
+      "modes": [
+        "parse",
+        "export"
+      ],
+      "documents": [
+        "RFC5208",
+        "RFC5915",
+        "RFC7468",
+        "RFC8018",
+        "RFC7292",
+        "RFC9879",
+        "RFC8017"
+      ],
+      "scope_ids": [
+        "KEY-MATERIAL",
+        "KEY-PBES2",
+        "KEY-PKCS12",
+        "KEY-PBMAC1",
+        "KEY-PRIVATE-DER-STRUCTURE"
+      ],
+      "package_docs": [
+        "keys/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Legacy KDF/ciphers, BER, nested bags and multiple identities are outside the current container profile.",
+      "closure": "Inventory selected grammar/KDF/password obligations, implement chosen container forms with explicit identity selection and aggregate work limits."
+    },
+    {
+      "id": "xades",
+      "title": "Closed current-time and with-time XAdES",
+      "role": "XAdES validator",
+      "modes": [
+        "current-time",
+        "with-time"
+      ],
+      "documents": [
+        "XADES1321",
+        "ADES1021"
+      ],
+      "scope_ids": [
+        "XADES-BASIC",
+        "XADES-SIGNATURE-TIMESTAMP",
+        "XADES-MATERIAL-ARCHIVE-CURRENT",
+        "XADES-WITH-TIME-BT"
+      ],
+      "package_docs": [
+        "xades/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Root-enveloped topology and selected properties only. B-LTA structures and with-time B-T do not establish a complete historical validation process.",
+      "closure": "Map property/topology obligations separately from validation; bind each property, certificate, evidence object and timestamp to specific signed bytes."
+    },
+    {
+      "id": "historical-ades",
+      "title": "Historical AdES workflow",
+      "role": "historical validator",
+      "modes": [
+        "historical"
+      ],
+      "documents": [
+        "ADES1021"
+      ],
+      "scope_ids": [],
+      "package_docs": [
+        "xades/doc.go"
+      ],
+      "claim": "target",
+      "inventory": "partial",
+      "gap": "Proof-of-existence graph, control-time/best-signature-time, expired TSA recovery and archive renewal are unimplemented.",
+      "closure": "Implement the published V1.4.1 process with reproducible passed/failed/indeterminate causes and independent sufficient/insufficient historical evidence pairs."
+    },
+    {
+      "id": "saml-sp",
+      "title": "Solicited WebSSO SAML SP",
+      "role": "SAML SP",
+      "modes": [
+        "websso",
+        "metadata"
+      ],
+      "documents": [
+        "SAMLCORE",
+        "SAMLBIND",
+        "SAMLPROF",
+        "SAMLMD",
+        "SAMLCONF",
+        "SAMLMDIOP"
+      ],
+      "scope_ids": [
+        "SAML-SOLICITED-WEBSSO",
+        "SAML-METADATA",
+        "SAML-REDIRECT",
+        "SAML-REPLAY"
+      ],
+      "package_docs": [
+        "saml/sp/doc.go",
+        "saml/protocol/doc.go",
+        "saml/metadata/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Role matrix is incomplete. EncryptedID/Assertion/Attribute and applicable algorithm obligations remain missing; other workflow targets include SLO, Artifact, ECP, queries and explicit unsolicited SSO.",
+      "closure": "Map Conformance sections 2-4 plus approved Errata 05 per role/binding; complete encrypted-element and workflow obligations and independent SP/IdP exchanges."
+    },
+    {
+      "id": "saml-idp",
+      "title": "Solicited WebSSO SAML IdP",
+      "role": "SAML IdP",
+      "modes": [
+        "websso",
+        "metadata"
+      ],
+      "documents": [
+        "SAMLCORE",
+        "SAMLBIND",
+        "SAMLPROF",
+        "SAMLMD",
+        "SAMLCONF",
+        "SAMLMDIOP"
+      ],
+      "scope_ids": [
+        "SAML-SOLICITED-WEBSSO",
+        "SAML-METADATA",
+        "SAML-REDIRECT",
+        "SAML-REPLAY"
+      ],
+      "package_docs": [
+        "saml/idp/doc.go",
+        "saml/protocol/doc.go",
+        "saml/metadata/doc.go"
+      ],
+      "claim": "restricted",
+      "inventory": "partial",
+      "gap": "Role matrix is incomplete. EncryptedID/Assertion/Attribute and applicable algorithm obligations remain missing; other workflow targets include SLO, Artifact, ECP, queries and explicit unsolicited SSO.",
+      "closure": "Map Conformance sections 2-4 plus approved Errata 05 per role/binding; complete encrypted-element and workflow obligations and independent SP/IdP exchanges."
+    }
+  ],
   "requirements": [
     {
       "id": "XML-PARSE",
@@ -475,7 +1583,8 @@
       "tests": [
         "cms/cms_test.go",
         "tests/integration/evidence/evidence_test.go"
-      ]
+      ],
+      "title": "Bounded CMS SignedData"
     },
     {
       "id": "OCSP-CURRENT-TIME",
@@ -492,7 +1601,8 @@
         "pki/ocsp_test.go",
         "tests/integration/evidence/evidence_test.go",
         "pki/standards_test.go"
-      ]
+      ],
+      "title": "Current-time offline OCSP"
     },
     {
       "id": "RFC3161-TSA",
@@ -508,7 +1618,8 @@
       "tests": [
         "timestamp/timestamp_test.go",
         "tests/integration/evidence/evidence_test.go"
-      ]
+      ],
+      "title": "RFC 3161/5816 timestamp tokens"
     },
     {
       "id": "XADES-SIGNATURE-TIMESTAMP",
@@ -522,7 +1633,8 @@
       "status": "implemented-closed-profile",
       "tests": [
         "xades/timestamp_test.go"
-      ]
+      ],
+      "title": "Closed XAdES signature timestamp"
     },
     {
       "id": "XADES-MATERIAL-ARCHIVE-CURRENT",
@@ -538,7 +1650,8 @@
       "tests": [
         "xades/archive_test.go",
         "tests/integration/evidence/evidence_test.go"
-      ]
+      ],
+      "title": "Closed current-time XAdES validation material and archives"
     },
     {
       "id": "SAML-METADATA",
@@ -554,7 +1667,8 @@
       "tests": [
         "saml/metadata/metadata_test.go",
         "tests/integration/saml/interop_test.go"
-      ]
+      ],
+      "title": "Signed SAML metadata"
     },
     {
       "id": "SAML-SOLICITED-WEBSSO",
@@ -574,7 +1688,8 @@
       "tests": [
         "tests/integration/saml/sso_test.go",
         "tests/integration/saml/interop_test.go"
-      ]
+      ],
+      "title": "Solicited SAML WebSSO"
     },
     {
       "id": "PSS-PARAMETERS",
@@ -956,6 +2071,2267 @@
       "title": "Explicit private-key grammar beyond crypto/x509 legacy tolerance"
     }
   ],
-  "scope": "Experimental XML security toolkit with bounded signatures, encryption, key containers, XPath/XSLT, offline trust/evidence verification, closed XAdES profiles and solicited SAML WebSSO; not a full standards conformance claim.",
-  "stage": "experimental-bounded-profiles"
+  "normative_requirements": [
+    {
+      "id": "N-XML-PROCESSOR",
+      "statement": "Read the internal subset and apply required entity/default/attribute normalization rules.",
+      "norm": {
+        "document": "XML10",
+        "clause": "5.1; 3.3.3; 4.4",
+        "level": "MUST",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xml-security",
+        "role": "XML processor",
+        "mode": "parse",
+        "status": "applicable",
+        "reason": "XML processor obligations remain applicable to any future full processor claim, even though the security parser rejects DTDs."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "No complete XML processor mode implements internal DTD declarations, default attributes and declared entity processing.",
+      "closure": "Add a separate XML processor mode with the required grammar/normalization semantics, explicit bounded resolver and official positive/negative XML tests; preserve the default DTD-free mode."
+    },
+    {
+      "id": "N-NS-DEFAULT",
+      "statement": "Default namespaces apply to unprefixed element names, not unprefixed attributes.",
+      "norm": {
+        "document": "NS10",
+        "clause": "6.2",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xml-security",
+        "role": "XML processor",
+        "mode": "parse",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "implemented",
+        "apis": [
+          "document.Parse",
+          "document.Element"
+        ],
+        "code": [
+          "internal/tree/parse.go",
+          "internal/tree/namespace.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "document/document_test.go",
+            "name": "TestSnapshot"
+          },
+          {
+            "file": "xmldsig/core_test.go",
+            "name": "TestTemplateObjectNamespaceImport"
+          }
+        ],
+        "negative": [
+          {
+            "file": "document/document_test.go",
+            "name": "TestParseRejects"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Independent clause-specific evidence and the complete normative inventory are not yet established.",
+      "closure": "Map the remaining clause cases and publish independent positive/negative fixtures with the selected edition and errata."
+    },
+    {
+      "id": "N-C14N-INPUT",
+      "statement": "Node-set input need not serialize to a well-formed document; octet input has a document condition.",
+      "norm": {
+        "document": "C14N11",
+        "clause": "2.1; 2.3",
+        "level": "normative",
+        "errata": [
+          "E11-02"
+        ]
+      },
+      "applies": {
+        "profile": "canonicalization",
+        "role": "canonicalizer",
+        "mode": "node-set",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "implemented",
+        "apis": [
+          "c14n.WriteNodeSet"
+        ],
+        "code": [
+          "c14n/c14n.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "c14n/nodeset_test.go",
+            "name": "TestSparseNodeSets"
+          }
+        ],
+        "negative": [
+          {
+            "file": "c14n/nodeset_test.go",
+            "name": "TestNewCanonicalErrors"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Independent clause-specific evidence and the complete normative inventory are not yet established.",
+      "closure": "Map the remaining clause cases and publish independent positive/negative fixtures with the selected edition and errata."
+    },
+    {
+      "id": "N-C14N-INHERIT",
+      "statement": "Apply the C14N 1.1 xml:id exclusion and xml:base joining rules across omitted ancestors.",
+      "norm": {
+        "document": "C14N11",
+        "clause": "2.4; 3.8",
+        "level": "normative",
+        "errata": [
+          "E11-01"
+        ]
+      },
+      "applies": {
+        "profile": "canonicalization",
+        "role": "canonicalizer",
+        "mode": "subtree",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "c14n.WriteElement",
+          "c14n.WriteNodeSet"
+        ],
+        "code": [
+          "c14n/c14n.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "c14n/nodeset_test.go",
+            "name": "TestCanonicalAlgorithms"
+          },
+          {
+            "file": "c14n/nodeset_test.go",
+            "name": "TestW3C11ErratumE1101"
+          }
+        ],
+        "negative": [
+          {
+            "file": "c14n/nodeset_test.go",
+            "name": "TestOmittedXMLAttributeShadowsInheritance"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Independent clause-specific evidence and the complete normative inventory are not yet established.",
+      "closure": "Map the remaining clause cases and publish independent positive/negative fixtures with the selected edition and errata."
+    },
+    {
+      "id": "N-EXC-VISIBLE",
+      "statement": "Render visibly used selected namespace bindings and the InclusiveNamespaces PrefixList.",
+      "norm": {
+        "document": "EXCC14N",
+        "clause": "3; 4",
+        "level": "normative",
+        "errata": [
+          "E02",
+          "E04",
+          "E07",
+          "E08"
+        ]
+      },
+      "applies": {
+        "profile": "canonicalization",
+        "role": "canonicalizer",
+        "mode": "node-set",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "c14n.WriteNodeSet",
+          "c14n.Options.InclusivePrefixes"
+        ],
+        "code": [
+          "c14n/c14n.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "c14n/nodeset_test.go",
+            "name": "TestSparseNamespaces"
+          }
+        ],
+        "negative": [
+          {
+            "file": "c14n/c14n_test.go",
+            "name": "TestCanonicalErrors"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Independent clause-specific evidence and the complete normative inventory are not yet established.",
+      "closure": "Map the remaining clause cases and publish independent positive/negative fixtures with the selected edition and errata."
+    },
+    {
+      "id": "N-DSIG-REFERENCES",
+      "statement": "Validate every required reference digest and reject a mismatch.",
+      "norm": {
+        "document": "DSIG11",
+        "clause": "3.2.1",
+        "level": "MUST",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmldsig",
+        "role": "signature implementation",
+        "mode": "verify",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "implemented",
+        "apis": [
+          "xmldsig.VerifySignature",
+          "xmldsig.VerifyDetached"
+        ],
+        "code": [
+          "xmldsig/verify.go",
+          "reference/process.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "xmldsig/core_test.go",
+            "name": "TestCoreForms"
+          }
+        ],
+        "negative": [
+          {
+            "file": "xmldsig/detached_test.go",
+            "name": "TestDetachedEveryDigestAndTypedError"
+          }
+        ]
+      },
+      "interop": {
+        "status": "covered",
+        "tests": [
+          {
+            "file": "tests/integration/xmldsig/signature_test.go",
+            "name": "TestCoreIndependentFixtures"
+          }
+        ],
+        "fixtures": [
+          "testdata/core/manifest.json",
+          "testdata/core/ec256-enveloping-cm0.jdk.xml",
+          "testdata/core/ec256-bad-second.jdk.xml"
+        ],
+        "reason": "The integration test verifies committed JDK-generated XML directly, including valid signatures and damaged references. This is selected evidence, not a full algorithm/processing conformance claim."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "",
+      "closure": "Selected normative behavior has positive, negative and independent fixture coverage; additional normative obligations remain in the profile inventory."
+    },
+    {
+      "id": "N-DSIG-SIGNATURE",
+      "statement": "Validate SignatureValue over the declared canonicalized SignedInfo.",
+      "norm": {
+        "document": "DSIG11",
+        "clause": "3.2.2",
+        "level": "MUST",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmldsig",
+        "role": "signature implementation",
+        "mode": "verify",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "implemented",
+        "apis": [
+          "xmldsig.VerifySignature"
+        ],
+        "code": [
+          "xmldsig/verify.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "xmldsig/core_test.go",
+            "name": "TestCoreAlgorithmsAndCanonicalization"
+          }
+        ],
+        "negative": [
+          {
+            "file": "xmldsig/core_test.go",
+            "name": "TestCoreDiagnosticsAndWrapping"
+          }
+        ]
+      },
+      "interop": {
+        "status": "covered",
+        "tests": [
+          {
+            "file": "tests/integration/xmldsig/signature_test.go",
+            "name": "TestCoreIndependentFixtures"
+          }
+        ],
+        "fixtures": [
+          "testdata/core/manifest.json",
+          "testdata/core/ec256-enveloping-cm0.jdk.xml",
+          "testdata/core/ec256-bad-second.jdk.xml"
+        ],
+        "reason": "The integration test verifies committed JDK-generated XML directly, including valid signatures and damaged references. This is selected evidence, not a full algorithm/processing conformance claim."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "",
+      "closure": "Selected normative behavior has positive, negative and independent fixture coverage; additional normative obligations remain in the profile inventory."
+    },
+    {
+      "id": "N-DSIG-PARAMETERS",
+      "statement": "Retain transform-specific parameter content through construction and verification.",
+      "norm": {
+        "document": "DSIG11",
+        "clause": "4.4.3.4; 6.1",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmldsig",
+        "role": "signature implementation",
+        "mode": "generate",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "implemented",
+        "apis": [
+          "xmldsig.SignDetached",
+          "xmldsig.BuildTemplate"
+        ],
+        "code": [
+          "xmldsig/detached.go",
+          "xmldsig/builder.go",
+          "xmldsig/transforms.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "xmldsig/detached_test.go",
+            "name": "TestDetachedProgramParameters"
+          }
+        ],
+        "negative": [
+          {
+            "file": "xmldsig/detached_test.go",
+            "name": "TestDetachedDamagedProgramParameters"
+          },
+          {
+            "file": "xmldsig/detached_test.go",
+            "name": "TestDetachedProgramPreflight"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Independent clause-specific evidence and the complete normative inventory are not yet established.",
+      "closure": "Map the remaining clause cases and publish independent positive/negative fixtures with the selected edition and errata."
+    },
+    {
+      "id": "N-DSIG-RETRIEVAL",
+      "statement": "Apply RetrievalMethod transforms before interpreting the referent type.",
+      "norm": {
+        "document": "DSIG11",
+        "clause": "4.5.3",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmldsig",
+        "role": "signature implementation",
+        "mode": "keyinfo",
+        "status": "applicable",
+        "reason": "Retrieval requires an explicit resolver and URI allowlist; KeyInfo does not establish trust."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "keyinfo.Parse",
+          "xmldsig.VerifySignatureWithKeyInfo"
+        ],
+        "code": [
+          "keyinfo/references.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "keyinfo/references_test.go",
+            "name": "TestRetrievalTypesAndPreflight"
+          }
+        ],
+        "negative": [
+          {
+            "file": "xmldsig/keyinfo_test.go",
+            "name": "TestKeyInfoResourceOrderAndInvalidPreflight"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "opt-in",
+          "reason": "Retrieval requires an explicit resolver and URI allowlist; KeyInfo does not establish trust."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "rawX509Certificate already accepts raw bytes or one Base64 transform. Additional transform chains and retrieval forms are unsupported.",
+      "closure": "Add the selected RetrievalMethod forms with explicit URI policy, transform allowlists, cycle/depth/byte limits and independent key-to-trust binding tests."
+    },
+    {
+      "id": "N-DSIG-SHA1-DIGEST",
+      "statement": "Implement SHA-1 digest for the XMLDSig 1.1 implementation requirement.",
+      "norm": {
+        "document": "DSIG11",
+        "clause": "6.1",
+        "level": "REQUIRED",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmldsig",
+        "role": "signature implementation",
+        "mode": "generate",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "SHA-1 digest is not implemented in the XMLDSig profile; a policy denial does not satisfy the implementation obligation.",
+      "closure": "Implement and independently test this algorithm in its required generation/verification roles behind an explicit compatibility policy; keep ordinary defaults unchanged."
+    },
+    {
+      "id": "N-DSIG-HMAC-SHA1",
+      "statement": "Implement HMAC-SHA1 for the XMLDSig 1.1 implementation requirement.",
+      "norm": {
+        "document": "DSIG11",
+        "clause": "6.1",
+        "level": "REQUIRED",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmldsig",
+        "role": "signature implementation",
+        "mode": "generate",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "HMAC-SHA1 is not implemented in the XMLDSig profile; a policy denial does not satisfy the implementation obligation.",
+      "closure": "Implement and independently test this algorithm in its required generation/verification roles behind an explicit compatibility policy; keep ordinary defaults unchanged."
+    },
+    {
+      "id": "N-DSIG-DSA-SHA1",
+      "statement": "Implement DSAwithSHA1 verification for the XMLDSig 1.1 implementation requirement.",
+      "norm": {
+        "document": "DSIG11",
+        "clause": "6.1",
+        "level": "REQUIRED",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmldsig",
+        "role": "signature implementation",
+        "mode": "verify",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "DSAwithSHA1 verification is not implemented in the XMLDSig profile; a policy denial does not satisfy the implementation obligation.",
+      "closure": "Implement and independently test this algorithm in its required generation/verification roles behind an explicit compatibility policy; keep ordinary defaults unchanged."
+    },
+    {
+      "id": "N-ENC-TRIPLEDES",
+      "statement": "Implement TripleDES-CBC as a required XML Encryption 1.1 algorithm.",
+      "norm": {
+        "document": "XMLENC11",
+        "clause": "5.1.1",
+        "level": "REQUIRED",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmlenc",
+        "role": "encryption implementation",
+        "mode": "decrypt",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "TripleDES-CBC is absent from the bounded AES-GCM profile.",
+      "closure": "Implement the required roles, syntax, parameters, bounded resource behavior and independent vectors; expose legacy use only by explicit policy and document authentication/oracle limitations."
+    },
+    {
+      "id": "N-ENC-AES128CBC",
+      "statement": "Implement AES-128-CBC as a required XML Encryption 1.1 algorithm.",
+      "norm": {
+        "document": "XMLENC11",
+        "clause": "5.1.1",
+        "level": "REQUIRED",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmlenc",
+        "role": "encryption implementation",
+        "mode": "decrypt",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "AES-128-CBC is absent from the bounded AES-GCM profile.",
+      "closure": "Implement the required roles, syntax, parameters, bounded resource behavior and independent vectors; expose legacy use only by explicit policy and document authentication/oracle limitations."
+    },
+    {
+      "id": "N-ENC-AES256CBC",
+      "statement": "Implement AES-256-CBC as a required XML Encryption 1.1 algorithm.",
+      "norm": {
+        "document": "XMLENC11",
+        "clause": "5.1.1",
+        "level": "REQUIRED",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmlenc",
+        "role": "encryption implementation",
+        "mode": "decrypt",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "AES-256-CBC is absent from the bounded AES-GCM profile.",
+      "closure": "Implement the required roles, syntax, parameters, bounded resource behavior and independent vectors; expose legacy use only by explicit policy and document authentication/oracle limitations."
+    },
+    {
+      "id": "N-ENC-CONCATKDF",
+      "statement": "Implement ConcatKDF as a required XML Encryption 1.1 algorithm.",
+      "norm": {
+        "document": "XMLENC11",
+        "clause": "5.1.1",
+        "level": "REQUIRED",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmlenc",
+        "role": "encryption implementation",
+        "mode": "decrypt",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "ConcatKDF is absent from the bounded AES-GCM profile.",
+      "closure": "Implement the required roles, syntax, parameters, bounded resource behavior and independent vectors; expose legacy use only by explicit policy and document authentication/oracle limitations."
+    },
+    {
+      "id": "N-ENC-OAEP-LEGACY",
+      "statement": "Implement RSA-OAEP with MGF1-SHA1 as a required XML Encryption 1.1 algorithm.",
+      "norm": {
+        "document": "XMLENC11",
+        "clause": "5.1.1",
+        "level": "REQUIRED",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmlenc",
+        "role": "encryption implementation",
+        "mode": "decrypt",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "RSA-OAEP with MGF1-SHA1 is absent from the bounded AES-GCM profile.",
+      "closure": "Implement the required roles, syntax, parameters, bounded resource behavior and independent vectors; expose legacy use only by explicit policy and document authentication/oracle limitations."
+    },
+    {
+      "id": "N-ENC-ECDH-ES",
+      "statement": "Implement ECDH-ES as a required XML Encryption 1.1 algorithm.",
+      "norm": {
+        "document": "XMLENC11",
+        "clause": "5.1.1",
+        "level": "REQUIRED",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmlenc",
+        "role": "encryption implementation",
+        "mode": "decrypt",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "ECDH-ES is absent from the bounded AES-GCM profile.",
+      "closure": "Implement the required roles, syntax, parameters, bounded resource behavior and independent vectors; expose legacy use only by explicit policy and document authentication/oracle limitations."
+    },
+    {
+      "id": "N-ENC-KW-TRIPLEDES",
+      "statement": "Implement TripleDES KeyWrap as a required XML Encryption 1.1 algorithm.",
+      "norm": {
+        "document": "XMLENC11",
+        "clause": "5.1.1",
+        "level": "REQUIRED",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmlenc",
+        "role": "encryption implementation",
+        "mode": "decrypt",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "TripleDES KeyWrap is absent from the bounded AES-GCM profile.",
+      "closure": "Implement the required roles, syntax, parameters, bounded resource behavior and independent vectors; expose legacy use only by explicit policy and document authentication/oracle limitations."
+    },
+    {
+      "id": "N-ENC-SHA1",
+      "statement": "Implement SHA-1 digest as a required XML Encryption 1.1 algorithm.",
+      "norm": {
+        "document": "XMLENC11",
+        "clause": "5.1.1",
+        "level": "REQUIRED",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmlenc",
+        "role": "encryption implementation",
+        "mode": "decrypt",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "SHA-1 digest is absent from the bounded AES-GCM profile.",
+      "closure": "Implement the required roles, syntax, parameters, bounded resource behavior and independent vectors; expose legacy use only by explicit policy and document authentication/oracle limitations."
+    },
+    {
+      "id": "N-ENC-GCM",
+      "statement": "Implement AES-128-GCM with authenticated decryption.",
+      "norm": {
+        "document": "XMLENC11",
+        "clause": "5.1.1; 5.2.4",
+        "level": "REQUIRED",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmlenc",
+        "role": "encryption implementation",
+        "mode": "decrypt",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "implemented",
+        "apis": [
+          "xmlenc.EncryptBytes",
+          "xmlenc.DecryptBytes"
+        ],
+        "code": [
+          "xmlenc/decrypt.go",
+          "xmlenc/encrypt.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "xmlenc/xmlenc_test.go",
+            "name": "TestRoundTripAndPrimitives"
+          }
+        ],
+        "negative": [
+          {
+            "file": "xmlenc/xmlenc_test.go",
+            "name": "TestRejectsTamperingAndDowngrade"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Independent clause-specific evidence and the complete normative inventory are not yet established.",
+      "closure": "Map the remaining clause cases and publish independent positive/negative fixtures with the selected edition and errata."
+    },
+    {
+      "id": "N-ENC-RSA15",
+      "statement": "Treat RSA-v1.5 as optional in XML Encryption 1.1.",
+      "norm": {
+        "document": "XMLENC11",
+        "clause": "5.1.1; 5.5.1",
+        "level": "OPTIONAL",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xmlenc",
+        "role": "encryption implementation",
+        "mode": "decrypt",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "RSA-v1.5 is unimplemented; it is an optional compatibility target, not a REQUIRED 1.1 algorithm.",
+      "closure": "If selected, add explicit policy, independent exchange/negative tests and an assessed oracle-resistant decryption workflow."
+    },
+    {
+      "id": "N-FO20-SUBSEQUENCE",
+      "statement": "Each supplied subsequence start/length argument has exactly one xs:double after function conversion. ",
+      "norm": {
+        "document": "FO20",
+        "clause": "15.1.10",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xpath20",
+        "role": "XPath evaluator",
+        "mode": "evaluate",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "implemented",
+        "apis": [
+          "transform.Engine.CompileXPath",
+          "transform.XPath.Evaluate"
+        ],
+        "code": [
+          "transform/internal/xpath/functions_sequence.go",
+          "transform/internal/xpath/functions.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "transform/xpath_test.go",
+            "name": "TestSubsequenceArgumentCardinality"
+          }
+        ],
+        "negative": [
+          {
+            "file": "transform/xpath_test.go",
+            "name": "TestSubsequenceArgumentCardinality"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Independent clause-specific evidence and the complete normative inventory are not yet established.",
+      "closure": "Map the remaining clause cases and publish independent positive/negative fixtures with the selected edition and errata."
+    },
+    {
+      "id": "N-FO30-SUBSEQUENCE",
+      "statement": "Each supplied subsequence start/length argument has exactly one xs:double after function conversion. ",
+      "norm": {
+        "document": "FO30",
+        "clause": "14.1.9",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xpath30",
+        "role": "XPath evaluator",
+        "mode": "evaluate",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "implemented",
+        "apis": [
+          "transform.Engine.CompileXPath",
+          "transform.XPath.Evaluate"
+        ],
+        "code": [
+          "transform/internal/xpath/functions_sequence.go",
+          "transform/internal/xpath/functions.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "transform/xpath_test.go",
+            "name": "TestSubsequenceArgumentCardinality"
+          }
+        ],
+        "negative": [
+          {
+            "file": "transform/xpath_test.go",
+            "name": "TestSubsequenceArgumentCardinality"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Independent clause-specific evidence and the complete normative inventory are not yet established.",
+      "closure": "Map the remaining clause cases and publish independent positive/negative fixtures with the selected edition and errata."
+    },
+    {
+      "id": "N-FO31-SUBSEQUENCE",
+      "statement": "Each supplied subsequence start/length argument has exactly one xs:double after function conversion. ",
+      "norm": {
+        "document": "FO31",
+        "clause": "14.1.8",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xpath31",
+        "role": "XPath evaluator",
+        "mode": "evaluate",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "implemented",
+        "apis": [
+          "transform.Engine.CompileXPath",
+          "transform.XPath.Evaluate"
+        ],
+        "code": [
+          "transform/internal/xpath/functions_sequence.go",
+          "transform/internal/xpath/functions.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "transform/xpath_test.go",
+            "name": "TestSubsequenceArgumentCardinality"
+          }
+        ],
+        "negative": [
+          {
+            "file": "transform/xpath_test.go",
+            "name": "TestSubsequenceArgumentCardinality"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Independent clause-specific evidence and the complete normative inventory are not yet established.",
+      "closure": "Map the remaining clause cases and publish independent positive/negative fixtures with the selected edition and errata."
+    },
+    {
+      "id": "N-XPATH10-CONVERSION",
+      "statement": "Use XPath 1.0 type conversions and version-specific function availability.",
+      "norm": {
+        "document": "XP10",
+        "clause": "3.4; 4",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xpath10",
+        "role": "XPath evaluator",
+        "mode": "evaluate",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "transform.Engine.CompileXPath",
+          "transform.XPath.Evaluate"
+        ],
+        "code": [
+          "transform/internal/xpath/functions.go",
+          "transform/xpath.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "transform/xpath_test.go",
+            "name": "TestXPathVersions"
+          }
+        ],
+        "negative": [
+          {
+            "file": "transform/xpath_test.go",
+            "name": "TestVersionBoundaries"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Independent clause-specific evidence and the complete normative inventory are not yet established.",
+      "closure": "Map the remaining clause cases and publish independent positive/negative fixtures with the selected edition and errata."
+    },
+    {
+      "id": "N-XSLT10-BASIC",
+      "statement": "Implement the applicable language obligations for the selected XSLT 1.0 processor.",
+      "norm": {
+        "document": "XSLT10",
+        "clause": "17",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xslt10",
+        "role": "XSLT processor",
+        "mode": "execute",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "transform.Engine.CompileXSLT",
+          "transform.Stylesheet.Execute"
+        ],
+        "code": [
+          "transform/xslt.go",
+          "transform/internal/xslt/compile.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "transform/xslt10_test.go",
+            "name": "TestXSLT10XMLConstructionAndSimplifiedStylesheet"
+          }
+        ],
+        "negative": [
+          {
+            "file": "transform/xslt_test.go",
+            "name": "TestXSLTVersionBoundaries"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "A complete language obligation inventory and pinned official-suite report are missing. Unsupported mandatory behavior is not an optional-feature skip.",
+      "closure": "Add revision-pinned W3C suite execution with dependency applicability and deterministic settings; expose mandatory failures as failures and fix them before claiming full Basic conformance."
+    },
+    {
+      "id": "N-XSLT20-BASIC",
+      "statement": "Implement the applicable language obligations for the selected XSLT Basic 2.0 processor.",
+      "norm": {
+        "document": "XSLT20",
+        "clause": "21",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xslt20",
+        "role": "XSLT processor",
+        "mode": "execute",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "transform.Engine.CompileXSLT",
+          "transform.Stylesheet.Execute"
+        ],
+        "code": [
+          "transform/xslt.go",
+          "transform/internal/xslt/compile.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "transform/xslt_test.go",
+            "name": "TestXSLT20And30"
+          }
+        ],
+        "negative": [
+          {
+            "file": "transform/xslt_test.go",
+            "name": "TestXSLTVersionBoundaries"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "A complete language obligation inventory and pinned official-suite report are missing. Unsupported mandatory behavior is not an optional-feature skip.",
+      "closure": "Add revision-pinned W3C suite execution with dependency applicability and deterministic settings; expose mandatory failures as failures and fix them before claiming full Basic conformance."
+    },
+    {
+      "id": "N-XSLT30-BASIC",
+      "statement": "Implement the applicable language obligations for the selected XSLT Basic 3.0 processor.",
+      "norm": {
+        "document": "XSLT30",
+        "clause": "27",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xslt30",
+        "role": "XSLT processor",
+        "mode": "execute",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "transform.Engine.CompileXSLT",
+          "transform.Stylesheet.Execute"
+        ],
+        "code": [
+          "transform/xslt.go",
+          "transform/internal/xslt/compile.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "transform/xslt_test.go",
+            "name": "TestXSLT20And30"
+          }
+        ],
+        "negative": [
+          {
+            "file": "transform/xslt_test.go",
+            "name": "TestXSLTVersionBoundaries"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "A complete language obligation inventory and pinned official-suite report are missing. Unsupported mandatory behavior is not an optional-feature skip.",
+      "closure": "Add revision-pinned W3C suite execution with dependency applicability and deterministic settings; expose mandatory failures as failures and fix them before claiming full Basic conformance."
+    },
+    {
+      "id": "N-PKIX-CRL",
+      "statement": "Evaluate issuer, scope, critical extensions and revocation status under the selected CRL processing model.",
+      "norm": {
+        "document": "RFC5280",
+        "clause": "6.3",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "pki",
+        "role": "certificate verifier",
+        "mode": "crl",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "pki.Verifier.Verify"
+        ],
+        "code": [
+          "pki/crl.go",
+          "pki/pki.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "pki/pki_test.go",
+            "name": "TestPKIXAndCRL"
+          }
+        ],
+        "negative": [
+          {
+            "file": "pki/standards_test.go",
+            "name": "TestCRLRejectsCriticalProfileExtensions"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Only direct complete CRLs are processed; delta, indirect and distribution-point scope processing remain gaps.",
+      "closure": "Implement issuer/scope/base-delta/critical-extension/time rules with independent cases and preserve failure under insufficient required evidence."
+    },
+    {
+      "id": "N-OCSP-ACCEPT",
+      "statement": "Authenticate the responder and match the certificate identifier and validity interval.",
+      "norm": {
+        "document": "RFC6960",
+        "clause": "3.2; 4.2.2.2",
+        "level": "MUST",
+        "errata": []
+      },
+      "applies": {
+        "profile": "pki",
+        "role": "certificate verifier",
+        "mode": "ocsp",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "pki.VerifyOCSP"
+        ],
+        "code": [
+          "pki/ocsp_verify.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "pki/ocsp_test.go",
+            "name": "TestOCSPDelegation"
+          }
+        ],
+        "negative": [
+          {
+            "file": "pki/standards_test.go",
+            "name": "TestOCSPNextUpdateIsExclusive"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Independent clause-specific evidence and the complete normative inventory are not yet established.",
+      "closure": "Map the remaining clause cases and publish independent positive/negative fixtures with the selected edition and errata."
+    },
+    {
+      "id": "N-CMS-BINDING",
+      "statement": "Bind content, signed attributes, digest and signer certificate before accepting SignedData.",
+      "norm": {
+        "document": "RFC5652",
+        "clause": "5.4; 5.6",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "cms",
+        "role": "CMS implementation",
+        "mode": "verify",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "cms.SignedData.Verify"
+        ],
+        "code": [
+          "cms/verify.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "cms/cms_test.go",
+            "name": "TestCMSIndependentFixtures"
+          }
+        ],
+        "negative": [
+          {
+            "file": "cms/cms_test.go",
+            "name": "TestCMSMultiplePolicyAndMutation"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Selected definite-length SignedData and strict signed attributes are supported; general BER/countersignature obligations remain outside the implemented subset.",
+      "closure": "Map the CMS grammar and signed-byte rules, then add bounded selected BER forms and independent positive/negative binding tests."
+    },
+    {
+      "id": "N-TSA-RESPONSE",
+      "statement": "Bind a timestamp response to its request imprint, nonce and accepted policy and authenticate the TSA.",
+      "norm": {
+        "document": "RFC3161",
+        "clause": "2.4.2",
+        "level": "MUST",
+        "errata": []
+      },
+      "applies": {
+        "profile": "timestamp",
+        "role": "timestamp verifier",
+        "mode": "verify",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "timestamp.Verifier.VerifyResponse"
+        ],
+        "code": [
+          "timestamp/verify.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "timestamp/timestamp_test.go",
+            "name": "TestRoundTripAndBindings"
+          }
+        ],
+        "negative": [
+          {
+            "file": "timestamp/timestamp_test.go",
+            "name": "TestTSAUsageAndPolicy"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Independent clause-specific evidence and the complete normative inventory are not yet established.",
+      "closure": "Map the remaining clause cases and publish independent positive/negative fixtures with the selected edition and errata."
+    },
+    {
+      "id": "N-KEY-CONTAINERS",
+      "statement": "In the selected password integrity mode, authenticate PFX contents and retain an unambiguous private-key/certificate identity.",
+      "norm": {
+        "document": "RFC7292",
+        "clause": "4.1; 6",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "keys",
+        "role": "key codec",
+        "mode": "parse",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "keys.ParsePKCS12"
+        ],
+        "code": [
+          "keys/pkcs12.go",
+          "keys/pkcs12_mac.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "keys/password_test.go",
+            "name": "TestPKCS12Identity"
+          }
+        ],
+        "negative": [
+          {
+            "file": "keys/password_test.go",
+            "name": "TestPasswordProtectionPolicy"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "One matching private key/certificate, selected MAC/KDFs and flat DER bags only; general PKCS#12 is not implemented.",
+      "closure": "Map password/KDF/grammar obligations and add selected formats/identities only with independent fixtures, ambiguity rejection and aggregate work limits."
+    },
+    {
+      "id": "N-XADES-PROPERTIES",
+      "statement": "Bind SignedProperties and signing-certificate properties to the selected XML signature.",
+      "norm": {
+        "document": "XADES1321",
+        "clause": "5.1; 5.2",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "xades",
+        "role": "XAdES validator",
+        "mode": "current-time",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "xades.VerifyBasicEnveloped"
+        ],
+        "code": [
+          "xades/basic.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "xades/basic_test.go",
+            "name": "TestBasicRoundTrip"
+          }
+        ],
+        "negative": [
+          {
+            "file": "xades/basic_test.go",
+            "name": "TestSignedWrongCertificateDigest"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Only closed root-enveloped topology and selected properties are supported.",
+      "closure": "Map every selected EN 319 132-1 property/topology constraint and add independent supported-form and negative binding fixtures."
+    },
+    {
+      "id": "N-ADES-HISTORICAL",
+      "statement": "Derive validation time and historical conclusions from proof-of-existence and applicable evidence processing.",
+      "norm": {
+        "document": "ADES1021",
+        "clause": "5.5; 5.6",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "historical-ades",
+        "role": "historical validator",
+        "mode": "historical",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "unavailable",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "No complete control-time/best-signature-time, evidence dependency or expired-TSA/archive-renewal engine exists.",
+      "closure": "Implement published V1.4.1 process steps and explanations; independently verify paired adequate/inadequate historical evidence after signer expiration. Do not substitute asserted SigningTime/GenTime for the process."
+    },
+    {
+      "id": "N-SAML-SP-ENCRYPTED",
+      "statement": "Process or generate encrypted counterparts wherever the selected mode handles the corresponding plaintext elements.",
+      "norm": {
+        "document": "SAMLCONF",
+        "clause": "3.4",
+        "level": "MUST",
+        "errata": [
+          "Approved Errata 05 applicability review pending"
+        ]
+      },
+      "applies": {
+        "profile": "saml-sp",
+        "role": "SAML SP",
+        "mode": "websso",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "EncryptedID, EncryptedAssertion and EncryptedAttribute support is missing for applicable plaintext contexts.",
+      "closure": "Implement each applicable encrypted counterpart over an independently checked XMLenc profile; test full exchanges, issuer/recipient/audience/time/signature coverage and failure cases."
+    },
+    {
+      "id": "N-SAML-SP-ALGORITHMS",
+      "statement": "Implement the role-applicable signature and encryption algorithms required by SAML Conformance.",
+      "norm": {
+        "document": "SAMLCONF",
+        "clause": "4.1; 4.2",
+        "level": "MUST",
+        "errata": []
+      },
+      "applies": {
+        "profile": "saml-sp",
+        "role": "SAML SP",
+        "mode": "websso",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "Required legacy signature/encryption algorithm implementations are absent; modern defaults do not satisfy these implementation obligations.",
+      "closure": "Inventory generation/verification obligations with approved errata; implement required compatibility capabilities without enabling them in ordinary policy."
+    },
+    {
+      "id": "N-SAML-SP-WEBSSO",
+      "statement": "Apply the selected Web Browser SSO profile conditions to the complete solicited exchange.",
+      "norm": {
+        "document": "SAMLPROF",
+        "clause": "4.1.4",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "saml-sp",
+        "role": "SAML SP",
+        "mode": "websso",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "saml/sp.ServiceProvider",
+          "saml/idp.IdentityProvider"
+        ],
+        "code": [
+          "saml/sp/sp.go",
+          "saml/idp/idp.go",
+          "saml/protocol/response.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "tests/integration/saml/sso_test.go",
+            "name": "TestEndToEndSolicitedLogin"
+          }
+        ],
+        "negative": [
+          {
+            "file": "tests/integration/saml/sso_test.go",
+            "name": "TestSignedArbitraryACSRejected"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Only solicited POST/Redirect flows are implemented; complete role/binding matrix and external SP/IdP workflow interoperability are missing.",
+      "closure": "Complete Conformance/Bindings/Profiles/Errata 05 mapping and independent SP/IdP positive and negative exchanges, including atomic state/replay behavior."
+    },
+    {
+      "id": "N-SAML-IdP-ENCRYPTED",
+      "statement": "Process or generate encrypted counterparts wherever the selected mode handles the corresponding plaintext elements.",
+      "norm": {
+        "document": "SAMLCONF",
+        "clause": "3.4",
+        "level": "MUST",
+        "errata": [
+          "Approved Errata 05 applicability review pending"
+        ]
+      },
+      "applies": {
+        "profile": "saml-idp",
+        "role": "SAML IdP",
+        "mode": "websso",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "EncryptedID, EncryptedAssertion and EncryptedAttribute support is missing for applicable plaintext contexts.",
+      "closure": "Implement each applicable encrypted counterpart over an independently checked XMLenc profile; test full exchanges, issuer/recipient/audience/time/signature coverage and failure cases."
+    },
+    {
+      "id": "N-SAML-IdP-ALGORITHMS",
+      "statement": "Implement the role-applicable signature and encryption algorithms required by SAML Conformance.",
+      "norm": {
+        "document": "SAMLCONF",
+        "clause": "4.1; 4.2",
+        "level": "MUST",
+        "errata": []
+      },
+      "applies": {
+        "profile": "saml-idp",
+        "role": "SAML IdP",
+        "mode": "websso",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "unimplemented",
+        "apis": [],
+        "code": []
+      },
+      "tests": {
+        "positive": [],
+        "negative": []
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "forbidden",
+          "reason": "The default security profile rejects this legacy or unsupported capability."
+        },
+        "compatibility": {
+          "status": "unavailable",
+          "reason": "No separate compatibility policy implements this requirement."
+        }
+      },
+      "gap": "Required legacy signature/encryption algorithm implementations are absent; modern defaults do not satisfy these implementation obligations.",
+      "closure": "Inventory generation/verification obligations with approved errata; implement required compatibility capabilities without enabling them in ordinary policy."
+    },
+    {
+      "id": "N-SAML-IdP-WEBSSO",
+      "statement": "Apply the selected Web Browser SSO profile conditions to the complete solicited exchange.",
+      "norm": {
+        "document": "SAMLPROF",
+        "clause": "4.1.4",
+        "level": "normative",
+        "errata": []
+      },
+      "applies": {
+        "profile": "saml-idp",
+        "role": "SAML IdP",
+        "mode": "websso",
+        "status": "applicable",
+        "reason": "Applies to the selected public operation within the bounded profile."
+      },
+      "implementation": {
+        "status": "limited",
+        "apis": [
+          "saml/sp.ServiceProvider",
+          "saml/idp.IdentityProvider"
+        ],
+        "code": [
+          "saml/sp/sp.go",
+          "saml/idp/idp.go",
+          "saml/protocol/response.go"
+        ]
+      },
+      "tests": {
+        "positive": [
+          {
+            "file": "tests/integration/saml/sso_test.go",
+            "name": "TestEndToEndSolicitedLogin"
+          }
+        ],
+        "negative": [
+          {
+            "file": "tests/integration/saml/sso_test.go",
+            "name": "TestSignedArbitraryACSRejected"
+          }
+        ]
+      },
+      "interop": {
+        "status": "pending",
+        "tests": [],
+        "fixtures": [],
+        "reason": "Existing internal tests are not treated as independent clause-level conformance evidence."
+      },
+      "policy": {
+        "default": {
+          "status": "enabled",
+          "reason": "Applies to the selected public operation within the bounded profile."
+        },
+        "compatibility": {
+          "status": "not-applicable",
+          "reason": "Feature-specific explicit options apply; no general legacy compatibility policy is provided."
+        }
+      },
+      "gap": "Only solicited POST/Redirect flows are implemented; complete role/binding matrix and external SP/IdP workflow interoperability are missing.",
+      "closure": "Complete Conformance/Bindings/Profiles/Errata 05 mapping and independent SP/IdP positive and negative exchanges, including atomic state/replay behavior."
+    }
+  ]
 }

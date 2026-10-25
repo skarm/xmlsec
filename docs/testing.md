@@ -40,8 +40,12 @@ go test -count=1 ./tests -run '^TestExternalConsumer$'
 
 Shared repository helpers are in `internal/testutil`; public fixtures in
 `testdata`. Optional C/Java oracles are in `tests/interop/testdata`, with Go
-adapters in `tests/interop/cmd`. [conformance.json](conformance.json) maps supported
-requirements to tests; `make docs` checks those paths and documentation links.
+adapters in `tests/interop/cmd`. [conformance.json](conformance.json) separates
+capabilities from normative obligations. `make docs` checks documentation links,
+schema and state consistency, edition references, local code/fixture paths,
+exported APIs and named positive/negative/interoperability test functions.
+See [normative traceability](conformance.md); this validates the register without
+running cited tests or proving completeness of the clause inventory.
 
 ## Performance
 

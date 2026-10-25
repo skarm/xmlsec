@@ -116,7 +116,7 @@ collection limits apply across the operation. Writer variants are described in
 supported forms; an empty list denies all. Retrieval needs an exact URI allowlist
 and bounded resolver. rawX509Certificate retrieval accepts raw certificate bytes
 or one Base64 transform; other RetrievalMethod transform chains are unsupported.
-`VerifyWithKeyInfo` requires an application trust selector;
+`VerifySignatureWithKeyInfo` requires an application trust selector;
 an embedded key or certificate is not trust.
 
 `pki.NewVerifier` snapshots explicit roots and policy; it never uses system roots.

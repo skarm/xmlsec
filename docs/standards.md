@@ -1,8 +1,10 @@
 # Standards
 
 These primary sources define supported profiles. Listing a standard does not claim
-complete conformance. [conformance.json](conformance.json) maps implemented scope to
-tests; [compatibility](compatibility.md) records exclusions and oracle differences.
+complete conformance. [conformance.json](conformance.json) pins editions and errata
+sources and separates capabilities from the partial normative clause inventory.
+[Normative traceability](conformance.md) explains its states and acceptance rules;
+[compatibility](compatibility.md) records exclusions and oracle differences.
 
 ## XML, canonicalization and signatures
 
@@ -33,6 +35,7 @@ tests; [compatibility](compatibility.md) records exclusions and oracle differenc
 - [RFC 6960](https://www.rfc-editor.org/rfc/rfc6960.html) and [RFC 9654](https://www.rfc-editor.org/rfc/rfc9654.html): OCSP and nonce
 - [RFC 3161](https://www.rfc-editor.org/rfc/rfc3161.html) and [RFC 5816](https://www.rfc-editor.org/rfc/rfc5816.html): timestamps
 - [ETSI EN 319 132-1 V1.3.1](https://www.etsi.org/deliver/etsi_en/319100_319199/31913201/01.03.01_60/en_31913201v010301p.pdf): XAdES properties
+- [ETSI EN 319 102-1 V1.4.1](https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf): future historical-validation baseline; the complete process is unimplemented
 
 ## Protocols and encryption
 
@@ -41,6 +44,8 @@ tests; [compatibility](compatibility.md) records exclusions and oracle differenc
   [Profiles](https://docs.oasis-open.org/security/saml/v2.0/saml-profiles-2.0-os.pdf),
   [Metadata](https://docs.oasis-open.org/security/saml/v2.0/saml-metadata-2.0-os.pdf) and
   [metadata trust](https://docs.oasis-open.org/security/saml/Post2.0/sstc-metadata-iop-os.html)
+- SAML 2.0 [Conformance](https://docs.oasis-open.org/security/saml/v2.0/saml-conformance-2.0-os.pdf)
+  and [Approved Errata 05](https://docs.oasis-open.org/security/saml/v2.0/errata05/os/saml-v2.0-errata05-os.html)
 - [XML Encryption 1.1](https://www.w3.org/TR/xmlenc-core1/): AES-GCM and selected Element/Content replacement
 - [RFC 8017](https://www.rfc-editor.org/rfc/rfc8017.html): RSA-OAEP and PKCS#1 encodings
 - [RFC 5208](https://www.rfc-editor.org/rfc/rfc5208.html),
