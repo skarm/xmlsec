@@ -3,10 +3,15 @@ package xmlenc_test
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
+	"crypto/fips140"
+	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -505,3 +510,633 @@ func decryptReader(t *testing.T, source io.ReadCloser) ([]byte, error) {
 type cipherReaderFunc func([]byte) (int, error)
 
 func (f cipherReaderFunc) Read(p []byte) (int, error) { return f(p) }
+
+func graphXML(t *testing.T, doc *document.Document) string {
+	t.Helper()
+	wire, err := doc.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(wire)
+}
+
+func graphData(t *testing.T, secret []byte, info string) *document.Document {
+	t.Helper()
+	doc, err := xmlenc.EncryptBytesWithKey(t.Context(), []byte("graph payload\x00\xff"), secret, xmlenc.SymmetricOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := strings.Replace(graphXML(t, doc), "<xenc:EncryptedData ", `<xenc:EncryptedData Id="data" `, 1)
+	if info != "" {
+		wire = strings.Replace(wire, "<xenc:CipherData>", `<ds:KeyInfo xmlns:ds="`+xmlenc.SignatureNamespace+`">`+info+`</ds:KeyInfo><xenc:CipherData>`, 1)
+	}
+	return parse(t, []byte(wire))
+}
+
+func graphWrap(t *testing.T, secret, kek []byte, name, carried, id string, refs []xmlenc.KeyGraphReference) *document.Document {
+	t.Helper()
+	doc, err := xmlenc.EncryptKey(t.Context(), secret, xmlenc.KeyGraphKey{Name: name, Algorithm: xmlenc.AES256KeyWrap, Secret: kek}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES256KeyWrap, ID: id, CarriedKeyName: carried, References: refs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
+func graphAssert(t *testing.T, doc *document.Document, selected document.Element, options xmlenc.KeyGraphOptions) {
+	t.Helper()
+	before := graphXML(t, doc)
+	got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), doc, selected, options)
+	if err != nil || string(got) != "graph payload\x00\xff" {
+		t.Fatalf("graph plaintext %q: %v", got, err)
+	}
+	if graphXML(t, doc) != before {
+		t.Fatal("graph changed source snapshot")
+	}
+}
+
+func TestKeyGraphRelationships(t *testing.T) {
+	secret, kek := bytes.Repeat([]byte{0x52}, 32), bytes.Repeat([]byte{0x93}, 32)
+	options := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}}
+	wrapped := graphWrap(t, secret, kek, "master", "session", "key", nil)
+	for _, kind := range []string{"inline", "retrieval", "carried", "data-reference", "standalone"} {
+		t.Run(kind, func(t *testing.T) {
+			info := graphXML(t, wrapped)
+			sibling := ""
+			opts := options
+			switch kind {
+			case "retrieval":
+				info = `<ds:RetrievalMethod URI="#key" Type="` + xmlenc.Namespace + `EncryptedKey"/>`
+				sibling = graphXML(t, wrapped)
+			case "carried":
+				info = `<ds:KeyName>session</ds:KeyName>`
+				sibling = graphXML(t, wrapped)
+			case "data-reference":
+				info = ""
+				sibling = graphXML(t, graphWrap(t, secret, kek, "master", "", "key", []xmlenc.KeyGraphReference{{URI: "#data"}}))
+			case "standalone":
+				info = ""
+				sibling = graphXML(t, wrapped)
+				opts.KeyURIs = []string{"#key"}
+			}
+			data := graphData(t, secret, info)
+			if sibling == "" {
+				graphAssert(t, data, data.Root(), opts)
+				return
+			}
+			envelope := parse(t, []byte("<r>"+graphXML(t, data)+sibling+"</r>"))
+			graphAssert(t, envelope, envelope.Root().Children()[0], opts)
+		})
+	}
+	t.Run("nested wrapping via KeyReference", func(t *testing.T) {
+		intermediate := bytes.Repeat([]byte{0x71}, 32)
+		outer := graphWrap(t, intermediate, kek, "master", "", "outer", []xmlenc.KeyGraphReference{{URI: "#inner", Key: true}})
+		inner := graphWrap(t, secret, intermediate, "", "", "inner", nil)
+		data := graphData(t, secret, `<ds:RetrievalMethod URI="#inner"/>`)
+		doc := parse(t, []byte("<r>"+graphXML(t, data)+graphXML(t, inner)+graphXML(t, outer)+"</r>"))
+		graphAssert(t, doc, doc.Root().Children()[0], options)
+	})
+	t.Run("consistent paths", func(t *testing.T) {
+		info := `<ds:KeyName>direct</ds:KeyName>` + graphXML(t, wrapped)
+		data := graphData(t, secret, info)
+		opts := options
+		opts.Keys = append(append([]xmlenc.KeyGraphKey(nil), options.Keys...), xmlenc.KeyGraphKey{Name: "direct", Algorithm: xmlenc.AES256GCM, Secret: secret})
+		graphAssert(t, data, data.Root(), opts)
+		opts.Keys[1].Secret = bytes.Repeat([]byte{0x11}, 32)
+		if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), data, data.Root(), opts); got != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+			t.Fatal("conflicting authorized paths accepted", err)
+		}
+	})
+}
+
+func TestKeyGraphDerivedKey(t *testing.T) {
+	t.Run("OpenSSL aligned known vector", func(t *testing.T) {
+		master := []byte("secret")
+		parameters := xmlenc.ConcatKDFParameters{AlgorithmID: append([]byte{0}, []byte("algorithm")...), PartyUInfo: append([]byte{0}, []byte("party-u")...), PartyVInfo: append([]byte{0}, []byte("party-v")...)}
+		// OpenSSL SSKDF/SHA256 counter1 output, independent of this implementation.
+		secret, err := hex.DecodeString("decd092d8d48598e451375077940a69c91f27e53faa451bfd3eef6d0dec2a780")
+		if err != nil {
+			t.Fatal(err)
+		}
+		derived, err := xmlenc.BuildDerivedKey(t.Context(), xmlenc.DerivedKeyOptions{Parameters: parameters, MasterKeyName: "master"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := graphData(t, secret, graphXML(t, derived))
+		graphAssert(t, data, data.Root(), xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.ConcatKDF, Secret: master}}, ConcatKDF: &parameters})
+	})
+	master := bytes.Repeat([]byte{0x18}, 32)
+	parameters := xmlenc.ConcatKDFParameters{AlgorithmID: append([]byte{0}, []byte(xmlenc.AES256GCM)...), PartyUInfo: []byte{3, 0xd8}, PartyVInfo: []byte{0, 0x71}}
+	if fips140.Enabled() {
+		if got, err := xmlenc.DeriveConcatKey(t.Context(), master, 256, parameters); got != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+			t.Fatal("non-octet KDF escaped FIPS policy", err)
+		}
+		parameters.PartyUInfo = []byte{0, 0xd8}
+	}
+	secret, err := xmlenc.DeriveConcatKey(t.Context(), master, 256, parameters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived, err := xmlenc.BuildDerivedKey(t.Context(), xmlenc.DerivedKeyOptions{Parameters: parameters, ID: "derived", MasterKeyName: "master", DerivedKeyName: "session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := graphData(t, secret, graphXML(t, derived))
+	opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.ConcatKDF, Secret: master}}, ConcatKDF: &parameters}
+	graphAssert(t, data, data.Root(), opts)
+	t.Run("expected context binding", func(t *testing.T) {
+		bad := parameters
+		bad.PartyVInfo = []byte{0, 0x72}
+		opts.ConcatKDF = &bad
+		if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), data, data.Root(), opts); got != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+			t.Fatal("unbound KDF context accepted", err)
+		}
+	})
+	t.Run("encrypted master", func(t *testing.T) {
+		kek := bytes.Repeat([]byte{0x67}, 32)
+		wrapped := graphWrap(t, master, kek, "kek", "master", "wrapped-master", nil)
+		doc := parse(t, []byte("<r>"+graphXML(t, data)+graphXML(t, wrapped)+"</r>"))
+		opts.Keys = []xmlenc.KeyGraphKey{{Name: "kek", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}
+		opts.KeyAlgorithms = []string{xmlenc.ConcatKDF}
+		opts.ConcatKDF = &parameters
+		graphAssert(t, doc, doc.Root().Children()[0], opts)
+	})
+}
+
+func TestKeyGraphCipherReferences(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x31}, 32)
+	opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES256GCM, Secret: secret}}}
+	data := graphData(t, secret, "")
+	value := data.Root().Children()[1].Children()[0].Text()
+	wire := strings.Replace(graphXML(t, data), `<xenc:CipherValue>`+value+`</xenc:CipherValue>`, `<xenc:CipherReference URI="#blob"><xenc:Transforms><ds:Transform xmlns:ds="`+xmlenc.SignatureNamespace+`" Algorithm="`+xmlenc.SignatureNamespace+`base64"/></xenc:Transforms></xenc:CipherReference>`, 1)
+	doc := parse(t, []byte(`<r><blob xml:id="blob">`+value+`</blob>`+wire+`</r>`))
+	graphAssert(t, doc, doc.Root().Children()[1], opts)
+	t.Run("empty same-document URI", func(t *testing.T) {
+		whole := parse(t, []byte(strings.Replace(graphXML(t, doc), `URI="#blob"`, `URI=""`, 1)))
+		graphAssert(t, whole, whole.Root().Children()[1], opts)
+	})
+	t.Run("duplicate IDs", func(t *testing.T) {
+		duplicate := parse(t, []byte(strings.Replace(graphXML(t, doc), "</r>", `<other xml:id="blob"/></r>`, 1)))
+		if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), duplicate, duplicate.Root().Children()[1], opts); got != nil || !errors.Is(err, xmlenc.ErrFormat) {
+			t.Fatal("duplicate ID accepted", err)
+		}
+	})
+	t.Run("unsafe transform", func(t *testing.T) {
+		unsafe := parse(t, []byte(strings.Replace(graphXML(t, doc), xmlenc.SignatureNamespace+"base64", xmlenc.SignatureNamespace+"enveloped-signature", 1)))
+		if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), unsafe, unsafe.Root().Children()[1], opts); got != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+			t.Fatal("unexpected transform accepted", err)
+		}
+	})
+}
+
+func TestKeyGraphExternalResources(t *testing.T) {
+	secret, kek := bytes.Repeat([]byte{0x40}, 32), bytes.Repeat([]byte{0x41}, 32)
+	data := graphData(t, secret, `<ds:RetrievalMethod URI="keys.xml#key"/>`)
+	keydoc := graphWrap(t, secret, kek, "kek", "", "key", nil)
+	calls := 0
+	reader := &resourceReader{Reader: strings.NewReader(graphXML(t, keydoc))}
+	options := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "kek", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}, External: &xmlenc.KeyGraphResources{BaseURI: "https://example.test/data.xml", AllowedURIs: []string{"https://example.test/keys.xml"}, Resolver: xmlenc.CipherResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
+		calls++
+		if uri != "https://example.test/keys.xml" {
+			t.Fatal(uri)
+		}
+		return reader, nil
+	})}}
+	graphAssert(t, data, data.Root(), options)
+	if calls != 1 || !reader.closed {
+		t.Fatal("external key lifecycle", calls, reader.closed)
+	}
+	options.External.AllowedURIs = nil
+	calls = 0
+	if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), data, data.Root(), options); got != nil || !errors.Is(err, xmlenc.ErrPolicy) || calls != 0 {
+		t.Fatal("unapproved key I/O", err, calls)
+	}
+}
+
+func TestKeyGraphMetadataAndGuards(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x19}, 32)
+	opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES256GCM, Secret: secret}}}
+	data := graphData(t, secret, "")
+	wire := graphXML(t, data)
+	method := `<xenc:EncryptionMethod Algorithm="` + xmlenc.AES256GCM + `"></xenc:EncryptionMethod>`
+	for _, kind := range []string{"method omitted", "opaque type", "properties"} {
+		t.Run(kind, func(t *testing.T) {
+			variant := wire
+			switch kind {
+			case "method omitted":
+				variant = strings.Replace(variant, method, "", 1)
+				if variant == wire {
+					t.Fatal("method removal did not change fixture")
+				}
+			case "opaque type":
+				variant = strings.Replace(variant, `Id="data"`, `Id="data" Type="urn:custom" MimeType="application/gzip" Encoding="urn:opaque"`, 1)
+			case "properties":
+				variant = strings.Replace(variant, "</xenc:EncryptedData>", `<xenc:EncryptionProperties Id="props"><xenc:EncryptionProperty Target="#data"><app:note xmlns:app="urn:app">hint</app:note></xenc:EncryptionProperty></xenc:EncryptionProperties></xenc:EncryptedData>`, 1)
+			}
+			doc := parse(t, []byte(variant))
+			graphAssert(t, doc, doc.Root(), opts)
+			if got, err := xmlenc.DecryptDocumentWithKeyGraph(t.Context(), doc, doc.Root(), opts); got != nil || !errors.Is(err, xmlenc.ErrFormat) {
+				t.Fatal("opaque bytes entered XML API", err)
+			}
+		})
+	}
+	for _, kind := range []string{"duplicate bindings", "typed nil", "nodes", "bytes", "cancel", "foreign selected"} {
+		t.Run(kind, func(t *testing.T) {
+			options := opts
+			ctx := t.Context()
+			selected := data.Root()
+			want := xmlenc.ErrPolicy
+			switch kind {
+			case "duplicate bindings":
+				options.Keys = append(append([]xmlenc.KeyGraphKey(nil), opts.Keys...), opts.Keys...)
+			case "typed nil":
+				var provider *rsa.PrivateKey
+				options.Keys = []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES256GCM, Secret: secret, Decrypter: provider}}
+			case "nodes":
+				options.Limits.MaxNodes = 1
+			case "bytes":
+				options.Limits.MaxBytes = 1
+			case "cancel":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+				want = context.Canceled
+			case "foreign selected":
+				selected = graphData(t, secret, "").Root()
+				want = xmlenc.ErrFormat
+			}
+			if got, err := xmlenc.DecryptBytesWithKeyGraph(ctx, data, selected, options); got != nil || !errors.Is(err, want) {
+				t.Fatal("graph guard", kind, err)
+			}
+		})
+	}
+}
+
+func TestKeyGraphDependencyGuards(t *testing.T) {
+	secret, kek := bytes.Repeat([]byte{0x40}, 32), bytes.Repeat([]byte{0x41}, 32)
+	keydoc := graphWrap(t, secret, kek, "master", "loop", "key", nil)
+	wire := strings.Replace(graphXML(t, keydoc), "<ds:KeyName>master</ds:KeyName>", "<ds:KeyName>loop</ds:KeyName>", 1)
+	data := graphData(t, secret, wire)
+	options := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}}
+	if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), data, data.Root(), options); got != nil || !errors.Is(err, xmlenc.ErrFormat) {
+		t.Fatal("cycle accepted", err)
+	}
+	t.Run("depth", func(t *testing.T) {
+		options.Limits.MaxDepth = 1
+		outer := graphWrap(t, kek, kek, "master", "intermediate", "outer", nil)
+		inner := graphWrap(t, secret, kek, "intermediate", "session", "inner", nil)
+		data := graphData(t, secret, `<ds:KeyName>session</ds:KeyName>`)
+		doc := parse(t, []byte("<r>"+graphXML(t, data)+graphXML(t, inner)+graphXML(t, outer)+"</r>"))
+		if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), doc, doc.Root().Children()[0], options); got != nil || !errors.Is(err, document.ErrLimit) {
+			t.Fatal("dependency depth accepted", err)
+		}
+	})
+}
+
+func TestKeyGraphXMLRestoration(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x33}, 32)
+	source := parse(t, []byte(`<r xmlns:p="urn:p"><p:a>value</p:a><tail/></r>`))
+	options := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES256GCM, Secret: secret}}}
+	encrypted, selected, err := xmlenc.EncryptElementWithKey(t.Context(), source, source.Root().Children()[0], secret, xmlenc.SymmetricOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, element, err := xmlenc.DecryptElementWithKeyGraph(t.Context(), encrypted, selected, options)
+	if err != nil || element.Name() != (document.Name{Space: "urn:p", Local: "a"}) || len(restored.Root().Children()) != 2 {
+		t.Fatal("element restoration", err)
+	}
+	content, selected, err := xmlenc.EncryptContentWithKey(t.Context(), source, source.Root(), secret, xmlenc.SymmetricOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, parent, err := xmlenc.DecryptContentWithKeyGraph(t.Context(), content, selected, options)
+	if err != nil || !parent.Same(restored.Root()) || len(parent.Children()) != 2 {
+		t.Fatal("content restoration", err)
+	}
+	if got, _, err := xmlenc.DecryptElementWithKeyGraph(t.Context(), content, selected, options); got != nil || !errors.Is(err, xmlenc.ErrFormat) {
+		t.Fatal("content accepted as element", err)
+	}
+	standalone, err := xmlenc.EncryptDocumentWithKey(t.Context(), source, secret, xmlenc.SymmetricOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := xmlenc.DecryptDocumentWithKeyGraph(t.Context(), standalone, standalone.Root(), options)
+	if err != nil || plain.Root().Name() != source.Root().Name() {
+		t.Fatal("document restoration", err)
+	}
+}
+
+func TestKeyGraphExternalFailureGuards(t *testing.T) {
+	secret, kek := bytes.Repeat([]byte{0x42}, 32), bytes.Repeat([]byte{0x43}, 32)
+	keydoc := graphWrap(t, secret, kek, "kek", "", "key", nil)
+	data := graphData(t, secret, `<ds:RetrievalMethod URI="https://example.test/key.xml#key"/>`)
+	failure := errors.New("key resolver failure")
+	for _, kind := range []string{"resolver error", "close error", "nil reader", "typed nil reader", "stalled reader", "cancelled reader", "bytes"} {
+		t.Run(kind, func(t *testing.T) {
+			source := &resourceReader{Reader: strings.NewReader(graphXML(t, keydoc))}
+			ctx := t.Context()
+			var cancel context.CancelFunc
+			if kind == "cancelled reader" {
+				ctx, cancel = context.WithCancel(ctx)
+				defer cancel()
+			}
+			resolver := xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				switch kind {
+				case "resolver error":
+					return source, failure
+				case "close error":
+					source.closeErr = failure
+				case "nil reader":
+					return nil, nil
+				case "typed nil reader":
+					var reader *resourceReader
+					return reader, nil
+				case "stalled reader":
+					source.Reader = cipherReaderFunc(func([]byte) (int, error) { return 0, nil })
+				case "cancelled reader":
+					cancel()
+				}
+				return source, nil
+			})
+			opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "kek", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}, External: &xmlenc.KeyGraphResources{AllowedURIs: []string{"https://example.test/key.xml"}, Resolver: resolver}}
+			if kind == "bytes" {
+				opts.Limits.MaxBytes = 900
+			}
+			got, err := xmlenc.DecryptBytesWithKeyGraph(ctx, data, data.Root(), opts)
+			if got != nil || err == nil {
+				t.Fatal("key resource failure returned plaintext", kind, err)
+			}
+			if kind != "nil reader" && kind != "typed nil reader" && !source.closed {
+				t.Fatal("key reader not closed", kind)
+			}
+			if kind == "resolver error" || kind == "close error" {
+				if !errors.Is(err, failure) {
+					t.Fatal("lost resource cause", err)
+				}
+			}
+			if kind == "cancelled reader" && !errors.Is(err, context.Canceled) {
+				t.Fatal("lost cancellation", err)
+			}
+		})
+	}
+	t.Run("resource count", func(t *testing.T) {
+		intermediate := graphWrap(t, kek, kek, "kek", "middle", "inner", nil)
+		outer := graphWrap(t, secret, kek, "middle", "", "key", nil)
+		outerwire := strings.Replace(graphXML(t, outer), `<ds:KeyName>middle</ds:KeyName>`, `<ds:RetrievalMethod URI="https://example.test/inner.xml#inner"/>`, 1)
+		calls := 0
+		opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "kek", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}, Limits: xmlenc.KeyGraphLimits{MaxResources: 1}, External: &xmlenc.KeyGraphResources{AllowedURIs: []string{"https://example.test/key.xml", "https://example.test/inner.xml"}, Resolver: xmlenc.CipherResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+			calls++
+			wire := outerwire
+			if uri == "https://example.test/inner.xml" {
+				wire = graphXML(t, intermediate)
+			}
+			return io.NopCloser(strings.NewReader(wire)), nil
+		})}}
+		if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), data, data.Root(), opts); got != nil || !errors.Is(err, document.ErrLimit) || calls != 1 {
+			t.Fatal("resource budget", err, calls)
+		}
+	})
+}
+
+func TestKeyGraphCipherPolicySeparation(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x5b}, 32)
+	data := graphData(t, secret, "")
+	external, selected, ciphertext, err := xmlenc.ExternalizeCiphertext(t.Context(), data, data.Root(), "https://example.test/cipher.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES256GCM, Secret: secret}}, Data: externalOptions("https://example.test/cipher.bin", ciphertext)}
+	graphAssert(t, external, selected, opts)
+	calls := 0
+	opts.Data.External = nil
+	opts.External = &xmlenc.KeyGraphResources{AllowedURIs: []string{"https://example.test/cipher.bin"}, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+		calls++
+		return io.NopCloser(bytes.NewReader(ciphertext)), nil
+	})}
+	if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), external, selected, opts); got != nil || !errors.Is(err, xmlenc.ErrPolicy) || calls != 0 {
+		t.Fatal("key permission authorized cipher resource", err, calls)
+	}
+}
+
+func TestKeyGraphECDHComposition(t *testing.T) {
+	recipient, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := bytes.Repeat([]byte{0x56}, 32)
+	wrapped, err := xmlenc.EncryptKey(t.Context(), secret, xmlenc.KeyGraphKey{Name: "recipient", Algorithm: xmlenc.AES256KeyWrap, ECDHPublicKey: recipient.PublicKey()}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES256KeyWrap, ID: "agreement", CarriedKeyName: "session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "recipient", Algorithm: xmlenc.AES256KeyWrap, ECDHRecipient: recipient}}}
+	for _, kind := range []string{"inline", "retrieval", "carried", "external", "nested"} {
+		t.Run(kind, func(t *testing.T) {
+			info := graphXML(t, wrapped)
+			sibling := ""
+			options := opts
+			switch kind {
+			case "retrieval":
+				info = `<ds:RetrievalMethod URI="#agreement"/>`
+				sibling = graphXML(t, wrapped)
+			case "carried":
+				info = `<ds:KeyName>session</ds:KeyName>`
+				sibling = graphXML(t, wrapped)
+			case "external":
+				info = `<ds:RetrievalMethod URI="https://example.test/agreement.xml"/>`
+				options.External = &xmlenc.KeyGraphResources{AllowedURIs: []string{"https://example.test/agreement.xml"}, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+					return io.NopCloser(strings.NewReader(graphXML(t, wrapped))), nil
+				})}
+			case "nested":
+				kek := bytes.Repeat([]byte{0x47}, 16)
+				outer, err := xmlenc.EncryptKey(t.Context(), kek, xmlenc.KeyGraphKey{Name: "recipient", Algorithm: xmlenc.AES256KeyWrap, ECDHPublicKey: recipient.PublicKey()}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES256KeyWrap, ID: "outer", CarriedKeyName: "kek"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				inner, err := xmlenc.EncryptKey(t.Context(), secret, xmlenc.KeyGraphKey{Name: "kek", Algorithm: xmlenc.AES128KeyWrap, Secret: kek}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES128KeyWrap, ID: "inner"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				options.KeyAlgorithms = []string{xmlenc.AES128KeyWrap}
+				info = graphXML(t, inner)
+				sibling = graphXML(t, outer)
+			}
+			data := graphData(t, secret, info)
+			if sibling == "" {
+				graphAssert(t, data, data.Root(), options)
+				return
+			}
+			doc := parse(t, []byte("<r>"+graphXML(t, data)+sibling+"</r>"))
+			graphAssert(t, doc, doc.Root().Children()[0], options)
+		})
+	}
+	t.Run("provider validation and cancellation", func(t *testing.T) {
+		data := graphData(t, secret, graphXML(t, wrapped))
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		provider := &agreementProvider{key: recipient, want: ctx, cancel: cancel}
+		adapter, err := xmlenc.AdaptContextECDHRecipient(provider)
+		if err != nil {
+			t.Fatal(err)
+		}
+		options := opts
+		options.Keys = []xmlenc.KeyGraphKey{{Name: "recipient", Algorithm: xmlenc.AES256KeyWrap, ECDHRecipient: adapter}}
+		wire := strings.Replace(graphXML(t, data), `Algorithm="`+xmlenc.ConcatKDF+`"`, `Algorithm="urn:other-kdf"`, 1)
+		malformed := parse(t, []byte(wire))
+		if got, err := xmlenc.DecryptBytesWithKeyGraph(ctx, malformed, malformed.Root(), options); got != nil || err == nil || provider.calls != 0 {
+			t.Fatal("bad KDF invoked ECDH provider", err, provider.calls)
+		}
+		if got, err := xmlenc.DecryptBytesWithKeyGraph(ctx, data, data.Root(), options); got != nil || !errors.Is(err, context.Canceled) || provider.calls != 1 {
+			t.Fatal("ECDH graph cancellation", err, provider.calls)
+		}
+	})
+}
+
+func TestKeyGraphPropertyGrammar(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x69}, 32)
+	data := graphData(t, secret, "")
+	opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES256GCM, Secret: secret}}}
+	for _, body := range []string{"", "text", `<same xmlns="` + xmlenc.Namespace + `"/>`, `<no-namespace/>`} {
+		t.Run(body, func(t *testing.T) {
+			wire := strings.Replace(graphXML(t, data), "</xenc:EncryptedData>", `<xenc:EncryptionProperties><xenc:EncryptionProperty>`+body+`</xenc:EncryptionProperty></xenc:EncryptionProperties></xenc:EncryptedData>`, 1)
+			doc := parse(t, []byte(wire))
+			if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), doc, doc.Root(), opts); got != nil || !errors.Is(err, xmlenc.ErrFormat) {
+				t.Fatal("invalid property content accepted", err)
+			}
+		})
+	}
+}
+
+// RFC3394 section4.6 supplies all three octet strings independently of this API.
+func TestKeyGraphGenerationVector(t *testing.T) {
+	kek, _ := hex.DecodeString("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+	secret, _ := hex.DecodeString("00112233445566778899aabbccddeeff000102030405060708090a0b0c0d0e0f")
+	expected, _ := hex.DecodeString("28c9f404c4b810f4cbccb35cfb87f8263f5786e2d80ed326cbc7f0e71a99f43bfb988b9b7a02dd21")
+	wrapped := graphWrap(t, secret, kek, "master", "session", "key", nil)
+	ciphertext, err := base64.StdEncoding.DecodeString(wrapped.Root().Children()[2].Children()[0].Text())
+	if err != nil || !bytes.Equal(ciphertext, expected) {
+		t.Fatal("standalone EncryptKey RFC3394 vector", err)
+	}
+	data := graphData(t, secret, graphXML(t, wrapped))
+	graphAssert(t, data, data.Root(), xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}})
+}
+
+func TestKeyGraphECDHKeyInfoIDs(t *testing.T) {
+	recipient, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := bytes.Repeat([]byte{0x56}, 32)
+	wrapped, err := xmlenc.EncryptKey(t.Context(), secret, xmlenc.KeyGraphKey{Name: "recipient", Algorithm: xmlenc.AES256KeyWrap, ECDHPublicKey: recipient.PublicKey()}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES256KeyWrap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := graphXML(t, wrapped)
+	for _, name := range []string{"ds:KeyInfo", "xenc:OriginatorKeyInfo", "xenc:RecipientKeyInfo"} {
+		wire = strings.Replace(wire, "<"+name+">", "<"+name+` Id="`+strings.ReplaceAll(name, ":", "-")+`">`, 1)
+	}
+	data := graphData(t, secret, wire)
+	opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "recipient", Algorithm: xmlenc.AES256KeyWrap, ECDHRecipient: recipient}}}
+	graphAssert(t, data, data.Root(), opts)
+	duplicate := parse(t, []byte(strings.Replace(graphXML(t, data), `Id="xenc-RecipientKeyInfo"`, `Id="xenc-OriginatorKeyInfo"`, 1)))
+	if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), duplicate, duplicate.Root(), opts); got != nil || !errors.Is(err, xmlenc.ErrFormat) {
+		t.Fatal("agreement IDs bypassed index", err)
+	}
+}
+
+func TestKeyGraphURIContext(t *testing.T) {
+	secret, kek := bytes.Repeat([]byte{0x21}, 32), bytes.Repeat([]byte{0x22}, 32)
+	wrapped := graphWrap(t, secret, kek, "master", "", "key", nil)
+	data := graphData(t, secret, `<ds:RetrievalMethod URI="key.xml#key"/>`)
+	base := "https://example.test/messages/data.xml"
+	doc := parse(t, []byte(`<message xml:base="../keys/">`+graphXML(t, data)+`</message>`))
+	calls := 0
+	targetURI := "https://example.test/keys/key.xml"
+	opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}, External: &xmlenc.KeyGraphResources{BaseURI: base, AllowedURIs: []string{targetURI}, Resolver: xmlenc.CipherResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+		calls++
+		if uri != targetURI {
+			t.Fatal(uri)
+		}
+		return io.NopCloser(strings.NewReader(graphXML(t, wrapped))), nil
+	})}}
+	graphAssert(t, doc, doc.Root().Children()[0], opts)
+	if calls != 1 {
+		t.Fatal("XML base resolution", calls)
+	}
+	for _, kind := range []string{"no opt in", "denied resolved URI", "malformed base", "base fragment", "base credentials"} {
+		t.Run(kind, func(t *testing.T) {
+			variant := doc
+			options := opts
+			policy := *opts.External
+			policy.AllowedURIs = append([]string(nil), policy.AllowedURIs...)
+			options.External = &policy
+			calls = 0
+			switch kind {
+			case "no opt in":
+				policy.BaseURI = ""
+			case "denied resolved URI":
+				policy.AllowedURIs = []string{"https://example.test/messages/key.xml"}
+			case "malformed base":
+				variant = parse(t, []byte(strings.Replace(graphXML(t, doc), `../keys/`, `bad%xx`, 1)))
+			case "base fragment":
+				variant = parse(t, []byte(strings.Replace(graphXML(t, doc), `../keys/`, `../keys/#x`, 1)))
+			case "base credentials":
+				variant = parse(t, []byte(strings.Replace(graphXML(t, doc), `../keys/`, `https://user:password@example.test/`, 1)))
+			}
+			if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), variant, variant.Root().Children()[0], options); got != nil || err == nil || calls != 0 {
+				t.Fatal("URI policy bypass", kind, err, calls)
+			}
+		})
+	}
+	t.Run("same-document reference ignores external XML base", func(t *testing.T) {
+		local := graphData(t, secret, `<ds:RetrievalMethod URI="#key"/>`)
+		variant := parse(t, []byte(`<message xml:base="https://denied.test/">`+graphXML(t, local)+graphXML(t, wrapped)+`</message>`))
+		calls = 0
+		graphAssert(t, variant, variant.Root().Children()[0], opts)
+		if calls != 0 {
+			t.Fatal("fragment caused external read")
+		}
+	})
+}
+
+func TestKeyGraphCountsActualCipherResourceBytes(t *testing.T) {
+	secret, kek := bytes.Repeat([]byte{0x62}, 32), bytes.Repeat([]byte{0x63}, 32)
+	wrapped := graphWrap(t, secret, kek, "master", "", "", nil)
+	encoded := wrapped.Root().Children()[2].Children()[0].Text()
+	ciphertext, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, transform := range []bool{false, true} {
+		t.Run(strconv.FormatBool(transform), func(t *testing.T) {
+			uri := "https://example.test/wrapped-key.bin"
+			ref := `<xenc:CipherReference URI="` + uri + `"/>`
+			body := ciphertext
+			if transform {
+				ref = `<xenc:CipherReference URI="` + uri + `"><xenc:Transforms><ds:Transform Algorithm="` + xmlenc.SignatureNamespace + `base64"/></xenc:Transforms></xenc:CipherReference>`
+				body = []byte(strings.Repeat(" ", 4000) + encoded)
+			}
+			keywire := strings.Replace(graphXML(t, wrapped), "<xenc:CipherValue>"+encoded+"</xenc:CipherValue>", ref, 1)
+			if !strings.Contains(keywire, "CipherReference") {
+				t.Fatal("cipher reference fixture failed")
+			}
+			data := graphData(t, secret, keywire+keywire)
+			for _, ceiling := range []int{len(body), 65536} {
+				calls := 0
+				opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}, Limits: xmlenc.KeyGraphLimits{MaxBytes: 32768}, Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, MaxBytes: ceiling, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+					calls++
+					return io.NopCloser(bytes.NewReader(body)), nil
+				})}}}
+				graphAssert(t, data, data.Root(), opts)
+				if calls != 2 {
+					t.Fatal("expected both authorized paths", calls)
+				}
+				if transform {
+					opts.Limits.MaxBytes = 8192
+					calls = 0
+					if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), data, data.Root(), opts); got != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+						t.Fatal("encoded whitespace escaped aggregate raw-byte budget", err, calls)
+					}
+				}
+			}
+		})
+	}
+}

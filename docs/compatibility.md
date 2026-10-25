@@ -101,13 +101,29 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
   public key must agree. Schema-dependent DER rules for custom attributes remain
   the application's responsibility.
 - XML Encryption AES-GCM 128/192/256 with direct keys, independently selected
-  SHA-224/256/384/512 OAEP/MGF1 hashes or AES Key Wrap and one inline EncryptedKey.
+  SHA-224/256/384/512 OAEP/MGF1 hashes or AES Key Wrap. The strict entry points
+  require one inline EncryptedKey or a direct application key.
   Explicit `OAEPParameters.AllowLegacy` permits SHA-1 and `RSAOAEP10` with fixed
   MGF1-SHA1; the exact application-selected parameters still have to match.
   Default RSA-OAEP remains SHA-256/MGF1-SHA256. Bytes, root, Element and Content
   are supported. CipherReference permits one exact absolute URI with raw bytes
-  or one base64 transform. CBC, RSA PKCS#1 v1.5, key agreement,
-  KDF/DerivedKey/ReferenceList and external EncryptedKey processing are unsupported.
+  or one base64 transform. Explicit `Options.AllowLegacy` additionally permits
+  AES-CBC 128/192/256 and TripleDES-CBC, including RFC 3217 TripleDES key wrap
+  for TripleDES data keys. CBC plaintext is unauthenticated; legacy algorithms
+  remain disabled by default and in FIPS mode. CLI opt-in is `-allow-legacy-data`.
+  Optional EncryptionMethod/KeySize is accepted only when it agrees with the
+  selected data key, KEK or RSA modulus. The bounded ConcatKDF API supports
+  XMLENC bitstring parameters and SHA-1/SHA-256; SHA-1 requires explicit legacy
+  permission, and non-octet input is denied in FIPS mode.
+  Explicit ECDH-ES APIs support P-256, P-384 and P-521, ConcatKDF and AES Key
+  Wrap. Agreement does not authenticate the sender. Explicit key-graph APIs
+  resolve bounded nested/retrieved/derived keys, ReferenceList and CarriedKeyName
+  relationships; external key documents require an exact application allowlist.
+  Key labels, recipients and references confer no trust. Cipher-reference
+  transformations are separately selected; base64 and built-in canonicalization
+  are supported by the graph API, including implicit Canonical XML 1.0 conversion.
+  RSA PKCS#1 v1.5, finite-field DH, PBKDF2, EXI and padded AES key wrap remain
+  unsupported optional features.
 
 General key-manager persistence, HSM management, XMLDSig decryption transforms,
 CipherReference XPath/XSLT pipelines and arbitrary XPointer are unsupported.

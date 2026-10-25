@@ -29,3 +29,13 @@ const (
 	// TransformEnvelopedSignature is the XMLDSig enveloped-signature transform URI.
 	TransformEnvelopedSignature = "http://www.w3.org/2000/09/xmldsig#enveloped-signature"
 )
+
+// XMLDSig 1.1 named-curve identifiers are shared by signing and agreement.
+const (
+	// CurveP256 identifies the NIST P-256 prime curve.
+	CurveP256 = "urn:oid:1.2.840.10045.3.1.7"
+	// CurveP384 identifies the NIST P-384 prime curve.
+	CurveP384 = "urn:oid:1.3.132.0.34"
+	// CurveP521 identifies the NIST P-521 prime curve.
+	CurveP521 = "urn:oid:1.3.132.0.35"
+)

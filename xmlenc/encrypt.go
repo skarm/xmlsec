@@ -3,8 +3,6 @@ package xmlenc
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
@@ -21,7 +19,7 @@ func EncryptBytes(ctx context.Context, plaintext []byte, recipient *rsa.PublicKe
 		return nil, err
 	}
 
-	return encrypt(ctx, plaintext, p, "")
+	return encrypt(ctx, plaintext, p)
 }
 
 // EncryptDocument encrypts the complete root element, excluding document-level
@@ -44,7 +42,7 @@ func EncryptBytesWithKeyWrap(ctx context.Context, plaintext, kek []byte, options
 		return nil, err
 	}
 
-	return encrypt(ctx, plaintext, p, "")
+	return encrypt(ctx, plaintext, p)
 }
 
 // EncryptDocumentWithKeyWrap encrypts the complete root element with Type
@@ -70,7 +68,7 @@ func encryptDocument(ctx context.Context, doc *document.Document, p profile) (*d
 func encryptSerializedElement(ctx context.Context, node *tree.Node, p profile) (*document.Document, error) {
 	// Keep local namespace declarations, including xmlns="". Selected-element
 	// plaintext is reparsed in its unchanged parent's namespace context.
-	plaintext, storage, err := serializePlaintext(ctx, []*tree.Node{node}, p.options.MaxPlaintextBytes)
+	plaintext, storage, err := serializePlaintext(ctx, []*tree.Node{node}, p.options.MaxPlaintextBytes, p.data)
 	if err != nil {
 		return nil, err
 	}
@@ -88,8 +86,9 @@ func encryptSerializedElement(ctx context.Context, node *tree.Node, p profile) (
 }
 
 // Count before allocating so XML is written directly into the buffer reused by
-// GCM. The second serialization trades a traversal for bounded exact storage.
-func serializePlaintext(ctx context.Context, nodes []*tree.Node, maximum int) ([]byte, []byte, error) {
+// the selected cipher. The second serialization trades a traversal for bounded
+// exact storage.
+func serializePlaintext(ctx context.Context, nodes []*tree.Node, maximum int, data dataCipher) ([]byte, []byte, error) {
 	size, err := tree.WriteXMLFragment(ctx, io.Discard, nodes, maximum)
 	if err != nil {
 		if errors.Is(err, document.ErrLimit) {
@@ -99,7 +98,7 @@ func serializePlaintext(ctx context.Context, nodes []*tree.Node, maximum int) ([
 		return nil, nil, err
 	}
 
-	storage := make([]byte, gcmNonceBytes, int(size)+gcmOverhead)
+	storage := make([]byte, data.ivBytes, int(size)+data.overhead())
 
 	output := bytes.NewBuffer(storage)
 	if _, err := tree.WriteXMLFragment(ctx, output, nodes, maximum); err != nil {
@@ -109,11 +108,11 @@ func serializePlaintext(ctx context.Context, nodes []*tree.Node, maximum int) ([
 
 	storage = output.Bytes()
 
-	return storage[gcmNonceBytes:], storage, nil
+	return storage[data.ivBytes:], storage, nil
 }
 
-func encrypt(ctx context.Context, plaintext []byte, p profile, typ string) (*document.Document, error) {
-	return encryptOwned(ctx, plaintext, nil, p, typ)
+func encrypt(ctx context.Context, plaintext []byte, p profile) (*document.Document, error) {
+	return encryptOwned(ctx, plaintext, nil, p, "")
 }
 
 func encryptOwned(ctx context.Context, plaintext, storage []byte, p profile, typ string) (*document.Document, error) {
@@ -125,11 +124,11 @@ func encryptOwned(ctx context.Context, plaintext, storage []byte, p profile, typ
 		return nil, ErrPolicy
 	}
 
-	aead := p.direct
+	block := p.direct
 
 	var wrapped []byte
 
-	if aead == nil {
+	if block == nil {
 		key := make([]byte, p.keyBytes)
 		defer clear(key)
 
@@ -137,12 +136,13 @@ func encryptOwned(ctx context.Context, plaintext, storage []byte, p profile, typ
 			return nil, err
 		}
 
-		block, err := aes.NewCipher(key)
-		if err != nil {
-			return nil, err
+		if p.data.tripleDES {
+			oddDESParity(key)
 		}
 
-		aead, err = cipher.NewGCM(block)
+		var err error
+
+		block, err = p.data.block(key)
 		if err != nil {
 			return nil, err
 		}
@@ -153,18 +153,8 @@ func encryptOwned(ctx context.Context, plaintext, storage []byte, p profile, typ
 		}
 	}
 
-	if storage == nil {
-		storage = make([]byte, gcmNonceBytes, gcmNonceBytes+len(plaintext)+aead.Overhead())
-	}
-
-	iv := storage[:gcmNonceBytes]
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		return nil, err
-	}
-
-	encrypted := aead.Seal(iv, iv, plaintext, nil)
-
-	if err := ctx.Err(); err != nil {
+	encrypted, err := p.data.seal(ctx, plaintext, storage, block)
+	if err != nil {
 		return nil, err
 	}
 

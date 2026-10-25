@@ -30,9 +30,12 @@ type task struct {
 	Mode, Key, Certificate, Root, CRL, Input, Method, Relay, At string
 	DataAlgorithm, KeyAlgorithm                                 string
 	Selection                                                   string
-	XML                                                         bool
 	OAEPHash, CipherURI, Resource, KeyName                      string
+	OAEPAlgorithm, OAEPMGFHash                                  string
 	OAEPLabel                                                   []byte
+	XML                                                         bool
+	OAEPAllowLegacy                                             bool
+	AllowLegacy                                                 bool
 }
 
 type output struct {
@@ -95,22 +98,19 @@ func public(path string) (crypto.PublicKey, error) {
 }
 
 func encryptionOptions(t task) (xmlenc.Options, error) {
-	opts := xmlenc.Options{DataAlgorithm: t.DataAlgorithm}
-	if t.OAEPHash != "" || len(t.OAEPLabel) != 0 {
-		var hash crypto.Hash
-
-		switch t.OAEPHash {
-		case "", "256":
-			hash = crypto.SHA256
-		case "384":
-			hash = crypto.SHA384
-		case "512":
-			hash = crypto.SHA512
-		default:
-			return opts, errors.New("OAEP hash")
+	opts := xmlenc.Options{DataAlgorithm: t.DataAlgorithm, AllowLegacy: t.AllowLegacy}
+	if t.OAEPHash != "" || t.OAEPMGFHash != "" || t.OAEPAlgorithm != "" || t.OAEPAllowLegacy || len(t.OAEPLabel) != 0 {
+		hash, err := oaepHash(t.OAEPHash)
+		if err != nil {
+			return opts, err
 		}
 
-		opts.OAEP = &xmlenc.OAEPParameters{Hash: hash, Label: t.OAEPLabel}
+		mgf, err := oaepHash(t.OAEPMGFHash)
+		if err != nil {
+			return opts, err
+		}
+
+		opts.OAEP = &xmlenc.OAEPParameters{Algorithm: t.OAEPAlgorithm, Hash: hash, MGFHash: mgf, AllowLegacy: t.OAEPAllowLegacy, Label: t.OAEPLabel}
 	}
 
 	if t.Resource != "" {
@@ -128,6 +128,25 @@ func encryptionOptions(t task) (xmlenc.Options, error) {
 	}
 
 	return opts, nil
+}
+
+func oaepHash(name string) (crypto.Hash, error) {
+	switch name {
+	case "":
+		return 0, nil
+	case "1":
+		return crypto.SHA1, nil
+	case "224":
+		return crypto.SHA224, nil
+	case "256":
+		return crypto.SHA256, nil
+	case "384":
+		return crypto.SHA384, nil
+	case "512":
+		return crypto.SHA512, nil
+	default:
+		return 0, errors.New("OAEP hash")
+	}
 }
 
 func process(ctx context.Context, t task) (o output, err error) {

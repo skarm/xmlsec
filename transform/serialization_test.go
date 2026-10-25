@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -2394,14 +2395,12 @@ func serializationParameterDocumentFromOutput(t *testing.T, declarations string)
 	for _, name := range keys {
 		if name == "use-character-maps" {
 			characters := map[string]string{}
-			for _, mapName := range strings.Fields(values[name]) {
+			for mapName := range strings.FieldsSeq(values[name]) {
 				mapping, found := characterMaps[mapName]
 				if !found {
 					t.Fatal("missing literal character map", mapName)
 				}
-				for character, replacement := range mapping {
-					characters[character] = replacement
-				}
+				maps.Copy(characters, mapping)
 			}
 			document.WriteString(`<o:use-character-maps>`)
 			chars := make([]string, 0, len(characters))

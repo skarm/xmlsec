@@ -2,17 +2,17 @@ package xmlenc
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/document"
 )
 
-// EncryptBytesWithKey encrypts bytes with an explicitly supplied AES data key.
-// It creates a fresh random 96-bit nonce and a 128-bit tag, with no EncryptedKey.
-// Applications must limit each data key to at most 2^32 encryptions and manage
+// EncryptBytesWithKey encrypts bytes with an explicitly supplied symmetric data key.
+// GCM creates a fresh random 96-bit nonce and a 128-bit tag. Explicit legacy
+// CBC uses a fresh IV and XMLENC padding, without authentication. No EncryptedKey
+// is generated.
+// Applications must limit each GCM data key to at most 2^32 encryptions and manage
 // secret distribution. KeyName is an untrusted hint, not an identity assertion.
 func EncryptBytesWithKey(ctx context.Context, plaintext, key []byte, options SymmetricOptions) (*document.Document, error) {
 	p, err := symmetricProfile(ctx, key, options)
@@ -20,12 +20,13 @@ func EncryptBytesWithKey(ctx context.Context, plaintext, key []byte, options Sym
 		return nil, err
 	}
 
-	return encrypt(ctx, plaintext, p, "")
+	return encrypt(ctx, plaintext, p)
 }
 
-// DecryptBytesWithKey authenticates untyped EncryptedData with an explicit AES
+// DecryptBytesWithKey decrypts untyped EncryptedData with an explicit symmetric
 // data key and exact caller-selected algorithm and KeyName. It returns no plaintext
-// on authentication, format, budget or cancellation failure.
+// on cipher, format, budget or cancellation failure. GCM authenticates before
+// returning plaintext; permitted CBC plaintext has no authentication.
 func DecryptBytesWithKey(ctx context.Context, doc *document.Document, key []byte, options SymmetricOptions) ([]byte, error) {
 	p, err := symmetricProfile(ctx, key, options)
 	if err != nil {
@@ -36,7 +37,7 @@ func DecryptBytesWithKey(ctx context.Context, doc *document.Document, key []byte
 }
 
 // EncryptDocumentWithKey encrypts the complete root element using an explicit
-// AES data key. It has the serialization and limit contracts of EncryptDocument.
+// symmetric data key. It has the serialization and limit contracts of EncryptDocument.
 func EncryptDocumentWithKey(ctx context.Context, doc *document.Document, key []byte, options SymmetricOptions) (*document.Document, error) {
 	p, err := symmetricProfile(ctx, key, options)
 	if err != nil {
@@ -46,8 +47,8 @@ func EncryptDocumentWithKey(ctx context.Context, doc *document.Document, key []b
 	return encryptDocument(ctx, doc, p)
 }
 
-// DecryptDocumentWithKey authenticates a standalone Type #Element envelope with
-// an explicit AES data key before parsing it under the configured XML limits.
+// DecryptDocumentWithKey decrypts a standalone Type #Element envelope with
+// an explicit symmetric data key before parsing it under the configured XML limits.
 func DecryptDocumentWithKey(ctx context.Context, doc *document.Document, key []byte, options SymmetricOptions) (*document.Document, error) {
 	p, err := symmetricProfile(ctx, key, options)
 	if err != nil {
@@ -58,7 +59,7 @@ func DecryptDocumentWithKey(ctx context.Context, doc *document.Document, key []b
 }
 
 // EncryptElementWithKey replaces exactly the selected element using an explicit
-// AES data key. It has the snapshot, namespace and limit contracts of EncryptElement.
+// symmetric data key. It has the snapshot, namespace and limit contracts of EncryptElement.
 func EncryptElementWithKey(ctx context.Context, doc *document.Document, selected document.Element, key []byte, options SymmetricOptions) (*document.Document, document.Element, error) {
 	node, err := selectedNode(doc, selected)
 	if err != nil {
@@ -73,8 +74,8 @@ func EncryptElementWithKey(ctx context.Context, doc *document.Document, selected
 	return encryptSelected(ctx, doc, node, p)
 }
 
-// DecryptElementWithKey authenticates and restores exactly the selected element
-// with an explicit AES data key, using its parent's original namespace context.
+// DecryptElementWithKey decrypts and restores exactly the selected element
+// with an explicit symmetric data key, using its parent's original namespace context.
 func DecryptElementWithKey(ctx context.Context, doc *document.Document, selected document.Element, key []byte, options SymmetricOptions) (*document.Document, document.Element, error) {
 	node, err := selectedNode(doc, selected)
 	if err != nil {
@@ -90,7 +91,7 @@ func DecryptElementWithKey(ctx context.Context, doc *document.Document, selected
 }
 
 // EncryptContentWithKey replaces the selected parent's complete content with
-// one envelope using an explicit AES data key. Empty and mixed content are supported.
+// one envelope using an explicit symmetric data key. Empty and mixed content are supported.
 func EncryptContentWithKey(ctx context.Context, doc *document.Document, parent document.Element, key []byte, options SymmetricOptions) (*document.Document, document.Element, error) {
 	node, err := contentParent(doc, parent)
 	if err != nil {
@@ -105,8 +106,8 @@ func EncryptContentWithKey(ctx context.Context, doc *document.Document, parent d
 	return encryptContent(ctx, doc, node, p)
 }
 
-// DecryptContentWithKey authenticates and restores selected Type #Content with
-// an explicit AES data key. It has the snapshot and namespace contracts of DecryptContent.
+// DecryptContentWithKey decrypts and restores selected Type #Content with
+// an explicit symmetric data key. It has the snapshot and namespace contracts of DecryptContent.
 func DecryptContentWithKey(ctx context.Context, doc *document.Document, selected document.Element, key []byte, options SymmetricOptions) (*document.Document, document.Element, error) {
 	node, err := selectedNode(doc, selected)
 	if err != nil || node.Parent == nil {
@@ -141,15 +142,12 @@ func symmetricProfile(ctx context.Context, key []byte, options SymmetricOptions)
 		}
 	}
 
-	block, err := aes.NewCipher(key)
+	block, err := p.data.block(key)
 	if err != nil {
 		return profile{}, ErrPolicy
 	}
 
-	p.direct, err = cipher.NewGCM(block)
-	if err != nil {
-		return profile{}, ErrPolicy
-	}
+	p.direct = block
 
 	p.keyName = options.KeyName
 
@@ -165,8 +163,12 @@ func decodeDirectProfile(ctx context.Context, root document.Element, p profile) 
 	names = append(names, elementName(Namespace, "CipherData"))
 
 	children, err := childElements(root, names...)
-	if err != nil || !matchesMethod(children[0], p.options.DataAlgorithm, true) {
+	if err != nil {
 		return nil, nil, ErrFormat
+	}
+
+	if err := checkEncryptionMethod(ctx, children[0], p.options.DataAlgorithm, p.keyBytes*8, false); err != nil {
+		return nil, nil, err
 	}
 
 	if p.keyName != "" {
@@ -178,7 +180,7 @@ func decodeDirectProfile(ctx context.Context, root document.Element, p profile) 
 		}
 	}
 
-	data, err := decodeCipherData(ctx, children[len(children)-1], p.options.MaxPlaintextBytes+gcmOverhead, p.options.External)
+	data, err := decodeCipherData(ctx, children[len(children)-1], p.options.MaxPlaintextBytes+p.data.overhead(), p.options.External)
 
 	return nil, data, err
 }

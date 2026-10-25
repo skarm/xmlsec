@@ -49,6 +49,10 @@ func keyWrapProfile(ctx context.Context, kek []byte, options KeyWrapOptions) (pr
 		algorithm = AES256KeyWrap
 	}
 
+	if algorithm == TripleDESKeyWrap {
+		return tripleDESWrapProfile(p, kek)
+	}
+
 	var kekBytes int
 
 	switch algorithm {
@@ -73,7 +77,7 @@ func keyWrapProfile(ctx context.Context, kek []byte, options KeyWrapOptions) (pr
 
 	keyBytes := p.keyBytes
 	p.transport = keyTransport{
-		algorithm: algorithm, wrappedBytes: keyBytes + 8,
+		algorithm: algorithm, wrappedBytes: keyBytes + 8, keyBits: kekBytes * 8,
 		wrap: func(key []byte) ([]byte, error) { return wrapKey(block, key) },
 		unwrap: func(_ context.Context, wrapped []byte) ([]byte, error) {
 			return unwrapKey(block, wrapped, keyBytes)
@@ -119,7 +123,7 @@ func wrapKey(block cipher.Block, key []byte) ([]byte, error) {
 
 func unwrapKey(block cipher.Block, wrapped []byte, keyBytes int) ([]byte, error) {
 	// Check the expected session-key size before allocation or AES operations.
-	// General RFC 3394 inputs can be much larger than this closed GCM profile.
+	// General RFC 3394 inputs can be much larger than the bounded data-key profile.
 	if !sessionKeySize(keyBytes) || len(wrapped) != keyBytes+8 {
 		return nil, ErrDecrypt
 	}

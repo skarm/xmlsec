@@ -46,7 +46,7 @@ func EncryptContentWithKeyWrap(ctx context.Context, doc *document.Document, pare
 	return encryptContent(ctx, doc, node, p)
 }
 
-// DecryptContent authenticates one selected Type #Content EncryptedData and
+// DecryptContent decrypts one selected Type #Content EncryptedData and
 // replaces it with its decrypted content in the actual parent's namespace
 // context (XMLENC 1.1 sections 4.5.1–4.5.4). It returns a new snapshot and the
 // restored parent handle: content can contain zero, one or many nodes of any
@@ -69,7 +69,7 @@ func DecryptContent(ctx context.Context, doc *document.Document, selected docume
 }
 
 // DecryptContentWithKeyWrap has the DecryptContent snapshot/context contracts
-// and authenticates with an explicitly supplied KEK.
+// using an explicitly supplied KEK.
 func DecryptContentWithKeyWrap(ctx context.Context, doc *document.Document, selected document.Element, kek []byte, options KeyWrapOptions) (*document.Document, document.Element, error) {
 	node, err := selectedNode(doc, selected)
 	if err != nil || node.Parent == nil {
@@ -98,7 +98,7 @@ func contentParent(doc *document.Document, parent document.Element) (*tree.Node,
 }
 
 func encryptContent(ctx context.Context, doc *document.Document, parent *tree.Node, p profile) (*document.Document, document.Element, error) {
-	raw, storage, err := serializePlaintext(ctx, parent.Children, p.options.MaxPlaintextBytes)
+	raw, storage, err := serializePlaintext(ctx, parent.Children, p.options.MaxPlaintextBytes, p.data)
 	if err != nil {
 		return nil, document.Element{}, err
 	}

@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -843,16 +844,14 @@ func xpathHostChoiceDeclarations(version string) map[string]string {
 	}
 
 	if version != "20" {
-		for key, value := range map[string]string{
+		maps.Copy(choices, map[string]string{
 			"non-infoset-construction": "Non-XML input comes from caller-built document trees and public `Value`/`Sequence`",
 			"schema-type-system":       "`XMLSchemaVersion` selects 1.0 or 1.1 datatype",
 			"extension-signatures":     "have their registered arity and generic `item()*` argument/result types",
 			"environment-variables":    "come only from the copied `Config.Environment` map",
 			"serialization-parameters": "Serialization occurs through explicit",
 			"external-result-mismatch": "invalid external-function results retain their type error",
-		} {
-			choices[key] = value
-		}
+		})
 	}
 
 	return choices

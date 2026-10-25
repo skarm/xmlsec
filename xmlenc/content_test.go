@@ -3,9 +3,11 @@ package xmlenc_test
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
 	"crypto/rsa"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -278,12 +280,48 @@ func authenticatedContent(t testing.TB, raw []byte, prefix, suffix string) *docu
 		t.Fatal(err)
 	}
 
-	wire := strings.Replace(string(xmlBytes(t, encrypted)), "<xenc:EncryptedData ", `<xenc:EncryptedData Type="`+xmlenc.ContentType+`" `, 1)
+	wire := bytes.Replace(xmlBytes(t, encrypted), []byte("<xenc:EncryptedData "), []byte(`<xenc:EncryptedData Type="`+xmlenc.ContentType+`" `), 1)
 
-	doc, err := document.Parse(t.Context(), []byte(prefix+wire+suffix), document.DefaultLimits())
+	wrapped := io.MultiReader(strings.NewReader(prefix), bytes.NewReader(wire), strings.NewReader(suffix))
+
+	doc, err := document.ParseReader(t.Context(), wrapped, document.DefaultLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	return doc
+}
+
+func TestECDHContent(t *testing.T) {
+	for _, curve := range []ecdh.Curve{ecdh.P256(), ecdh.P384(), ecdh.P521()} {
+		recipient := agreementKey(t, curve)
+		for _, content := range []string{"", "й 😀 &amp; text", `before<p:v xmlns:p="urn:shadow">one</p:v><!--inside--><?inside ok?><bare xmlns=""/>after`} {
+			t.Run(agreementCurveLabel(curve)+"/"+content, func(t *testing.T) {
+				source := parse(t, []byte(`<?outside ok?><r xmlns="urn:r" xmlns:p="urn:p" xml:lang="ru"><head>visible</head><box flag="public">`+content+`</box><tail/></r><!--after-->`))
+				before := xmlBytes(t, source)
+				parent := source.Root().Children()[1]
+				encrypted, handle, err := xmlenc.EncryptContentWithECDH(t.Context(), source, parent, recipient.PublicKey(), xmlenc.ECDHOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !handle.Same(encrypted.Root().Children()[1].Children()[0]) {
+					t.Fatal("wrong encrypted handle")
+				}
+				restored, restoredParent, err := xmlenc.DecryptContentWithECDH(t.Context(), encrypted, handle, recipient, xmlenc.ECDHOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !restoredParent.Same(restored.Root().Children()[1]) {
+					t.Fatal("wrong restored parent")
+				}
+				sameXML(t, source, restored)
+				if !bytes.Equal(before, xmlBytes(t, source)) {
+					t.Fatal("source mutated")
+				}
+				if out, handle, err := xmlenc.DecryptContentWithECDH(t.Context(), encrypted, encrypted.Root(), recipient, xmlenc.ECDHOptions{}); out != nil || handle.Valid() || err == nil {
+					t.Fatal(out, handle, err)
+				}
+			})
+		}
+	}
 }

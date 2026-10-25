@@ -27,11 +27,13 @@ type CipherResolver = resource.Resolver
 // CipherResolverFunc adapts a function to CipherResolver.
 type CipherResolverFunc = resource.ResolverFunc
 
-// ExternalCipherReference permits one exact absolute URI in EncryptedData.
-// EncryptedKey must remain inline. Empty/same-document URIs, fragments and
-// arbitrary transform programs are unsupported. Ciphertext is either raw bytes
-// or the result of one XMLDSig base64 transform. Resolving bytes asserts no trust:
-// plaintext is returned only after GCM authentication and all other checks.
+// ExternalCipherReference permits one exact absolute ciphertext URI. The strict
+// entry points require inline EncryptedKey and deny empty/same-document URIs;
+// KeyGraphOptions separately enables bounded key relationships and local cipher
+// references. External ciphertext is raw bytes or one XMLDSig base64 transform,
+// without fragments or arbitrary transform programs. Resolving bytes asserts no trust:
+// plaintext is returned only after the selected cipher and resource checks.
+// GCM authenticates ciphertext; explicit legacy CBC remains unauthenticated.
 type ExternalCipherReference struct {
 	// Resolver is an application-owned adapter; nil and typed-nil are rejected.
 	Resolver CipherResolver
@@ -47,7 +49,8 @@ type ExternalCipherReference struct {
 // for the application to store at uri. It performs no I/O and does not change
 // EncryptedKey. Selection must belong to doc; the original snapshot is retained.
 // This operation does not authenticate the envelope, its URI or its metadata.
-// Decryption requires an explicit matching Options.External resolver and GCM tag.
+// Decryption requires an explicit matching Options.External resolver and the
+// same caller-selected cipher policy. CBC adds no authentication to the resource.
 func ExternalizeCiphertext(ctx context.Context, doc *document.Document, selected document.Element, uri string) (*document.Document, document.Element, []byte, error) {
 	if ctx == nil || !validCipherURI(uri) {
 		return nil, document.Element{}, nil, ErrPolicy
@@ -74,7 +77,8 @@ func ExternalizeCiphertext(ctx context.Context, doc *document.Document, selected
 		return nil, document.Element{}, nil, ErrFormat
 	}
 
-	ciphertext, err := decodeCipherValue(ctx, tree.Wrap(doc, cipherData), (32<<20)+gcmOverhead)
+	// AES-CBC needs an IV plus up to one complete padding block.
+	ciphertext, err := decodeCipherValue(ctx, tree.Wrap(doc, cipherData), (32<<20)+32)
 	if err != nil {
 		return nil, document.Element{}, nil, err
 	}
@@ -221,7 +225,7 @@ func readCipherResource(ctx context.Context, p *ExternalCipherReference, limit, 
 	return out, nil
 }
 
-// GCM requires contiguous ciphertext. Unknown-length resources are collected in
+// Decryption consumes contiguous bounded ciphertext. Unknown-length resources are collected in
 // fixed chunks and joined once, without repeatedly copying growing prefixes.
 func readCiphertext(ctx context.Context, source io.Reader, maximum int) ([]byte, error) {
 	reader := &streamio.Reader{Context: ctx, Source: source, Limit: int64(maximum), LimitError: ErrPolicy}

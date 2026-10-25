@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/reference"
@@ -631,11 +632,11 @@ func (p *parser) ecKeyValue(n *tree.Node) (*ecdsa.PublicKey, error) {
 
 func curveForURI(s string) elliptic.Curve {
 	switch s {
-	case "urn:oid:1.2.840.10045.3.1.7":
+	case lexicon.CurveP256:
 		return elliptic.P256()
-	case "urn:oid:1.3.132.0.34":
+	case lexicon.CurveP384:
 		return elliptic.P384()
-	case "urn:oid:1.3.132.0.35":
+	case lexicon.CurveP521:
 		return elliptic.P521()
 	}
 
@@ -790,11 +791,11 @@ func structure(n *tree.Node, space, local string, allowed ...string) ([]*tree.No
 func curveURI(c elliptic.Curve) string {
 	switch c {
 	case elliptic.P256():
-		return "urn:oid:1.2.840.10045.3.1.7"
+		return lexicon.CurveP256
 	case elliptic.P384():
-		return "urn:oid:1.3.132.0.34"
+		return lexicon.CurveP384
 	case elliptic.P521():
-		return "urn:oid:1.3.132.0.35"
+		return lexicon.CurveP521
 	}
 
 	return ""

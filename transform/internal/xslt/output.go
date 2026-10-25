@@ -605,12 +605,12 @@ func (writer *fullyNormalizedWriter) consumeRune(r rune) error {
 // condition, even when the selected repertoire requires numeric references.
 // Storage is bounded independently of reference length (including leading zeros).
 type fullyNormalizedReference struct {
+	name        string
+	digits      int
+	number      uint32
 	active      bool
 	phase       byte
 	hexadecimal bool
-	digits      int
-	number      uint32
-	name        string
 	invalid     bool
 }
 
@@ -692,28 +692,28 @@ func fullyNormalizedName(name string) error {
 // boundaries without validating XML or retaining complete tags/text. Ordinary
 // references are expanded separately; mapped references remain opaque.
 type fullyNormalizedText struct {
-	mode            byte
-	quote           rune
 	prefix          string
+	htmlName        string
+	htmlToken       string
+	htmlURI         string
+	htmlRaw         string
+	htmlNamespaces  []byte
 	tail            int
 	depth           int
+	edition         int
+	htmlRawMatched  int
+	quote           rune
+	mode            byte
 	started         bool
 	nameStart       bool
 	plain           bool
 	html            bool
 	html5           bool
-	edition         int
-	htmlNamespaces  []byte
 	htmlNamespace   byte
-	htmlName        string
-	htmlToken       string
 	htmlHadName     bool
 	htmlAttributeNS bool
-	htmlURI         string
 	htmlSelfClosing bool
 	htmlClosing     bool
-	htmlRaw         string
-	htmlRawMatched  int
 }
 
 func (state *fullyNormalizedText) data(r rune) error {

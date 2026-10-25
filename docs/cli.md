@@ -168,6 +168,12 @@ and key hint. It selects exactly one EncryptedData (`-index` / `-id` when needed
 and publishes no plaintext on failure. `encryption externalize` writes a separate
 ciphertext and CipherReference XML; decrypt with an exact URI/path resource entry.
 
+GCM remains the default. CBC data algorithms and TripleDES Key Wrap require
+`-allow-legacy-data` with their exact `-algorithm` / `-wrap-algorithm` URI.
+CBC plaintext is unauthenticated; applications must check ciphertext integrity
+before using this compatibility mode. The flag does not enable legacy OAEP or
+change the selected algorithms. ECDH and key-graph composition use the Go APIs.
+
 `key generate`, `public`, `convert` and `inspect` handle supported key formats.
 Private-key commands use `-key-format plain|pkcs8|pkcs12` and `-password-file`;
 passwords are never argument values. Password files contain one line, with one

@@ -3432,7 +3432,7 @@ func mathFunctionContractCases() map[string]string {
 		`abs(math:atan2(xs:double('INF'),xs:double('INF')) - math:pi() div 4) lt 1e-15`:  nameTrue,
 		`abs(math:atan2(xs:double('-INF'),xs:double('INF')) + math:pi() div 4) lt 1e-15`: nameTrue,
 	}
-	for _, name := range strings.Fields("exp exp10 log log10 sqrt sin cos tan asin acos atan") {
+	for name := range strings.FieldsSeq("exp exp10 log log10 sqrt sin cos tan asin acos atan") {
 		call := "math:" + name
 		cases[call+`(0e0) instance of xs:double`] = nameTrue
 		cases[call+`('1')`] = errCodeXPTY0004

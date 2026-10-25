@@ -218,7 +218,7 @@ profiles described in [compatibility](compatibility.md).
 
 AES-GCM uses an explicit RSA-OAEP SHA-2, AES Key Wrap or direct AES-key suite.
 Bytes accept arbitrary plaintext; XML Element/Content operations require UTF-8/NFC.
-Decryption authenticates before XML parsing and returns no plaintext on failure.
+GCM decryption authenticates before XML parsing and returns no plaintext on failure.
 Element replacement changes the selected element; Content replacement changes
 its children. Both return a new snapshot and preserve unrelated content.
 Decryption does not authenticate a sender or establish signature coverage.
@@ -231,6 +231,44 @@ mean SHA-1; they never select SHA-256 or expand the caller's accepted parameters
 Decryption requires the caller-selected parameters. Direct-key variants
 require a matching AES key size and exact configured KeyName hint. Limit a data
 key to at most 2^32 encryptions with the randomly generated 96-bit nonces.
+
+AES-CBC 128/192/256 and TripleDES-CBC require an exact `DataAlgorithm` and
+`Options.AllowLegacy: true`. TripleDES Key Wrap requires the same permission
+and a TripleDES data key. Selected legacy algorithms are disabled in FIPS mode.
+CBC uses XMLENC padding, whose preceding padding bytes may have arbitrary values;
+it does not use PKCS#7 padding. Successful CBC decryption does not authenticate
+plaintext. The application must establish ciphertext integrity before decryption
+and keep legacy keys separate from GCM keys. Uniform errors and dummy-key
+processing do not establish resistance to padding oracles.
+
+`DeriveConcatKey` implements ConcatKDF with SHA-256 or explicitly permitted
+legacy SHA-1. The five `ConcatKDFParameters` fields use XMLENC's padding-count
+octet followed by the original bit string, before hex encoding. Padding is
+removed before the fields are concatenated. Fields, secrets, derived key lengths
+and work are bounded. Non-octet OtherInfo is supported outside FIPS mode; FIPS mode
+requires byte-aligned OtherInfo supported by Go's validated hash backend.
+
+The Go `Encrypt*WithECDH` / `Decrypt*WithECDH` APIs use an explicit static
+recipient and a fresh ephemeral key for each encryption. They support P-256,
+P-384 and P-521 with ConcatKDF and AES Key Wrap. A nil `ECDHOptions.KDF` selects
+SHA-256 and binds the wrap algorithm URI and recipient public point in OtherInfo;
+explicit parameters must match exactly. `RecipientKeyName` is an optional exact
+hint; received key descriptions never choose a recipient or establish sender
+identity. `AdaptContextECDHRecipient` passes cancellation to an application key
+provider. Byte, document, selected-element and content operations retain their
+existing snapshot, namespace and plaintext-limit contracts.
+
+`Decrypt*WithKeyGraph` explicitly enables inline, sibling and authorized external
+EncryptedKey/DerivedKey relationships, RetrievalMethod, ReferenceList and exact
+key-name associations. Select the EncryptedData handle and application-owned
+material explicitly. Algorithms, KDF context, IDs, graph depth, nodes, bytes and
+resources remain bounded; conflicting authorized key paths fail rather than
+selecting whichever decrypts. Key XML resources use `KeyGraphOptions.External`;
+external ciphertext uses the separate `Data.External` policy. Same-document
+cipher references permit the selected built-in base64/canonicalization transforms.
+Byte decryption treats Type/MimeType/Encoding as advisory metadata; XML restoration
+requires the appropriate Element/Content type. `EncryptKey` emits a standalone
+wrapped key; `BuildDerivedKey` emits derivation metadata without publishing a secret.
 
 `ExternalizeCiphertext` returns XML and owned ciphertext without I/O.
 CipherReference decryption requires `Options.External` with one exact absolute

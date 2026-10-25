@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -312,9 +313,11 @@ func authenticatedElement(t *testing.T, raw, parent string, limits document.Limi
 		t.Fatal(err)
 	}
 
-	wire := strings.Replace(string(xmlBytes(t, encrypted)), "<xenc:EncryptedData ", `<xenc:EncryptedData Type="`+xmlenc.ElementType+`" `, 1)
+	wire := bytes.Replace(xmlBytes(t, encrypted), []byte("<xenc:EncryptedData "), []byte(`<xenc:EncryptedData Type="`+xmlenc.ElementType+`" `), 1)
 
-	doc, err := document.Parse(context.Background(), []byte(parent+wire+`</r>`), limits)
+	wrapped := io.MultiReader(strings.NewReader(parent), bytes.NewReader(wire), strings.NewReader("</r>"))
+
+	doc, err := document.ParseReader(context.Background(), wrapped, limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +352,7 @@ func TestSelectedElementRejectsHandlesTamperingAndCancellation(t *testing.T) {
 	value := encrypted.Root().Children()[0].Children()[2].Children()[0].Text()
 	tag, _ := base64.StdEncoding.DecodeString(value)
 	tag[len(tag)-1] ^= 1
-	bad := parse(t, []byte(strings.Replace(string(xmlBytes(t, encrypted)), value, base64.StdEncoding.EncodeToString(tag), 1)))
+	bad := parse(t, bytes.Replace(xmlBytes(t, encrypted), []byte(value), []byte(base64.StdEncoding.EncodeToString(tag)), 1))
 
 	before := xmlBytes(t, bad)
 	if result, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, bad, bad.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}); result != nil || !errors.Is(err, xmlenc.ErrDecrypt) || !bytes.Equal(before, xmlBytes(t, bad)) {
@@ -407,8 +410,14 @@ func FuzzSelectedElementPlaintext(f *testing.F) {
 			t.Fatal(err)
 		}
 
-		wire := strings.Replace(string(xmlBytes(t, encrypted)), "<xenc:EncryptedData ", `<xenc:EncryptedData Type="`+xmlenc.ElementType+`" `, 1)
-		source := parse(t, []byte(`<r xmlns="urn:outer" xmlns:p="urn:p" xml:lang="ru">`+wire+`<tail>visible</tail></r>`))
+		wire := bytes.Replace(xmlBytes(t, encrypted), []byte("<xenc:EncryptedData "), []byte(`<xenc:EncryptedData Type="`+xmlenc.ElementType+`" `), 1)
+		wrapped := io.MultiReader(strings.NewReader(`<r xmlns="urn:outer" xmlns:p="urn:p" xml:lang="ru">`), bytes.NewReader(wire), strings.NewReader(`<tail>visible</tail></r>`))
+
+		source, err := document.ParseReader(ctx, wrapped, document.DefaultLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+
 		before := xmlBytes(t, source)
 		limits := document.DefaultLimits()
 		limits.MaxBytes, limits.MaxNodes, limits.MaxDepth, limits.MaxAttributesPerElement = 4096, 64, 8, 8

@@ -1626,8 +1626,7 @@ func residualLegacyAttribute301(t *testing.T, directory string, item suiteCase, 
 	input := filepath.Join(directory, "tests", "insn", "attribute", "attribute-03.xml")
 	output, err := exec.CommandContext(t.Context(), binary, "-cp", classpath, "net.sf.saxon.Transform", "-xsl:"+style, "-s:"+input).Output()
 	if err != nil {
-		var failure *exec.ExitError
-		if errors.As(err, &failure) {
+		if failure, ok := errors.AsType[*exec.ExitError](err); ok {
 			t.Fatalf("original Saxon9.4: %s: %v", failure.Stderr, err)
 		}
 		t.Fatal(err)

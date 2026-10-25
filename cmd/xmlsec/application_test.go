@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -506,4 +507,22 @@ func rejectCLI(t *testing.T, input []byte, args ...string) []byte {
 	}
 
 	return out.Bytes()
+}
+
+func TestEncryptionLegacyCBCPolicy(t *testing.T) {
+	dir := t.TempDir()
+	secret := testutil.WriteFile(t, dir, "cbc-key", bytes.Repeat([]byte{7}, 32))
+	args := []string{nameEncrypt, "-transport", transportDirect, flagKey, secret, "-algorithm", xmlenc.AES256CBC}
+	rejectCLI(t, []byte("legacy CBC plaintext"), args...)
+	if fips140.Enabled() {
+		rejectCLI(t, []byte("legacy CBC plaintext"), append(args, "-allow-legacy-data")...)
+		return
+	}
+	encrypted := cli(t, []byte("legacy CBC plaintext"), append(args, "-allow-legacy-data")...)
+	args[0] = nameDecrypt
+	rejectCLI(t, encrypted, args...)
+	plain := cli(t, encrypted, append(args, "-allow-legacy-data")...)
+	if string(plain) != "legacy CBC plaintext" {
+		t.Fatal(string(plain))
+	}
 }

@@ -1,7 +1,9 @@
 package xmlenc_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdh"
 	"crypto/rsa"
 	"errors"
 	"strings"
@@ -60,7 +62,7 @@ func TestElementPlaintextProfile(t *testing.T) {
 
 	raw, _ := encrypted.XML(ctx)
 
-	labeled := parse(t, []byte(strings.Replace(string(raw), "<xenc:EncryptedData ", "<xenc:EncryptedData Type=\""+xmlenc.ElementType+"\" ", 1)))
+	labeled := parse(t, bytes.Replace(raw, []byte("<xenc:EncryptedData "), []byte("<xenc:EncryptedData Type=\""+xmlenc.ElementType+"\" "), 1))
 	if result, err := xmlenc.DecryptDocumentWithKeyWrap(ctx, labeled, kek, xmlenc.KeyWrapOptions{}); result != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 		t.Fatalf("UTF-16 #Element accepted: %v", err)
 	}
@@ -91,7 +93,7 @@ func testElementPlaintextProfileCase(t *testing.T, rsaTransport *bool, ctx *cont
 		t.Fatal(err)
 	}
 
-	labeled := parse(t, []byte(strings.Replace(string(raw), "<xenc:EncryptedData ", "<xenc:EncryptedData Type=\""+xmlenc.ElementType+"\" ", 1)))
+	labeled := parse(t, bytes.Replace(raw, []byte("<xenc:EncryptedData "), []byte("<xenc:EncryptedData Type=\""+xmlenc.ElementType+"\" "), 1))
 
 	var result *document.Document
 	if *rsaTransport {
@@ -121,5 +123,53 @@ func TestEncryptElementRefusesNormalization(t *testing.T) {
 	after, _ := doc.XML(ctx)
 	if string(after) != string(before) {
 		t.Fatal("source changed")
+	}
+}
+
+func TestECDHDocumentAndElement(t *testing.T) {
+	for _, curve := range []ecdh.Curve{ecdh.P256(), ecdh.P384(), ecdh.P521()} {
+		t.Run(agreementCurveLabel(curve), func(t *testing.T) {
+			recipient := agreementKey(t, curve)
+			source := parse(t, []byte(`<?outside ok?><r xmlns="urn:r" xmlns:p="urn:p" xml:lang="ru"><head>visible</head><box><p:secret xmlns:p="urn:shadow" flag="é"><p:v>й 😀</p:v><!--inside--></p:secret><tail/></box></r><!--after-->`))
+			before := xmlBytes(t, source)
+			encrypted, err := xmlenc.EncryptDocumentWithECDH(t.Context(), source, recipient.PublicKey(), xmlenc.ECDHOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			restored, err := xmlenc.DecryptDocumentWithECDH(t.Context(), encrypted, recipient, xmlenc.ECDHOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sameXML(t, parse(t, []byte(`<r xmlns="urn:r" xmlns:p="urn:p" xml:lang="ru"><head>visible</head><box><p:secret xmlns:p="urn:shadow" flag="é"><p:v>й 😀</p:v><!--inside--></p:secret><tail/></box></r>`)), restored)
+			if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), encrypted, recipient, xmlenc.ECDHOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+				t.Fatal(out, err)
+			}
+			selected := source.Root().Children()[1].Children()[0]
+			encrypted, handle, err := xmlenc.EncryptElementWithECDH(t.Context(), source, selected, recipient.PublicKey(), xmlenc.ECDHOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !handle.Same(encrypted.Root().Children()[1].Children()[0]) {
+				t.Fatal("wrong encrypted handle")
+			}
+			restored, handle, err = xmlenc.DecryptElementWithECDH(t.Context(), encrypted, handle, recipient, xmlenc.ECDHOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !handle.Same(restored.Root().Children()[1].Children()[0]) {
+				t.Fatal("wrong restored handle")
+			}
+			sameXML(t, source, restored)
+			if !bytes.Equal(before, xmlBytes(t, source)) {
+				t.Fatal("borrowed source mutated")
+			}
+			if out, handle, err := xmlenc.EncryptElementWithECDH(t.Context(), restored, selected, recipient.PublicKey(), xmlenc.ECDHOptions{}); out != nil || handle.Valid() || !errors.Is(err, xmlenc.ErrFormat) {
+				t.Fatal(out, handle, err)
+			}
+			nfd := parse(t, []byte("<r>e\u0301</r>"))
+			if out, err := xmlenc.EncryptDocumentWithECDH(t.Context(), nfd, recipient.PublicKey(), xmlenc.ECDHOptions{}); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+				t.Fatal(out, err)
+			}
+		})
 	}
 }

@@ -53,11 +53,15 @@ func encodeProfile(ctx context.Context, wrapped, encrypted []byte, p profile, ty
 		keyMethod := encryptedElement("EncryptionMethod")
 		setAttribute(keyMethod, "Algorithm", p.transport.algorithm)
 
-		if p.transport.algorithm == RSAOAEP {
+		if rsaOAEPAlgorithm(p.transport.algorithm) {
 			encodeOAEP(keyMethod, p.transport.oaep)
 		}
 
 		appendChild(encryptedKey, keyMethod)
+
+		if p.transport.keyInfo != nil {
+			appendChild(encryptedKey, p.transport.keyInfo)
+		}
 
 		cipherData, err := encodeCipherData(ctx, wrapped)
 		if err != nil {
@@ -76,7 +80,16 @@ func encodeProfile(ctx context.Context, wrapped, encrypted []byte, p profile, ty
 	}
 
 	limits := document.DefaultLimits()
-	limits.MaxBytes = base64.StdEncoding.EncodedLen(p.options.MaxPlaintextBytes+gcmOverhead) + 8192
+
+	limits.MaxBytes = base64.StdEncoding.EncodedLen(p.options.MaxPlaintextBytes+p.data.overhead()) + 8192
+	if p.transport.keyInfo != nil {
+		size, err := tree.WriteXMLFragment(ctx, io.Discard, []*tree.Node{p.transport.keyInfo}, 64<<10)
+		if err != nil {
+			return nil, errors.Join(ErrPolicy, err)
+		}
+
+		limits.MaxBytes += int(size)
+	}
 
 	return tree.ParseProduced(ctx, func(dst io.Writer) error {
 		return writeProfile(ctx, dst, root.Children, encrypted, typ, limits.MaxBytes)
@@ -227,8 +240,12 @@ func decodeProfile(ctx context.Context, doc *document.Document, typ string, p pr
 	}
 
 	children, err := childElements(root, elementName(Namespace, "EncryptionMethod"), elementName(SignatureNamespace, "KeyInfo"), elementName(Namespace, "CipherData"))
-	if err != nil || !matchesMethod(children[0], p.options.DataAlgorithm, true) {
+	if err != nil {
 		return nil, nil, ErrFormat
+	}
+
+	if err := checkEncryptionMethod(ctx, children[0], p.options.DataAlgorithm, p.keyBytes*8, false); err != nil {
+		return nil, nil, err
 	}
 
 	keyInfo, err := childElements(children[1], elementName(Namespace, "EncryptedKey"))
@@ -236,19 +253,40 @@ func decodeProfile(ctx context.Context, doc *document.Document, typ string, p pr
 		return nil, nil, ErrFormat
 	}
 
-	key, err := childElements(keyInfo[0], elementName(Namespace, "EncryptionMethod"), elementName(Namespace, "CipherData"))
-	if err != nil || !exactAttributes(keyInfo[0]) || !matchesMethod(key[0], p.transport.algorithm, p.transport.algorithm != RSAOAEP) {
+	keyNames := []document.Name{elementName(Namespace, "EncryptionMethod")}
+	if p.transport.checkKeyInfo != nil {
+		keyNames = append(keyNames, elementName(SignatureNamespace, "KeyInfo"))
+	}
+
+	keyNames = append(keyNames, elementName(Namespace, "CipherData"))
+
+	key, err := childElements(keyInfo[0], keyNames...)
+	if err != nil || !exactAttributes(keyInfo[0]) {
 		return nil, nil, ErrFormat
 	}
 
-	if p.transport.algorithm == RSAOAEP {
+	if err := checkEncryptionMethod(ctx, key[0], p.transport.algorithm, p.transport.keyBits, rsaOAEPAlgorithm(p.transport.algorithm)); err != nil {
+		return nil, nil, err
+	}
+
+	if rsaOAEPAlgorithm(p.transport.algorithm) {
 		if err := checkOAEP(ctx, key[0], p.transport.oaep); err != nil {
 			return nil, nil, err
 		}
 	}
+
+	cipherIndex := 1
+
+	if p.transport.checkKeyInfo != nil {
+		if err := p.transport.checkKeyInfo(ctx, key[1]); err != nil {
+			return nil, nil, err
+		}
+
+		cipherIndex = 2
+	}
 	// At most a 16384-bit RSA ciphertext. Key Wrap additionally requires the
 	// exact session-key length plus eight bytes before any unwrap operations.
-	wrapped, err := decodeCipherValue(ctx, key[1], 2048)
+	wrapped, err := decodeCipherValue(ctx, key[cipherIndex], 2048)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -257,7 +295,7 @@ func decodeProfile(ctx context.Context, doc *document.Document, typ string, p pr
 		return nil, nil, ErrDecrypt
 	}
 
-	data, err := decodeCipherData(ctx, children[2], p.options.MaxPlaintextBytes+gcmOverhead, p.options.External)
+	data, err := decodeCipherData(ctx, children[2], p.options.MaxPlaintextBytes+p.data.overhead(), p.options.External)
 	if err != nil {
 		return nil, nil, err
 	}

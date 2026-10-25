@@ -6,6 +6,7 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	_ "crypto/sha1" // #nosec G505 -- Explicit legacy OAEP policy only.
 	_ "crypto/sha256"
 	_ "crypto/sha512"
 	"io"
@@ -58,10 +59,12 @@ func rsaEncryptProfile(ctx context.Context, options Options, recipient *rsa.Publ
 	}
 
 	p.transport = keyTransport{
-		algorithm: RSAOAEP, wrappedBytes: recipient.Size(),
+		algorithm: oaep.Algorithm, wrappedBytes: recipient.Size(), keyBits: recipient.N.BitLen(),
 		oaep: oaep,
 		wrap: func(key []byte) ([]byte, error) {
-			return rsa.EncryptOAEP(oaep.Hash.New(), rand.Reader, recipient, key, oaep.Label)
+			return rsa.EncryptOAEPWithOptions(rand.Reader, recipient, key, &rsa.OAEPOptions{
+				Hash: oaep.Hash, MGFHash: oaep.MGFHash, Label: oaep.Label,
+			})
 		},
 	}
 
@@ -93,10 +96,10 @@ func rsaDecryptProfile(ctx context.Context, options Options, recipient crypto.De
 	}
 
 	p.transport = keyTransport{
-		algorithm: RSAOAEP, wrappedBytes: public.Size(),
+		algorithm: oaep.Algorithm, wrappedBytes: public.Size(), keyBits: public.N.BitLen(),
 		oaep: oaep,
 		unwrap: func(ctx context.Context, ciphertext []byte) ([]byte, error) {
-			options := &rsa.OAEPOptions{Hash: oaep.Hash, MGFHash: oaep.Hash, Label: bytes.Clone(oaep.Label)}
+			options := &rsa.OAEPOptions{Hash: oaep.Hash, MGFHash: oaep.MGFHash, Label: bytes.Clone(oaep.Label)}
 			if provider, ok := recipient.(contextualDecrypter); ok {
 				return provider.decrypt(ctx, rand.Reader, ciphertext, options)
 			}

@@ -6,27 +6,31 @@ import (
 	"crypto/rsa"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/tree"
 )
 
 const (
 	gcmNonceBytes = 12
 	gcmTagBytes   = 16
-	gcmOverhead   = gcmNonceBytes + gcmTagBytes
 )
 
 type keyTransport struct {
 	algorithm    string
 	wrappedBytes int
+	keyBits      int
 	wrap         func([]byte) ([]byte, error)
 	unwrap       func(context.Context, []byte) ([]byte, error)
 	oaep         OAEPParameters
+	keyInfo      *tree.Node
+	checkKeyInfo func(context.Context, document.Element) error
 }
 
 type profile struct {
 	options   Options
 	keyBytes  int
 	transport keyTransport
-	direct    cipher.AEAD
+	direct    cipher.Block
+	data      dataCipher
 	keyName   string
 }
 
@@ -43,16 +47,8 @@ func normalize(ctx context.Context, options Options) (profile, error) {
 		options.DataAlgorithm = AES256GCM
 	}
 
-	var keyBytes int
-
-	switch options.DataAlgorithm {
-	case AES128GCM:
-		keyBytes = 16
-	case AES192GCM:
-		keyBytes = 24
-	case AES256GCM:
-		keyBytes = 32
-	default:
+	data, err := dataAlgorithm(options.DataAlgorithm, options.AllowLegacy)
+	if err != nil {
 		return profile{}, ErrPolicy
 	}
 
@@ -77,7 +73,7 @@ func normalize(ctx context.Context, options Options) (profile, error) {
 	}
 
 	if options.External != nil {
-		external, err := normalizeExternal(*options.External, options.MaxPlaintextBytes+gcmOverhead)
+		external, err := normalizeExternal(*options.External, options.MaxPlaintextBytes+data.overhead())
 		if err != nil {
 			return profile{}, err
 		}
@@ -85,7 +81,7 @@ func normalize(ctx context.Context, options Options) (profile, error) {
 		options.External = &external
 	}
 
-	return profile{options: options, keyBytes: keyBytes}, nil
+	return profile{options: options, keyBytes: data.keyBytes, data: data}, nil
 }
 
 func validateRSAKey(key *rsa.PublicKey) error {

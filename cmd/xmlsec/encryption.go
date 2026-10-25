@@ -19,12 +19,13 @@ func runEncryption(ctx context.Context, args []string, stdin io.Reader, stdout, 
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
 	input := fs.String("in", "-", "input XML or plaintext bytes")
-	output := fs.String("out", "-", "output XML or authenticated plaintext")
-	keyFile := fs.String("key", "", "RSA public/private key or raw AES key file")
+	output := fs.String("out", "-", "output XML or decrypted plaintext (CBC is unauthenticated)")
+	keyFile := fs.String("key", "", "RSA public/private key or raw symmetric key file")
 	transport := fs.String("transport", nameRSA, "key transport: rsa, wrap or direct")
 	scope := fs.String("scope", scopeBytes, "plaintext scope: bytes, document, element or content")
 	algorithm := fs.String("algorithm", xmlenc.AES256GCM, "data encryption algorithm URI")
-	wrap := fs.String("wrap-algorithm", xmlenc.AES256KeyWrap, "AES key wrap algorithm URI")
+	allowLegacy := fs.Bool("allow-legacy-data", false, "explicitly permit unauthenticated CBC and legacy TripleDES key wrap; denied in FIPS mode")
+	wrap := fs.String("wrap-algorithm", xmlenc.AES256KeyWrap, "symmetric key wrap algorithm URI")
 	name := fs.String("key-name", "", "exact untrusted KeyName hint for direct-key mode")
 	oaepHash := fs.String("oaep-hash", "sha256", "RSA-OAEP digest and MGF1 hash")
 	labelFile := fs.String("oaep-label-file", "", "optional exact OAEP label bytes")
@@ -40,7 +41,7 @@ func runEncryption(ctx context.Context, args []string, stdin io.Reader, stdout, 
 
 	specific := "in out id id-attr id-ns index uri cipher-out"
 	if cmd != "externalize" {
-		specific = "in out key transport scope algorithm wrap-algorithm key-name oaep-hash oaep-label-file max-plaintext-bytes id id-attr id-ns"
+		specific = "in out key transport scope algorithm allow-legacy-data wrap-algorithm key-name oaep-hash oaep-label-file max-plaintext-bytes id id-attr id-ns"
 		if cmd == nameDecrypt {
 			specific += " index resources" + privateKeyFlagNames
 		}
@@ -59,7 +60,7 @@ func runEncryption(ctx context.Context, args []string, stdin io.Reader, stdout, 
 	}
 	defer cancel()
 
-	options := encryptionCommand{command: cmd, input: *input, output: *output, key: *keyFile, transport: *transport, scope: *scope, algorithm: *algorithm, wrap: *wrap, keyName: *name, oaepHash: *oaepHash, labelFile: *labelFile, maximum: *maximum, id: *id, idName: document.Name{Space: *idNS, Local: *idAttr}, index: *index, resources: *resources, uri: *uri, cipherOut: *cipherOut, keyFlags: keyFlags}
+	options := encryptionCommand{command: cmd, input: *input, output: *output, key: *keyFile, transport: *transport, scope: *scope, algorithm: *algorithm, wrap: *wrap, keyName: *name, oaepHash: *oaepHash, labelFile: *labelFile, maximum: *maximum, id: *id, idName: document.Name{Space: *idNS, Local: *idAttr}, index: *index, resources: *resources, uri: *uri, cipherOut: *cipherOut, keyFlags: keyFlags, allowLegacy: *allowLegacy}
 
 	return options.run(ctx, stdin, stdout)
 }
@@ -78,6 +79,7 @@ type encryptionCommand struct {
 	idName                                    document.Name
 	maximum, index                            int
 	keyFlags                                  *privateKeyFlags
+	allowLegacy                               bool
 }
 
 func (c encryptionCommand) run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
@@ -137,7 +139,7 @@ func (c encryptionCommand) run(ctx context.Context, stdin io.Reader, stdout io.W
 }
 
 func (c encryptionCommand) options(ctx context.Context) (xmlenc.Options, error) {
-	opt := xmlenc.Options{DataAlgorithm: c.algorithm, MaxPlaintextBytes: c.maximum, XMLLimits: execution(ctx).xml}
+	opt := xmlenc.Options{DataAlgorithm: c.algorithm, AllowLegacy: c.allowLegacy, MaxPlaintextBytes: c.maximum, XMLLimits: execution(ctx).xml}
 	if c.scope != scopeBytes && c.scope != "document" && c.scope != scopeElement && c.scope != "content" {
 		return opt, usageError("-scope must be bytes, document, element or content")
 	}

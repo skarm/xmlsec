@@ -3,7 +3,6 @@ package xmlenc
 import (
 	"context"
 	"crypto"
-	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"io"
@@ -22,7 +21,7 @@ func DecryptBytes(ctx context.Context, doc *document.Document, recipient crypto.
 	return decrypt(ctx, doc, p, "")
 }
 
-// DecryptDocument accepts only Type #Element, authenticates the ciphertext and
+// DecryptDocument accepts only Type #Element, decrypts the ciphertext and
 // requires a single UTF-8/NFC element under the configured XML limits. No output
 // is returned on failure, including malformed or over-budget decrypted XML.
 func DecryptDocument(ctx context.Context, doc *document.Document, recipient crypto.Decrypter, options Options) (*document.Document, error) {
@@ -97,7 +96,7 @@ func decrypt(ctx context.Context, doc *document.Document, p profile, typ string)
 		return nil, err
 	}
 
-	if len(wrapped) != p.transport.wrappedBytes || len(data) < gcmOverhead {
+	if len(wrapped) != p.transport.wrappedBytes || len(data) < p.data.overhead() {
 		return nil, ErrDecrypt
 	}
 
@@ -106,7 +105,7 @@ func decrypt(ctx context.Context, doc *document.Document, p profile, typ string)
 	}
 
 	if p.direct != nil {
-		return openGCM(ctx, data, p.direct, false)
+		return openData(ctx, data, p, p.direct, false)
 	}
 
 	key := make([]byte, p.keyBytes)
@@ -127,20 +126,25 @@ func decrypt(ctx context.Context, doc *document.Document, p profile, typ string)
 	if !badKey {
 		copy(key, actual)
 	}
-	// A failed unwrap still performs a GCM check with a random dummy key.
+	// A failed unwrap still performs the selected cipher checks with a random dummy key.
 	// This is not a constant-time guarantee for external providers or a complete
 	// oracle-resistance audit. Format and caller-policy errors remain distinct.
-	block, err := aes.NewCipher(key)
+	block, err := p.data.block(key)
 	if err != nil {
 		return nil, ErrDecrypt
 	}
 
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
+	return openData(ctx, data, p, block, badKey)
+}
+
+func openData(ctx context.Context, data []byte, p profile, block cipher.Block, badKey bool) ([]byte, error) {
+	plaintext, err := p.data.open(ctx, data, block, badKey)
+	if err == nil && len(plaintext) > p.options.MaxPlaintextBytes {
+		clear(plaintext)
 		return nil, ErrDecrypt
 	}
 
-	return openGCM(ctx, data, aead, badKey)
+	return plaintext, err
 }
 
 func openGCM(ctx context.Context, data []byte, aead cipher.AEAD, badKey bool) ([]byte, error) {

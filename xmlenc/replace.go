@@ -48,7 +48,7 @@ func EncryptElementWithKeyWrap(ctx context.Context, doc *document.Document, sele
 	return encryptSelected(ctx, doc, node, p)
 }
 
-// DecryptElement authenticates exactly the selected Type #Element EncryptedData
+// DecryptElement decrypts exactly the selected Type #Element EncryptedData
 // and replaces it in a new snapshot. XMLLimits bound the plaintext element;
 // the source document's parsing limits also bound the complete output. Plaintext
 // is parsed using the parent's namespaces (W3C XMLENC 1.1 section 4.5.1).
@@ -70,7 +70,7 @@ func DecryptElement(ctx context.Context, doc *document.Document, selected docume
 }
 
 // DecryptElementWithKeyWrap replaces exactly the selected Type #Element
-// EncryptedData after authentication with the explicit KEK. It does not search
+// EncryptedData using the explicit KEK. It does not search
 // for other encrypted elements or recursively decrypt their contents.
 // It returns the new snapshot and restored handle, with the limits/context
 // contracts of DecryptElement.

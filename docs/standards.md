@@ -55,7 +55,9 @@ Implementation and local/independent evidence gaps remain explicit.
   [metadata trust](https://docs.oasis-open.org/security/saml/Post2.0/sstc-metadata-iop-os.html)
 - SAML 2.0 [Conformance](https://docs.oasis-open.org/security/saml/v2.0/saml-conformance-2.0-os.pdf)
   and [Approved Errata 05](https://docs.oasis-open.org/security/saml/v2.0/errata05/os/saml-v2.0-errata05-os.html)
-- [XML Encryption 1.1](https://www.w3.org/TR/xmlenc-core1/): AES-GCM and selected Element/Content replacement
+- [XML Encryption 1.1](https://www.w3.org/TR/xmlenc-core1/): bounded GCM/CBC,
+  OAEP, key wrap, ConcatKDF/ECDH and selected Element/Content replacement;
+  algorithm availability and default security policy are tracked separately
 - [RFC 8017](https://www.rfc-editor.org/rfc/rfc8017.html): RSA-OAEP and PKCS#1 encodings
 - [RFC 5208](https://www.rfc-editor.org/rfc/rfc5208.html),
   [RFC 5915](https://www.rfc-editor.org/rfc/rfc5915.html) and
@@ -64,6 +66,7 @@ Implementation and local/independent evidence gaps remain explicit.
 - [RFC 7292](https://www.rfc-editor.org/rfc/rfc7292.html) and
   [RFC 9879](https://www.rfc-editor.org/rfc/rfc9879.html): PKCS#12 and PBMAC1 password integrity
 - [RFC 3394](https://www.rfc-editor.org/rfc/rfc3394.html): AES Key Wrap
+- [RFC 3217](https://www.rfc-editor.org/rfc/rfc3217.html): explicit legacy TripleDES Key Wrap
 
 The library does not perform XSD validation or download schemas.
 
