@@ -207,7 +207,7 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 	}
 
 	// XTSE0080: function name must not be in a reserved namespace
-	if isReservedFunctionNS(qn.URI) {
+	if reservedNamespaceForProcessor(qn.URI, c.stylesheet.processorLanguage()) {
 		return staticError(errCodeXTSE0080, "xsl:function name %q is in a reserved namespace", name)
 	}
 
@@ -315,17 +315,6 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 	return nil
 }
 
-// isReservedFunctionNS returns true if the given namespace URI is reserved
-// by the XSLT 3.0 spec and may not be used for user-defined functions.
-func isReservedFunctionNS(uri string) bool {
-	switch uri {
-	case lexicon.NamespaceXSLT, xpath.NSFn, xpath.NSMath, xpath.NSMap, xpath.NSArray, xpath.NSXS:
-		return true
-	}
-
-	return false
-}
-
 func validateFunctionOptions(elem *xdm.Element) error {
 	// XTSE0020: validate override-extension-function (boolean)
 	if oef, has := elem.GetAttribute("override-extension-function"); has {
@@ -371,7 +360,7 @@ func compileFunctionChildren(childElem *xdm.Element) error {
 				"xsl:param %q in xsl:function must not have content", getAttr(childElem, xslAttrName))
 		}
 
-		if ch.Type() == xdm.TextNode && !isXMLWhitespaceOnly(xdm.CharacterData(ch)) {
+		if ch.Type() == xdm.TextNode && xdm.CharacterData(ch) != "" {
 			return staticError(errCodeXTSE0760,
 				"xsl:param %q in xsl:function must not have content", getAttr(childElem, xslAttrName))
 		}

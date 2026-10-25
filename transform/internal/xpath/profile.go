@@ -283,6 +283,10 @@ func functionVisible(version int, uri, name string, arity int) bool {
 		return false
 	}
 
+	if uri == NSXS {
+		return xsConstructorVisible(version, name)
+	}
+
 	if uri != NSFn {
 		return true
 	}
@@ -311,6 +315,14 @@ func functionVisible(version int, uri, name string, arity int) bool {
 	}
 
 	return true
+}
+
+func xsConstructorVisible(version int, name string) bool {
+	if name == lexicon.TypeNumeric && version < 31 {
+		return false
+	}
+
+	return version != 20 || !isBuiltinListLocalName(name) && name != lexicon.TypeError
 }
 
 // BuiltinFunctionAvailable reports the selected language's standard function

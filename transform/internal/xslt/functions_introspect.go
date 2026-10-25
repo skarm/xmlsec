@@ -20,7 +20,7 @@ func (ec *execContext) fnElementAvailable(ctx context.Context, args []xdm.Sequen
 }
 
 func introspectionElementAvailable(ctx context.Context, args []xdm.Sequence, processor int, disabled bool) (xdm.Sequence, error) {
-	name, err := introspectionArgumentName(ctx, args, xpath.FnDefaultXMLNamespace(ctx), errCodeXTDE1440)
+	name, err := introspectionArgumentName(ctx, args, xpath.FnDefaultXMLNamespace(ctx), errCodeXTDE1440, processor)
 	if err != nil {
 		return nil, err
 	}
@@ -28,7 +28,7 @@ func introspectionElementAvailable(ctx context.Context, args []xdm.Sequence, pro
 	return xdm.SingleBoolean(elementAvailable(name, processor, disabled)), nil
 }
 
-func introspectionArgumentName(ctx context.Context, args []xdm.Sequence, defaultNS, code string) (xdm.QNameValue, error) {
+func introspectionArgumentName(ctx context.Context, args []xdm.Sequence, defaultNS, code string, processor int) (xdm.QNameValue, error) {
 	value, err := xpath.AtomizeItem(args[0].Get(0))
 	if err != nil {
 		return xdm.QNameValue{}, err
@@ -37,6 +37,10 @@ func introspectionArgumentName(ctx context.Context, args []xdm.Sequence, default
 	name, err := xpath.AtomicToString(value)
 	if err != nil {
 		return xdm.QNameValue{}, err
+	}
+
+	if processor < 30 && !xmlchar.IsValidQName(name) {
+		return xdm.QNameValue{}, dynamicError(code, "%q is not a valid QName", name)
 	}
 
 	return resolveIntrospectionName(name, defaultNS, code, func(prefix string) (string, bool) { return xpath.FnNamespace(ctx, prefix) })
@@ -67,7 +71,7 @@ func elementAvailable(name xdm.QNameValue, processor int, disabled bool) bool {
 
 // function-available(name, arity?) returns true if the named function is available.
 func (ec *execContext) fnFunctionAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	name, err := introspectionArgumentName(ctx, args, xpath.NSFn, errCodeXTDE1400)
+	name, err := introspectionArgumentName(ctx, args, xpath.NSFn, errCodeXTDE1400, ec.stylesheet.processorLanguage())
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +81,7 @@ func (ec *execContext) fnFunctionAvailable(ctx context.Context, args []xdm.Seque
 		return xdm.SingleBoolean(false), nil
 	}
 
-	return xdm.SingleBoolean(ec.functionAvailable(name, arity)), nil
+	return xdm.SingleBoolean(ec.functionAvailable(ctx, name, arity)), nil
 }
 
 // functionAvailableArity reserves -1 for an omitted argument. Huge positive
@@ -108,10 +112,11 @@ func functionAvailableArity(args []xdm.Sequence) (int, bool) {
 	return int(arity), true
 }
 
-func (ec *execContext) functionAvailable(name xdm.QNameValue, arity int) bool {
+func (ec *execContext) functionAvailable(ctx context.Context, name xdm.QNameValue, arity int) bool {
 	if ec.stylesheet.processorLanguage() == 10 {
 		if name.URI != xpath.NSFn {
-			return false
+			function := xpath.FnRegisteredFunction(ctx, name.URI, name.Local)
+			return function != nil && functionAvailableAtArity(function, arity)
 		}
 
 		_, core := xpath.XPath10FunctionArity(name.Local)
@@ -123,6 +128,10 @@ func (ec *execContext) functionAvailable(name xdm.QNameValue, arity int) bool {
 	qname := xpath.QualifiedName{URI: name.URI, Name: name.Local}
 	if ec.stylesheetFunctionDefined(qname, arity) {
 		return ec.dynamicStylesheetFunction(qname, arity) != nil
+	}
+
+	if function := xpath.FnRegisteredFunction(ctx, name.URI, name.Local); function != nil {
+		return functionAvailableAtArity(function, arity)
 	}
 
 	if name.URI == xpath.NSFn {
@@ -139,21 +148,29 @@ func (ec *execContext) functionAvailable(name xdm.QNameValue, arity int) bool {
 }
 
 // type-available(name) returns true if the named type is available.
-func fnTypeAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	name, err := introspectionArgumentName(ctx, args, xpath.FnDefaultXMLNamespace(ctx), errCodeXTDE1428)
+func (ec *execContext) fnTypeAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return introspectionTypeAvailable(ctx, args, ec.stylesheet.processorLanguage())
+}
+
+func introspectionTypeAvailable(ctx context.Context, args []xdm.Sequence, processor int) (xdm.Sequence, error) {
+	name, err := introspectionArgumentName(ctx, args, xpath.FnDefaultXMLNamespace(ctx), errCodeXTDE1428, processor)
 	if err != nil {
 		return nil, err
 	}
 
-	return xdm.SingleBoolean(typeAvailable(ctx, name)), nil
+	return xdm.SingleBoolean(typeAvailable(name, processor)), nil
 }
 
-func typeAvailable(ctx context.Context, name xdm.QNameValue) bool {
+func typeAvailable(name xdm.QNameValue, processor int) bool {
 	if name.URI != lexicon.NamespaceXSD || !xdm.IsKnownXSDType("xs:"+name.Local) {
 		return false
 	}
 
-	return name.Local != "dateTimeStamp" || xpath.XMLSchemaVersion(ctx) >= 11
+	if name.Local == lexicon.TypeNumeric && processor < 30 {
+		return false
+	}
+
+	return true
 }
 
 // current-group() returns the items in the current group during for-each-group.
@@ -233,25 +250,16 @@ func (ec *execContext) accumulatorLookup(
 	fnName string,
 	nodeMaps func() (map[xdm.Node]map[string]xdm.Sequence, map[xdm.Node]map[string]error),
 ) (xdm.Sequence, error) {
-	if len(args) == 0 || (args[0] == nil || xdm.SequenceLen(args[0]) == 0) {
-		return xdm.EmptySequence(), nil
-	}
-
-	av, err := xpath.AtomizeItem(args[0].Get(0))
+	resolved, err := introspectionArgumentName(ctx, args, "", errCodeXTDE3340, ec.stylesheet.processorLanguage())
 	if err != nil {
-		return xdm.EmptySequence(), nil //nolint:nilerr // accumulator lookup returns empty on atomization failure
-	}
-
-	name, err := xpath.AtomicToString(av)
-	if err != nil {
-		return xdm.EmptySequence(), nil //nolint:nilerr // accumulator lookup returns empty on string conversion failure
-	}
-
-	if err := validateAccumulatorName(name, fnName); err != nil {
 		return nil, err
 	}
 
-	name = resolveQName(name, ec.stylesheet.namespaces)
+	name := resolved.Local
+	if resolved.URI != "" {
+		name = xdm.ClarkName(resolved.URI, resolved.Local)
+	}
+
 	if err := ec.checkAccumulatorAccess(name); err != nil {
 		return nil, err
 	}
@@ -295,14 +303,6 @@ func (ec *execContext) accumulatorLookup(
 	return xdm.EmptySequence(), nil
 }
 
-func validateAccumulatorName(name, fnName string) error {
-	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
-		return dynamicError(errCodeXTDE3340, "%q is not a valid EQName for %s", name, fnName)
-	}
-
-	return nil
-}
-
 func accumulatorNodeValue(
 	node xdm.Node,
 	stateKey string,
@@ -324,22 +324,21 @@ func accumulatorNodeValue(
 }
 
 func (ec *execContext) accumulatorLookupNode(ctx context.Context, fnName string) (xdm.Node, error) {
-	node := xpath.FnContextNode(ctx)
-	if node == nil {
-		node = ec.contextNode
+	item, err := xpath.FnContextItem(ctx)
+	if err != nil {
+		return nil, dynamicErrorCause(errCodeXTDE3350, err, "%s requires a context item", fnName)
 	}
 
-	if !ec.evaluatingAccumulator && node == nil {
+	value, isNode := item.(xdm.NodeItem)
+	if !isNode || xdm.IsNilNode(value.Node) {
 		return nil, dynamicError(errCodeXTTE3360, "%s requires context to be a node", fnName)
 	}
 
-	if !ec.evaluatingAccumulator && !xdm.IsNilNode(node) {
-		if kind := node.Type(); kind == xdm.AttributeNode || kind == xdm.NamespaceNode {
-			return nil, dynamicError(errCodeXTTE3360, "%s cannot be called on an attribute or namespace node", fnName)
-		}
+	if kind := value.Node.Type(); kind == xdm.AttributeNode || kind == xdm.NamespaceNode {
+		return nil, dynamicError(errCodeXTTE3360, "%s cannot be called on an attribute or namespace node", fnName)
 	}
 
-	return node, nil
+	return value.Node, nil
 }
 
 func (ec *execContext) currentAccumulatorValue(name string) (xdm.Sequence, bool, error) {

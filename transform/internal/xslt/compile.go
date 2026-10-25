@@ -14,6 +14,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -238,6 +239,13 @@ func compilePrepared(ctx context.Context, doc *xdm.Document, cfg *compileConfig)
 	}
 
 	c.applyPreparedConfig(cfg)
+
+	restoreModule, err := c.enterModule(c.moduleKey, false)
+	if err != nil {
+		return nil, err
+	}
+	defer restoreModule()
+
 	// Namespace and base URI are available to root shadow expressions. Other
 	// root attributes are interpreted only after their shadows have replaced them.
 	if xmlBase, present := root.GetAttributeNS("base", lexicon.NamespaceXML); present {
@@ -372,13 +380,14 @@ type compiler struct {
 	staticVars                 map[string]xdm.Sequence         // static="yes" params evaluated at compile time
 	externalStaticParams       map[string]xdm.Sequence         // externally supplied static param overrides
 	charMapModuleKeys          map[string]string               // character-map name -> moduleKey that first defined it (for XTSE1580)
-	moduleSources              map[*xdm.Document]*xdm.Document // original source of normalized 1.0 modules
+	moduleSources              map[*xdm.Document]*xdm.Document // original source of privately prepared modules
 	usedModes                  map[string]struct{}             // all mode names referenced (for XTSE3085)
 	outputAllowDupExplicit     map[string]bool                 // per-output-name: allow-duplicate-names explicitly set (compile-time merge bookkeeping, keyed like stylesheet.outputs)
 	localTemplateNames         map[string]struct{}             // pre-scanned named templates in this module (for XTSE3055)
 	overrideDecls              map[string]struct{}             // "kind:name" of every xsl:override declaration so far (for XTSE3055)
 	localVarNames              map[string]struct{}             // pre-scanned variable names in this module (for XTSE3050)
-	localModeNames             map[string]struct{}             // pre-scanned mode names in this module (for XTSE3050)
+	localFunctionNames         map[funcKey]struct{}
+	localModeNames             map[string]struct{} // pre-scanned mode names in this module (for XTSE3050)
 	// Declared visibility snapshots (before xsl:expose modification)
 	declaredTemplateVis map[string]string
 	declaredFunctionVis map[string]string
@@ -392,12 +401,16 @@ type compiler struct {
 	xpathDefaultNS            string // current xpath-default-namespace value
 	baseURI                   string
 	moduleKey                 string
+	defaultCollationByNode    map[xdm.Node]string
 	defaultCollation          string                     // current default-collation URI (resolved from space-separated list)
 	effectiveVersion          string                     // effective XSLT version for forwards-compat processing
 	modulePath                []moduleLoad               // distinguishes include-only and import cycles
 	pendingPatternValidations []pendingPatternValidation // deferred pattern function validations
 	pendingFunctionCalls      []xpath.FunctionNameRef
 	pendingTemplateCalls      []templateCallReference
+	variableScopeNode         xdm.Node
+	pendingVariableReferences []pendingVariableReference
+	globalVariableSources     map[*xdm.Element]globalBinding
 	usedAttrSetRefs           []string // all use-attribute-sets names referenced (for XTSE0710)
 	importPrec                int
 	minImportPrec             int   // importPrec value before processing this module's xsl:import elements
@@ -405,15 +418,14 @@ type compiler struct {
 	iterateDepth              int   // nesting depth of xsl:iterate (for xsl:break/next-iteration validation)
 	inOverrideRule            bool  // lexical restriction on xsl:apply-imports (XTSE3460)
 	hasXPathDefaultNS         bool  // whether an xpath-default-namespace is in effect (distinguishes explicit "" reset from absent)
-	preserveSpace             bool  // xml:space="preserve" in effect
 	expandText                bool  // expand-text="yes" — text value templates enabled
 	breakAllowed              bool  // true when xsl:break/xsl:next-iteration are allowed at this position
 	insideImport              bool  // true when compiling an imported module (for XTSE3008)
 }
 
 type templateCallReference struct {
-	Name     string
-	Forwards bool
+	Name           string
+	LegacyForwards bool
 }
 
 // recordModeUsage records a mode name (or space-separated list of mode names)
@@ -433,16 +445,11 @@ func (c *compiler) recordModeUsage(_ context.Context, mode string) {
 	}
 }
 
-// shouldStripText returns true if a whitespace-only text node should be stripped
-// during compilation (i.e., xml:space is not "preserve").
-// Uses the XML definition of whitespace (#x20, #x9, #xD, #xA) so that
-// characters like U+00A0 (non-breaking space) are NOT stripped.
+// shouldStripText only discards empty fragments. Stylesheet whitespace was
+// normalized once, before conditional/static processing; every remaining
+// whitespace node is significant, including inherited xml:space="preserve".
 func (c *compiler) shouldStripText(_ context.Context, text string) bool {
-	if c.preserveSpace {
-		return false
-	}
-
-	return isXMLWhitespaceOnly(text)
+	return text == ""
 }
 
 // resolveAsType resolves an "as" attribute sequence type string using
@@ -488,11 +495,17 @@ func (c *compiler) backwardsCompatible() bool {
 // pushes the version, but these direct paths bypass it.
 func (c *compiler) pushElementVersion(elem *xdm.Element) func() {
 	saved := c.effectiveVersion
+
+	restoreScope := c.pushVariableScopeNode(elem)
 	if ver := elementXSLTVersion(elem); ver != "" {
 		c.effectiveVersion = ver
 	}
 
-	return func() { c.effectiveVersion = saved }
+	return func() {
+		c.effectiveVersion = saved
+
+		restoreScope()
+	}
 }
 
 // elementXSLTVersion returns the XSLT version declared on an element: the
@@ -501,17 +514,21 @@ func (c *compiler) pushElementVersion(elem *xdm.Element) func() {
 // ordinary literal result attribute (copied to the output), NOT an XSLT version,
 // so it must not affect the effective version.
 func elementXSLTVersion(elem *xdm.Element) string {
+	value, _ := elementXSLTVersionAttribute(elem)
+
+	return value
+}
+
+func elementXSLTVersionAttribute(elem *xdm.Element) (string, bool) {
 	if elem.URI() == lexicon.NamespaceXSLT {
 		if elem.LocalName() == nameOutput || elem.LocalName() == lexicon.XSLTElementResultDocument {
-			return "" // These version attributes select serialization, not XSLT.
+			return "", false // These select serialization, not the XSLT language.
 		}
 
-		return getAttr(elem, lexicon.SerializationVersion)
+		return elem.GetAttribute(lexicon.SerializationVersion)
 	}
 
-	ver, _ := elem.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
-
-	return ver
+	return elem.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
 }
 
 // pushStaticVersion forces a non-backwards-compatible effective version for the
@@ -541,31 +558,19 @@ func (c *compiler) markCompatExpr(expr *xpath.Expression) {
 	c.stylesheet.compatExprs[expr] = struct{}{}
 }
 
-// validateEmptyElement checks that an XSLT element required to be empty has
-// no non-whitespace text content or element children. Returns XTSE0260 on violation.
-// When xml:space="preserve" is in effect, even whitespace-only text nodes are errors.
+// validateEmptyElement checks content after stylesheet preprocessing.
+// Whitespace retained by xml:space is content and therefore raises XTSE0260.
 func (c *compiler) validateEmptyElement(_ context.Context, elem *xdm.Element, name string) error {
-	xmlSpacePreserve := getAttr(elem, lexicon.QNameXMLSpace) == validationPreserve
 	for child := range xdm.Children(elem) {
-		switch child.Type() {
-		case xdm.ElementNode:
-			return staticError(errCodeXTSE0260, "%s must be empty, found child element", name)
-		case xdm.TextNode:
-			content := xdm.CharacterData(child)
-			if !isXMLWhitespaceOnly(content) {
-				return staticError(errCodeXTSE0260, "%s must be empty, found text content", name)
-			}
-
-			if xmlSpacePreserve && content != "" {
-				return staticError(errCodeXTSE0260, "%s must be empty, whitespace preserved by xml:space", name)
-			}
+		if child.Type() == xdm.ElementNode || isStylesheetTextNode(child) {
+			return staticError(errCodeXTSE0260, "%s must be empty", name)
 		}
 	}
 
 	return nil
 }
 
-// hasEffectiveContent returns true if the element has non-whitespace content
+// hasEffectiveContent returns true if the normalized element has content
 // after considering use-when exclusions. Child elements whose use-when evaluates
 // to false are not counted as content.
 func (c *compiler) hasEffectiveContent(ctx context.Context, elem *xdm.Element) bool {
@@ -589,7 +594,7 @@ func (c *compiler) hasEffectiveContent(ctx context.Context, elem *xdm.Element) b
 
 			return true
 		case *xdm.Text:
-			if !isXMLWhitespaceOnly(xdm.CharacterData(v)) {
+			if xdm.CharacterData(v) != "" {
 				return true
 			}
 		}
@@ -647,9 +652,13 @@ func (c *compiler) setStaticVarWithKind(ctx context.Context, name, kind string, 
 	return nil
 }
 
-// checkQNamePrefix validates that if a QName has a prefix, that prefix is declared
-// in the current namespace bindings. Returns XTSE0280 for undeclared prefixes.
+// checkQNamePrefix validates a QName/EQName and any required prefix binding.
+// Returns XTSE0020 for invalid names or XTSE0280 for undeclared prefixes.
 func (c *compiler) checkQNamePrefix(_ context.Context, name, context string) error {
+	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
+		return staticError(errCodeXTSE0020, "invalid name %q on %s", name, context)
+	}
+
 	if strings.HasPrefix(name, "Q{") {
 		return nil // EQName, no prefix to resolve
 	}
@@ -657,9 +666,7 @@ func (c *compiler) checkQNamePrefix(_ context.Context, name, context string) err
 	if idx := strings.IndexByte(name, ':'); idx > 0 {
 		prefix := name[:idx]
 		if _, ok := c.nsBindings[prefix]; !ok {
-			if _, ok := c.stylesheet.namespaces[prefix]; !ok {
-				return staticError(errCodeXTSE0280, "undeclared namespace prefix %q in %s name %q", prefix, context, name)
-			}
+			return staticError(errCodeXTSE0280, "undeclared namespace prefix %q in %s name %q", prefix, context, name)
 		}
 	}
 
@@ -808,7 +815,9 @@ func (c *compiler) useWhenFunctions() map[string]xpath.Function {
 		funcSystemProperty: newIntrospectionFunc(funcSystemProperty, func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 			return introspectionSystemProperty(ctx, args, processor, disabled)
 		}),
-		fnNameTypeAvailable: newIntrospectionFunc(fnNameTypeAvailable, fnTypeAvailable),
+		fnNameTypeAvailable: newIntrospectionFunc(fnNameTypeAvailable, func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+			return introspectionTypeAvailable(ctx, args, processor)
+		}),
 		fnNameElementAvailable: newIntrospectionFunc(fnNameElementAvailable, func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 			return introspectionElementAvailable(ctx, args, processor, disabled)
 		}),
@@ -854,7 +863,7 @@ func (c *compiler) useWhenEvaluator(_ context.Context) xpath.Evaluator {
 	// XSLT 2.0 use-when has no available documents (section 3.12).
 	// The 3.0 static context may access explicitly resolved resources.
 	if c.resolver != nil && c.stylesheet.processorLanguage() >= 30 {
-		eval = eval.URIResolver(c.resolver)
+		eval = eval.URIResolver(resourceURIResolver{c.resolver})
 	}
 	// Honor the compiler's per-resource read cap on compile-time doc() /
 	// doc-available() (and any other bounded XPath built-in) so a root use-when
@@ -883,30 +892,53 @@ func (c *compiler) xpathNamespaces(ns map[string]string) map[string]string {
 	return bound
 }
 
+func (c *compiler) expressionNamespaces(ns map[string]string) (map[string]string, string) {
+	for node := c.variableScopeNode; node != nil; node = node.Parent() {
+		element, ok := node.(*xdm.Element)
+		if !ok {
+			continue
+		}
+
+		ns = inScopeNamespaces(element)
+
+		bound := make(map[string]string, len(ns)+1)
+		for prefix, uri := range ns {
+			if prefix != "" {
+				bound[prefix] = uri
+			}
+		}
+
+		if namespace, present := c.declarationDefaultNamespace(element); present {
+			bound[""] = namespace
+		}
+
+		return bound, ns[""]
+	}
+
+	return c.xpathNamespaces(ns), ns[""]
+}
+
 func (c *compiler) compileXPath(expr string, ns map[string]string) (*xpath.Expression, error) {
 	version := c.stylesheet.xpathVersion()
 	if err := xpath.Charge(c.invocation, len(ns)); err != nil {
 		return nil, err
 	}
 
-	bound := c.xpathNamespaces(ns)
+	bound, xmlDefault := c.expressionNamespaces(ns)
 
 	compiled, err := xpath.NewCompiler().Context(c.invocation).Language(version, bound).HostFunctions(c.hostFunctionAvailable).Compile(expr)
 	if err != nil {
-		if c.forwardsCompatible(c.effectiveVersion) {
-			return xpath.DeferredExpression(err, version), nil
-		}
-
-		code := lexicon.ErrXPST0003
-
-		if detail, ok := errors.AsType[*xdm.Error](err); ok {
-			code = detail.Code
-		}
-
-		return nil, staticErrorCause(code, err, "invalid XPath %q: %v", expr, err)
+		return c.xpathCompilationError(expr, version, err)
 	}
 
-	compiled = compiled.BindNamespaceContext(bound, ns[""])
+	compiled = compiled.BindNamespaceContext(bound, xmlDefault)
+
+	collation, err := c.declarationDefaultCollation(c.variableScopeNode)
+	if err != nil {
+		return nil, err
+	}
+
+	compiled = compiled.BindDefaultCollation(collation)
 
 	refs := compiled.StaticReferences(bound)
 	for _, name := range refs.FreeVariables {
@@ -920,20 +952,50 @@ func (c *compiler) compileXPath(expr string, ns map[string]string) (*xpath.Expre
 			}
 		}
 	}
+
+	if err := c.recordVariableReferences(refs.FreeVariables, bound, c.variableScopeNode, false); err != nil {
+		return nil, err
+	}
+
 	// XSLT backwards-compatible processing: an expression compiled under an
 	// effective version < 2.0 is evaluated in XPath 1.0 compatibility mode. Record
 	// it by pointer identity so evalXPath can select the compat evaluator.
 	if c.backwardsCompatible() {
 		c.markCompatExpr(compiled)
-	} else if !c.forwardsCompatible(c.effectiveVersion) {
+	}
+
+	if c.stylesheet.processorLanguage() >= 20 || !c.backwardsCompatible() && !c.forwardsCompatible(c.effectiveVersion) {
 		if err := compiled.Validate(bound); err != nil {
 			return nil, err
 		}
 
-		c.pendingFunctionCalls = append(c.pendingFunctionCalls, refs.FunctionNames...)
+		for _, function := range refs.FunctionNames {
+			// XSLT backwards compatibility only defers unavailable functions in
+			// namespaces other than the standard function namespace (§3.9.1).
+			if !c.backwardsCompatible() || function.URI == xpath.NSFn {
+				c.pendingFunctionCalls = append(c.pendingFunctionCalls, function)
+			}
+		}
 	}
 
 	return compiled, nil
+}
+
+func (c *compiler) xpathCompilationError(expr string, version int, err error) (*xpath.Expression, error) {
+	if failure := preserveControlFailure(c.invocation, err); failure != nil {
+		return nil, failure
+	}
+
+	if c.stylesheet.processorLanguage() == 10 && c.forwardsCompatible(c.effectiveVersion) {
+		return xpath.DeferredExpression(err, version), nil
+	}
+
+	code := lexicon.ErrXPST0003
+	if detail, ok := errors.AsType[*xdm.Error](err); ok {
+		code = detail.Code
+	}
+
+	return nil, staticErrorCause(code, err, "invalid XPath %q: %v", expr, err)
 }
 
 func (c *compiler) readPackageMetadata(root *xdm.Element, localName string) error {
@@ -977,7 +1039,7 @@ func (c *compiler) applyPreparedConfig(cfg *compileConfig) {
 	if cfg != nil {
 		c.stylesheet.processorVersion = cfg.processorVersion
 		c.baseURI = cfg.baseURI
-		c.moduleKey = cfg.baseURI
+		c.moduleKey = uripath.EscapeResourceReference(cfg.baseURI)
 		c.resolver = cfg.resolver
 		c.packageResolver = cfg.packageResolver
 		c.externalStaticParams = cfg.staticParams
@@ -1014,15 +1076,13 @@ func (c *compiler) configureRootContext(ctx context.Context, root *xdm.Element) 
 		c.hasXPathDefaultNS = true
 	}
 
-	if dc := getAttr(root, nameDefaultCollation); dc != "" {
-		if uri := resolveDefaultCollation(dc); uri != "" {
-			c.defaultCollation = uri
-			c.stylesheet.defaultCollation = uri
-		} else {
-			return staticError(errCodeXTSE0125,
-				"no recognized collation URI in default-collation %q", dc)
-		}
+	collation, err := c.declarationDefaultCollation(root)
+	if err != nil {
+		return err
 	}
+
+	c.defaultCollation = collation
+	c.stylesheet.defaultCollation = collation
 
 	// Read expand-text from stylesheet root (XSLT 3.0, using GetAttribute to catch empty values)
 	if et, hasET := root.GetAttribute(nameExpandText); hasET {
@@ -1046,14 +1106,71 @@ func (c *compiler) configureRootContext(ctx context.Context, root *xdm.Element) 
 // resolveDefaultCollation takes a space-separated list of collation URIs
 // (as specified by XSLT's default-collation attribute) and returns the first
 // URI that is supported by the XPath engine.  Returns "" if none is supported.
-func resolveDefaultCollation(list string) string {
-	for uri := range strings.FieldsSeq(list) {
+func resolveDefaultCollation(list, baseURI string) string {
+	for _, reference := range strings.FieldsFunc(list, xmlchar.IsSpace) {
+		uri := resolveAgainstBaseURI(reference, baseURI)
 		if xpath.IsCollationSupported(uri) {
 			return uri
 		}
 	}
 
 	return ""
+}
+
+// declarationDefaultCollation uses lexical ancestors, independently of the
+// currently compiled module or the eventual caller's dynamic context.
+func (c *compiler) declarationDefaultCollation(node xdm.Node) (string, error) {
+	if node == nil {
+		return lexicon.CollationCodepoint, nil
+	}
+
+	if uri, cached := c.defaultCollationByNode[node]; cached {
+		return uri, nil
+	}
+
+	if err := xpath.Charge(c.invocation, 1); err != nil {
+		return "", err
+	}
+
+	uri, err := c.uncachedDefaultCollation(node)
+	if err != nil {
+		return "", err
+	}
+
+	if c.defaultCollationByNode == nil {
+		c.defaultCollationByNode = make(map[xdm.Node]string)
+	}
+
+	c.defaultCollationByNode[node] = uri
+
+	return uri, nil
+}
+
+func (c *compiler) uncachedDefaultCollation(node xdm.Node) (string, error) {
+	if element, ok := node.(*xdm.Element); ok {
+		if value, present := standardAttribute(element, nameDefaultCollation); present {
+			uri := resolveDefaultCollation(value, stylesheetBaseURI(element, c.baseURI, c.moduleRoot))
+			if uri == "" {
+				return "", staticError(errCodeXTSE0125, "no recognized collation URI in default-collation %q", value)
+			}
+
+			return uri, nil
+		}
+
+		if element == c.moduleRoot {
+			return lexicon.CollationCodepoint, nil
+		}
+	}
+
+	return c.declarationDefaultCollation(node.Parent())
+}
+
+func standardAttribute(element *xdm.Element, name string) (string, bool) {
+	if element.URI() == lexicon.NamespaceXSLT {
+		return element.GetAttribute(name)
+	}
+
+	return element.GetAttributeNS(name, lexicon.NamespaceXSLT)
 }
 
 // Resolve xml:base as a URI reference. A directory result stays a directory;
@@ -1093,7 +1210,7 @@ func (c *compiler) readRootVersion(ctx context.Context, root *xdm.Element, local
 // isXSDecimal returns true if s is a valid xs:decimal lexical form:
 // optional sign, digits, optional dot followed by digits. No exponent.
 func isXSDecimal(s string) bool {
-	s = strings.TrimSpace(s)
+	s = strings.Trim(s, " \t\r\n")
 	if s == "" {
 		return false
 	}
@@ -1125,7 +1242,7 @@ func isXSDecimal(s string) bool {
 }
 
 func compilePreparedVersion(c *compiler, root *xdm.Element, localName string) error {
-	if c.stylesheet.version == "" {
+	if _, present := root.GetAttribute(lexicon.SerializationVersion); !present {
 		if _, hasShadow := root.GetAttribute("_version"); !hasShadow {
 			return staticError(errCodeXTSE0010, "xsl:%s requires a version attribute", localName)
 		}
@@ -1141,86 +1258,32 @@ func compilePreparedVersion(c *compiler, root *xdm.Element, localName string) er
 }
 
 func (c *compiler) readResultNamespacePolicy(root *xdm.Element) error {
-	c.stylesheet.excludePrefixes = make(map[string]struct{})
-	c.stylesheet.excludeURIs = make(map[string]struct{})
-
-	if erp := getAttr(root, nameExcludeResultPrefixes); erp != "" {
-		if erp == "#all" {
-			for prefix := range c.stylesheet.namespaces {
-				c.stylesheet.excludePrefixes[prefix] = struct{}{}
-			}
-		} else {
-			if err := compilePreparedFieldsSeq(erp, c); err != nil {
-				return err
-			}
-		}
+	excludes, err := c.elementResultExcludes(root)
+	if err != nil {
+		return err
 	}
-	// extension-element-prefixes are also excluded from output.
-	// XTSE0800: reserved namespaces must not be used as extension namespaces.
-	if eep := getAttr(root, nameExtensionElementPrefixes); eep != "" {
-		for prefix := range strings.FieldsSeq(eep) {
-			uri := c.nsBindings[prefix]
-			if isReservedNamespace(uri) {
-				return staticError(errCodeXTSE0800,
-					"reserved namespace %q (prefix %q) must not be used as an extension namespace", uri, prefix)
-			}
 
-			c.stylesheet.excludePrefixes[prefix] = struct{}{}
-			if uri != "" {
-				if c.extensionURIs == nil {
-					c.extensionURIs = make(map[string]struct{})
-				}
-
-				c.extensionURIs[uri] = struct{}{}
-			}
-		}
-	}
-	// Resolve excluded prefixes to URIs now, before template processing
-	// can mutate c.stylesheet.namespaces. XSLT spec: exclude-result-prefixes
-	// identifies namespace URIs, not prefix names.
-	for prefix := range c.stylesheet.excludePrefixes {
-		if uri, ok := c.stylesheet.namespaces[prefix]; ok {
-			c.stylesheet.excludeURIs[uri] = struct{}{}
-		}
-	}
+	c.localExcludes = excludes
+	c.setInstructionExtensionURIs(root)
 
 	return nil
 }
 
 func isReservedNamespace(uri string) bool {
+	return reservedNamespaceForProcessor(uri, 30)
+}
+
+func reservedNamespaceForProcessor(uri string, processor int) bool {
 	switch uri {
-	case lexicon.NamespaceXSLT,
-		lexicon.NamespaceXSD,
-		lexicon.NamespaceFn,
-		lexicon.NamespaceMath,
-		lexicon.NamespaceMap,
-		lexicon.NamespaceArray,
-		lexicon.NamespaceXML,
-		lexicon.NamespaceXMLNS:
+	case lexicon.NamespaceXSLT, lexicon.NamespaceXSD, lexicon.NamespaceXSI,
+		lexicon.NamespaceFn, lexicon.NamespaceXML:
 		return true
+	case lexicon.NamespaceMath, lexicon.NamespaceMap, lexicon.NamespaceArray,
+		lexicon.NamespaceErr, lexicon.NamespaceXMLNS:
+		return processor >= 30
 	}
 
 	return false
-}
-
-func compilePreparedFieldsSeq(erp string, c *compiler) error {
-	for prefix := range strings.FieldsSeq(erp) {
-		if prefix == lexicon.ModeDefault {
-			c.stylesheet.excludePrefixes[""] = struct{}{}
-			continue
-		}
-		// XTSE0808: prefix must be declared
-		if _, ok := c.stylesheet.namespaces[prefix]; !ok {
-			if _, ok := c.nsBindings[prefix]; !ok {
-				return staticError(errCodeXTSE0808,
-					"undeclared namespace prefix %q in exclude-result-prefixes", prefix)
-			}
-		}
-
-		c.stylesheet.excludePrefixes[prefix] = struct{}{}
-	}
-
-	return nil
 }
 
 // completeTopLevelDeclarations runs checks that depend on finalized import
@@ -1344,7 +1407,7 @@ func (c *compiler) validateTemplateReferences() error {
 		target := c.stylesheet.namedTemplates[call.Name]
 		// An accepted private component is visible inside the accepting package;
 		// private limits re-export, while hidden removes the binding.
-		if (target == nil || target.Visibility == visHidden) && !call.Forwards {
+		if (target == nil || target.Visibility == visHidden) && !call.LegacyForwards {
 			return staticError(errCodeXTSE0650, "xsl:call-template references unavailable template %q", call.Name)
 		}
 	}
@@ -1353,6 +1416,10 @@ func (c *compiler) validateTemplateReferences() error {
 }
 
 func (c *compiler) validateDeferredReferences(ctx context.Context) error {
+	if err := c.validateVariableReferences(ctx); err != nil {
+		return err
+	}
+
 	if err := c.validateTemplateReferences(); err != nil {
 		return err
 	}
@@ -1441,6 +1508,19 @@ func (c *compiler) staticFunctionAvailable(ctx context.Context, uri, name string
 }
 
 func (c *compiler) hostFunctionAvailable(uri, name string, arity int) bool {
+	if c.stylesheet.processorLanguage() >= 20 && c.backwardsCompatible() && uri != xpath.NSFn {
+		return true // Every unavailable foreign name/arity has the BC error binding.
+	}
+
+	key := funcKey{Name: xpath.QualifiedName{URI: uri, Name: name}, Arity: arity}
+	if _, declared := c.localFunctionNames[key]; declared || c.stylesheet.functions[key] != nil {
+		return true
+	}
+
+	if function := xpath.FunctionsFromContext(c.invocation)[key.Name]; function != nil {
+		return arity >= function.MinArity() && (function.MaxArity() < 0 || arity <= function.MaxArity())
+	}
+
 	return uri == lexicon.NamespaceFn && xsltFunctionAcceptsVersionArity(c.stylesheet.processorLanguage(), name, arity) &&
 		(c.stylesheet.processorLanguage() >= 30 || !xslt30Function(name))
 }
@@ -1666,7 +1746,7 @@ func getAttr(elem *xdm.Element, name string) string {
 // parseXSDBool parses an xs:boolean value ("yes"/"no", lexicon.ValueTrue/lexicon.ValueFalse, "1"/"0")
 // with whitespace trimming per the XSD specification.
 func parseXSDBool(s string) (bool, bool) {
-	switch strings.TrimSpace(s) {
+	switch strings.Trim(s, " \t\r\n") {
 	case lexicon.ValueYes, lexicon.ValueTrue, "1":
 		return true, true
 	case lexicon.ValueNo, lexicon.ValueFalse, "0":
@@ -1724,26 +1804,25 @@ func resolveQName(qname string, nsBindings map[string]string) string {
 	return qname
 }
 
-// isNonWhitespaceTextNode returns true if the node is a text or CDATA node
-// containing non-whitespace content.
-func isNonWhitespaceTextNode(n xdm.Node) bool {
+// isStylesheetTextNode reports non-empty text retained by preprocessing.
+func isStylesheetTextNode(n xdm.Node) bool {
 	switch n.(type) {
 	case *xdm.Text, *xdm.CDATASection:
-		return !isXMLWhitespaceOnly(xdm.CharacterData(n))
+		return xdm.CharacterData(n) != ""
 	}
 
 	return false
 }
 
 // hasNonEmptyContent returns true if the element has any child elements or
-// non-whitespace text content.
+// text content retained by stylesheet preprocessing.
 func hasNonEmptyContent(elem *xdm.Element) bool {
 	for child := range xdm.Children(elem) {
 		if _, ok := child.(*xdm.Element); ok {
 			return true
 		}
 
-		if isNonWhitespaceTextNode(child) {
+		if isStylesheetTextNode(child) {
 			return true
 		}
 	}
@@ -1768,14 +1847,14 @@ func parseDOEAttr(v string) (bool, error) {
 }
 
 // hasSignificantContent returns true if the element has child elements or
-// non-whitespace text content (i.e., it has a sequence constructor body).
+// retained text content (i.e., it has a sequence constructor body).
 func hasSignificantContent(elem *xdm.Element) bool {
 	for child := range xdm.Children(elem) {
 		switch child.Type() {
 		case xdm.ElementNode:
 			return true
 		case xdm.TextNode, xdm.CDATASectionNode:
-			if !isXMLWhitespaceOnly(xdm.CharacterData(child)) {
+			if xdm.CharacterData(child) != "" {
 				return true
 			}
 		}
@@ -1784,8 +1863,7 @@ func hasSignificantContent(elem *xdm.Element) bool {
 	return false
 }
 
-// hasSignificantChildren returns true if elem has any non-whitespace-only
-// text children, or element children other than xsl:fallback.
+// hasSignificantChildren reports retained text or elements other than xsl:fallback.
 func hasSignificantChildren(elem *xdm.Element) bool {
 	for child := range xdm.Children(elem) {
 		switch c := child.(type) {
@@ -1796,7 +1874,7 @@ func hasSignificantChildren(elem *xdm.Element) bool {
 
 			return true
 		case *xdm.Text:
-			if !isXMLWhitespaceOnly(xdm.CharacterData(c)) {
+			if xdm.CharacterData(c) != "" {
 				return true
 			}
 		}

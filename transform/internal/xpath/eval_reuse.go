@@ -76,6 +76,7 @@ func (e *Expression) EvaluateReuse(ctx context.Context, state *EvalState, node x
 	}
 
 	ec := &state.ec
+	bindInvocationScope(ctx, ec)
 	ec.version = e.version
 	ec.defaultXMLNamespace = state.baseXMLNamespace
 
@@ -134,7 +135,7 @@ func (e *Expression) EvaluateReuse(ctx context.Context, state *EvalState, node x
 		return Result{seq: xdm.ItemSlice(state.oneItem[:])}, nil
 	}
 
-	if err := e.prefixPlan.Validate(ec.namespaces, e.staticNamespaces != nil || ec.strictPrefixes || e.version == 10, ec.schemaDeclarations); err != nil {
+	if err := e.prefixPlan.Validate(ec.namespaces, e.staticNamespaces != nil || ec.strictPrefixes || e.version == 10, ec.schemaDeclarations, ec.version); err != nil {
 		return Result{}, err
 	}
 

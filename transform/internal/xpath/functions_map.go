@@ -74,7 +74,7 @@ func fnMapMerge(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 			// xs:string and is converted with the function conversion rules.
 			// So xs:string subtypes (xs:NCName, ...), xs:anyURI, xs:untypedAtomic,
 			// and a single-item array all coerce to a string. An empty, multi-item,
-			// or non-convertible value is a FOJS0005 error (not XPTY0004).
+			// or non-convertible value retains the function conversion error.
 			s, convErr := coerceDuplicatesOption(ctx, val)
 			if convErr != nil {
 				return nil, convErr
@@ -173,53 +173,20 @@ func prepareMergedValue(ctx context.Context, ec *evalContext, lengths map[xdm.Ma
 	return nil
 }
 
-// coerceDuplicatesOption converts the 'duplicates' option value of map:merge to
-// a string. The option is declared as xs:string, so only xs:untypedAtomic,
-// xs:string (and subtypes), and xs:anyURI (and subtypes) are accepted; any other
-// atomic type — even a custom type whose Go payload happens to be a string — is a
-// FOJS0005 error, and is never silently accepted. A single-item array still
-// flattens to its member via atomization. Atomization is ctx-aware: an
-// element-only-typed node has no typed value, so it surfaces err:FOTY0012
-// unchanged, masked as no FOJS0005 invalid-option error.
+// coerceDuplicatesOption applies the required xs:string option type before
+// validating its permitted values (F&O 3.1 sections 1.5 and 17.1.2).
 func coerceDuplicatesOption(ctx context.Context, val xdm.Sequence) (string, error) {
-	var first xdm.AtomicValue
-
-	count := 0
-
-	_, err := atomizeStreamCont(val, typedValueItemCheck(ctx), func(av xdm.AtomicValue) (bool, error) {
-		count++
-		if count == 1 {
-			first = av
-			return true, nil
-		}
-
-		return false, nil
-	})
+	converted, err := coerceFuncallArg(ctx, val, stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne), "map:merge duplicates option", 0, getFnContext(ctx))
 	if err != nil {
-		if isNoTypedValueError(err) {
-			return "", err
-		}
-
-		return "", &xdm.Error{Code: errCodeFOJS0005, Message: fmt.Sprintf("map:merge: 'duplicates' option must be a single string: %s", err)}
+		return "", err
 	}
 
-	if count != 1 {
-		return "", &xdm.Error{Code: errCodeFOJS0005, Message: fmt.Sprintf("map:merge: 'duplicates' option must be a single string, got sequence of length %d", count)}
+	atom, ok := converted.Get(0).(xdm.AtomicValue)
+	if !ok {
+		return "", &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "map:merge duplicates option did not yield an atomic value"}
 	}
 
-	av := first
-	if av.TypeName != xdm.TypeUntypedAtomic &&
-		!xdm.IsAtomicSubtypeOf(av, xdm.TypeString) &&
-		!xdm.IsAtomicSubtypeOf(av, xdm.TypeAnyURI) {
-		return "", &xdm.Error{Code: errCodeFOJS0005, Message: fmt.Sprintf("map:merge: 'duplicates' option must be a string, got %s", av.TypeName)}
-	}
-
-	s, convErr := atomicToString(av)
-	if convErr != nil {
-		return "", &xdm.Error{Code: errCodeFOJS0005, Message: fmt.Sprintf("map:merge: 'duplicates' option must be a single string: %s", convErr)}
-	}
-
-	return s, nil
+	return atomicToString(atom)
 }
 
 func fnMapSize(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {

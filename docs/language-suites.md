@@ -55,7 +55,9 @@ as the suite default; it is independent of the public engine default 1.1 and doe
 not enable schema validation. Both `xsd-version` and `XSD_1.1` dependencies use
 that actual selection. The report records `xsd_version` and `unicode_version`.
 `-xpath10-compatibility` selects the modern QT3 static compatibility property;
-its default is false and XSLT runs use stylesheet-local modes instead.
+its default is false. With this flag, only QT3 cases explicitly declaring that
+dependency are applicable; the catalog contract requires strict mode for cases
+without it. XSLT runs use stylesheet-local modes.
 `-assertions` enables assertions in the suite's XSLT invocation; its default is false. Nested
 `fn:transform` calls independently select their standard `enable-assertions` option. Reports
 record both choices, and dependencies match those actual settings.
@@ -116,6 +118,15 @@ processors without that optional facility. Streaming and association flags
 apply only to the principal source (`role="."`). Named environments and collection
 sources use the same checks. Invalid flags/version values remain failures,
 and strict/lax source validation remains an unsupported harness operation.
+
+A QT3 environment's schema declaration also implies a schema-awareness
+dependency, as required by its
+[pinned catalog schema](https://github.com/w3c/qt3tests/blob/201a6e466940cdfc727f4babfedcde5332b9f578/catalog-schema.xsd#L434).
+Such cases are not applicable to this Basic profile; their requested annotations
+are never silently removed. The file-free built-in functions namespace import
+used by untyped JSON tests supplies no schema components and remains applicable.
+The XSLT catalog has a different declaration contract: unused schema declarations
+remain applicable, and requested validation still reports its actual failure.
 
 A `unicode-version` dependency identifies an exact edition, as in the publisher
 runner; it is not a minimum. The selected Unicode 17.0 case/category data cannot
@@ -185,14 +196,26 @@ Inline source XML is parsed with the content element's catalog base URI,
 including inherited `xml:base`, following the publisher's `c:parse-xml` runner.
 This base is independent of the environment's XPath static base; a constructed
 source's base does not give it a retrieval document URI.
+Catalog `file` attributes are URI references, including percent-escaped paths;
+their own inherited `xml:base` controls local retrieval. Resolved paths remain
+confined to the suite checkout, including symlink checks. A separate resource
+`uri` controls its language identity. Declared HTTP resource files are recorded
+without fetching them: unused declarations are harmless, while actual reads
+report their unavailability in this offline profile.
 
 Environment and invocation modules can supply a principal stylesheet/package
 and secondary modules. Declared packages are resolved by name and version;
 each source version retains its own file/base URI, even when catalog package
-URIs agree. The highest matching declared version is selected using the same range parser
+URIs agree. A secondary package's own expanded `xsl:package` root supplies its
+name and version; stale catalog metadata does not rewrite the declaration.
+Explicit catalog identities remain discovery hints for computed shadow attributes
+or invalid roots, which the compiler evaluates and diagnoses itself.
+The highest matching declared version is selected using the same range parser
 as the compiler, which independently validates the returned package. No undeclared
 package or network fallback is added. Output metadata selects a logical base
 output URI, serialization, an optional XML result tree and a raw-result variable.
+An omitted output `file` keeps the driver default; an empty `file` resolves
+against the catalog node's base URI, including `xml:base`; `#absent` removes it.
 Output URIs never write files. XSLT schema declarations register bounded local
 retrieval resources without enabling validation or importing schema components.
 Unused declarations can coexist with Basic execution, and requested schema
@@ -209,7 +232,7 @@ failures. Source schema validation remains a harness gap; a case requiring it
 fails with a reason. QT3's file-free import of the built-in functions namespace is
 recognized for untyped `json-to-xml`; `validate=true` reaches the evaluator's
 `FOJS0004` without enabling schema validation. Other QT3 schema declarations
-retain their separate harness boundary.
+imply the optional schema-awareness dependency described above.
 
 Assertions include standard errors, boolean/count/empty/type/value checks,
 XPath predicates, XML fragments, exact serialization, serialization regex,
@@ -218,6 +241,11 @@ differences unless `ignore-prefixes` is explicit. Parsed nodes are compared
 through public immutable handles, preserving PI names/data, text and attribute
 values while ignoring attribute order and unused namespace declarations. Relative
 namespace names remain literal; C14N is unsuitable because it must reject them.
+If the normal XML parser rejects namespace names admitted by the XDM datatype
+rules, the UTF-8 comparator retries with shared injective aliases for namespace
+values on both sides. Only namespace declaration values are rewritten; text,
+ordinary attributes, comments and processing instructions retain their bytes.
+The ordinary parser still checks names, prefixes and reserved namespace bindings.
 Complete documents discard outer layout whitespace; fragments retain their text. String whitespace follows the respective catalog defaults.
 Expected UTF-8, ASCII and ISO-8859-1 serialization files normalize CRLF
 to LF, following the pinned publisher runner's text comparison. Bare CR data,

@@ -337,7 +337,8 @@ func (e Evaluator) ContextItem(item xdm.Item) Evaluator {
 // ContextItem(item).Position(position).Size(size) but copies the evaluator
 // configuration once instead of three times, for callers that set a new focus
 // on every evaluation. A nil item leaves the context to the node passed to
-// Evaluate, and a position or size of 0 or less selects the default of 1.
+// Evaluate, a nonpositive position and zero size select the default of 1. A negative size
+// represents an absent context size (for a streamable XSLT merge action).
 func (e Evaluator) Focus(item xdm.Item, position, size int) Evaluator {
 	e = e.clone()
 	e.cfg.contextItem = item
@@ -490,8 +491,13 @@ func (e Evaluator) Evaluate(ctx context.Context, expr *Expression, node xdm.Node
 	}
 
 	ec := e.newEvalCtx(node)
+	bindInvocationScope(ctx, ec)
 
 	ec.version = expr.version
+
+	if expr.staticCollation != "" {
+		ec.defaultCollation = expr.staticCollation
+	}
 
 	if expr.staticNamespaces != nil {
 		ec.defaultXMLNamespace = expr.defaultXMLNamespace
@@ -504,7 +510,7 @@ func (e Evaluator) Evaluate(ctx context.Context, expr *Expression, node xdm.Node
 
 	applyBudget(ctx, ec)
 
-	if err := expr.prefixPlan.Validate(ec.namespaces, expr.staticNamespaces != nil || ec.strictPrefixes || ec.version == 10, ec.schemaDeclarations); err != nil {
+	if err := expr.prefixPlan.Validate(ec.namespaces, expr.staticNamespaces != nil || ec.strictPrefixes || ec.version == 10, ec.schemaDeclarations, ec.version); err != nil {
 		return nil, err
 	}
 
@@ -532,8 +538,13 @@ func (e Evaluator) ValidateExpression(ctx context.Context, expr *Expression) err
 	}
 
 	ec := e.newEvalCtx(nil)
+	bindInvocationScope(ctx, ec)
 
 	ec.version = expr.version
+
+	if expr.staticCollation != "" {
+		ec.defaultCollation = expr.staticCollation
+	}
 
 	if expr.staticNamespaces != nil {
 		ec.defaultXMLNamespace = expr.defaultXMLNamespace
@@ -542,7 +553,7 @@ func (e Evaluator) ValidateExpression(ctx context.Context, expr *Expression) err
 
 	applyBudget(ctx, ec)
 
-	if err := expr.prefixPlan.Validate(ec.namespaces, ec.strictPrefixes, ec.schemaDeclarations); err != nil {
+	if err := expr.prefixPlan.Validate(ec.namespaces, ec.strictPrefixes, ec.schemaDeclarations, ec.version); err != nil {
 		return err
 	}
 
@@ -559,8 +570,8 @@ func (e Evaluator) ValidateExpression(ctx context.Context, expr *Expression) err
 		}
 
 		for _, typ := range collector.typeNames {
-			if typ.URI != NSXS || (!knownXSTypeNames(typ.Name) && typ.Name != "anyType" && typ.Name != "anySimpleType" && typ.Name != "untyped") {
-				return &xdm.Error{Code: "XPST0051", Message: "unknown type in the static context: " + typ.Name}
+			if typ.URI != NSXS || (!knownXSTypeForVersion(typ.Name, ec.version) && typ.Name != lexicon.TypeAnyType && typ.Name != lexicon.TypeAnySimpleType && typ.Name != lexicon.TypeUntyped) {
+				return &xdm.Error{Code: errCodeXPST0051, Message: "unknown type in the static context: " + typ.Name}
 			}
 		}
 	}
@@ -597,8 +608,13 @@ func (e Evaluator) EvaluateEBV(ctx context.Context, expr *Expression, node xdm.N
 	}
 
 	ec := e.newEvalCtx(node)
+	bindInvocationScope(ctx, ec)
 
 	ec.version = expr.version
+
+	if expr.staticCollation != "" {
+		ec.defaultCollation = expr.staticCollation
+	}
 
 	if expr.staticNamespaces != nil {
 		ec.defaultXMLNamespace = expr.defaultXMLNamespace
@@ -611,7 +627,7 @@ func (e Evaluator) EvaluateEBV(ctx context.Context, expr *Expression, node xdm.N
 
 	applyBudget(ctx, ec)
 
-	if err := expr.prefixPlan.Validate(ec.namespaces, expr.staticNamespaces != nil || ec.strictPrefixes || ec.version == 10, ec.schemaDeclarations); err != nil {
+	if err := expr.prefixPlan.Validate(ec.namespaces, expr.staticNamespaces != nil || ec.strictPrefixes || ec.version == 10, ec.schemaDeclarations, ec.version); err != nil {
 		return false, err
 	}
 
@@ -725,7 +741,7 @@ func (e Evaluator) newEvalCtx(node xdm.Node) *evalContext {
 		ec.position = cfg.position
 	}
 
-	if cfg.size > 0 {
+	if cfg.size != 0 {
 		ec.size = cfg.size
 	}
 

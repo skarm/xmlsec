@@ -7,11 +7,28 @@ import (
 	"errors"
 	"maps"
 
+	"github.com/skarm/xmlsec/transform/internal/pattern"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
 // ErrBudget reports exhaustion of the invocation's shared resource budget.
 var ErrBudget = errors.New("XML execution resource limit exceeded")
+
+// ControlFailure preserves cancellation and implementation limits instead of
+// converting them into recoverable language errors. Ordinary errors return nil.
+func ControlFailure(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return errors.Join(err, ctx.Err())
+	}
+
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, ErrBudget) || errors.Is(err, ErrOpLimit) ||
+		errors.Is(err, ErrNodeSetLimit) || errors.Is(err, ErrRecursionLimit) || errors.Is(err, pattern.ErrLimit) {
+		return err
+	}
+
+	return nil
+}
 
 // WithBudget shares limits across nested XSLT and XPath calls in one goroutine.
 func WithBudget(ctx context.Context, operations, nodes, bytes, depth int) context.Context {

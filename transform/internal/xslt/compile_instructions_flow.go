@@ -28,8 +28,8 @@ func (c *compiler) compileApplyTemplates(ctx context.Context, elem *xdm.Element)
 		Mode: mode,
 	}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
+	if hasSelect {
 		expr, err := c.compileXPath(selectAttr, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -42,7 +42,7 @@ func (c *compiler) compileApplyTemplates(ctx context.Context, elem *xdm.Element)
 		childElem, ok := child.(*xdm.Element)
 		if !ok {
 			// XTSE0010: non-element content not allowed in xsl:apply-templates
-			if isNonWhitespaceTextNode(child) {
+			if isStylesheetTextNode(child) {
 				return nil, staticError(errCodeXTSE0010, "text is not allowed as a child of xsl:apply-templates")
 			}
 
@@ -155,12 +155,12 @@ func (c *compiler) compileCallTemplate(ctx context.Context, elem *xdm.Element) (
 	}
 
 	inst := &callTemplateInst{Name: resolveQName(name, namespaces), Compat: c.backwardsCompatible()}
-	c.pendingTemplateCalls = append(c.pendingTemplateCalls, templateCallReference{Name: inst.Name, Forwards: c.forwardsCompatible(c.effectiveVersion)})
+	c.pendingTemplateCalls = append(c.pendingTemplateCalls, templateCallReference{Name: inst.Name, LegacyForwards: c.stylesheet.processorLanguage() == 10 && c.forwardsCompatible(c.effectiveVersion)})
 
 	for child := range xdm.Children(elem) {
 		childElem, ok := child.(*xdm.Element)
 		if !ok {
-			if isNonWhitespaceTextNode(child) {
+			if isStylesheetTextNode(child) {
 				return nil, staticError(errCodeXTSE0010, "text is not allowed as a child of xsl:call-template")
 			}
 
@@ -193,8 +193,8 @@ func (c *compiler) compileCallTemplate(ctx context.Context, elem *xdm.Element) (
 }
 
 func (c *compiler) compileIf(ctx context.Context, elem *xdm.Element) (*ifInst, error) {
-	testAttr := getAttr(elem, lexicon.AttrTest)
-	if testAttr == "" {
+	testAttr, present := elem.GetAttribute(lexicon.AttrTest)
+	if !present {
 		return nil, staticError(errCodeXTSE0010, "xsl:if requires test attribute")
 	}
 
@@ -219,7 +219,7 @@ func (c *compiler) compileChoose(ctx context.Context, elem *xdm.Element) (*choos
 		// XTSE0010: xsl:choose must contain only xsl:when and xsl:otherwise elements
 		switch child.(type) {
 		case *xdm.Text, *xdm.CDATASection:
-			if !isXMLWhitespaceOnly(xdm.CharacterData(child)) {
+			if xdm.CharacterData(child) != "" {
 				return nil, staticError(errCodeXTSE0010, "text is not allowed as a child of xsl:choose")
 			}
 
@@ -287,8 +287,8 @@ func (c *compiler) compileWhenClause(ctx context.Context, elem *xdm.Element) (*w
 		restoreVersion()
 	}()
 
-	testAttr := getAttr(elem, lexicon.AttrTest)
-	if testAttr == "" {
+	testAttr, present := elem.GetAttribute(lexicon.AttrTest)
+	if !present {
 		return nil, staticError(errCodeXTSE0010, "xsl:when requires test attribute")
 	}
 
@@ -303,7 +303,11 @@ func (c *compiler) compileWhenClause(ctx context.Context, elem *xdm.Element) (*w
 		maps.Copy(namespaces, c.nsBindings)
 	}
 
-	collation := getAttr(elem, nameDefaultCollation)
+	collation, err := c.declarationDefaultCollation(elem)
+	if err != nil {
+		return nil, err
+	}
+
 	body, err := c.compileChildren(ctx, elem)
 	clause := &whenClause{Test: expression, Body: body, Namespaces: namespaces, DefaultCollation: collation}
 	clause.XPathDefaultNS = c.xpathDefaultNS
@@ -369,8 +373,8 @@ func (c *compiler) compileForEach(ctx context.Context, elem *xdm.Element) (*forE
 	c.breakAllowed = false
 	defer func() { c.breakAllowed = savedBreak }()
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr == "" {
+	selectAttr, present := elem.GetAttribute(xslAttrSelect)
+	if !present {
 		return nil, staticError(errCodeXTSE0010, "xsl:for-each requires select attribute")
 	}
 
@@ -424,10 +428,8 @@ func (c *compiler) collectForEachSorts(ctx context.Context, elem *xdm.Element, i
 }
 
 func (c *compiler) compileForEachBody(ctx context.Context, elem *xdm.Element, inst *forEachInst, lastSort xdm.Node) error {
-	pastSort := lastSort == nil // true once we've passed all sort elements
 	for child := range xdm.Children(elem) {
 		if child == lastSort {
-			pastSort = true
 			continue
 		}
 
@@ -436,8 +438,6 @@ func (c *compiler) compileForEachBody(ctx context.Context, elem *xdm.Element, in
 			if v.URI() == lexicon.NamespaceXSLT && v.LocalName() == lexicon.XSLTElementSort {
 				continue
 			}
-
-			pastSort = true
 
 			childInst, err := c.compileInstruction(ctx, v)
 			if err != nil {
@@ -449,13 +449,8 @@ func (c *compiler) compileForEachBody(ctx context.Context, elem *xdm.Element, in
 			}
 		case *xdm.Text:
 			text := xdm.CharacterData(v)
-			// Strip whitespace-only text nodes in the sort region (before/between sorts)
-			if !pastSort && isXMLWhitespaceOnly(text) {
-				continue
-			}
-
 			if !c.shouldStripText(ctx, text) {
-				lit, err := c.compileLiteralText(text)
+				lit, err := c.compileLiteralTextAt(v, text)
 				if err != nil {
 					return err
 				}
@@ -463,7 +458,7 @@ func (c *compiler) compileForEachBody(ctx context.Context, elem *xdm.Element, in
 				inst.Body = append(inst.Body, lit)
 			}
 		case *xdm.CDATASection:
-			lit, err := c.compileLiteralText(xdm.CharacterData(v))
+			lit, err := c.compileLiteralTextAt(v, xdm.CharacterData(v))
 			if err != nil {
 				return err
 			}
@@ -500,15 +495,19 @@ func (c *compiler) compileSortKey(ctx context.Context, elem *xdm.Element) (*sort
 		}
 	}
 
-	sk := &sortKey{forwards10: c.stylesheet.processorLanguage() == 10 && forwards10(elem)}
+	sk := &sortKey{
+		forwards10: c.stylesheet.processorLanguage() == 10 && forwards10(elem),
+		backwards:  c.backwardsCompatible(),
+		BaseURI:    stylesheetBaseURI(elem, c.baseURI, c.moduleRoot),
+	}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
 	// XTSE1015: xsl:sort with select must not have content
 	if selectAttr != "" && c.hasEffectiveContent(ctx, elem) {
 		return nil, staticError(errCodeXTSE1015, "xsl:sort with a select attribute must not have content")
 	}
 
-	if selectAttr != "" {
+	if hasSelect {
 		expr, err := c.compileXPath(selectAttr, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -552,14 +551,20 @@ func (c *compiler) compileSortKeyOptions(elem *xdm.Element, key *sortKey) error 
 		{nameCollation, &key.Collation},
 		{"stable", &key.Stable},
 	} {
-		value := getAttr(elem, option.name)
-		if value == "" {
+		value, present := elem.GetAttribute(option.name)
+		if !present {
 			continue
 		}
 
 		compiled, err := c.compileAVT(value, c.nsBindings)
 		if err != nil {
 			return err
+		}
+
+		if literal, static := compiled.staticValue(); static && c.stylesheet.processorLanguage() >= 20 {
+			if err := validateLiteralSortOption(option.name, literal); err != nil {
+				return err
+			}
 		}
 
 		*option.target = compiled
@@ -597,6 +602,10 @@ func (c *compiler) compileWithParam(ctx context.Context, elem *xdm.Element) (*wi
 		return nil, staticError(errCodeXTSE0010, "xsl:with-param requires name attribute")
 	}
 
+	if err := c.checkQNamePrefix(ctx, name, "xsl:with-param"); err != nil {
+		return nil, err
+	}
+
 	// Validate tunnel attribute value if present (including empty string)
 	if tunnelAttr, hasTunnel := elem.GetAttribute(nameTunnel); hasTunnel {
 		if err := validateBooleanAttr("xsl:with-param", nameTunnel, tunnelAttr); err != nil {
@@ -631,8 +640,8 @@ func (c *compiler) compileWithParam(ctx context.Context, elem *xdm.Element) (*wi
 
 	wp.Tunnel = xsdBoolTrue(getAttr(elem, nameTunnel))
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
+	if hasSelect {
 		// XTSE0620: select and non-empty content are mutually exclusive.
 		if err := c.validateEmptyElement(ctx, elem, "xsl:with-param"); err != nil {
 			return nil, staticError(errCodeXTSE0620, "xsl:with-param %q has both @select and content", name)
@@ -659,18 +668,8 @@ func (c *compiler) compileWithParam(ctx context.Context, elem *xdm.Element) (*wi
 func (c *compiler) compilePerformSort(ctx context.Context, elem *xdm.Element) (*performSortInst, error) {
 	inst := &performSortInst{}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
-		expr, err := c.compileXPath(selectAttr, c.nsBindings)
-		if err != nil {
-			return nil, err
-		}
-
-		inst.Select = expr
-
-		if err := validatePerformSortSelectContent(elem); err != nil {
-			return nil, err
-		}
+	if err := c.compilePerformSortSelection(elem, inst); err != nil {
+		return nil, err
 	}
 
 	// Collect sort keys and body. xsl:sort must come before other content.
@@ -679,6 +678,19 @@ func (c *compiler) compilePerformSort(ctx context.Context, elem *xdm.Element) (*
 	for child := range xdm.Children(elem) {
 		childElem, ok := child.(*xdm.Element)
 		if !ok {
+			if !isStylesheetTextNode(child) {
+				continue
+			}
+
+			pastSort = true
+
+			literal, err := c.compileLiteralTextAt(child, xdm.CharacterData(child))
+			if err != nil {
+				return nil, err
+			}
+
+			inst.Body = append(inst.Body, literal)
+
 			continue
 		}
 
@@ -704,7 +716,27 @@ func (c *compiler) compilePerformSort(ctx context.Context, elem *xdm.Element) (*
 		}
 	}
 
+	if len(inst.Sort) == 0 {
+		return nil, staticError(errCodeXTSE0010, "xsl:perform-sort requires at least one xsl:sort child")
+	}
+
 	return inst, nil
+}
+
+func (c *compiler) compilePerformSortSelection(elem *xdm.Element, inst *performSortInst) error {
+	selectAttr, present := elem.GetAttribute(xslAttrSelect)
+	if !present {
+		return nil
+	}
+
+	expression, err := c.compileXPath(selectAttr, c.nsBindings)
+	if err != nil {
+		return err
+	}
+
+	inst.Select = expression
+
+	return validatePerformSortSelectContent(elem)
 }
 
 func validatePerformSortSelectContent(elem *xdm.Element) error {
@@ -712,6 +744,10 @@ func validatePerformSortSelectContent(elem *xdm.Element) error {
 	for child := range xdm.Children(elem) {
 		childElem, ok := child.(*xdm.Element)
 		if !ok {
+			if isStylesheetTextNode(child) {
+				return staticError(errCodeXTSE1040, "xsl:perform-sort with select attribute must not contain text")
+			}
+
 			continue
 		}
 
@@ -772,7 +808,7 @@ func (c *compiler) compileApplyImports(ctx context.Context, elem *xdm.Element) (
 	for child := range xdm.Children(elem) {
 		childElem, ok := child.(*xdm.Element)
 		if !ok {
-			if isNonWhitespaceTextNode(child) {
+			if isStylesheetTextNode(child) {
 				return nil, staticError(errCodeXTSE0010, "text is not allowed as a child of xsl:apply-imports")
 			}
 
@@ -807,12 +843,17 @@ func (c *compiler) compileApplyImports(ctx context.Context, elem *xdm.Element) (
 func (c *compiler) compileTry(ctx context.Context, elem *xdm.Element) (*tryCatchInst, error) {
 	inst := &tryCatchInst{RollbackOutput: true}
 
-	if rb := getAttr(elem, "rollback-output"); rb == lexicon.ValueNo {
-		inst.RollbackOutput = false
+	if rb, present := elem.GetAttribute("rollback-output"); present {
+		value, valid := parseXSDBool(rb)
+		if !valid {
+			return nil, staticError(errCodeXTSE0020, "invalid xsl:try rollback-output value %q", rb)
+		}
+
+		inst.RollbackOutput = value
 	}
 
 	// xsl:try select attribute
-	if sel := getAttr(elem, xslAttrSelect); sel != "" {
+	if sel, present := elem.GetAttribute(xslAttrSelect); present {
 		expr, err := c.compileXPath(sel, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -827,16 +868,37 @@ func (c *compiler) compileTry(ctx context.Context, elem *xdm.Element) (*tryCatch
 		}
 	}
 
+	if len(inst.Catches) == 0 {
+		return nil, staticError(errCodeXTSE0010, "xsl:try requires at least one xsl:catch child")
+	}
+
 	return inst, nil
 }
 
 func (c *compiler) compileTryChild(ctx context.Context, child xdm.Node, inst *tryCatchInst) error {
 	elem, ok := child.(*xdm.Element)
 	if !ok {
-		if inst.Select != nil {
-			if text, ok := child.(*xdm.Text); ok && !isXMLWhitespaceOnly(xdm.CharacterData(text)) {
+		switch child.(type) {
+		case *xdm.Text, *xdm.CDATASection:
+			text := xdm.CharacterData(child)
+			if c.shouldStripText(ctx, text) {
+				return nil
+			}
+
+			if inst.Select != nil {
 				return staticError(errCodeXTSE3140, "xsl:try with select attribute must not have non-catch/fallback children")
 			}
+
+			if len(inst.Catches) > 0 {
+				return staticError(errCodeXTSE0010, "xsl:try body must precede xsl:catch children")
+			}
+
+			literal, err := c.compileLiteralTextAt(child, text)
+			if err != nil {
+				return err
+			}
+
+			inst.Try = append(inst.Try, literal)
 		}
 
 		return nil
@@ -862,6 +924,10 @@ func (c *compiler) compileTryChild(ctx context.Context, child xdm.Node, inst *tr
 		return staticError(errCodeXTSE3140, "xsl:try with select attribute must not have non-catch/fallback children")
 	}
 
+	if len(inst.Catches) > 0 {
+		return staticError(errCodeXTSE0010, "xsl:try body must precede xsl:catch children")
+	}
+
 	compiled, err := c.compileInstruction(ctx, elem)
 	if err != nil {
 		return err
@@ -879,6 +945,9 @@ func (c *compiler) compileCatchClause(ctx context.Context, elem *xdm.Element) (*
 
 	defer c.pushElementVersion(elem)()
 
+	_, restoreText := c.pushFlowClauseTextContext(elem)
+	defer restoreText()
+
 	savedNamespaces := c.pushElementNamespaces(ctx, elem)
 	defer func() { c.nsBindings = savedNamespaces }()
 
@@ -893,7 +962,7 @@ func (c *compiler) compileCatchClause(ctx context.Context, elem *xdm.Element) (*
 
 	// xsl:catch select attribute
 	// XTSE3150: xsl:catch with select must have empty content.
-	if sel := getAttr(elem, xslAttrSelect); sel != "" {
+	if sel, present := elem.GetAttribute(xslAttrSelect); present {
 		if hasNonEmptyContent(elem) {
 			return nil, staticError(errCodeXTSE3150, "xsl:catch with select attribute must have empty content")
 		}
@@ -917,8 +986,8 @@ func (c *compiler) compileCatchClause(ctx context.Context, elem *xdm.Element) (*
 }
 
 func (c *compiler) compileForEachGroup(ctx context.Context, elem *xdm.Element) (*forEachGroupInst, error) {
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr == "" {
+	selectAttr, present := elem.GetAttribute(xslAttrSelect)
+	if !present {
 		return nil, staticError(errCodeXTSE0010, "xsl:for-each-group requires select attribute")
 	}
 
@@ -931,7 +1000,12 @@ func (c *compiler) compileForEachGroup(ctx context.Context, elem *xdm.Element) (
 		return nil, err
 	}
 
-	inst := &forEachGroupInst{Select: expr}
+	defaultCollation, err := c.declarationDefaultCollation(elem)
+	if err != nil {
+		return nil, err
+	}
+
+	inst := &forEachGroupInst{Select: expr, DefaultCollation: defaultCollation}
 
 	if err := c.compileGroupingOptions(elem, inst); err != nil {
 		return nil, err
@@ -999,9 +1073,7 @@ func (c *compiler) compileGroupingOptions(elem *xdm.Element, inst *forEachGroupI
 			return err
 		}
 
-		if comp == lexicon.ValueYes || comp == lexicon.ValueTrue || comp == "1" {
-			inst.Composite = true
-		}
+		inst.Composite = xsdBoolTrue(comp)
 	}
 
 	if gb, present := elem.GetAttribute("group-by"); present {
@@ -1064,10 +1136,10 @@ func (c *compiler) compileGroupingBody(ctx context.Context, elem *xdm.Element, i
 			if childInst != nil {
 				inst.Body = append(inst.Body, childInst)
 			}
-		case *xdm.Text:
+		case *xdm.Text, *xdm.CDATASection:
 			text := xdm.CharacterData(v)
 			if !c.shouldStripText(ctx, text) {
-				lit, err := c.compileLiteralText(text)
+				lit, err := c.compileLiteralTextAt(v, text)
 				if err != nil {
 					return err
 				}
@@ -1081,8 +1153,8 @@ func (c *compiler) compileGroupingBody(ctx context.Context, elem *xdm.Element, i
 }
 
 func (c *compiler) compileAnalyzeString(ctx context.Context, elem *xdm.Element) (*analyzeStringInst, error) {
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr == "" {
+	selectAttr, present := elem.GetAttribute(xslAttrSelect)
+	if !present {
 		return nil, staticError(errCodeXTSE0010, "xsl:analyze-string requires select attribute")
 	}
 
@@ -1192,8 +1264,8 @@ func (c *compiler) compileEvaluate(ctx context.Context, elem *xdm.Element) (inst
 	}
 
 	// xpath attribute is required
-	xpathAttr := getAttr(elem, "xpath")
-	if xpathAttr == "" {
+	xpathAttr, present := elem.GetAttribute("xpath")
+	if !present {
 		return nil, staticError(errCodeXTSE0010, "xsl:evaluate requires an xpath attribute")
 	}
 
@@ -1205,7 +1277,7 @@ func (c *compiler) compileEvaluate(ctx context.Context, elem *xdm.Element) (inst
 	inst.XPath = expr
 
 	// context-item (optional)
-	if ci := getAttr(elem, nameContextItem); ci != "" {
+	if ci, present := elem.GetAttribute(nameContextItem); present {
 		ciExpr, err := c.compileXPath(ci, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -1225,7 +1297,7 @@ func (c *compiler) compileEvaluate(ctx context.Context, elem *xdm.Element) (inst
 	}
 
 	// namespace-context (optional XPath expression producing a node)
-	if nc := getAttr(elem, "namespace-context"); nc != "" {
+	if nc, present := elem.GetAttribute("namespace-context"); present {
 		ncExpr, err := c.compileXPath(nc, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -1235,7 +1307,7 @@ func (c *compiler) compileEvaluate(ctx context.Context, elem *xdm.Element) (inst
 	}
 
 	// with-params (optional map expression)
-	if wp := getAttr(elem, "with-params"); wp != "" {
+	if wp, present := elem.GetAttribute("with-params"); present {
 		wpExpr, err := c.compileXPath(wp, c.nsBindings)
 		if err != nil {
 			return nil, err

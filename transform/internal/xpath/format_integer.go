@@ -69,6 +69,8 @@ func fnFormatInteger(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 		lang = ec.getDefaultLanguage()
 	}
 
+	defaultLanguage := lang
+
 	if len(args) > 2 && xdm.SequenceLen(args[2]) > 0 {
 		langAtom, err := AtomizeItem(args[2].Get(0))
 		if err != nil {
@@ -78,12 +80,26 @@ func fnFormatInteger(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 		lang = langAtom.StringVal()
 	}
 
+	lang = strings.ToLower(lang)
+	if !isSupportedIntegerLanguage(lang) {
+		lang = strings.ToLower(defaultLanguage)
+	}
+
 	result, err := formatIntegerPicture(n, picture, lang)
 	if err != nil {
 		return nil, err
 	}
 
 	return xdm.SingleString(result), nil
+}
+
+func isSupportedIntegerLanguage(lang string) bool {
+	switch lang {
+	case "en", "de", "fr", "it":
+		return true
+	default:
+		return false
+	}
 }
 
 func formatIntegerPicture(n *big.Int, picture, lang string) (string, error) {

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"maps"
-	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -51,11 +50,15 @@ func (c *compiler) compileCharacterMap(ctx context.Context, elem *xdm.Element) e
 	for child := range xdm.Children(elem) {
 		childElem, ok := child.(*xdm.Element)
 		if !ok {
+			if err := validateStructuralText(child, elem); err != nil {
+				return err
+			}
+
 			continue
 		}
 
 		if childElem.URI() != lexicon.NamespaceXSLT || childElem.LocalName() != lexicon.XSLTElementOutputCharacter {
-			continue
+			return staticError(errCodeXTSE0010, "unexpected child element in xsl:character-map: %s", childElem.Name())
 		}
 
 		charAttr := getAttr(childElem, "character")
@@ -111,10 +114,8 @@ func (c *compiler) compileKey(ctx context.Context, elem *xdm.Element) error {
 	// Handle per-element default-collation override (standard attribute)
 	savedDefaultCollation := c.defaultCollation
 
-	if dc := getAttr(elem, nameDefaultCollation); dc != "" {
-		if uri := resolveDefaultCollation(dc); uri != "" {
-			c.defaultCollation = uri
-		}
+	if err := c.setInstructionDefaultCollation(elem); err != nil {
+		return err
 	}
 
 	defer func() { c.defaultCollation = savedDefaultCollation }()
@@ -207,18 +208,18 @@ func (c *compiler) compileKey(ctx context.Context, elem *xdm.Element) error {
 }
 
 func (c *compiler) compileKeyValue(ctx context.Context, elem *xdm.Element, kd *keyDef) error {
-	useAttr := getAttr(elem, lexicon.AttrUse)
+	useAttr, hasUse := elem.GetAttribute(lexicon.AttrUse)
 	hasContent := c.hasEffectiveContent(ctx, elem)
 	// XTSE1205: must have either use attr or content, not both, and not neither
-	if useAttr != "" && hasContent {
+	if hasUse && hasContent {
 		return staticError(errCodeXTSE1205, "xsl:key must not have both a use attribute and content")
 	}
 
-	if useAttr == "" && !hasContent {
+	if !hasUse && !hasContent {
 		return staticError(errCodeXTSE1205, "xsl:key must have either a use attribute or content")
 	}
 
-	if useAttr != "" {
+	if hasUse {
 		useExpr, err := c.compileXPath(useAttr, c.nsBindings)
 		if err != nil {
 			return err
@@ -681,37 +682,31 @@ func loadParameterDocumentFromFile(ctx context.Context, injected *xdm.ParseOptio
 }
 
 func parameterDocumentURI(baseURI, href string) string {
-	// Scheme detection follows RFC 3986, including schemes without an authority.
-	// Local filesystem bases retain forward slashes on every operating system.
-	if baseURI == "" {
-		return href
+	uri, err := resolveModuleURI(href, baseURI)
+	if err != nil {
+		return uripath.EscapeResourceReference(href)
 	}
 
-	if uripath.URIScheme(href) != "" || uripath.URIScheme(baseURI) != "" {
-		resolved, err := uripath.ResolveSchemaURI(href, baseURI)
-		if err == nil {
-			return resolved
-		}
-
-		return href
-	}
-
-	if !uripath.IsAbsolutePath(href) {
-		return uripath.JoinLocalBaseDir(path.Dir(uripath.ToSlash(baseURI)), href)
-	}
-
-	return href
+	return uri
 }
 
 func loadParameterDocumentRoot(ctx context.Context, injected *xdm.ParseOptions, baseURI, href string, openResource func(context.Context, string) (io.ReadCloser, error), runtime bool, resourceLimit int64) (*xdm.Element, error) {
 	reader, err := openResource(ctx, parameterDocumentURI(baseURI, href))
 	if err != nil {
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return nil, failure
+		}
+
 		return nil, parameterDocumentLoadError(err, href, runtime)
 	}
 	// Parameter documents use the fixed W3C schema and no external entities.
 	// The injected parse options and resource limit still apply to parsing.
 	doc, err := parseXMLResource(ctx, injected, reader, "", resourceLimit)
 	if err != nil {
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return nil, failure
+		}
+
 		if runtime {
 			return nil, dynamicErrorCause(lexicon.ErrFODC0002, err, "cannot parse parameter-document %q: %v", href, err)
 		}
@@ -800,7 +795,7 @@ func (c *compiler) compileAttributeSet(ctx context.Context, elem *xdm.Element) e
 		childElem, ok := child.(*xdm.Element)
 		if !ok {
 			// XTSE0010: text content not allowed in xsl:attribute-set
-			if isNonWhitespaceTextNode(child) {
+			if isStylesheetTextNode(child) {
 				return staticError(errCodeXTSE0010, "text is not allowed as a child of xsl:attribute-set")
 			}
 
@@ -1100,7 +1095,10 @@ func (c *compiler) compileSpaceHandling(ctx context.Context, elem *xdm.Element, 
 	declNS := c.spaceDeclNamespaces(elem)
 
 	for name := range strings.FieldsSeq(elements) {
-		nt := nameTest{ImportPrec: c.importPrec}
+		nt := nameTest{
+			ImportPrec: c.importPrec,
+			SpaceOrder: len(c.stylesheet.stripSpace) + len(c.stylesheet.preserveSpace),
+		}
 
 		if strings.HasPrefix(name, "Q{") {
 			if closeIdx := strings.IndexByte(name, '}'); closeIdx > 0 {
@@ -1205,6 +1203,12 @@ func (c *compiler) spaceDeclNamespaces(elem *xdm.Element) map[string]string {
 // does not cover the name-set of an "a" vs "a" conflict, so it must not cancel
 // that genuine same-precedence conflict.
 func (c *compiler) checkSpaceConflicts(_ context.Context) error {
+	if c.stylesheet.processorLanguage() == 20 {
+		// XSLT 2.0 §3.4 permits recovery from XTRE0270 by using the last
+		// declaration. XSLT 3.0 makes the conflict a static error instead.
+		return nil
+	}
+
 	if len(c.stylesheet.stripSpace) == 0 || len(c.stylesheet.preserveSpace) == 0 {
 		return nil
 	}

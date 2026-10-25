@@ -74,3 +74,22 @@ func TestLexicalScanners(t *testing.T) {
 		}
 	}
 }
+
+func TestAnyURIEditionSyntax(t *testing.T) {
+	for _, c := range []struct {
+		valid  bool
+		values []string
+	}{
+		{true, []string{"", "#fragment", "?query", "relative/path:part", "urn:a:", "http://[::1]:80/", "//user@[::ffff:192.0.2.1]/", "//[::ffff:192.000.002.001]/", "//[::000.000.000.000]/", "//[::255.255.255.255]/", "//registry:word/path", "urn:two words", "urn:a\\b^c`d", "urn:имя", "urn:a\x7fb", "urn:a%20b"}},
+		{false, []string{"####", "urn:a#b#c", "%", "%xx", ":a", "1scheme:value", "urn:", "urn:#f", "//[::1", "//[::1]tail", "//[::1]:word", "//[not-ipv6]", "//[127.0.0.1]", "//[::ffff:256.0.2.1]/", "//[::ffff:192.0000.2.1]/", "//[::ffff:192.0x0.2.1]/", "http://example.test/[path]"}},
+	} {
+		for _, s := range c.values {
+			if err := lexicalpkg.ValidateBuiltin(s, "anyURI", lexicalpkg.Version10); (err == nil) != c.valid {
+				t.Errorf("XSD 1.0 %q: %v, want valid=%t", s, err, c.valid)
+			}
+			if err := lexicalpkg.ValidateBuiltin(s, "anyURI", lexicalpkg.Version11); err != nil {
+				t.Errorf("XSD 1.1 %q: %v", s, err)
+			}
+		}
+	}
+}

@@ -91,10 +91,8 @@ func (c *compiler) compileTemplate(ctx context.Context, elem *xdm.Element) error
 	// Inherit or override default-collation
 	savedDefaultCollation := c.defaultCollation
 
-	if dc := getAttr(elem, nameDefaultCollation); dc != "" {
-		if uri := resolveDefaultCollation(dc); uri != "" {
-			c.defaultCollation = uri
-		}
+	if err := c.setInstructionDefaultCollation(elem); err != nil {
+		return err
 	}
 
 	tmpl.DefaultCollation = c.defaultCollation
@@ -207,39 +205,10 @@ func parseTemplatePriority(prio string) (float64, error) {
 	return f, nil
 }
 
-// templateResultExcludes resolves prefixes at the declaration site and returns
-// the existing set unchanged when the template has no local exclusion setting.
-func (c *compiler) templateResultExcludes(elem *xdm.Element) map[string]struct{} {
-	if erp := getAttr(elem, nameExcludeResultPrefixes); erp != "" {
-		newExcludes := make(map[string]struct{})
-		maps.Copy(newExcludes, c.localExcludes)
-
-		if erp == lexicon.ModeAll {
-			for prefix := range c.stylesheet.namespaces {
-				if uri, ok := c.nsBindings[prefix]; ok && uri != "" {
-					newExcludes[uri] = struct{}{}
-				}
-			}
-		} else {
-			for prefix := range strings.FieldsSeq(erp) {
-				if uri, ok := c.nsBindings[prefix]; ok && uri != "" {
-					newExcludes[uri] = struct{}{}
-				}
-			}
-		}
-
-		return newExcludes
-	}
-
-	return c.localExcludes
-}
-
 func (c *compiler) compileScopedTemplateBody(ctx context.Context, elem *xdm.Element) (*contextItemDecl, []instruction, []*param, error) {
-	savedExcludes, savedExpandText, savedPreserveSpace := c.localExcludes, c.expandText, c.preserveSpace
-
-	c.localExcludes = c.templateResultExcludes(elem)
+	savedExpandText := c.expandText
 	defer func() {
-		c.localExcludes, c.expandText, c.preserveSpace = savedExcludes, savedExpandText, savedPreserveSpace
+		c.expandText = savedExpandText
 	}()
 
 	if value, present := elem.GetAttribute(nameExpandText); present {
@@ -249,10 +218,6 @@ func (c *compiler) compileScopedTemplateBody(ctx context.Context, elem *xdm.Elem
 		}
 
 		c.expandText = expand
-	}
-
-	if value := getAttr(elem, lexicon.QNameXMLSpace); value != "" {
-		c.preserveSpace = value == lexicon.SpacePreserve
 	}
 
 	return c.compileTemplateBodyEx(ctx, elem, false)
@@ -545,11 +510,14 @@ func (c *compiler) compileTemplateBody(ctx context.Context, elem *xdm.Element) (
 }
 
 func (c *compiler) compileTemplateBodyEx(ctx context.Context, elem *xdm.Element, isFunction bool) (*contextItemDecl, []instruction, []*param, error) {
-	lastDecl := lastTemplateDeclaration(elem)
+	restorePolicy, err := c.pushResultNamespacePolicy(elem)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer restorePolicy()
 
 	body := templateBodyCompiler{
-		compiler: c, isFunction: isFunction, lastDecl: lastDecl,
-		inParams: true, pastDecls: lastDecl == nil,
+		compiler: c, isFunction: isFunction, inParams: true,
 	}
 	for child := range xdm.Children(elem) {
 		if err := body.compileChild(ctx, child); err != nil {
@@ -562,25 +530,6 @@ func (c *compiler) compileTemplateBodyEx(ctx context.Context, elem *xdm.Element,
 	}
 
 	return body.context, body.body, body.params, nil
-}
-
-// lastTemplateDeclaration bounds whitespace stripping in the prologue even
-// when xml:space preserves whitespace elsewhere in the body.
-func lastTemplateDeclaration(elem *xdm.Element) xdm.Node {
-	var last xdm.Node
-
-	for child := range xdm.Children(elem) {
-		declaration, ok := child.(*xdm.Element)
-		if !ok || declaration.URI() != lexicon.NamespaceXSLT {
-			continue
-		}
-
-		if name := declaration.LocalName(); name == nameContextItem || name == lexicon.XSLTElementParam {
-			last = child
-		}
-	}
-
-	return last
 }
 
 func validateUniqueTemplateParams(params []*param) error {
@@ -648,6 +597,8 @@ func (c *compiler) validateContextItem(ctx context.Context, elem *xdm.Element) e
 }
 
 func (c *compiler) compileParamDef(ctx context.Context, elem *xdm.Element) (*param, error) {
+	defer c.pushVariableScopeNode(elem)()
+
 	// A static="yes" parameter is a compile-time static-context value and is
 	// version-independent (forced non-compat even inside a version < 2.0 module);
 	// a non-static param honors its own version attribute.
@@ -670,8 +621,8 @@ func (c *compiler) compileParamDef(ctx context.Context, elem *xdm.Element) (*par
 		return nil, staticError(errCodeXTSE0010, "xsl:param requires name attribute")
 	}
 
-	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
-		return nil, staticError(errCodeXTSE0020, "invalid name %q on xsl:param", name)
+	if err := c.checkQNamePrefix(ctx, name, "xsl:param"); err != nil {
+		return nil, err
 	}
 
 	// Validate boolean attribute values (including empty string)
@@ -743,11 +694,25 @@ func (c *compiler) compileParamDef(ctx context.Context, elem *xdm.Element) (*par
 
 	p.StaticBaseURI = stylesheetBaseURI(elem, c.baseURI, c.moduleRoot)
 
+	if err := c.compileParamDefault(ctx, elem, p); err != nil {
+		return nil, err
+	}
+
+	return p, nil
+}
+
+// compileParamDefault chooses exactly one source for the parameter's default:
+// an XPath select expression or a sequence constructor.
+func (c *compiler) compileParamDefault(ctx context.Context, elem *xdm.Element, p *param) error {
 	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
 	if hasSelect {
+		if err := c.validateEmptyElement(ctx, elem, "xsl:param"); err != nil {
+			return staticError(errCodeXTSE0620, "xsl:param %q has both @select and content", getAttr(elem, xslAttrName))
+		}
+
 		expr, err := c.compileXPath(selectAttr, c.nsBindings)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		p.Select = expr
@@ -756,13 +721,13 @@ func (c *compiler) compileParamDef(ctx context.Context, elem *xdm.Element) (*par
 	if !hasSelect {
 		body, err := c.compileChildren(ctx, elem)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		p.Body = body
 	}
 
-	return p, nil
+	return nil
 }
 
 // validateRequiredParamDefault rejects a supplied default before any static
@@ -785,7 +750,7 @@ func hasParamDefaultContent(elem *xdm.Element) bool {
 		case xdm.ElementNode:
 			return true
 		case xdm.TextNode, xdm.CDATASectionNode:
-			if !isXMLWhitespaceOnly(xdm.CharacterData(child)) {
+			if xdm.CharacterData(child) != "" {
 				return true
 			}
 		}
@@ -795,6 +760,8 @@ func hasParamDefaultContent(elem *xdm.Element) bool {
 }
 
 func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element) error {
+	defer c.pushVariableScopeNode(elem)()
+
 	savedNS := c.pushElementNamespaces(ctx, elem)
 	defer func() { c.nsBindings = savedNS }()
 
@@ -829,8 +796,8 @@ func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element)
 		return staticError(errCodeXTSE0010, "xsl:variable requires name attribute")
 	}
 
-	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
-		return staticError(errCodeXTSE0020, "invalid name %q on xsl:variable", name)
+	if err := c.checkQNamePrefix(ctx, name, "xsl:variable"); err != nil {
+		return err
 	}
 
 	// XTSE0020: validate static attribute (boolean)
@@ -894,7 +861,7 @@ func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element)
 		}
 		// XPST0008: a global variable is out of scope within its own
 		// declaration. Detect self-references in the select expression.
-		if xpathExprReferencesVar(expr.AST(), name, c.nsBindings) {
+		if c.stylesheet.processorLanguage() < 20 && xpathExprReferencesVar(expr.AST(), name, c.nsBindings) {
 			return staticError(lexicon.ErrXPST0008,
 				"global variable %q references itself in its select expression", name)
 		}
@@ -909,7 +876,7 @@ func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element)
 		v.Body = body
 	}
 
-	return c.registerGlobalVariable(v)
+	return c.registerGlobalVariable(elem, v)
 }
 
 // xpathExprReferencesVar walks an XPath AST and returns true if any
@@ -1111,9 +1078,10 @@ func xpathMapConstructorRefsVar(expr xpath.MapConstructorExpr, local, prefix str
 	return false
 }
 
-func (c *compiler) registerGlobalVariable(v *variable) error {
+func (c *compiler) registerGlobalVariable(element *xdm.Element, v *variable) error {
 	v.ImportPrec = c.importPrec
 	c.stylesheet.globalVars = append(c.stylesheet.globalVars, v)
+	c.recordGlobalBindingSource(element, v.binding())
 
 	return nil
 }
@@ -1142,7 +1110,7 @@ func (c *compiler) compileGlobalParam(ctx context.Context, elem *xdm.Element) er
 		defer c.pushElementVersion(elem)()
 	}
 	// XTSE0020: tunnel="yes" is not allowed on a stylesheet parameter
-	if getAttr(elem, nameTunnel) == lexicon.ValueYes {
+	if xsdBoolTrue(getAttr(elem, nameTunnel)) {
 		return staticError(errCodeXTSE0020, "tunnel=\"yes\" is not allowed on a stylesheet parameter")
 	}
 
@@ -1165,6 +1133,7 @@ func (c *compiler) compileGlobalParam(ctx context.Context, elem *xdm.Element) er
 
 	p.ImportPrec = c.importPrec
 	c.stylesheet.globalParams = append(c.stylesheet.globalParams, p)
+	c.recordGlobalBindingSource(elem, p.binding())
 
 	return nil
 }
@@ -1178,27 +1147,23 @@ type contextItemDecl struct {
 }
 
 type templateBodyCompiler struct {
-	lastDecl   xdm.Node
 	compiler   *compiler
 	context    *contextItemDecl
 	params     []*param
 	body       []instruction
 	isFunction bool
 	inParams   bool
-	pastDecls  bool
 	sawContent bool
 }
 
 func (b *templateBodyCompiler) compileChild(ctx context.Context, child xdm.Node) error {
+	defer b.compiler.pushVariableScopeNode(child)()
+
 	switch node := child.(type) {
 	case *xdm.Element:
 		return b.compileElement(ctx, node)
 	case *xdm.Text:
 		text := xdm.CharacterData(node)
-		if !b.pastDecls && isXMLWhitespaceOnly(text) {
-			return nil
-		}
-
 		if b.compiler.shouldStripText(ctx, text) {
 			return nil
 		}
@@ -1219,15 +1184,11 @@ func (b *templateBodyCompiler) compileElement(ctx context.Context, elem *xdm.Ele
 				return err
 			}
 
-			b.pastDecls = b.pastDecls || elem == b.lastDecl
-
 			return nil
 		case lexicon.XSLTElementParam:
 			if err := b.compileParam(ctx, elem); err != nil {
 				return err
 			}
-
-			b.pastDecls = b.pastDecls || elem == b.lastDecl
 
 			return nil
 		}
@@ -1297,7 +1258,7 @@ func (b *templateBodyCompiler) compileParam(ctx context.Context, elem *xdm.Eleme
 			"xsl:param must appear before other content in xsl:template/xsl:function")
 	}
 
-	if _, hasStatic := elem.GetAttribute(nameStatic); hasStatic {
+	if xsdBoolTrue(getAttr(elem, nameStatic)) {
 		return staticError(errCodeXTSE0020,
 			"xsl:param %q: static attribute is not allowed on template/function parameters", getAttr(elem, xslAttrName))
 	}

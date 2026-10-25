@@ -11,6 +11,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
 type iterateCompileState struct {
@@ -23,6 +24,17 @@ type iterateCompileState struct {
 type iterateBodyChild struct {
 	elem *xdm.Element
 	text string
+	node xdm.Node
+}
+
+// Structural content models permit only named child elements after stylesheet
+// preprocessing; retained character data is never a sequence constructor there.
+func validateStructuralText(child xdm.Node, parent *xdm.Element) error {
+	if isStylesheetTextNode(child) {
+		return staticError(errCodeXTSE0010, "text is not allowed as a child of xsl:%s", parent.LocalName())
+	}
+
+	return nil
 }
 
 // compileSourceDocument compiles an xsl:source-document element.
@@ -65,8 +77,8 @@ func (c *compiler) compileSourceDocument(ctx context.Context, elem *xdm.Element)
 
 // compileIterate compiles an xsl:iterate element.
 func (c *compiler) compileIterate(ctx context.Context, elem *xdm.Element) (instruction, error) {
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr == "" {
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
+	if !hasSelect {
 		return nil, staticError(errCodeXTSE0010, "xsl:iterate requires select attribute")
 	}
 
@@ -115,10 +127,8 @@ func (c *compiler) compileIterate(ctx context.Context, elem *xdm.Element) (instr
 
 func validateIterateParamDefaults(params []*iterateParam) error {
 	for _, param := range params {
-		if param.Select == nil && len(param.Body) == 0 && param.As != "" {
-			if !strings.HasSuffix(param.As, "?") && !strings.HasSuffix(param.As, "*") {
-				return staticError(errCodeXTSE3520, "xsl:iterate parameter %q with type %q requires a select attribute or default value", param.Name, param.As)
-			}
+		if param.Select == nil && len(param.Body) == 0 && !allowsEmptySequence(param.As) {
+			return staticError(errCodeXTSE3520, "xsl:iterate parameter %q with type %q requires a select attribute or default value", param.Name, param.As)
 		}
 	}
 
@@ -203,7 +213,7 @@ func (c *compiler) collectIterateChild(ctx context.Context, child xdm.Node, inst
 			value := xdm.CharacterData(text)
 			if !c.shouldStripText(ctx, value) {
 				state.inParams = false
-				state.bodyChildren = append(state.bodyChildren, iterateBodyChild{text: value})
+				state.bodyChildren = append(state.bodyChildren, iterateBodyChild{text: value, node: child})
 			}
 		}
 
@@ -280,14 +290,14 @@ func (c *compiler) hasStreamingSequenceBody(ctx context.Context, elem *xdm.Eleme
 }
 
 func (c *compiler) compileIterateCompletion(ctx context.Context, elem *xdm.Element) ([]instruction, error) {
-	selectAttr := getAttr(elem, xslAttrSelect)
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
 	hasBody := c.hasStreamingSequenceBody(ctx, elem)
 
-	if selectAttr != "" && hasBody {
+	if hasSelect && hasBody {
 		return nil, staticError(errCodeXTSE3125, "xsl:on-completion must not have both select attribute and sequence constructor")
 	}
 
-	if selectAttr == "" {
+	if !hasSelect {
 		return c.compileChildren(ctx, elem)
 	}
 
@@ -307,7 +317,7 @@ func (c *compiler) compileIterateBody(ctx context.Context, inst *iterateInst, ch
 	last := lastIterateBodyChild(children)
 	for i, child := range children {
 		if child.elem == nil {
-			text, err := c.compileLiteralText(child.text)
+			text, err := c.compileLiteralTextAt(child.node, child.text)
 			if err != nil {
 				return err
 			}
@@ -346,33 +356,30 @@ func lastIterateBodyChild(children []iterateBodyChild) int {
 
 // compileIterateParam compiles an xsl:param inside xsl:iterate.
 func (c *compiler) compileIterateParam(ctx context.Context, elem *xdm.Element) (*iterateParam, error) {
-	defer c.pushElementVersion(elem)()
-
-	name := getAttr(elem, xslAttrName)
-	if name == "" {
-		return nil, staticError(errCodeXTSE0010, "xsl:param requires name attribute")
+	for _, attribute := range []string{ctxItemRequired, nameTunnel, nameStatic} {
+		if xsdBoolTrue(getAttr(elem, attribute)) {
+			return nil, staticError(errCodeXTSE0020, "xsl:iterate parameter must not specify %s=\"yes\"", attribute)
+		}
 	}
 
-	p := &iterateParam{
-		Name: resolveQName(name, c.nsBindings),
-		As:   getAttr(elem, "as"),
+	definition, err := c.compileParamDef(ctx, elem)
+	if err != nil {
+		return nil, err
 	}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
-		expr, err := c.compileXPath(selectAttr, c.nsBindings)
+	p := &iterateParam{Name: definition.Name, As: definition.As, Select: definition.Select, Body: definition.Body}
+	if p.As != "" {
+		st, err := xpath.ParseSequenceType(p.As)
 		if err != nil {
 			return nil, err
 		}
 
-		p.Select = expr
-	} else {
-		body, err := c.compileChildren(ctx, elem)
+		bound, err := xpath.BindSequenceType(ctx, st, definition.TypeNamespaces, definition.XPathDefaultNS)
 		if err != nil {
 			return nil, err
 		}
 
-		p.Body = body
+		p.Type = &bound
 	}
 
 	return p, nil
@@ -381,15 +388,41 @@ func (c *compiler) compileIterateParam(ctx context.Context, elem *xdm.Element) (
 // compileFork compiles an xsl:fork element.
 func (c *compiler) compileFork(ctx context.Context, elem *xdm.Element) (instruction, error) {
 	inst := &forkInst{}
+	seenSequence, seenGroup := false, false
 
 	for child := range xdm.Children(elem) {
 		childElem, ok := child.(*xdm.Element)
 		if !ok {
+			if err := validateStructuralText(child, elem); err != nil {
+				return nil, err
+			}
+
 			continue
 		}
 
-		// Each child of xsl:fork is a branch (typically xsl:sequence or
-		// xsl:for-each-group, but any instruction is valid per spec).
+		if childElem.URI() != lexicon.NamespaceXSLT {
+			return nil, staticError(errCodeXTSE0010, "unexpected child element in xsl:fork: %s", childElem.Name())
+		}
+
+		switch childElem.LocalName() {
+		case lexicon.XSLTElementFallback:
+			continue
+		case lexicon.XSLTElementSequence:
+			if seenGroup {
+				return nil, staticError(errCodeXTSE0010, "xsl:fork cannot mix xsl:sequence and xsl:for-each-group branches")
+			}
+
+			seenSequence = true
+		case lexicon.XSLTElementForEachGroup:
+			if seenSequence || seenGroup {
+				return nil, staticError(errCodeXTSE0010, "xsl:fork permits only one xsl:for-each-group branch")
+			}
+
+			seenGroup = true
+		default:
+			return nil, staticError(errCodeXTSE0010, "unexpected child element xsl:%s in xsl:fork", childElem.LocalName())
+		}
+
 		branch, err := c.compileForkBranch(ctx, childElem)
 		if err != nil {
 			return nil, err
@@ -405,23 +438,8 @@ func (c *compiler) compileFork(ctx context.Context, elem *xdm.Element) (instruct
 
 // compileForkBranch compiles one child of xsl:fork into a branch (slice of instructions).
 func (c *compiler) compileForkBranch(ctx context.Context, elem *xdm.Element) ([]instruction, error) {
-	defer c.pushElementVersion(elem)()
-	// If the child is xsl:sequence, compile its children as the branch body.
-	if elem.URI() == lexicon.NamespaceXSLT && elem.LocalName() == lexicon.XSLTElementSequence {
-		selectAttr := getAttr(elem, xslAttrSelect)
-		if selectAttr != "" {
-			expr, err := c.compileXPath(selectAttr, c.nsBindings)
-			if err != nil {
-				return nil, err
-			}
-
-			return []instruction{&xslSequenceInst{Select: expr}}, nil
-		}
-
-		return c.compileChildren(ctx, elem)
-	}
-
-	// Otherwise, compile the element as a single-instruction branch.
+	// Dispatch through the ordinary compiler so each branch retains its lexical
+	// context and the same select/body validation as instructions outside a fork.
 	inst, err := c.compileInstruction(ctx, elem)
 	if err != nil {
 		return nil, err
@@ -447,7 +465,7 @@ func (c *compiler) compileBreak(ctx context.Context, elem *xdm.Element) (instruc
 	}
 
 	// XTSE3125: xsl:break must not have both select and body.
-	selectAttr := getAttr(elem, xslAttrSelect)
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
 	hasBody := false
 
 	for ch := elem.FirstChild(); ch != nil; ch = ch.NextSibling() {
@@ -470,13 +488,13 @@ func (c *compiler) compileBreak(ctx context.Context, elem *xdm.Element) (instruc
 		}
 	}
 
-	if selectAttr != "" && hasBody {
+	if hasSelect && hasBody {
 		return nil, staticError(errCodeXTSE3125, "xsl:break must not have both select attribute and sequence constructor")
 	}
 
 	inst := &breakInst{}
 
-	if selectAttr != "" {
+	if hasSelect {
 		expr, err := c.compileXPath(selectAttr, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -512,25 +530,31 @@ func (c *compiler) compileNextIteration(ctx context.Context, elem *xdm.Element) 
 	for child := range xdm.Children(elem) {
 		childElem, ok := child.(*xdm.Element)
 		if !ok {
+			if err := validateStructuralText(child, elem); err != nil {
+				return nil, err
+			}
+
 			continue
 		}
 
-		if childElem.URI() == lexicon.NamespaceXSLT && childElem.LocalName() == lexicon.XSLTElementWithParam {
-			wp, err := c.compileWithParam(ctx, childElem)
-			if err != nil {
-				return nil, err
-			}
-
-			if wp == nil {
-				continue
-			}
-
-			if err := checkDuplicateWithParam(inst.Params, wp); err != nil {
-				return nil, err
-			}
-
-			inst.Params = append(inst.Params, wp)
+		if childElem.URI() != lexicon.NamespaceXSLT || childElem.LocalName() != lexicon.XSLTElementWithParam {
+			return nil, staticError(errCodeXTSE0010, "unexpected child element in xsl:next-iteration: %s", childElem.Name())
 		}
+
+		wp, err := c.compileWithParam(ctx, childElem)
+		if err != nil {
+			return nil, err
+		}
+
+		if wp == nil {
+			continue
+		}
+
+		if err := checkDuplicateWithParam(inst.Params, wp); err != nil {
+			return nil, err
+		}
+
+		inst.Params = append(inst.Params, wp)
 	}
 
 	return inst, nil
@@ -539,6 +563,9 @@ func (c *compiler) compileNextIteration(ctx context.Context, elem *xdm.Element) 
 // compileAccumulator compiles an xsl:accumulator top-level element.
 func (c *compiler) compileAccumulator(ctx context.Context, elem *xdm.Element) error {
 	defer c.pushElementVersion(elem)()
+
+	savedNamespaces := c.pushElementNamespaces(ctx, elem)
+	defer func() { c.nsBindings = savedNamespaces }()
 
 	name := getAttr(elem, xslAttrName)
 	if name == "" {
@@ -554,9 +581,25 @@ func (c *compiler) compileAccumulator(ctx context.Context, elem *xdm.Element) er
 		ImportPrec: c.importPrec,
 	}
 
+	if acc.As != "" {
+		typeName, err := xpath.ParseSequenceType(acc.As)
+		if err != nil {
+			return err
+		}
+
+		defaultNamespace, _ := c.declarationDefaultNamespace(elem)
+
+		bound, err := xpath.BindSequenceType(ctx, typeName, inScopeNamespaces(elem), defaultNamespace)
+		if err != nil {
+			return err
+		}
+
+		acc.Type = &bound
+	}
+
 	// Read initial-value attribute (required per XSLT 3.0 §10.4)
-	iv := getAttr(elem, "initial-value")
-	if iv == "" {
+	iv, hasInitial := elem.GetAttribute("initial-value")
+	if !hasInitial {
 		return staticError(errCodeXTSE0010, "xsl:accumulator %q requires initial-value attribute", expandedName)
 	}
 
@@ -571,17 +614,19 @@ func (c *compiler) compileAccumulator(ctx context.Context, elem *xdm.Element) er
 	for child := range xdm.Children(elem) {
 		childElem, ok := child.(*xdm.Element)
 		if !ok {
-			continue
-		}
-
-		if childElem.URI() != lexicon.NamespaceXSLT {
-			continue
-		}
-
-		if childElem.LocalName() == lexicon.XSLTElementAccumulatorRule {
-			if err := c.compileAccumulatorRule(ctx, acc, childElem); err != nil {
+			if err := validateStructuralText(child, elem); err != nil {
 				return err
 			}
+
+			continue
+		}
+
+		if childElem.URI() != lexicon.NamespaceXSLT || childElem.LocalName() != lexicon.XSLTElementAccumulatorRule {
+			return staticError(errCodeXTSE0010, "unexpected child element in xsl:accumulator: %s", childElem.Name())
+		}
+
+		if err := c.compileAccumulatorRule(ctx, acc, childElem); err != nil {
+			return err
 		}
 	}
 
@@ -630,12 +675,6 @@ func (c *compiler) compileAccumulatorRule(ctx context.Context, parent *accumulat
 		return staticError(errCodeXTSE0010, "xsl:accumulator-rule requires match attribute")
 	}
 
-	// XPST0008: $value is only in scope in the select expression/body of
-	// an accumulator-rule, not in the match pattern. Reject it early.
-	if containsVarRef(matchAttr, "value") {
-		return staticError(lexicon.ErrXPST0008, "variable $value is not in scope in accumulator-rule match pattern")
-	}
-
 	matchPat, err := c.compilePattern(matchAttr, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
 	if err != nil {
 		return err
@@ -652,8 +691,12 @@ func (c *compiler) compileAccumulatorRule(ctx context.Context, parent *accumulat
 		rule.Phase = "start"
 	}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
+	if hasSelect {
+		if err := c.validateEmptyElement(ctx, elem, "xsl:accumulator-rule"); err != nil {
+			return err
+		}
+
 		expr, err := c.compileXPath(selectAttr, c.nsBindings)
 		if err != nil {
 			return err
@@ -674,38 +717,6 @@ func (c *compiler) compileAccumulatorRule(ctx context.Context, parent *accumulat
 	return nil
 }
 
-// containsVarRef checks whether a string contains a variable reference $name
-// that is NOT inside a string literal.
-func containsVarRef(s, name string) bool {
-	ref := "$" + name
-	inSingle := false
-	inDouble := false
-
-	for i := range len(s) {
-		switch s[i] {
-		case '\'':
-			if !inDouble {
-				inSingle = !inSingle
-			}
-		case '"':
-			if !inSingle {
-				inDouble = !inDouble
-			}
-		case '$':
-			if !inSingle && !inDouble && i+len(ref)-1 < len(s) {
-				if s[i:i+len(ref)] == ref {
-					end := i + len(ref)
-					if end >= len(s) || !xmlchar.IsNCNameChar(rune(s[end])) {
-						return true
-					}
-				}
-			}
-		}
-	}
-
-	return false
-}
-
 // compileMerge compiles an xsl:merge element.
 func (c *compiler) compileMerge(ctx context.Context, elem *xdm.Element) (instruction, error) {
 	inst := &mergeInst{}
@@ -715,11 +726,15 @@ func (c *compiler) compileMerge(ctx context.Context, elem *xdm.Element) (instruc
 	for child := range xdm.Children(elem) {
 		childElem, ok := child.(*xdm.Element)
 		if !ok {
+			if err := validateStructuralText(child, elem); err != nil {
+				return nil, err
+			}
+
 			continue
 		}
 
 		if childElem.URI() != lexicon.NamespaceXSLT {
-			continue
+			return nil, staticError(errCodeXTSE0010, "unexpected child element in xsl:merge: %s", childElem.Name())
 		}
 		// Resolve shadow attributes on child XSLT elements (e.g.
 		// _select="..." on xsl:merge-source) before compilation.
@@ -729,6 +744,10 @@ func (c *compiler) compileMerge(ctx context.Context, elem *xdm.Element) (instruc
 
 		switch childElem.LocalName() {
 		case lexicon.XSLTElementMergeSource:
+			if actionCount != 0 {
+				return nil, staticError(errCodeXTSE0010, "xsl:merge-source must precede xsl:merge-action")
+			}
+
 			src, err := c.compileMergeSource(ctx, childElem)
 			if err != nil {
 				return nil, err
@@ -759,6 +778,10 @@ func (c *compiler) compileMerge(ctx context.Context, elem *xdm.Element) (instruc
 		}
 	}
 
+	if actionCount == 0 {
+		return nil, staticError(errCodeXTSE0010, "xsl:merge requires an xsl:merge-action child")
+	}
+
 	if err := validateMergeComponents(inst); err != nil {
 		return nil, err
 	}
@@ -769,10 +792,6 @@ func (c *compiler) compileMerge(ctx context.Context, elem *xdm.Element) (instruc
 func validateMergeComponents(inst *mergeInst) error {
 	if len(inst.Sources) == 0 {
 		return staticError(errCodeXTSE0010, "xsl:merge requires at least one xsl:merge-source child")
-	}
-
-	if len(inst.Action) == 0 {
-		return staticError(errCodeXTSE0010, "xsl:merge requires an xsl:merge-action child")
 	}
 
 	// XTSE2200: all merge-sources must have the same number of merge-keys.
@@ -838,17 +857,22 @@ func mergeStreamCheck(inst *mergeInst) error {
 		}
 
 		for _, mk := range src.Keys {
-			if mk.OrderAVT != nil {
+			if mk.OrderAVT != nil && avtIsDynamic(mk.OrderAVT) {
 				return staticError(errCodeXTSE3470, "xsl:merge-key @order must not be an AVT when xsl:merge-source is streamable")
 			}
 
-			if mk.DataTypeAVT != nil {
+			if mk.DataTypeAVT != nil && avtIsDynamic(mk.DataTypeAVT) {
 				return staticError(errCodeXTSE3470, "xsl:merge-key @data-type must not be an AVT when xsl:merge-source is streamable")
 			}
 		}
 	}
 
 	return nil
+}
+
+func avtIsDynamic(value *avt) bool {
+	_, static := value.staticValue()
+	return !static
 }
 
 func (c *compiler) compileMergeSource(ctx context.Context, elem *xdm.Element) (*mergeSource, error) {
@@ -878,6 +902,10 @@ func (c *compiler) compileMergeSource(ctx context.Context, elem *xdm.Element) (*
 	for child := range xdm.Children(elem) {
 		childElem, ok := child.(*xdm.Element)
 		if !ok {
+			if err := validateStructuralText(child, elem); err != nil {
+				return nil, err
+			}
+
 			continue
 		}
 
@@ -894,10 +922,12 @@ func (c *compiler) compileMergeSource(ctx context.Context, elem *xdm.Element) (*
 		}
 	}
 
-	// XTSE0010: merge-source must have at least a select, for-each-source,
-	// or for-each-item attribute.
-	if src.Select == nil && src.ForEachSource == nil && src.ForEachItem == nil {
-		return nil, staticError(errCodeXTSE0010, "xsl:merge-source requires at least one of select, for-each-source, or for-each-item attributes")
+	if len(src.Keys) == 0 {
+		return nil, staticError(errCodeXTSE0010, "xsl:merge-source requires at least one xsl:merge-key child")
+	}
+
+	if src.Select == nil {
+		return nil, staticError(errCodeXTSE0010, "xsl:merge-source requires a select attribute")
 	}
 
 	// XTSE3195: for-each-source and for-each-item are mutually exclusive.
@@ -934,7 +964,7 @@ func (c *compiler) compileMergeSourceSelection(elem *xdm.Element, src *mergeSour
 	}
 
 	// for-each-source: XPath expression evaluating to sequence of URI strings
-	if fes := getAttr(elem, "for-each-source"); fes != "" {
+	if fes, present := elem.GetAttribute("for-each-source"); present {
 		expr, err := c.compileXPath(fes, c.nsBindings)
 		if err != nil {
 			return err
@@ -944,7 +974,7 @@ func (c *compiler) compileMergeSourceSelection(elem *xdm.Element, src *mergeSour
 	}
 
 	// for-each-item: XPath expression evaluating to sequence of items (nodes)
-	if fei := getAttr(elem, "for-each-item"); fei != "" {
+	if fei, present := elem.GetAttribute("for-each-item"); present {
 		expr, err := c.compileXPath(fei, c.nsBindings)
 		if err != nil {
 			return err
@@ -954,7 +984,7 @@ func (c *compiler) compileMergeSourceSelection(elem *xdm.Element, src *mergeSour
 	}
 
 	// select: XPath expression for selecting items from each source
-	if sel := getAttr(elem, xslAttrSelect); sel != "" {
+	if sel, present := elem.GetAttribute(xslAttrSelect); present {
 		expr, err := c.compileXPath(sel, c.nsBindings)
 		if err != nil {
 			return err
@@ -981,18 +1011,21 @@ func (c *compiler) compileMergeKey(ctx context.Context, elem *xdm.Element) (*mer
 	}
 
 	mk := &mergeKey{
-		Order: sortOrderAscending, // default
+		Order:   sortOrderAscending,
+		BaseURI: stylesheetBaseURI(elem, c.baseURI, c.moduleRoot),
 	}
 
-	c.compileMergeKeyCollation(elem, mk)
+	if err := c.compileMergeKeyCollation(elem, mk); err != nil {
+		return nil, err
+	}
 
-	selAttr := getAttr(elem, xslAttrSelect)
+	selAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
 
-	if selAttr != "" && c.hasStreamingSequenceBody(ctx, elem) {
+	if hasSelect && c.hasStreamingSequenceBody(ctx, elem) {
 		return nil, staticError(errCodeXTSE3200, "xsl:merge-key must not have both select attribute and sequence constructor")
 	}
 
-	if selAttr != "" {
+	if hasSelect {
 		expr, err := c.compileXPath(selAttr, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -1033,54 +1066,60 @@ func validateMergeKeyAttrs(elem *xdm.Element) error {
 	return nil
 }
 
-func (c *compiler) compileMergeKeyCollation(elem *xdm.Element, mk *mergeKey) {
-	// Track collation-related attributes for sort verification.
-	collation := getAttr(elem, nameCollation)
-	mk.Collation = collation
-	mk.Lang = getAttr(elem, lexicon.AttrLang)
-
-	mk.CaseOrder = getAttr(elem, nameCaseOrder)
-	if mk.Lang != "" || mk.CaseOrder != "" {
-		mk.HasCollation = true
-	} else if collation != "" && collation != lexicon.CollationCodepoint {
-		mk.HasCollation = true
-	}
-	// Compile the collation attribute as an AVT so that expressions like
-	// collation="{$collation}" are resolved at runtime.
-	if collation != "" {
-		collAVT, err := c.compileAVT(collation, c.nsBindings)
-		if err == nil && collAVT != nil {
-			mk.CollationAVT = collAVT
+func (c *compiler) compileMergeKeyCollation(elem *xdm.Element, key *mergeKey) error {
+	for _, option := range []struct {
+		name   string
+		target **avt
+		flag   uint8
+	}{
+		{nameCollation, &key.CollationAVT, mergeAttrCollation},
+		{lexicon.AttrLang, &key.LangAVT, mergeAttrLang},
+		{nameCaseOrder, &key.CaseOrderAVT, mergeAttrCaseOrder},
+	} {
+		if err := c.compileMergeKeyOption(elem, key, option.name, option.target, option.flag); err != nil {
+			return err
 		}
 	}
+
+	return nil
 }
 
-func (c *compiler) compileMergeKeyOrdering(elem *xdm.Element, mk *mergeKey) error {
-	if order := getAttr(elem, nameOrder); order != "" {
-		if strings.Contains(order, "{") {
-			avt, err := c.compileAVT(order, c.nsBindings)
-			if err != nil {
-				return err
-			}
-
-			mk.OrderAVT = avt
-		} else {
-			mk.Order = order
+func (c *compiler) compileMergeKeyOrdering(elem *xdm.Element, key *mergeKey) error {
+	for _, option := range []struct {
+		name   string
+		target **avt
+		flag   uint8
+	}{
+		{nameOrder, &key.OrderAVT, mergeAttrOrder},
+		{nameDataType, &key.DataTypeAVT, mergeAttrDataType},
+	} {
+		if err := c.compileMergeKeyOption(elem, key, option.name, option.target, option.flag); err != nil {
+			return err
 		}
 	}
 
-	if dataType := getAttr(elem, nameDataType); dataType != "" {
-		if strings.Contains(dataType, "{") {
-			avt, err := c.compileAVT(dataType, c.nsBindings)
-			if err != nil {
-				return err
-			}
+	return nil
+}
 
-			mk.DataTypeAVT = avt
-		} else {
-			mk.DataType = dataType
+func (c *compiler) compileMergeKeyOption(elem *xdm.Element, key *mergeKey, name string, target **avt, flag uint8) error {
+	value, present := elem.GetAttribute(name)
+	if !present {
+		return nil
+	}
+
+	compiled, err := c.compileAVT(value, c.nsBindings)
+	if err != nil {
+		return err
+	}
+
+	if literal, static := compiled.staticValue(); static {
+		if err := validateLiteralSortOption(name, literal); err != nil {
+			return err
 		}
 	}
+
+	key.specified |= flag
+	*target = compiled
 
 	return nil
 }

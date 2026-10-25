@@ -63,7 +63,12 @@ func castToFloat(v xdm.AtomicValue) (xdm.AtomicValue, error) {
 	if v.TypeName == xdm.TypeString || v.TypeName == xdm.TypeUntypedAtomic || xdm.IsStringDerived(v.TypeName) {
 		return castStringToFloat(strings.Trim(v.StringVal(), " \t\r\n"))
 	}
-	// For non-string sources, promote through double then narrow
+	// Round exact decimal/integer values directly to binary32. Narrowing
+	// through double can erase which side of a float midpoint they lie on.
+	if v.TypeName == xdm.TypeDecimal || xdm.IsIntegerDerived(v.TypeName) {
+		return xdm.AtomicValue{TypeName: xdm.TypeFloat, Value: xdm.NewFloat(float64(numericToFloat32(v)))}, nil
+	}
+
 	dbl, err := castToDouble(v)
 	if err != nil {
 		return xdm.AtomicValue{}, err
@@ -72,6 +77,23 @@ func castToFloat(v xdm.AtomicValue) (xdm.AtomicValue, error) {
 	f := dbl.DoubleVal()
 
 	return xdm.AtomicValue{TypeName: xdm.TypeFloat, Value: xdm.NewFloat(f)}, nil
+}
+
+// numericToFloat32 applies numeric promotion without an intermediate double
+// rounding for exact integers/decimals. Callers already bound numeric magnitude.
+func numericToFloat32(value xdm.AtomicValue) float32 {
+	value = xdm.PromoteSchemaType(value)
+	if value.TypeName == xdm.TypeDecimal {
+		f, _ := value.BigRat().Float32()
+		return f
+	}
+
+	if xdm.IsIntegerDerived(value.TypeName) {
+		f, _ := new(big.Float).SetInt(value.BigInt()).Float32()
+		return f
+	}
+
+	return float32(value.ToFloat64())
 }
 
 // castStringToFloat rounds directly to binary32, avoiding double rounding.

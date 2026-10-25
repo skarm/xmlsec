@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math/big"
+	"net/netip"
 	"strings"
 	"unicode/utf8"
 
@@ -812,24 +813,16 @@ func validateAnyURI(value string, version Version) error {
 		return nil
 	}
 
-	if value == "" {
-		return nil
-	}
-
-	if strings.HasPrefix(value, ":") || strings.HasSuffix(value, ":") {
+	if !utf8.ValidString(value) {
 		return fmt.Errorf("invalid anyURI")
 	}
 
+	// XSD 1.0 §3.2.17 applies XLink escaping before RFC 2396/2732
+	// syntax checks. Spaces, controls, non-ASCII and the excluded punctuation
+	// become escaped octets, so they cannot be rejected as URI characters.
+	// '%' and '#' are deliberately not escaped by that algorithm.
 	for i := 0; i < len(value); i++ {
 		ch := value[i]
-		if ch >= utf8.RuneSelf {
-			continue
-		}
-
-		if ch < ' ' || ch == 0x7f || strings.ContainsRune("\\^`", rune(ch)) {
-			return fmt.Errorf("invalid anyURI")
-		}
-
 		if ch == '%' {
 			if i+2 >= len(value) || !isHexDigit(value[i+1]) || !isHexDigit(value[i+2]) {
 				return fmt.Errorf("invalid anyURI")
@@ -839,7 +832,126 @@ func validateAnyURI(value string, version Version) error {
 		}
 	}
 
+	uri, fragment, _ := strings.Cut(value, "#")
+	if strings.Contains(fragment, "#") || !validXSD10URI(uri) {
+		return fmt.Errorf("invalid anyURI")
+	}
+
 	return nil
+}
+
+func validXSD10URI(uri string) bool {
+	if i := strings.IndexAny(uri, ":/?"); i >= 0 && uri[i] == ':' {
+		scheme := uri[:i]
+		if scheme == "" || !xmlchar.IsASCIILetter(scheme[0]) {
+			return false
+		}
+
+		for i := 1; i < len(scheme); i++ {
+			ch := scheme[i]
+			if !xmlchar.IsASCIILetter(ch) && !xmlchar.IsASCIIDigit(ch) && !strings.ContainsRune("+.-", rune(ch)) {
+				return false
+			}
+		}
+
+		uri = uri[i+1:]
+		if uri == "" {
+			return false
+		}
+
+		if uri[0] != '/' {
+			// opaque_part starts with uric_no_slash, which excludes brackets.
+			return uri[0] != '[' && uri[0] != ']'
+		}
+	}
+
+	path, _, _ := strings.Cut(uri, "?")
+	if strings.HasPrefix(path, "//") {
+		authority, rest, _ := strings.Cut(path[2:], "/")
+		if !validXSD10Authority(authority) {
+			return false
+		}
+
+		path = rest
+	}
+
+	// Brackets occur in IPv6 hosts and in uric (query/fragment/opaque
+	// components), but are not pchar in an RFC 2396 hierarchical path.
+	return !strings.ContainsAny(path, "[]")
+}
+
+func validXSD10Authority(authority string) bool {
+	if !strings.ContainsAny(authority, "[]") {
+		// RFC 2396 reg_name also permits ':' and '@'; imposing server/port
+		// rules here would reject valid registry-based naming authorities.
+		return true
+	}
+
+	if i := strings.LastIndexByte(authority, '@'); i >= 0 {
+		if strings.ContainsAny(authority[:i], "[]@") {
+			return false
+		}
+
+		authority = authority[i+1:]
+	}
+
+	host, port, ok := strings.Cut(strings.TrimPrefix(authority, "["), "]")
+	if !strings.HasPrefix(authority, "[") || !ok {
+		return false
+	}
+
+	if !validXSD10IPv6(host) {
+		return false
+	}
+
+	if port != "" {
+		if port[0] != ':' {
+			return false
+		}
+
+		for i := 1; i < len(port); i++ {
+			if !xmlchar.IsASCIIDigit(port[i]) {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+func validXSD10IPv6(host string) bool {
+	if colon := strings.LastIndexByte(host, ':'); colon >= 0 && strings.ContainsRune(host[colon+1:], '.') {
+		// RFC 2732 uses RFC 2373's 1*3DIGIT IPv4 octets. Unlike netip,
+		// that grammar permits leading zeroes, interpreted as decimal.
+		// Normalize only this validation copy; retain the original anyURI value.
+		octets := strings.SplitN(host[colon+1:], ".", 5)
+		if len(octets) != 4 {
+			return false
+		}
+
+		for i, octet := range octets {
+			if octet == "" || len(octet) > 3 {
+				return false
+			}
+
+			for j := range len(octet) {
+				if !xmlchar.IsASCIIDigit(octet[j]) {
+					return false
+				}
+			}
+
+			octets[i] = strings.TrimLeft(octet, "0")
+			if octets[i] == "" {
+				octets[i] = "0"
+			}
+		}
+
+		host = host[:colon+1] + strings.Join(octets, ".")
+	}
+
+	address, err := netip.ParseAddr(host)
+
+	return err == nil && address.Is6() && address.Zone() == ""
 }
 
 func isHexDigit(ch byte) bool {

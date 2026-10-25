@@ -84,16 +84,20 @@ const (
 	TypeDateTime         = "dateTime"
 	// TypeTime is the xs:time builtin local name, hoisted to a constant so the
 	// several switch/comparison sites that reference it share one literal.
-	TypeTime               = "time"
-	TypeDuration           = "duration"
-	TypeGYear              = "gYear"
-	TypeGYearMonth         = "gYearMonth"
-	TypeGMonth             = "gMonth"
-	TypeGDay               = "gDay"
-	TypeGMonthDay          = "gMonthDay"
-	TypeDayTimeDuration    = "dayTimeDuration"
-	TypeYearMonthDuration  = "yearMonthDuration"
-	TypeDateTimeStamp      = "dateTimeStamp"
+	TypeTime              = "time"
+	TypeDuration          = "duration"
+	TypeGYear             = "gYear"
+	TypeGYearMonth        = "gYearMonth"
+	TypeGMonth            = "gMonth"
+	TypeGDay              = "gDay"
+	TypeGMonthDay         = "gMonthDay"
+	TypeDayTimeDuration   = "dayTimeDuration"
+	TypeYearMonthDuration = "yearMonthDuration"
+	TypeDateTimeStamp     = "dateTimeStamp"
+	// TypeAnyType names the universal schema type used in node annotations.
+	TypeAnyType = "anyType"
+	// TypeUntyped is the XDM node annotation's local name in the XSD namespace.
+	TypeUntyped            = "untyped"
 	TypeAnyAtomicType      = "anyAtomicType"
 	TypeError              = "error"
 	TypeAnyURI             = "anyURI"
@@ -127,6 +131,9 @@ const (
 	TypeENTITIES           = "ENTITIES"
 	TypeNMToken            = "NMTOKEN"
 	TypeNMTokens           = "NMTOKENS"
+
+	// TypeNumeric names the XPath 3.1 numeric union in the XSD namespace.
+	TypeNumeric = "numeric"
 )
 
 // XPath node test string constants (with parentheses).

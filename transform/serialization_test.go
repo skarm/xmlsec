@@ -735,12 +735,10 @@ func TestSerializeParameterDocuments(t *testing.T) {
 			{`<encoding value="bad encoding"/>`, errCodeSEPM0017},
 			{`<encoding value="1bad"/>`, errCodeSEPM0017},
 			{`<encoding value=""/>`, errCodeSEPM0017},
-			{`<unknown value="yes"/>`, errCodeSEPM0017},
 			{`<indent/>`, errCodeSEPM0017},
 			{`<indent value="yes" other="no"/>`, errCodeSEPM0017},
 			{`<indent value="yes">text</indent>`, errCodeSEPM0017},
 			{`<indent value="yes"/><indent value="no"/>`, errCodeSEPM0019},
-			{`<indent xmlns="" value="yes"/>`, errCodeSEPM0017},
 			{`<cdata-section-elements value="missing:name"/>`, errCodeSEPM0017},
 			{`<use-character-maps value="yes"/>`, errCodeSEPM0017},
 			{`<use-character-maps><wrong/></use-character-maps>`, errCodeSEPM0017},
@@ -748,7 +746,6 @@ func TestSerializeParameterDocuments(t *testing.T) {
 			{`<use-character-maps><character-map character="a" other="x"/></use-character-maps>`, errCodeSEPM0017},
 			{`<use-character-maps><character-map character="a" map-string="x"/><character-map character="a" map-string="y"/></use-character-maps>`, errCodeSEPM0018},
 			{`<use-character-maps/><use-character-maps/>`, errCodeSEPM0019},
-			{`<indent value="true"/>`, ""},
 		} {
 			params := `<serialization-parameters xmlns="http://www.w3.org/2010/xslt-xquery-serialization"><method value="text"/>` + tc.body + `</serialization-parameters>`
 			value, err := query(t, e, `serialize('x', parse-xml($params)/*)`, version).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{
@@ -762,15 +759,212 @@ func TestSerializeParameterDocuments(t *testing.T) {
 		`serialize('x',map{'encoding':'bad encoding'})`:           errCodeSEPM0016,
 		`serialize('x',map{'encoding':'1bad'})`:                   errCodeSEPM0016,
 		`serialize('x',map{'encoding':''})`:                       errCodeSEPM0016,
+		`serialize('x',map{'normalization-form':''})`:             errCodeSEPM0016,
+		`serialize('x',map{'normalization-form':'unavailable'})`:  "SESU0011",
 		`serialize('x', 1)`:                                       errCodeXPTY0004,
 		`serialize('x', parse-xml('<wrong/>')/*)`:                 errCodeXPTY0004,
 		`serialize('x', (map{}, map{}))`:                          errCodeXPTY0004,
 		`serialize('x', map{'indent':'yes'})`:                     errCodeXPTY0004,
 		`serialize('x', map{'use-character-maps':map{'ab':'x'}})`: errCodeSEPM0016,
-		`serialize('x', parse-xml('<serialization-parameters xmlns="http://www.w3.org/2010/xslt-xquery-serialization" extra="x"/>')/*)`: errCodeSEPM0017,
 	} {
 		value, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
 		assertSerializationSequence(t, expression, value, err, "", code)
+	}
+}
+
+// The function's originating language fixes the serialization edition, including
+// when a named reference escapes to a later XPath caller.
+func serializeEditionCases() []struct{ name, parameters, want30, want31 string } {
+	const root = `<serialization-parameters xmlns="http://www.w3.org/2010/xslt-xquery-serialization"`
+	const method = `<method value="text"/>`
+	const end = `</serialization-parameters>`
+
+	return []struct{ name, parameters, want30, want31 string }{
+		{"text", `<method value="text"/>`, "x", "x"},
+		{"empty namespace method EQName", `<method value="Q{}text"/>`, "SEPM0017", "x"},
+		{"whitespace namespace method EQName", `<method value="Q{ }text"/>`, "SEPM0017", "x"},
+		{"empty namespace JSON node EQName", `<method value="text"/><json-node-output-method value="Q{}xml"/>`, "SEPM0017", "x"},
+		{"whitespace namespace unknown method", `<method value="Q{ }unknown"/>`, "SEPM0017", "SEPM0017"},
+		{"nonempty namespace method EQName", `<method value="Q{urn:e}method"/>`, "SEPM0017", "SEPM0016"},
+		{"json", `<method value="json"/>`, "SEPM0017", `"x"`},
+		{"adaptive", `<method value="adaptive"/>`, "SEPM0017", `"x"`},
+		{"boolean yes", `<method value="text"/><indent value=" yes "/>`, "x", "x"},
+		{"boolean true", `<method value="text"/><indent value="true"/>`, "SEPM0017", "x"},
+		{"boolean false", `<method value="text"/><indent value="false"/>`, "SEPM0017", "x"},
+		{"boolean one", `<method value="text"/><indent value="1"/>`, "SEPM0017", "x"},
+		{"boolean zero", `<method value="text"/><indent value="0"/>`, "SEPM0017", "x"},
+		{"standalone true", `<method value="text"/><standalone value="true"/>`, "SEPM0017", "x"},
+		{"standalone omit", `<method value="text"/><standalone value="omit"/>`, "x", "x"},
+		{"duplicate names", `<method value="text"/><allow-duplicate-names value="yes"/>`, "SEPM0017", "x"},
+		{"JSON node method", `<method value="text"/><json-node-output-method value="text"/>`, "SEPM0017", "x"},
+		{"foreign parameter attribute", `<method xmlns:e="urn:ext" e:hint="x" value="text"/>`, "x", "x"},
+		{"foreign parameter element", `<method value="text"/><e:parameter xmlns:e="urn:ext"><e:child/></e:parameter>`, "SEPM0017", "x"},
+		{"missing map character", `<method value="text"/><use-character-maps><character-map map-string="ignored"/></use-character-maps>`, "x", "x"},
+		{"foreign character map attributes", `<method value="text"/><use-character-maps xmlns:e="urn:ext" e:hint="x"><character-map character="x" map-string="y" e:hint="x"/></use-character-maps>`, "y", "y"},
+		{"foreign character map element", `<method value="text"/><use-character-maps><e:extra xmlns:e="urn:ext"><e:child/></e:extra></use-character-maps>`, "x", "x"},
+		{"foreign map unknown xsi type", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="missing"/></use-character-maps>`, "SEPM0017", "SEPM0017"},
+		{"foreign map required typed value", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="string-param-type"/></use-character-maps>`, "SEPM0017", "SEPM0017"},
+		{"foreign map valid typed value", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="string-param-type" value="ok"/></use-character-maps>`, "x", "x"},
+		{"foreign map builtin invalid value", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:boolean">bad</e:x></use-character-maps>`, "SEPM0017", "SEPM0017"},
+		{"foreign map builtin valid value", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:boolean">true</e:x></use-character-maps>`, "x", "x"},
+		{"foreign map builtin child content", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:string"><e:y/></e:x></use-character-maps>`, "SEPM0017", "SEPM0017"},
+		{"foreign map builtin attribute", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:string" e:hint="x">ok</e:x></use-character-maps>`, "SEPM0017", "SEPM0017"},
+		{"foreign map nested invalid known parameter", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e"><indent value="bad"/></e:x></use-character-maps>`, "SEPM0017", "SEPM0017"},
+		{"foreign map nested valid known parameter", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e"><indent value="yes"/></e:x></use-character-maps>`, "x", "x"},
+		{"foreign map nested unknown xsi type", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e"><e:y xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="missing"/></e:x></use-character-maps>`, "SEPM0017", "SEPM0017"},
+		{"foreign map nil without declaration", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="yes"/></use-character-maps>`, "x", "x"},
+		{"foreign map nested duplicate maps", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e"><use-character-maps><character-map character="x" map-string="y"/><character-map character="x" map-string="z"/></use-character-maps></e:x></use-character-maps>`, "x", "x"},
+		{"foreign map nested root attributes", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e"><serialization-parameters extra="x"/></e:x></use-character-maps>`, "SEPM0017", "SEPM0017"},
+		{"foreign map nested root unknown child", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e"><serialization-parameters><unknown/></serialization-parameters></e:x></use-character-maps>`, "SEPM0017", "SEPM0017"},
+		{"foreign map base type empty", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="base-param-type"/></use-character-maps>`, "x", "x"},
+		{"foreign map base type value attribute", `<method value="text"/><use-character-maps><e:x xmlns:e="urn:e" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="base-param-type" value="bad"/></use-character-maps>`, "SEPM0017", "SEPM0017"},
+		{"EQName list", `<method value="text"/><cdata-section-elements value="Q{urn:e}r"/>`, "SEPM0017", "x"},
+		{"unbound method prefix", `<method value="missing:method"/>`, "SEPM0017", "SEPM0017"},
+		{"unbound JSON node method prefix", `<method value="text"/><json-node-output-method value="missing:method"/>`, "SEPM0017", "SEPM0017"},
+		{"version whitespace edition", `<method value="xml"/><version value=" 1.0 "/>`, "SESU0013", "x"},
+		{"root attribute", root + ` extra="x">` + method + end, "SEPM0017", "x"},
+		{"root foreign attribute", root + ` xmlns:e="urn:e" e:extra="x">` + method + end, "SEPM0017", "x"},
+		{"root unknown xsi attribute", root + ` xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:unknown="x">` + method + end, "SEPM0017", "x"},
+		{"root schema location", root + ` xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:ext">` + method + end, "x", "x"},
+		{"parameter unknown xsi attribute", `<method xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:unknown="x" value="text"/>`, "x", "x"},
+		{"root text", root + `>ignored` + method + end, "SEPM0017", "x"},
+		{"unknown parameter", method + `<unknown value="yes"/>`, "SEPM0017", "x"},
+		{"unknown typed parameter", method + `<unknown xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="string-param-type" value="yes"/>`, "SEPM0017", "x"},
+		{"unqualified parameter", method + `<indent xmlns="" value="yes"/>`, "SEPM0017", "x"},
+		{"invalid xsi type", `<method xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="yes-no-param-type" value="text"/>`, "SEPM0017", "SEPM0017"},
+		{"unbound xsi type", `<method xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="missing:t" value="text"/>`, "SEPM0017", "SEPM0017"},
+		{"unknown xsi type", `<method xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="missing-type" value="text"/>`, "SEPM0017", "SEPM0017"},
+		{"same xsi type", `<method xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="method-param-type" value="text"/>`, "x", "x"},
+		{"xsi nil true", `<method xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true" value="text"/>`, "SEPM0017", "SEPM0017"},
+		{"xsi nil invalid", `<method xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="yes" value="text"/>`, "SEPM0017", "SEPM0017"},
+		{"xsi nil false", `<method xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="false" value="text"/>`, "SEPM0017", "SEPM0017"},
+		{"multiple foreign map children", method + `<use-character-maps><e:x xmlns:e="urn:e"/><e:y xmlns:e="urn:e"/></use-character-maps>`, "SEPM0017", "SEPM0017"},
+		{"foreign map child ordering", method + `<use-character-maps><e:x xmlns:e="urn:e"/><character-map character="x" map-string="y"/></use-character-maps>`, "SEPM0017", "SEPM0017"},
+		{"method whitespace edition", `<method value=" text "/>`, "SEPM0017", "x"},
+		{"encoding whitespace edition", `<method value="text"/><encoding value=" UTF-8 "/>`, "SEPM0017", "x"},
+		{"invalid public identifier", `<method value="text"/><doctype-public value="é"/>`, "SEPM0017", "SEPM0017"},
+		{"invalid system identifier", `<method value="text"/><doctype-system value="&quot;'"/>`, "SEPM0017", "SEPM0017"},
+		{"empty normalization", `<method value="text"/><normalization-form value=""/>`, "SEPM0017", "SEPM0017"},
+		{"unsupported normalization", `<method value="text"/><normalization-form value="unavailable"/>`, "SESU0011", "SESU0011"},
+		{"invalid boolean", `<method value="text"/><indent value="YES"/>`, "SEPM0017", "SEPM0017"},
+	}
+}
+
+func serializeParameterDocument(body string) string {
+	if strings.HasPrefix(body, "<serialization-parameters ") {
+		return body
+	}
+	return `<serialization-parameters xmlns="http://www.w3.org/2010/xslt-xquery-serialization">` + body + `</serialization-parameters>`
+}
+
+func serializeEditionOutputCases() []struct{ name, expression, want30, want31 string } {
+	const prefix = `<serialization-parameters xmlns="http://www.w3.org/2010/xslt-xquery-serialization">`
+	const suffix = `</serialization-parameters>`
+	public := prefix + `<method value="xml"/><omit-xml-declaration value="yes"/><doctype-public value=" a  b "/><doctype-system value="d.dtd"/>` + suffix
+	media := prefix + `<method value="html"/><html-version value="5"/><media-type value=" text/plain  "/><include-content-type value="yes"/>` + suffix
+	return []struct{ name, expression, want30, want31 string }{
+		{"public identifier whitespace", `serialize(parse-xml('<r/>'),parse-xml('` + public + `')/*)`, `<!DOCTYPE r PUBLIC " a  b " "d.dtd"><r/>`, `<!DOCTYPE r PUBLIC "a b" "d.dtd"><r/>`},
+		{"media type whitespace", `contains(serialize(parse-xml('<html><head/></html>'),parse-xml('` + media + `')/*),'content="text/plain; charset=UTF-8"')`, "false", "true"},
+	}
+}
+
+func TestSerializeEditionContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, tc := range serializeEditionCases() {
+		for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+			t.Run(tc.name+strconv.Itoa(int(version)), func(t *testing.T) {
+				want := tc.want31
+				if version == transform.XPath30 {
+					want = tc.want30
+				}
+				code := ""
+				if comparisonErrorCode(want) {
+					code, want = want, ""
+				}
+				params := serializeParameterDocument(tc.parameters)
+				bindings := transform.XPathContext{Variables: transform.Bindings{{Local: "params"}: transform.Values(transform.String(params))}}
+				for _, call := range []string{`serialize('x',parse-xml($params)/*)`, `serialize#2('x',parse-xml($params)/*)`, `function-lookup(QName('http://www.w3.org/2005/xpath-functions','serialize'),2)('x',parse-xml($params)/*)`} {
+					got, err := query(t, e, call, version).Evaluate(t.Context(), nil, bindings)
+					assertSerializationSequence(t, call, got, err, want, code)
+				}
+				f := evaluate(t, e, `serialize#2`, version)
+				bindings.Variables[transform.Name{Local: "f"}] = f
+				got, err := query(t, e, `$f('x',parse-xml($params)/*)`, transform.XPath31).Evaluate(t.Context(), nil, bindings)
+				assertSerializationSequence(t, "escaped reference", got, err, want, code)
+			})
+		}
+	}
+	for _, tc := range serializeEditionOutputCases() {
+		for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+			want := tc.want31
+			if version == transform.XPath30 {
+				want = tc.want30
+			}
+			got, err := query(t, e, tc.expression, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+			assertSerializationSequence(t, tc.name, got, err, want, "")
+		}
+	}
+}
+
+func serialization20Cases() []markupSerializationCase {
+	return []markupSerializationCase{
+		{"XML escaping", `<xsl:output method="xml" omit-xml-declaration="yes" indent="no"/>`, `<r a="&lt;&amp;&quot;">&lt;&amp;</r>`, `<r a="&lt;&amp;&quot;">&lt;&amp;</r>`, ""},
+		{"XHTML empty element", `<xsl:output method="xhtml" omit-xml-declaration="yes" indent="no"/>`, `<r/>`, `<r></r>`, ""},
+		{"HTML void", `<xsl:output method="html" indent="no"/>`, `<br/>`, `<br>`, ""},
+		{"text content", `<xsl:output method="text"/>`, `<r>&lt;&amp;</r>`, `<&`, ""},
+		{"sequence normalization", `<xsl:output method="text"/>`, `<xsl:sequence select="(1,2)"/>`, `1 2`, ""},
+		{"normalization", `<xsl:output method="text" normalization-form="NFC"/>`, `<xsl:value-of select="concat('e',codepoints-to-string(769))"/>`, "é", ""},
+		{"character map", `<xsl:output method="text" use-character-maps="m"/><xsl:character-map name="m"><xsl:output-character character="x" string="y"/></xsl:character-map>`, `x`, `y`, ""},
+		{"invalid boolean", `<xsl:output method="xml" indent="true"/>`, `x`, `XTSE0020`, ""},
+		{"new output parameter", `<xsl:output method="text" item-separator="|"/>`, `<xsl:sequence select="(1,2)"/>`, `XTSE0090`, ""},
+	}
+}
+
+func serialization20Sheet(test markupSerializationCase) string {
+	source := sheet(version20, test.declarations+`<xsl:template name="start">`+test.body+`</xsl:template>`)
+	source = strings.Replace(source, `<xsl:output method="text"/>`, "", 1)
+	return strings.Replace(source, `<xsl:stylesheet `, `<xsl:stylesheet exclude-result-prefixes="xs" `, 1)
+}
+
+func TestXSLTSerializationEditions(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range serialization20Cases() {
+		source := serialization20Sheet(test)
+		compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: transform.XSLT20})
+		got := ""
+		if err == nil {
+			result, runErr := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+			err = runErr
+			if err == nil {
+				got = string(result.Primary)
+			}
+		}
+		want, code := test.want, ""
+		if comparisonErrorCode(want) {
+			want, code = "", want
+		}
+		assertSerializationResult(t, test.name, got, err, want, code)
+	}
+
+	for _, attr := range []string{`item-separator="|"`, `suppress-indentation="r"`, `html-version="5"`} {
+		for _, secondary := range []bool{false, true} {
+			declarations, body := `<xsl:output method="text" `+attr+`/>`, `<xsl:sequence select="(1,2)"/>`
+			if secondary {
+				declarations, body = "", `<xsl:result-document href="urn:out" method="text" `+attr+`>`+body+`</xsl:result-document>`
+			}
+			source := sheet(version20, declarations+`<xsl:template name="start">`+body+`</xsl:template>`)
+			for _, processor := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
+				_, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: processor})
+				if processor == transform.XSLT20 {
+					var detail *transform.Error
+					if !errors.As(err, &detail) || detail.Code != "XTSE0090" {
+						t.Error(attr, secondary, processor, err)
+					}
+				} else if err != nil {
+					t.Error(attr, secondary, processor, err)
+				}
+			}
+		}
 	}
 }
 
@@ -932,7 +1126,8 @@ func TestJSONHTMLHeadMetadata(t *testing.T) {
 type markupSerializationErrorCase struct{ name, attributes, expression, options, code string }
 
 func markupSerializationErrorCases() []markupSerializationErrorCase {
-	return []markupSerializationErrorCase{
+	cases := make([]markupSerializationErrorCase, 0, 34)
+	cases = append(cases, []markupSerializationErrorCase{
 		{"HTML PI", `method="html"`, `parse-xml('<r><?p a>b?></r>')/r/processing-instruction()`, `map{'method':'html'}`, "SERE0015"},
 		{"HTML nested PI", `method="html"`, `parse-xml('<r><?p a>b?></r>')/r`, `map{'method':'html'}`, "SERE0015"},
 		{"HTML4 control", `method="html" html-version="4.01"`, `codepoints-to-string(127)`, `map{'method':'html','html-version':4.01}`, "SERE0014"},
@@ -955,7 +1150,14 @@ func markupSerializationErrorCases() []markupSerializationErrorCase {
 		{"XML doctype fragment shape", `method="xml" omit-xml-declaration="yes" doctype-system="d.dtd"`, `(parse-xml('<a/>'),parse-xml('<b/>'))`, `map{'method':'xml','doctype-system':'d.dtd'}`, "SEPM0004"},
 		{"XHTML doctype fragment shape", `method="xhtml" omit-xml-declaration="yes" doctype-system="d.dtd"`, `(parse-xml('<a/>'),parse-xml('<b/>'))`, `map{'method':'xhtml','doctype-system':'d.dtd'}`, "SEPM0004"},
 		{"XML composing start", `method="xml" normalization-form="fully-normalized" omit-xml-declaration="yes"`, `codepoints-to-string(769)`, ``, "SERE0012"},
+	}...)
+	for _, method := range []string{"xml", "xhtml", "html", "text", "json", "adaptive"} {
+		cases = append(cases,
+			markupSerializationErrorCase{method + " invalid public identifier", `method="` + method + `" doctype-public="é"`, `parse-xml('<r>x</r>')`, `map{'method':'` + method + `','doctype-public':'é'}`, "SEPM0016"},
+			markupSerializationErrorCase{method + " invalid system identifier", `method="` + method + `" doctype-system="&quot;&apos;"`, `parse-xml('<r>x</r>')`, `map{'method':'` + method + `','doctype-system':concat(codepoints-to-string(34),codepoints-to-string(39))}`, "SEPM0016"},
+		)
 	}
+	return cases
 }
 
 func TestMarkupSerializationContentErrors(t *testing.T) {
@@ -1485,6 +1687,78 @@ func TestAdaptiveSerializationRules(t *testing.T) {
 				var buf strings.Builder
 				_, err = result.WriterTo(t.Context()).WriteTo(&buf)
 				assertSerializationResult(t, "WriterTo", buf.String(), err, test.want, "")
+			}
+		})
+	}
+}
+
+// These literal option maps are shared with the independent processor checks.
+func serializationMapConversionCases() []struct{ name, options, want string } {
+	return []struct{ name, options, want string }{
+		{"boolean array", `map{'method':'text','indent':[true()]}`, "x"},
+		{"boolean node", `map{'method':'text','indent':parse-xml('<r>true</r>')/*}`, "x"},
+		{"boolean untyped whitespace", `map{'method':'text','indent':xs:untypedAtomic(' true ')}`, "x"},
+		{"boolean empty array", `map{'method':'text','indent':[]}`, "x"},
+		{"boolean cardinality", `map{'method':'text','indent':[true(),false()]}`, "XPTY0004"},
+		{"boolean string", `map{'method':'text','indent':'true'}`, "XPTY0004"},
+		{"boolean invalid untyped", `map{'method':'text','indent':xs:untypedAtomic('yes')}`, "FORG0001"},
+		{"boolean function", `map{'method':'text','indent':string#1}`, "FOTY0013"},
+		{"decimal integer", `map{'method':'text','html-version':5}`, "x"},
+		{"decimal array", `map{'method':'text','html-version':[5.0]}`, "x"},
+		{"decimal node", `map{'method':'text','html-version':parse-xml('<r>5.0</r>')/*}`, "x"},
+		{"decimal empty array", `map{'method':'text','html-version':[]}`, "x"},
+		{"decimal float", `map{'method':'text','html-version':xs:float(5)}`, "XPTY0004"},
+		{"decimal double", `map{'method':'text','html-version':5e0}`, "XPTY0004"},
+		{"decimal string", `map{'method':'text','html-version':'5'}`, "XPTY0004"},
+		{"decimal invalid untyped", `map{'method':'text','html-version':xs:untypedAtomic('5e0')}`, "FORG0001"},
+		{"decimal cardinality", `map{'method':'text','html-version':[5,6]}`, "XPTY0004"},
+		{"string array", `map{'method':'text','item-separator':[[],'a']}`, "x"},
+		{"string node", `map{'method':'text','item-separator':parse-xml('<r>a</r>')/*}`, "x"},
+		{"string URI promotion", `map{'method':'text','item-separator':xs:anyURI('a')}`, "x"},
+		{"string subtype", `map{'method':'text','item-separator':xs:token('a')}`, "x"},
+		{"string numeric", `map{'method':'text','item-separator':1}`, "XPTY0004"},
+		{"string boolean", `map{'method':'text','item-separator':true()}`, "XPTY0004"},
+		{"string QName", `map{'method':'text','media-type':QName('urn:e','e')}`, "XPTY0004"},
+		{"encoding boolean", `map{'method':'text','encoding':true()}`, "XPTY0004"},
+		{"normalization numeric", `map{'method':'text','normalization-form':1}`, "XPTY0004"},
+		{"method subtype", `map{'method':xs:token('text')}`, "x"},
+		{"method numeric", `map{'method':1}`, "XPTY0004"},
+		{"method boolean", `map{'method':true()}`, "XPTY0004"},
+		{"method URI union", `map{'method':xs:anyURI('text')}`, "XPTY0004"},
+		{"method untyped union", `map{'method':xs:untypedAtomic('text')}`, "XPTY0117"},
+		{"method invalid string", `map{'method':'bogus'}`, "SEPM0016"},
+		{"method unqualified QName", `map{'method':QName('','text')}`, "SEPM0016"},
+		{"node method untyped union", `map{'method':'text','json-node-output-method':xs:untypedAtomic('xml')}`, "XPTY0117"},
+		{"node method invalid string", `map{'method':'text','json-node-output-method':'bogus'}`, "SEPM0016"},
+		{"standalone array", `map{'method':'text','standalone':[false()]}`, "x"},
+		{"standalone untyped whitespace", `map{'method':'text','standalone':xs:untypedAtomic(' false ')}`, "x"},
+		{"standalone empty array", `map{'method':'text','standalone':[]}`, "x"},
+		{"standalone string omit", `map{'method':'text','standalone':'omit'}`, "XPTY0004"},
+		{"standalone invalid untyped", `map{'method':'text','standalone':xs:untypedAtomic('omit')}`, "FORG0001"},
+		{"QName list untyped", `map{'method':'text','cdata-section-elements':xs:untypedAtomic('r')}`, "XPTY0117"},
+		{"QName suppression untyped", `map{'method':'text','suppress-indentation':xs:untypedAtomic('r')}`, "XPTY0117"},
+		{"QName list array", `map{'method':'text','cdata-section-elements':[QName('','r')]}`, "x"},
+		{"character map key subtype", `map{'method':'text','use-character-maps':map{xs:token('x'):'y'}}`, "y"},
+		{"character map value subtype", `map{'method':'text','use-character-maps':map{'x':xs:Name('y')}}`, "y"},
+		{"character map untyped key", `map{'method':'text','use-character-maps':map{xs:untypedAtomic('x'):'y'}}`, "XPTY0004"},
+		{"character map untyped value", `map{'method':'text','use-character-maps':map{'x':xs:untypedAtomic('y')}}`, "XPTY0004"},
+		{"character map value node", `map{'method':'text','use-character-maps':map{'x':parse-xml('<r>y</r>')/*}}`, "XPTY0004"},
+	}
+}
+
+func TestSerializationMapOptionConversions(t *testing.T) {
+	e := engine(t, transform.Config{})
+	function := evaluate(t, e, `serialize#2`, transform.XPath31)
+	for _, test := range serializationMapConversionCases() {
+		t.Run(test.name, func(t *testing.T) {
+			want, code := test.want, ""
+			if comparisonErrorCode(want) {
+				want, code = "", want
+			}
+			for _, call := range []string{`serialize`, `(serialize#2)`, `function-lookup(QName('http://www.w3.org/2005/xpath-functions','serialize'),2)`, `$f`} {
+				expression := call + `('x',` + test.options + `)`
+				values, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "f"}: function}})
+				assertSerializationSequence(t, expression, values, err, want, code)
 			}
 		})
 	}

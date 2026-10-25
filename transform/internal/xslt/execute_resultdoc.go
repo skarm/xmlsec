@@ -11,6 +11,7 @@ import (
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -456,6 +457,8 @@ func resourceURIKey(uri string) string {
 		return ""
 	}
 
+	uri = uripath.EscapeResourceReference(uri)
+
 	ref, err := url.Parse(ensureFileURI(uri))
 	if err != nil || !ref.IsAbs() {
 		return ""
@@ -574,6 +577,9 @@ func (ec *execContext) checkResourceWrite(uri string) error {
 // href ("file:///d/out.xml") under the same base collapse to the same key, so
 // two result documents denoting the same file are detected as duplicates.
 func canonicalResultURIKey(href, base string) string {
+	href = uripath.EscapeResourceReference(href)
+	base = uripath.EscapeResourceReference(base)
+
 	ref, err := url.Parse(href)
 	if err != nil {
 		return href
@@ -998,13 +1004,41 @@ func (ec *execContext) evalBoolSerializationAVT(ctx context.Context, a *avt, par
 		return false, err
 	}
 
-	b, ok := parseXSDBool(strings.TrimSpace(v))
+	b, ok := parseXSLTBoolean(v, ec.stylesheet.processorLanguage())
 	if !ok {
-		return false, dynamicError(lexicon.ErrSEPM0016,
+		code := lexicon.ErrSEPM0016
+		if ec.stylesheet.processorLanguage() == 20 {
+			code = errCodeXTDE0030
+		}
+
+		return false, dynamicError(code,
 			"%q is not a valid value for xsl:result-document/@%s", v, paramName)
 	}
 
 	return b, nil
+}
+
+func (ec *execContext) evalStandaloneSerializationAVT(ctx context.Context, attribute *avt) (string, error) {
+	value, err := ec.evalSerializationAVT(ctx, attribute)
+	if err != nil {
+		return "", err
+	}
+
+	value = strings.Trim(value, " \t\r\n")
+	if ec.stylesheet.processorLanguage() == 20 && value != lexicon.ValueOmit {
+		if _, valid := parseXSLTBoolean(value, 20); !valid {
+			return "", dynamicError(errCodeXTDE0030, "%q is not a valid XSLT 2.0 value for xsl:result-document/@standalone", value)
+		}
+	}
+
+	switch value {
+	case lexicon.ValueTrue, "1":
+		return lexicon.ValueYes, nil
+	case lexicon.ValueFalse, "0":
+		return lexicon.ValueNo, nil
+	default:
+		return value, nil
+	}
 }
 
 // evalResultDocOutputDef evaluates serialization parameter AVTs on
@@ -1184,18 +1218,9 @@ func (ec *execContext) evalResultDocDeclarationParams(ctx context.Context, inst 
 	}
 
 	if inst.Standalone != nil {
-		v, err := ec.evalSerializationAVT(ctx, inst.Standalone)
+		v, err := ec.evalStandaloneSerializationAVT(ctx, inst.Standalone)
 		if err != nil {
 			return err
-		}
-
-		switch strings.TrimSpace(v) {
-		case lexicon.ValueTrue, "1":
-			v = lexicon.ValueYes
-		case lexicon.ValueFalse, "0":
-			v = lexicon.ValueNo
-		default:
-			v = strings.TrimSpace(v)
 		}
 
 		base.Standalone = v

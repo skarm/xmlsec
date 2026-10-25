@@ -73,7 +73,7 @@ func (c *compiler) validateAsSequenceTypeWithNS(_ context.Context, as string, co
 		return staticError("XTSE1660", "%s: 'as' requires schema-annotated nodes", context)
 	}
 
-	if err := xpath.ValidateSequenceType(st, ns, defaultNS, nil); err != nil {
+	if err := xpath.ValidateSequenceTypeForVersion(st, ns, defaultNS, nil, c.stylesheet.xpathVersion()); err != nil {
 		return err
 	}
 

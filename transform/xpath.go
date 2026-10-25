@@ -8,6 +8,7 @@ import (
 	"maps"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -256,6 +257,10 @@ func (e *Engine) CompileXPath(ctx context.Context, source string, options XPathO
 	}
 
 	if version != XPath10 {
+		for prefix, uri := range namespaces {
+			namespaces[prefix] = xmlchar.CollapseSpace(uri)
+		}
+
 		if err := xpath.CheckStaticNamespaces(namespaces); err != nil {
 			return nil, wrapXPath("compile XPath", err, version)
 		}

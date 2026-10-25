@@ -49,7 +49,7 @@ func (c *compiler) compileValueOf(ctx context.Context, elem *xdm.Element) (*valu
 		for child := range xdm.Children(elem) {
 			switch child.Type() {
 			case xdm.TextNode, xdm.CDATASectionNode:
-				if !isXMLWhitespaceOnly(xdm.CharacterData(child)) {
+				if xdm.CharacterData(child) != "" {
 					return nil, staticError(errCodeXTSE0870, "xsl:value-of with select attribute must not have content")
 				}
 			case xdm.ElementNode:
@@ -138,8 +138,8 @@ func (c *compiler) compileElement(ctx context.Context, elem *xdm.Element) (*elem
 		}
 	}
 
-	nameAttr := getAttr(elem, xslAttrName)
-	if nameAttr == "" {
+	nameAttr, hasName := elem.GetAttribute(xslAttrName)
+	if !hasName {
 		return nil, staticError(errCodeXTSE0010, "xsl:element requires name attribute")
 	}
 
@@ -150,8 +150,8 @@ func (c *compiler) compileElement(ctx context.Context, elem *xdm.Element) (*elem
 
 	inst := &elementInst{Name: nameAVT, InheritNamespaces: true}
 
-	if inAttr := getAttr(elem, nameInheritNamespaces); inAttr == lexicon.ValueNo {
-		inst.InheritNamespaces = false
+	if inAttr, present := elem.GetAttribute(nameInheritNamespaces); present {
+		inst.InheritNamespaces = xsdBoolTrue(inAttr)
 	}
 
 	// Capture compile-time namespace bindings for runtime name resolution.
@@ -217,8 +217,8 @@ func (c *compiler) compileElement(ctx context.Context, elem *xdm.Element) (*elem
 }
 
 func (c *compiler) compileAttribute(ctx context.Context, elem *xdm.Element) (*attributeInst, error) {
-	nameAttr := getAttr(elem, xslAttrName)
-	if nameAttr == "" {
+	nameAttr, hasName := elem.GetAttribute(xslAttrName)
+	if !hasName {
 		return nil, staticError(errCodeXTSE0010, "xsl:attribute requires name attribute")
 	}
 
@@ -267,8 +267,8 @@ func (c *compiler) compileAttribute(ctx context.Context, elem *xdm.Element) (*at
 		inst.Separator = sepAVT
 	}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
+	if hasSelect {
 		// XTSE0840: xsl:attribute with select must have empty content.
 		if hasNonEmptyContent(elem) {
 			return nil, staticError(errCodeXTSE0840, "xsl:attribute with select attribute must have empty content")
@@ -295,8 +295,8 @@ func (c *compiler) compileAttribute(ctx context.Context, elem *xdm.Element) (*at
 func (c *compiler) compileComment(ctx context.Context, elem *xdm.Element) (*commentInst, error) {
 	inst := &commentInst{}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
+	if hasSelect {
 		// XTSE0940: select and non-empty content are mutually exclusive.
 		if err := c.validateEmptyElement(ctx, elem, "xsl:comment"); err != nil {
 			return nil, staticError(errCodeXTSE0940, "xsl:comment has both @select and content")
@@ -321,8 +321,8 @@ func (c *compiler) compileComment(ctx context.Context, elem *xdm.Element) (*comm
 }
 
 func (c *compiler) compilePI(ctx context.Context, elem *xdm.Element) (*piInst, error) {
-	nameAttr := getAttr(elem, xslAttrName)
-	if nameAttr == "" {
+	nameAttr, hasName := elem.GetAttribute(xslAttrName)
+	if !hasName {
 		return nil, staticError(errCodeXTSE0010, "xsl:processing-instruction requires name attribute")
 	}
 
@@ -333,8 +333,8 @@ func (c *compiler) compilePI(ctx context.Context, elem *xdm.Element) (*piInst, e
 
 	inst := &piInst{Name: nameAVT}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
+	if hasSelect {
 		// XTSE0940: select and non-empty content are mutually exclusive.
 		if err := c.validateEmptyElement(ctx, elem, "xsl:processing-instruction"); err != nil {
 			return nil, staticError("XTSE0880", "xsl:processing-instruction has both @select and content")
@@ -411,7 +411,7 @@ func (c *compiler) compileCopy(ctx context.Context, elem *xdm.Element) (*copyIns
 		inst.TypeName = resolveXSDTypeName(typeAttr, c.nsBindings)
 	}
 
-	if selectAttr := getAttr(elem, xslAttrSelect); selectAttr != "" {
+	if selectAttr, present := elem.GetAttribute(xslAttrSelect); present {
 		expr, err := c.compileXPath(selectAttr, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -447,8 +447,8 @@ func (c *compiler) compileCopyOf(_ context.Context, elem *xdm.Element) (*copyOfI
 		return nil, err
 	}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr == "" {
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
+	if !hasSelect {
 		return nil, staticError(errCodeXTSE0010, "xsl:copy-of requires select attribute")
 	}
 
@@ -506,7 +506,7 @@ func validateCopyOfStructure(elem *xdm.Element) error {
 			return staticError(errCodeXTSE0260,
 				"xsl:copy-of must be empty, but contains child element %s", child.Name())
 		case xdm.TextNode, xdm.CDATASectionNode:
-			if !isXMLWhitespaceOnly(xdm.CharacterData(child)) {
+			if xdm.CharacterData(child) != "" {
 				return staticError(errCodeXTSE0260,
 					"xsl:copy-of must be empty, but contains text content")
 			}
@@ -544,7 +544,7 @@ func (c *compiler) compileNumber(_ context.Context, elem *xdm.Element) (*numberI
 		return nil, err
 	}
 
-	if sel := getAttr(elem, xslAttrSelect); sel != "" {
+	if sel, present := elem.GetAttribute(xslAttrSelect); present {
 		expr, err := c.compileXPath(sel, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -553,22 +553,16 @@ func (c *compiler) compileNumber(_ context.Context, elem *xdm.Element) (*numberI
 		inst.Select = expr
 	}
 
-	if lang := getAttr(elem, lexicon.AttrLang); lang != "" {
-		avt, err := c.compileAVT(lang, c.nsBindings)
-		if err != nil {
+	for _, option := range []struct {
+		name  string
+		value **avt
+	}{
+		{lexicon.AttrLang, &inst.Lang},
+		{nameLetterValue, &inst.LetterValue},
+	} {
+		if err := c.compileNumberOption(elem, option.name, option.value); err != nil {
 			return nil, err
 		}
-
-		inst.Lang = avt
-	}
-
-	if lv := getAttr(elem, "letter-value"); lv != "" {
-		avt, err := c.compileAVT(lv, c.nsBindings)
-		if err != nil {
-			return nil, err
-		}
-
-		inst.LetterValue = avt
 	}
 
 	return inst, nil
@@ -595,12 +589,12 @@ func (c *compiler) compileNumberCounting(elem *xdm.Element, inst *numberInst) er
 
 	inst.memoizable = !patternReadsVariables(inst.Count) && !patternReadsVariables(inst.From)
 
-	if valueAttr := getAttr(elem, "value"); valueAttr != "" {
+	if valueAttr, present := elem.GetAttribute("value"); present {
 		// XTSE0975: when value is present, select/level/count/from must be absent.
-		_, hasLevel := elem.GetAttribute("level")
-		if getAttr(elem, xslAttrSelect) != "" || getAttr(elem, "count") != "" ||
-			getAttr(elem, "from") != "" || hasLevel {
-			return staticError(errCodeXTSE0975, "xsl:number: when @value is present, @select, @level, @count, and @from must be absent")
+		for _, attribute := range []string{xslAttrSelect, "level", lexicon.AttrCount, lexicon.AttrFrom} {
+			if _, specified := elem.GetAttribute(attribute); specified {
+				return staticError(errCodeXTSE0975, "xsl:number: when @value is present, @select, @level, @count, and @from must be absent")
+			}
 		}
 
 		expr, err := c.compileXPath(valueAttr, c.nsBindings)
@@ -631,56 +625,40 @@ func patternReadsVariables(p *pattern) bool {
 }
 
 func (c *compiler) compileNumberFormatting(elem *xdm.Element, inst *numberInst) error {
-	if fmtAttr := getAttr(elem, "format"); fmtAttr != "" {
-		avt, err := c.compileAVT(fmtAttr, c.nsBindings)
-		if err != nil {
+	for _, option := range []struct {
+		name  string
+		value **avt
+	}{
+		{nameFormat, &inst.Format},
+		{nameGroupingSeparator, &inst.GroupingSeparator},
+		{nameGroupingSize, &inst.GroupingSize},
+		{"ordinal", &inst.Ordinal},
+		{nameStartAt, &inst.StartAt},
+	} {
+		if err := c.compileNumberOption(elem, option.name, option.value); err != nil {
 			return err
 		}
-
-		inst.Format = avt
 	}
 
-	if gs := getAttr(elem, nameGroupingSeparator); gs != "" {
-		avt, err := c.compileAVT(gs, c.nsBindings)
-		if err != nil {
-			return err
-		}
+	return nil
+}
 
-		inst.GroupingSeparator = avt
+func (c *compiler) compileNumberOption(elem *xdm.Element, name string, target **avt) error {
+	value, present := elem.GetAttribute(name)
+	if !present {
+		return nil
 	}
 
-	if gsz := getAttr(elem, "grouping-size"); gsz != "" {
-		avt, err := c.compileAVT(gsz, c.nsBindings)
-		if err != nil {
-			return err
-		}
-
-		inst.GroupingSize = avt
+	compiled, err := c.compileAVT(value, c.nsBindings)
+	if err != nil {
+		return err
 	}
 
-	if ord := getAttr(elem, "ordinal"); ord != "" {
-		avt, err := c.compileAVT(ord, c.nsBindings)
-		if err != nil {
-			return err
-		}
-
-		inst.Ordinal = avt
+	if literal, static := compiled.staticValue(); static && c.stylesheet.processorLanguage() >= 20 && !validNumberOption(name, literal) {
+		return staticError(errCodeXTSE0020, "%q is not a valid value for xsl:number/@%s", literal, name)
 	}
 
-	if sa := getAttr(elem, "start-at"); sa != "" {
-		avt, err := c.compileAVT(sa, c.nsBindings)
-		if err != nil {
-			return err
-		}
-		// Validate static start-at: must be a space-separated list of integers
-		if !strings.Contains(sa, "{") {
-			if _, ok := parseStartAt(sa); !ok {
-				return staticError(errCodeXTSE0020, "%q is not a valid value for xsl:number/@start-at", sa)
-			}
-		}
-
-		inst.StartAt = avt
-	}
+	*target = compiled
 
 	return nil
 }
@@ -699,18 +677,18 @@ func (c *compiler) compileNamespace(ctx context.Context, elem *xdm.Element) (*na
 
 	inst := &namespaceInst{Name: nameAVT}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
 	hasContent := c.hasEffectiveContent(ctx, elem)
 	// XTSE0910: select and content are mutually exclusive on xsl:namespace
-	if selectAttr != "" && hasContent {
+	if hasSelect && hasContent {
 		return nil, staticError(errCodeXTSE0910, "xsl:namespace must not have both a select attribute and content")
 	}
 
-	if selectAttr == "" && !hasContent {
+	if !hasSelect && !hasContent {
 		return nil, staticError(errCodeXTSE0910, "xsl:namespace must have either a select attribute or content")
 	}
 
-	if selectAttr != "" {
+	if hasSelect {
 		expr, err := c.compileXPath(selectAttr, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -759,11 +737,16 @@ func (c *compiler) compileSequence(ctx context.Context, elem *xdm.Element) (inst
 		return nil, err
 	}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
+	if hasSelect {
 		// XTSE3185: when @select is present, only xsl:fallback children are allowed.
 		if hasSignificantChildren(elem) {
-			return nil, staticError(errCodeXTSE3185, "xsl:sequence with @select must not have content other than xsl:fallback")
+			code := errCodeXTSE3185
+			if c.stylesheet.processorLanguage() == 20 {
+				code = errCodeXTSE0010
+			}
+
+			return nil, staticError(code, "xsl:sequence with @select must not have content other than xsl:fallback")
 		}
 
 		expr, err := c.compileXPath(selectAttr, c.nsBindings)
@@ -824,7 +807,7 @@ func (c *compiler) compileLiteralResultElement(ctx context.Context, elem *xdm.El
 
 	savedExcludes := c.localExcludes
 
-	excludes, err := c.literalResultExcludes(elem)
+	excludes, err := c.elementResultExcludes(elem)
 	if err != nil {
 		return nil, err
 	}
@@ -865,52 +848,67 @@ func (c *compiler) compileLiteralResultElement(ctx context.Context, elem *xdm.El
 	return lre, nil
 }
 
-func (c *compiler) literalResultExcludes(elem *xdm.Element) (map[string]struct{}, error) {
-	// Collect element-level xsl:exclude-result-prefixes and
-	// xsl:extension-element-prefixes (cumulative with parent)
-	needNewExcludes := false
-	if _, ok := elem.GetAttributeNS(nameExcludeResultPrefixes, lexicon.NamespaceXSLT); ok {
-		needNewExcludes = true
+// pushResultNamespacePolicy applies cumulative standard attributes at every
+// declaration/instruction entry, including structural clauses compiled directly.
+func (c *compiler) pushResultNamespacePolicy(elem *xdm.Element) (func(), error) {
+	excludes, extensions := c.localExcludes, c.extensionURIs
+	namespaces := c.nsBindings
+	c.nsBindings = inScopeNamespaces(elem)
+
+	localExcludes, err := c.elementResultExcludes(elem)
+	if err != nil {
+		c.nsBindings = namespaces
+		return nil, err
 	}
 
-	if _, ok := elem.GetAttributeNS(nameExtensionElementPrefixes, lexicon.NamespaceXSLT); ok {
-		needNewExcludes = true
+	c.localExcludes = localExcludes
+	c.setInstructionExtensionURIs(elem)
+	c.nsBindings = namespaces
+
+	return func() { c.localExcludes, c.extensionURIs = excludes, extensions }, nil
+}
+
+func (c *compiler) elementResultExcludes(elem *xdm.Element) (map[string]struct{}, error) {
+	erp, hasERP := elem.GetAttributeNS(nameExcludeResultPrefixes, lexicon.NamespaceXSLT)
+
+	eep, hasEEP := elem.GetAttributeNS(nameExtensionElementPrefixes, lexicon.NamespaceXSLT)
+	if elem.URI() == lexicon.NamespaceXSLT {
+		erp, hasERP = elem.GetAttribute(nameExcludeResultPrefixes)
+		eep, hasEEP = elem.GetAttribute(nameExtensionElementPrefixes)
 	}
 
-	if needNewExcludes {
-		newExcludes := make(map[string]struct{})
-		maps.Copy(newExcludes, c.localExcludes)
-		// Resolve prefixes to URIs at the declaration point so that
-		// exclude-result-prefixes applies to URIs, not prefixes.
-		// When a child element rebinds a prefix to a different URI,
-		// the original URI (not the new one) remains excluded.
-		if erp, ok := elem.GetAttributeNS(nameExcludeResultPrefixes, lexicon.NamespaceXSLT); ok {
-			if err := c.addLiteralResultExclusions(newExcludes, erp); err != nil {
-				return nil, err
-			}
+	if !hasERP && !hasEEP {
+		return c.localExcludes, nil
+	}
+
+	excludes := make(map[string]struct{}, len(c.localExcludes)+4)
+	maps.Copy(excludes, c.localExcludes)
+
+	if hasERP {
+		if err := c.addLiteralResultExclusions(excludes, erp); err != nil {
+			return nil, err
+		}
+	}
+
+	for prefix := range strings.FieldsSeq(eep) {
+		if prefix == lexicon.ModeDefault {
+			prefix = ""
 		}
 
-		if eep, ok := elem.GetAttributeNS(nameExtensionElementPrefixes, lexicon.NamespaceXSLT); ok {
-			for prefix := range strings.FieldsSeq(eep) {
-				if uri, ok := c.nsBindings[prefix]; ok && uri != "" {
-					newExcludes[uri] = struct{}{}
-				} else {
-					return nil, staticError(errCodeXTSE1430,
-						"undeclared namespace prefix %q in extension-element-prefixes", prefix)
-				}
-			}
+		if uri := c.nsBindings[prefix]; uri != "" {
+			excludes[uri] = struct{}{}
+		} else {
+			return nil, staticError(errCodeXTSE1430, "undeclared namespace prefix %q in extension-element-prefixes", prefix)
 		}
-
-		return newExcludes, nil
 	}
 
-	return c.localExcludes, nil
+	return excludes, nil
 }
 
 func (c *compiler) addLiteralResultExclusions(excludes map[string]struct{}, prefixes string) error {
 	if prefixes == lexicon.ModeAll {
-		for prefix := range c.stylesheet.namespaces {
-			if uri, ok := c.nsBindings[prefix]; ok && uri != "" {
+		for _, uri := range c.nsBindings {
+			if uri != "" {
 				excludes[uri] = struct{}{}
 			}
 		}
@@ -960,18 +958,9 @@ func (c *compiler) addLiteralResultExtensionURIs(elem *xdm.Element) {
 }
 
 func (c *compiler) literalResultNamespaces(elem *xdm.Element) map[string]string {
-	// Build set of excluded namespace URIs. Stylesheet-level URIs were
-	// resolved at compile init (before template processing mutates namespaces).
-	// Local (element-level) URIs are already resolved to URIs at declaration
-	// point, so we merge them directly.
-	excludedURIs := make(map[string]struct{}, len(c.stylesheet.excludeURIs)+len(c.localExcludes))
-	for uri := range c.stylesheet.excludeURIs {
-		excludedURIs[uri] = struct{}{}
-	}
-
-	for uri := range c.localExcludes {
-		excludedURIs[uri] = struct{}{}
-	}
+	// Each pending literal result carries exclusions from its own module and
+	// ancestors; the principal stylesheet's policy cannot apply globally.
+	excludedURIs := maps.Clone(c.localExcludes)
 
 	// Namespace aliases override exclusions for both their source and result URI.
 	for _, alias := range c.stylesheet.namespaceAliases {

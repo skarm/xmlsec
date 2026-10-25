@@ -17,14 +17,33 @@ type atomicTypeRequirement struct {
 	name   string
 }
 
+type literalQNameRequirement struct {
+	target      AtomicTypeName
+	value       string
+	constructor bool
+}
+
 type prefixValidationPlan struct {
-	prefixes    []string
-	atomicTypes []atomicTypeRequirement
+	prefixes        []string
+	atomicTypes     []atomicTypeRequirement
+	annotationTypes []string
+	castTypes       []AtomicTypeName
+	qnameLiterals   []literalQNameRequirement
 }
 
 // ValidateSequenceType checks type names and namespace bindings at a declaration
 // site, using the same static rules as an XPath instance-of expression.
 func ValidateSequenceType(st xdm.SequenceType, namespaces map[string]string, defaultNS string, decls SchemaDeclarations) error {
+	return ValidateSequenceTypeForVersion(st, namespaces, defaultNS, decls, 31)
+}
+
+// ValidateSequenceTypeForVersion checks a declaration using the selected
+// XPath version's predefined schema types and sequence type grammar.
+func ValidateSequenceTypeForVersion(st xdm.SequenceType, namespaces map[string]string, defaultNS string, decls SchemaDeclarations, version int) error {
+	if err := CheckTypeLanguage(st, version); err != nil {
+		return err
+	}
+
 	namespaces = maps.Clone(namespaces)
 	if namespaces == nil {
 		namespaces = make(map[string]string, 1)
@@ -34,10 +53,10 @@ func ValidateSequenceType(st xdm.SequenceType, namespaces map[string]string, def
 	plan := newPrefixPlanBuilder()
 	appendSequenceTypePrefixChecks(&plan, st)
 
-	return plan.plan().Validate(namespaces, true, decls)
+	return plan.plan().Validate(namespaces, true, decls, version)
 }
 
-func (p prefixValidationPlan) Validate(namespaces map[string]string, strict bool, decls SchemaDeclarations) error {
+func (p prefixValidationPlan) Validate(namespaces map[string]string, strict bool, decls SchemaDeclarations, version int) error {
 	for _, prefix := range p.prefixes {
 		if err := validatePrefix(prefix, namespaces, strict); err != nil {
 			return err
@@ -45,37 +64,180 @@ func (p prefixValidationPlan) Validate(namespaces map[string]string, strict bool
 	}
 
 	for _, req := range p.atomicTypes {
-		lexical := joinQName(req.prefix, req.name)
+		if err := validateAtomicTypeRequirement(req, namespaces, strict, decls, version); err != nil {
+			return err
+		}
+	}
 
-		prefix, local := splitEQName(lexical)
-		if !strings.HasPrefix(lexical, "Q{") {
-			if err := validatePrefix(prefix, namespaces, strict); err != nil {
+	for _, target := range p.castTypes {
+		if err := validateCastTarget(target, namespaces, decls, version, strict); err != nil {
+			return err
+		}
+	}
+
+	for _, name := range p.annotationTypes {
+		if err := validateAnnotationType(name, namespaces, decls, version); err != nil {
+			return err
+		}
+	}
+
+	if version == 20 {
+		for _, literal := range p.qnameLiterals {
+			if err := validateLiteralQName(literal, namespaces, strict, decls); err != nil {
 				return err
 			}
 		}
-
-		uri := resolveStaticNameURI(lexical, namespaces, namespaces[""])
-		if uri == lexicon.NamespaceXSD {
-			if knownXSTypeNames(local) && local != lexicon.TypeNMTokens && local != lexicon.TypeIDREFS && local != lexicon.TypeENTITIES {
-				continue
-			}
-		} else if decls != nil {
-			if _, ok := decls.LookupSchemaType(local, uri); ok {
-				continue
-			}
-		}
-
-		return &xdm.Error{Code: "XPST0051", Message: fmt.Sprintf("unknown atomic or union type %s", lexical)}
 	}
 
 	return nil
+}
+
+func validateAtomicTypeRequirement(req atomicTypeRequirement, namespaces map[string]string, strict bool, decls SchemaDeclarations, version int) error {
+	lexical := joinQName(req.prefix, req.name)
+
+	prefix, local := splitEQName(lexical)
+	if !strings.HasPrefix(lexical, "Q{") {
+		if err := validatePrefix(prefix, namespaces, strict); err != nil {
+			return err
+		}
+	}
+
+	uri := resolveStaticNameURI(lexical, namespaces, namespaces[""])
+	if uri == lexicon.NamespaceXSD {
+		if knownXSTypeForVersion(local, version) && !isBuiltinListLocalName(local) && (version != 20 || local != lexicon.TypeError) {
+			return nil
+		}
+	} else if decls != nil {
+		if _, ok := decls.LookupSchemaType(local, uri); ok {
+			return nil
+		}
+	}
+
+	return &xdm.Error{Code: errCodeXPST0051, Message: fmt.Sprintf("unknown atomic or union type %s", lexical)}
+}
+
+// F&O 2.0 §5.3 requires literal QName constructors/casts to be evaluated
+// statically. Castable itself is a test, not one of those conversion forms.
+func validateLiteralQName(literal literalQNameRequirement, namespaces map[string]string, strict bool, decls SchemaDeclarations) error {
+	name := joinQName(literal.target.Prefix, literal.target.Name)
+	_, local := splitEQName(name)
+	defaultNS := namespaces[""]
+
+	if literal.constructor {
+		defaultNS = NSFn
+	}
+
+	uri := resolveStaticNameURI(name, namespaces, defaultNS)
+
+	qname := uri == NSXS && local == lexicon.TypeQName
+	if !qname && decls != nil {
+		base := resolveToBuiltinBase(local, uri, decls)
+		qname = base == xdm.TypeQName || base == xdm.TypeNOTATION
+	}
+
+	if !qname {
+		return nil
+	}
+
+	prefix, _, _, valid := xdm.SplitLexicalQName(literal.value)
+	if valid && prefix != "" {
+		if err := validatePrefix(prefix, namespaces, strict); err != nil {
+			return &xdm.Error{Code: errCodeFONS0004, Message: "no static namespace binding for QName prefix " + prefix}
+		}
+	}
+	// Invalid lexical values remain dynamic conversion errors. The host
+	// may forbid reporting those errors from an unselected expression.
+	return nil
+}
+
+func addLiteralQNameCheck(plan *prefixPlanBuilder, target AtomicTypeName, source Expr, constructor bool) {
+	literal, ok := source.(LiteralExpr)
+	if !ok {
+		return
+	}
+
+	value, ok := literal.Value.(string)
+	if !ok {
+		return
+	}
+
+	plan.qnameLiterals = append(plan.qnameLiterals, literalQNameRequirement{target: target, value: value, constructor: constructor})
+}
+
+// Element and attribute type annotations may name complex, list, or union
+// types, but the named type must still exist in the static context.
+func validateAnnotationType(name string, namespaces map[string]string, decls SchemaDeclarations, version int) error {
+	_, local := splitEQName(name)
+	uri := resolveStaticNameURI(name, namespaces, namespaces[""])
+
+	if uri == lexicon.NamespaceXSD {
+		if knownXSTypeForVersion(local, version) || local == lexicon.TypeAnyType || local == lexicon.TypeAnySimpleType || local == lexicon.TypeUntyped {
+			return nil
+		}
+	} else if decls != nil {
+		if _, ok := decls.LookupSchemaType(local, uri); ok {
+			return nil
+		}
+	}
+
+	return &xdm.Error{Code: lexicon.ErrXPST0008, Message: "unknown type in the static context: " + name}
+}
+
+// validateCastTarget applies the selected language's static cast rules even
+// when the operand is empty or the expression is in an unevaluated branch.
+func validateCastTarget(target AtomicTypeName, namespaces map[string]string, decls SchemaDeclarations, version int, strict bool) error {
+	lexical := joinQName(target.Prefix, target.Name)
+
+	prefix, local := splitEQName(lexical)
+	if !strings.HasPrefix(lexical, "Q{") {
+		if err := validatePrefix(prefix, namespaces, strict); err != nil {
+			return err
+		}
+	}
+
+	uri := resolveStaticNameURI(lexical, namespaces, namespaces[""])
+	if uri == lexicon.NamespaceXSD {
+		if local == lexicon.TypeAnyAtomicType || local == lexicon.TypeNotation || local == lexicon.TypeAnySimpleType && version != 20 {
+			return &xdm.Error{Code: errCodeXPST0080, Message: "abstract cast target " + lexical}
+		}
+
+		if knownXSTypeForVersion(local, version) && (version != 20 || !isBuiltinListLocalName(local) && local != lexicon.TypeError) {
+			return nil
+		}
+	} else if decls != nil {
+		name := xdm.QAnnotation(uri, local)
+		_, list := decls.ListItemType(name)
+		union := len(decls.UnionMemberTypes(name)) > 0
+
+		base := resolveToBuiltinBase(local, uri, decls)
+		if version != 20 && (list || union) || !list && !union && strings.HasPrefix(base, "xs:") && knownXSTypeNames(strings.TrimPrefix(base, "xs:")) {
+			return nil
+		}
+	}
+
+	code := "XQST0052"
+	if version == 20 {
+		code = errCodeXPST0051
+	}
+
+	return &xdm.Error{Code: code, Message: "unknown or non-simple cast target " + lexical}
+}
+
+func knownXSTypeForVersion(local string, version int) bool {
+	// Earlier libraries use bare "numeric" only as signature shorthand;
+	// xs:numeric becomes an implicitly imported union type in F&O 3.1.
+	return knownXSTypeNames(local) && (local != lexicon.TypeNumeric || version == 0 || version >= 31)
+}
+
+func isBuiltinListLocalName(local string) bool {
+	return local == lexicon.TypeNMTokens || local == lexicon.TypeIDREFS || local == lexicon.TypeENTITIES
 }
 
 // knownXSTypeNames lists valid type local names in the xs: namespace
 // for use in SequenceType (instance of, cast as, etc.).
 func knownXSTypeNames(key string) bool {
 	switch key {
-	case lexicon.TypeString, "integer", "decimal", "double", "float", fnNameBoolean, lexicon.TypeDate, lexicon.TypeDateTime, lexicon.TypeTime, lexicon.TypeDuration, "dayTimeDuration", "yearMonthDuration", "anyURI", lexicon.TypeQName, lexicon.TypeBase64Binary, lexicon.TypeHexBinary, "untypedAtomic", "anyAtomicType", "long", "int", "short", "byte", "unsignedLong", "unsignedInt", "unsignedShort", "unsignedByte", "nonNegativeInteger", "nonPositiveInteger", "positiveInteger", "negativeInteger", "normalizedString", "token", "language", lexicon.TypeName, "NCName", "NMTOKEN", "ENTITY", "ID", "IDREF", lexicon.TypeGDay, lexicon.TypeGMonth, lexicon.TypeGMonthDay, lexicon.TypeGYear, lexicon.TypeGYearMonth, "dateTimeStamp", lexicon.TypeError, "numeric", "NOTATION", lexicon.TypeNMTokens, lexicon.TypeIDREFS, lexicon.TypeENTITIES:
+	case lexicon.TypeString, "integer", lexicon.TypeDecimal, "double", "float", fnNameBoolean, lexicon.TypeDate, lexicon.TypeDateTime, lexicon.TypeTime, lexicon.TypeDuration, lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration, "anyURI", lexicon.TypeQName, lexicon.TypeBase64Binary, lexicon.TypeHexBinary, lexicon.TypeUntypedAtomic, lexicon.TypeAnyAtomicType, "long", "int", "short", "byte", "unsignedLong", "unsignedInt", "unsignedShort", "unsignedByte", "nonNegativeInteger", "nonPositiveInteger", "positiveInteger", "negativeInteger", "normalizedString", "token", "language", lexicon.TypeName, "NCName", lexicon.TypeNMToken, lexicon.TypeENTITY, "ID", "IDREF", lexicon.TypeGDay, lexicon.TypeGMonth, lexicon.TypeGMonthDay, lexicon.TypeGYear, lexicon.TypeGYearMonth, lexicon.TypeDateTimeStamp, lexicon.TypeError, lexicon.TypeNumeric, lexicon.TypeNotation, lexicon.TypeNMTokens, lexicon.TypeIDREFS, lexicon.TypeENTITIES:
 		return true
 	}
 
@@ -124,6 +286,9 @@ type prefixPlanBuilder struct {
 	atomicTypes     []atomicTypeRequirement
 	seenPrefixes    map[string]struct{}
 	seenAtomicTypes map[atomicTypeRequirement]struct{}
+	castTypes       []AtomicTypeName
+	annotationTypes []string
+	qnameLiterals   []literalQNameRequirement
 }
 
 func newPrefixPlanBuilder() prefixPlanBuilder {
@@ -132,8 +297,11 @@ func newPrefixPlanBuilder() prefixPlanBuilder {
 
 func (b prefixPlanBuilder) plan() prefixValidationPlan {
 	return prefixValidationPlan{
-		prefixes:    b.prefixes,
-		atomicTypes: b.atomicTypes,
+		prefixes:        b.prefixes,
+		atomicTypes:     b.atomicTypes,
+		castTypes:       b.castTypes,
+		annotationTypes: b.annotationTypes,
+		qnameLiterals:   b.qnameLiterals,
 	}
 }
 
@@ -210,10 +378,15 @@ func appendExprLocalPrefixChecks(plan *prefixPlanBuilder, node Expr) {
 		addPrefixCheck(plan, n.Prefix)
 	case FunctionCall:
 		addPrefixCheck(plan, n.Prefix)
+
+		if len(n.Args) == 1 {
+			addLiteralQNameCheck(plan, AtomicTypeName{Prefix: n.Prefix, Name: n.Name}, n.Args[0], true)
+		}
 	case NamedFunctionRef:
 		addPrefixCheck(plan, n.Prefix)
 	case CastExpr:
 		addCastTypePrefixCheck(plan, n.Type)
+		addLiteralQNameCheck(plan, n.Type, n.Expr, false)
 	case CastableExpr:
 		addCastTypePrefixCheck(plan, n.Type)
 	case InstanceOfExpr:
@@ -255,17 +428,21 @@ func appendExprLocalPrefixChecks(plan *prefixPlanBuilder, node Expr) {
 			}
 		}
 	case InlineFunctionExpr:
-		for _, param := range n.Params {
-			addVarNamePrefixCheck(plan, param.Name)
+		appendInlineFunctionPrefixChecks(plan, n)
+	}
+}
 
-			if param.TypeHint != nil {
-				appendSequenceTypePrefixChecks(plan, *param.TypeHint)
-			}
-		}
+func appendInlineFunctionPrefixChecks(plan *prefixPlanBuilder, function InlineFunctionExpr) {
+	for _, param := range function.Params {
+		addVarNamePrefixCheck(plan, param.Name)
 
-		if n.ReturnType != nil {
-			appendSequenceTypePrefixChecks(plan, *n.ReturnType)
+		if param.TypeHint != nil {
+			appendSequenceTypePrefixChecks(plan, *param.TypeHint)
 		}
+	}
+
+	if function.ReturnType != nil {
+		appendSequenceTypePrefixChecks(plan, *function.ReturnType)
 	}
 }
 
@@ -299,10 +476,10 @@ func appendNodeTestPrefixChecks(plan *prefixPlanBuilder, nt xdm.NodeTest) {
 		addAtomicOrUnionTypeCheck(plan, t)
 	case xdm.ElementTest:
 		addQNameStringPrefixCheck(plan, t.Name)
-		addQNameStringPrefixCheck(plan, t.TypeName)
+		addAnnotationTypeCheck(plan, t.TypeName)
 	case xdm.AttributeTest:
 		addQNameStringPrefixCheck(plan, t.Name)
-		addQNameStringPrefixCheck(plan, t.TypeName)
+		addAnnotationTypeCheck(plan, t.TypeName)
 	case xdm.SchemaElementTest:
 		addQNameStringPrefixCheck(plan, t.Name)
 	case xdm.SchemaAttributeTest:
@@ -388,6 +565,15 @@ func addQNameStringPrefixCheck(plan *prefixPlanBuilder, qname string) {
 	addVarNamePrefixCheck(plan, qname)
 }
 
+func addAnnotationTypeCheck(plan *prefixPlanBuilder, name string) {
+	if name == "" {
+		return
+	}
+
+	addQNameStringPrefixCheck(plan, name)
+	plan.annotationTypes = append(plan.annotationTypes, name)
+}
+
 // addCatchCodePrefixCheck extracts the prefix from a catch error code
 // and adds it to the prefix validation plan. Handles wildcards and Q{uri} forms.
 func addCatchCodePrefixCheck(plan *prefixPlanBuilder, code string) {
@@ -413,6 +599,7 @@ func addCatchCodePrefixCheck(plan *prefixPlanBuilder, code string) {
 // prefix.
 func addCastTypePrefixCheck(plan *prefixPlanBuilder, t AtomicTypeName) {
 	addQNameStringPrefixCheck(plan, joinQName(t.Prefix, t.Name))
+	plan.castTypes = append(plan.castTypes, t)
 }
 
 func addAtomicOrUnionTypeCheck(plan *prefixPlanBuilder, t xdm.AtomicOrUnionType) {

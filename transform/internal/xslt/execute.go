@@ -280,16 +280,20 @@ func (ec *execContext) ResolveFunction(_ context.Context, uri, name string, arit
 	if uri == lexicon.NamespaceXSLT && name == nameOriginal && ec.originalFunc != nil {
 		return ec.originalFunc, true, nil
 	}
-	// Strict expressions reject missing functions during compilation. Calls
-	// deferred by compatibility processing bind an extension fallback instead;
-	// the resolver is deliberately excluded from function-lookup.
-	if !isReservedFunctionNS(uri) {
-		return &xsltFunc{min: arity, max: arity, fn: func(context.Context, []xdm.Sequence) (xdm.Sequence, error) {
-			return nil, dynamicError("XTDE1425", "extension function Q{%s}%s#%d is unavailable", uri, name, arity)
-		}}, true, nil
-	}
 
 	return nil, false, nil
+}
+
+// ResolveCompatibilityFunction implements the special XSLT backwards binding
+// for every unavailable function outside the standard fn namespace (§3.9.1).
+func (ec *execContext) ResolveCompatibilityFunction(_ context.Context, uri, name string, arity int) (xpath.Function, bool, error) {
+	if uri == xpath.NSFn {
+		return nil, false, nil
+	}
+
+	return &xsltFunc{min: arity, max: arity, fn: func(context.Context, []xdm.Sequence) (xdm.Sequence, error) {
+		return nil, dynamicError("XTDE1425", "extension function Q{%s}%s#%d is unavailable", uri, name, arity)
+	}}, true, nil
 }
 
 // ResolveVariable implements xpath.VariableResolver. It lazily evaluates
@@ -1522,7 +1526,7 @@ func (ec *execContext) buildBaseXPathEvaluator(baseURI string) xpath.Evaluator {
 
 	if ec.transformConfig != nil {
 		if r := ec.transformConfig.uriResolver; r != nil {
-			eval = eval.URIResolver(r)
+			eval = eval.URIResolver(resourceURIResolver{r})
 		}
 
 		if c := ec.transformConfig.httpClient; c != nil {
@@ -1819,7 +1823,7 @@ func (ec *execContext) scopedXPathEvaluator(ctx context.Context, compat bool) xp
 // withFocus applies the current dynamic focus (context item, position, size)
 // to eval. When no focus is set, eval is returned unchanged.
 func (ec *execContext) withFocus(eval xpath.Evaluator) xpath.Evaluator {
-	if ec.contextItem == nil && ec.position <= 0 && ec.size <= 0 {
+	if ec.contextItem == nil && ec.position <= 0 && ec.size == 0 {
 		return eval
 	}
 

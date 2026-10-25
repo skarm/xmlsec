@@ -275,8 +275,8 @@ func lookupDeclarationXSLTElement(name string) (elementDef, bool) {
 		return elementDef{attrs: map[string]attrDef{
 			xslAttrName: {required: true},
 			"as":        {},
-			// A 2.0 attribute, so the 2.0 pair: allowsBoolAliases admits the
-			// other four spellings in a 3.0 module.
+			// A 2.0 attribute; a selected 3.0 processor also admits the four
+			// boolean aliases, regardless of the module's version.
 			xslElemOverride: {values: []string{lexicon.ValueYes, "no"}},
 			// A function cannot declare hidden visibility; xsl:expose may make it
 			// hidden (REC H.1, xsl:visibility-not-hidden-type).
@@ -459,13 +459,13 @@ func lookupConstructorXSLTElement(name string) (elementDef, bool) {
 			"level":               {values: []string{nameSingle, "multiple", "any"}},
 			"count":               {},
 			"from":                {},
-			"format":              {avt: true},
+			nameFormat:            {avt: true},
 			lexicon.AttrLang:      {avt: true},
-			"letter-value":        {values: []string{"alphabetic", "traditional"}, avt: true},
+			nameLetterValue:       {values: []string{"alphabetic", "traditional"}, avt: true},
 			"ordinal":             {avt: true},
 			nameGroupingSeparator: {avt: true},
-			"grouping-size":       {avt: true},
-			"start-at":            {avt: true, since30: true},
+			nameGroupingSize:      {avt: true},
+			nameStartAt:           {avt: true, since30: true},
 		}}, true
 	}
 
@@ -648,10 +648,8 @@ func lookupDynamicXSLTElement(name string) (elementDef, bool) {
 	case "message":
 		return elementDef{attrs: map[string]attrDef{
 			xslAttrSelect: {},
-			// 3.0 declares terminate as an AVT yielding xs:boolean, which widens
-			// the set to the four lexical forms of the type. That widening is
-			// applied by allowsBoolAliases rather than listed here, so the
-			// enumeration stays the 2.0 pair and a 2.0 module is held to it.
+			// Both editions support AVTs. The 2.0 vocabulary is yes/no; a
+			// selected 3.0 processor also accepts the four boolean aliases.
 			"terminate": {values: []string{lexicon.ValueYes, "no"}, avt: true},
 			// @error-code follows the processor's version, not the module's.
 			"error-code": {processor30: true, avt: true},
@@ -719,10 +717,10 @@ func lookupSerializationXSLTElement(name string) (elementDef, bool) {
 				values: []string{lexicon.MethodXML, lexicon.MethodHTML, lexicon.MethodXHTML, lexicon.MethodText},
 			},
 			lexicon.SerializationParameterDocument:   {processor30: true, avt: true},
-			lexicon.SerializationItemSeparator:       {avt: true},
-			lexicon.SerializationHTMLVersion:         {avt: true},
-			lexicon.SerializationSuppressIndentation: {avt: true},
-			"format":                                 {avt: true},
+			lexicon.SerializationItemSeparator:       {processor30: true, avt: true},
+			lexicon.SerializationHTMLVersion:         {processor30: true, avt: true},
+			lexicon.SerializationSuppressIndentation: {processor30: true, avt: true},
+			nameFormat:                               {avt: true},
 			lexicon.AttrHref:                         {avt: true},
 			nameValidation:                           {values: []string{validationStrict, validationLax, validationPreserve, validationStrip}},
 			lexicon.AttrType:                         {},
@@ -760,11 +758,11 @@ func lookupSerializationXSLTElement(name string) (elementDef, bool) {
 			lexicon.SerializationParameterDocument:   {processor30: true, uri: true},
 			lexicon.SerializationAllowDuplicateNames: {processor30: true, values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"}},
 			lexicon.SerializationBuildTree:           {processor30: true, values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"}},
-			lexicon.SerializationHTMLVersion:         {},
-			lexicon.SerializationSuppressIndentation: {},
+			lexicon.SerializationHTMLVersion:         {processor30: true},
+			lexicon.SerializationSuppressIndentation: {processor30: true},
 			// item-separator is applied during sequence normalization (§5.7.1), not
 			// just serialization: inserted text nodes participate in result validation.
-			lexicon.SerializationItemSeparator:        {},
+			lexicon.SerializationItemSeparator:        {processor30: true},
 			lexicon.SerializationByteOrderMark:        {values: []string{lexicon.ValueYes, "no"}},
 			lexicon.SerializationCDATASectionElements: {},
 			lexicon.SerializationDoctypePublic:        {},
@@ -776,8 +774,8 @@ func lookupSerializationXSLTElement(name string) (elementDef, bool) {
 			lexicon.SerializationMediaType:            {},
 			lexicon.SerializationNormalizationForm:    {nmtoken: true},
 			lexicon.SerializationOmitXMLDeclaration:   {values: []string{lexicon.ValueYes, "no"}},
-			// The enumeration retains the 2.0 vocabulary. allowsBoolAliases admits
-			// the boolean synonyms only in 3.0 modules.
+			// The enumeration retains the 2.0 vocabulary. A selected 3.0 processor
+			// also admits the boolean synonyms in a 2.0 module.
 			lexicon.SerializationStandalone:        {values: []string{lexicon.ValueYes, "no", lexicon.ValueOmit}},
 			lexicon.SerializationUndeclarePrefixes: {values: []string{lexicon.ValueYes, "no"}},
 			lexicon.SerializationUseCharacterMaps:  {},

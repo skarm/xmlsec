@@ -84,8 +84,6 @@ type Stylesheet struct {
 	outputs             map[string]*OutputDef                       // "" = default output
 	functions           map[funcKey]*xslFunction                    // xsl:function defs (keyed by name+arity)
 	namespaces          map[string]string                           // prefix -> URI from stylesheet
-	excludePrefixes     map[string]struct{}                         // prefixes excluded from output
-	excludeURIs         map[string]struct{}                         // namespace URIs excluded from output
 	decimalFormats      map[xpath.QualifiedName]xpath.DecimalFormat // named decimal formats
 	decimalFmtPrec      map[xpath.QualifiedName]int                 // import precedence of each decimal format
 	decimalFmtSet       map[xpath.QualifiedName]map[string]struct{} // explicitly set properties per format
@@ -353,7 +351,8 @@ type characterMapDef struct {
 type accumulatorDef struct {
 	Initial           *xpath.Expression
 	Name              string
-	As                string // type declaration
+	As                string            // type declaration
+	Type              *xdm.SequenceType // type bound in the declaration static context
 	InitialBody       []instruction
 	Rules             []*accumulatorRule
 	ImportPrec        int // import precedence for conflict resolution
@@ -387,6 +386,7 @@ type nameTest struct {
 	URI        string // resolved namespace URI (set at compile time)
 	HasURI     bool   // true when URI was explicitly resolved (distinguishes "" from unset)
 	ImportPrec int    // import precedence of the declaring module
+	SpaceOrder int    // declaration order for XSLT 2.0 whitespace conflict recovery
 }
 
 // DefaultOutputDef returns the default output definition for the stylesheet

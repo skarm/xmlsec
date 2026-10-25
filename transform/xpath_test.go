@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/big"
 	"strconv"
@@ -176,6 +177,10 @@ func TestXPathXMLSchemaEditions(t *testing.T) {
 			{`xs:gYearMonth('-0000-01')`, "0000-01", errCodeFORG0001},
 			{`xs:anyURI('%gg')`, "%gg", errCodeFORG0001},
 			{`xs:anyURI(':/relative')`, ":/relative", errCodeFORG0001},
+			{`xs:anyURI('####')`, "####", errCodeFORG0001},
+			{`xs:anyURI('1scheme:value')`, "1scheme:value", errCodeFORG0001},
+			{`xs:anyURI('//[not-ipv6]/')`, "//[not-ipv6]/", errCodeFORG0001},
+			{`xs:anyURI('//[::ffff:192.0000.2.1]/')`, "//[::ffff:192.0000.2.1]/", errCodeFORG0001},
 			{`sum((xs:untypedAtomic('+INF'),1))`, namePositiveInfinity, errCodeFORG0001},
 			{`sum(xs:untypedAtomic('+INF'))`, namePositiveInfinity, errCodeFORG0001},
 			{`avg((xs:untypedAtomic('+INF'),1))`, namePositiveInfinity, errCodeFORG0001},
@@ -203,10 +208,31 @@ func TestXPathXMLSchemaEditions(t *testing.T) {
 			`matches('-', '[a-z-]')`, `matches('-', '[-a-z]')`, `matches('-', '[a-z\-0-9]')`,
 			`matches('b', '[a-z-[aeiou]]')`, `matches('[a-z-x]', '[a-z-x]', 'q')`,
 			`xs:anyURI(' https://example.test/%20 ') eq xs:anyURI('https://example.test/%20')`,
+			`string(xs:anyURI('urn:trailing:')) eq 'urn:trailing:'`,
+			`string(xs:anyURI('relative/with:colon')) eq 'relative/with:colon'`,
+			`string(xs:anyURI('urn:a\b^c` + "`" + `d')) eq 'urn:a\b^c` + "`" + `d'`,
+			`string(xs:anyURI('http://[::1]:80/path?q#f')) eq 'http://[::1]:80/path?q#f'`,
+			`string(xs:anyURI('//registry:word/path')) eq '//registry:word/path'`,
+			`string(xs:anyURI('http://[::ffff:192.000.002.001]/')) eq 'http://[::ffff:192.000.002.001]/'`,
 			`xs:date('2000-02-29') eq xs:date('2000-02-29')`,
 		} {
 			if got := text(t, evaluate(t, e, expression, transform.XPath31)); got != nameTrue {
 				t.Fatal(edition, expression, got)
+			}
+		}
+
+		for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+			if got := text(t, evaluate(t, e, `string(xs:anyURI('http://[::ffff:192.000.002.001]/')) eq 'http://[::ffff:192.000.002.001]/'`, version)); got != nameTrue {
+				t.Fatal(edition, version, got)
+			}
+			value, err := query(t, e, `xs:anyURI('//[::ffff:192.0000.2.1]/')`, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if edition == transform.XMLSchema10 {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != errCodeFORG0001 {
+					t.Fatal(edition, version, value, err)
+				}
+			} else if err != nil || text(t, value) != "//[::ffff:192.0000.2.1]/" {
+				t.Fatal(edition, version, value, err)
 			}
 		}
 
@@ -999,6 +1025,215 @@ func TestXPathInlineParameterNames(t *testing.T) {
 	}
 }
 
+func TestXPathCastTargetContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for _, target := range []string{"xs:anyType", "xs:untyped", "xs:missing", "p:missing", "xs:anySimpleType", "xs:anyAtomicType", "xs:NOTATION"} {
+			code := "XQST0052"
+			if version == transform.XPath20 {
+				code = "XPST0051"
+			}
+			if target == "xs:anyAtomicType" || target == "xs:NOTATION" || target == "xs:anySimpleType" && version != transform.XPath20 {
+				code = "XPST0080"
+			}
+			for _, operator := range []string{"cast", "castable"} {
+				for _, source := range []string{`'x' ` + operator + ` as ` + target, `if (false()) then ('x' ` + operator + ` as ` + target + `) else true()`} {
+					_, err := e.CompileXPath(t.Context(), source, transform.XPathOptions{Version: version, Namespaces: map[string]string{"p": "urn:missing"}})
+					var detail *transform.Error
+					if !errors.As(err, &detail) || detail.Code != code {
+						t.Errorf("XPath %d %s: %v, want %s", version, source, err, code)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestXPathVersionedSchemaTypes(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for _, tc := range []struct{ source, want, oldCode string }{
+			{`xs:numeric(1) instance of xs:integer`, nameTrue, "XPST0017"},
+			{`xs:numeric(xs:float('2')) instance of xs:float`, nameTrue, "XPST0017"},
+			{`xs:numeric(2.5) instance of xs:decimal`, nameTrue, "XPST0017"},
+			{`xs:numeric('2') instance of xs:double`, nameTrue, "XPST0017"},
+			{`1 instance of xs:numeric`, nameTrue, "XPST0051"},
+			{`() instance of element(*, xs:numeric)`, nameFalse, "XPST0008"},
+			{`() instance of attribute(*, xs:numeric)`, nameFalse, "XPST0008"},
+			{`1 treat as xs:numeric`, "1", "XPST0051"},
+			{`1 cast as xs:numeric`, "1", "XQST0052"},
+			{`1 castable as xs:numeric`, nameTrue, "XQST0052"},
+			{`if(false()) then (1 cast as xs:numeric) else 1`, "1", "XQST0052"},
+		} {
+			q, err := e.CompileXPath(t.Context(), tc.source, transform.XPathOptions{Version: version})
+			if version < transform.XPath31 {
+				code := tc.oldCode
+				if version == transform.XPath20 && code == "XQST0052" {
+					code = "XPST0051"
+				}
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != code {
+					t.Errorf("%d %s: %v, want %s", version, tc.source, err, code)
+				}
+				continue
+			}
+			if err != nil {
+				t.Fatal(version, tc.source, err)
+			}
+			value, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
+			if err != nil || text(t, value) != tc.want {
+				t.Fatal(version, tc.source, value, err, tc.want)
+			}
+		}
+		for _, name := range []string{"NMTOKENS", "IDREFS", "ENTITIES"} {
+			source := `count(xs:` + name + `('a b'))`
+			q, err := e.CompileXPath(t.Context(), source, transform.XPathOptions{Version: version})
+			if version == transform.XPath20 {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != "XPST0017" {
+					t.Fatal(version, source, err)
+				}
+				continue
+			}
+			if err != nil {
+				t.Fatal(version, source, err)
+			}
+			value, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
+			if err != nil || text(t, value) != "2" {
+				t.Fatal(version, source, value, err)
+			}
+		}
+
+		for _, test := range []struct{ source, want, code string }{
+			{`empty(xs:error(()))`, nameTrue, "XPST0017"},
+			{`() castable as xs:error?`, nameTrue, "XPST0051"},
+			{`1 castable as xs:error`, nameFalse, "XPST0051"},
+			{`empty(() cast as xs:error?)`, nameTrue, "XPST0051"},
+			{`1 instance of xs:error`, nameFalse, "XPST0051"},
+		} {
+			q, err := e.CompileXPath(t.Context(), test.source, transform.XPathOptions{Version: version})
+			if version == transform.XPath20 {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != test.code {
+					t.Fatal(version, test.source, err)
+				}
+
+				continue
+			}
+
+			if err != nil {
+				t.Fatal(version, test.source, err)
+			}
+
+			value, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
+			if err != nil || text(t, value) != test.want {
+				t.Fatal(version, test.source, value, err)
+			}
+		}
+	}
+	for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+		want := nameFalse
+		if version == transform.XPath31 {
+			want = nameTrue
+		}
+		if got := text(t, evaluate(t, e, `exists(function-lookup(QName('http://www.w3.org/2001/XMLSchema','numeric'),1))`, version)); got != want {
+			t.Fatal(version, got)
+		}
+		_, err := e.CompileXPath(t.Context(), `'2' cast as n:numeric`, transform.XPathOptions{Version: version, Namespaces: map[string]string{"n": namespaceSchema, "xs": "urn:shadowed"}})
+		if version == transform.XPath30 {
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != "XQST0052" {
+				t.Fatal(version, err)
+			}
+		} else if err != nil {
+			t.Fatal(version, err)
+		}
+	}
+	for _, expression := range []string{
+		`xs:numeric#1(xs:short(2)) instance of xs:short`,
+		`function-lookup(xs:QName('xs:numeric'),1)(2.5) instance of xs:decimal`,
+		`xs:numeric(?)(xs:float('2')) instance of xs:float`,
+		`apply(xs:numeric#1,[1]) instance of xs:integer`,
+		`xs:numeric(true()) instance of xs:double`,
+		`empty(xs:numeric(()))`,
+		`not(xs:date('2026-01-01') castable as xs:numeric)`,
+	} {
+		if got := text(t, evaluate(t, e, expression, transform.XPath31)); got != nameTrue {
+			t.Fatal(expression, got)
+		}
+	}
+	for _, expression := range []string{`xs:numeric(xs:date('2026-01-01'))`, `xs:date('2026-01-01') cast as xs:numeric`} {
+		_, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != errCodeFORG0001 {
+			t.Fatal(expression, err)
+		}
+	}
+}
+
+func TestXPathListCastContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+		for _, target := range []string{"NMTOKENS", "IDREFS", "ENTITIES"} {
+			for _, expression := range []string{
+				`count('a b' cast as xs:` + target + `) eq 2`,
+				`deep-equal('a b' cast as xs:` + target + `,xs:` + target + `('a b'))`,
+				`count(xs:untypedAtomic('a b') cast as xs:` + target + `) eq 2`,
+				`not(12 castable as xs:` + target + `)`,
+				`not(xs:anyURI('a') castable as xs:` + target + `)`,
+				`not('' castable as xs:` + target + `)`,
+				`empty(() cast as xs:` + target + `?)`,
+			} {
+				if got := text(t, evaluate(t, e, expression, version)); got != nameTrue {
+					t.Fatal(version, expression, got)
+				}
+			}
+			for _, invalid := range []struct{ source, code string }{
+				{`12`, errCodeXPTY0004},
+				{`true()`, errCodeXPTY0004},
+				{`xs:anyURI('a')`, errCodeXPTY0004},
+				{`xs:date('2026-01-01')`, errCodeXPTY0004},
+				{`''`, errCodeFORG0001},
+				{`'a/'`, errCodeFORG0001},
+			} {
+				for _, expression := range []string{`xs:` + target + `(` + invalid.source + `)`, invalid.source + ` cast as xs:` + target} {
+					_, err := query(t, e, expression, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+					var detail *transform.Error
+					if !errors.As(err, &detail) || detail.Code != invalid.code {
+						t.Fatal(version, expression, err)
+					}
+				}
+			}
+		}
+	}
+
+	for _, expression := range []string{
+		`xs:NMTOKENS#1(12)`,
+		`xs:NMTOKENS(?)(12)`,
+		`function-lookup(xs:QName('xs:NMTOKENS'),1)(12)`,
+		`apply(xs:NMTOKENS#1,[12])`,
+	} {
+		_, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != errCodeXPTY0004 {
+			t.Fatal(expression, err)
+		}
+	}
+
+	bounded := engine(t, transform.Config{Limits: transform.Limits{MaxNodes: 4}})
+	for _, expression := range []string{`count('a b c d' cast as xs:NMTOKENS) eq 4`, `count(xs:NMTOKENS('a b c d')) eq 4`} {
+		if got := text(t, evaluate(t, bounded, expression, transform.XPath31)); got != nameTrue {
+			t.Fatal(expression, got)
+		}
+	}
+	for _, expression := range []string{`'a b c d e' cast as xs:NMTOKENS`, `'a b c d e' castable as xs:NMTOKENS`, `xs:NMTOKENS('a b c d e')`} {
+		_, err := query(t, bounded, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+		if !errors.Is(err, transform.ErrLimit) {
+			t.Fatal(expression, err)
+		}
+	}
+}
+
 func TestXPathStaticNamespaceAndSchemaErrors(t *testing.T) {
 	e := engine(t, transform.Config{})
 
@@ -1012,10 +1247,17 @@ func TestXPathStaticNamespaceAndSchemaErrors(t *testing.T) {
 			{`@xmlns:*`, errCodeXPST0081},
 			{`@xmlns:local`, errCodeXPST0081},
 			{`@p:local`, errCodeXPST0081},
+			{`p:local()`, errCodeXPST0081},
+			{`() instance of p:integer`, errCodeXPST0081},
+			{`p:local`, errCodeXPST0081},
 			{"1\u00a0+ 2", errCodeXPST0003},
 			{"1\u0085+ 2", errCodeXPST0003},
 			{"1\u2003+ 2", errCodeXPST0003},
 			{`() instance of xs: integer`, errCodeXPST0003},
+			{`() instance of element(*, xs:missing)`, errCodeXPST0008},
+			{`() instance of attribute(*, xs:missing)`, errCodeXPST0008},
+			{`() instance of document-node(element(*, xs:missing))`, errCodeXPST0008},
+			{`if(false()) then (1 treat as element(*, p:missing)) else 1`, errCodeXPST0081},
 		} {
 			_, err := e.CompileXPath(t.Context(), test.source, transform.XPathOptions{
 				Version: version, Namespaces: map[string]string{"p": ""},
@@ -1045,6 +1287,32 @@ func TestXPathStaticNamespaceAndSchemaErrors(t *testing.T) {
 			if _, err := e.CompileXPath(t.Context(), source, transform.XPathOptions{Version: version}); err != nil {
 				t.Fatal("valid syntax", source, err)
 			}
+		}
+
+		for _, source := range []string{`() instance of element(*, anyType)`, `() instance of attribute(*, string)`, `() instance of document-node(element(*, untyped))`} {
+			q, err := e.CompileXPath(t.Context(), source, transform.XPathOptions{Version: version, Namespaces: map[string]string{"": namespaceSchema}})
+			if err != nil {
+				t.Fatal(version, source, err)
+			}
+
+			value, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
+			if err != nil || text(t, value) != nameFalse {
+				t.Fatal(version, source, value, err)
+			}
+		}
+	}
+
+	for _, source := range []string{
+		`() instance of element(*, Q{http://www.w3.org/2001/XMLSchema}missing)`,
+		`() instance of attribute(*, Q{http://www.w3.org/2001/XMLSchema}missing)`,
+		`() instance of function(element(*, xs:missing)) as item()*`,
+		`() instance of array(element(*, xs:missing))`,
+		`() instance of map(xs:string, attribute(*, xs:missing))`,
+	} {
+		_, err := e.CompileXPath(t.Context(), source, transform.XPathOptions{Version: transform.XPath31})
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != errCodeXPST0008 {
+			t.Fatal(source, err)
 		}
 	}
 }
@@ -1106,8 +1374,6 @@ func TestXPathLexicalCasts(t *testing.T) {
 
 	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
 		for source, want := range map[string]string{
-			`1 castable as xs:error`:                                 nameFalse,
-			`empty(() cast as xs:error?)`:                            nameTrue,
 			`'0x1p0' castable as xs:double`:                          nameFalse,
 			`'1_000' castable as xs:float`:                           nameFalse,
 			`'Infinity' castable as xs:double`:                       nameFalse,
@@ -1732,7 +1998,7 @@ func TestXPath20ArgumentContracts(t *testing.T) {
 }
 
 func standardFunctionTypeCases() map[string]string {
-	return map[string]string{
+	cases := map[string]string{
 		`transform#1 instance of function(map(*)) as map(*)`:                                  nameTrue,
 		`transform#1 instance of function(xs:integer) as map(*)`:                              nameFalse,
 		`transform(?) instance of function(map(*)) as map(*)`:                                 nameTrue,
@@ -1757,6 +2023,8 @@ func standardFunctionTypeCases() map[string]string {
 		`([1])(?) instance of function(xs:integer) as item()*`:                                nameTrue,
 		`(map{'a':1})(?) instance of function(xs:anyAtomicType) as item()*`:                   nameTrue,
 	}
+	maps.Copy(cases, additionalFunctionTypeCases())
+	return cases
 }
 
 func TestXPathCurrentDateTimeTypes(t *testing.T) {
@@ -1906,6 +2174,10 @@ func TestXPathQNameCastVersions(t *testing.T) {
 		{`for $v in 'local' return xs:QName($v)`, errCodeXPTY0004, "local"},
 		{`xs:QName(xs:untypedAtomic('local'))`, errCodeXPTY0004, "local"},
 		{`xs:QName(xs:QName('local'))`, "local", "local"},
+		{`xs:QName('not a QName')`, "FORG0001", "FORG0001"},
+		{`'not a QName' cast as xs:QName`, "FORG0001", "FORG0001"},
+		{`if (false()) then xs:QName('not a QName') else true()`, nameTrue, nameTrue},
+		{`if (false()) then ('not a QName' cast as xs:QName) else true()`, nameTrue, nameTrue},
 	} {
 		for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
 			want := tc.modern
@@ -2036,6 +2308,492 @@ func TestXPathRepeatedFunctionSignatures(t *testing.T) {
 			var detail *transform.Error
 			if !errors.As(err, &detail) || detail.Code != errCodeFOAR0002 {
 				t.Fatal("arity capacity misclassified as a syntax error", expression, err)
+			}
+		}
+	}
+}
+
+// sequenceSubtypeCases exercises declared signatures without evaluating bodies:
+// the subtype judgement depends on the declared types, not sampled return values.
+func sequenceSubtypeCases() map[string]string {
+	cases := map[string]string{
+		`(function() as map(*) {map{}}) instance of function() as map(xs:anyAtomicType,item()*)`:         nameTrue,
+		`(function() as map(xs:anyAtomicType,item()*) {map{}}) instance of function() as map(*)`:         nameTrue,
+		`(function() as map(*) {map{}}) instance of function() as map(xs:string,item()*)`:                nameFalse,
+		`(function() as map(xs:error,item()*) {map{}}) instance of function() as map(xs:string,item()*)`: nameTrue,
+		`(function() as map(xs:string,item()*) {map{}}) instance of function() as map(xs:error,item()*)`: nameFalse,
+	}
+	for _, target := range []string{`empty-sequence()`, `node()`, `xs:integer`, `item()+`, `xs:error`} {
+		for _, bottom := range []string{`xs:error`, `xs:error+`} {
+			cases[`(function() as `+bottom+` {error()}) instance of function() as `+target] = nameTrue
+		}
+	}
+	for _, empty := range []string{`empty-sequence()`, `xs:error?`, `xs:error*`} {
+		for _, target := range []string{`empty-sequence()`, `xs:error?`, `xs:error*`, `xs:integer?`, `node()*`} {
+			cases[`(function() as `+empty+` {()}) instance of function() as `+target] = nameTrue
+		}
+		for _, target := range []string{`xs:error`, `xs:error+`, `xs:integer`, `node()+`} {
+			cases[`(function() as `+empty+` {()}) instance of function() as `+target] = nameFalse
+		}
+	}
+	for _, tc := range []struct{ source, target, want string }{
+		{`processing-instruction(p)`, `processing-instruction(p)`, nameTrue},
+		{`processing-instruction(p)`, `processing-instruction()`, nameTrue},
+		{`processing-instruction()`, `processing-instruction(p)`, nameFalse},
+		{`processing-instruction(p)`, `processing-instruction(q)`, nameFalse},
+		{`processing-instruction(p)`, `node()`, nameTrue},
+		{`namespace-node()`, `namespace-node()`, nameTrue},
+		{`namespace-node()`, `node()`, nameTrue},
+		{`node()`, `namespace-node()`, nameFalse},
+		{`element(n)`, `element(n,xs:anyType?)`, nameTrue},
+		{`element(n)`, `element(n,xs:anyType)`, nameFalse},
+		{`element(n,xs:integer?)`, `element(n,xs:anyType?)`, nameTrue},
+		{`element(n,xs:integer?)`, `element(n,xs:integer)`, nameFalse},
+		{`element(n,xs:integer)`, `element(*,xs:decimal)`, nameTrue},
+		{`element(n,xs:integer)`, `element(m,xs:decimal)`, nameFalse},
+		{`attribute(n)`, `attribute(n,xs:anyType)`, nameTrue},
+		{`attribute(n)`, `attribute(n,xs:string)`, nameFalse},
+		{`attribute(n,xs:integer)`, `attribute(n,xs:decimal)`, nameTrue},
+		{`attribute(n,xs:integer)`, `attribute(n,xs:string)`, nameFalse},
+		{`attribute(n,xs:integer)`, `attribute(*,xs:decimal)`, nameTrue},
+		{`attribute(n,xs:integer)`, `attribute(*,xs:string)`, nameFalse},
+		{`attribute(n,xs:integer)`, `attribute(m,xs:decimal)`, nameFalse},
+		{`document-node(element(n,xs:integer))`, `document-node(element(n,xs:decimal))`, nameTrue},
+		{`document-node(element(n,xs:integer))`, `document-node(element(m,xs:decimal))`, nameFalse},
+	} {
+		cases[`(function() as `+tc.source+` {error()}) instance of function() as `+tc.target] = tc.want
+	}
+	cases[`(function($x as node()) as empty-sequence() {()}) instance of function(xs:error) as empty-sequence()`] = nameTrue
+	cases[`(function($x as xs:error) as empty-sequence() {()}) instance of function(node()) as empty-sequence()`] = nameFalse
+	return cases
+}
+
+func TestXPathSequenceSubtypeContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+		for expression, want := range sequenceSubtypeCases() {
+			if version == transform.XPath30 && strings.Contains(expression, "map(") {
+				continue
+			}
+			if got := text(t, evaluate(t, e, expression, version)); got != want {
+				t.Errorf("XPath %d %s: %q, want %q", version, expression, got, want)
+			}
+		}
+	}
+}
+
+func binaryOperatorExpressions() map[string]bool {
+	cases := make(map[string]bool, 24)
+	for _, values := range [][2]string{
+		{`xs:hexBinary('01')`, `xs:hexBinary('02')`},
+		{`xs:base64Binary('AQ==')`, `xs:base64Binary('Ag==')`},
+	} {
+		for _, op := range []string{`lt`, `le`, `<`, `<=`} {
+			cases[values[0]+` `+op+` `+values[1]] = true
+		}
+		for _, op := range []string{`gt`, `ge`, `>`, `>=`} {
+			cases[values[1]+` `+op+` `+values[0]] = true
+		}
+		for _, op := range []string{`eq`, `=`} {
+			cases[values[0]+` `+op+` `+values[0]] = false
+		}
+		for _, op := range []string{`ne`, `!=`} {
+			cases[values[0]+` `+op+` `+values[1]] = false
+		}
+	}
+	return cases
+}
+
+func TestXPathBinaryComparisonEditions(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for expression, ordered := range binaryOperatorExpressions() {
+			result, err := query(t, e, expression, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if ordered && version < transform.XPath31 {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != errCodeXPTY0004 {
+					t.Errorf("XPath %d %s: %v, want XPTY0004", version, expression, err)
+				}
+				continue
+			}
+			if err != nil {
+				t.Errorf("XPath %d %s: %v", version, expression, err)
+				continue
+			}
+			if got := text(t, result); got != nameTrue {
+				t.Errorf("XPath %d %s: %q, want true", version, expression, got)
+			}
+		}
+	}
+}
+
+func mapKeyAtomizationCases() map[string]string {
+	return map[string]string{
+		`map{[]:1}`:                 errCodeXPTY0004,
+		`map{[1,2]:1}`:              errCodeXPTY0004,
+		`map{map{}:1}`:              errCodeFOTY0013,
+		`map{([], [1]): 'value'}?1`: "value",
+		`map{[[],[1]]: 'value'}?1`:  "value",
+		`string-join(map{1:'a',2:'b'}?([1,2]), '')`:       "ab",
+		`string-join(map{1:'a',2:'b'} ! ?([1,2]), '')`:    "ab",
+		`empty(map{1:'a'}?([]))`:                          nameTrue,
+		`empty(map{1:'a'} ! ?([]))`:                       nameTrue,
+		`string-join([10,20]?([1,2]) ! string(), ',')`:    "10,20",
+		`string-join([10,20] ! ?([1,2]) ! string(), ',')`: "10,20",
+		`empty([10,20]?([]))`:                             nameTrue,
+		`empty([10,20] ! ?([]))`:                          nameTrue,
+		`[10,20]?(map{})`:                                 errCodeFOTY0013,
+		`map{1:'a'}?(map{})`:                              errCodeFOTY0013,
+	}
+}
+
+func predicateNumericCases() map[string]string {
+	cases := make(map[string]string, 30)
+	for value, want := range map[string]string{
+		`1.00000000000000000000000000000000000000001`:               "0",
+		`0.99999999999999999999999999999999999999999`:               "0",
+		`xs:decimal('1.00000000000000000000000000000000000000001')`: "0",
+		`1.0`:              "1",
+		`xs:double('NaN')`: "0",
+		`xs:double('INF')`: "0",
+	} {
+		cases[`count((1,2)[`+value+`])`] = want
+		cases[`count(parse-xml('<r><n/><n/></r>')/*/*[`+value+`])`] = want
+		cases[`count((parse-xml('<r><n/><n/></r>')/*/*)[`+value+`])`] = want
+	}
+	return cases
+}
+
+func TestXPathMapKeyAtomization(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for expression, want := range mapKeyAtomizationCases() {
+		result, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+		if want == errCodeXPTY0004 || want == errCodeFOTY0013 {
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != want {
+				t.Errorf("%s: %v, want %s", expression, err, want)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", expression, err)
+			continue
+		}
+		if got := text(t, result); got != want {
+			t.Errorf("%s: %q, want %q", expression, got, want)
+		}
+	}
+}
+
+func TestXPathNumericPredicates(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for expression, want := range predicateNumericCases() {
+			if version == transform.XPath20 && strings.Contains(expression, "parse-xml") {
+				continue
+			}
+			if got := text(t, evaluate(t, e, expression, version)); got != want {
+				t.Errorf("XPath %d %s: %q, want %q", version, expression, got, want)
+			}
+		}
+	}
+}
+
+func TestXPathStaticNamespaceWhitespace(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		bindings := map[string]string{"p": " \turn:p\n ", "": "\n urn:elements \t", "xs": " " + namespaceSchema + "\t"}
+		program, err := e.CompileXPath(t.Context(), `namespace-uri-from-QName(xs:QName('p:n')) eq 'urn:p' and () instance of element(n)?`, transform.XPathOptions{Version: version, Namespaces: bindings})
+		if err != nil {
+			t.Fatal(version, err)
+		}
+		if bindings["p"] != " \turn:p\n " {
+			t.Fatal("caller namespace bindings were changed")
+		}
+		bindings["p"] = "urn:changed"
+		result, err := program.Evaluate(t.Context(), nil, transform.XPathContext{})
+		if err != nil || text(t, result) != nameTrue {
+			t.Fatal(version, err)
+		}
+		for _, bindings := range []map[string]string{
+			{"p": " \thttp://www.w3.org/XML/1998/namespace\n"},
+			{"xml": " urn:other "},
+		} {
+			_, err := e.CompileXPath(t.Context(), "1", transform.XPathOptions{Version: version, Namespaces: bindings})
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != errCodeXQST0070 {
+				t.Fatal(version, err)
+			}
+		}
+	}
+}
+
+func xpathCoreClauseCases() map[string]string {
+	return map[string]string{
+		`count((1,(2,3),()))`:               "3",
+		`concat('it''s', ' / ', "a""b")`:    `it's / a"b`,
+		`1 + (: outer (: inner :) :) 2 * 3`: "7",
+		`20 - 3 - 2`:                        "15",
+		`24 div 3 div 2`:                    "4",
+		`- - + 3`:                           "3",
+		`empty(() + 1)`:                     nameTrue,
+		`xs:untypedAtomic('2') + 1 eq 3`:    nameTrue,
+		`(1,2) + 1`:                         errCodeXPTY0004,
+		`string-join(for $x in (1,2), $y in (3,4) return string($x*10+$y), ',')`: "13,14,23,24",
+		`string-join(for $x in () return string($x), ',')`:                       "",
+		`string-join(7 ! (for $x in (1,2) return string(.)), ',')`:               "7,7",
+		`let $x := (1,2), $y := $x return deep-equal($x,$y)`:                     nameTrue,
+		`some $x in () satisfies true()`:                                         nameFalse,
+		`every $x in () satisfies false()`:                                       nameTrue,
+		`some $x in (1,2), $y in (3,4) satisfies $x+$y eq 6`:                     nameTrue,
+		`every $x in (1,2), $y in () satisfies false()`:                          nameTrue,
+		`if (true()) then 'selected' else error()`:                               "selected",
+		`if (false()) then error() else 'selected'`:                              "selected",
+		`boolean((1,2))`:            "FORG0006",
+		`boolean([])`:               "FORG0006",
+		`boolean(map{})`:            "FORG0006",
+		`boolean(())`:               nameFalse,
+		`boolean(xs:double('NaN'))`: nameFalse,
+		`let $d:=parse-xml('<r a="1"><n>1</n><n>2</n></r>') return string-join(($d/r/n[2],$d/r/n[1],$d/r/n[2])/self::node(), ',')`: "1,2",
+		`let $d:=parse-xml('<r><n/><n/></r>') return count(($d/r/n[2],$d/r/n[1],$d/r/n[2]) | ())`:                                  "2",
+		`let $d:=parse-xml('<r><n/><n/></r>') return count($d/r/n intersect $d/r/n[1])`:                                            "1",
+		`let $d:=parse-xml('<r><n/><n/></r>') return count($d/r/n except $d/r/n[1])`:                                               "1",
+		`1 union ()`:              errCodeXPTY0004,
+		`() intersect 1`:          errCodeXPTY0004,
+		`1/self::node()`:          "XPTY0019",
+		`parse-xml('<r/>')/(.,1)`: "XPTY0018",
+		`parse-xml('<r/>')/root(.) is parse-xml('<r/>')`:                                                            nameFalse,
+		`let $d:=parse-xml('<r a="1"><n/><n/></r>') return $d << $d/r and $d/r << $d/r/@a and $d/r/@a << $d/r/n[1]`: nameTrue,
+		`empty(() is ())`:              nameTrue,
+		`1 is 1`:                       errCodeXPTY0004,
+		`(1,2) eq 1`:                   errCodeXPTY0004,
+		`(1,2) = 2`:                    nameTrue,
+		`(1,2) != 2`:                   nameTrue,
+		`empty(() eq 1)`:               nameTrue,
+		`xs:untypedAtomic('2') = 2`:    nameTrue,
+		`xs:untypedAtomic('2') eq 2`:   errCodeXPTY0004,
+		`1 instance of xs:decimal`:     nameTrue,
+		`() instance of xs:integer?`:   nameTrue,
+		`(1,2) instance of xs:integer`: nameFalse,
+		`1 treat as xs:integer`:        "1",
+		`1 treat as xs:string`:         "XPDY0050",
+		`let $f := function($x as xs:integer) as xs:integer {$x+1} return $f(2)`: "3",
+		`let $f := function(){.} return 1 ! $f()`:                                "XPDY0002",
+		`(concat(?, 'x'))('a')`:                                                  "ax",
+		`'a' => concat('b') => upper-case()`:                                     "AB",
+		`array:size([(),(1,2)])`:                                                 "2",
+		`array:size(array {(),(1,2)})`:                                           "2",
+		`let $d:=parse-xml('<r/>') return map{'node':$d}?node is $d`:             nameTrue,
+		`map{xs:float('NaN'):1,xs:double('NaN'):2}`:                              "XQDY0137",
+		`empty(map{1:'a'}?missing)`:                                              nameTrue,
+		`[10,20]?0`:                                                              errCodeFOAY0001,
+		`[10,20]?(1.0)`:                                                          errCodeXPTY0004,
+		`1?*`:                                                                    errCodeXPTY0004,
+		`?name`:                                                                  "XPDY0002",
+	}
+}
+
+func TestXPathCoreClauseContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for expression, want := range xpathCoreClauseCases() {
+		program, err := e.CompileXPath(t.Context(), expression, transform.XPathOptions{Version: transform.XPath31})
+		var result transform.Sequence
+		if err == nil {
+			result, err = program.Evaluate(t.Context(), nil, transform.XPathContext{})
+		}
+		if len(want) == 8 && want[2] >= 'A' && want[2] <= 'Z' {
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != want {
+				t.Errorf("%s: %v, want %s", expression, err, want)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", expression, err)
+			continue
+		}
+		if got := text(t, result); got != want {
+			t.Errorf("%s: %q, want %q", expression, got, want)
+		}
+	}
+}
+
+func exactFloatCastCases() map[string]string {
+	return map[string]string{
+		`xs:decimal('1.000000059604644775390626') gt xs:float(1)`: nameTrue,
+		`xs:decimal('16777217') + xs:float('-16777216') eq 0`:     nameTrue,
+		`xs:decimal('16777217') - xs:float('16777216') eq 0`:      nameTrue,
+
+		`xs:float(xs:decimal('1.000000059604644775390626')) gt 1`:                            nameTrue,
+		`xs:float(xs:decimal('1.000000059604644775390624')) eq 1`:                            nameTrue,
+		`xs:float(xs:decimal('1.000000059604644775390625')) eq 1`:                            nameTrue,
+		`xs:float(xs:decimal('-1.000000059604644775390626')) lt -1`:                          nameTrue,
+		`xs:float(xs:decimal('-1.000000059604644775390624')) eq -1`:                          nameTrue,
+		`xs:float(xs:integer('18446745173221179393')) gt xs:float('18446744073709551616')`:   nameTrue,
+		`xs:float(xs:integer('-18446745173221179393')) lt xs:float('-18446744073709551616')`: nameTrue,
+		`xs:float(xs:decimal('1e-100'))`:                                                     errCodeFORG0001,
+		`xs:float(xs:decimal('0.000000000000000000000000000000000000000000000700649232162408535461864791644958065640130970938257885878534141944895541342930300743319094181060791015625')) eq 0`: nameTrue,
+		`xs:float(xs:decimal('0.000000000000000000000000000000000000000000000700649232162408535461864791644958065640130970938257885878534141944895541342930300743319094181060791015626')) gt 0`: nameTrue,
+		`1 div xs:float(xs:decimal('-0.0000000000000000000000000000000000000000000000000000000000000001')) eq xs:float('-INF')`:                                                                 nameTrue,
+		`xs:float(xs:integer('9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999')) eq xs:float('INF')`:                                       nameTrue,
+	}
+}
+
+func TestXPathExactFloatCasts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for expression, want := range exactFloatCastCases() {
+			result, err := query(t, e, expression, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if want == errCodeFORG0001 {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != want {
+					t.Errorf("XPath %d %s: %v, want %s", version, expression, err, want)
+				}
+				continue
+			}
+			if err != nil || text(t, result) != want {
+				t.Errorf("XPath %d %s: %v", version, expression, err)
+			}
+		}
+	}
+}
+
+const untypedNodeTypeXML = `<r xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true" a="1"><c/></r>`
+
+func untypedNodeTypeCases() map[string]string {
+	return map[string]string{
+		`/* instance of element()`:                           nameTrue,
+		`/* instance of element(r)`:                          nameTrue,
+		`/* instance of element(missing)`:                    nameFalse,
+		`/* instance of element(*,xs:untyped)`:               nameTrue,
+		`/* instance of element(r,xs:anyType)`:               nameTrue,
+		`/* instance of element(r,xs:string?)`:               nameFalse,
+		`nilled(/*)`:                                         nameFalse,
+		`/*/@a instance of attribute()`:                      nameTrue,
+		`/*/@a instance of attribute(a)`:                     nameTrue,
+		`/*/@a instance of attribute(missing)`:               nameFalse,
+		`/*/@a instance of attribute(*,xs:untypedAtomic)`:    nameTrue,
+		`/*/@a instance of attribute(a,xs:anyAtomicType)`:    nameTrue,
+		`/*/@a instance of attribute(a,xs:string)`:           nameFalse,
+		`. instance of document-node(element(r,xs:untyped))`: nameTrue,
+		`. instance of document-node(element(missing))`:      nameFalse,
+		`/*/@a instance of element()`:                        nameFalse,
+		`/* instance of attribute()`:                         nameFalse,
+	}
+}
+
+func TestXPathUntypedNodeTypeMatching(t *testing.T) {
+	e := engine(t, transform.Config{})
+	doc, err := e.Parse(t.Context(), []byte(untypedNodeTypeXML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for expression, want := range untypedNodeTypeCases() {
+			program := query(t, e, expression, version)
+			result, err := program.Evaluate(t.Context(), doc, transform.XPathContext{})
+			if err != nil || text(t, result) != want {
+				t.Errorf("XPath %d %s: %v, %v; want %s", version, expression, result, err, want)
+			}
+		}
+	}
+}
+
+func qnameWhitespaceCases() map[string]string {
+	return map[string]string{
+		"xs:QName('\u00a0local')":                             errCodeFORG0001,
+		"xs:QName('\u0085local')":                             errCodeFORG0001,
+		"xs:QName('\u2003local')":                             errCodeFORG0001,
+		"xs:QName('\u00a0p:x')":                               errCodeFORG0001,
+		"'\u00a0local' castable as xs:QName":                  nameFalse,
+		"if (false()) then xs:QName('\u00a0p:x') else true()": nameTrue,
+		"xs:QName(' \tlocal\n ' )":                            "local",
+		"xs:QName('\u1680local')":                             "\u1680local",
+	}
+}
+
+func qnameLiteral20Cases() map[string]string {
+	return map[string]string{
+		`xs:QName('missing:x')`:                                        "FONS0004",
+		`'missing:x' cast as xs:QName`:                                 "FONS0004",
+		`if (false()) then xs:QName('missing:x') else true()`:          "FONS0004",
+		`if (false()) then ('missing:x' cast as xs:QName) else true()`: "FONS0004",
+		`xs:QName('missing:x') castable as xs:QName`:                   "FONS0004",
+	}
+}
+
+func TestXPathStaticQNameLiterals(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for expression, want := range qnameLiteral20Cases() {
+		_, err := e.CompileXPath(t.Context(), expression, transform.XPathOptions{Version: transform.XPath20})
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != want {
+			t.Errorf("%s: %v, want static %s", expression, err, want)
+		}
+	}
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for expression, want := range qnameWhitespaceCases() {
+			result, err := query(t, e, expression, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if want == errCodeFORG0001 {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != want {
+					t.Errorf("QName whitespace %d %s: %v", version, expression, err)
+				}
+			} else if err != nil || text(t, result) != want {
+				t.Errorf("QName whitespace %d %s: %v, %v; want %q", version, expression, result, err, want)
+			}
+		}
+		for _, expression := range []string{
+			`not('missing:x' castable as xs:QName)`,
+			`not('not a QName' castable as xs:QName)`,
+			`if (false()) then ('missing:x' castable as xs:QName) else true()`,
+		} {
+			if got := text(t, evaluate(t, e, expression, version)); got != nameTrue {
+				t.Fatal(version, expression, got)
+			}
+		}
+		for _, expression := range []string{
+			`namespace-uri-from-QName(t:QName('p:x')) eq 'urn:literal'`,
+			`namespace-uri-from-QName('p:x' cast as t:QName) eq 'urn:literal'`,
+		} {
+			program, err := e.CompileXPath(t.Context(), expression, transform.XPathOptions{Version: version, Namespaces: map[string]string{"t": namespaceSchema, "p": "urn:literal", "xs": "urn:rebound"}})
+			if err != nil {
+				t.Fatal(version, expression, err)
+			}
+			result, err := program.Evaluate(t.Context(), nil, transform.XPathContext{})
+			if err != nil || text(t, result) != nameTrue {
+				t.Fatal(version, expression, err)
+			}
+		}
+		for _, expression := range []string{`QName('','p:x')`, `QName((),'p:x')`} {
+			_, err := query(t, e, expression, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != "FOCA0002" {
+				t.Fatal("empty QName namespace", version, expression, err)
+			}
+		}
+		for _, expression := range []string{`xs:QName('p:x')`, `'p:x' cast as xs:QName`} {
+			program, err := e.CompileXPath(t.Context(), expression, transform.XPathOptions{Version: version, Namespaces: map[string]string{"p": ""}})
+			if version != transform.XPath20 && err != nil {
+				t.Fatal("modern compile", expression, err)
+			}
+			if err == nil {
+				_, err = program.Evaluate(t.Context(), nil, transform.XPathContext{})
+			}
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != "FONS0004" {
+				t.Fatal("unbound QName value prefix", version, expression, err)
+			}
+		}
+		if version == transform.XPath20 {
+			continue
+		}
+		for _, expression := range []string{
+			`if (false()) then xs:QName('missing:x') else true()`,
+			`if (false()) then ('not a QName' cast as xs:QName) else true()`,
+		} {
+			if got := text(t, evaluate(t, e, expression, version)); got != nameTrue {
+				t.Fatal(version, expression, got)
 			}
 		}
 	}

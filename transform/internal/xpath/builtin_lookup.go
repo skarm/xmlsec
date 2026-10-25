@@ -1,6 +1,6 @@
-// Built-in lookup uses stateless function-family dispatch instead of package initialization.
 package xpath
 
+// lookupBuiltin uses stateless function-family dispatch instead of package initialization.
 func lookupBuiltin(qn QualifiedName) (Function, bool) {
 	switch qn.URI {
 	case NSArray:

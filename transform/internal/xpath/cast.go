@@ -46,6 +46,21 @@ func CastFromStringContext(ctx context.Context, source, target string) (xdm.Atom
 	return CastAtomicContext(ctx, xdm.AtomicValue{TypeName: xdm.TypeString, Value: source}, target)
 }
 
+// castToNumeric preserves an existing union member; strings and booleans
+// choose the first castable member, xs:double (F&O 3.1 §18.4).
+func castToNumeric(ctx context.Context, value xdm.AtomicValue) (xdm.AtomicValue, error) {
+	source := normalizeCastSource(value)
+	if source.IsNumeric() {
+		return value, nil
+	}
+
+	if source.TypeName != xdm.TypeBoolean && source.TypeName != xdm.TypeUntypedAtomic && !xdm.IsStringDerived(source.TypeName) {
+		return xdm.AtomicValue{}, &xdm.Error{Code: errCodeFORG0001, Message: "cannot cast " + value.TypeName + " to " + xdm.TypeNumeric}
+	}
+
+	return CastAtomicContext(ctx, value, xdm.TypeDouble)
+}
+
 // msgDateTimeStampTimezone is the FORG0001 message for an xs:dateTimeStamp
 // value that is missing its mandatory timezone.
 const msgDateTimeStampTimezone = "xs:dateTimeStamp requires a timezone"
@@ -90,6 +105,13 @@ func CastAtomic(v xdm.AtomicValue, targetType string) (xdm.AtomicValue, error) {
 		v = xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: v.Value}
 	}
 
+	// Across type branches, a built-in string restriction first casts to its
+	// primitive string base (F&O 2.0 17.3.4 and 3.0 18.3.4). Identity above
+	// retains the original type when no such conversion is required.
+	if xdm.IsStringDerived(v.TypeName) && v.TypeName != xdm.TypeString {
+		v = xdm.AtomicValue{TypeName: xdm.TypeString, Value: v.Value}
+	}
+
 	if v.TypeName == xdm.TypeUntypedAtomic {
 		return CastFromString(v.StringVal(), targetType)
 	}
@@ -100,7 +122,6 @@ func CastAtomic(v xdm.AtomicValue, targetType string) (xdm.AtomicValue, error) {
 func isAbstractCastTarget(typeName string) bool {
 	return typeName == xdm.TypeAnyAtomicType ||
 		typeName == "xs:anySimpleType" ||
-		typeName == "xs:anyType" ||
 		typeName == xdm.TypeNOTATION
 }
 

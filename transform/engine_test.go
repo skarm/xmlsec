@@ -401,6 +401,151 @@ func TestXPathImplementationLimitCodes(t *testing.T) {
 	}
 }
 
+func TestRegexImplementationLimitCodes(t *testing.T) {
+	input := strings.Repeat("a", 10000)
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for _, source := range []string{`matches($input,'z')`, `replace($input,'z','x')`, `tokenize($input,'z')`, `analyze-string($input,'a')`} {
+			if version == transform.XPath20 && strings.HasPrefix(source, "analyze-string") {
+				continue
+			}
+			t.Run(fmt.Sprint(version)+source, func(t *testing.T) {
+				e := engine(t, transform.Config{Limits: transform.Limits{MaxOperations: 128}})
+				q := query(t, e, source, version)
+				_, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "input"}: transform.Values(transform.String(input))}})
+				var detail *transform.Error
+				if !errors.Is(err, transform.ErrLimit) || !errors.As(err, &detail) {
+					t.Fatal("valid regex must retain the resource failure", err)
+				}
+				want := ""
+				if version >= transform.XPath30 {
+					want = "XPDY0130"
+				}
+				if detail.Code != want {
+					t.Fatal("resource failure was reported as invalid regex", detail.Code, want, err)
+				}
+				_, err = query(t, e, `matches('a','[')`, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+				if !errors.As(err, &detail) || detail.Code != "FORX0002" || errors.Is(err, transform.ErrLimit) {
+					t.Fatal("invalid regex lost its syntax error", err)
+				}
+			})
+		}
+	}
+}
+
+func TestXSLTImplementationLimitCodes(t *testing.T) {
+	for _, version := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
+		for _, body := range []string{
+			`<xsl:template name="start"><xsl:call-template name="start"/></xsl:template>`,
+			`<xsl:template match="/" name="start"><xsl:apply-templates select="."/></xsl:template>`,
+			`<xsl:function name="l:f" xmlns:l="urn:loop"><xsl:sequence select="l:f()"/></xsl:function><xsl:template name="start"><xsl:sequence xmlns:l="urn:loop" select="l:f()"/></xsl:template>`,
+		} {
+			e := engine(t, transform.Config{Limits: transform.Limits{MaxDepth: 16}})
+			source := sheet(map[transform.XSLTVersion]string{transform.XSLT20: version20, transform.XSLT30: version30}[version], body)
+			s, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{Version: version})
+			if err != nil {
+				t.Fatal("recursive stylesheet must compile", err)
+			}
+			node, err := e.Parse(t.Context(), []byte(`<r/>`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = s.Transform(t.Context(), node, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+			var detail *transform.Error
+			if !errors.Is(err, transform.ErrLimit) || !errors.As(err, &detail) || detail.Code != "" {
+				t.Fatal("recursion must not masquerade as a computed-name error", version, err)
+			}
+		}
+	}
+	e := engine(t, transform.Config{Limits: transform.Limits{MaxOperations: 256}})
+	s := stylesheet(t, e, sheet(version30, `<xsl:param name="input"/><xsl:template name="start"><xsl:analyze-string select="$input" regex="z"><xsl:non-matching-substring>x</xsl:non-matching-substring></xsl:analyze-string></xsl:template>`))
+	_, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, Parameters: transform.Bindings{{Local: "input"}: transform.Values(transform.String(strings.Repeat("a", 10000)))}})
+	var detail *transform.Error
+	if !errors.Is(err, transform.ErrLimit) || !errors.As(err, &detail) || detail.Code != "" {
+		t.Fatal("analyze-string budget must not become XTDE1140", err)
+	}
+}
+
+func TestRegexProgramLimits(t *testing.T) {
+	e := engine(t, transform.Config{})
+	pattern := strings.Repeat("(", 129) + "a" + strings.Repeat(")", 129)
+	expression := `matches('a','` + pattern + `')`
+	_, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+	var detail *transform.Error
+	if !errors.Is(err, transform.ErrLimit) || !errors.As(err, &detail) || detail.Code != "XPDY0130" {
+		t.Fatal("valid regex exceeding the parser depth was classified as invalid syntax", err)
+	}
+
+	source := sheet(version30, `<xsl:template name="start"><xsl:analyze-string select="'a'" regex="`+pattern+`"><xsl:non-matching-substring>x</xsl:non-matching-substring></xsl:analyze-string></xsl:template>`)
+	s := stylesheet(t, e, source)
+	_, err = s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+	if !errors.Is(err, transform.ErrLimit) || !errors.As(err, &detail) || detail.Code != "" {
+		t.Fatal("regex compilation limit became XTDE1140", err)
+	}
+}
+
+func TestTransformSourceOptionFailures(t *testing.T) {
+	for _, stage := range []string{"open", "read", "close"} {
+		for _, cause := range []error{transform.ErrResource, transform.ErrLimit, context.Canceled, context.DeadlineExceeded} {
+			e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				if stage == "open" {
+					return nil, cause
+				}
+
+				// Invalid XML also exercises cleanup alongside a content failure.
+				reader := &dtdFailureReader{Reader: strings.NewReader("\x00")}
+				if stage == "read" {
+					reader.readError = cause
+				} else {
+					reader.closeError = cause
+				}
+
+				return reader, nil
+			})})
+			_, err := query(t, e, `transform(map{'stylesheet-location':'urn:missing'})`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+			var detail *transform.Error
+			if !errors.Is(err, cause) || !errors.As(err, &detail) {
+				t.Fatal("stylesheet retrieval lost its cause", cause, err)
+			}
+			want := "FOXT0003"
+			if stage == "open" {
+				want = "FOXT0002"
+			}
+			switch {
+			case errors.Is(cause, transform.ErrLimit):
+				want = "XPDY0130"
+			case errors.Is(cause, context.Canceled), errors.Is(cause, context.DeadlineExceeded):
+				want = ""
+			}
+			if detail.Code != want {
+				t.Fatal("source option failure has the wrong category", stage, cause, detail.Code, want)
+			}
+		}
+	}
+}
+
+func TestCallbackLimitsCannotBeCaught(t *testing.T) {
+	name := transform.Name{Space: namespaceApplication, Local: "budget"}
+	e := engine(t, transform.Config{Functions: []transform.Function{{
+		Name:  name,
+		Arity: 0,
+		Call: func(context.Context, []transform.Sequence) (transform.Sequence, error) {
+			return transform.Sequence{}, transform.ErrLimit
+		},
+	}}})
+	source := sheet(version30, `<xsl:template name="start"><xsl:try><xsl:sequence xmlns:a="`+namespaceApplication+`" select="a:budget()"/><xsl:catch>caught</xsl:catch></xsl:try></xsl:template>`)
+	s := stylesheet(t, e, source)
+	_, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+	if !errors.Is(err, transform.ErrLimit) {
+		t.Fatal("xsl:catch recovered a callback resource limit", err)
+	}
+
+	_, err = query(t, e, `transform(map{'stylesheet-text':$sheet,'initial-template':QName('','start')})`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "sheet"}: transform.Values(transform.String(source))}})
+	var detail *transform.Error
+	if !errors.Is(err, transform.ErrLimit) || !errors.As(err, &detail) || detail.Code != "XPDY0130" {
+		t.Fatal("nested transformation reclassified a callback limit", err)
+	}
+}
+
 func TestErrorCodeNamespaces(t *testing.T) {
 	e := engine(t, transform.Config{})
 

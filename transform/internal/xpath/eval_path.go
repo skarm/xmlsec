@@ -1299,7 +1299,9 @@ func resolveTestTypeName(raw string, ec *evalContext) string {
 func predicateTrue(r xdm.Sequence, position int) (bool, error) {
 	if xdm.SequenceLen(r) == 1 {
 		if av, ok := r.Get(0).(xdm.AtomicValue); ok && av.IsNumeric() {
-			return av.ToFloat64() == float64(position), nil
+			return compareNumeric(TokenEq, xdm.PromoteSchemaType(av), xdm.AtomicValue{
+				TypeName: xdm.TypeInteger, Value: int64(position),
+			})
 		}
 	}
 

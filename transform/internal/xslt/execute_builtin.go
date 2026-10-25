@@ -355,15 +355,17 @@ func (ec *execContext) isElementStripped(elem *xdm.Element) bool {
 	// Find the most authoritative matching strip rule, ordered first by import
 	// precedence (higher wins) and then by NameTest specificity priority.
 	stripPrec, stripPriority, stripped := -1, -1, false
+	stripOrder := -1
 
 	for _, nt := range stripRules {
 		if !matchSpaceNameTest(nt, elem) {
 			continue
 		}
 
-		if !stripped || rankSpaceRule(nt) > packSpaceRank(stripPrec, stripPriority) {
+		if !stripped || rankSpaceRule(nt) > packSpaceRank(stripPrec, stripPriority) || rankSpaceRule(nt) == packSpaceRank(stripPrec, stripPriority) && nt.SpaceOrder > stripOrder {
 			stripPrec = nt.ImportPrec
 			stripPriority = nameTestPriority(nt)
+			stripOrder = nt.SpaceOrder
 			stripped = true
 		}
 	}
@@ -376,7 +378,7 @@ func (ec *execContext) isElementStripped(elem *xdm.Element) bool {
 	// authoritative (import precedence, then specificity).
 	stripRank := packSpaceRank(stripPrec, stripPriority)
 	for _, nt := range ec.effectivePreserveSpace() {
-		if matchSpaceNameTest(nt, elem) && rankSpaceRule(nt) >= stripRank {
+		if matchSpaceNameTest(nt, elem) && (rankSpaceRule(nt) > stripRank || rankSpaceRule(nt) == stripRank && nt.SpaceOrder >= stripOrder) {
 			return false
 		}
 	}

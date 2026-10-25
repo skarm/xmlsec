@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"math/bits"
 	"slices"
-	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
@@ -55,7 +54,7 @@ func (ec *execContext) fnKey(ctx context.Context, args []xdm.Sequence) (xdm.Sequ
 		return nil, dynamicError(lexicon.ErrXPST0017, "key() requires two or three arguments")
 	}
 
-	name, err := keyArgumentName(ctx, args[0])
+	name, err := keyArgumentName(ctx, args[0], ec.stylesheet.processorLanguage())
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +119,7 @@ func documentRoot(node xdm.Node) xdm.Node {
 	return node
 }
 
-func keyArgumentName(ctx context.Context, arg xdm.Sequence) (string, error) {
+func keyArgumentName(ctx context.Context, arg xdm.Sequence, processor int) (string, error) {
 	var name string
 
 	if xpath.FnXPath10Compat(ctx) {
@@ -146,24 +145,20 @@ func keyArgumentName(ctx context.Context, arg xdm.Sequence) (string, error) {
 		}
 	}
 
-	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
+	if processor < 30 && !xmlchar.IsValidQName(name) {
 		return "", dynamicError(errCodeXTDE1260, "invalid key name %q", name)
 	}
 
-	if strings.HasPrefix(name, "Q{") {
-		return resolveQName(name, nil), nil
+	resolved, err := resolveIntrospectionName(name, "", errCodeXTDE1260, func(prefix string) (string, bool) { return xpath.FnNamespace(ctx, prefix) })
+	if err != nil {
+		return "", err
 	}
 
-	if prefix, local, found := strings.Cut(name, ":"); found {
-		uri, ok := xpath.FnNamespace(ctx, prefix)
-		if !ok || uri == "" {
-			return "", dynamicError(errCodeXTDE1260, "undeclared prefix in key name %q", name)
-		}
-
-		return xdm.ClarkName(uri, local), nil
+	if resolved.URI == "" {
+		return resolved.Local, nil
 	}
 
-	return name, nil
+	return xdm.ClarkName(resolved.URI, resolved.Local), nil
 }
 
 func (ec *execContext) keyArgumentRoot(ctx context.Context, args []xdm.Sequence) (xdm.Node, error) {
@@ -211,7 +206,7 @@ func (ec *execContext) fnSystemProperty(ctx context.Context, args []xdm.Sequence
 }
 
 func introspectionSystemProperty(ctx context.Context, args []xdm.Sequence, processor int, disabled bool) (xdm.Sequence, error) {
-	name, err := introspectionArgumentName(ctx, args, "", errCodeXTDE1390)
+	name, err := introspectionArgumentName(ctx, args, "", errCodeXTDE1390, processor)
 	if err != nil {
 		return nil, err
 	}

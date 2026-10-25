@@ -7,6 +7,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -114,7 +115,11 @@ func (a *avt) evaluateStatic(ctx context.Context, eval xpath.Evaluator, node xdm
 
 	for _, p := range a.parts {
 		if p.expr != nil {
-			result, err := eval.Evaluate(ctx, p.expr, node)
+			if err := eval.ValidateExpression(ctx, p.expr); err != nil {
+				return "", err
+			}
+
+			result, err := eval.Evaluate(ctx, p.expr.BindDefaultCollation(lexicon.CollationCodepoint), node)
 			if err != nil {
 				return "", err
 			}

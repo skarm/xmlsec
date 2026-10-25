@@ -208,7 +208,53 @@ func (c *compiler) preprocessConditionalElement(ctx context.Context, elem *xdm.E
 
 func (c *compiler) validatePreparedLanguage(root *xdm.Element) error {
 	if c.stylesheet.processorLanguage() >= 20 && c.deferredLanguageChecks[root] {
-		return checkModernLanguage(root, elementXSLTVersion(root), c.stylesheet.processorLanguage())
+		if err := checkModernLanguage(root, elementXSLTVersion(root), c.stylesheet.processorLanguage()); err != nil {
+			return err
+		}
+	}
+
+	return c.validateDefaultCollations(root)
+}
+
+// A foreign top-level data element and its descendants are not XSLT
+// instructions. Its own use-when still participates in module inclusion.
+func isUserDefinedDataElement(element *xdm.Element) bool {
+	if element.URI() == "" || element.URI() == lexicon.NamespaceXSLT {
+		return false
+	}
+
+	parent, ok := element.Parent().(*xdm.Element)
+
+	return ok && parent.URI() == lexicon.NamespaceXSLT &&
+		(parent.LocalName() == nameStylesheet || parent.LocalName() == fnNameTransform || parent.LocalName() == namePackage)
+}
+
+// Check every retained declaration and instruction, including unused ones.
+// Resolution uses each attribute's defining element, after static exclusion.
+func (c *compiler) validateDefaultCollations(element *xdm.Element) error {
+	if isUserDefinedDataElement(element) {
+		return nil
+	}
+
+	if _, present := standardAttribute(element, nameDefaultCollation); present {
+		if _, err := c.declarationDefaultCollation(element); err != nil {
+			return err
+		}
+	}
+
+	forwards := element.URI() == lexicon.NamespaceXSLT && unavailableInstruction(element.LocalName(), c.stylesheet.processorLanguage()) && elementForwardsCompatible(element, c.stylesheet.processorLanguage())
+	for child := range xdm.ChildElements(element) {
+		if err := xpath.Charge(c.invocation, 1); err != nil {
+			return err
+		}
+
+		if forwards && (child.URI() != lexicon.NamespaceXSLT || child.LocalName() != lexicon.XSLTElementFallback) {
+			continue
+		}
+
+		if err := c.validateDefaultCollations(child); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -233,6 +279,10 @@ func (c *compiler) preprocessStaticSubtree(ctx context.Context, elem *xdm.Elemen
 	include, err := c.preprocessConditionalElement(ctx, elem, false)
 	if err != nil || !include {
 		return include, err
+	}
+
+	if isUserDefinedDataElement(elem) {
+		return true, nil
 	}
 
 	forwards := elem.URI() == lexicon.NamespaceXSLT && unavailableInstruction(elem.LocalName(), c.stylesheet.processorLanguage()) && elementForwardsCompatible(elem, c.stylesheet.processorLanguage())

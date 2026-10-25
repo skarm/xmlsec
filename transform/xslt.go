@@ -159,6 +159,10 @@ func (s *Stylesheet) prepare(ctx context.Context, d *Document, options XSLTConte
 		}
 	}()
 
+	if options.Template.Local != "" && options.Mode.Local != "" && s.version == XSLT20 {
+		return nil, nil, xslt.Invocation{}, nil, xsltError("execute XSLT", &xdm.Error{Code: "XTDE0047", Message: "XSLT 2.0 invocation specifies both an initial mode and an initial template"})
+	}
+
 	if options.Template.Local != "" && options.Mode.Local != "" || options.function.Local != "" && (options.Template.Local != "" || options.Mode.Local != "" || len(options.InitialParameters) != 0 || len(options.TunnelParameters) != 0) {
 		return nil, nil, xslt.Invocation{}, nil, wrap("transform XSLT", ErrInput)
 	}

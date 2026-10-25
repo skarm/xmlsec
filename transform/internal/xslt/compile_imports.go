@@ -5,7 +5,6 @@ package xslt
 
 import (
 	"context"
-	"maps"
 	"path"
 	"slices"
 	"strings"
@@ -17,47 +16,37 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
-// enterModuleNamespaceScope establishes the compilation namespace scope for an
-// imported/included module root: it snapshots c.nsBindings and c.localExcludes,
-// seeds c.nsBindings with the module root's in-scope namespaces (so the module's
-// literal result elements see ITS declarations, not a sibling module's), and adds
-// the module root's exclude-result-prefixes / extension-element-prefixes to the
-// exclusion set (resolved to URIs against the module root's own namespaces, per
-// XSLT 3.0 §11.1.3). The returned function restores both maps. Without this, an
-// imported module's root namespaces would leak into later-compiled siblings and
-// its exclude-result-prefixes would be ignored, so literal result elements emit
-// spurious namespace declarations.
+// enterModuleNamespaceScope isolates a module's lexical namespaces, result
+// exclusions, and extension designations. Standard attributes do not extend
+// across xsl:include/import boundaries (XSLT 3.0 §3.4).
 func (c *compiler) enterModuleNamespaceScope(root *xdm.Element) func() {
 	savedNS := c.nsBindings
 	savedExcludes := c.localExcludes
+	savedExtensions := c.extensionURIs
 	defaultNS, hasDefault := c.xpathDefaultNS, c.hasXPathDefaultNS
 	c.xpathDefaultNS, c.hasXPathDefaultNS = c.declarationDefaultNamespace(root)
 
 	inScope := inScopeNamespaces(root)
-	newBindings := make(map[string]string, len(savedNS)+len(inScope))
-	maps.Copy(newBindings, savedNS)
-	// The module root's in-scope namespaces override any inherited binding.
-	maps.Copy(newBindings, inScope)
-	c.nsBindings = newBindings
+	// Module namespace bindings are lexical; undeclared prefixes must not
+	// inherit bindings from the importing module or an earlier sibling.
+	c.nsBindings = inScope
 
-	newExcludes := c.moduleResultPrefixExcludes(root, inScope, savedExcludes)
-	if newExcludes != nil {
-		c.localExcludes = newExcludes
-	}
+	c.localExcludes = c.moduleResultPrefixExcludes(root, inScope)
+	c.extensionURIs = nil
+	c.setInstructionExtensionURIs(root)
 
 	return func() {
 		c.nsBindings = savedNS
 		c.localExcludes = savedExcludes
+		c.extensionURIs = savedExtensions
 		c.xpathDefaultNS, c.hasXPathDefaultNS = defaultNS, hasDefault
 	}
 }
 
 // moduleResultPrefixExcludes resolves a module root's exclude-result-prefixes and
 // extension-element-prefixes to the set of namespace URIs to exclude from result
-// trees, unioned onto base. inScope is the module root's in-scope namespaces.
-// Returns nil when the module declares neither attribute (so the caller keeps the
-// existing exclusion map).
-func (c *compiler) moduleResultPrefixExcludes(root *xdm.Element, inScope map[string]string, base map[string]struct{}) map[string]struct{} {
+// trees. inScope is the module root's in-scope namespaces.
+func (c *compiler) moduleResultPrefixExcludes(root *xdm.Element, inScope map[string]string) map[string]struct{} {
 	erp := getAttr(root, nameExcludeResultPrefixes)
 
 	eep := getAttr(root, nameExtensionElementPrefixes)
@@ -65,8 +54,7 @@ func (c *compiler) moduleResultPrefixExcludes(root *xdm.Element, inScope map[str
 		return nil
 	}
 
-	out := make(map[string]struct{}, len(base)+4)
-	maps.Copy(out, base)
+	out := make(map[string]struct{}, 4)
 
 	addPrefix := func(prefix string) {
 		if prefix == lexicon.ModeDefault {
@@ -106,8 +94,8 @@ func (c *compiler) compileImport(ctx context.Context, elem *xdm.Element) error {
 		return err
 	}
 
-	href := getAttr(elem, lexicon.AttrHref)
-	if href == "" {
+	href, present := elem.GetAttribute(lexicon.AttrHref)
+	if !present {
 		return staticError(errCodeXTSE0010, "xsl:import requires href attribute")
 	}
 
@@ -115,8 +103,8 @@ func (c *compiler) compileImport(ctx context.Context, elem *xdm.Element) error {
 }
 
 func (c *compiler) resolveIncludeURI(_ context.Context, elem *xdm.Element) (string, string, error) {
-	href := getAttr(elem, lexicon.AttrHref)
-	if href == "" {
+	href, present := elem.GetAttribute(lexicon.AttrHref)
+	if !present {
 		return "", "", staticError(errCodeXTSE0010, "xsl:include requires href attribute")
 	}
 
@@ -250,11 +238,19 @@ func (c *compiler) loadModuleDoc(ctx context.Context, uri string) (*xdm.Document
 
 	rc, resolveErr := c.resolver.Resolve(ctx, uri)
 	if resolveErr != nil {
+		if failure := preserveControlFailure(ctx, resolveErr); failure != nil {
+			return nil, failure
+		}
+
 		return nil, staticErrorCause(errCodeXTSE0165, resolveErr, "cannot resolve %q: %v", uri, resolveErr)
 	}
 
 	doc, err := parseXMLResource(ctx, c.parseOptions, rc, uri, c.maxResourceBytes)
 	if err != nil {
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return nil, failure
+		}
+
 		return nil, staticErrorCause(errCodeXTSE0165, err, "cannot parse %q: %v", uri, err)
 	}
 
@@ -594,6 +590,12 @@ func expandSimplifiedModule(ctx context.Context, doc *xdm.Document, root *xdm.El
 		Kind: tree.ElementNode, Name: tree.Name{Space: lexicon.NamespaceXSLT, Local: nameStylesheet}, Prefix: version.Prefix(), SourceLine: literal.SourceLine,
 		NS: []tree.Namespace{{Prefix: version.Prefix(), URI: lexicon.NamespaceXSLT}}, Attrs: []tree.Attribute{{Name: tree.Name{Local: lexicon.SerializationVersion}, Value: version.Value()}},
 	}
+	// Extraction loses ancestor xml:space. Keep it on the synthetic wrapper so
+	// re-normalization preserves the same text without adding an LRE attribute.
+	if space := inheritedStylesheetXMLSpace(root.Parent()); space != "" {
+		wrapper.Attrs = append(wrapper.Attrs, tree.Attribute{Name: tree.Name{Space: lexicon.NamespaceXML, Local: lexicon.AttrSpace}, Prefix: lexicon.PrefixXML, Value: space})
+	}
+
 	if base := xpath.NodeBaseURI(root.Parent()); base != "" && base != doc.URL() {
 		wrapper.Attrs = append(wrapper.Attrs, tree.Attribute{Name: tree.Name{Space: lexicon.NamespaceXML, Local: "base"}, Prefix: "xml", Value: base})
 	}
@@ -605,7 +607,12 @@ func expandSimplifiedModule(ctx context.Context, doc *xdm.Document, root *xdm.El
 	literal.Parent = tmpl
 	wrapper.Children = []*tree.Node{tmpl}
 
-	prepared, err := xdm.WrapDocument(ctx, tree.FromNodes([]*tree.Node{wrapper}, tree.DefaultLimits()))
+	private := tree.FromNodes([]*tree.Node{wrapper}, tree.DefaultLimits())
+	if err := normalizeStylesheetDocument(ctx, private); err != nil {
+		return nil, err
+	}
+
+	prepared, err := xdm.WrapDocument(ctx, private)
 	if err != nil {
 		return nil, err
 	}
@@ -613,6 +620,18 @@ func expandSimplifiedModule(ctx context.Context, doc *xdm.Document, root *xdm.El
 	prepared.SetURL(doc.URL())
 
 	return prepared, nil
+}
+
+func inheritedStylesheetXMLSpace(node xdm.Node) string {
+	for ; node != nil; node = node.Parent() {
+		if elem, ok := node.(*xdm.Element); ok {
+			if space, present := elem.GetAttributeNS("space", lexicon.NamespaceXML); present {
+				return space
+			}
+		}
+	}
+
+	return ""
 }
 
 func (c *compiler) compileExternalModule(ctx context.Context, doc *xdm.Document, importedRoot *xdm.Element, uri string, isImport bool) error {
@@ -741,9 +760,6 @@ func (c *compiler) compileExternalModule(ctx context.Context, doc *xdm.Document,
 // shared with the schema loader — so the two layers cannot drift. Windows
 // drive-letter paths (single-letter "scheme") stay filesystem paths.
 func resolveModuleURI(href, baseURI string) (string, error) {
-	if href == "" || baseURI == "" {
-		return href, nil
-	}
 	// A Windows drive-letter href ("C:/..." or "C:\\...") is a filesystem path,
 	// not a URI: its single-letter "scheme" is rejected by uripath.URIScheme, so
 	// without this branch it would fall through to ResolveSchemaURI and be
@@ -751,6 +767,17 @@ func resolveModuleURI(href, baseURI string) (string, error) {
 	// base. Address its own location verbatim. This must run BEFORE the URI
 	// branch below.
 	if isWindowsDrivePath(href) {
+		return href, nil
+	}
+
+	href = uripath.EscapeResourceReference(href)
+
+	baseURI = uripath.EscapeResourceReference(baseURI)
+	if href == "" {
+		return baseURI, nil
+	}
+
+	if baseURI == "" {
 		return href, nil
 	}
 	// Absolute-URI href, or any href against a URI base: defer to the shared

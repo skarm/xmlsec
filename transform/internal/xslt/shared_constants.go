@@ -1,6 +1,10 @@
 package xslt
 
 const (
+	nameFormat                         = "format"
+	nameLetterValue                    = "letter-value"
+	nameGroupingSize                   = "grouping-size"
+	nameStartAt                        = "start-at"
 	nameOriginal                       = "original"
 	processorProductName               = "xmlsec"
 	nameProductName                    = "product-name"

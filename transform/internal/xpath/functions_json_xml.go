@@ -375,14 +375,18 @@ type xmlToJSONOptions struct {
 	indent bool
 }
 
-type xmlJSONInherited struct {
-	escaped    bool
-	escapedKey bool
-}
+type xmlJSONPosition uint8
+
+const (
+	xmlJSONRoot xmlJSONPosition = iota
+	xmlJSONMapMember
+	xmlJSONArrayMember
+)
 
 type xmlJSONMeta struct {
 	kind       string
-	inherited  xmlJSONInherited
+	escaped    bool
+	escapedKey bool
 	hasKey     bool
 	keyActual  string
 	keyEncoded string
@@ -412,7 +416,7 @@ func fnXMLToJSON(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 		return nil, err
 	}
 
-	jsonText, _, err := serializeJSONXMLElement(root, xmlJSONInherited{}, opts, 0)
+	jsonText, _, err := serializeJSONXMLElement(root, xmlJSONRoot, opts, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -453,8 +457,11 @@ func xmlToJSONRootElement(node xdm.Node) (*xdm.Element, error) {
 		elemCount := 0
 
 		for child := range xdm.Children(n) {
-			if child.Type() == xdm.ElementNode {
+			switch child.Type() {
+			case xdm.ElementNode:
 				elemCount++
+			case xdm.TextNode, xdm.CDATASectionNode:
+				return nil, &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: document must have no text children"}
 			}
 		}
 
@@ -466,12 +473,12 @@ func xmlToJSONRootElement(node xdm.Node) (*xdm.Element, error) {
 	case *xdm.Element:
 		return n, nil
 	default:
-		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "xml-to-json expects an element or document node"}
+		return nil, &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json expects an element or document node"}
 	}
 }
 
-func serializeJSONXMLElement(elem *xdm.Element, inherited xmlJSONInherited, opts xmlToJSONOptions, depth int) (string, xmlJSONMeta, error) {
-	meta, err := parseXMLJSONMeta(elem, inherited)
+func serializeJSONXMLElement(elem *xdm.Element, position xmlJSONPosition, opts xmlToJSONOptions, depth int) (string, xmlJSONMeta, error) {
+	meta, err := parseXMLJSONMeta(elem, position)
 	if err != nil {
 		return "", xmlJSONMeta{}, err
 	}
@@ -487,11 +494,11 @@ func serializeJSONXMLElement(elem *xdm.Element, inherited xmlJSONInherited, opts
 func serializeJSONXMLContent(elem *xdm.Element, meta xmlJSONMeta, opts xmlToJSONOptions, depth int) (string, error) {
 	switch meta.kind {
 	case jsonKindMap:
-		return serializeJSONXMLMap(elem, meta.inherited, opts, depth)
+		return serializeJSONXMLMap(elem, opts, depth)
 	case jsonKindArray:
-		return serializeJSONXMLArray(elem, meta.inherited, opts, depth)
+		return serializeJSONXMLArray(elem, opts, depth)
 	case lexicon.TypeString:
-		return serializeJSONXMLString(elem, meta.inherited.escaped)
+		return serializeJSONXMLString(elem, meta.escaped)
 	case lexicon.TypeNumber:
 		content, err := scalarElementText(elem, true)
 		if err != nil {
@@ -517,7 +524,7 @@ func serializeJSONXMLContent(elem *xdm.Element, meta xmlJSONMeta, opts xmlToJSON
 	}
 }
 
-func serializeJSONXMLMap(elem *xdm.Element, inherited xmlJSONInherited, opts xmlToJSONOptions, depth int) (string, error) {
+func serializeJSONXMLMap(elem *xdm.Element, opts xmlToJSONOptions, depth int) (string, error) {
 	children, err := jsonElementChildren(elem, true)
 	if err != nil {
 		return "", err
@@ -527,7 +534,7 @@ func serializeJSONXMLMap(elem *xdm.Element, inherited xmlJSONInherited, opts xml
 
 	seen := make(map[string]struct{}, len(children))
 	for _, child := range children {
-		value, meta, err := serializeJSONXMLElement(child, inherited, opts, depth+1)
+		value, meta, err := serializeJSONXMLElement(child, xmlJSONMapMember, opts, depth+1)
 		if err != nil {
 			return "", err
 		}
@@ -547,7 +554,7 @@ func serializeJSONXMLMap(elem *xdm.Element, inherited xmlJSONInherited, opts xml
 	return formatJSONComposite("{", "}", parts, depth, opts.indent), nil
 }
 
-func serializeJSONXMLArray(elem *xdm.Element, inherited xmlJSONInherited, opts xmlToJSONOptions, depth int) (string, error) {
+func serializeJSONXMLArray(elem *xdm.Element, opts xmlToJSONOptions, depth int) (string, error) {
 	children, err := jsonElementChildren(elem, false)
 	if err != nil {
 		return "", err
@@ -555,7 +562,7 @@ func serializeJSONXMLArray(elem *xdm.Element, inherited xmlJSONInherited, opts x
 
 	parts := make([]string, 0, len(children))
 	for _, child := range children {
-		value, _, err := serializeJSONXMLElement(child, inherited, opts, depth+1)
+		value, _, err := serializeJSONXMLElement(child, xmlJSONArrayMember, opts, depth+1)
 		if err != nil {
 			return "", err
 		}
@@ -584,15 +591,12 @@ func serializeJSONXMLString(elem *xdm.Element, escaped bool) (string, error) {
 	return "\"" + encodeJSONStringContent(content) + "\"", nil
 }
 
-func parseXMLJSONMeta(elem *xdm.Element, inherited xmlJSONInherited) (xmlJSONMeta, error) {
+func parseXMLJSONMeta(elem *xdm.Element, position xmlJSONPosition) (xmlJSONMeta, error) {
 	if elem.URI() != NSFn {
 		return xmlJSONMeta{}, &xdm.Error{Code: errCodeFOJS0006, Message: fmt.Sprintf("xml-to-json: invalid namespace %q", elem.URI())}
 	}
 
-	meta := xmlJSONMeta{
-		kind:      elem.LocalName(),
-		inherited: inherited,
-	}
+	meta := xmlJSONMeta{kind: elem.LocalName()}
 
 	switch meta.kind {
 	case jsonKindMap, jsonKindArray, lexicon.TypeString, lexicon.TypeNumber, fnNameBoolean, jsonKindNull:
@@ -601,38 +605,13 @@ func parseXMLJSONMeta(elem *xdm.Element, inherited xmlJSONInherited) (xmlJSONMet
 	}
 
 	for _, attr := range elem.Attributes() {
-		switch attr.URI() {
-		case "":
-			switch attr.LocalName() {
-			case "key":
-				meta.hasKey = true
-				meta.keyActual = attr.Value()
-			case "escaped":
-				v, err := parseXMLJSONBooleanAttr(attr.Value())
-				if err != nil {
-					return xmlJSONMeta{}, err
-				}
-
-				meta.inherited.escaped = v
-			case "escaped-key":
-				v, err := parseXMLJSONBooleanAttr(attr.Value())
-				if err != nil {
-					return xmlJSONMeta{}, err
-				}
-
-				meta.inherited.escapedKey = v
-			default:
-				return xmlJSONMeta{}, &xdm.Error{Code: errCodeFOJS0006, Message: fmt.Sprintf("xml-to-json: invalid attribute %q", attr.Name())}
-			}
-		case NSFn:
-			return xmlJSONMeta{}, &xdm.Error{Code: errCodeFOJS0006, Message: fmt.Sprintf("xml-to-json: invalid attribute namespace for %q", attr.Name())}
-		default:
-			// Attributes in other namespaces are ignored.
+		if err := parseXMLJSONAttribute(&meta, attr, position); err != nil {
+			return xmlJSONMeta{}, err
 		}
 	}
 
 	if meta.hasKey {
-		if meta.inherited.escapedKey {
+		if meta.escapedKey {
 			encoded, actual, err := validateEscapedJSONContent(meta.keyActual)
 			if err != nil {
 				return xmlJSONMeta{}, err
@@ -646,6 +625,59 @@ func parseXMLJSONMeta(elem *xdm.Element, inherited xmlJSONInherited) (xmlJSONMet
 	}
 
 	return meta, nil
+}
+
+func parseXMLJSONAttribute(meta *xmlJSONMeta, attr *xdm.Attribute, position xmlJSONPosition) error {
+	switch attr.URI() {
+	case "":
+		switch attr.LocalName() {
+		case "key":
+			if position == xmlJSONArrayMember {
+				return &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: array child cannot have a key attribute"}
+			}
+
+			if position == xmlJSONRoot {
+				return nil
+			}
+
+			meta.hasKey = true
+			meta.keyActual = attr.Value()
+		case "escaped":
+			if meta.kind != lexicon.TypeString {
+				return &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: escaped is permitted only on a string element"}
+			}
+
+			v, err := parseXMLJSONBooleanAttr(attr.Value())
+			if err != nil {
+				return err
+			}
+
+			meta.escaped = v
+		case "escaped-key":
+			if position == xmlJSONArrayMember {
+				return &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: array child cannot have an escaped-key attribute"}
+			}
+
+			if position == xmlJSONRoot {
+				return nil
+			}
+
+			v, err := parseXMLJSONBooleanAttr(attr.Value())
+			if err != nil {
+				return err
+			}
+
+			meta.escapedKey = v
+		default:
+			return &xdm.Error{Code: errCodeFOJS0006, Message: fmt.Sprintf("xml-to-json: invalid attribute %q", attr.Name())}
+		}
+	case NSFn:
+		return &xdm.Error{Code: errCodeFOJS0006, Message: fmt.Sprintf("xml-to-json: invalid attribute namespace for %q", attr.Name())}
+	default:
+		// Attributes in other namespaces are ignored.
+	}
+
+	return nil
 }
 
 func jsonElementChildren(elem *xdm.Element, insideMap bool) ([]*xdm.Element, error) {
@@ -699,9 +731,7 @@ func validateNullElement(elem *xdm.Element) error {
 	for child := range xdm.Children(elem) {
 		switch child.Type() {
 		case xdm.TextNode, xdm.CDATASectionNode:
-			if strings.Trim(xdm.CharacterData(child), " \t\r\n") != "" {
-				return &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: null element must not contain text"}
-			}
+			return &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: null element must not contain text"}
 		case xdm.CommentNode, xdm.ProcessingInstructionNode:
 			continue
 		case xdm.ElementNode:

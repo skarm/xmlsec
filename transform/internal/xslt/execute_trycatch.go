@@ -84,11 +84,11 @@ func (ec *execContext) execMessageWithDefaults(ctx context.Context, inst *messag
 // Cancellation and exhausted budgets must terminate execution rather than
 // being converted into recoverable content or type errors.
 func preserveControlFailure(ctx context.Context, err error) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
+	if failure := xpath.ControlFailure(ctx, err); failure != nil {
+		return failure
 	}
 
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrResourceTooLarge) || errors.Is(err, xpath.ErrBudget) || errors.Is(err, xpath.ErrOpLimit) || errors.Is(err, xpath.ErrNodeSetLimit) || errors.Is(err, xpath.ErrRecursionLimit) {
+	if errors.Is(err, ErrResourceTooLarge) {
 		return err
 	}
 

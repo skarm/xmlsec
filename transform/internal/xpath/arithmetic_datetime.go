@@ -19,7 +19,7 @@ import (
 // near math.MaxInt (e.g. AddDate(0,0,1<<60) returns the original date
 // unchanged). We bound the move to maxSafeAddDateYears' worth of months or days,
 // which stays comfortably inside the representable range and well clear of any
-// wrap; anything larger is a genuine FODT0002 overflow.
+// wrap; anything larger is a genuine FODT0001 date/time overflow.
 //
 // maxSafeAddDateYears is 1e11 where int is 64 bits. Where int is 32 bits,
 // time.Time reports its year as an int, so the bound is math.MaxInt/4 (about
@@ -81,7 +81,17 @@ func julianDayNumber(year, month, day int) int64 {
 	y := int64(year) + 4800 - a
 	m := int64(month) + 12*a - 3
 
-	return int64(day) + (153*m+2)/5 + 365*y + y/4 - y/100 + y/400 - 32045
+	return int64(day) + (153*m+2)/5 + 365*y + floorYearDivision(y, 4) - floorYearDivision(y, 100) + floorYearDivision(y, 400) - 32045
+}
+
+// Meeus' Gregorian formula uses floor, including for years before -4800.
+func floorYearDivision(year, divisor int64) int64 {
+	quotient := year / divisor
+	if year%divisor < 0 {
+		quotient--
+	}
+
+	return quotient
 }
 
 // evalDateTimeArithmetic handles arithmetic involving durations and date/time values.
@@ -259,118 +269,78 @@ func arithmeticDurationNumber(ctx context.Context, op TokenType, dur, num xdm.At
 		return nil, true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: textXsDurationCannotBeUsedInArithmetic}
 	}
 
-	d := dur.DurationVal()
+	// XPath's operator table accepts numeric, retaining integer/decimal
+	// arithmetic when the supplied numeric operand is exact. In particular,
+	// decimal duration fields must not be rounded through binary64 here.
+	num = xdm.PromoteSchemaType(num)
+	if xdm.IsIntegerDerived(num.TypeName) || num.TypeName == xdm.TypeDecimal {
+		result, err := arithmeticDurationExact(ctx, op, dur.TypeName, dur.DurationVal(), toRat(num))
 
-	// Resolve the multiplier/divisor as an EXACT rational FIRST, before any
-	// float64 zero/NaN inspection. A schema-derived decimal/integer numeric
-	// reports ToFloat64()==0 even when its true value is non-zero, which would
-	// otherwise spuriously trigger the division-by-zero check. numericToRat is
-	// BaseType-aware and recovers the exact value for xs:integer/xs:decimal
-	// (and their restrictions). A FINITE xs:double/xs:float operand is converted
-	// to its EXACT binary rational so whole-second/whole-month durations beyond
-	// 2^53 survive the multiplication intact; only non-finite (Inf/NaN) operands
-	// fall through to the float path below, which reports the proper error.
-	if nRat, ok := numericToRatExact(num); ok {
-		if op == TokenDiv && nRat.Sign() == 0 {
-			return nil, true, &xdm.Error{Code: errCodeFODT0002, Message: "division of duration by zero"}
-		}
-
-		if dur.TypeName == xdm.TypeYearMonthDuration {
-			return arithmeticYearMonthDurationRat(op, d, nRat)
-		}
-		// dayTimeDuration * / number: compute the result in exact rational
-		// seconds. This makes e.g. PT11S * 0.1 canonicalize identically to a
-		// parsed PT1.1S, and preserves whole-second durations beyond 2^53.
-		//
-		// When d.SecRat is present the EXACT total-seconds magnitude is
-		// authoritative. A legacy float-only duration (no SecRat) whose Seconds
-		// exceed the exact float64 range cannot be represented precisely, so a
-		// rational built from it would be misleading — fall through to the float
-		// path which reports overflow.
-		const maxExactDayTimeSecs = float64(1 << 53)
-		if dur.TypeName == xdm.TypeDayTimeDuration && (d.SecRat != nil || math.Abs(d.Seconds) <= maxExactDayTimeSecs) {
-			secsRat := xdm.DurationToRat(d, false)
-
-			var resRat *big.Rat
-			if op == TokenStar {
-				resRat = new(big.Rat).Mul(secsRat, nRat)
-			} else {
-				resRat = new(big.Rat).Quo(secsRat, nRat)
-
-				var err error
-
-				resRat, err = finiteDecimalValue(ctx, resRat)
-				if err != nil {
-					return nil, true, err
-				}
-			}
-
-			negative := resRat.Sign() < 0
-
-			absRat := resRat
-			if negative {
-				absRat = new(big.Rat).Neg(resRat)
-			}
-
-			rsecs, frac := durationFromRatSeconds(absRat)
-
-			return xdm.SingleAtomic(xdm.AtomicValue{
-				TypeName: dur.TypeName,
-				Value:    xdm.Duration{Seconds: rsecs, FracSec: frac, SecRat: absRat, Negative: negative},
-			}), true, nil
-		}
+		return result, true, err
 	}
 
-	result, err := arithmeticDurationFloat(op, dur.TypeName, d, num.ToFloat64())
+	// A floating operand uses the floating operator semantics before rounding
+	// the month count or constructing decimal seconds.
+	double, err := CastAtomicContext(ctx, num, xdm.TypeDouble)
+	if err != nil {
+		return nil, true, err
+	}
+
+	result, err := arithmeticDurationFloat(op, dur.TypeName, dur.DurationVal(), double.DoubleVal())
 
 	return result, true, err
 }
 
-// arithmeticYearMonthDurationRat computes yearMonthDuration * / number using
-// EXACT rational month arithmetic. The signed month total is multiplied or
-// divided as a big.Rat, rounded "half towards positive infinity" exactly, and
-// range-checked before narrowing to int (FODT0002 on overflow). This keeps
-// integer/decimal operands precise — e.g. P9007199254740993M * 1 stays
-// P9007199254740993M instead of rounding through float64.
-func arithmeticYearMonthDurationRat(op TokenType, d xdm.Duration, nRat *big.Rat) (xdm.Sequence, bool, error) {
-	months := big.NewInt(int64(d.Months))
-	if d.Negative {
-		months.Neg(months)
+func arithmeticDurationExact(ctx context.Context, op TokenType, typeName string, d xdm.Duration, number *big.Rat) (xdm.Sequence, error) {
+	if number.Sign() == 0 {
+		if op == TokenDiv {
+			return nil, &xdm.Error{Code: errCodeFODT0002, Message: "division of duration by zero"}
+		}
+
+		return xdm.SingleAtomic(xdm.AtomicValue{TypeName: typeName, Value: xdm.Duration{}}), nil
 	}
 
-	monthsRat := new(big.Rat).SetInt(months)
+	value := xdm.DurationToRat(d, typeName == xdm.TypeYearMonthDuration)
+	if err := preflightDecimal(ctx, op, value, number); err != nil {
+		return nil, err
+	}
 
-	var resRat *big.Rat
+	result := new(big.Rat)
 	if op == TokenStar {
-		resRat = new(big.Rat).Mul(monthsRat, nRat)
+		result.Mul(value, number)
 	} else {
-		resRat = new(big.Rat).Quo(monthsRat, nRat)
+		result.Quo(value, number)
 	}
 
-	// Round half towards positive infinity, exactly.
-	rounded := ratRound(resRat)
-	resInt := new(big.Int).Quo(rounded.Num(), rounded.Denom())
+	if typeName == xdm.TypeYearMonthDuration {
+		rounded := ratRound(result)
 
-	negative := resInt.Sign() < 0
-
-	absInt := resInt
-	if negative {
-		absInt = new(big.Int).Neg(resInt)
+		return durationFromMonthCount(new(big.Int).Quo(rounded.Num(), rounded.Denom()))
 	}
 
-	if !absInt.IsInt64() || absInt.Int64() > int64(math.MaxInt) {
-		return nil, true, &xdm.Error{Code: errCodeFODT0002, Message: "yearMonthDuration arithmetic overflow"}
+	if op == TokenDiv {
+		var err error
+
+		result, err = finiteDecimalValue(ctx, result)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	return xdm.SingleAtomic(xdm.AtomicValue{
-		TypeName: xdm.TypeYearMonthDuration,
-		Value:    xdm.Duration{Months: int(absInt.Int64()), Negative: negative},
-	}), true, nil
+	if err := ChargeNumber(ctx, xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: result}); err != nil {
+		return nil, err
+	}
+
+	return durationFromExactSeconds(typeName, result), nil
 }
 
 func arithmeticDateTimeDuration(op TokenType, dt, dur xdm.AtomicValue) (xdm.Sequence, bool, error) {
 	if op != TokenPlus && op != TokenMinus {
 		return nil, true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "invalid operator for date/time ± duration"}
+	}
+
+	if dur.TypeName == xdm.TypeDuration {
+		return nil, true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: textXsDurationCannotBeUsedInArithmetic}
 	}
 
 	// xs:time can only be combined with xs:dayTimeDuration, not xs:yearMonthDuration
@@ -399,12 +369,20 @@ func arithmeticDateTimeDuration(op TokenType, dt, dur xdm.AtomicValue) (xdm.Sequ
 		secsRat = new(big.Rat).Neg(secsRat)
 	}
 
+	if dt.TypeName == xdm.TypeTime {
+		// F&O 9.7.13 discards whole days before adding to the reference date.
+		// A large valid duration must not overflow a date that is not returned.
+		days := new(big.Int).Quo(secsRat.Num(), new(big.Int).Mul(secsRat.Denom(), big.NewInt(86400)))
+		wholeDays := new(big.Rat).SetInt(new(big.Int).Mul(days, big.NewInt(86400)))
+		secsRat = new(big.Rat).Sub(secsRat, wholeDays)
+	}
+
 	if months != 0 {
 		// time.AddDate computes the result via int month arithmetic that silently
 		// wraps for magnitudes near math.MaxInt, so reject month magnitudes beyond a
 		// conservative bound that keeps the result within representable years.
 		if int64(months) > maxSafeAddDateMonths || int64(months) < -maxSafeAddDateMonths {
-			return nil, true, &xdm.Error{Code: errCodeFODT0002, Message: "date/time arithmetic overflow: month count out of range"}
+			return nil, true, &xdm.Error{Code: errCodeFODT0001, Message: "date/time arithmetic overflow: month count out of range"}
 		}
 
 		if !resultYearFits(t, int64(max(months, -months)/12+1)) {
@@ -442,7 +420,7 @@ func arithmeticDateTimeDuration(op TokenType, dt, dur xdm.AtomicValue) (xdm.Sequ
 		// original date unchanged). Reject any day magnitude beyond a conservative
 		// bound that keeps the result well within time.Time's representable years.
 		if days.CmpAbs(big.NewInt(maxSafeAddDateDays)) > 0 {
-			return nil, true, &xdm.Error{Code: errCodeFODT0002, Message: "date/time arithmetic overflow: day count out of range"}
+			return nil, true, &xdm.Error{Code: errCodeFODT0001, Message: "date/time arithmetic overflow: day count out of range"}
 		}
 
 		if !resultYearFits(t, days.Int64()/365+1) {
@@ -617,75 +595,6 @@ func arithmeticDurationDivDuration(ctx context.Context, la, ra xdm.AtomicValue) 
 	return result, true, err
 }
 
-// numericToRat returns the exact rational value of an integer- or
-// decimal-typed numeric AtomicValue. It returns ok=false for xs:double and
-// xs:float, whose backing float64 values are binary-imprecise and therefore
-// cannot be represented exactly as the intended decimal.
-func numericToRat(a xdm.AtomicValue) (*big.Rat, bool) {
-	// Resolve the effective numeric type. A schema-derived numeric (e.g. a
-	// restriction of xs:decimal or xs:integer) carries a custom TypeName whose
-	// BaseType names the built-in ancestor; consult BaseType so its exact value
-	// is preserved instead of falling through to the imprecise float path.
-	tn := a.TypeName
-	if !xdm.IsIntegerDerived(tn) && tn != xdm.TypeDecimal {
-		if xdm.IsIntegerDerived(a.BaseType) || a.BaseType == xdm.TypeDecimal {
-			tn = a.BaseType
-		}
-	}
-
-	if xdm.IsIntegerDerived(tn) {
-		switch v := a.Value.(type) {
-		case int64:
-			return new(big.Rat).SetInt64(v), true
-		case *big.Int:
-			return new(big.Rat).SetInt(v), true
-		}
-
-		return nil, false
-	}
-
-	if tn == xdm.TypeDecimal {
-		r, ok := a.Value.(*big.Rat)
-		if !ok {
-			return nil, false
-		}
-
-		return new(big.Rat).Set(r), true
-	}
-
-	return nil, false
-}
-
-// numericToRatExact extends numericToRat to also recover an EXACT rational from
-// a FINITE xs:double/xs:float operand. The IEEE-754 binary value is converted to
-// the exact rational it denotes (big.Rat.SetFloat64), so duration*/number math
-// can route through the exact-rational path and preserve whole-second/whole-month
-// magnitudes beyond 2^53. Non-finite operands (±Inf, NaN) have no rational value;
-// they report ok=false so the caller's float path produces the proper error.
-func numericToRatExact(a xdm.AtomicValue) (*big.Rat, bool) {
-	if r, ok := numericToRat(a); ok {
-		return r, true
-	}
-
-	if !a.IsNumeric() {
-		return nil, false
-	}
-	// Promote a schema-derived double/float (custom TypeName, BaseType=xs:double/
-	// xs:float) so ToFloat64 reads the underlying value. Keying off the
-	// unknown TypeName would return 0.
-	f := xdm.PromoteSchemaType(a).ToFloat64()
-	if math.IsInf(f, 0) || math.IsNaN(f) {
-		return nil, false
-	}
-
-	r := new(big.Rat).SetFloat64(f)
-	if r == nil {
-		return nil, false
-	}
-
-	return r, true
-}
-
 // durationFromRatSeconds splits a non-negative exact total-seconds rational
 // into the float64 Seconds field (whole seconds plus fractional part, kept for
 // compatibility with the rest of the Duration machinery) and an exact FracSec
@@ -734,59 +643,65 @@ func arithmeticDurationFloat(op TokenType, typeName string, d xdm.Duration, n fl
 		return nil, &xdm.Error{Code: errCodeFODT0002, Message: "division of duration by zero"}
 	}
 
-	// Normalize duration to signed
-	months := float64(d.Months)
+	if op == TokenStar && math.IsInf(n, 0) {
+		return nil, &xdm.Error{Code: errCodeFODT0002, Message: textDurationOverflow}
+	}
 
-	secs := d.Seconds
-	if d.Negative {
-		months, secs = -months, -secs
+	if op == TokenStar && n == 0 || op == TokenDiv && math.IsInf(n, 0) {
+		return xdm.SingleAtomic(xdm.AtomicValue{TypeName: typeName, Value: xdm.Duration{}}), nil
+	}
+
+	value := float64(d.Months)
+	if typeName == xdm.TypeDayTimeDuration {
+		value, _ = xdm.DurationToRat(d, false).Float64()
+	} else if d.Negative {
+		value = -value
 	}
 
 	if op == TokenStar {
-		months *= n
-		secs *= n
+		value *= n
 	} else {
-		months /= n
-		secs /= n
+		value /= n
 	}
 
-	// A NaN here comes from 0 * ±INF. A ±INF multiplier overflows per F&O
-	// (FODT0002), and converting NaN to int64 below would give a different
-	// value on each architecture.
-	if math.IsInf(months, 0) || math.IsInf(secs, 0) || math.IsNaN(months) || math.IsNaN(secs) {
-		return nil, &xdm.Error{Code: errCodeFODT0002, Message: textDurationOverflow}
-	}
-	// Detect precision loss for very large values
-	const maxExactFloat64 = 1 << 53
-
-	absSecs := math.Abs(secs)
-
-	absMonths := math.Abs(months)
-	if absSecs > maxExactFloat64 || absMonths > maxExactFloat64 {
+	if math.IsInf(value, 0) || math.IsNaN(value) {
 		return nil, &xdm.Error{Code: errCodeFODT0002, Message: textDurationOverflow}
 	}
 
-	// Per XPath F&O spec: months are rounded "half towards positive infinity"
-	// i.e. math.Floor(months + 0.5)
-	// The rounded count is at most 2^53, so it fits int64; where int is 32
-	// bits a count past 2^31-1 is a duration overflow.
-	roundedMonths := int64(math.Floor(months + 0.5))
-
-	resMonths := int(roundedMonths)
-	if int64(resMonths) != roundedMonths {
-		return nil, &xdm.Error{Code: errCodeFODT0002, Message: "duration overflow: month count out of int range"}
+	if typeName == xdm.TypeYearMonthDuration {
+		return durationFromRoundedMonths(value)
 	}
 
-	resSecs := secs
+	return durationFromExactSeconds(typeName, new(big.Rat).SetFloat64(value)), nil
+}
 
-	negative := resMonths < 0 || (resMonths == 0 && resSecs < 0)
-	if negative {
-		resMonths = -resMonths
-		resSecs = -resSecs
-	}
+func durationFromExactSeconds(typeName string, seconds *big.Rat) xdm.Sequence {
+	negative := seconds.Sign() < 0
+	seconds.Abs(seconds)
+	whole, fraction := durationFromRatSeconds(seconds)
 
 	return xdm.SingleAtomic(xdm.AtomicValue{
 		TypeName: typeName,
-		Value:    xdm.Duration{Months: resMonths, Seconds: resSecs, Negative: negative},
+		Value:    xdm.Duration{Seconds: whole, FracSec: fraction, SecRat: seconds, Negative: negative},
+	})
+}
+
+func durationFromRoundedMonths(value float64) (xdm.Sequence, error) {
+	rounded, _ := new(big.Float).SetFloat64(roundHalfUpFloat(value, 0)).Int(nil)
+
+	return durationFromMonthCount(rounded)
+}
+
+func durationFromMonthCount(rounded *big.Int) (xdm.Sequence, error) {
+	negative := rounded.Sign() < 0
+	rounded.Abs(rounded)
+
+	if !rounded.IsInt64() || rounded.Int64() > int64(math.MaxInt) {
+		return nil, &xdm.Error{Code: errCodeFODT0002, Message: "duration overflow: month count out of int range"}
+	}
+
+	return xdm.SingleAtomic(xdm.AtomicValue{
+		TypeName: xdm.TypeYearMonthDuration,
+		Value:    xdm.Duration{Months: int(rounded.Int64()), Negative: negative},
 	}), nil
 }

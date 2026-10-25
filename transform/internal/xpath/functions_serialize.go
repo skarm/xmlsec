@@ -20,6 +20,7 @@ import (
 	"github.com/skarm/xmlsec/internal/xmloutput"
 	"github.com/skarm/xmlsec/transform/internal/xdm/encoding"
 	htmlpkg "github.com/skarm/xmlsec/transform/internal/xdm/html"
+	lexical "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 )
 
 const (
@@ -29,6 +30,17 @@ const (
 	errCodeSERE0020 = "SERE0020"
 	errCodeSERE0021 = "SERE0021"
 	errCodeSERE0023 = "SERE0023"
+)
+
+// Named types from the published serialization-parameter schemas.
+const (
+	serializeStringParamType          = "string-param-type"
+	serializeTokenizedStringParamType = "tokenized-string-param-type"
+	serializeQualifiedEQNameType      = "Qualified-EQName"
+	serializeQNameOrEQNameType        = "QName-or-EQName"
+	serializeJSONNodeMethodType       = "json-node-output-method-type"
+	serializePrefixedQNameType        = "Prefixed-QName"
+	serializeCharacterMapsParamType   = "use-character-maps-param-type"
 )
 
 func lookupFunctionsSerialize(name string) (*builtinFunc, bool) {
@@ -150,6 +162,9 @@ func applySerializeNormalization(s string, opts serializeOptions) (string, error
 type serializeOptions struct {
 	ctx   context.Context
 	depth int
+	// edition is the serialization contract selected by the originating
+	// XPath function context. Zero denotes the shared 3.1 host defaults.
+	edition int
 	// cdataElements / suppressIndent hold the exact expanded {uri}local element
 	// names for the cdata-section-elements and suppress-indentation parameters.
 	cdataElements  map[string]struct{}
@@ -245,6 +260,9 @@ func (opts serializeOptions) methodEmitsDoctype() bool {
 
 // validate checks method-specific parameter constraints before output starts.
 func (opts serializeOptions) validate() error {
+	if opts.edition == 30 && (opts.method == lexicon.MethodJSON || opts.method == lexicon.MethodAdaptive) {
+		return &xdm.Error{Code: lexicon.ErrSEPM0016, Message: fmt.Sprintf("output method %q is not defined by Serialization 3.0", opts.method)}
+	}
 	// An extension method (a prefixed QName) is a valid method-type value but
 	// helium implements no extension output methods, so it is an unsupported
 	// value (SEPM0016), with no silent fall-through to the xml method. The
@@ -270,15 +288,10 @@ func (opts serializeOptions) validate() error {
 		return &xdm.Error{Code: lexicon.ErrSESU0013, Message: fmt.Sprintf("XML output version %q is not supported", opts.xmlVersion)}
 	}
 
-	// A doctype-system value MUST NOT contain BOTH an apostrophe (#x27) and a
-	// quotation mark (#x22) — it could not be written as an XML SystemLiteral. Per
-	// Serialization 3.1 §3 that is an invalid parameter value (SEPM0016), rather
-	// than silently emitting a malformed DOCTYPE. doctype-system is applicable only
-	// to the xml, xhtml, and html output methods (§5.1.7 / §7.4.6) — text/json/
-	// adaptive ignore it — so the SystemLiteral check is gated to the methods that
-	// actually emit a DOCTYPE.
-	if opts.methodEmitsDoctype() && strings.ContainsRune(opts.doctypeSystem, '"') && strings.ContainsRune(opts.doctypeSystem, '\'') {
-		return &xdm.Error{Code: lexicon.ErrSEPM0016, Message: "doctype-system must not contain both a quotation mark and an apostrophe"}
+	// Parameter domains are checked before method-specific effects. In
+	// particular, ignored metadata still has to be a valid parameter value.
+	if !xmloutput.ValidPublicID(opts.doctypePublic) || !xmloutput.ValidSystemID(opts.doctypeSystem) {
+		return &xdm.Error{Code: lexicon.ErrSEPM0016, Message: "invalid doctype identifier"}
 	}
 
 	// SEPM0009 (Serialization 3.1): when the omit-xml-declaration parameter is
@@ -324,15 +337,15 @@ func (opts serializeOptions) validate() error {
 	return nil
 }
 
-// isSupportedSerializeNormForm reports whether form names a Unicode normalization
-// form helium applies. A valid, active normalization-form (serialize parameter
-// values are validated at parse time by serializeNormalizationFormValid) is one of
-// NFC/NFD/NFKC/NFKD or "fully-normalized"; of these only "fully-normalized" is
-// unsupported — it is not provided by golang.org/x/text/unicode/norm and is the
-// SESU0011 unsupported-normalization serialization error. "none"/"" request no
-// normalization (serializeNormalizationActive is false).
+// isSupportedSerializeNormForm reports the implemented Unicode forms. Other
+// valid NMTOKEN values, including fully-normalized, raise SESU0011.
 func isSupportedSerializeNormForm(form string) bool {
-	return serializeNormalizationActive(form) && form != "fully-normalized"
+	switch form {
+	case nameNFC, nameNFD, nameNFKC, nameNFKD:
+		return true
+	}
+
+	return false
 }
 
 // serializeNormalizationActive reports whether the normalization-form parameter
@@ -398,7 +411,7 @@ func (opts *serializeOptions) booleanParam(name string) (*bool, bool) {
 
 func (opts *serializeOptions) stringParam(name string) *string {
 	switch name {
-	case "method":
+	case lexicon.SerializationMethod:
 		return &opts.method
 	case "item-separator":
 		return &opts.itemSeparator
@@ -412,7 +425,7 @@ func (opts *serializeOptions) stringParam(name string) *string {
 		return &opts.doctypePublic
 	case "doctype-system":
 		return &opts.doctypeSystem
-	case "json-node-output-method":
+	case lexicon.SerializationJSONNodeOutputMethod:
 		return &opts.jsonNodeOutputMethod
 	case "normalization-form":
 		return &opts.normalizationForm
@@ -439,6 +452,10 @@ func parseSerializeOptions(ctx context.Context, args []xdm.Sequence) (serializeO
 		includeContentType:  true,
 		escapeURIAttributes: true,
 	}
+	if ec := getFnContext(ctx); ec != nil && ec.version == 30 {
+		opts.edition = 30
+	}
+
 	if len(args) <= 1 || xdm.SequenceLen(args[1]) == 0 {
 		return opts, nil
 	}
@@ -448,6 +465,10 @@ func parseSerializeOptions(ctx context.Context, args []xdm.Sequence) (serializeO
 	}
 
 	if m, ok := args[1].Get(0).(xdm.MapItem); ok {
+		if opts.edition == 30 {
+			return opts, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "XPath 3.0 serialization parameters must be an output:serialization-parameters element"}
+		}
+
 		return parseSerializeOptionsMap(ctx, opts, m)
 	}
 
@@ -501,7 +522,7 @@ func parseSerializeMapOutputOptions(ctx context.Context, opts serializeOptions, 
 		opts.itemSeparatorSet = true
 	}
 
-	indent, found, err := readSerializeBooleanOption(m, "indent")
+	indent, found, err := readSerializeBooleanOption(ctx, m, "indent")
 	if err != nil {
 		return opts, err
 	}
@@ -512,10 +533,10 @@ func parseSerializeMapOutputOptions(ctx context.Context, opts serializeOptions, 
 	// The map form of fn:serialize defaults omit-xml-declaration to true:
 	// supplying an empty map has the same effect as omitting the argument, and
 	// the XML declaration is omitted unless the option requests otherwise
-	// (F&O 3.1 §18.9.1; W3C serialize-xml-127a).
+	// (F&O 3.1 §14.7.3; W3C serialize-xml-127a).
 	opts.omitXMLDeclaration = true
 
-	omit, found, err := readSerializeBooleanOption(m, "omit-xml-declaration")
+	omit, found, err := readSerializeBooleanOption(ctx, m, "omit-xml-declaration")
 	if err != nil {
 		return opts, err
 	}
@@ -524,7 +545,7 @@ func parseSerializeMapOutputOptions(ctx context.Context, opts serializeOptions, 
 		opts.omitXMLDeclaration = omit
 	}
 
-	allow, found, err := readSerializeBooleanOption(m, "allow-duplicate-names")
+	allow, found, err := readSerializeBooleanOption(ctx, m, "allow-duplicate-names")
 	if err != nil {
 		return opts, err
 	}
@@ -550,7 +571,7 @@ func parseSerializeMapOutputOptions(ctx context.Context, opts serializeOptions, 
 }
 
 func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, m xdm.MapItem) (serializeOptions, error) {
-	undeclare, found, err := readSerializeBooleanOption(m, "undeclare-prefixes")
+	undeclare, found, err := readSerializeBooleanOption(ctx, m, "undeclare-prefixes")
 	if err != nil {
 		return opts, err
 	}
@@ -559,7 +580,7 @@ func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, 
 		opts.undeclarePrefixes = undeclare
 	}
 
-	include, found, err := readSerializeBooleanOption(m, "include-content-type")
+	include, found, err := readSerializeBooleanOption(ctx, m, "include-content-type")
 	if err != nil {
 		return opts, err
 	}
@@ -568,7 +589,7 @@ func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, 
 		opts.includeContentType = include
 	}
 
-	escape, found, err := readSerializeBooleanOption(m, "escape-uri-attributes")
+	escape, found, err := readSerializeBooleanOption(ctx, m, "escape-uri-attributes")
 	if err != nil {
 		return opts, err
 	}
@@ -586,7 +607,7 @@ func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, 
 		opts.xmlVersion = version
 	}
 
-	hv, found, err := readSerializeNumberOption(m, "html-version")
+	hv, found, err := readSerializeNumberOption(ctx, m, "html-version")
 	if err != nil {
 		return opts, err
 	}
@@ -624,7 +645,7 @@ func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, 
 	// Validation parity with the element form for the recognized-but-unapplied
 	// (or limitation) parameters, so an invalid value is rejected consistently.
 	// Validate the boolean value; UTF-8 output does not emit a BOM.
-	if _, _, err := readSerializeBooleanOption(m, "byte-order-mark"); err != nil {
+	if _, _, err := readSerializeBooleanOption(ctx, m, "byte-order-mark"); err != nil {
 		return opts, err
 	}
 
@@ -664,7 +685,7 @@ func parseSerializeMapContentOptions(ctx context.Context, opts serializeOptions,
 	}
 
 	if v, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: "use-character-maps"}); found {
-		charMap, err := resolveSerializeCharacterMaps(v)
+		charMap, err := resolveSerializeCharacterMaps(ctx, v)
 		if err != nil {
 			return opts, err
 		}
@@ -693,47 +714,49 @@ func parseSerializeMapContentOptions(ctx context.Context, opts serializeOptions,
 	return opts, nil
 }
 
-func readSerializeBooleanOption(m xdm.MapItem, name string) (bool, bool, error) {
-	v, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: name})
+// serializeOptionValue applies the map option's declared function conversion,
+// independently of an enclosing XSLT backwards-compatibility mode.
+func serializeOptionValue(ctx context.Context, value xdm.Sequence, target string, occurrence xdm.Occurrence, name string) (xdm.Sequence, error) {
+	var strict evalContext
+	if ec := getFnContext(ctx); ec != nil {
+		strict = *ec
+	}
+
+	strict.xpath10Compat = false
+
+	return coerceFuncallArg(ctx, value, stAtomic(target, occurrence), "serialize option "+name, 0, &strict)
+}
+
+func serializeOptionalAtomic(ctx context.Context, value xdm.Sequence, target, name string) (xdm.AtomicValue, bool, error) {
+	converted, err := serializeOptionValue(ctx, value, target, xdm.OccurrenceZeroOrOne, name)
+	if err != nil {
+		return xdm.AtomicValue{}, false, err
+	}
+
+	if xdm.SequenceLen(converted) == 0 {
+		return xdm.AtomicValue{}, false, nil
+	}
+
+	atom, ok := converted.Get(0).(xdm.AtomicValue)
+	if !ok {
+		return xdm.AtomicValue{}, false, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialization option did not yield an atomic value"}
+	}
+
+	return atom, true, nil
+}
+
+func readSerializeBooleanOption(ctx context.Context, m xdm.MapItem, name string) (bool, bool, error) {
+	value, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: name})
 	if !found {
 		return false, false, nil
 	}
-	// A map entry present with the empty sequence selects the parameter's
-	// DEFAULT (F&O 3.1 fn:serialize: present-empty = use default, not an
-	// error), so report it as not-found and let the caller keep its default.
-	if xdm.SequenceLen(v) == 0 {
-		return false, false, nil
+
+	atom, found, err := serializeOptionalAtomic(ctx, value, xdm.TypeBoolean, name)
+	if err != nil || !found {
+		return false, found, err
 	}
 
-	if xdm.SequenceLen(v) != 1 {
-		return false, true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %q must be a single xs:boolean", name)}
-	}
-
-	av, ok := v.Get(0).(xdm.AtomicValue)
-	if !ok {
-		return false, true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %q must be xs:boolean", name)}
-	}
-
-	switch av.TypeName {
-	case xdm.TypeBoolean:
-		return av.BooleanVal(), true, nil
-	case xdm.TypeUntypedAtomic:
-		s, err := atomicToString(av)
-		if err != nil {
-			return false, true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %q must be xs:boolean", name)}
-		}
-
-		switch s {
-		case lexicon.ValueTrue, "1":
-			return true, true, nil
-		case lexicon.ValueFalse, "0":
-			return false, true, nil
-		default:
-			return false, true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %q must be xs:boolean", name)}
-		}
-	default:
-		return false, true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %q must be xs:boolean", name)}
-	}
+	return atom.BooleanVal(), true, nil
 }
 
 // resolveSerializeQNameNames converts a serialization parameter whose value is a
@@ -742,107 +765,62 @@ func readSerializeBooleanOption(m xdm.MapItem, name string) (bool, bool, error) 
 // exact expanded {uri}local name (Clark notation; an explicit empty namespace is
 // "{}local"). Matching is by exact expanded name, so QName("","b") does not match
 // a namespaced <p:b>.
-func resolveSerializeQNameNames(ctx context.Context, v xdm.Sequence, name string) (map[string]struct{}, error) {
-	// Option (function) conversion (F&O 3.1 §2.5): atomize FIRST so an array
-	// value (W3C serialize-xml-106a supplies [QName(...), ...]) flattens to its
-	// members and each member atomizes to its xs:QName, THEN require every atom to
-	// be an xs:QName.
-	atoms, err := atomizeTypedValue(ctx, v)
+func resolveSerializeQNameNames(ctx context.Context, value xdm.Sequence, name string) (map[string]struct{}, error) {
+	converted, err := serializeOptionValue(ctx, value, xdm.TypeQName, xdm.OccurrenceZeroOrMore, name)
 	if err != nil {
 		return nil, err
 	}
 
 	names := make(map[string]struct{})
 
-	for _, av := range atoms {
-		if av.TypeName != xdm.TypeQName {
-			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %q must be a sequence of xs:QName", name)}
-		}
-
-		qn, ok := av.Value.(xdm.QNameValue)
+	for item := range xdm.SequenceItems(converted) {
+		atom, ok := item.(xdm.AtomicValue)
 		if !ok {
-			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %q must be a sequence of xs:QName", name)}
+			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialization QName option did not yield atomic values"}
 		}
 
-		names[xdm.ClarkName(qn.URI, qn.Local)] = struct{}{}
+		qname, ok := atom.Value.(xdm.QNameValue)
+		if !ok {
+			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialization QName option has an invalid value"}
+		}
+
+		names[xdm.ClarkName(qname.URI, qname.Local)] = struct{}{}
 	}
 
 	return names, nil
 }
 
-// readSerializeNumberOption extracts a numeric-valued serialize option
-// (html-version, an xs:decimal) from the option map as its canonical string
-// form. A non-numeric value is err:XPTY0004. found is false only when the key is
-// absent.
-func readSerializeNumberOption(m xdm.MapItem, name string) (string, bool, error) {
-	v, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: name})
-	if !found {
-		return "", false, nil
-	}
-	// A map entry present with the empty sequence selects the parameter's DEFAULT
-	// (present-empty = use default, not an error); report it as not-found.
-	if xdm.SequenceLen(v) == 0 {
-		return "", false, nil
-	}
-
-	if xdm.SequenceLen(v) != 1 {
-		return "", true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %q must be a single number", name)}
-	}
-
-	av, ok := v.Get(0).(xdm.AtomicValue)
-	if !ok || !av.IsNumeric() {
-		return "", true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %q must be numeric", name)}
-	}
-
-	s, err := atomicToString(av)
-	if err != nil {
-		return "", true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %q must be numeric", name)}
-	}
-
-	return s, true, nil
+// html-version requires xs:decimal?: integers are subtypes, while floating
+// values cannot be promoted down to decimal by function conversion.
+func readSerializeNumberOption(ctx context.Context, m xdm.MapItem, name string) (string, bool, error) {
+	return readSerializeAtomicStringOption(ctx, m, name, xdm.TypeDecimal)
 }
 
-// readSerializeStringOption extracts a string-valued serialize option from the
-// option map, applying F&O 3.1 §2.5 option (function) conversion: it atomizes
-// the value FIRST — through the ctx-aware typed-value atomization, so an
-// element-only-typed node (which has no typed value) raises err:FOTY0012 and an
-// array (e.g. an empty-array member) flattens to its members — THEN enforces the
-// singleton cardinality. atomizeTypedValue keeps the atom's type (e.g. an
-// xs:QName "method" value), so atomicToString handles it unchanged; a raw
-// pre-atomization seqLen gate would wrongly reject map{"method": ([], "xml")}.
-// found is false only when the option key is absent.
 func readSerializeStringOption(ctx context.Context, m xdm.MapItem, name string) (string, bool, error) {
-	v, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: name})
+	return readSerializeAtomicStringOption(ctx, m, name, xdm.TypeString)
+}
+
+func readSerializeAtomicStringOption(ctx context.Context, m xdm.MapItem, name, target string) (string, bool, error) {
+	value, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: name})
 	if !found {
 		return "", false, nil
 	}
 
-	atoms, err := atomizeTypedValue(ctx, v)
-	if err != nil {
-		return "", true, err
-	}
-	// A map entry present with the empty sequence selects the parameter's DEFAULT
-	// (present-empty = use default, not an error); report it as not-found.
-	if len(atoms) == 0 {
-		return "", false, nil
+	atom, found, err := serializeOptionalAtomic(ctx, value, target, name)
+	if err != nil || !found {
+		return "", found, err
 	}
 
-	if len(atoms) != 1 {
-		return "", true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %q must be a singleton", name)}
-	}
+	text, err := atomicToString(atom)
 
-	s, err := atomicToString(atoms[0])
-	if err != nil {
-		return "", true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %q must be string-like", name)}
-	}
-
-	return s, true, nil
+	return text, true, err
 }
 
 // resolveSerializeMethodMap resolves the map-form "method" option, whose value is
-// an xs:string OR xs:QName (F&O 3.1 §18.9.1). It inspects the ATOM so a
+// an xs:string OR xs:QName (F&O 3.1 §14.7.3). It inspects the ATOM so a
 // namespaced QName keeps its namespace instead of being stringified to its local
-// part: a no-namespace value must be a built-in method token (else err:XPTY0004),
+// part: a no-namespace string must be a supported method token; invalid values
+// raise SEPM0016 after the declared union-type conversion,
 // and a value with a non-null namespace (a namespaced QName, or a prefixed-QName
 // string) names an EXTENSION method — a valid value helium does not implement,
 // which the SEPM0016 dispatch check reports as unsupported (the extension name is
@@ -888,26 +866,33 @@ func resolveSerializeMethodOption(ctx context.Context, m xdm.MapItem, name strin
 		}
 
 		if qn.URI == "" {
-			return "", true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %s: an xs:QName value must have a non-absent namespace, got %q", name, qn.Local)}
+			return "", true, &xdm.Error{Code: lexicon.ErrSEPM0016, Message: fmt.Sprintf("serialize option %s: an xs:QName value must have a non-absent namespace, got %q", name, qn.Local)}
 		}
 
 		return "Q{" + qn.URI + "}" + qn.Local, true, nil
 	}
 
-	value, err := atomicToString(av)
-	if err != nil {
-		return "", true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %s has an invalid value", name)}
+	// The expected type is a namespace-sensitive pure union. Unlike an
+	// expected xs:string, it does not permit URI promotion or untyped casting.
+	if av.TypeName == xdm.TypeUntypedAtomic {
+		return "", true, &xdm.Error{Code: "XPTY0117", Message: "untypedAtomic cannot be converted to the serialization method union"}
 	}
 
+	if !atomicMatchesTargetType(av, xdm.TypeString, getFnContext(ctx)) {
+		return "", true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialization method must be a string or QName"}
+	}
+
+	value := av.StringVal()
+
 	if !valid(value) {
-		return "", true, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option %s has an invalid value %q", name, value)}
+		return "", true, &xdm.Error{Code: lexicon.ErrSEPM0016, Message: fmt.Sprintf("serialize option %s has an invalid value %q", name, value)}
 	}
 
 	return value, true, nil
 }
 
 func parseSerializeOptionsNode(opts serializeOptions, n xdm.Node) (serializeOptions, error) {
-	elem, err := readSerializeOptionsRoot(n)
+	elem, err := readSerializeOptionsRoot(n, opts.edition)
 	if err != nil {
 		return opts, err
 	}
@@ -915,7 +900,7 @@ func parseSerializeOptionsNode(opts serializeOptions, n xdm.Node) (serializeOpti
 	seen := make(map[string]struct{})
 
 	for child := range xdm.Children(elem) {
-		param, err := readSerializeOptionsChild(child)
+		param, err := readSerializeOptionsChild(child, opts.edition)
 		if err != nil {
 			return opts, err
 		}
@@ -932,10 +917,12 @@ func parseSerializeOptionsNode(opts serializeOptions, n xdm.Node) (serializeOpti
 		seen[key] = struct{}{}
 
 		if param.URI() != lexicon.NamespaceSerialization {
-			if _, err := readSerializeParamValue(param); err != nil {
-				return opts, err
+			if opts.edition == 30 {
+				return opts, &xdm.Error{Code: errCodeSEPM0017, Message: "Serialization 3.0 does not declare extension parameter elements"}
 			}
 
+			// No extension serialization parameters are implemented. The 3.1
+			// schema permits foreign elements with arbitrary content.
 			continue
 		}
 
@@ -948,7 +935,7 @@ func parseSerializeOptionsNode(opts serializeOptions, n xdm.Node) (serializeOpti
 	return opts, nil
 }
 
-func readSerializeOptionsRoot(n xdm.Node) (*xdm.Element, error) {
+func readSerializeOptionsRoot(n xdm.Node, edition int) (*xdm.Element, error) {
 	elem, ok := n.(*xdm.Element)
 	if !ok {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize options node must be an element"}
@@ -958,19 +945,36 @@ func readSerializeOptionsRoot(n xdm.Node) (*xdm.Element, error) {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize options root must be output:serialization-parameters"}
 	}
 
-	if len(elem.Attributes()) != 0 {
-		return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "serialize options root must not have attributes"}
+	if edition == 30 {
+		for _, attr := range elem.Attributes() {
+			if attr.URI() != lexicon.NamespaceXSI || !serializeInstanceAttribute(attr.LocalName()) {
+				return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "Serialization 3.0 options root must not have attributes"}
+			}
+		}
+
+		if err := validateSerializeInstanceAttributes(elem, ""); err != nil {
+			return nil, err
+		}
 	}
 
 	return elem, nil
 }
 
+func serializeInstanceAttribute(name string) bool {
+	switch name {
+	case lexicon.AttrType, "nil", "schemaLocation", "noNamespaceSchemaLocation":
+		return true
+	}
+
+	return false
+}
+
 // readSerializeOptionsChild skips comments, PIs and whitespace while enforcing
 // the parameter element's required namespace.
-func readSerializeOptionsChild(child xdm.Node) (*xdm.Element, error) {
+func readSerializeOptionsChild(child xdm.Node, edition int) (*xdm.Element, error) {
 	switch child.Type() {
 	case xdm.TextNode, xdm.CDATASectionNode:
-		if isXSDWhitespaceOnly(xdm.CharacterData(child)) {
+		if edition != 30 || isXSDWhitespaceOnly(xdm.CharacterData(child)) {
 			return nil, nil
 		}
 
@@ -983,7 +987,7 @@ func readSerializeOptionsChild(child xdm.Node) (*xdm.Element, error) {
 	}
 
 	param, _ := xdm.AsNode[*xdm.Element](child)
-	if param.URI() == "" {
+	if edition == 30 && param.URI() == "" {
 		return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "serialize options parameters must be namespace-qualified"}
 	}
 
@@ -992,8 +996,23 @@ func readSerializeOptionsChild(child xdm.Node) (*xdm.Element, error) {
 
 func applySerializeNodeParam(opts serializeOptions, param *xdm.Element) (serializeOptions, error) {
 	name := param.LocalName()
+	if opts.edition == 30 && (name == lexicon.SerializationAllowDuplicateNames || name == lexicon.SerializationJSONNodeOutputMethod) {
+		return opts, &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialization parameter %q is not defined by Serialization 3.0", name)}
+	}
+
+	parameterType := serializeParameterType(name, opts.edition)
+	if opts.edition != 30 && parameterType == "" {
+		// SER31 validates the selected standard parameters individually. A
+		// child outside that finite set participates only in duplicate checks.
+		return opts, nil
+	}
+
+	if err := validateSerializeInstanceAttributes(param, parameterType); err != nil {
+		return opts, err
+	}
+
 	if target, recognized := opts.booleanParam(name); recognized {
-		value, err := readSerializeParamYesNo(param)
+		value, err := readSerializeParamYesNo(param, opts.edition)
 		if err != nil {
 			return opts, err
 		}
@@ -1006,7 +1025,7 @@ func applySerializeNodeParam(opts serializeOptions, param *xdm.Element) (seriali
 	}
 
 	if target := opts.stringParam(name); target != nil {
-		value, err := readSerializeNodeStringParam(param)
+		value, err := readSerializeNodeStringParam(param, opts.edition)
 		if err != nil {
 			return opts, err
 		}
@@ -1022,7 +1041,7 @@ func applySerializeNodeParam(opts serializeOptions, param *xdm.Element) (seriali
 
 	switch name {
 	case lexicon.SerializationCDATASectionElements, "suppress-indentation":
-		names, err := readSerializeParamQNameNames(param)
+		names, err := readSerializeParamQNameNames(param, opts.edition)
 		if err != nil {
 			return opts, err
 		}
@@ -1033,7 +1052,7 @@ func applySerializeNodeParam(opts serializeOptions, param *xdm.Element) (seriali
 			opts.suppressIndent = names
 		}
 	case "use-character-maps":
-		charMap, err := resolveSerializeCharacterMapsElement(param)
+		charMap, err := resolveSerializeCharacterMapsElement(opts, param, true)
 		if err != nil {
 			return opts, err
 		}
@@ -1046,12 +1065,433 @@ func applySerializeNodeParam(opts serializeOptions, param *xdm.Element) (seriali
 	return opts, nil
 }
 
+// Serialization declares a finite set of complex parameter types, all direct
+// siblings derived from base-param-type. No additional schema types are supplied
+// by this host, so xsi:type must name the parameter's own declared type.
+func serializeParameterType(name string, edition int) string {
+	switch name {
+	case lexicon.SerializationByteOrderMark, lexicon.SerializationEscapeURIAttributes, lexicon.SerializationIncludeContentType,
+		lexicon.SerializationIndent, lexicon.SerializationOmitXMLDeclaration, lexicon.SerializationUndeclarePrefixes,
+		lexicon.SerializationAllowDuplicateNames:
+		return "yes-no-param-type"
+	case lexicon.SerializationCDATASectionElements, lexicon.SerializationSuppressIndentation:
+		return "QNames-param-type"
+	case lexicon.SerializationHTMLVersion:
+		return "decimal-param-type"
+	case lexicon.SerializationItemSeparator:
+		return serializeStringParamType
+	case lexicon.SerializationMediaType, lexicon.SerializationVersion:
+		if edition == 30 {
+			return serializeStringParamType
+		}
+
+		return serializeTokenizedStringParamType
+	case lexicon.SerializationNormalizationForm:
+		return "NMTOKEN-param-type"
+	case lexicon.SerializationStandalone:
+		return "yes-no-omit-param-type"
+	case lexicon.SerializationDoctypePublic, lexicon.SerializationDoctypeSystem, lexicon.SerializationEncoding,
+		lexicon.SerializationMethod, lexicon.SerializationJSONNodeOutputMethod, lexicon.SerializationUseCharacterMaps:
+		return name + "-param-type"
+	}
+
+	return ""
+}
+
+func validateSerializeInstanceAttributes(elem *xdm.Element, expectedType string) error {
+	for _, attr := range elem.Attributes() {
+		if attr.URI() != lexicon.NamespaceXSI {
+			continue
+		}
+
+		switch attr.LocalName() {
+		case "nil":
+			// XSD Element Locally Valid (Element) forbids xsi:nil entirely
+			// when the declaration is not nillable, even xsi:nil="false".
+			return &xdm.Error{Code: errCodeSEPM0017, Message: "serialization parameter element is not nillable"}
+		case lexicon.AttrType:
+			name := strings.Trim(attr.Value(), lexicon.XMLWhitespace)
+			if strings.HasPrefix(name, "Q{") {
+				return &xdm.Error{Code: errCodeSEPM0017, Message: "xsi:type must be a lexical QName"}
+			}
+
+			resolved, err := resolveSerializeNameToken(elem, name)
+			if err != nil {
+				return err
+			}
+
+			if expectedType == "" || resolved != xdm.ClarkName(lexicon.NamespaceSerialization, expectedType) {
+				return &xdm.Error{Code: errCodeSEPM0017, Message: "xsi:type is not derived from the declared serialization parameter type"}
+			}
+		}
+	}
+
+	return nil
+}
+
+// Lax assessment is confined to the finite published serialization schema and
+// its XSD 1.0 builtins. No extension schemas are loaded. An undeclared foreign
+// element still assesses declared descendants and an explicit xsi:type.
+func validateSerializeLaxElement(opts serializeOptions, elem *xdm.Element) error {
+	if err := Charge(opts.ctx, 1); err != nil {
+		return err
+	}
+
+	if declared, err := validateSerializeDeclaredElement(opts, elem); declared {
+		return err
+	}
+
+	for _, attr := range elem.Attributes() {
+		if attr.URI() != lexicon.NamespaceXSI || attr.LocalName() != lexicon.AttrType {
+			continue
+		}
+
+		name := strings.Trim(attr.Value(), lexicon.XMLWhitespace)
+		if strings.HasPrefix(name, "Q{") {
+			return serializeSchemaError("xsi:type must be a lexical QName")
+		}
+
+		resolved, err := resolveSerializeNameToken(elem, name)
+		if err != nil {
+			return err
+		}
+
+		if strings.HasPrefix(resolved, "{"+lexicon.NamespaceSerialization+"}") {
+			return validateSerializeNamedType(opts, elem, strings.TrimPrefix(resolved, "{"+lexicon.NamespaceSerialization+"}"))
+		}
+
+		if strings.HasPrefix(resolved, "{"+lexicon.NamespaceXSD+"}") {
+			return validateSerializeBuiltinType(opts, elem, strings.TrimPrefix(resolved, "{"+lexicon.NamespaceXSD+"}"))
+		}
+
+		return serializeSchemaError("unknown serialization subtree xsi:type")
+	}
+
+	return validateSerializeLaxChildren(opts, elem)
+}
+
+func validateSerializeDeclaredElement(opts serializeOptions, elem *xdm.Element) (bool, error) {
+	if elem.URI() != lexicon.NamespaceSerialization {
+		return false, nil
+	}
+
+	name := elem.LocalName()
+	if name == "serialization-parameters" {
+		return true, validateSerializeLaxContainer(opts, elem)
+	}
+
+	if name == "serialization-parameter-element" {
+		return true, serializeSchemaError("serialization-parameter-element is abstract")
+	}
+
+	if serializeParameterType(name, opts.edition) == "" || opts.edition == 30 && (name == lexicon.SerializationAllowDuplicateNames || name == lexicon.SerializationJSONNodeOutputMethod) {
+		return false, nil
+	}
+
+	if name == lexicon.SerializationUseCharacterMaps {
+		// Nested validation neither extracts mappings nor imposes SEPM0018 on
+		// otherwise schema-valid duplicate entries.
+		if err := validateSerializeInstanceAttributes(elem, serializeCharacterMapsParamType); err != nil {
+			return true, err
+		}
+
+		_, err := resolveSerializeCharacterMapsElement(opts, elem, false)
+
+		return true, err
+	}
+
+	_, err := applySerializeNodeParam(opts, elem)
+
+	return true, err
+}
+
+func validateSerializeLaxChildren(opts serializeOptions, elem *xdm.Element) error {
+	for child := range xdm.Children(elem) {
+		if err := Charge(opts.ctx, 1); err != nil {
+			return err
+		}
+
+		if element, ok := child.(*xdm.Element); ok {
+			if err := validateSerializeLaxElement(opts, element); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func validateSerializeLaxContainer(opts serializeOptions, elem *xdm.Element) error {
+	// The global schema declaration has no attributes in either edition; this
+	// differs from the unvalidated outer container in the SER31 procedure.
+	if _, err := readSerializeOptionsRoot(elem, 30); err != nil {
+		return err
+	}
+
+	for child := range xdm.Children(elem) {
+		if err := Charge(opts.ctx, 1); err != nil {
+			return err
+		}
+
+		param, err := readSerializeOptionsChild(child, 30)
+		if err != nil {
+			return err
+		}
+
+		if param == nil {
+			continue
+		}
+
+		if param.URI() == lexicon.NamespaceSerialization {
+			if serializeParameterType(param.LocalName(), opts.edition) == "" || opts.edition == 30 && (param.LocalName() == lexicon.SerializationAllowDuplicateNames || param.LocalName() == lexicon.SerializationJSONNodeOutputMethod) {
+				return serializeSchemaError("unknown child of serialization-parameters")
+			}
+		} else if opts.edition == 30 {
+			return serializeSchemaError("Serialization 3.0 container has no foreign-element wildcard")
+		}
+
+		if err := validateSerializeLaxElement(opts, param); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateSerializeNamedType(opts serializeOptions, elem *xdm.Element, name string) error {
+	if opts.edition == 30 && name == serializeQNameOrEQNameType {
+		return serializeSchemaError("unknown Serialization 3.0 type")
+	}
+
+	if name == serializeCharacterMapsParamType {
+		_, err := resolveSerializeCharacterMapsElement(opts, elem, false)
+		return err
+	}
+
+	if name == "base-param-type" {
+		if err := validateSerializeMapAttributes(elem); err != nil {
+			return err
+		}
+
+		if hasNonWhitespaceContent(elem) {
+			return serializeSchemaError("base-param-type must be empty")
+		}
+
+		return nil
+	}
+
+	domain := ""
+
+	switch name {
+	case serializeStringParamType, serializeTokenizedStringParamType, "decimal-param-type", "NMTOKEN-param-type":
+		if name == serializeTokenizedStringParamType && opts.edition == 30 {
+			return serializeSchemaError("unknown Serialization 3.0 type")
+		}
+
+		domain = strings.TrimSuffix(name, "-param-type")
+	case "yes-no-param-type", "yes-no-omit-param-type", "QNames-param-type", "method-param-type":
+		domain = strings.TrimSuffix(name, "-param-type") + "-type"
+	case "doctype-public-param-type":
+		domain = "pubid-char-string-type"
+	case "doctype-system-param-type":
+		domain = "system-id-string-type"
+	case "encoding-param-type":
+		domain = "encoding-string-type"
+	case "json-node-output-method-param-type":
+		if opts.edition == 30 {
+			return serializeSchemaError("unknown Serialization 3.0 type")
+		}
+
+		domain = serializeJSONNodeMethodType
+	}
+
+	if domain != "" {
+		value, err := readSerializeParamValue(elem)
+		if err != nil {
+			return err
+		}
+
+		return validateSerializeTypeValue(opts, elem, domain, value)
+	}
+
+	value, err := serializeSimpleContent(opts, elem)
+	if err != nil {
+		return err
+	}
+
+	return validateSerializeTypeValue(opts, elem, name, value)
+}
+
+func serializeSimpleContent(opts serializeOptions, elem *xdm.Element) (string, error) {
+	for _, attr := range elem.Attributes() {
+		if err := Charge(opts.ctx, 1); err != nil {
+			return "", err
+		}
+
+		if attr.URI() != lexicon.NamespaceXSI || !serializeInstanceAttribute(attr.LocalName()) {
+			return "", serializeSchemaError("simple xsi:type does not permit attributes")
+		}
+	}
+
+	for child := range xdm.Children(elem) {
+		if err := Charge(opts.ctx, 1); err != nil {
+			return "", err
+		}
+
+		if child.Type() == xdm.ElementNode {
+			return "", serializeSchemaError("simple xsi:type does not permit element children")
+		}
+	}
+
+	value := xdm.StringValue(elem)
+	if err := Charge(opts.ctx, len(value)); err != nil {
+		return "", err
+	}
+
+	return value, nil
+}
+
+func validateSerializeBuiltinType(opts serializeOptions, elem *xdm.Element, name string) error {
+	if !xdm.IsKnownXSDType("xs:" + name) {
+		return serializeSchemaError("unknown XSD xsi:type")
+	}
+
+	switch name {
+	case lexicon.TypeUntyped, lexicon.TypeUntypedAtomic, lexicon.TypeAnyAtomicType, lexicon.TypeNumeric, lexicon.TypeError, lexicon.TypeDateTimeStamp, lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration:
+		return serializeSchemaError("xsi:type is not in the published XSD 1.0 schema context")
+	case lexicon.TypeAnyType:
+		return validateSerializeLaxChildren(opts, elem)
+	}
+
+	value, err := serializeSimpleContent(opts, elem)
+	if err != nil {
+		return err
+	}
+
+	if name == lexicon.TypeAnySimpleType {
+		return nil
+	}
+
+	value = lexical.Normalize(value, name)
+	if err := lexical.ValidateBuiltin(value, name, lexical.Version10); err != nil {
+		return serializeSchemaError("invalid XSD-typed serialization subtree value")
+	}
+
+	if name == lexicon.TypeQName {
+		if strings.HasPrefix(value, "Q{") {
+			return serializeSchemaError("xs:QName requires a lexical QName")
+		}
+
+		_, err := resolveSerializeNameToken(elem, value)
+
+		return err
+	}
+
+	if name == lexicon.TypeNotation {
+		return serializeSchemaError("no NOTATION declarations in serialization schema")
+	}
+
+	if name == lexicon.TypeENTITY || name == lexicon.TypeENTITIES {
+		doc, ok := xdm.DocumentRoot(elem).(*xdm.Document)
+		for _, entity := range xsdListFields(value) {
+			if !ok {
+				return serializeSchemaError("ENTITY requires an unparsed entity declaration")
+			}
+
+			if _, found := doc.UnparsedEntity(entity); !found {
+				return serializeSchemaError("unknown unparsed ENTITY")
+			}
+		}
+	}
+
+	return nil
+}
+
+func validateSerializeTypeValue(opts serializeOptions, elem *xdm.Element, name, value string) error {
+	token := strings.Trim(value, lexicon.XMLWhitespace)
+	valid := true
+
+	switch name {
+	case "string", "tokenized-string":
+		return nil
+	case lexicon.TypeDecimal:
+		valid = isValidXSDecimal(token)
+	case lexicon.TypeNMToken:
+		valid = serializeNormalizationFormValid(token)
+	case "yes-no-type", "yes-no-omit-type":
+		_, valid = serializeEditionBooleanValue(token, opts.edition)
+		valid = valid || name == "yes-no-omit-type" && token == lexicon.ValueOmit
+	case "char-type":
+		valid = utf8.RuneCountInString(value) == 1
+	case "encoding-string-type":
+		valid = xmlchar.IsValidEncName(token) && (opts.edition != 30 || value == token)
+	case "pubid-char-string-type":
+		valid = xmloutput.ValidPublicID(strings.ReplaceAll(value, "\t", " "))
+	case "system-id-string-type":
+		valid = xmloutput.ValidSystemID(value)
+	case "method-type", serializeJSONNodeMethodType:
+		if name == serializeJSONNodeMethodType && opts.edition == 30 {
+			return serializeSchemaError("unknown Serialization 3.0 type")
+		}
+
+		_, err := readSerializeNodeMethodValue(elem, value, token, opts.edition, name == "method-type")
+
+		return err
+	case "QNames-type":
+		for _, part := range xsdListFields(value) {
+			if err := Charge(opts.ctx, 1); err != nil {
+				return err
+			}
+
+			if err := validateSerializeTypeValue(opts, elem, serializeQNameOrEQNameType, part); err != nil {
+				return err
+			}
+		}
+	case serializeQNameOrEQNameType, "EQName", serializePrefixedQNameType, serializeQualifiedEQNameType:
+		return validateSerializeQNameType(opts, elem, name, token)
+	default:
+		valid = false
+	}
+
+	if !valid {
+		return serializeSchemaError("invalid or unknown published serialization type")
+	}
+
+	return nil
+}
+
+func validateSerializeQNameType(opts serializeOptions, elem *xdm.Element, name, token string) error {
+	if opts.edition == 30 && name != serializeQNameOrEQNameType {
+		return serializeSchemaError("unknown Serialization 3.0 type")
+	}
+
+	if uri, local, eqname := parseEQNameToken(token); eqname {
+		if opts.edition == 30 || name == serializePrefixedQNameType || !xmlchar.IsValidNCName(local) || name == serializeQualifiedEQNameType && strings.Trim(uri, lexicon.XMLWhitespace) == "" {
+			return serializeSchemaError("invalid published EQName type")
+		}
+
+		return nil
+	}
+
+	if name == "EQName" || name == serializeQualifiedEQNameType || name == serializePrefixedQNameType && !strings.Contains(token, ":") {
+		return serializeSchemaError("invalid published QName type")
+	}
+
+	_, err := resolveSerializeNameToken(elem, token)
+
+	return err
+}
+
+func serializeSchemaError(message string) error {
+	return &xdm.Error{Code: errCodeSEPM0017, Message: message}
+}
+
 // readSerializeNodeStringParam preserves literal string parameters and trims
 // XSD whitespace only for parameters with token or decimal lexical domains.
-func readSerializeNodeStringParam(param *xdm.Element) (string, error) {
+func readSerializeNodeStringParam(param *xdm.Element, edition int) (string, error) {
 	name := param.LocalName()
 	if name == lexicon.SerializationStandalone {
-		return readSerializeParamStandalone(param)
+		return readSerializeParamStandalone(param, edition)
 	}
 
 	value, err := readSerializeParamValue(param)
@@ -1063,17 +1503,11 @@ func readSerializeNodeStringParam(param *xdm.Element) (string, error) {
 
 	switch name {
 	case "encoding":
-		if !xmlchar.IsValidEncName(token) {
+		if !xmlchar.IsValidEncName(token) || edition == 30 && value != token {
 			return "", &xdm.Error{Code: errCodeSEPM0017, Message: "invalid serialization encoding name"}
 		}
-	case "method":
-		if !serializeMethodValid(token) {
-			return "", &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter method has an invalid value %q", value)}
-		}
-	case "json-node-output-method":
-		if !serializeJSONNodeOutputMethodValid(token) {
-			return "", &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter json-node-output-method has an invalid value %q", value)}
-		}
+	case lexicon.SerializationMethod, lexicon.SerializationJSONNodeOutputMethod:
+		return readSerializeNodeMethod(param, value, token, edition)
 	case "normalization-form":
 		if !serializeNormalizationFormValid(token) {
 			return "", &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter normalization-form has an invalid value %q", value)}
@@ -1082,9 +1516,69 @@ func readSerializeNodeStringParam(param *xdm.Element) (string, error) {
 		if !isValidXSDecimal(token) {
 			return "", &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter html-version must be an xs:decimal, got %q", value)}
 		}
+	case lexicon.SerializationDoctypePublic:
+		if edition != 30 {
+			value = xmlchar.CollapseSpace(value)
+		}
+
+		if !xmloutput.ValidPublicID(strings.ReplaceAll(value, "\t", " ")) {
+			return "", &xdm.Error{Code: errCodeSEPM0017, Message: "invalid doctype-public parameter"}
+		}
+
+		return value, nil
+	case lexicon.SerializationDoctypeSystem:
+		if !xmloutput.ValidSystemID(value) {
+			return "", &xdm.Error{Code: errCodeSEPM0017, Message: "invalid doctype-system parameter"}
+		}
+
+		return value, nil
+	case lexicon.SerializationMediaType:
+		if edition != 30 {
+			return xmlchar.CollapseSpace(value), nil
+		}
+
+		return value, nil
 	case lexicon.SerializationVersion:
+		if edition == 30 {
+			return value, nil // SER30 uses xs:string, SER31 uses xs:token.
+		}
 	default:
 		return value, nil
+	}
+
+	return token, nil
+}
+
+func readSerializeNodeMethod(param *xdm.Element, value, token string, edition int) (string, error) {
+	return readSerializeNodeMethodValue(param, value, token, edition, param.LocalName() == lexicon.SerializationMethod)
+}
+
+func readSerializeNodeMethodValue(param *xdm.Element, value, token string, edition int, method bool) (string, error) {
+	if edition != 30 {
+		// The published 3.1 union also admits Q{\s*}builtin. It denotes
+		// the same absent-namespace method as the corresponding token.
+		if uri, local, ok := parseEQNameToken(token); ok && strings.Trim(uri, lexicon.XMLWhitespace) == "" && isBuiltinSerializeMethod(local) {
+			token = local
+		}
+	}
+
+	valid := serializeJSONNodeOutputMethodValid(token)
+	if method {
+		valid = serializeMethodValid(token)
+		if edition == 30 && (isBuiltinSerializeMethod(token) && value != token ||
+			token == lexicon.MethodJSON || token == lexicon.MethodAdaptive || strings.HasPrefix(token, "Q{")) {
+			valid = false
+		}
+	}
+
+	if !valid {
+		return "", &xdm.Error{Code: errCodeSEPM0017, Message: "invalid serialization method parameter"}
+	}
+
+	if isExtensionMethodName(token) {
+		if _, err := resolveSerializeNameToken(param, token); err != nil {
+			return "", err
+		}
 	}
 
 	return token, nil
@@ -1133,15 +1627,20 @@ func allASCIIDigits(s string) bool {
 	return true
 }
 
-// serializeNormalizationFormValid reports whether v is a valid normalization-form
-// value: one of the Unicode normalization forms, "none", or empty.
+// serializeNormalizationFormValid checks the NMTOKEN parameter domain. A
+// syntactically valid but unsupported form is diagnosed later as SESU0011.
 func serializeNormalizationFormValid(v string) bool {
-	switch v {
-	case "", nameNone, nameNFC, nameNFD, nameNFKC, nameNFKD, "fully-normalized":
-		return true
+	if v == "" {
+		return false
 	}
 
-	return false
+	for _, r := range v {
+		if r != ':' && !xmlchar.IsNCNameChar(r) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // isExtensionMethodName reports whether v is a syntactically valid extension
@@ -1152,7 +1651,7 @@ func serializeNormalizationFormValid(v string) bool {
 // value must be one of the built-in tokens.
 func isExtensionMethodName(v string) bool {
 	if uri, local, ok := parseEQNameToken(v); ok {
-		return uri != "" && xmlchar.IsValidNCName(local)
+		return strings.Trim(uri, lexicon.XMLWhitespace) != "" && xmlchar.IsValidNCName(local)
 	}
 
 	prefix, local, hasPrefix := strings.Cut(v, ":")
@@ -1191,17 +1690,28 @@ func readSerializeParamValue(elem *xdm.Element) (string, error) {
 		return "", &xdm.Error{Code: errCodeSEPM0017, Message: "serialize parameter must not have child content"}
 	}
 
-	attrs := elem.Attributes()
-	if len(attrs) != 1 {
-		return "", &xdm.Error{Code: errCodeSEPM0017, Message: "serialize parameter must have exactly one value attribute"}
+	var (
+		value string
+		found bool
+	)
+
+	for _, attr := range elem.Attributes() {
+		if attr.URI() != "" && attr.URI() != lexicon.NamespaceSerialization {
+			continue // base-param-type permits foreign attributes.
+		}
+
+		if attr.URI() != "" || attr.LocalName() != "value" {
+			return "", &xdm.Error{Code: errCodeSEPM0017, Message: "serialize parameter must use an unqualified value attribute"}
+		}
+
+		value, found = attr.Value(), true
 	}
 
-	attr := attrs[0]
-	if attr.URI() != "" || attr.LocalName() != "value" {
-		return "", &xdm.Error{Code: errCodeSEPM0017, Message: "serialize parameter must use an unqualified value attribute"}
+	if !found {
+		return "", &xdm.Error{Code: errCodeSEPM0017, Message: "serialize parameter requires a value attribute"}
 	}
 
-	return attr.Value(), nil
+	return value, nil
 }
 
 // serializeBooleanValue normalizes a Serialization 3.1 boolean lexical to
@@ -1220,13 +1730,24 @@ func serializeBooleanValue(value string) (string, bool) {
 	return "", false
 }
 
-func readSerializeParamYesNo(elem *xdm.Element) (bool, error) {
+// Serialization 3.0 parameter documents admit only yes/no; the boolean
+// synonyms were added in the 3.1 schema.
+func serializeEditionBooleanValue(value string, edition int) (string, bool) {
+	if edition == 30 {
+		value = strings.Trim(value, lexicon.XMLWhitespace)
+		return value, value == lexicon.ValueYes || value == lexicon.ValueNo
+	}
+
+	return serializeBooleanValue(value)
+}
+
+func readSerializeParamYesNo(elem *xdm.Element, edition int) (bool, error) {
 	value, err := readSerializeParamValue(elem)
 	if err != nil {
 		return false, err
 	}
 
-	bv, ok := serializeBooleanValue(value)
+	bv, ok := serializeEditionBooleanValue(value, edition)
 	if !ok {
 		return false, &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter %q must be a boolean (yes/no/true/false/1/0)", elem.LocalName())}
 	}
@@ -1239,7 +1760,7 @@ func readSerializeParamYesNo(elem *xdm.Element) (bool, error) {
 // lexical space {yes, no, true, false, 1, 0} plus "omit" (Serialization 3.1).
 // The value is XSD-whitespace-collapsed, so " no " is the "no" value; it returns
 // the normalized "yes"/"no"/"omit".
-func readSerializeParamStandalone(elem *xdm.Element) (string, error) {
+func readSerializeParamStandalone(elem *xdm.Element, edition int) (string, error) {
 	value, err := readSerializeParamValue(elem)
 	if err != nil {
 		return "", err
@@ -1249,7 +1770,7 @@ func readSerializeParamStandalone(elem *xdm.Element) (string, error) {
 		return lexicon.ValueOmit, nil
 	}
 
-	if bv, ok := serializeBooleanValue(value); ok {
+	if bv, ok := serializeEditionBooleanValue(value, edition); ok {
 		return bv, nil
 	}
 
@@ -1264,7 +1785,7 @@ func readSerializeParamStandalone(elem *xdm.Element) (string, error) {
 // lexical QName resolves its prefix against the parameter element's in-scope
 // namespaces; an UNPREFIXED lexical QName resolves through the in-scope DEFAULT
 // namespace (these parameters use the default namespace for unprefixed QNames).
-func readSerializeParamQNameNames(elem *xdm.Element) (map[string]struct{}, error) {
+func readSerializeParamQNameNames(elem *xdm.Element, edition int) (map[string]struct{}, error) {
 	value, err := readSerializeParamValue(elem)
 	if err != nil {
 		return nil, err
@@ -1275,6 +1796,10 @@ func readSerializeParamQNameNames(elem *xdm.Element) (map[string]struct{}, error
 	// (#x20/#x9/#xA/#xD) — NBSP and other Unicode whitespace stay inside the token
 	// and then fail NCName validation, and are never silently split.
 	for _, token := range xsdListFields(value) {
+		if edition == 30 && strings.HasPrefix(token, "Q{") {
+			return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "Serialization 3.0 requires lexical QNames"}
+		}
+
 		key, err := resolveSerializeNameToken(elem, token)
 		if err != nil {
 			return nil, err
@@ -1380,72 +1905,19 @@ func lookupInScopeNamespace(elem xdm.Node, prefix string) (string, bool) {
 	return "", false
 }
 
-// resolveSerializeStandaloneMap validates and resolves the "standalone" option
-// value in the map form of fn:serialize. Its value space is
-// union(xs:boolean, enum("omit")) (F&O 3.1 §18.9.1). The map form does NOT
-// whitespace-collapse the value, so a string such as " omit " (with surrounding
-// spaces) is not the "omit" enum value and is a type error [err:XPTY0004]. It
-// returns "yes"/"no"/"omit", or "" to select the parameter default (omit).
-func resolveSerializeStandaloneMap(ctx context.Context, v xdm.Sequence) (string, error) {
-	xerr := &xdm.Error{Code: lexicon.ErrXPTY0004, Message: `serialize option "standalone" must be xs:boolean or "omit"`}
-	// Option (function) conversion (F&O 3.1 §2.5): atomize FIRST so an array
-	// (e.g. an empty-array member) flattens to its members, THEN apply the
-	// singleton cardinality. An empty atomized value selects the parameter
-	// default (omit); it is not a bad value (QT3 serialize-xml-131 supplies
-	// map{"standalone":()}). Atomization is ctx-aware: an element-only-typed node
-	// has no typed value, so it surfaces err:FOTY0012, masked as no
-	// XPTY0004 bad-value error.
-	atoms, err := atomizeTypedValue(ctx, v)
-	if err != nil {
-		if isNoTypedValueError(err) {
-			return "", err
-		}
-
-		return "", xerr
+// The map-form standalone option is xs:boolean?, unlike the XML parameter's
+// yes/no/omit lexical domain. An empty value selects the default, omit.
+func resolveSerializeStandaloneMap(ctx context.Context, value xdm.Sequence) (string, error) {
+	atom, found, err := serializeOptionalAtomic(ctx, value, xdm.TypeBoolean, lexicon.SerializationStandalone)
+	if err != nil || !found {
+		return "", err
 	}
 
-	if len(atoms) == 0 {
-		return "", nil
+	if atom.BooleanVal() {
+		return lexicon.ValueYes, nil
 	}
 
-	if len(atoms) > 1 {
-		return "", xerr
-	}
-
-	av := atoms[0]
-	switch av.TypeName {
-	case xdm.TypeBoolean:
-		if av.BooleanVal() {
-			return lexicon.ValueYes, nil
-		}
-
-		return lexicon.ValueNo, nil
-	case xdm.TypeString, xdm.TypeUntypedAtomic:
-		s, err := atomicToString(av)
-		if err != nil {
-			return "", xerr
-		}
-
-		if s == lexicon.ValueOmit {
-			return lexicon.ValueOmit, nil
-		}
-		// An untypedAtomic may carry an xs:boolean lexical; accept the same
-		// value space the other boolean map options do (readBool): true/false/1/0.
-		// A TYPED xs:string is not an xs:boolean member of the union, and yes/no
-		// are not xs:boolean lexicals — both stay rejected.
-		if av.TypeName == xdm.TypeUntypedAtomic {
-			switch s {
-			case lexicon.ValueTrue, "1":
-				return lexicon.ValueYes, nil
-			case lexicon.ValueFalse, "0":
-				return lexicon.ValueNo, nil
-			}
-		}
-
-		return "", xerr
-	default:
-		return "", xerr
-	}
+	return lexicon.ValueNo, nil
 }
 
 // serializeNodeKindError reports err:SENR0001 when a bare attribute or namespace
@@ -1491,12 +1963,13 @@ func serializeItemKindError(item xdm.Item) error {
 // resolveSerializeCharacterMapsElement validates the element form of
 // use-character-maps and builds the rune→replacement map from its
 // output:character-map children.
-func resolveSerializeCharacterMapsElement(elem *xdm.Element) (map[rune]string, error) {
-	if len(elem.Attributes()) != 0 {
-		return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "serialize parameter use-character-maps must not have attributes"}
+func resolveSerializeCharacterMapsElement(opts serializeOptions, elem *xdm.Element, extract bool) (map[rune]string, error) {
+	if err := validateSerializeMapAttributes(elem); err != nil {
+		return nil, err
 	}
 
 	result := make(map[rune]string)
+	foreignChild := false
 
 	for child := range xdm.Children(elem) {
 		switch child.Type() {
@@ -1514,41 +1987,35 @@ func resolveSerializeCharacterMapsElement(elem *xdm.Element) (map[rune]string, e
 		}
 
 		charMap, _ := xdm.AsNode[*xdm.Element](child)
-		if charMap.URI() != lexicon.NamespaceSerialization || charMap.LocalName() != "character-map" {
+		if charMap.URI() != "" && charMap.URI() != lexicon.NamespaceSerialization {
+			if foreignChild {
+				return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "use-character-maps permits one trailing foreign child"}
+			}
+
+			foreignChild = true
+
+			if err := validateSerializeLaxElement(opts, charMap); err != nil {
+				return nil, err
+			}
+
+			continue
+		}
+
+		if foreignChild || charMap.URI() != lexicon.NamespaceSerialization || charMap.LocalName() != "character-map" {
 			return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "use-character-maps children must be output:character-map"}
 		}
 
-		if hasNonWhitespaceContent(charMap) {
-			return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "character-map must not have child content"}
+		character, mapString, hasCharacter, err := readSerializeCharacterMap(charMap)
+		if err != nil {
+			return nil, err
 		}
 
-		// map-string is an xs:string: an absent OR empty value maps the character
-		// to the EMPTY replacement (deletion), so presence is tracked separately
-		// from value and an empty value is not rejected. Only the character
-		// attribute is required (and must be a single character).
-		var (
-			character, mapString string
-			hasCharacter         bool
-		)
-
-		for _, attr := range charMap.Attributes() {
-			if attr.URI() != "" {
-				return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "character-map attributes must be unqualified"}
-			}
-
-			switch attr.LocalName() {
-			case "character":
-				character = attr.Value()
-				hasCharacter = true
-			case "map-string":
-				mapString = attr.Value()
-			default:
-				return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "character-map has unsupported attribute"}
-			}
+		if !hasCharacter {
+			continue
 		}
 
-		if !hasCharacter || utf8.RuneCountInString(character) != 1 {
-			return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "character-map character must be a single character"}
+		if !extract {
+			continue // Schema validity does not extract nested character maps.
 		}
 
 		key := []rune(character)[0]
@@ -1560,6 +2027,53 @@ func resolveSerializeCharacterMapsElement(elem *xdm.Element) (map[rune]string, e
 	}
 
 	return result, nil
+}
+
+func validateSerializeMapAttributes(elem *xdm.Element) error {
+	for _, attr := range elem.Attributes() {
+		if attr.URI() == "" || attr.URI() == lexicon.NamespaceSerialization {
+			return &xdm.Error{Code: errCodeSEPM0017, Message: "use-character-maps only permits foreign attributes"}
+		}
+	}
+
+	return nil
+}
+
+// Both character-map attributes are optional in the schema. An absent character
+// matches no input character; an absent map-string deletes the matching one.
+func readSerializeCharacterMap(elem *xdm.Element) (character, replacement string, present bool, err error) {
+	if hasNonWhitespaceContent(elem) {
+		return "", "", false, &xdm.Error{Code: errCodeSEPM0017, Message: "character-map must not have child content"}
+	}
+
+	if err := validateSerializeInstanceAttributes(elem, ""); err != nil {
+		return "", "", false, err
+	}
+
+	for _, attr := range elem.Attributes() {
+		if attr.URI() != "" && attr.URI() != lexicon.NamespaceSerialization {
+			continue
+		}
+
+		if attr.URI() != "" {
+			return "", "", false, &xdm.Error{Code: errCodeSEPM0017, Message: "character-map attributes must be unqualified"}
+		}
+
+		switch attr.LocalName() {
+		case "character":
+			character, present = attr.Value(), true
+		case "map-string":
+			replacement = attr.Value()
+		default:
+			return "", "", false, &xdm.Error{Code: errCodeSEPM0017, Message: "character-map has unsupported attribute"}
+		}
+	}
+
+	if present && utf8.RuneCountInString(character) != 1 {
+		return "", "", false, &xdm.Error{Code: errCodeSEPM0017, Message: "character-map character must be a single character"}
+	}
+
+	return character, replacement, present, nil
 }
 
 func hasNonWhitespaceContent(elem *xdm.Element) bool {
@@ -1583,7 +2097,7 @@ func hasNonWhitespaceContent(elem *xdm.Element) bool {
 // option and builds the rune→replacement map. Keys must be single-character
 // strings and values strings (option (function) conventions apply — a QName key
 // is err:XPTY0004; W3C serialize-xml-139/139b).
-func resolveSerializeCharacterMaps(v xdm.Sequence) (map[rune]string, error) {
+func resolveSerializeCharacterMaps(ctx context.Context, v xdm.Sequence) (map[rune]string, error) {
 	// A use-character-maps entry present with the empty sequence selects the
 	// default (no character map); present-empty = use default, not an error. An
 	// empty (non-nil) map disables the feature just like a nil one.
@@ -1603,7 +2117,11 @@ func resolveSerializeCharacterMaps(v xdm.Sequence) (map[rune]string, error) {
 	charMap := make(map[rune]string)
 
 	err := m.ForEachView(func(key xdm.AtomicValue, value xdm.Sequence) error {
-		if key.TypeName != xdm.TypeString && key.TypeName != xdm.TypeUntypedAtomic {
+		if err := fnCountOp(ctx, getFnContext(ctx)); err != nil {
+			return err
+		}
+
+		if !atomicMatchesTargetType(key, xdm.TypeString, getFnContext(ctx)) {
 			return &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize use-character-maps keys must be strings"}
 		}
 
@@ -1617,12 +2135,16 @@ func resolveSerializeCharacterMaps(v xdm.Sequence) (map[rune]string, error) {
 		}
 
 		av, ok := value.Get(0).(xdm.AtomicValue)
-		if !ok || (av.TypeName != xdm.TypeString && av.TypeName != xdm.TypeUntypedAtomic) {
+		if !ok || !atomicMatchesTargetType(av, xdm.TypeString, getFnContext(ctx)) {
 			return &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize use-character-maps values must be strings"}
 		}
 
 		mapString, err := atomicToString(av)
 		if err != nil {
+			return err
+		}
+
+		if err := ChargeString(ctx, len(keyString)+len(mapString)); err != nil {
 			return err
 		}
 

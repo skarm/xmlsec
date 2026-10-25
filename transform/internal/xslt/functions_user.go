@@ -150,7 +150,7 @@ func (f *xslUserFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequen
 	ec.depth++
 	if ec.depth > xpath.DepthLimit(ctx, maxRecursionDepth) {
 		ec.depth--
-		return nil, dynamicErrorCause(errCodeXTDE0820, xpath.ErrBudget, "recursion depth exceeded in xsl:function %s", f.def.Name.Name)
+		return nil, fmt.Errorf("xsl:function %s: %w", f.def.Name.Name, xpath.ErrRecursionLimit)
 	}
 	defer func() { ec.depth-- }()
 

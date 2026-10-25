@@ -12,6 +12,7 @@ import (
 	"path"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
@@ -41,7 +42,7 @@ type TransformOption interface {
 // and to resolve resources (fn:doc/document()/fn:unparsed-text and external
 // entities) referenced while compiling and running the transformed stylesheet.
 // Resource access is opt-in: without a resolver, stylesheet-location and fn:doc
-// fail (FOXT0003 / FODC0002).
+// fail (FOXT0002 / FODC0002).
 func WithTransformURIResolver(r xpath.URIResolver) TransformOption {
 	return transformOptionFunc(func(c *transformFnConfig) { c.innerURIResolver = r })
 }
@@ -176,9 +177,15 @@ func (ec *execContext) xsltFunctionsNS() map[xpath.QualifiedName]xpath.Function 
 		}
 	}
 
+	if ec.stylesheet.processorLanguage() == 20 {
+		for _, name := range []string{"unparsed-text", fnNameUnparsedTextAvailable} {
+			ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: name}] = newLegacyTextFunction(name)
+		}
+	}
+
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameElementAvailable}] = newIntrospectionFunc(fnNameElementAvailable, ec.fnElementAvailable)
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameFunctionAvailable}] = newIntrospectionFunc(fnNameFunctionAvailable, ec.fnFunctionAvailable)
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameTypeAvailable}] = newIntrospectionFunc(fnNameTypeAvailable, fnTypeAvailable)
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameTypeAvailable}] = newIntrospectionFunc(fnNameTypeAvailable, ec.fnTypeAvailable)
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameCurrent}] = &xsltFunc{min: 0, max: 0, fn: ec.fnCurrent, noDynRef: true, dynRefError: errCodeXTDE1360}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameCurrentGroup}] = &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentGroup, noDynRef: true, dynRefError: errCodeXTDE1061}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameCurrentGroupingKey}] = &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentGroupingKey, noDynRef: true, dynRefError: errCodeXTDE1071}
@@ -913,7 +920,15 @@ func dynamicProgramLimit(ctx context.Context, resourceBytes int64) int64 {
 }
 
 // The XSLT error code takes precedence over the generic FOXT0003 fallback.
-func transformFailure(cause error, format string, args ...any) error {
+func transformFailure(ctx context.Context, cause error, format string, args ...any) error {
+	return transformFailureCode(ctx, cause, errCodeFOXT0003, format, args...)
+}
+
+func transformFailureCode(ctx context.Context, cause error, fallback, format string, args ...any) error {
+	if failure := preserveControlFailure(ctx, cause); failure != nil {
+		return failure
+	}
+
 	if errors.Is(cause, ErrLanguageUnsupported) {
 		return dynamicErrorCause(errCodeFOXT0001, cause, format, args...)
 	}
@@ -926,7 +941,7 @@ func transformFailure(cause error, format string, args ...any) error {
 		return cause
 	}
 
-	return dynamicErrorCause(errCodeFOXT0003, cause, format, args...)
+	return dynamicErrorCause(fallback, cause, format, args...)
 }
 
 type transformProgramCounter struct {
@@ -955,22 +970,25 @@ func (cfg *transformFnConfig) compileTransformLocation(ctx context.Context, nest
 	baseURI := loc
 
 	if cfg.stylesheetResolver == nil {
-		return nil, dynamicError(errCodeFOXT0003, "fn:transform: cannot read stylesheet %q: no URIResolver configured (filesystem access is opt-in)", stylesheetLoc)
+		return nil, dynamicError(errCodeFOXT0002, "fn:transform: cannot read stylesheet %q: no URIResolver configured (filesystem access is opt-in)", stylesheetLoc)
 	}
 
 	rc, resolveErr := cfg.stylesheetResolver.Resolve(ctx, loc)
 	if resolveErr != nil {
-		return nil, transformFailure(resolveErr, "fn:transform: cannot resolve stylesheet %q: %v", stylesheetLoc, resolveErr)
+		// The supplied stylesheet-location cannot identify a usable source, before
+		// invoking the compiler. Report the invalid option rather than a failure
+		// of an already invoked transformation (F&O fn:transform error conditions).
+		return nil, transformFailureCode(ctx, resolveErr, errCodeFOXT0002, "fn:transform: cannot resolve stylesheet %q: %v", stylesheetLoc, resolveErr)
 	}
 
 	doc, parseErr := parseXMLResource(ctx, cfg.parseOptions, rc, baseURI, cfg.programLimit(ctx))
 	if parseErr != nil {
-		return nil, dynamicErrorCause(errCodeFOXT0003, parseErr, "fn:transform: cannot parse stylesheet %q: %v", stylesheetLoc, parseErr)
+		return nil, transformFailure(ctx, parseErr, "fn:transform: cannot parse stylesheet %q: %v", stylesheetLoc, parseErr)
 	}
 
 	ss, compileErr := nestedCompiler.BaseURI(baseURI).Compile(ctx, doc)
 	if compileErr != nil {
-		return nil, transformFailure(compileErr, "fn:transform: cannot compile stylesheet %q: %v", stylesheetLoc, compileErr)
+		return nil, transformFailure(ctx, compileErr, "fn:transform: cannot compile stylesheet %q: %v", stylesheetLoc, compileErr)
 	}
 
 	return ss, nil
@@ -989,12 +1007,12 @@ func (cfg *transformFnConfig) compileTransformPackage(ctx context.Context, neste
 
 	rc, location, resolveErr := resolver.ResolvePackage(ctx, packageName, packageVersion)
 	if resolveErr != nil {
-		return nil, dynamicErrorCause(errCodeFOXT0003, resolveErr, "fn:transform: cannot resolve package %q (version %q): %v", packageName, packageVersion, resolveErr)
+		return nil, transformFailure(ctx, resolveErr, "fn:transform: cannot resolve package %q (version %q): %v", packageName, packageVersion, resolveErr)
 	}
 
 	doc, parseErr := parseXMLResource(ctx, cfg.parseOptions, rc, location, cfg.programLimit(ctx))
 	if parseErr != nil {
-		return nil, dynamicErrorCause(errCodeFOXT0003, parseErr, "fn:transform: cannot parse package %q: %v", packageName, parseErr)
+		return nil, transformFailure(ctx, parseErr, "fn:transform: cannot parse package %q: %v", packageName, parseErr)
 	}
 
 	if err := checkResolvedPackage(doc, packageName, packageVersion); err != nil {
@@ -1008,7 +1026,7 @@ func (cfg *transformFnConfig) compileTransformPackage(ctx context.Context, neste
 
 	ss, compileErr := compiler.Compile(ctx, doc)
 	if compileErr != nil {
-		return nil, transformFailure(compileErr, "fn:transform: cannot compile package %q: %v", packageName, compileErr)
+		return nil, transformFailure(ctx, compileErr, "fn:transform: cannot compile package %q: %v", packageName, compileErr)
 	}
 
 	if err := checkCompiledPackage(ss, packageName, packageVersion); err != nil {
@@ -1037,14 +1055,14 @@ func (cfg *transformFnConfig) compileTransformText(ctx context.Context, nestedCo
 
 	doc, parseErr := parseOptions.WithByteLimit(cfg.programLimit(ctx)).ParseText(ctx, stylesheetText)
 	if parseErr != nil {
-		return nil, transformFailure(parseErr, "fn:transform: cannot parse stylesheet-text: %v", parseErr)
+		return nil, transformFailure(ctx, parseErr, "fn:transform: cannot parse stylesheet-text: %v", parseErr)
 	}
 
 	compiler := nestedCompiler.BaseURI(baseURI)
 
 	ss, compileErr := compiler.Compile(ctx, doc)
 	if compileErr != nil {
-		return nil, transformFailure(compileErr, "fn:transform: cannot compile stylesheet-text: %v", compileErr)
+		return nil, transformFailure(ctx, compileErr, "fn:transform: cannot compile stylesheet-text: %v", compileErr)
 	}
 
 	return ss, nil
@@ -1075,14 +1093,21 @@ func (cfg *transformFnConfig) compileTransformNode(ctx context.Context, compiler
 
 	compileDoc, err := stylesheetNodeCompileDocument(ctx, node.Node, owner)
 	if err != nil {
-		return nil, dynamicErrorCause(errCodeFOXT0003, err, "fn:transform: cannot prepare stylesheet node: %v", err)
+		return nil, transformFailure(ctx, err, "fn:transform: cannot prepare stylesheet node: %v", err)
 	}
+
+	sourceDoc := compileDoc
 
 	if limit := cfg.programLimit(ctx); limit > 0 {
 		counter := &transformProgramCounter{ctx: ctx, remaining: limit}
-		if err := (xdm.XMLSerialization{OmitDeclaration: true}).WriteTo(counter, compileDoc); err != nil {
-			return nil, transformFailure(err, "fn:transform: stylesheet-node exceeds its program budget: %v", err)
+		if err := (xdm.XMLSerialization{OmitDeclaration: true}).WriteTo(counter, sourceDoc); err != nil {
+			return nil, transformFailure(ctx, err, "fn:transform: stylesheet-node exceeds its program budget: %v", err)
 		}
+	}
+
+	compileDoc, err = stylesheetNodeXMLSpace(ctx, node.Node, compileDoc)
+	if err != nil {
+		return nil, transformFailure(ctx, err, "fn:transform: cannot preserve stylesheet whitespace context: %v", err)
 	}
 
 	if baseURI != "" {
@@ -1091,10 +1116,59 @@ func (cfg *transformFnConfig) compileTransformNode(ctx context.Context, compiler
 
 	stylesheet, err := compiler.Compile(ctx, compileDoc)
 	if err != nil {
-		return nil, transformFailure(err, "fn:transform: cannot compile stylesheet: %v", err)
+		return nil, transformFailure(ctx, err, "fn:transform: cannot compile stylesheet: %v", err)
+	}
+
+	if compileDoc != sourceDoc {
+		stylesheet.sourceDoc = sourceDoc
+		for uri, module := range stylesheet.moduleDocs {
+			if module == compileDoc {
+				stylesheet.moduleDocs[uri] = sourceDoc
+			}
+		}
 	}
 
 	return stylesheet, nil
+}
+
+// stylesheetNodeXMLSpace keeps inherited XML whitespace policy private to the
+// compilation tree. Generic element extraction and the original source retain
+// their attributes; simplified modules put the policy on a synthetic wrapper.
+func stylesheetNodeXMLSpace(ctx context.Context, node xdm.Node, source *xdm.Document) (*xdm.Document, error) {
+	elem, ok := node.(*xdm.Element)
+	if !ok {
+		return source, nil
+	}
+
+	if _, own := elem.GetAttributeNS("space", lexicon.NamespaceXML); own {
+		return source, nil
+	}
+
+	space := inheritedStylesheetXMLSpace(elem.Parent())
+	if space == "" {
+		return source, nil
+	}
+
+	if elem.URI() != lexicon.NamespaceXSLT {
+		return expandSimplifiedModule(ctx, source, elem)
+	}
+
+	private, err := tree.Clone(ctx, source.Reference().Document())
+	if err != nil {
+		return nil, err
+	}
+
+	root := tree.Root(private)
+	root.Attrs = append(root.Attrs, tree.Attribute{Name: tree.Name{Space: lexicon.NamespaceXML, Local: lexicon.AttrSpace}, Prefix: lexicon.PrefixXML, Value: space})
+
+	prepared, err := xdm.WrapDocument(ctx, private)
+	if err != nil {
+		return nil, err
+	}
+
+	prepared.SetURL(source.URL())
+
+	return prepared, nil
 }
 
 // A stylesheet-node element defines the module root, even when it is
@@ -1429,7 +1503,7 @@ func (request transformRequest) deliverSerialized(ctx context.Context, doc *xdm.
 func serializeDeliveredValue(ctx context.Context, value ValueResult) (string, error) {
 	var buf bytes.Buffer
 	if err := SerializeValue(ctx, &buf, value); err != nil {
-		return "", transformFailure(err, "fn:transform: serialization error: %v", err)
+		return "", transformFailure(ctx, err, "fn:transform: serialization error: %v", err)
 	}
 
 	return buf.String(), nil

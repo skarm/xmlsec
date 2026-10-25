@@ -617,21 +617,3 @@ func (out *outputFrame) captureXSLSequence(seq xdm.Sequence) bool {
 
 	return true
 }
-
-// atomizeSequence converts each item in the sequence to an atomic value.
-// Arrays are flattened before atomization.
-func atomizeSequence(seq xdm.Sequence) xdm.Sequence {
-	seq = flattenArraysInSequence(seq)
-
-	result := make(xdm.ItemSlice, 0, xdm.SequenceLen(seq))
-	for item := range xdm.SequenceItems(seq) {
-		av, err := xpath.AtomizeItem(item)
-		if err != nil {
-			result = append(result, xdm.AtomicValue{TypeName: xdm.TypeString, Value: stringifyItem(item)})
-		} else {
-			result = append(result, av)
-		}
-	}
-
-	return result
-}

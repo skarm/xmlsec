@@ -4,6 +4,7 @@
 package xslt
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"math"
@@ -26,6 +27,7 @@ const (
 
 type sortKey struct {
 	forwards10 bool
+	backwards  bool // effective XSLT 1.0 processing for sort-key cardinality
 
 	Select    *xpath.Expression
 	Body      []instruction // sequence constructor (when select is absent)
@@ -35,6 +37,7 @@ type sortKey struct {
 	Lang      *avt
 	Collation *avt // collation URI
 	Stable    *avt // "yes"/"no"/"true"/"false"/"1"/"0"
+	BaseURI   string
 }
 
 type sortValueKind uint8
@@ -48,6 +51,8 @@ const (
 // sortValue is a pre-extracted, typed sort key. Numeric values are parsed
 // once at extraction time; no string→float conversion happens during comparison.
 type sortValue struct {
+	empty    bool   // an empty default sort key precedes every ordinary value
+	binary   []byte // raw octets for the XPath3.1 binary ordering
 	kind     sortValueKind
 	str      string
 	num      float64
@@ -67,6 +72,7 @@ type sortMode uint8
 const (
 	sortModeText sortMode = iota
 	sortModeNumber
+	sortModeBinary
 )
 
 type resolvedLevel struct {
@@ -119,7 +125,9 @@ func (ks keyedSlice[T]) convertAutoNumeric(level int, exact bool) int {
 
 		rank = max(rank, sortFloatRank(sv.atom))
 		if sv.kind == sortValueText {
+			empty := sv.empty
 			*sv = parseToNumericSortValue(sv.str)
+			sv.empty = empty
 		}
 	}
 
@@ -138,7 +146,24 @@ func (ks keyedSlice[T]) convertAutoNumeric(level int, exact bool) int {
 func compareSortValues(a, b sortValue, level resolvedLevel) int {
 	var c int
 
+	if a.empty || b.empty {
+		if a.empty != b.empty {
+			c = 1
+			if a.empty {
+				c = -1
+			}
+		}
+
+		if level.desc {
+			c = -c
+		}
+
+		return c
+	}
+
 	switch level.mode {
+	case sortModeBinary:
+		c = bytes.Compare(a.binary, b.binary)
 	case sortModeNumber:
 		if level.exact && level.floatRank == 0 && a.precise != nil && b.precise != nil {
 			c = a.precise.Cmp(b.precise)
@@ -206,6 +231,7 @@ const (
 	dataTypeText                           // explicit data-type="text"
 	dataTypeNumber                         // explicit data-type=lexicon.TypeNumber
 	dataTypeNumberAuto                     // auto-detected from first numeric/date value
+	dataTypeBinaryAuto                     // auto-detected XPath3.1 binary value
 )
 
 func (ec *execContext) selectedSortValue(ctx context.Context, sk *sortKey, node xdm.Node, dtMode *dataTypeMode, evalState *xpath.EvalState) (sortValue, error) {
@@ -214,16 +240,34 @@ func (ec *execContext) selectedSortValue(ctx context.Context, sk *sortKey, node 
 		return sortValue{}, err
 	}
 
-	seq := result.Sequence()
+	return ec.sortSequenceValue(ctx, result.Sequence(), ec.isCompatExpr(sk.Select), dtMode)
+}
+
+func (ec *execContext) sortSequenceValue(ctx context.Context, seq xdm.Sequence, compatible bool, dtMode *dataTypeMode) (sortValue, error) {
+	atoms, err := xpath.FnAtomize(ctx, seq)
+	if err != nil {
+		return sortValue{}, err
+	}
+
+	seq = nil
+
+	if len(atoms) > 0 {
+		items := make(xdm.ItemSlice, len(atoms))
+		for i, atom := range atoms {
+			items[i] = atom
+		}
+
+		seq = items
+	}
 
 	seqLen := 0
 	if seq != nil {
 		seqLen = xdm.SequenceLen(seq)
 	}
 
-	strVal := result.StringValue()
+	strVal := stringifySequence(seq)
 	// Backwards-compatible keys use the first item without raising XTTE1020.
-	if seqLen > 1 && ec.isCompatExpr(sk.Select) {
+	if seqLen > 1 && compatible {
 		seq = xdm.ItemSlice{seq.Get(0)}
 		strVal = stringifyItem(seq.Get(0))
 		seqLen = 1
@@ -257,11 +301,7 @@ func (ec *execContext) selectedSortValue(ctx context.Context, sk *sortKey, node 
 
 	if *dtMode == dataTypeNumberAuto {
 		sv := extractNumericSortValue(seq, strVal, false, implicitTZ)
-		if seqLen == 1 {
-			sv = applyNumberAutoSingleton(sv, seq.Get(0), implicitTZ)
-		}
-
-		return sv, nil
+		return autoNumericSortValue(sv, seq, implicitTZ), nil
 	}
 
 	return textSortValue(seq, strVal, seqLen == 1, dtMode, implicitTZ), nil
@@ -300,7 +340,8 @@ func (ec *execContext) evaluateSortExpression(ctx context.Context, expr *xpath.E
 	return *result, nil
 }
 
-func (ec *execContext) bodySortValue(ctx context.Context, body []instruction, node xdm.Node, dtMode *dataTypeMode) (sortValue, error) {
+func (ec *execContext) bodySortValue(ctx context.Context, sk *sortKey, node xdm.Node, dtMode *dataTypeMode) (sortValue, error) {
+	body := sk.Body
 	if len(body) == 0 {
 		if *dtMode == dataTypeNumber || *dtMode == dataTypeNumberAuto {
 			return sortValue{kind: sortValueNaN}, nil
@@ -314,19 +355,7 @@ func (ec *execContext) bodySortValue(ctx context.Context, body []instruction, no
 		return sortValue{}, err
 	}
 
-	implicitTZ := ec.currentTime.Location()
-	if *dtMode == dataTypeNumber {
-		return extractNumericSortValue(val, stringifySequence(val), true, implicitTZ), nil
-	}
-
-	if *dtMode == dataTypeNumberAuto {
-		sv := extractNumericSortValue(val, stringifySequence(val), false, implicitTZ)
-		return autoNumericSortValue(sv, val, implicitTZ), nil
-	}
-
-	strVal := stringifySequence(val)
-
-	return textSortValue(val, strVal, val != nil && xdm.SequenceLen(val) == 1, dtMode, implicitTZ), nil
+	return ec.sortSequenceValue(ctx, val, sk.backwards, dtMode)
 }
 
 // autoNumericSortValue promotes an atomized singleton while retaining its type
@@ -349,7 +378,7 @@ func (ec *execContext) evaluateSortBody(ctx context.Context, body []instruction,
 	}
 
 	ec.temporaryOutputDepth++
-	val, err := ec.evaluateBody(ctx, body)
+	val, err := ec.evaluateBodyAsSequence(ctx, body)
 	ec.temporaryOutputDepth--
 	ec.currentNode = savedCurrent
 	ec.contextNode = savedContext
@@ -461,7 +490,7 @@ func sortItems1(ctx context.Context, ec *execContext, items xdm.Sequence, sk *so
 	}
 
 	// XTDE1030: check for heterogeneous sort key types that can't be compared.
-	if err := validateSortKeyTypes1(entries, dtMode); err != nil {
+	if err := validateSortKeyTypes1(entries, dtMode, ec.stylesheet.xpathVersion()); err != nil {
 		return nil, err
 	}
 
@@ -534,7 +563,7 @@ func sortItemsN(ctx context.Context, ec *execContext, items xdm.Sequence, sortKe
 	}
 
 	// XTDE1030: validate each sort key's type consistency across the sequence.
-	if err := validateSortKeyTypesN(entries, dtModes); err != nil {
+	if err := validateSortKeyTypesN(entries, dtModes, ec.stylesheet.xpathVersion()); err != nil {
 		return nil, err
 	}
 
@@ -641,7 +670,7 @@ func sortNodes1(ctx context.Context, ec *execContext, nodes []xdm.Node, sk *sort
 	}
 
 	// XTDE1030: check for incompatible or non-orderable sort key types.
-	if err := validateSortKeyTypes1(entries, dtMode); err != nil {
+	if err := validateSortKeyTypes1(entries, dtMode, ec.stylesheet.xpathVersion()); err != nil {
 		return nil, err
 	}
 
@@ -696,7 +725,7 @@ func sortNodesN(ctx context.Context, ec *execContext, nodes []xdm.Node, sortKeys
 	}
 
 	// XTDE1030: validate each sort key's type consistency across the sequence.
-	if err := validateSortKeyTypesN(entries, dtModes); err != nil {
+	if err := validateSortKeyTypesN(entries, dtModes, ec.stylesheet.xpathVersion()); err != nil {
 		return nil, err
 	}
 
@@ -771,6 +800,11 @@ func (ec *execContext) performSortInput(ctx context.Context, inst *performSortIn
 
 // --- Sort level resolution ---
 
+func evaluateSortOption(ctx context.Context, ec *execContext, option *avt) (string, error) {
+	value, err := option.evaluate(ctx, ec.contextNode)
+	return strings.Trim(value, " \t\r\n"), err
+}
+
 // resolveSortOrder evaluates the order AVT (defaulting to ascending) and
 // validates it, raising XTDE0030 for any value other than ascending/descending.
 func resolveSortOrder(ctx context.Context, ec *execContext, sk *sortKey) (string, error) {
@@ -779,7 +813,7 @@ func resolveSortOrder(ctx context.Context, ec *execContext, sk *sortKey) (string
 	if sk.Order != nil {
 		var err error
 
-		order, err = sk.Order.evaluate(ctx, ec.contextNode)
+		order, err = evaluateSortOption(ctx, ec, sk.Order)
 		if err != nil {
 			return "", err
 		}
@@ -811,10 +845,12 @@ func buildResolvedSort(ctx context.Context, ec *execContext, sortKeys []*sortKey
 		}
 
 		if sk.Collation != nil {
-			uri, err := sk.Collation.evaluate(ctx, ec.contextNode)
+			uri, err := evaluateSortOption(ctx, ec, sk.Collation)
 			if err != nil {
 				return resolvedSort{}, err
 			}
+
+			uri = resolveAgainstBaseURI(strings.Trim(uri, " \t\r\n"), sk.BaseURI)
 
 			cmpFn, err := xpath.ResolveCollationCompareFunc(uri)
 			if err != nil {
@@ -847,8 +883,8 @@ func resolveLevel1(ctx context.Context, ec *execContext, sk *sortKey) (resolvedL
 		return resolvedLevel{}, err
 	}
 	// XTDE0030: validate lang attribute value
-	if sk.Lang != nil {
-		lang, err := sk.Lang.evaluate(ctx, ec.contextNode)
+	if sk.Collation == nil && sk.Lang != nil {
+		lang, err := evaluateSortOption(ctx, ec, sk.Lang)
 		if err != nil {
 			return resolvedLevel{}, err
 		}
@@ -862,10 +898,12 @@ func resolveLevel1(ctx context.Context, ec *execContext, sk *sortKey) (resolvedL
 	rl := resolvedLevel{desc: order == sortOrderDescending}
 
 	if sk.Collation != nil {
-		uri, err := sk.Collation.evaluate(ctx, ec.contextNode)
+		uri, err := evaluateSortOption(ctx, ec, sk.Collation)
 		if err != nil {
 			return resolvedLevel{}, err
 		}
+
+		uri = resolveAgainstBaseURI(strings.Trim(uri, " \t\r\n"), sk.BaseURI)
 
 		cmpFn, err := xpath.ResolveCollationCompareFunc(uri)
 		if err != nil {
@@ -899,23 +937,24 @@ func buildImplicitCollationURI(ctx context.Context, ec *execContext, sk *sortKey
 	var params []string
 
 	if sk.Lang != nil {
-		lang, err := sk.Lang.evaluate(ctx, ec.contextNode)
+		lang, err := evaluateSortOption(ctx, ec, sk.Lang)
 		if err != nil {
 			return "", err
 		}
 
+		lang = strings.Trim(lang, " \t\r\n")
 		if lang != "" {
 			params = append(params, "lang="+lang)
 		}
 	}
 
 	if sk.CaseOrder != nil {
-		co, err := sk.CaseOrder.evaluate(ctx, ec.contextNode)
+		co, err := evaluateSortOption(ctx, ec, sk.CaseOrder)
 		if err != nil {
 			return "", err
 		}
 
-		switch co {
+		switch strings.Trim(co, " \t\r\n") {
 		case nameUpperFirst:
 			params = append(params, "caseFirst=upper")
 		case nameLowerFirst:
@@ -946,7 +985,7 @@ func validateSortKeyAttrs(ctx context.Context, ec *execContext, sk *sortKey) err
 	}
 
 	if sk.DataType != nil {
-		dt, err := sk.DataType.evaluate(ctx, ec.contextNode)
+		dt, err := evaluateSortOption(ctx, ec, sk.DataType)
 		if err != nil {
 			return err
 		}
@@ -957,8 +996,8 @@ func validateSortKeyAttrs(ctx context.Context, ec *execContext, sk *sortKey) err
 		}
 	}
 
-	if sk.CaseOrder != nil {
-		co, err := sk.CaseOrder.evaluate(ctx, ec.contextNode)
+	if sk.Collation == nil && sk.CaseOrder != nil {
+		co, err := evaluateSortOption(ctx, ec, sk.CaseOrder)
 		if err != nil {
 			return err
 		}
@@ -969,8 +1008,8 @@ func validateSortKeyAttrs(ctx context.Context, ec *execContext, sk *sortKey) err
 		}
 	}
 
-	if sk.Lang != nil {
-		lang, err := sk.Lang.evaluate(ctx, ec.contextNode)
+	if sk.Collation == nil && sk.Lang != nil {
+		lang, err := evaluateSortOption(ctx, ec, sk.Lang)
 		if err != nil {
 			return err
 		}
@@ -982,25 +1021,26 @@ func validateSortKeyAttrs(ctx context.Context, ec *execContext, sk *sortKey) err
 	}
 
 	if sk.Stable != nil {
-		stable, err := sk.Stable.evaluate(ctx, ec.contextNode)
+		stable, err := evaluateSortOption(ctx, ec, sk.Stable)
 		if err != nil {
 			return err
 		}
 		// helium always performs a stable sort; the evaluated value is
 		// validated for conformance but does not change sort behavior
 		// (honoring stable="no" via an unstable sort is out of scope).
-		if _, ok := parseXSDBool(stable); !ok {
+		if _, ok := parseXSLTBoolean(stable, ec.stylesheet.processorLanguage()); !ok {
 			return dynamicError(errCodeXTDE0030,
 				"invalid stable %q in xsl:sort; must be a valid xs:boolean", stable)
 		}
 	}
 
 	if sk.Collation != nil {
-		uri, err := sk.Collation.evaluate(ctx, ec.contextNode)
+		uri, err := evaluateSortOption(ctx, ec, sk.Collation)
 		if err != nil {
 			return err
 		}
 
+		uri = resolveAgainstBaseURI(strings.Trim(uri, " \t\r\n"), sk.BaseURI)
 		if _, err := xpath.ResolveCollationCompareFunc(uri); err != nil {
 			return dynamicError(errCodeXTDE1035,
 				"unknown collation URI %q", uri)
@@ -1021,8 +1061,13 @@ func validateSortKeyAttrs(ctx context.Context, ec *execContext, sk *sortKey) err
 // families (e.g. mixed xs:yearMonthDuration + xs:dayTimeDuration, which define
 // `eq` but raise XPTY0004 on `lt`) and genuinely incomparable families (e.g.
 // xs:date vs xs:integer) are correctly rejected with XTDE1030.
-func sortKeyTypesComparable(a, b xdm.AtomicValue) bool {
+func sortKeyTypesComparable(a, b xdm.AtomicValue, version int) bool {
+	if version < 31 && (binarySortType(a) || binarySortType(b)) {
+		return false
+	}
+
 	_, err := xpath.ValueCompare(xpath.TokenLt, a, b)
+
 	return err == nil
 }
 
@@ -1035,7 +1080,7 @@ func sortKeyTypesComparable(a, b xdm.AtomicValue) bool {
 // atomic types trivially comparable, so the check is skipped entirely for them.
 // Only default-data-type levels (dataTypeAuto / dataTypeNumberAuto) compare
 // values by their own atomic types and need the consistency check.
-func validateSortLevelTypes(values []sortValue, mode dataTypeMode) error {
+func validateSortLevelTypes(values []sortValue, mode dataTypeMode, version int) error {
 	if mode == dataTypeText || mode == dataTypeNumber {
 		return nil
 	}
@@ -1058,7 +1103,7 @@ func validateSortLevelTypes(values []sortValue, mode dataTypeMode) error {
 			continue
 		}
 
-		if !sortKeyTypesComparable(*ref, v.atom) {
+		if !sortKeyTypesComparable(*ref, v.atom, version) {
 			return dynamicError(errCodeXTDE1030,
 				"sort keys have incompatible types: %s and %s", ref.TypeName, v.atom.TypeName)
 		}
@@ -1069,25 +1114,25 @@ func validateSortLevelTypes(values []sortValue, mode dataTypeMode) error {
 
 // validateSortKeyTypes1 routes a single-key sort's values through the shared
 // per-level validator.
-func validateSortKeyTypes1[T any](entries []keyed1[T], mode dataTypeMode) error {
+func validateSortKeyTypes1[T any](entries []keyed1[T], mode dataTypeMode, version int) error {
 	values := make([]sortValue, len(entries))
 	for i := range entries {
 		values[i] = entries[i].key
 	}
 
-	return validateSortLevelTypes(values, mode)
+	return validateSortLevelTypes(values, mode, version)
 }
 
 // validateSortKeyTypesN routes each level of a multi-key sort through the shared
 // per-level validator.
-func validateSortKeyTypesN[T any](entries keyedSlice[T], dtModes []dataTypeMode) error {
+func validateSortKeyTypesN[T any](entries keyedSlice[T], dtModes []dataTypeMode, version int) error {
 	values := make([]sortValue, len(entries))
 	for level, m := range dtModes {
 		for i := range entries {
 			values[i] = entries[i].keys[level]
 		}
 
-		if err := validateSortLevelTypes(values, m); err != nil {
+		if err := validateSortLevelTypes(values, m, version); err != nil {
 			return err
 		}
 	}
@@ -1117,20 +1162,37 @@ func isValidSortDataType(s string) bool {
 	return false
 }
 
-// isValidLanguageTag checks if s is a plausible BCP47 language tag.
-// Rejects obviously invalid values (empty, contains quotes, whitespace).
+func validateLiteralSortOption(name, value string) error {
+	value = strings.Trim(value, " \t\r\n")
+	valid := true
+
+	switch name {
+	case nameOrder:
+		valid = value == sortOrderAscending || value == sortOrderDescending
+	case nameCaseOrder:
+		valid = value == nameLowerFirst || value == nameUpperFirst
+	case nameDataType:
+		valid = isValidSortDataType(value)
+	case lexicon.AttrLang:
+		valid = isValidLanguageTag(value)
+	}
+
+	if !valid {
+		return staticError(errCodeXTSE0020, "invalid %s value %q in sort key", name, value)
+	}
+
+	return nil
+}
+
+// XSLT permits an xs:language value or an empty language hint (§13.1.3).
 func isValidLanguageTag(s string) bool {
 	if s == "" {
 		return true // empty = implementation default
 	}
 
-	for _, r := range s {
-		if r == '\'' || r == '"' || r == ' ' || r == '\t' || r == '\n' {
-			return false
-		}
-	}
+	_, err := xpath.CastFromString(strings.Trim(s, " \t\r\n"), xdm.TypeLanguage)
 
-	return true
+	return err == nil
 }
 
 // --- Key evaluation ---
@@ -1187,6 +1249,13 @@ func fillSingletonSortValue(sv *sortValue, item xdm.Item, dtMode *dataTypeMode, 
 // the same primitive-type resolution as the XTDE1030 validation gate.
 func applyAutoSortPromotion(sv *sortValue, av xdm.AtomicValue, dtMode *dataTypeMode, implicitTZ *time.Location) {
 	sv.typeName = av.TypeName
+	if binarySortType(av) {
+		sv.binary, _ = av.Value.([]byte)
+
+		if *dtMode == dataTypeAuto {
+			*dtMode = dataTypeBinaryAuto
+		}
+	}
 
 	if *dtMode != dataTypeAuto {
 		return
@@ -1196,6 +1265,11 @@ func applyAutoSortPromotion(sv *sortValue, av xdm.AtomicValue, dtMode *dataTypeM
 		*sv = nv
 		*dtMode = dataTypeNumberAuto
 	}
+}
+
+func binarySortType(value xdm.AtomicValue) bool {
+	value = xdm.PromoteSchemaType(value)
+	return value.TypeName == xdm.TypeBase64Binary || value.TypeName == xdm.TypeHexBinary
 }
 
 // evaluateSortKey evaluates a single sort key for one item and returns its typed value.
@@ -1210,13 +1284,13 @@ func evaluateSortKey(ctx context.Context, ec *execContext, sk *sortKey, node xdm
 		return ec.selectedSortValue(ctx, sk, node, dtMode, evalState)
 	}
 
-	return ec.bodySortValue(ctx, sk.Body, node, dtMode)
+	return ec.bodySortValue(ctx, sk, node, dtMode)
 }
 
 // textSortValue records the atom after promotion so the XTDE1030 consistency
 // gate sees the original type even when the comparison value becomes numeric.
 func textSortValue(seq xdm.Sequence, text string, singleton bool, dtMode *dataTypeMode, implicitTZ *time.Location) sortValue {
-	sv := sortValue{kind: sortValueText, str: text}
+	sv := sortValue{kind: sortValueText, str: text, empty: !singleton && *dtMode != dataTypeText && *dtMode != dataTypeNumber}
 	if singleton {
 		atom, haveAtom := fillSingletonSortValue(&sv, seq.Get(0), dtMode, implicitTZ)
 		sv.atom = atom
@@ -1256,7 +1330,10 @@ func extractNumericSortValue(seq xdm.Sequence, fallback string, numericOnly bool
 		}
 	}
 
-	return parseToNumericSortValue(fallback)
+	value := parseToNumericSortValue(fallback)
+	value.empty = !numericOnly && xdm.SequenceLen(seq) == 0
+
+	return value
 }
 
 // applyNumberAutoSingleton finalizes a dataTypeNumberAuto singleton sort value.
@@ -1379,7 +1456,7 @@ func initDataTypeModes(ctx context.Context, ec *execContext, sortKeys []*sortKey
 			continue
 		}
 
-		dt, err := sk.DataType.evaluate(ctx, ec.contextNode)
+		dt, err := evaluateSortOption(ctx, ec, sk.DataType)
 		if err != nil {
 			return nil, err
 		}
@@ -1399,7 +1476,7 @@ func initDataTypeMode1(ctx context.Context, ec *execContext, sk *sortKey) (dataT
 		return dataTypeAuto, nil
 	}
 
-	dt, err := sk.DataType.evaluate(ctx, ec.contextNode)
+	dt, err := evaluateSortOption(ctx, ec, sk.DataType)
 	if err != nil {
 		return dataTypeAuto, err
 	}
@@ -1419,6 +1496,8 @@ func finalizeLevels(rs *resolvedSort, dtModes []dataTypeMode, entries interface 
 ) {
 	for i, m := range dtModes {
 		switch m {
+		case dataTypeBinaryAuto:
+			rs.levels[i].mode = sortModeBinary
 		case dataTypeNumber, dataTypeNumberAuto:
 			rs.levels[i].mode = sortModeNumber
 			rs.levels[i].floatRank = entries.convertAutoNumeric(i, m == dataTypeNumberAuto)
@@ -1431,6 +1510,8 @@ func finalizeLevels(rs *resolvedSort, dtModes []dataTypeMode, entries interface 
 
 func finalizeLevel1[T any](level *resolvedLevel, dtMode dataTypeMode, entries []keyed1[T]) {
 	switch dtMode {
+	case dataTypeBinaryAuto:
+		level.mode = sortModeBinary
 	case dataTypeNumber, dataTypeNumberAuto:
 		level.mode = sortModeNumber
 		level.exact = dtMode == dataTypeNumberAuto
@@ -1440,7 +1521,9 @@ func finalizeLevel1[T any](level *resolvedLevel, dtMode dataTypeMode, entries []
 
 			level.floatRank = max(level.floatRank, sortFloatRank(k.atom))
 			if k.kind == sortValueText {
+				empty := k.empty
 				*k = parseToNumericSortValue(k.str)
+				k.empty = empty
 			}
 		}
 
@@ -1515,7 +1598,7 @@ func sortGroups1(ctx context.Context, ec *execContext, groups []fegGroup, sk *so
 	}
 
 	// XTDE1030: check for incompatible or non-orderable sort key types.
-	if err := validateSortKeyTypes1(entries, dtMode); err != nil {
+	if err := validateSortKeyTypes1(entries, dtMode, ec.stylesheet.xpathVersion()); err != nil {
 		return nil, err
 	}
 
@@ -1562,7 +1645,7 @@ func sortGroupsN(ctx context.Context, ec *execContext, groups []fegGroup, sortKe
 	}
 
 	// XTDE1030: validate each sort key's type consistency across the sequence.
-	if err := validateSortKeyTypesN(entries, dtModes); err != nil {
+	if err := validateSortKeyTypesN(entries, dtModes, ec.stylesheet.xpathVersion()); err != nil {
 		return nil, err
 	}
 

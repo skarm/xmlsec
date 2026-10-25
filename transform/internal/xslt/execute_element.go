@@ -13,6 +13,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	lexical "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -78,9 +79,9 @@ func (ec *execContext) computedElementNamespace(ctx context.Context, inst *eleme
 			return "", err
 		}
 
-		if uri == lexicon.NamespaceXMLNS {
+		if uri == lexicon.NamespaceXMLNS || !validComputedNamespaceURI(ctx, uri) {
 			return "", dynamicError(errCodeXTDE0835,
-				"namespace URI %q is reserved and cannot be used", uri)
+				"namespace URI %q is invalid or reserved", uri)
 		}
 
 		return uri, nil
@@ -462,8 +463,8 @@ func (ec *execContext) annotateAttributesFromType(elem *xdm.Element, typeName st
 // resolveComputedAttributeName resolves the expanded name of a computed
 // xsl:attribute exactly once, honoring an explicit namespace= attribute when
 // present and otherwise resolving the lexical prefix against the in-scope
-// namespaces. It enforces the namespace-related constraints (XTDE0865 for the
-// reserved xmlns URI, XTDE0860 for an undeclared prefix when no namespace
+// namespaces. It enforces the namespace-related constraints (XTDE0865 for an
+// invalid or reserved URI, XTDE0860 for an undeclared prefix when no namespace
 // attribute is given). The lexical-QName (XTDE0850) and reserved-xmlns-name
 // (XTDE0855) checks are performed separately by validateComputedAttributeName.
 //
@@ -485,10 +486,10 @@ func (ec *execContext) resolveComputedAttributeName(ctx context.Context, name st
 		if err != nil {
 			return resolvedAttrName{}, err
 		}
-		// XTDE0865: the xmlns namespace URI is reserved.
-		if nsURI == lexicon.NamespaceXMLNS {
+
+		if nsURI == lexicon.NamespaceXMLNS || !validComputedNamespaceURI(ctx, nsURI) {
 			return resolvedAttrName{}, dynamicError(errCodeXTDE0865,
-				"namespace URI %q is reserved and cannot be used for attributes", nsURI)
+				"namespace URI %q is invalid or reserved", nsURI)
 		}
 
 		if nsURI == "" {
@@ -955,7 +956,7 @@ func (ec *execContext) execNamespace(ctx context.Context, inst *namespaceInst) e
 		return err
 	}
 
-	if err := validateComputedNamespace(name, value); err != nil {
+	if err := validateComputedNamespace(ctx, name, value); err != nil {
 		return err
 	}
 
@@ -990,7 +991,7 @@ func (ec *execContext) execNamespace(ctx context.Context, inst *namespaceInst) e
 	return nil
 }
 
-func validateComputedNamespace(name, value string) error {
+func validateComputedNamespace(ctx context.Context, name, value string) error {
 	if name == lexicon.PrefixXMLNS {
 		return dynamicError(errCodeXTDE0920,
 			"cannot create namespace node with prefix %q", name)
@@ -1018,14 +1019,24 @@ func validateComputedNamespace(name, value string) error {
 			"namespace URI %q is reserved and cannot be used", value)
 	}
 
-	// XSD 1.1 xs:anyURI accepts any string; only an empty URI with a
-	// non-empty prefix needs another namespace construction error.
+	if !validComputedNamespaceURI(ctx, value) {
+		return dynamicError(errCodeXTDE0905, "invalid namespace URI %q", value)
+	}
+
 	if value == "" {
 		return dynamicError(errCodeXTDE0930,
 			"namespace prefix %q requires a non-empty URI", name)
 	}
 
 	return nil
+}
+
+func validComputedNamespaceURI(ctx context.Context, value string) bool {
+	if xpath.XMLSchemaVersion(ctx) != 10 {
+		return true
+	}
+
+	return lexical.ValidateBuiltin(lexical.Normalize(value, lexicon.TypeAnyURI), lexicon.TypeAnyURI, lexical.Version10) == nil
 }
 
 func (ec *execContext) computedNamespaceValue(ctx context.Context, inst *namespaceInst) (string, error) {
@@ -1047,7 +1058,7 @@ func (ec *execContext) computedNamespaceValue(ctx context.Context, inst *namespa
 	err := ec.withV2TempOutput(func() error {
 		var err error
 
-		val, err = ec.evaluateBody(ctx, inst.Body)
+		val, err = ec.evaluateBodyAsSequence(ctx, inst.Body)
 
 		return err
 	})
@@ -1055,7 +1066,7 @@ func (ec *execContext) computedNamespaceValue(ctx context.Context, inst *namespa
 		return "", err
 	}
 
-	return stringifySequence(val), nil
+	return stringifySimpleContent(ctx, val, " ")
 }
 
 func (ec *execContext) addComputedNamespace(elem *xdm.Element, name, value string) error {

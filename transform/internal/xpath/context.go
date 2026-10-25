@@ -151,6 +151,28 @@ func InvocationState(ctx context.Context, key any, create func() any) any {
 	return value
 }
 
+// WithInvocationScope shares resource snapshots across the XPath expressions of
+// one host operation. Starting another public operation replaces this scope.
+func WithInvocationScope(ctx context.Context) context.Context {
+	return context.WithValue(ctx, invocationScopeKey{}, &invocationState{})
+}
+
+// WithTextResourceCacheLimit bounds retained text/JSON sources independently
+// of the cumulative budget for constructed and returned string values.
+func WithTextResourceCacheLimit(ctx context.Context, bytes int) context.Context {
+	return context.WithValue(ctx, textResourceCacheLimitKey{}, int64(bytes))
+}
+
+type textResourceCacheLimitKey struct{}
+
+func bindInvocationScope(ctx context.Context, ec *evalContext) {
+	if state, ok := ctx.Value(invocationScopeKey{}).(*invocationState); ok {
+		ec.invocation = state
+	} else {
+		ec.invocation = &invocationState{}
+	}
+}
+
 // IsDynamicCall reports evaluation inside an invoked function item, including
 // inline functions and higher-order calls.
 func IsDynamicCall(ctx context.Context) bool {
@@ -206,6 +228,19 @@ func FnNamespace(ctx context.Context, prefix string) (string, bool) {
 	return "", false
 }
 
+// FnRegisteredFunction looks up an explicit function in the calling
+// expression's static registry. Escaped function items retain this registry;
+// a later invocation's application registry does not replace it. Lazy host
+// resolvers are deliberately excluded, as they are not discoverable functions.
+func FnRegisteredFunction(ctx context.Context, uri, local string) Function {
+	name := QualifiedName{URI: uri, Name: local}
+	if ec := getFnContext(ctx); ec != nil {
+		return ec.fnsNS[name]
+	}
+
+	return FunctionsFromContext(ctx)[name]
+}
+
 // FnDefaultXMLNamespace returns the host's XML default namespace at the call
 // site. It is independent of XPath's default element/type namespace.
 func FnDefaultXMLNamespace(ctx context.Context) string {
@@ -227,6 +262,8 @@ func FnXPath10Compat(ctx context.Context) bool {
 type fnContextKey struct{}
 
 type invocationState struct{ values map[any]any }
+
+type invocationScopeKey struct{}
 
 type xmlSchemaVersionKey struct{}
 

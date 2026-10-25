@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -257,6 +258,25 @@ func TestXSLTContextItemContracts(t *testing.T) {
 
 func TestXSLTDeclarationContracts(t *testing.T) {
 	e := engine(t, transform.Config{})
+	for _, processor := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
+		for _, source := range []string{
+			sheet("17.0", `<xsl:template name="start">ok</xsl:template><xsl:template name="unused"><xsl:call-template name="missing"/></xsl:template>`),
+			sheet("17.0", `<xsl:template name="start"><xsl:call-template name="missing"/></xsl:template>`),
+			sheet(version20, `<xsl:template name="start" version="17.0"><xsl:if test="false()"><xsl:call-template name="missing"/></xsl:if></xsl:template>`),
+		} {
+			_, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: processor})
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != errCodeXTSE0650 {
+				t.Fatal("forward call-template must fail during compilation", processor, source, err)
+			}
+		}
+	}
+
+	legacy := sheet("1.1", `<xsl:template name="start"><xsl:if test="false()"><xsl:call-template name="missing"/></xsl:if><xsl:text>ok</xsl:text></xsl:template>`)
+	if _, err := e.CompileXSLT(t.Context(), []byte(legacy), transform.XSLTOptions{ProcessorVersion: transform.XSLT10}); err != nil {
+		t.Fatal("selected 1.0 legacy forward behavior changed", err)
+	}
+
 	for body, code := range map[string]string{
 		`<xsl:template name="start"><xsl:if test="false()"><xsl:call-template name="missing"/></xsl:if></xsl:template>`:                           errCodeXTSE0650,
 		`<xsl:template name="start"><xsl:call-template name="bad/name"/></xsl:template>`:                                                          errCodeXTSE0020,
@@ -283,7 +303,6 @@ func TestXSLTDeclarationContracts(t *testing.T) {
 		for _, body := range []string{
 			`<xsl:template name="start"><xsl:call-template xmlns:p="urn:application" name="p:target"/></xsl:template><xsl:template xmlns:p="urn:application" name="p:target">ok</xsl:template>`,
 			`<xsl:template name="start"><xsl:call-template name="Q{urn:application}target"/></xsl:template><xsl:template name="Q{urn:application}target">ok</xsl:template>`,
-			`<xsl:template name="start" version="4.0"><xsl:if test="false()"><xsl:call-template name="missing"/></xsl:if><xsl:text>ok</xsl:text></xsl:template>`,
 		} {
 			got, err := resourceStylesheetResult(t, e, sheet(version30, body), nested)
 			if err != nil || got != "ok" {
@@ -507,14 +526,16 @@ func TestXSLTSimpleContentErrors(t *testing.T) {
 
 	for _, nested := range []bool{false, true} {
 		for instruction, code := range map[string]string{
-			`<r value="{1 div 0}"/>`:                                   errCodeFOAR0001,
-			`<r value="{error(QName('urn:application', 'oops'))}"/>`:   applicationErrorLocal,
-			`<r value="{string#1}"/>`:                                  errCodeFOTY0013,
-			`<r value="{[1, [map{}]]}"/>`:                              errCodeFOTY0013,
-			`<xsl:value-of select="[1,[string#1]]"/>`:                  errCodeFOTY0013,
-			`<xsl:comment select="[map{}]"/>`:                          errCodeFOTY0013,
-			`<xsl:processing-instruction name="p" select="string#1"/>`: errCodeFOTY0013,
-			`<r><xsl:attribute name="a" select="[map{}]"/></r>`:        errCodeFOTY0013,
+			`<r value="{1 div 0}"/>`:                                                           errCodeFOAR0001,
+			`<r value="{error(QName('urn:application', 'oops'))}"/>`:                           applicationErrorLocal,
+			`<r value="{string#1}"/>`:                                                          errCodeFOTY0013,
+			`<r value="{[1, [map{}]]}"/>`:                                                      errCodeFOTY0013,
+			`<xsl:value-of select="[1,[string#1]]"/>`:                                          errCodeFOTY0013,
+			`<xsl:comment select="[map{}]"/>`:                                                  errCodeFOTY0013,
+			`<xsl:processing-instruction name="p" select="string#1"/>`:                         errCodeFOTY0013,
+			`<r><xsl:attribute name="a" select="[map{}]"/></r>`:                                errCodeFOTY0013,
+			`<r><xsl:namespace name="p"><xsl:sequence select="map{}"/></xsl:namespace></r>`:    errCodeFOTY0013,
+			`<r><xsl:namespace name="p"><xsl:sequence select="string#1"/></xsl:namespace></r>`: errCodeFOTY0013,
 		} {
 			_, err := resourceStylesheetResult(t, e, sheet(version30, `<xsl:template name="start">`+instruction+`</xsl:template>`), nested)
 
@@ -541,7 +562,28 @@ func TestXSLTSimpleContentErrors(t *testing.T) {
 		if err != nil || got != "1" {
 			t.Fatal(nested, got, err)
 		}
+
+		for _, test := range namespaceSimpleContentCases() {
+			got, err := resourceStylesheetResult(t, e, test.source, nested)
+			if err != nil || got != test.want {
+				t.Fatal(test.name, nested, got, err, test.want)
+			}
+		}
 	}
+}
+
+func namespaceSimpleContentCases() []struct{ name, source, want string } {
+	cases := make([]struct{ name, source, want string }, 0, 4)
+	for _, test := range []struct{ name, variable, want string }{
+		{"empty text", `<xsl:variable name="v" as="text()"><xsl:text/></xsl:variable>`, "||"},
+		{"space text", `<xsl:variable name="v" as="text()"><xsl:text> </xsl:text></xsl:variable>`, " | | "},
+		{"empty atomic", `<xsl:variable name="v" as="xs:string" select="''"/>`, " |  | "},
+		{"document text", `<xsl:variable name="v"><xsl:sequence select="''"/><xsl:sequence select="''"/></xsl:variable>`, "  |   |  "},
+	} {
+		body := test.variable + `<xsl:variable name="n" as="node()"><xsl:namespace name="p"><xsl:sequence select="$v"/><xsl:value-of select="'|'"/><xsl:sequence select="$v"/><xsl:value-of select="'|'"/><xsl:sequence select="$v"/></xsl:namespace></xsl:variable><xsl:value-of select="$n"/>`
+		cases = append(cases, struct{ name, source, want string }{test.name, sheet(version30, `<xsl:template name="start">`+body+`</xsl:template>`), test.want})
+	}
+	return cases
 }
 
 func TestXSLTExplicitGlobalContext(t *testing.T) {
@@ -1146,6 +1188,28 @@ func TestXSLTDecimalCompatibilityVersions(t *testing.T) {
 
 func TestXSLTVersionBoundaries(t *testing.T) {
 	e := engine(t, transform.Config{})
+	for _, test := range booleanProfileCases() {
+		compiled, err := e.CompileXSLT(t.Context(), []byte(hostFunctionSheet(version30, test)), transform.XSLTOptions{ProcessorVersion: transform.XSLT20})
+		got := ""
+		if err == nil {
+			out, runErr := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+			err = runErr
+			if err == nil {
+				got = string(out.Primary)
+			}
+		}
+		if err != nil {
+			var detail *transform.Error
+			if !errors.As(err, &detail) {
+				t.Fatal(test.name, err)
+			}
+			got = detail.Code
+		}
+		if got != test.want20 {
+			t.Fatal("2.0 forward boolean vocabulary", test.name, got, err, test.want20)
+		}
+	}
+
 	if _, err := e.CompileXSLT(t.Context(), []byte(packageSheet("", `<xsl:template name="start"/>`)), transform.XSLTOptions{ProcessorVersion: transform.XSLT20}); err == nil {
 		t.Fatal("2.0 accepted xsl:package as a stylesheet module")
 	}
@@ -1301,7 +1365,7 @@ func TestXSLTProcessorVersion(t *testing.T) {
 		{"expanded future decimal", "10.0", stylesheetFallback, nameFallbackResult, transform.XSLT30},
 		{"future decimal precision", "3.0000000000000000000000000001", stylesheetFallback, nameFallbackResult, transform.XSLT30},
 		{"backwards decimal precision", "1.9999999999999999999999999999", `<xsl:value-of select="(10,20)"/>`, "10", transform.XSLT30},
-		{"future syntax in unused branch", version40, `<xsl:if test="false()"><xsl:sequence select="future syntax!"/></xsl:if><xsl:text>ok</xsl:text>`, "ok", transform.XSLT30},
+		{"legacy future syntax in unused branch", "1.1", `<xsl:if test="false()"><xsl:value-of select="future syntax!"/></xsl:if><xsl:text>ok</xsl:text>`, "ok", transform.XSLT10},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			program := sheet(tc.declaration, `<xsl:output method="text"/><xsl:template name="start">`+tc.body+`</xsl:template>`)
@@ -1376,7 +1440,365 @@ func hostFunctionCases() []hostFunctionCase {
 		{"passive exponent character", `<xsl:decimal-format decimal-separator="e"/>`, `<xsl:value-of select="format-number(1.5,'0e0')"/>`, "1e5", "XTSE1300"},
 	}
 	cases = append(cases, groupFunctionCases()...)
+	cases = append(cases, booleanProfileCases()...)
+	cases = append(cases, sortMergeContractCases()...)
+	cases = append(cases, numberingContractCases()...)
+	cases = append(cases, numericPrecisionCases()...)
 	return append(cases, instructionContractCases()...)
+}
+
+func numericPrecisionCases() []hostFunctionCase {
+	return []hostFunctionCase{
+		{"power exact integer parity", "", `<xsl:value-of xmlns:math="http://www.w3.org/2005/xpath-functions/math" select="math:pow(-1,9007199254740993)"/>`, "XPST0017", "-1"},
+		{"power exact negative zero parity", "", `<xsl:value-of xmlns:math="http://www.w3.org/2005/xpath-functions/math" select="1 div math:pow(-0e0,9007199254740993)"/>`, "XPST0017", "-INF"},
+		{"power negative integer exponent", "", `<xsl:value-of xmlns:math="http://www.w3.org/2005/xpath-functions/math" select="math:pow(-2,-3)"/>`, "XPST0017", "-0.125"},
+		{"round actual binary negative scale", "", `<xsl:value-of select="round(1.5e24,-24) eq 1e24"/>`, "XPST0017", "true"},
+		{"round even actual binary negative scale", "", `<xsl:value-of select="round-half-to-even(1.5e24,-24) eq 1e24"/>`, "true", "true"},
+		{"date rejects generic duration", "", `<xsl:value-of select="xs:date('2000-01-01') + xs:duration('P1M')"/>`, "XPTY0004", "XPTY0004"},
+		{"datetime rejects generic duration", "", `<xsl:value-of select="xs:dateTime('2000-01-01T12:00:00') - xs:duration('P1D')"/>`, "XPTY0004", "XPTY0004"},
+		{"time duration wraps days", "", `<xsl:value-of select="xs:time('23:00:00') + xs:dayTimeDuration('P3DT2H')"/>`, "01:00:00", "01:00:00"},
+		{"date ancient leap subtraction", "", `<xsl:value-of select="xs:date('-5004-03-01') - xs:date('-5004-02-28')"/>`, "P2D", "P2D"},
+		{"date ancient century subtraction", "", `<xsl:value-of select="xs:date('-5000-03-01') - xs:date('-5000-02-28')"/>`, "P1D", "P1D"},
+		{"datetime ancient reverse subtraction", "", `<xsl:value-of select="xs:dateTime('-5200-02-28T23:00:00Z') - xs:dateTime('-5200-03-01T00:00:00Z')"/>`, "-P1DT1H", "-P1DT1H"},
+		{"date formatting country fallback", "", `<xsl:value-of select="format-date(xs:date('2000-01-01'),'[Y]','en',(),'de')"/>`, "2000", "2000"},
+		{"date formatting unknown place fallback", "", `<xsl:value-of select="format-date(xs:date('2000-01-01'),'[Y]','en',(),'unknown place')"/>`, "2000", "2000"},
+		{"datetime formatting known timezone", "", `<xsl:value-of select="format-dateTime(xs:dateTime('2010-02-15T12:00:00Z'),'[H01]:[m01]','en',(),'America/New_York')"/>`, "07:00", "07:00"},
+		{"date calendar unbound prefix", "", `<xsl:value-of select="format-date(xs:date('2000-01-01'),'[Y]','en','missing:AD',())"/>`, "XTDE1340", "FOFD1340"},
+		{"date calendar bound prefix fallback", "", `<xsl:value-of xmlns:c="urn:calendar" select="format-date(xs:date('2000-01-01'),'[Y]','en','c:AD',())"/>`, "[Calendar: AD]2000", "[Calendar: AD]2000"},
+		{"date calendar named function static prefix", `<xsl:variable xmlns:c="urn:calendar" name="format" select="format-date#5"/>`, `<xsl:value-of select="$format(xs:date('2000-01-01'),'[Y]','en','c:AD',())"/>`, "XPST0003", "[Calendar: AD]2000"},
+		{"date calendar lookup static prefix", `<xsl:variable name="format" select="function-lookup(QName('http://www.w3.org/2005/xpath-functions','format-date'),5)"/>`, `<xsl:value-of xmlns:c="urn:calendar" select="$format(xs:date('2000-01-01'),'[Y]','en','c:AD',())"/>`, "XPST0017", "FOFD1340"},
+		{"date calendar empty rejected", "", `<xsl:value-of select="format-date(xs:date('2000-01-01'),'[Y]','en','',())"/>`, "XTDE1340", "FOFD1340"},
+		{"date calendar known fallbacks", "", `<xsl:value-of select="for $calendar in ('AME','VE','VS') return format-date(xs:date('2000-01-01'),'[Y]','en',$calendar,())"/>`, "[Calendar: AD]2000 [Calendar: AD]2000 [Calendar: AD]2000", "[Calendar: AD]2000 [Calendar: AD]2000 [Calendar: AD]2000"},
+		{"date calendar unknown rejected", "", `<xsl:value-of select="format-date(xs:date('2000-01-01'),'[Y]','en','US',())"/>`, "XTDE1340", "FOFD1340"},
+		{"date formatting minimum width beyond 1000", "", `<xsl:value-of select="string-length(format-date(xs:date('2000-01-01'),'[Y,1001]'))"/>`, "1001", "1001"},
+		{"duration published decimal month multiplication", "", `<xsl:value-of select="xs:yearMonthDuration('P2Y11M') * 2.3"/>`, "P6Y9M", "P6Y9M"},
+		{"duration published decimal second multiplication", "", `<xsl:value-of select="xs:dayTimeDuration('PT2H10M') * 2.1"/>`, "PT4H33M", "PT4H33M"},
+		{"duration preserves decimal seconds", "", `<xsl:value-of select="xs:dayTimeDuration('PT1S') * xs:decimal('10.03')"/>`, "PT10.03S", "PT10.03S"},
+		{"duration integer second multiplication", "", `<xsl:value-of select="xs:dayTimeDuration('P3DT4H3M3.100S') * 3 eq xs:dayTimeDuration('P9DT12H9M9.3S')"/>`, "true", "true"},
+		{"duration integer second multiplication reversed", "", `<xsl:value-of select="3 * xs:dayTimeDuration('P3DT4H3M3.100S') eq xs:dayTimeDuration('P9DT12H9M9.3S')"/>`, "true", "true"},
+		{"duration integer second division", "", `<xsl:value-of select="xs:dayTimeDuration('P8DT4H4M4.400S') div 4 eq xs:dayTimeDuration('P2DT1H1M1.1S')"/>`, "true", "true"},
+		{"duration double month multiplication", "", `<xsl:value-of select="xs:yearMonthDuration('P2Y11M') * 2.3e0"/>`, "P6Y9M", "P6Y9M"},
+		{"duration double second multiplication", "", `<xsl:value-of select="xs:dayTimeDuration('PT2H10M') * 2.1e0"/>`, "PT4H33M", "PT4H33M"},
+		{"duration decimal multiplier exactness", "", `<xsl:value-of select="xs:yearMonthDuration('P1M') * xs:decimal('0.4999999999999999999999999999')"/>`, "P0M", "P0M"},
+		{"duration decimal divisor exactness", "", `<xsl:value-of select="xs:yearMonthDuration('P1M') div xs:decimal('2.000000000000000000000000001')"/>`, "P0M", "P0M"},
+		{"duration negative month tie", "", `<xsl:value-of select="xs:yearMonthDuration('P1M') * -0.5e0"/>`, "P0M", "P0M"},
+		{"duration NaN multiplier", "", `<xsl:value-of select="xs:dayTimeDuration('PT1S') * xs:double('NaN')"/>`, "FOCA0005", "FOCA0005"},
+		{"duration divide by zero", "", `<xsl:value-of select="xs:yearMonthDuration('P1M') div 0"/>`, "FODT0002", "FODT0002"},
+		{"minimum datetime stamp", "", `<xsl:value-of select="min(xs:dateTimeStamp('2000-01-01T00:00:00Z'))"/>`, "2000-01-01T00:00:00Z", "2000-01-01T00:00:00Z"},
+		{"maximum mixed datetime stamp", "", `<xsl:value-of select="max((xs:dateTimeStamp('2000-01-01T00:00:00Z'),xs:dateTime('2001-01-01T00:00:00Z')))"/>`, "2001-01-01T00:00:00Z", "2001-01-01T00:00:00Z"},
+		{"derived string calendar cast", "", `<xsl:value-of select="xs:date(xs:token('2000-01-01'))"/>`, "2000-01-01", "2000-01-01"},
+		{"derived string duration cast", "", `<xsl:value-of select="xs:duration(xs:Name('P1D'))"/>`, "P1D", "P1D"},
+		{"derived string URI cast", "", `<xsl:value-of select="xs:anyURI(xs:token('urn:x'))"/>`, "urn:x", "urn:x"},
+		{"derived string QName cast", "", `<xsl:value-of xmlns:p="urn:p" select="xs:QName(xs:token('p:x'))"/>`, "XPTY0004", "p:x"},
+		{"date empty language fallback", "", `<xsl:value-of select="format-date(xs:date('2000-01-01'),'[MNn]','',(),())"/>`, "[Language: en]January", "[Language: en]January"},
+	}
+}
+
+func TestXPathDateFormattingWidthBudgets(t *testing.T) {
+	for _, test := range []struct {
+		name, picture string
+		limit         int
+		want          string
+	}{
+		{"ordinary", "[Y,8]", 4096, "8"},
+		{"large valid width", "[Y,1001]", 16384, "1001"},
+		{"tight budget", "[Y,1001]", 256, ""},
+		{"overflow width", "[Y,999999999999999999999999999999999999]", 4096, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: test.limit}})
+			for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+				query, err := e.CompileXPath(t.Context(), `string-length(format-date(xs:date('2000-01-01'),'`+test.picture+`'))`, transform.XPathOptions{Version: version})
+				if err != nil {
+					t.Fatal(version, err)
+				}
+
+				result, err := query.Evaluate(t.Context(), nil, transform.XPathContext{})
+				if test.want == "" {
+					if !errors.Is(err, transform.ErrLimit) {
+						t.Fatal(version, err)
+					}
+
+					continue
+				}
+
+				if err != nil {
+					t.Fatal(version, err)
+				}
+
+				got, err := result.Text()
+				if err != nil || got != test.want {
+					t.Fatal(version, got, test.want, err)
+				}
+			}
+		})
+	}
+}
+
+func TestXPathAggregateDateTimeStamp(t *testing.T) {
+	for _, edition := range []transform.XMLSchemaVersion{transform.XMLSchema10, transform.XMLSchema11} {
+		e := engine(t, transform.Config{XMLSchemaVersion: edition})
+		for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+			for _, test := range []struct{ function, arguments, want string }{
+				{"min", `xs:dateTimeStamp('2000-01-01T00:00:00Z')`, "2000-01-01T00:00:00Z"},
+				{"max", `(xs:dateTimeStamp('2000-01-01T00:00:00Z'),xs:dateTime('2001-01-01T00:00:00Z'))`, "2001-01-01T00:00:00Z"},
+				{"min", `(xs:dateTime('2001-01-01T00:00:00Z'),xs:dateTimeStamp('2000-01-01T00:00:00Z'))`, "2000-01-01T00:00:00Z"},
+				{"max", `(xs:dateTimeStamp('2000-01-01T00:00:00Z'),xs:date('2001-01-01Z'))`, "FORG0006"},
+			} {
+				calls := []string{test.function}
+				if version != transform.XPath20 {
+					calls = append(calls, "("+test.function+"#1)", "function-lookup(QName('http://www.w3.org/2005/xpath-functions','"+test.function+"'),1)")
+				}
+
+				for _, call := range calls {
+					compiled, err := e.CompileXPath(t.Context(), call+"("+test.arguments+")", transform.XPathOptions{Version: version})
+					if err != nil {
+						t.Fatal(edition, version, call, err)
+					}
+
+					result, err := compiled.Evaluate(t.Context(), nil, transform.XPathContext{})
+					if comparisonErrorCode(test.want) {
+						var detail *transform.Error
+						if !errors.As(err, &detail) || detail.Code != test.want {
+							t.Fatal(edition, version, call, err)
+						}
+
+						continue
+					}
+
+					if err != nil {
+						t.Fatal(edition, version, call, err)
+					}
+
+					got, err := result.Text()
+					if err != nil || got != test.want {
+						t.Fatal(edition, version, call, got, test.want, err)
+					}
+				}
+			}
+
+			if got := text(t, evaluate(t, e, `min((current-dateTime(),current-dateTime())) eq current-dateTime()`, version)); got != "true" {
+				t.Fatal(edition, version, got)
+			}
+		}
+	}
+}
+
+func TestXPathDerivedStringCasts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range []struct{ target, source, want string }{
+		{"date", `xs:token('2000-01-01')`, "2000-01-01"},
+		{"dateTime", `xs:normalizedString('2000-01-01T00:00:00Z')`, "2000-01-01T00:00:00Z"},
+		{"dateTimeStamp", `xs:token('2000-01-01T00:00:00Z')`, "2000-01-01T00:00:00Z"},
+		{"time", `xs:normalizedString('12:34:56')`, "12:34:56"},
+		{"duration", `xs:NCName('P1D')`, "P1D"},
+		{"yearMonthDuration", `xs:Name('P1M')`, "P1M"},
+		{"dayTimeDuration", `xs:IDREF('P1D')`, "P1D"},
+		{"integer", `xs:NMTOKEN('123')`, "123"},
+		{"boolean", `xs:NMTOKEN('1')`, "true"},
+		{"boolean", `xs:normalizedString('false')`, "false"},
+		{"anyURI", `xs:token('urn:x')`, "urn:x"},
+		{"anyURI", `xs:language('en')`, "en"},
+		{"gYear", `xs:normalizedString('2000')`, "2000"},
+		{"QName", `xs:token('p:x')`, "p:x"},
+		{"QName", `xs:ID('local')`, "local"},
+		{"token", `xs:token('kept')`, "kept"},
+		{"date", `xs:token('bad')`, "FORG0001"},
+		{"date", `xs:anyURI('2000-01-01')`, "XPTY0004"},
+		{"integer", `xs:anyURI('123')`, "XPTY0004"},
+		{"integer", `xs:Name('bad')`, "FORG0001"},
+		{"QName", `xs:token('not a name')`, "FORG0001"},
+	} {
+		for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+			want := test.want
+			if test.target == "QName" && version == transform.XPath20 {
+				want = "XPTY0004" // This edition requires a literal lexical QName.
+			}
+
+			target := "xs:" + test.target
+			expressions := []string{target + "(" + test.source + ")", test.source + " cast as " + target}
+			if version != transform.XPath20 {
+				expressions = append(expressions, "("+target+"#1)("+test.source+")", "function-lookup(QName('http://www.w3.org/2001/XMLSchema','"+test.target+"'),1)("+test.source+")")
+			}
+
+			for _, expression := range expressions {
+				compiled, err := e.CompileXPath(t.Context(), expression, transform.XPathOptions{Version: version, Namespaces: map[string]string{"p": "urn:p"}})
+				if err != nil {
+					t.Fatal(version, expression, err)
+				}
+
+				result, err := compiled.Evaluate(t.Context(), nil, transform.XPathContext{})
+				if comparisonErrorCode(want) {
+					var detail *transform.Error
+					if !errors.As(err, &detail) || detail.Code != want {
+						t.Fatal(version, expression, err, want)
+					}
+
+					continue
+				}
+
+				if err != nil {
+					t.Fatal(version, expression, err)
+				}
+
+				got, err := result.Text()
+				if err != nil || got != want {
+					t.Fatal(version, expression, got, want, err)
+				}
+			}
+		}
+	}
+}
+
+func TestXPathDateTimeArithmeticBounds(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range []struct{ expression, want string }{
+		{`xs:time('12:00:00') + xs:dayTimeDuration('P100000000000000000000DT1H')`, "13:00:00"},
+		{`xs:time('12:00:00') - xs:dayTimeDuration('P100000000000000000000DT13H')`, "23:00:00"},
+		{`xs:date('2000-01-01') + xs:yearMonthDuration('P9223372036854775807M')`, "FODT0001"},
+		{`xs:dateTime('2000-01-01T12:00:00') + xs:dayTimeDuration('P100000000000000000000D')`, "FODT0001"},
+		{`xs:yearMonthDuration('P9007199254740993M') * 1`, "P750599937895082Y9M"},
+		{`seconds-from-duration(xs:dayTimeDuration('PT9007199254740993S') * 1)`, "33"},
+		{`xs:dayTimeDuration('P100000000000000000000D') div xs:double('INF')`, "PT0S"},
+		{`xs:dayTimeDuration('P100000000000000000000D') * 0`, "PT0S"},
+		{`xs:dayTimeDuration('P9223372036854775807D') div 0.5 eq xs:dayTimeDuration('P18446744073709551614D')`, "true"},
+	} {
+		for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+			query, err := e.CompileXPath(t.Context(), test.expression, transform.XPathOptions{Version: version})
+			if err != nil {
+				t.Fatal(version, test.expression, err)
+			}
+
+			result, err := query.Evaluate(t.Context(), nil, transform.XPathContext{})
+			if comparisonErrorCode(test.want) {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != test.want {
+					t.Fatal(version, test.expression, test.want, err)
+				}
+
+				continue
+			}
+
+			if err != nil {
+				t.Fatal(version, test.expression, err)
+			}
+
+			got, err := result.Text()
+			if err != nil || got != test.want {
+				t.Fatal(version, test.expression, got, test.want, err)
+			}
+		}
+	}
+}
+
+func TestXPathNumericPrecisionContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range []struct{ name, function, namespace, arguments, want string }{
+		{"power integer parity", "pow", "http://www.w3.org/2005/xpath-functions/math", "-1,9007199254740993", "-1"},
+		{"power negative integer parity", "pow", "http://www.w3.org/2005/xpath-functions/math", "-1,-9007199254740993", "-1"},
+		{"power even integer parity", "pow", "http://www.w3.org/2005/xpath-functions/math", "-1,9007199254740994", "1"},
+		{"power negative zero parity", "pow", "http://www.w3.org/2005/xpath-functions/math", "-0e0,9007199254740993", "-0"},
+		{"power negative exponent", "pow", "http://www.w3.org/2005/xpath-functions/math", "-2,-3", "-0.125"},
+		{"power zero exponent", "pow", "http://www.w3.org/2005/xpath-functions/math", "xs:double('NaN'),0", "1"},
+		{"round actual binary", "round", "http://www.w3.org/2005/xpath-functions", "1.5e24,-24", "1.0E24"},
+		{"round even control", "round-half-to-even", "http://www.w3.org/2005/xpath-functions", "1.5e24,-24", "1.0E24"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			name := "Q{" + test.namespace + "}" + test.function
+			for _, call := range []string{name, "(" + name + "#2)", "function-lookup(QName('" + test.namespace + "','" + test.function + "'),2)"} {
+				for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+					query, err := e.CompileXPath(t.Context(), call+"("+test.arguments+")", transform.XPathOptions{Version: version})
+					if err != nil {
+						t.Fatal(version, call, err)
+					}
+
+					result, err := query.Evaluate(t.Context(), nil, transform.XPathContext{})
+					if err != nil {
+						t.Fatal(version, call, err)
+					}
+
+					got, err := result.Text()
+					if err != nil || got != test.want {
+						t.Fatal(version, call, got, test.want, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func sortMergeContractCases() []hostFunctionCase {
+	return []hostFunctionCase{
+		{"streamability zero arity function", `<xsl:function xmlns:f="urn:f" name="f:value" streamability="inspection"><xsl:sequence select="1"/></xsl:function>`, `ok`, "XTSE0090", "XTSE3155"},
+		{"streamability attribute set reference", `<xsl:attribute-set name="a" streamable="yes" use-attribute-sets="b"/><xsl:attribute-set name="b"/>`, `ok`, "XTSE0090", "XTSE0730"},
+		{"accumulator local declaration namespace", `<xsl:accumulator xmlns:p="urn:acc" xmlns:t="http://www.w3.org/2001/XMLSchema" name="p:a" as="t:integer" initial-value="0"><xsl:accumulator-rule match="n" select="$value+1"/></xsl:accumulator>`, `<xsl:variable name="d"><r><n/><n/></r></xsl:variable><xsl:for-each select="$d/r/n"><xsl:value-of xmlns:q="urn:acc" select="accumulator-before('q:a')"/></xsl:for-each>`, "XTSE0010", "12"},
+		{"accumulator absent context", `<xsl:accumulator xmlns:p="urn:acc" xmlns:t="http://www.w3.org/2001/XMLSchema" name="p:a" as="t:integer" initial-value="0"><xsl:accumulator-rule match="n" select="$value+1"/></xsl:accumulator>`, `<xsl:value-of select="accumulator-before('Q{urn:acc}a')"/>`, "XTSE0010", "XTDE3350"},
+		{"accumulator atomic context", `<xsl:accumulator xmlns:p="urn:acc" xmlns:t="http://www.w3.org/2001/XMLSchema" name="p:a" as="t:integer" initial-value="0"><xsl:accumulator-rule match="n" select="$value+1"/></xsl:accumulator>`, `<xsl:for-each select="42"><xsl:value-of select="accumulator-before('Q{urn:acc}a')"/></xsl:for-each>`, "XTSE0010", "XTTE3360"},
+		{"accumulator unbound name prefix", `<xsl:accumulator xmlns:p="urn:acc" xmlns:t="http://www.w3.org/2001/XMLSchema" name="p:a" as="t:integer" initial-value="0"><xsl:accumulator-rule match="n" select="$value+1"/></xsl:accumulator>`, `<xsl:variable name="d"><n/></xsl:variable><xsl:for-each select="$d/n"><xsl:value-of select="accumulator-before('q:a')"/></xsl:for-each>`, "XTSE0010", "XTDE3340"},
+		{"copy function mixed sequence", `<xsl:variable name="n"><n/></xsl:variable>`, `<xsl:variable name="c" select="copy-of((1,$n/n,2))"/><xsl:value-of select="count($c) eq 3 and $c[1] eq 1 and $c[3] eq 2 and $c[2] instance of element(n) and not($c[2] is $n/n) and empty($c[2]/parent::node())"/>`, "XPST0017", "true"},
+		{"copy function atomic context", "", `<xsl:for-each select="42"><xsl:value-of select="copy-of()"/></xsl:for-each>`, "XPST0017", "42"},
+		{"copy function absent context", "", `<xsl:value-of select="copy-of()"/>`, "XPST0017", "XPDY0002"},
+		{"snapshot document accumulator values", `<xsl:accumulator name="a" initial-value="'initial'"><xsl:accumulator-rule match="n" select="generate-id(.)"/></xsl:accumulator>`, `<xsl:variable name="d"><r><n/></r></xsl:variable><xsl:variable name="before" select="$d/r/n/accumulator-before('a')"/><xsl:variable name="s" select="snapshot($d)"/><xsl:value-of select="$s/r/n/accumulator-before('a') eq $before"/>`, "XTSE0010", "true"},
+		{"snapshot function atomic context", "", `<xsl:for-each select="42"><xsl:value-of select="snapshot()"/></xsl:for-each>`, "XPST0017", "42"},
+		{"snapshot function absent context", "", `<xsl:value-of select="snapshot()"/>`, "XPST0017", "XPDY0002"},
+		{"snapshot function mixed sequence", `<xsl:variable name="n"><r><n/></r></xsl:variable>`, `<xsl:variable name="c" select="snapshot((1,$n/r/n,2))"/><xsl:value-of select="count($c) eq 3 and $c[1] eq 1 and $c[3] eq 2 and $c[2] instance of element(n) and not($c[2] is $n/r/n) and exists($c[2]/parent::r)"/>`, "XPST0017", "true"},
+		{"sort binary octets", "", `<xsl:for-each select="(xs:base64Binary('////'),xs:base64Binary('AAAA'))"><xsl:sort select="."/><xsl:value-of select="."/></xsl:for-each>`, "XTDE1030", "AAAA////"},
+		{"sort binary explicit text", "", `<xsl:for-each select="(xs:base64Binary('////'),xs:base64Binary('AAAA'))"><xsl:sort select="." data-type="text"/><xsl:value-of select="."/></xsl:for-each>`, "////AAAA", "////AAAA"},
+		{"sort binary multiple keys", "", `<xsl:for-each select="(xs:base64Binary('////'),xs:base64Binary('AAAA'))"><xsl:sort select="1"/><xsl:sort select="."/><xsl:value-of select="."/></xsl:for-each>`, "XTDE1030", "AAAA////"},
+		{"merge binary octets", "", `<xsl:merge><xsl:merge-source select="(xs:base64Binary('////'),xs:base64Binary('AAAA'))" sort-before-merge="yes"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/></xsl:merge-action></xsl:merge>`, "XTSE0010", "AAAA////"},
+		{"sort relative collation", ``, `<xsl:for-each xml:base="http://www.w3.org/2005/xpath-functions/collation/" select="('b','a')"><xsl:sort select="." collation="codepoint"/><xsl:value-of select="."/></xsl:for-each>`, "ab", "ab"},
+		{"sort explicit collation ignores dynamic case", ``, `<xsl:for-each select="('b','a')"><xsl:sort select="." collation="http://www.w3.org/2005/xpath-functions/collation/codepoint" case-order="{error()}"/><xsl:value-of select="."/></xsl:for-each>`, "ab", "ab"},
+		{"sort ignored option static function", ``, `<xsl:for-each select="(1,2)"><xsl:sort select="." collation="http://www.w3.org/2005/xpath-functions/collation/codepoint" lang="{missing()}"/></xsl:for-each>`, "XPST0017", "XPST0017"},
+		{"sort ignored option malformed AVT", ``, `<xsl:for-each select="(1,2)"><xsl:sort select="." collation="http://www.w3.org/2005/xpath-functions/collation/codepoint" case-order="{"/></xsl:for-each>`, "XTSE0350", "XTSE0350"},
+		{"sort language lexical value", ``, `<xsl:for-each select="(1,2)"><xsl:sort select="." lang="{'invalid_language'}"/></xsl:for-each>`, "XTDE0030", "XTDE0030"},
+		{"sort empty string ordering", ``, `<xsl:for-each select="('string','empty')"><xsl:sort select="if (. eq 'empty') then () else ''"/><xsl:value-of select="."/></xsl:for-each>`, "emptystring", "emptystring"},
+		{"sort empty numeric ordering", ``, `<xsl:for-each select="('zero','NaN','empty')"><xsl:sort select="if (. eq 'empty') then () else if (. eq 'NaN') then xs:double('NaN') else 0"/><xsl:value-of select="."/></xsl:for-each>`, "emptyNaNzero", "emptyNaNzero"},
+		{"group lexical default collation", `<xsl:function xmlns:f="urn:f" name="f:groups" default-collation="http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive"><xsl:for-each-group select="('A','a')" group-by="."><xsl:sequence select="count(current-group())"/></xsl:for-each-group></xsl:function>`, `<xsl:value-of xmlns:f="urn:f" select="f:groups()"/>`, "2", "2"},
+		{"merge order difference", ``, `<xsl:merge><xsl:merge-source select="1"><xsl:merge-key select="." order="ascending"/></xsl:merge-source><xsl:merge-source select="2"><xsl:merge-key select="." order="descending"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/></xsl:merge-action></xsl:merge>`, "XTSE0010", "XTDE2210"},
+		{"merge effective collation", ``, `<xsl:merge><xsl:merge-source select="'a'"><xsl:merge-key select="." collation="{'http://www.w3.org/2005/xpath-functions/collation/codepoint'}"/></xsl:merge-source><xsl:merge-source select="'b'"><xsl:merge-key select="." collation="http://www.w3.org/2005/xpath-functions/collation/codepoint"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/></xsl:merge-action></xsl:merge>`, "XTSE0010", "ab"},
+		{"merge case avt", ``, `<xsl:merge><xsl:merge-source select="('A','a')"><xsl:merge-key select="." lang="{'en'}" case-order="{'upper-first'}"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/></xsl:merge-action></xsl:merge>`, "XTSE0010", "Aa"},
+		{"merge bad order", ``, `<xsl:merge><xsl:merge-source select="1"><xsl:merge-key select="." order="{'invalid'}"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/></xsl:merge-action></xsl:merge>`, "XTSE0010", "XTDE0030"},
+		{"merge text number", ``, `<xsl:merge><xsl:merge-source select="(1,10,2)"><xsl:merge-key select="." data-type="text"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="concat(.,',')"/></xsl:merge-action></xsl:merge>`, "XTSE0010", "1,10,2,"},
+		{"merge collation equality", ``, `<xsl:merge><xsl:merge-source select="'A'"><xsl:merge-key select="." collation="http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive"/></xsl:merge-source><xsl:merge-source select="'a'"><xsl:merge-key select="." collation="http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="count(current-merge-group())"/></xsl:merge-action></xsl:merge>`, "XTSE0010", "2"},
+		{"merge presort collation", ``, `<xsl:merge><xsl:merge-source select="('A','a')" sort-before-merge="yes"><xsl:merge-key select="." lang="en" case-order="lower-first"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/></xsl:merge-action></xsl:merge>`, "XTSE0010", "aA"},
+		{"merge empty string", ``, `<xsl:merge><xsl:merge-source select="(0,1)"><xsl:merge-key select="if (. eq 0) then () else ''"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="concat(.,':',count(current-merge-group()),':',count(current-merge-key()),';')"/></xsl:merge-action></xsl:merge>`, "XTSE0010", "0:1:0;1:1:1;"},
+		{"merge nan group", ``, `<xsl:merge><xsl:merge-source select="('a','b')"><xsl:merge-key select="xs:double('NaN')"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="count(current-merge-group())"/></xsl:merge-action></xsl:merge>`, "XTSE0010", "2"},
+		{"merge relative collation", ``, `<xsl:merge xml:base="http://www.w3.org/2005/xpath-functions/collation/"><xsl:merge-source select="('a','b')"><xsl:merge-key select="." collation="codepoint"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/></xsl:merge-action></xsl:merge>`, "XTSE0010", "ab"},
+		{"merge option presence differs", ``, `<xsl:merge><xsl:merge-source select="1"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-source select="2"><xsl:merge-key select="." order="ascending"/></xsl:merge-source><xsl:merge-action/></xsl:merge>`, "XTSE0010", "XTDE2210"},
+		{"merge ignored language differs", ``, `<xsl:merge><xsl:merge-source select="1"><xsl:merge-key select="." lang="en" collation="http://www.w3.org/2005/xpath-functions/collation/codepoint"/></xsl:merge-source><xsl:merge-source select="2"><xsl:merge-key select="." lang="fi" collation="http://www.w3.org/2005/xpath-functions/collation/codepoint"/></xsl:merge-source><xsl:merge-action/></xsl:merge>`, "XTSE0010", "XTDE2210"},
+		{"merge source local namespace", ``, `<xsl:merge><xsl:merge-source xmlns:p="http://www.w3.org/2005/xpath-functions" select="p:reverse((2,1))"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/></xsl:merge-action></xsl:merge>`, "XTSE0010", "12"},
+		{"merge key local namespace", ``, `<xsl:merge><xsl:merge-source select="(1,2)"><xsl:merge-key xmlns:p="http://www.w3.org/2005/xpath-functions" select="p:number(.)"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/></xsl:merge-action></xsl:merge>`, "XTSE0010", "12"},
+	}
+}
+
+func numberingContractCases() []hostFunctionCase {
+	return []hostFunctionCase{
+		{"number array atomization", "", `<xsl:number value="[1,2]"/>`, "XPST0003", "1.2"},
+		{"number large integer double conversion", "", `<xsl:number value="9007199254740993"/>`, "9007199254740992", "9007199254740992"},
+		{"number negative decimal half", "", `<xsl:number value="xs:decimal('-0.5')"/>`, "0", "0"},
+		{"number negative double half", "", `<xsl:number value="xs:double('-0.5')"/>`, "0", "0"},
+		{"number negative value rejected", "", `<xsl:number value="-1"/>`, "XTDE0980", "XTDE0980"},
+		{"number node position single", `<xsl:variable name="d"><r><n/><n/><n/></r></xsl:variable>`, `<xsl:for-each select="$d/r/n"><xsl:number/></xsl:for-each>`, "123", "123"},
+		{"number node position multiple", `<xsl:variable name="d"><r><a><b/><b/></a><a><b/></a></r></xsl:variable>`, `<xsl:for-each select="$d/r/a/b"><xsl:number level="multiple" count="a|b"/><xsl:text>;</xsl:text></xsl:for-each>`, "1.1;1.2;2.1;", "1.1;1.2;2.1;"},
+		{"number node position any", `<xsl:variable name="d"><r><a><n/><n/></a><a><n/></a></r></xsl:variable>`, `<xsl:for-each select="$d/r/a/n"><xsl:number level="any" count="n" from="a"/></xsl:for-each>`, "121", "121"},
+		{"number grouping size dynamic", "", `<xsl:number value="1234" grouping-separator="," grouping-size="{'bad'}"/>`, "XTDE0030", "XTDE0030"},
+		{"number grouping size empty", "", `<xsl:number value="1234" grouping-separator="," grouping-size=""/>`, "XTSE0020", "XTSE0020"},
+		{"number grouping size XML whitespace", "", `<xsl:number value="1234" grouping-separator="," grouping-size="{' 3 '}"/>`, "1,234", "1,234"},
+		{"number grouping size large", "", `<xsl:number value="1234" grouping-separator="," grouping-size="{'999999999999999999999999999999'}"/>`, "1234", "1234"},
+		{"number grouping size negative", "", `<xsl:number value="1234" grouping-separator="," grouping-size="{'-1'}"/>`, "1234", "1234"},
+		{"number grouping incomplete pair ignored", "", `<xsl:number value="1234" grouping-size="{error()}"/>`, "1234", "1234"},
+		{"number letter value dynamic", "", `<xsl:number value="1234" letter-value="{'invalid'}"/>`, "XTDE0030", "XTDE0030"},
+		{"number letter value evaluated", "", `<xsl:number value="1234" letter-value="{error()}"/>`, "FOER0000", "FOER0000"},
+		{"number letter value empty", "", `<xsl:number value="1234" letter-value=""/>`, "XTSE0020", "XTSE0020"},
+		{"number empty format", "", `<xsl:number value="1234" format=""/>`, "1234", "1234"},
+		{"number ordinal no", "", `<xsl:number value="1234" ordinal="no" lang="en"/>`, "1234th", "1234"},
+		{"number ordinal false", "", `<xsl:number value="1234" ordinal="false" lang="en"/>`, "1234th", "1234"},
+		{"number ordinal zero", "", `<xsl:number value="1234" ordinal="0" lang="en"/>`, "1234th", "1234"},
+		{"number ordinal yes", "", `<xsl:number value="1234" ordinal="yes" lang="en"/>`, "1234th", "1234th"},
+		{"number start at plus rejected", "", `<xsl:number value="1234" start-at="{'+1'}"/>`, "XTSE0090", "XTDE0030"},
+		{"number start at XML whitespace", "", `<xsl:number value="1" start-at="{' 2 3 '}"/>`, "XTSE0090", "2"},
+		{"number start at nonXML whitespace", "", `<xsl:number value="1" start-at="{concat('1',codepoints-to-string(160),'2')}"/>`, "XTSE0090", "XTDE0030"},
+	}
 }
 
 func groupFunctionCases() []hostFunctionCase {
@@ -1409,8 +1831,58 @@ func hostFunctionSheet(version string, test hostFunctionCase) string {
 	return sheet(version, test.global+`<xsl:template name="start">`+test.body+`</xsl:template>`)
 }
 
+// Boolean spellings are selected by the processor, including a 2.0
+// declaration under a 3.0 processor and a future declaration under 2.0.
+func booleanProfileCases() []hostFunctionCase {
+	return []hostFunctionCase{
+		{"boolean copy alias", "", `<xsl:variable name="n"><n>ok</n></xsl:variable><xsl:copy-of select="$n/n" copy-namespaces="true"/>`, "XTSE0020", "ok"},
+		{"boolean inherit alias", "", `<xsl:element name="n" inherit-namespaces="1">ok</xsl:element>`, "XTSE0020", "ok"},
+		{"boolean inherit false semantics", "", `<xsl:variable name="n"><xsl:element xmlns:p="urn:p" name="p:parent" inherit-namespaces="false"><xsl:element name="child"/></xsl:element></xsl:variable><xsl:value-of select="empty(namespace-uri-for-prefix('p',$n/*/*))"/>`, "XTSE0020", "true"},
+		{"boolean inherit zero semantics", "", `<xsl:variable name="n"><xsl:element xmlns:p="urn:p" name="p:parent" inherit-namespaces="0"><xsl:element name="child"/></xsl:element></xsl:variable><xsl:value-of select="empty(namespace-uri-for-prefix('p',$n/*/*))"/>`, "XTSE0020", "true"},
+		{"boolean inherit whitespace semantics", "", `<xsl:variable name="n"><xsl:element xmlns:p="urn:p" name="p:parent" inherit-namespaces="&#x9; no &#xA;"><xsl:element name="child"/></xsl:element></xsl:variable><xsl:value-of select="empty(namespace-uri-for-prefix('p',$n/*/*))"/>`, "true", "true"},
+		{"boolean composite whitespace semantics", "", `<xsl:variable name="groups" as="element()*"><xsl:for-each-group version="2.0" select="(1,2)" group-by="(.,9)" composite="&#x9; yes &#xA;"><g/></xsl:for-each-group></xsl:variable><xsl:value-of select="count($groups)"/>`, "XTSE0090", "2"},
+		{"boolean literal result alias", "", `<out xsl:inherit-namespaces="false">ok</out>`, "XTSE0020", "ok"},
+		{"boolean required alias", `<xsl:template name="target"><xsl:param name="p" required="true"/><xsl:value-of select="$p"/></xsl:template>`, `<xsl:call-template name="target"><xsl:with-param name="p" select="'ok'"/></xsl:call-template>`, "XTSE0020", "ok"},
+		{"boolean tunnel alias", `<xsl:template name="target"><xsl:param name="p" tunnel="false" select="'ok'"/><xsl:value-of select="$p"/></xsl:template>`, `<xsl:call-template name="target"/>`, "XTSE0020", "ok"},
+		{"boolean function override alias", `<xsl:function xmlns:f="urn:f" name="f:value" override="false"><xsl:sequence select="'ok'"/></xsl:function>`, `<xsl:value-of xmlns:f="urn:f" select="f:value()"/>`, "XTSE0020", "ok"},
+		{"boolean sort literal alias", "", `<xsl:for-each select="(2,1)"><xsl:sort select="." stable="true"/><xsl:value-of select="."/></xsl:for-each>`, "XTSE0020", "12"},
+		{"boolean output alias", `<xsl:output indent="true"/>`, "ok", "XTSE0020", "ok"},
+		{"boolean standalone alias", `<xsl:output standalone="1"/>`, "ok", "XTSE0020", "ok"},
+		{"boolean escaping alias", "", `<xsl:text disable-output-escaping="false">ok</xsl:text>`, "XTSE0020", "ok"},
+		{"boolean message literal alias", "", `<xsl:message terminate="false"/>ok`, "XTSE0020", "ok"},
+		{"boolean message computed alias", "", `<xsl:message terminate="{false()}"/>ok`, "XTDE0030", "ok"},
+		{"boolean message computed no", "", `<xsl:message terminate="{'no'}"/>ok`, "ok", "ok"},
+		{"boolean sort computed alias", "", `<xsl:for-each select="(2,1)"><xsl:sort select="." stable="{true()}"/><xsl:value-of select="."/></xsl:for-each>`, "XTDE0030", "12"},
+		{"boolean result document computed alias", "", `<xsl:result-document href="file:///tmp/xmlsec-boolean-output.xml" indent="{true()}">secondary</xsl:result-document>ok`, "XTDE0030", "ok"},
+		{"boolean standalone computed alias", "", `<xsl:result-document href="file:///tmp/xmlsec-boolean-output.xml" standalone="{false()}">secondary</xsl:result-document>ok`, "XTDE0030", "ok"},
+		{"boolean yes no literals", "", `<out xsl:inherit-namespaces="no"><xsl:element name="n" inherit-namespaces="yes">ok</xsl:element></out>`, "ok", "ok"},
+		{"boolean XML whitespace", "", `<xsl:variable name="n"><n>ok</n></xsl:variable><xsl:copy-of select="$n/n" copy-namespaces="&#x9; yes &#xA;"/>`, "ok", "ok"},
+		{"boolean sort computed yes", "", `<xsl:for-each select="(2,1)"><xsl:sort select="." stable="{'yes'}"/><xsl:value-of select="."/></xsl:for-each>`, "12", "12"},
+	}
+}
+
 func instructionContractCases() []hostFunctionCase {
 	return []hostFunctionCase{
+		{"local variable empty select", "", `<xsl:variable name="p" select=""/>ok`, "XPST0003", "XPST0003"},
+		{"attribute empty select", "", `<out><xsl:attribute name="a" select=""/></out>`, "XPST0003", "XPST0003"},
+		{"comment empty select", "", `<xsl:comment select=""/>`, "XPST0003", "XPST0003"},
+		{"PI empty select", "", `<xsl:processing-instruction name="p" select=""/>`, "XPST0003", "XPST0003"},
+		{"copy empty select", "", `<xsl:copy select=""/>`, "XTSE0090", "XPST0003"},
+		{"copy-of empty select", "", `<xsl:copy-of select=""/>`, "XPST0003", "XPST0003"},
+		{"copy-of missing select", "", `<xsl:copy-of/>`, "XTSE0010", "XTSE0010"},
+		{"number empty select", "", `<xsl:number select=""/>`, "XPST0003", "XPST0003"},
+		{"number empty value", "", `<xsl:number value=""/>`, "XPST0003", "XPST0003"},
+		{"namespace empty select", "", `<out><xsl:namespace name="p" select=""/></out>`, "XPST0003", "XPST0003"},
+		{"sequence empty select", "", `<xsl:sequence select=""/>`, "XPST0003", "XPST0003"},
+		{"key empty use", `<xsl:key name="k" match="*" use=""/>`, "ok", "XPST0003", "XPST0003"},
+		{"character map text child", `<xsl:character-map name="c">invalid<xsl:output-character character="a" string="b"/></xsl:character-map>`, "ok", "XTSE0010", "XTSE0010"},
+		{"character map foreign child", `<xsl:character-map name="c"><wrong/></xsl:character-map>`, "ok", "XTSE0010", "XTSE0010"},
+		{"character map empty declaration", `<xsl:character-map name="c"/>`, "ok", "ok", "ok"},
+		{"accumulator text child", `<xsl:accumulator name="a" initial-value="0">invalid<xsl:accumulator-rule match="*" select="$value+1"/></xsl:accumulator>`, "ok", "XTSE0010", "XTSE0010"},
+		{"accumulator foreign child", `<xsl:accumulator name="a" initial-value="0"><wrong/><xsl:accumulator-rule match="*" select="$value+1"/></xsl:accumulator>`, "ok", "XTSE0010", "XTSE0010"},
+		{"accumulator empty initial value", `<xsl:accumulator name="a" initial-value=""><xsl:accumulator-rule match="*" select="$value+1"/></xsl:accumulator>`, "ok", "XTSE0010", "XPST0003"},
+		{"accumulator rule empty select", `<xsl:accumulator name="a" initial-value="0"><xsl:accumulator-rule match="*" select=""/></xsl:accumulator>`, "ok", "XTSE0010", "XPST0003"},
+		{"accumulator rule select and body", `<xsl:accumulator name="a" initial-value="0"><xsl:accumulator-rule match="*" select="1">invalid</xsl:accumulator-rule></xsl:accumulator>`, "ok", "XTSE0010", "XTSE0260"},
 		{"atomic template selection", "", `<xsl:apply-templates select="42"/>`, "XTTE0520", "42"},
 		{"empty template selection", "", `<xsl:apply-templates select="()"/>ok`, "ok", "ok"},
 		{"function argument type error", `<xsl:function xmlns:f="urn:f" name="f:value"><xsl:param name="p" as="xs:integer"/><xsl:sequence select="$p"/></xsl:function>`, `<xsl:value-of xmlns:f="urn:f" select="f:value('bad')"/>`, "XTTE0790", "XPTY0004"},
@@ -1440,6 +1912,9 @@ func instructionContractCases() []hostFunctionCase {
 		{"basic lax validation", `<xsl:template name="unused"><xsl:element name="n" validation="lax"/></xsl:template>`, "ok", "XTSE1660", "ok"},
 		{"missing extension deferred", "", `<xsl:value-of xmlns:f="urn:missing" version="1.0" select="f:missing(1)"/>`, "XTDE1425", "XTDE1425"},
 		{"unused missing extension", "", `<xsl:if test="false()"><xsl:value-of xmlns:f="urn:missing" version="1.0" select="f:missing(1)"/></xsl:if>ok`, "ok", "ok"},
+		{"backwards missing standard function", "", `<xsl:if test="false()"><xsl:value-of version="1.0" select="missing()"/></xsl:if>ok`, "XPST0017", "XPST0017"},
+		{"backwards standard function arity", "", `<xsl:if test="false()"><xsl:value-of version="1.0" select="count()"/></xsl:if>ok`, "XPST0017", "XPST0017"},
+		{"backwards unbound XPath prefix", "", `<xsl:if test="false()"><xsl:value-of version="1.0" select="missing:value"/></xsl:if>ok`, "XPST0081", "XPST0081"},
 		{"copy select clears template rule", `<xsl:template match="r"><xsl:copy select="."><xsl:next-match/></xsl:copy></xsl:template>`, `<xsl:variable name="d"><r/></xsl:variable><xsl:apply-templates select="$d/r"/>`, "XTSE0090", "XTDE0560"},
 		{"implicit copy preserves template rule", `<xsl:template match="r" priority="1"><xsl:copy><xsl:next-match/></xsl:copy></xsl:template><xsl:template match="r" priority="0">next</xsl:template>`, `<xsl:variable name="d"><r/></xsl:variable><xsl:apply-templates select="$d/r"/>`, "next", "next"},
 		{"copy select replaces atomic focus", `<xsl:variable name="d"><r>node</r></xsl:variable>`, `<xsl:for-each select="42"><xsl:copy select="$d/r"><xsl:value-of select="string(.)"/></xsl:copy></xsl:for-each>`, "XTSE0090", "node"},
@@ -1529,6 +2004,24 @@ func TestXSLTConditionalCompilation(t *testing.T) {
 
 func TestXSLTStaticFunctionResolution(t *testing.T) {
 	e := engine(t, transform.Config{})
+	for _, processor := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
+		for _, version := range []string{version10, "17.0"} {
+			for _, tc := range []struct{ expression, code string }{{"1 +", "XPST0003"}, {"missing()", "XPST0017"}, {"count()", "XPST0017"}, {"p:value", "XPST0081"}} {
+				for _, body := range []string{
+					`<xsl:template name="start"><xsl:value-of select="` + tc.expression + `"/></xsl:template>`,
+					`<xsl:template name="start">ok</xsl:template><xsl:template name="unused"><xsl:value-of select="` + tc.expression + `"/></xsl:template>`,
+					`<xsl:template name="start"><xsl:if version="` + version + `" test="false()"><xsl:value-of select="` + tc.expression + `"/></xsl:if></xsl:template>`,
+				} {
+					_, err := e.CompileXSLT(t.Context(), []byte(sheet(version, body)), transform.XSLTOptions{ProcessorVersion: processor})
+					var detail *transform.Error
+					if !errors.As(err, &detail) || detail.Code != tc.code {
+						t.Fatal("XPath errors must fail compilation", processor, version, tc, err)
+					}
+				}
+			}
+		}
+	}
+
 	for _, tc := range []struct{ version, body, code string }{
 		{version30, `<xsl:template name="start"><xsl:if test="false()"><xsl:sequence select="missing()"/></xsl:if></xsl:template>`, errCodeXPST0017},
 		{version20, `<xsl:template name="start"><xsl:value-of select="current-output-uri()"/></xsl:template>`, errCodeXPST0017},
@@ -1550,18 +2043,16 @@ func TestXSLTStaticFunctionResolution(t *testing.T) {
 		t.Fatal("forward function declaration", out, err)
 	}
 
-	for _, version := range []string{version10, version40} {
-		body = `<xsl:template name="start"><xsl:if test="false()"><xsl:value-of select="missing()"/></xsl:if><xsl:text>ok</xsl:text></xsl:template>`
+	body = `<xsl:template name="start"><xsl:if test="false()"><xsl:value-of select="missing()"/></xsl:if><xsl:text>ok</xsl:text></xsl:template>`
 
-		compiled, err := e.CompileXSLT(t.Context(), []byte(sheet(version, body)), transform.XSLTOptions{ProcessorVersion: transform.XSLT30})
-		if err != nil {
-			t.Fatal(version, err)
-		}
+	compiled, err := e.CompileXSLT(t.Context(), []byte(sheet(version10, body)), transform.XSLTOptions{ProcessorVersion: transform.XSLT10})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-		out, err = compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
-		if err != nil || string(out.Primary) != "ok" {
-			t.Fatal(version, out, err)
-		}
+	out, err = compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+	if err != nil || string(out.Primary) != "ok" {
+		t.Fatal(out, err)
 	}
 }
 
@@ -1661,6 +2152,145 @@ func TestStreamingIterateBreakKeepsParameters(t *testing.T) {
 	}
 }
 
+func sequenceConstructorCases() []dynamicXPathCase {
+	return []dynamicXPathCase{
+		{"on-empty empty select", "", `<xsl:on-empty select=""/>`, "XPST0003"},
+		{"on-non-empty empty select", "", `<xsl:on-non-empty select=""/>`, "XPST0003"},
+		{"on-empty select and body", "", `<xsl:on-empty select="1">invalid</xsl:on-empty>`, "XTSE3185"},
+		{"on-non-empty select and body", "", `<xsl:on-non-empty select="1">invalid</xsl:on-non-empty>`, "XTSE3185"},
+		{"map-entry empty select", "", `<xsl:map><xsl:map-entry key="'a'" select=""/></xsl:map>`, "XPST0003"},
+		{"map-entry empty key expression", "", `<xsl:map><xsl:map-entry key="" select="1"/></xsl:map>`, "XPST0003"},
+		{"map-entry missing key", "", `<xsl:map><xsl:map-entry select="1"/></xsl:map>`, "XTSE0010"},
+		{"iterate empty select", "", `<xsl:iterate select=""/>`, "XPST0003"},
+		{"iterate missing select", "", `<xsl:iterate/>`, "XTSE0010"},
+		{"completion empty select", "", `<xsl:iterate select="()"><xsl:on-completion select=""/></xsl:iterate>`, "XPST0003"},
+		{"break empty select", "", `<xsl:iterate select="1"><xsl:break select=""/></xsl:iterate>`, "XPST0003"},
+		{"fork sequence empty select", "", `<xsl:fork><xsl:sequence select=""/></xsl:fork>`, "XPST0003"},
+		{"fork text child", "", `<xsl:fork>invalid<xsl:sequence select="1"/></xsl:fork>`, "XTSE0010"},
+		{"fork unexpected instruction", "", `<xsl:fork><xsl:value-of select="1"/></xsl:fork>`, "XTSE0010"},
+		{"fork mixed branch forms", "", `<xsl:fork><xsl:sequence select="1"/><xsl:for-each-group select="1" group-by="."><xsl:value-of select="."/></xsl:for-each-group></xsl:fork>`, "XTSE0010"},
+		{"fork repeated grouping branch", "", `<xsl:fork><xsl:for-each-group select="1" group-by="."/><xsl:for-each-group select="1" group-by="."/></xsl:fork>`, "XTSE0010"},
+		{"fork empty body", "", `<xsl:fork/>`, ""},
+		{"fork empty sequence branch", "", `<xsl:fork><xsl:sequence/></xsl:fork>`, ""},
+		{"fork sequence branches with fallback", "", `<xsl:fork xml:space="preserve"> <xsl:fallback>ignored</xsl:fallback><xsl:sequence select="'a'"/> <xsl:fallback>ignored</xsl:fallback><xsl:sequence select="'b'"/></xsl:fork>`, "a b"},
+		{"fork single grouping branch", "", `<xsl:fork><xsl:for-each-group select="(1,2)" group-by="."><xsl:value-of select="."/></xsl:for-each-group></xsl:fork>`, "12"},
+		{"fork sequence lexical namespace", "", `<xsl:fork><xsl:sequence xmlns:p="http://www.w3.org/2001/XMLSchema" select="p:integer('7')"/></xsl:fork>`, "7"},
+		{"merge text child", "", `<xsl:merge>invalid<xsl:merge-source select="1"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action>ok</xsl:merge-action></xsl:merge>`, "XTSE0010"},
+		{"merge source text child", "", `<xsl:merge><xsl:merge-source select="1">invalid<xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action>ok</xsl:merge-action></xsl:merge>`, "XTSE0010"},
+		{"merge foreign child", "", `<xsl:merge><wrong/><xsl:merge-source select="1"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action>ok</xsl:merge-action></xsl:merge>`, "XTSE0010"},
+		{"merge source after action", "", `<xsl:merge><xsl:merge-action>ok</xsl:merge-action><xsl:merge-source select="1"><xsl:merge-key select="."/></xsl:merge-source></xsl:merge>`, "XTSE0010"},
+		{"merge missing key", "", `<xsl:merge><xsl:merge-source select="1"/><xsl:merge-action>ok</xsl:merge-action></xsl:merge>`, "XTSE0010"},
+		{"merge missing select", "", `<xsl:merge><xsl:merge-source for-each-item="1"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action>ok</xsl:merge-action></xsl:merge>`, "XTSE0010"},
+		{"merge empty action", "", `<xsl:merge><xsl:merge-source select="1"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action/></xsl:merge>`, ""},
+		{"merge source empty select", "", `<xsl:merge><xsl:merge-source select=""><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action>ok</xsl:merge-action></xsl:merge>`, "XPST0003"},
+		{"merge source empty for-each-item", "", `<xsl:merge><xsl:merge-source for-each-item="" select="."><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action>ok</xsl:merge-action></xsl:merge>`, "XPST0003"},
+		{"merge source empty for-each-source", "", `<xsl:merge><xsl:merge-source for-each-source="" select="."><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action>ok</xsl:merge-action></xsl:merge>`, "XPST0003"},
+		{"merge key empty select", "", `<xsl:merge><xsl:merge-source select="1"><xsl:merge-key select=""/></xsl:merge-source><xsl:merge-action>ok</xsl:merge-action></xsl:merge>`, "XPST0003"},
+		{"next iteration text child", "", `<xsl:iterate select="1"><xsl:next-iteration>invalid</xsl:next-iteration></xsl:iterate>`, "XTSE0010"},
+		{"next iteration unexpected child", "", `<xsl:iterate select="1"><xsl:next-iteration><wrong/></xsl:next-iteration></xsl:iterate>`, "XTSE0010"},
+		{"element empty name", "", `<xsl:element name=""/>`, "XTDE0820"},
+		{"element computed empty name", "", `<xsl:element name="{''}"/>`, "XTDE0820"},
+		{"element missing name", "", `<xsl:element/>`, "XTSE0010"},
+		{"attribute empty name", "", `<out><xsl:attribute name=""/></out>`, "XTDE0850"},
+		{"attribute computed empty name", "", `<out><xsl:attribute name="{''}"/></out>`, "XTDE0850"},
+		{"attribute missing name", "", `<out><xsl:attribute/></out>`, "XTSE0010"},
+		{"PI empty name", "", `<xsl:processing-instruction name=""/>`, "XTDE0890"},
+		{"PI computed empty name", "", `<xsl:processing-instruction name="{''}"/>`, "XTDE0890"},
+		{"PI missing name", "", `<xsl:processing-instruction/>`, "XTSE0010"},
+		{"variable select and preserved body", "", `<xsl:if test="true()" xml:space="preserve"><xsl:variable name="p" select="1"> </xsl:variable><xsl:sequence select="$p"/></xsl:if>`, "XTSE0620"},
+		{"template comment text coalescing", "", "A<!--merge-->\n  <xsl:text>X</xsl:text>", "A\n  X"},
+		{"template PI text coalescing", "", "A<?merge ignored?>\n  <xsl:text>X</xsl:text>", "A\n  X"},
+		{"instruction result exclusion scope", "", `<xsl:variable name="v" as="element()"><xsl:if xmlns:p="urn:policy" exclude-result-prefixes="p" test="true()"><out/></xsl:if></xsl:variable><xsl:value-of select="exists(namespace-uri-for-prefix('p',$v))"/>`, nameFalse},
+		{"structural clause result exclusion scope", "", `<xsl:variable name="v" as="element()"><xsl:choose><xsl:when test="false()"/><xsl:otherwise xmlns:p="urn:policy" exclude-result-prefixes="p"><out/></xsl:otherwise></xsl:choose></xsl:variable><xsl:value-of select="exists(namespace-uri-for-prefix('p',$v))"/>`, nameFalse},
+		{"instruction result exclusion default prefix", "", `<xsl:variable name="v" as="element()"><xsl:if xmlns="urn:unused" exclude-result-prefixes="#default" test="true()"><out xmlns=""/></xsl:if></xsl:variable><xsl:value-of select="exists(namespace-uri-for-prefix('',$v))"/>`, nameFalse},
+		{"break item order and identity", "", `<xsl:variable name="n" as="node()"><n/></xsl:variable><xsl:variable name="v" as="item()*"><xsl:iterate select="1"><xsl:break><xsl:sequence select="1"/><xsl:sequence select="$n"/><xsl:text>X</xsl:text><xsl:sequence select="2"/></xsl:break></xsl:iterate></xsl:variable><xsl:value-of select="count($v),$v[1] instance of xs:integer,$v[2] is $n,$v[3] instance of text(),$v[4] eq 2"/>`, "4 true true true true"},
+		{"iterate empty string default", "", `<xsl:iterate select="1"><xsl:param name="p"/><xsl:break select="$p instance of xs:string and $p eq ''"/></xsl:iterate>`, nameTrue},
+		{"iterate document default", "", `<xsl:iterate select="1"><xsl:param name="p"><a/><b/></xsl:param><xsl:break select="$p instance of document-node() and count($p/*) eq 2"/></xsl:iterate>`, nameTrue},
+		{"iterate typed node identity", "", `<xsl:variable name="n" as="node()"><n/></xsl:variable><xsl:iterate select="1"><xsl:param name="p" as="node()"><xsl:sequence select="$n"/></xsl:param><xsl:break select="$p is $n"/></xsl:iterate>`, nameTrue},
+		{"iterate empty typed value", "", `<xsl:iterate select="1"><xsl:param name="p" as="xs:integer" select="()"/><xsl:break select="$p"/></xsl:iterate>`, "XTTE0590"},
+		{"next iteration empty typed value", "", `<xsl:iterate select="1 to 2"><xsl:param name="p" as="xs:integer" select="1"/><xsl:value-of select="$p"/><xsl:next-iteration><xsl:with-param name="p" select="()"/></xsl:next-iteration></xsl:iterate>`, "XTTE0590"},
+		{"iterate untyped conversion", "", `<xsl:iterate select="1"><xsl:param name="p" as="xs:integer" select="xs:untypedAtomic('7')"/><xsl:break select="$p instance of xs:integer and $p eq 7"/></xsl:iterate>`, nameTrue},
+		{"iterate parameter scoped type", "", `<xsl:iterate select="1"><xsl:param xmlns:t="http://www.w3.org/2001/XMLSchema" name="p" as="t:integer" select="xs:untypedAtomic('7')"/><xsl:break select="$p instance of xs:integer and $p eq 7"/></xsl:iterate>`, nameTrue},
+		{"iterate parameter scoped name", "", `<xsl:iterate select="1"><xsl:param xmlns:p="urn:parameter" name="p:value" select="7"/><xsl:break xmlns:p="urn:parameter" select="$p:value"/></xsl:iterate>`, "7"},
+		{"iterate next scoped type", "", `<xsl:iterate select="1"><xsl:param xmlns:t="http://www.w3.org/2001/XMLSchema" name="p" as="t:integer" select="1"/><xsl:on-completion select="$p instance of xs:integer and $p eq 7"/><xsl:next-iteration><xsl:with-param name="p" select="xs:untypedAtomic('7')"/></xsl:next-iteration></xsl:iterate>`, nameTrue},
+		{"iterate preceding parameter scope", "", `<xsl:variable name="p" select="100"/><xsl:iterate select="1"><xsl:param name="p" select="$p+1"/><xsl:param name="q" select="$p+1"/><xsl:break select="concat($p,':',$q)"/></xsl:iterate><xsl:value-of select="concat('|',$p)"/>`, "101:102|100"},
+		{"iterate parameter body scope", "", `<xsl:iterate select="1"><xsl:param name="p" select="'body'"/><xsl:param name="q" as="xs:string"><xsl:sequence select="$p"/></xsl:param><xsl:break select="$q"/></xsl:iterate>`, "body"},
+		{"iterate empty initial parameter scope", "", `<xsl:iterate select="()"><xsl:param name="p" select="41"/><xsl:param name="q" select="$p+1"/><xsl:on-completion select="$q"/></xsl:iterate>`, "42"},
+		{"iterate empty sequence default", "", `<xsl:iterate select="1"><xsl:param name="p" as="empty-sequence()"/><xsl:break select="empty($p)"/></xsl:iterate>`, nameTrue},
+		{"iterate commented optional default", "", `<xsl:iterate select="1"><xsl:param name="p" as="xs:integer? (: optional :)"/><xsl:break select="empty($p)"/></xsl:iterate>`, nameTrue},
+		{"iterate implicit mandatory default", "", `<xsl:iterate select="1"><xsl:param name="p" as="xs:integer"/><xsl:break select="$p"/></xsl:iterate>`, "XTSE3520"},
+		{"iterate required parameter rejected", "", `<xsl:iterate select="1"><xsl:param name="p" required="yes"/><xsl:break select="1"/></xsl:iterate>`, "XTSE0020"},
+		{"iterate tunnel parameter rejected", "", `<xsl:iterate select="1"><xsl:param name="p" tunnel="yes"/><xsl:break select="1"/></xsl:iterate>`, "XTSE0020"},
+		{"iterate parameter invalid name", "", `<xsl:iterate select="1"><xsl:param name="bad:name:twice"/><xsl:break select="1"/></xsl:iterate>`, "XTSE0020"},
+		{"iterate parameter select and body", "", `<xsl:iterate select="1"><xsl:param name="p" select="1"><xsl:text>ignored</xsl:text></xsl:param><xsl:break select="$p"/></xsl:iterate>`, "XTSE0620"},
+		{"iterate parameter empty select", "", `<xsl:iterate select="1"><xsl:param name="p" select=""/><xsl:break select="1"/></xsl:iterate>`, "XPST0003"},
+		{"nested iterate parameter names", "", `<xsl:iterate select="1"><xsl:param name="outer" select="0"/><xsl:iterate select="1"><xsl:param name="inner" select="0"/><xsl:on-completion select="$inner"/><xsl:next-iteration><xsl:with-param name="inner" select="$inner+1"/></xsl:next-iteration></xsl:iterate></xsl:iterate>`, "1"},
+		{"sort text node cardinality", "", `<xsl:for-each select="(2,1)"><xsl:sort><xsl:text>A</xsl:text><xsl:text>B</xsl:text></xsl:sort><xsl:value-of select="."/></xsl:for-each>`, "XTTE1020"},
+		{"sort array cardinality", "", `<xsl:for-each select="(2,1)"><xsl:sort select="[1,2]"/><xsl:value-of select="."/></xsl:for-each>`, "XTTE1020"},
+		{"sort body atomization error", "", `<xsl:for-each select="(2,1)"><xsl:sort><xsl:sequence select="map{}"/></xsl:sort><xsl:value-of select="."/></xsl:for-each>`, errCodeFOTY0013},
+		{"sort body numeric value", "", `<xsl:for-each select="(3,1,2)"><xsl:sort><xsl:sequence select="."/></xsl:sort><xsl:value-of select="."/></xsl:for-each>`, "123"},
+		{"sort empty stable key", "", `<xsl:for-each select="(3,2,1)"><xsl:sort><xsl:sequence select="()"/></xsl:sort><xsl:value-of select="."/></xsl:for-each>`, "321"},
+		{"sort body compatibility", "", `<xsl:for-each select="(3,1,2)"><xsl:sort version="1.0"><xsl:sequence version="3.0" select="(.,99)"/></xsl:sort><xsl:value-of select="."/></xsl:for-each>`, "123"},
+	}
+}
+
+func TestXSLTStylesheetPreprocessing(t *testing.T) {
+	e := engine(t, transform.Config{})
+	source := sheet(version30, "<xsl:template name=\"start\">A<!--merge-->\n  <xsl:text>X</xsl:text><?merge ignored?> </xsl:template>")
+	check := `let $style := parse-xml($stylesheet), $before := serialize($style),
+        $output := transform(map{'stylesheet-node':$style,'initial-template':QName('','start'),'delivery-format':'serialized'})?output
+        return $output eq concat('A',codepoints-to-string(10),'  X') and
+        serialize($style) eq $before and count($style//comment()) eq 1 and count($style//processing-instruction()) eq 1`
+	result, err := query(t, e, check, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: variableStylesheet}: transform.Values(transform.String(source))}})
+	if err != nil || text(t, result) != nameTrue {
+		t.Fatal(result, err)
+	}
+
+	for _, standard := range []bool{false, true} {
+		module := `<out xsl:version="3.0"><xsl:value-of select="exists(document('')/*/@xml:space)"/></out>`
+		if standard {
+			module = `<xsl:stylesheet version="3.0"><xsl:template match="/"><out><xsl:value-of select="exists(document('')/*/@xml:space)"/></out></xsl:template></xsl:stylesheet>`
+		}
+		input := `<wrapper xml:space="preserve" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">` + module + `</wrapper>`
+		expression := `let $style := parse-xml($stylesheet), $out := transform(map{'stylesheet-node':$style/*/*,'source-node':parse-xml('<r/>')})?output
+            return string($out) eq 'false' and empty($out/*/@xml:space)`
+		result, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: variableStylesheet}: transform.Values(transform.String(input))}})
+		if err != nil || text(t, result) != nameTrue {
+			t.Fatal("embedded stylesheet-node original source", standard, result, err)
+		}
+	}
+
+	bounded := engine(t, transform.Config{Limits: transform.Limits{MaxOperations: 64}})
+	large := sheet(version30, `<xsl:template name="start">A`+strings.Repeat(`<!--removed--> `, 128)+`</xsl:template>`)
+	if _, err := bounded.CompileXSLT(t.Context(), []byte(large), transform.XSLTOptions{}); !errors.Is(err, transform.ErrLimit) {
+		t.Fatal("stylesheet preprocessing ignored the operation budget", err)
+	}
+
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := e.CompileXSLT(canceled, []byte(source), transform.XSLTOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatal("stylesheet preprocessing ignored cancellation", err)
+	}
+}
+
+func TestSequenceConstructorContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range sequenceConstructorCases() {
+		source := sheet(version30, `<xsl:template name="start">`+test.body+`</xsl:template>`)
+		for _, nested := range []bool{false, true} {
+			got, err := resourceStylesheetResult(t, e, source, nested)
+			if comparisonErrorCode(test.want) {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != test.want {
+					t.Fatal(test.name, nested, got, err, test.want)
+				}
+			} else if err != nil || got != test.want {
+				t.Fatal(test.name, nested, got, err, test.want)
+			}
+		}
+	}
+}
+
 func TestStreamingMergeOrderAndGroups(t *testing.T) {
 	e := engine(t, transform.Config{})
 	s := stylesheet(t, e, sheet(version30, `<xsl:template name="start"><xsl:merge><xsl:merge-source name="left" select="(3,1,2)" sort-before-merge="yes"><xsl:merge-key select="." data-type="number"/></xsl:merge-source><xsl:merge-source name="right" select="(2,4)"><xsl:merge-key select="." data-type="number"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="concat(current-merge-key(),':',count(current-merge-group()),':',count(current-merge-group('left')),',')"/></xsl:merge-action></xsl:merge></xsl:template>`))
@@ -1672,6 +2302,57 @@ func TestStreamingMergeOrderAndGroups(t *testing.T) {
 
 	if got := string(out.Primary); got != "1:1:1,2:2:1,3:1:1,4:1:0," {
 		t.Fatalf("merge order/groups = %q", got)
+	}
+}
+
+func mergeFocusCases() []dynamicXPathCase {
+	return []dynamicXPathCase{
+		{"atomic action focus", "", `<xsl:for-each select="99"><xsl:merge><xsl:merge-source select="(1,2)"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="concat(.,':',current(),':',position(),':',last(),';')"/></xsl:merge-action></xsl:merge><xsl:value-of select="."/></xsl:for-each>`, "1:1:1:2;2:2:2:2;99"},
+		{"node action focus", "", `<xsl:variable name="n"><r>node</r></xsl:variable><xsl:for-each select="99"><xsl:merge><xsl:merge-source select="$n/r"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="concat(.,':',current())"/></xsl:merge-action></xsl:merge><xsl:value-of select="."/></xsl:for-each>`, "node:node99"},
+		{"anchor focus", "", `<xsl:merge><xsl:merge-source for-each-item="(10,20,30)" select="concat(.,':',position(),':',last())"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="concat(.,';')"/></xsl:merge-action></xsl:merge>`, "10:1:3;20:2:3;30:3:3;"},
+		{"singleton key focus", "", `<xsl:for-each select="(10,20)"><xsl:merge><xsl:merge-source select="(1,2)"><xsl:merge-key select="position()+last()"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="concat(current-merge-key(),':',count(current-merge-group()),';')"/></xsl:merge-action></xsl:merge></xsl:for-each>`, "2:2;2:2;"},
+		{"nested action restores focus", "", `<xsl:merge><xsl:merge-source select="(1,2)"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/><xsl:merge><xsl:merge-source select="(8,9)"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/></xsl:merge-action></xsl:merge><xsl:value-of select="concat(.,':',position(),':',last(),';')"/></xsl:merge-action></xsl:merge>`, "1891:1:2;2892:2:2;"},
+		{"failed action restores focus", "", `<xsl:for-each select="99"><xsl:try><xsl:merge><xsl:merge-source select="1"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:sequence select="1 idiv 0"/></xsl:merge-action></xsl:merge><xsl:catch><xsl:value-of select="concat(.,':',position(),':',last())"/></xsl:catch></xsl:try></xsl:for-each>`, "99:1:1"},
+	}
+}
+
+func TestMergeFocusContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range mergeFocusCases() {
+		t.Run(test.name, func(t *testing.T) {
+			for _, nested := range []bool{false, true} {
+				got, err := resourceStylesheetResult(t, e, dynamicXPathSheet(test), nested)
+				if err != nil || got != test.want {
+					t.Fatal(nested, got, err, test.want)
+				}
+			}
+		})
+	}
+}
+
+func TestStreamingResourceReferenceEscaping(t *testing.T) {
+	for _, reference := range []string{"путь a.xml", "%D0%BF%D1%83%D1%82%D1%8C%20a.xml"} {
+		for _, merge := range []bool{false, true} {
+			t.Run(reference+strconv.FormatBool(merge), func(t *testing.T) {
+				var opened []string
+				e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+					opened = append(opened, uri)
+					return io.NopCloser(strings.NewReader(`<r>ok</r>`)), nil
+				})})
+				body := `<xsl:source-document href="` + reference + `"><xsl:value-of select="r"/></xsl:source-document>`
+				if merge {
+					body = `<xsl:merge><xsl:merge-source for-each-source="'` + reference + `'" select="r"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="."/></xsl:merge-action></xsl:merge>`
+				}
+				compiled, err := e.CompileXSLT(t.Context(), []byte(sheet(version30, `<xsl:template name="start">`+body+`</xsl:template>`)), transform.XSLTOptions{BaseURI: "https://example.test/папка/main.xsl"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				out, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+				if err != nil || string(out.Primary) != "ok" || len(opened) != 1 || opened[0] != "https://example.test/%D0%BF%D0%B0%D0%BF%D0%BA%D0%B0/%D0%BF%D1%83%D1%82%D1%8C%20a.xml" {
+					t.Fatal(out, opened, err)
+				}
+			})
+		}
 	}
 }
 
@@ -1741,6 +2422,9 @@ func resultDocumentURICases() []struct{ name, body, check, want string } {
 	const collision = "XTDE1490"
 
 	return []struct{ name, body, check, want string }{
+		{"escaped Unicode output URI", `<xsl:result-document href="путь a.xml">ok</xsl:result-document>`, `string($r('https://output.invalid/base/%D0%BF%D1%83%D1%82%D1%8C%20a.xml')) eq 'ok'`, nameTrue},
+		{"escaped output URI idempotent", `<xsl:result-document href="a%20b.xml">ok</xsl:result-document>`, `string($r('https://output.invalid/base/a%20b.xml')) eq 'ok'`, nameTrue},
+		{"escaped output aliases collide", `<xsl:result-document href="a b.xml">one</xsl:result-document><xsl:result-document href="a%20b.xml">two</xsl:result-document>`, "exists(map:keys($r))", collision},
 		{"implicit before explicit", `implicit<xsl:result-document>explicit</xsl:result-document>`, "exists(map:keys($r))", collision},
 		{"implicit after explicit", `<xsl:result-document>explicit</xsl:result-document>implicit`, "exists(map:keys($r))", collision},
 		{"captured atomic before explicit", `<xsl:sequence select="42"/><xsl:result-document>explicit</xsl:result-document>`, "exists(map:keys($r))", collision},
@@ -1933,33 +2617,49 @@ func TestXSLTDatatypeEditionPaths(t *testing.T) {
 	for _, edition := range []transform.XMLSchemaVersion{transform.XMLSchema10, transform.XMLSchema11} {
 		e := engine(t, transform.Config{XMLSchemaVersion: edition})
 
-		for _, tc := range []struct{ body, modern, legacyCode string }{
-			{`<xsl:value-of select="xs:double('+INF')"/>`, namePositiveInfinity, errCodeFORG0001},
-			{`<xsl:analyze-string select="'-'" regex="[a-z-x]"><xsl:matching-substring><xsl:value-of select="."/></xsl:matching-substring></xsl:analyze-string>`, "-", "XTDE1140"},
-		} {
-			source := sheet(version30, `<xsl:template name="start">`+tc.body+`</xsl:template>`)
-			compiled := stylesheet(t, e, source)
+		for _, version := range []string{version20, version30} {
+			for _, tc := range []struct{ body, modern, legacyCode string }{
+				{`<xsl:value-of select="xs:double('+INF')"/>`, namePositiveInfinity, errCodeFORG0001},
+				{`<xsl:variable name="n"><xsl:element name="out" namespace="####"/></xsl:variable><xsl:value-of select="namespace-uri($n/*)"/>`, "####", "XTDE0835"},
+				{`<xsl:variable name="n"><out><xsl:attribute name="p:a" namespace="####"/></out></xsl:variable><xsl:value-of select="namespace-uri($n/*/@*)"/>`, "####", "XTDE0865"},
+				{`<xsl:variable name="n" as="node()"><xsl:namespace name="p" select="'####'"/></xsl:variable><xsl:value-of select="$n"/>`, "####", "XTDE0905"},
+				{`<xsl:variable name="n" as="node()"><xsl:namespace name="p" select="'%gg'"/></xsl:variable><xsl:value-of select="$n"/>`, "%gg", "XTDE0905"},
+				{`<xsl:analyze-string select="'-'" regex="[a-z-x]"><xsl:matching-substring><xsl:value-of select="."/></xsl:matching-substring></xsl:analyze-string>`, "-", "XTDE1140"},
+			} {
+				source := sheet(version, `<xsl:template name="start">`+tc.body+`</xsl:template>`)
+				compiled := stylesheet(t, e, source)
 
-			out, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
-			if edition == transform.XMLSchema10 {
-				var detail *transform.Error
-				if !errors.As(err, &detail) || detail.Code != tc.legacyCode {
+				out, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+				if edition == transform.XMLSchema10 {
+					var detail *transform.Error
+					if !errors.As(err, &detail) || detail.Code != tc.legacyCode {
+						t.Fatal(edition, tc.body, out, err)
+					}
+				} else if err != nil || string(out.Primary) != tc.modern {
 					t.Fatal(edition, tc.body, out, err)
 				}
-			} else if err != nil || string(out.Primary) != tc.modern {
-				t.Fatal(edition, tc.body, out, err)
-			}
 
-			q := query(t, e, `transform(map{'stylesheet-text':$stylesheet,'initial-template':QName('','start'),'delivery-format':'serialized'})?output`, transform.XPath31)
+				q := query(t, e, `transform(map{'stylesheet-text':$stylesheet,'initial-template':QName('','start'),'delivery-format':'serialized'})?output`, transform.XPath31)
 
-			value, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: variableStylesheet}: transform.Values(transform.String(source))}})
-			if edition == transform.XMLSchema10 {
-				var detail *transform.Error
-				if !errors.As(err, &detail) || detail.Code != tc.legacyCode {
+				value, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: variableStylesheet}: transform.Values(transform.String(source))}})
+				if edition == transform.XMLSchema10 {
+					var detail *transform.Error
+					if !errors.As(err, &detail) || detail.Code != tc.legacyCode {
+						t.Fatal(edition, "fn:transform", value, err)
+					}
+				} else if err != nil || text(t, value) != tc.modern {
 					t.Fatal(edition, "fn:transform", value, err)
 				}
-			} else if err != nil || text(t, value) != tc.modern {
-				t.Fatal(edition, "fn:transform", value, err)
+			}
+
+			for _, value := range []string{"relative/path", "urn:trailing:", "http://[::1]:80/path", "urn:two words", "urn:a\\b^c`d"} {
+				source := sheet(version, `<xsl:template name="start"><xsl:variable name="n" as="node()"><xsl:namespace name="p" select="'`+value+`'"/></xsl:variable><xsl:value-of select="$n"/></xsl:template>`)
+				for _, nested := range []bool{false, true} {
+					got, err := resourceStylesheetResult(t, e, source, nested)
+					if err != nil || got != value {
+						t.Fatal(edition, value, nested, got, err)
+					}
+				}
 			}
 		}
 	}
@@ -1970,14 +2670,34 @@ func TestXSLTTypeAvailabilityEditions(t *testing.T) {
 		e := engine(t, transform.Config{XMLSchemaVersion: edition})
 		for _, version := range []string{version20, version30} {
 			body := `<xsl:template name="start"><xsl:text use-when="type-available('xs:dateTimeStamp')">available:</xsl:text><xsl:text use-when="not(type-available('xs:dateTimeStamp'))">unavailable:</xsl:text><xsl:value-of select="type-available('xs:dateTimeStamp')"/></xsl:template>`
-			want := "unavailable:false"
-			if edition == transform.XMLSchema11 {
-				want = "available:true"
-			}
+			want := "available:true"
 			for _, nested := range []bool{false, true} {
 				got, err := resourceStylesheetResult(t, e, sheet(version, body), nested)
 				if err != nil || got != want {
 					t.Fatal(edition, version, nested, got, err, want)
+				}
+			}
+			body = `<xsl:template name="start"><xsl:text use-when="type-available('xs:numeric')">new:</xsl:text><xsl:text use-when="not(type-available('xs:numeric'))">old:</xsl:text><xsl:value-of select="type-available('xs:numeric'),function-available('xs:NMTOKENS',1)"/></xsl:template>`
+			for _, nested := range []bool{false, true} {
+				want := "new:true true"
+				if version == version20 && !nested {
+					want = "old:false false"
+				}
+				got, err := resourceStylesheetResult(t, e, sheet(version, body), nested)
+				if err != nil || got != want {
+					t.Fatal(edition, version, nested, got, err, want)
+				}
+			}
+			body = `<xsl:param name="p" as="xs:numeric" select="1"/><xsl:template name="start"><xsl:value-of select="$p instance of xs:numeric"/></xsl:template>`
+			for _, nested := range []bool{false, true} {
+				got, err := resourceStylesheetResult(t, e, sheet(version, body), nested)
+				if version == version20 && !nested {
+					var detail *transform.Error
+					if !errors.As(err, &detail) || detail.Code != "XPST0051" {
+						t.Fatal(edition, version, nested, got, err)
+					}
+				} else if err != nil || got != nameTrue {
+					t.Fatal(edition, version, nested, got, err)
 				}
 			}
 		}
@@ -2464,8 +3184,28 @@ type parameterContractCase struct{ name, global, param, call, check, code20, cod
 
 func parameterContractCases() []parameterContractCase {
 	return []parameterContractCase{
+		{"forward XPath syntax error", `<xsl:template name="unused" version="17.0"><xsl:value-of select="1 +"/></xsl:template>`, ``, ``, `true()`, "XPST0003", "XPST0003"},
+		{"forward XPath missing function", `<xsl:template name="unused" version="17.0"><xsl:value-of select="missing()"/></xsl:template>`, ``, ``, `true()`, "XPST0017", "XPST0017"},
+		{"forward XPath unbound prefix", `<xsl:template name="unused" version="17.0"><xsl:value-of select="p:value"/></xsl:template>`, ``, ``, `true()`, "XPST0081", "XPST0081"},
+		{"forward unused missing template", `<xsl:template name="unused" version="17.0"><xsl:call-template name="missing"/></xsl:template>`, ``, ``, `true()`, "XTSE0650", "XTSE0650"},
+		{"forward evaluated missing template", ``, ``, `<xsl:call-template version="17.0" name="missing"/>`, `true()`, "XTSE0650", "XTSE0650"},
+		{"forward conditional missing template", ``, ``, `<xsl:if version="17.0" test="false()"><xsl:call-template name="missing"/></xsl:if>`, `true()`, "XTSE0650", "XTSE0650"},
 		{"global default", `<xsl:param name="p" as="xs:integer" select="3.5"/>`, ``, ``, `$p`, "XTTE0600", "XTTE0590"},
-		{"global implicit mandatory", `<xsl:param name="p" as="xs:integer"/>`, ``, ``, `true()`, "XTDE0050", "XTDE0050"},
+		{"global implicit mandatory", `<xsl:param name="p" as="xs:integer"/>`, ``, ``, `true()`, "XTDE0610", "XTDE0050"},
+		{"global variable select and preserved body", `<xsl:variable name="p" select="1" xml:space="preserve"> </xsl:variable>`, ``, ``, `$p`, "XTSE0620", "XTSE0620"},
+		{"global select and body", `<xsl:param name="p" select="1"><xsl:text>ignored</xsl:text></xsl:param>`, ``, ``, `$p`, "XTSE0620", "XTSE0620"},
+		{"named select and body", ``, `<xsl:param name="p" select="1"><xsl:text>ignored</xsl:text></xsl:param>`, ``, `$p`, "XTSE0620", "XTSE0620"},
+		{"global unbound name prefix", `<xsl:param name="missing:p" select="1"/>`, ``, ``, `true()`, "XTSE0280", "XTSE0280"},
+		{"named unbound name prefix", ``, `<xsl:param name="missing:p" select="1"/>`, ``, `true()`, "XTSE0280", "XTSE0280"},
+		{"global variable unbound name prefix", `<xsl:variable name="missing:p" select="1"/>`, ``, ``, `true()`, "XTSE0280", "XTSE0280"},
+		{"local variable unbound name prefix", ``, ``, `<xsl:variable name="missing:p" select="1"/>`, `true()`, "XTSE0280", "XTSE0280"},
+		{"with parameter unbound name prefix", ``, ``, `<xsl:call-template name="target"><xsl:with-param name="missing:p" select="1"/></xsl:call-template>`, `true()`, "XTSE0280", "XTSE0280"},
+		{"local variable invalid name", ``, ``, `<xsl:variable name="bad:name:twice" select="1"/>`, `true()`, "XTSE0020", "XTSE0020"},
+		{"with parameter invalid name", ``, ``, `<xsl:call-template name="target"><xsl:with-param name="bad:name:twice" select="1"/></xsl:call-template>`, `true()`, "XTSE0020", "XTSE0020"},
+		{"local nonstatic parameter", ``, `<xsl:param name="p" static="no" select="1"/>`, ``, `$p eq 1`, "XTSE0090", ""},
+		{"local nonstatic variable", ``, `<xsl:variable name="p" static="no" select="1"/>`, ``, `$p eq 1`, "XTSE0090", ""},
+		{"local static parameter", ``, `<xsl:param name="p" static="yes" select="1"/>`, ``, `$p`, "XTSE0090", "XTSE0020"},
+		{"local static variable", ``, ``, `<xsl:variable name="p" static="yes" select="1"/>`, `true()`, "XTSE0090", "XTSE0020"},
 		{"named default", ``, `<xsl:param name="p" as="xs:integer" select="3.5"/>`, ``, `$p`, "XTTE0600", "XTTE0590"},
 		{"node default", ``, `<xsl:param name="p" as="xs:integer" select="3.5"/>`, `<xsl:variable name="source"><r/></xsl:variable><xsl:apply-templates select="$source/r"/>`, `$p`, "XTTE0600", "XTTE0590"},
 		{"named implicit mandatory", ``, `<xsl:param name="p" as="xs:integer"/>`, ``, `$p`, "XTDE0610", "XTDE0700"},
@@ -2491,6 +3231,245 @@ func parameterContractSheet(version string, test parameterContractCase) string {
 		source = strings.Replace(source, `<xsl:stylesheet `, `<xsl:stylesheet xmlns:a="urn:wrong" `, 1)
 	}
 	return source
+}
+
+func fractionalSecondsCases() []struct{ value, picture, old, modern string } {
+	return []struct{ value, picture, old, modern string }{
+		{"06.456", "[s].[f,2-2]", "06.46", "06.45"},
+		{"06.445", "[s].[f,2-2]", "06.44", "06.44"},
+		{"06.455", "[s].[f,2-2]", "06.46", "06.45"},
+		{"06.995", "[s].[f,2-2]", "06.00", "06.99"},
+		{"06.999", "[s].[f,2-2]", "06.00", "06.99"},
+		{"06.4567", "[f,3]", "4567", "456"},
+		{"06.4567", "[f001,1-*]", "4567", "4567"},
+		{"06.4", "[f001,1-1]", "4", "400"},
+		{"06.456", "[f,12-12]", "456000000000", "456000000000"},
+	}
+}
+
+func fractionalSecondsSheet(version, value, picture string) string {
+	return sheet(version, `<xsl:template name="start"><xsl:value-of select="format-time(xs:time('09:15:`+value+`'), '`+picture+`')"/></xsl:template>`)
+}
+
+func TestVersionedFractionalSeconds(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, version := range []string{version20, version30} {
+		for _, test := range fractionalSecondsCases() {
+			for _, nested := range []bool{false, true} {
+				want := test.modern
+				if version == version20 && !nested {
+					want = test.old
+				}
+				// fn:transform selects a 3.0 processor, independently of a 2.0
+				// module declaration (its xslt-version option requests a minimum).
+				got, err := resourceStylesheetResult(t, e, fractionalSecondsSheet(version, test.value, test.picture), nested)
+				if err != nil || got != want {
+					t.Fatal(version, test, nested, got, err, want)
+				}
+			}
+		}
+		for _, picture := range []string{"[f,0]", "[f,3-1]", "[f,]", "[f,1x]", "[f,+1]", "[f,-1]", "[f,1-]", "[f,1-2-3]"} {
+			_, err := resourceStylesheetResult(t, e, fractionalSecondsSheet(version, "06.456", picture), false)
+			code := "FOFD1340"
+
+			if version == version20 {
+				code = "XTDE1340"
+			}
+
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != code {
+				t.Fatal(version, picture, err, code)
+			}
+		}
+	}
+}
+
+func TestXPathFractionalSecondsEditions(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range fractionalSecondsCases() {
+		for _, call := range []string{"format-time", "(format-time#2)", "function-lookup(QName('http://www.w3.org/2005/xpath-functions','format-time'),2)"} {
+			for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+				want := test.modern
+				if version == transform.XPath30 {
+					want = test.old
+				}
+
+				expression := call + `(xs:time('12:13:` + test.value + `'),'` + test.picture + `')`
+				compiled, err := e.CompileXPath(t.Context(), expression, transform.XPathOptions{Version: version})
+				if err != nil {
+					t.Fatal(version, expression, err)
+				}
+
+				result, err := compiled.Evaluate(t.Context(), nil, transform.XPathContext{})
+				if err != nil {
+					t.Fatal(version, expression, err)
+				}
+
+				got, err := result.Text()
+				if err != nil || got != want {
+					t.Fatal(version, expression, got, want, err)
+				}
+			}
+		}
+	}
+}
+
+func TestXPathFormattingLanguageFallback(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range []struct{ name, function, arity, arguments, want string }{
+		{"integer unsupported", "format-integer", "3", `1,'w','zz'`, "eins"},
+		{"integer invalid", "format-integer", "3", `1,'w','not a language'`, "eins"},
+		{"integer empty", "format-integer", "3", `1,'w',''`, "eins"},
+		{"integer omitted", "format-integer", "2", `1,'w'`, "eins"},
+		{"integer recognized", "format-integer", "3", `1,'w','fr'`, "un"},
+		{"date unsupported", "format-date", "5", `xs:date('2000-01-01'),'[MNn]','zz',(),()`, "[Language: de]Januar"},
+		{"date invalid", "format-date", "5", `xs:date('2000-01-01'),'[MNn]','not a language',(),()`, "[Language: de]Januar"},
+		{"date empty", "format-date", "5", `xs:date('2000-01-01'),'[MNn]','',(),()`, "[Language: de]Januar"},
+		{"date recognized", "format-date", "5", `xs:date('2000-01-01'),'[MNn]','DE',(),()`, "Januar"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+				for _, call := range []string{test.function, "(" + test.function + "#" + test.arity + ")", "function-lookup(QName('http://www.w3.org/2005/xpath-functions','" + test.function + "')," + test.arity + ")"} {
+					compiled, err := e.CompileXPath(t.Context(), call+"("+test.arguments+")", transform.XPathOptions{Version: version})
+					if err != nil {
+						t.Fatal(version, call, err)
+					}
+
+					result, err := compiled.Evaluate(t.Context(), nil, transform.XPathContext{Context: transform.DynamicContext{DefaultLanguage: "de"}})
+					if err != nil {
+						t.Fatal(version, call, err)
+					}
+
+					got, err := result.Text()
+					if err != nil || got != test.want {
+						t.Fatal(version, call, got, test.want, err)
+					}
+				}
+
+				producer, err := e.CompileXPath(t.Context(), test.function+"#"+test.arity, transform.XPathOptions{Version: version})
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				callable, err := producer.Evaluate(t.Context(), nil, transform.XPathContext{Context: transform.DynamicContext{DefaultLanguage: "de"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				consumer, err := e.CompileXPath(t.Context(), "$f("+test.arguments+")", transform.XPathOptions{Version: version})
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				result, err := consumer.Evaluate(t.Context(), nil, transform.XPathContext{
+					Variables: transform.Bindings{{Local: "f"}: callable},
+					Context:   transform.DynamicContext{DefaultLanguage: "en"},
+				})
+				if err != nil {
+					t.Fatal(version, err)
+				}
+
+				got, err := result.Text()
+				if err != nil || got != test.want {
+					t.Fatal("escaped language context", version, got, test.want, err)
+				}
+			}
+		})
+	}
+}
+
+func TestExtensionNamespaceContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, version := range []string{version20, version30} {
+		for _, test := range []struct{ body, code string }{
+			{`<xsl:template name="start" extension-element-prefixes="missing"/>`, "XTSE1430"},
+			{`<xsl:template name="start"><r xsl:extension-element-prefixes="missing"/></xsl:template>`, "XTSE1430"},
+			{`<xsl:template name="start" extension-element-prefixes="#default"/>`, "XTSE1430"},
+		} {
+			_, err := e.CompileXSLT(t.Context(), []byte(sheet(version, test.body)), transform.XSLTOptions{})
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != test.code {
+				t.Fatal(version, test, err)
+			}
+		}
+	}
+	for _, body := range []string{
+		`<xsl:template name="start" extension-element-prefixes="xs"/>`,
+		`<xsl:template name="start"><r xsl:extension-element-prefixes="xs"/></xsl:template>`,
+		`<xsl:template name="start"><r xmlns="http://www.w3.org/2001/XMLSchema" xsl:extension-element-prefixes="#default"/></xsl:template>`,
+	} {
+		_, err := e.CompileXSLT(t.Context(), []byte(sheet(version30, body)), transform.XSLTOptions{})
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != "XTSE0085" {
+			t.Fatal(body, err)
+		}
+	}
+
+	for _, source := range []string{
+		strings.Replace(sheet(version30, `<xsl:template name="start"><action><xsl:fallback>ok</xsl:fallback></action></xsl:template>`), `<xsl:stylesheet `, `<xsl:stylesheet xmlns="urn:extension" extension-element-prefixes="#default" `, 1),
+		sheet(version30, `<xsl:template name="start"><action xmlns="urn:extension" xsl:extension-element-prefixes="#default"><xsl:fallback>ok</xsl:fallback></action></xsl:template>`),
+	} {
+		for _, nested := range []bool{false, true} {
+			got, err := resourceStylesheetResult(t, e, source, nested)
+			if err != nil || got != "ok" {
+				t.Fatal(source, nested, got, err)
+			}
+		}
+	}
+	// Conditional exclusion precedes checking the discarded extension declaration.
+	got, err := resourceStylesheetResult(t, e, sheet(version30, `<xsl:template name="start"><r xsl:use-when="false()" xsl:extension-element-prefixes="missing"/>ok</xsl:template>`), false)
+	if err != nil || got != "ok" {
+		t.Fatal(got, err)
+	}
+}
+
+func TestVersionedWhitespaceAndSequenceContracts(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, version := range []string{version20, version30} {
+		for _, test := range []struct{ declarations, want20 string }{
+			{`<xsl:strip-space elements="r"/><xsl:preserve-space elements="r"/>`, "1"},
+			{`<xsl:preserve-space elements="r"/><xsl:strip-space elements="r"/>`, "0"},
+			{`<xsl:strip-space elements="*:r"/><xsl:preserve-space elements="p:*" xmlns:p="urn:r"/>`, "1"},
+		} {
+			source := sheet(version, test.declarations+`<xsl:template name="start"><xsl:value-of select="count(doc('urn:source')/*/text())"/></xsl:template>`)
+			configured := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader(`<r xmlns="urn:r"> </r>`)), nil
+			})})
+			// Use the same namespace for exact and wildcard name tests.
+			source = strings.Replace(source, `<xsl:stylesheet `, `<xsl:stylesheet xpath-default-namespace="urn:r" `, 1)
+			got, err := resourceStylesheetResult(t, configured, source, false)
+			if version == version20 {
+				if err != nil || got != test.want20 {
+					t.Fatal(version, got, err, test.want20)
+				}
+			} else {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != "XTSE0270" {
+					t.Fatal(version, got, err)
+				}
+			}
+		}
+
+		compiled := stylesheet(t, e, sheet(version, `<xsl:template name="start">ok</xsl:template>`))
+		got, entryErr := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, Mode: transform.Name{Local: "m"}})
+		if version == version20 {
+			var detail *transform.Error
+			if !errors.As(entryErr, &detail) || detail.Code != "XTDE0047" {
+				t.Fatal(version, entryErr)
+			}
+		} else if !errors.Is(entryErr, transform.ErrInput) {
+			t.Fatal(version, got, entryErr)
+		}
+		_, err := e.CompileXSLT(t.Context(), []byte(sheet(version, `<xsl:template name="start"><xsl:sequence select="1"><xsl:text>invalid</xsl:text></xsl:sequence></xsl:template>`)), transform.XSLTOptions{})
+		code := "XTSE3185"
+		if version == version20 {
+			code = "XTSE0010"
+		}
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != code {
+			t.Fatal(version, err, code)
+		}
+	}
 }
 
 func TestParameterContracts(t *testing.T) {
@@ -2559,6 +3538,10 @@ func TestRequiredParameterBooleans(t *testing.T) {
 			var detail *transform.Error
 			if !errors.As(err, &detail) || detail.Code != "XTDE0050" {
 				t.Fatal(required, nested, err)
+			}
+			_, err = resourceStylesheetResult(t, e, sheet(version30, `<xsl:param name="p" tunnel="`+required+`" select="1"/><xsl:template name="start">unused</xsl:template>`), nested)
+			if !errors.As(err, &detail) || detail.Code != "XTSE0020" {
+				t.Fatal("global tunnel", required, nested, err)
 			}
 		}
 	}
@@ -3636,6 +4619,37 @@ func transformStylesheetNodeCases() []transformExpressionCase {
 		expression := `let $module := parse-xml('` + strings.ReplaceAll(test.input, "'", "''") + `') return transform(map{'stylesheet-node':` + test.selection + `,'initial-template':QName('', 'start'),'delivery-format':'serialized'})?output`
 		cases = append(cases, transformExpressionCase{test.name, expression, test.want})
 	}
+	for _, standard := range []bool{false, true} {
+		kind := "simplified"
+		if standard {
+			kind = "standard"
+		}
+		for _, policy := range []struct {
+			name, outer, own string
+			length           int
+		}{
+			{"inherited preserve", "preserve", "", 1},
+			{"own default", "preserve", `xml:space="default"`, 0},
+			{"own preserve", "default", `xml:space="preserve"`, 1},
+			{"inherited default", "default", "", 0},
+		} {
+			module := `<out xsl:version="3.0" ` + policy.own + `> </out>`
+			if standard {
+				module = `<xsl:stylesheet version="3.0" ` + policy.own + `><xsl:template match="/"><out> </out></xsl:template></xsl:stylesheet>`
+			}
+			input := `<wrapper xml:space="` + policy.outer + `" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">` + module + `</wrapper>`
+			attributes := 0
+			if !standard && policy.own != "" {
+				attributes = 1
+			}
+			expression := `let $module := parse-xml('` + strings.ReplaceAll(input, "'", "''") + `'), $before := serialize($module),
+                $out := transform(map{'stylesheet-node':$module/*/*,'source-node':parse-xml('<r/>')})?output
+                return string-length($out) eq ` + strconv.Itoa(policy.length) + ` and serialize($module) eq $before
+                and count($out/*/@xml:space) eq ` + strconv.Itoa(attributes)
+			cases = append(cases, transformExpressionCase{"embedded " + kind + " " + policy.name, expression, nameTrue})
+		}
+	}
+
 	generator := sheet(version30, `<xsl:template name="start"><xsl:element name="xsl:stylesheet"><xsl:attribute name="version">3.0</xsl:attribute><xsl:attribute name="xml:base">`+uri+`generated.xsl</xsl:attribute><xsl:element name="xsl:output"><xsl:attribute name="method">text</xsl:attribute></xsl:element><xsl:element name="xsl:template"><xsl:attribute name="name">start</xsl:attribute><xsl:element name="xsl:value-of"><xsl:attribute name="select">static-base-uri()</xsl:attribute></xsl:element></xsl:element></xsl:element></xsl:template>`)
 	expression := `let $module := transform(map{'stylesheet-text':'` + strings.ReplaceAll(generator, "'", "''") + `','initial-template':QName('', 'start'),'delivery-format':'raw'})?output return transform(map{'stylesheet-node':$module,'initial-template':QName('', 'start'),'delivery-format':'serialized'})?output`
 	cases = append(cases, transformExpressionCase{"parentless module", expression, uri + "generated.xsl"})

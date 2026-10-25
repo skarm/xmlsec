@@ -76,7 +76,7 @@ func (e *Engine) openResource(ctx context.Context, limit int, open func() (io.Re
 		budget.mu.Lock()
 		if budget.loads <= 0 {
 			budget.mu.Unlock()
-			return nil, ErrLimit
+			return nil, executionControlCause(ErrLimit)
 		}
 
 		budget.loads--
@@ -89,7 +89,7 @@ func (e *Engine) openResource(ctx context.Context, limit int, open func() (io.Re
 			err = errors.Join(err, r.Close())
 		}
 
-		return nil, errors.Join(ErrResource, err)
+		return nil, executionControlCause(errors.Join(ErrResource, err))
 	}
 
 	if nilcheck.IsNil(r) {
@@ -186,21 +186,21 @@ func (r *resourceStream) Read(p []byte) (int, error) {
 	if err != nil {
 		closeErr := r.Close()
 		if closeErr != nil {
-			return n, errors.Join(ErrResource, err, closeErr)
+			return n, executionControlCause(errors.Join(ErrResource, err, closeErr))
 		}
 
 		if !errors.Is(err, io.EOF) {
-			return n, errors.Join(ErrResource, err)
+			return n, executionControlCause(errors.Join(ErrResource, err))
 		}
 	}
 
-	return n, err
+	return n, executionControlCause(err)
 }
 
 func (r *resourceStream) Close() error {
 	if !r.closed {
 		r.closed = true
-		r.closeErr = r.reader.Close()
+		r.closeErr = executionControlCause(r.reader.Close())
 	}
 
 	return r.closeErr

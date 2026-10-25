@@ -18,6 +18,7 @@ import (
 type Expression struct {
 	staticNamespaces    map[string]string
 	defaultXMLNamespace string
+	staticCollation     string
 	deferred            error
 	source              string
 	ast                 Expr
@@ -44,6 +45,15 @@ func (e *Expression) BindNamespaceContext(ns map[string]string, defaultXMLNamesp
 	return bound
 }
 
+// BindDefaultCollation returns a copy with the host language's immutable
+// static default collation. Unbound expressions use the evaluator's setting.
+func (e *Expression) BindDefaultCollation(uri string) *Expression {
+	bound := *e
+	bound.staticCollation = uri
+
+	return &bound
+}
+
 // DeferredExpression preserves an invalid expression for XSLT 1.0 forwards
 // processing, which reports a syntax error only if that expression is evaluated.
 func DeferredExpression(err error, version int) *Expression {
@@ -53,15 +63,7 @@ func DeferredExpression(err error, version int) *Expression {
 // Validate runs static namespace prefix validation using the given bindings.
 // This catches undeclared namespace prefixes in function calls, type names, etc.
 func (e *Expression) Validate(namespaces map[string]string) error {
-	if e != nil && e.deferred != nil {
-		return nil //nolint:nilerr // XSLT 1.0 forwards processing defers the error until evaluation.
-	}
-
-	if err := e.requireCompiledProgram(); err != nil {
-		return err
-	}
-
-	return e.prefixPlan.Validate(namespaces, e.staticNamespaces != nil || e.version == 10, nil)
+	return e.ValidateWithSchema(namespaces, nil)
 }
 
 // ValidateWithSchema is like Validate but also supplies the in-scope schema
@@ -69,7 +71,11 @@ func (e *Expression) Validate(namespaces map[string]string) error {
 // permitted (it resolves against the default element/type namespace or as a
 // no-namespace schema type at evaluation time) instead of raising XPST0081.
 func (e *Expression) ValidateWithSchema(namespaces map[string]string, decls SchemaDeclarations) error {
-	if e != nil && e.deferred != nil {
+	if e == nil {
+		return e.requireCompiledProgram()
+	}
+
+	if e.deferred != nil {
 		return nil //nolint:nilerr // XSLT 1.0 forwards processing defers the error until evaluation.
 	}
 
@@ -77,7 +83,7 @@ func (e *Expression) ValidateWithSchema(namespaces map[string]string, decls Sche
 		return err
 	}
 
-	return e.prefixPlan.Validate(namespaces, e.staticNamespaces != nil || e.version == 10, decls)
+	return e.prefixPlan.Validate(namespaces, e.staticNamespaces != nil || e.version == 10, decls, e.version)
 }
 
 // String returns the original XPath expression string.

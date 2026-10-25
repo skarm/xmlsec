@@ -1,6 +1,3 @@
-// Node views implement XDM identity and navigation over the project XML tree.
-// Original XML content and child/attribute storage live in internal/tree.
-// Views can cache derived values; parsed documents are shared without serialization.
 package xdm
 
 import (
@@ -52,6 +49,9 @@ func (t ElementType) String() string {
 	return fmt.Sprintf("NodeKind(%d)", t)
 }
 
+// Node provides XDM identity and navigation over the project XML tree.
+// Original XML content and child/attribute storage live in internal/tree.
+// Node views can cache derived values; parsed documents are shared without serialization.
 type Node interface {
 	view() *nodeView
 	FirstChild() Node

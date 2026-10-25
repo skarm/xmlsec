@@ -56,6 +56,8 @@ func reservedFunctionNamespace(uri string) bool {
 }
 
 func (e *Engine) languageContext(ctx context.Context) context.Context {
+	ctx = xpath.WithInvocationScope(ctx)
+	ctx = xpath.WithTextResourceCacheLimit(ctx, e.limits.MaxResourceBytes)
 	ctx = xpath.WithXMLSchemaVersion(ctx, int(e.xmlSchemaVersion))
 
 	ctx = xslt.WithAssertions(ctx, e.xsltAssertions)
@@ -113,14 +115,15 @@ func (f *applicationFunction) MinArity() int { return f.definition.Arity }
 
 func (f *applicationFunction) MaxArity() int { return f.definition.Arity }
 
-// Generic item()* parameters need no conversion or arity-sized metadata slice.
+// FuncParamTypes returns nil because generic item()* parameters need no conversion
+// or arity-sized metadata slice.
 func (f *applicationFunction) FuncParamTypes() []xdm.SequenceType { return nil }
 
 func (f *applicationFunction) FuncReturnType() *xdm.SequenceType { return &f.resultType }
 
 func (f *applicationFunction) Call(ctx context.Context, arguments []xdm.Sequence) (xdm.Sequence, error) {
 	if err := xpath.Charge(ctx, len(arguments)+1); err != nil {
-		return nil, err
+		return nil, executionControlCause(err)
 	}
 
 	checker := sequenceChecker{ctx: ctx, limits: f.limits, input: true}
@@ -128,7 +131,7 @@ func (f *applicationFunction) Call(ctx context.Context, arguments []xdm.Sequence
 	args := make([]Sequence, len(arguments))
 	for i, arg := range arguments {
 		if err := checker.walk(arg, 0); err != nil {
-			return nil, err
+			return nil, executionControlCause(err)
 		}
 
 		args[i] = ownSequence(arg)
@@ -136,20 +139,20 @@ func (f *applicationFunction) Call(ctx context.Context, arguments []xdm.Sequence
 
 	result, err := f.definition.Call(ctx, args)
 	if err != nil {
-		return nil, err
+		return nil, executionControlCause(err)
 	}
 
 	checker = sequenceChecker{ctx: ctx, limits: f.limits, input: true}
 	if err := checker.walk(result.items, 0); err != nil {
-		return nil, err
+		return nil, executionControlCause(err)
 	}
 
 	if err := xpath.Charge(ctx, checker.count); err != nil {
-		return nil, err
+		return nil, executionControlCause(err)
 	}
 
 	if err := xpath.ChargeString(ctx, checker.size); err != nil {
-		return nil, err
+		return nil, executionControlCause(err)
 	}
 
 	return xdm.CloneSequence(result.items), nil

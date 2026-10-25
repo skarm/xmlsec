@@ -6,11 +6,13 @@ package xslt
 import (
 	"context"
 	"errors"
-	"math"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -20,6 +22,14 @@ var (
 	errNextIter = errors.New("xsl:next-iteration")
 )
 
+const (
+	mergeAttrOrder uint8 = 1 << iota
+	mergeAttrDataType
+	mergeAttrCollation
+	mergeAttrLang
+	mergeAttrCaseOrder
+)
+
 // mergeSourceItems holds the items from one merge source along with
 // their pre-extracted sort keys and the source name.
 type mergeSourceItems struct {
@@ -27,7 +37,6 @@ type mergeSourceItems struct {
 	items           xdm.ItemSlice
 	keys            [][]mergeKeyValue // keys[i] corresponds to items[i]
 	sortBeforeMerge bool              // from parent mergeSource
-	sourceIdx       int               // index into inst.Sources
 }
 
 // mergeKeyOrder tracks the descending flag for each key level.
@@ -38,12 +47,9 @@ type mergeKeyOrder struct {
 // mergeKeyValue holds a single merge key as an XPath atomic value for
 // type-aware comparison (dates, numbers, strings, etc.).
 type mergeKeyValue struct {
-	atom        xdm.AtomicValue       // the actual typed atomic value
-	str         string                // string fallback (used when atom is zero)
-	num         float64               // numeric value (used when numeric is true)
-	numeric     bool                  // true when data-type="number" was applied
-	isNaN       bool                  // true when numeric conversion produced NaN
-	collCompare func(a, b string) int // collation compare function (nil = codepoint)
+	comparison sortValue
+	level      *resolvedLevel
+	atom       xdm.AtomicValue // original value exposed by current-merge-key()
 }
 
 // execSourceDocument executes xsl:source-document by loading the referenced
@@ -61,7 +67,7 @@ func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocum
 		effectiveBase = ec.stylesheet.baseURI
 	}
 
-	resolvedURI := resolveAgainstBaseURI(docURI, effectiveBase)
+	resolvedURI := resolveAgainstBaseURI(uripath.EscapeResourceReference(docURI), uripath.EscapeResourceReference(effectiveBase))
 
 	cacheKey := ec.docCacheKey(resolvedURI)
 	if err := ec.CheckRead(ctx, resolvedURI); err != nil {
@@ -223,14 +229,15 @@ func (ec *execContext) execIterate(ctx context.Context, inst *iterateInst) error
 	return ec.completeIterate(ctx, inst.OnCompletion, paramVals)
 }
 
-func (ec *execContext) initializeIterateParams(ctx context.Context, params []*iterateParam) (map[string]xdm.Sequence, map[string]string, error) {
+func (ec *execContext) initializeIterateParams(ctx context.Context, params []*iterateParam) (map[string]xdm.Sequence, map[string]*xdm.SequenceType, error) {
 	values := make(map[string]xdm.Sequence, len(params))
-	types := make(map[string]string, len(params))
+	types := make(map[string]*xdm.SequenceType, len(params))
+
+	ec.pushVarScope()
+	defer ec.popVarScope()
 
 	for _, param := range params {
-		if param.As != "" {
-			types[param.Name] = param.As
-		}
+		types[param.Name] = param.Type
 
 		value, err := ec.evaluateIterateParam(ctx, param)
 		if err != nil {
@@ -238,27 +245,26 @@ func (ec *execContext) initializeIterateParams(ctx context.Context, params []*it
 		}
 
 		values[param.Name] = value
+		// Like every local binding, an iteration parameter is visible to
+		// following siblings, including later parameter initializers (§9.9).
+		ec.setVar(param.Name, value)
 	}
 
 	return values, types, nil
 }
 
-func (ec *execContext) evaluateIterateParam(ctx context.Context, param *iterateParam) (xdm.Sequence, error) {
-	value := xdm.EmptySequence()
+func (ec *execContext) evaluateIterateParam(ctx context.Context, p *iterateParam) (xdm.Sequence, error) {
+	var value xdm.Sequence
 
-	switch {
-	case param.Select != nil:
-		result, err := ec.evalXPath(ctx, param.Select, ec.contextNode)
+	if p.Select != nil {
+		result, err := ec.evalXPath(ctx, p.Select, ec.contextNode)
 		if err != nil {
 			return nil, err
 		}
 
 		value = result.Sequence()
-	case len(param.Body) > 0:
-		ec.temporaryOutputDepth++
-		result, err := ec.evaluateBody(ctx, param.Body)
-		ec.temporaryOutputDepth--
-
+	} else {
+		result, err := ec.templateParamBody(ctx, &param{As: p.As, Body: p.Body})
 		if err != nil {
 			return nil, err
 		}
@@ -266,15 +272,24 @@ func (ec *execContext) evaluateIterateParam(ctx context.Context, param *iterateP
 		value = result
 	}
 
-	return ec.coerceIterateParam(ctx, value, param.As, "xsl:iterate parameter $"+param.Name)
+	return ec.coerceIterateParam(ctx, value, p.Type, "xsl:iterate parameter $"+p.Name)
 }
 
-func (ec *execContext) coerceIterateParam(ctx context.Context, value xdm.Sequence, asType, label string) (xdm.Sequence, error) {
-	if asType == "" || value == nil || xdm.SequenceLen(value) == 0 {
+func (ec *execContext) coerceIterateParam(ctx context.Context, value xdm.Sequence, asType *xdm.SequenceType, label string) (xdm.Sequence, error) {
+	if asType == nil {
 		return value, nil
 	}
 
-	return checkSequenceType(ctx, value, parseSequenceType(asType), errCodeXTTE0570, label, ec)
+	converted, err := ec.convertSequenceType(ctx, value, *asType)
+	if err != nil {
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return nil, failure
+		}
+
+		return nil, dynamicError(errCodeXTTE0590, "%s: %s", label, err)
+	}
+
+	return converted, nil
 }
 
 func (ec *execContext) setIterateContext(item xdm.Item, position int) {
@@ -307,7 +322,7 @@ func (ec *execContext) executeIterateBody(ctx context.Context, body []instructio
 	return nil
 }
 
-func (ec *execContext) updateIterateParams(ctx context.Context, values map[string]xdm.Sequence, types map[string]string) error {
+func (ec *execContext) updateIterateParams(ctx context.Context, values map[string]xdm.Sequence, types map[string]*xdm.SequenceType) error {
 	for name, value := range ec.nextIterParams {
 		coerced, err := ec.coerceIterateParam(ctx, value, types[name], "xsl:next-iteration parameter $"+name)
 		if err != nil {
@@ -379,7 +394,7 @@ func (ec *execContext) execBreak(ctx context.Context, inst *breakInst) error {
 
 		ec.breakValue = result.Sequence()
 	} else if len(inst.Body) > 0 {
-		val, err := ec.evaluateBody(ctx, inst.Body)
+		val, err := ec.evaluateBodyAsSequence(ctx, inst.Body)
 		if err != nil {
 			return err
 		}
@@ -411,24 +426,99 @@ func (ec *execContext) execNextIteration(ctx context.Context, inst *nextIteratio
 // execMerge executes xsl:merge by loading, sorting, and merging items from
 // multiple sources, then executing the merge-action for each group of items
 // sharing the same key.
+// Each merge evaluates its five key attributes in the containing merge focus.
+// Resolve into private definitions so concurrent executions never mutate the
+// compiled stylesheet or compare unevaluated AVT source text.
+func (ec *execContext) resolveMergeDefinitions(ctx context.Context, definitions []*mergeSource) ([]*mergeSource, error) {
+	if err := xpath.Charge(ctx, len(definitions)); err != nil {
+		return nil, err
+	}
+
+	resolved := make([]*mergeSource, len(definitions))
+	for i, definition := range definitions {
+		if err := xpath.Charge(ctx, len(definition.Keys)); err != nil {
+			return nil, err
+		}
+
+		source := *definition
+		source.Keys = make([]*mergeKey, len(definition.Keys))
+
+		for j, key := range definition.Keys {
+			resolvedKey := *key
+			if err := ec.resolveMergeKeyOptions(ctx, &resolvedKey); err != nil {
+				return nil, err
+			}
+
+			source.Keys[j] = &resolvedKey
+		}
+
+		resolved[i] = &source
+	}
+
+	return resolved, nil
+}
+
+func (ec *execContext) resolveMergeKeyOptions(ctx context.Context, key *mergeKey) error {
+	for _, option := range []struct {
+		name     string
+		compiled **avt
+		value    *string
+	}{
+		{nameOrder, &key.OrderAVT, &key.Order},
+		{nameDataType, &key.DataTypeAVT, &key.DataType},
+		{nameCollation, &key.CollationAVT, &key.Collation},
+		{lexicon.AttrLang, &key.LangAVT, &key.Lang},
+		{nameCaseOrder, &key.CaseOrderAVT, &key.CaseOrder},
+	} {
+		if *option.compiled == nil {
+			continue
+		}
+
+		value, err := (*option.compiled).evaluate(ctx, ec.contextNode)
+		if err != nil {
+			return err
+		}
+
+		value = strings.Trim(value, " \t\r\n")
+		if key.specified&mergeAttrCollation == 0 || option.name != lexicon.AttrLang && option.name != nameCaseOrder {
+			if err := validateLiteralSortOption(option.name, value); err != nil {
+				return dynamicError(errCodeXTDE0030, "invalid %s value %q in xsl:merge-key", option.name, value)
+			}
+		}
+
+		*option.value = value
+		*option.compiled = nil
+	}
+
+	if key.specified&mergeAttrCollation != 0 {
+		key.Collation = resolveAgainstBaseURI(key.Collation, key.BaseURI)
+	}
+
+	return nil
+}
+
 func (ec *execContext) execMerge(ctx context.Context, inst *mergeInst) error {
+	definitions, err := ec.resolveMergeDefinitions(ctx, inst.Sources)
+	if err != nil {
+		return err
+	}
+
+	resolved := *inst
+	resolved.Sources = definitions
+	inst = &resolved
+
 	sources, err := ec.gatherAllMergeSources(ctx, inst.Sources)
 	if err != nil {
 		return err
 	}
 
-	orders, err := ec.evaluateMergeOrders(ctx, inst.Sources[0].Keys)
-	if err != nil {
-		return err
-	}
+	keys := inst.Sources[0].Keys
+	orders := make([]mergeKeyOrder, len(keys))
+	dataTypes := make([]string, len(keys))
 
-	dataTypes, err := ec.evaluateMergeDataTypes(ctx, inst.Sources)
-	if err != nil {
-		return err
-	}
-
-	if err := validateMergeDataTypes(dataTypes); err != nil {
-		return err
+	for i, key := range keys {
+		orders[i].desc = key.Order == lexicon.OutputDescending
+		dataTypes[i] = key.DataType
 	}
 
 	if err := validateMergeSourceCollations(inst.Sources); err != nil {
@@ -440,13 +530,15 @@ func (ec *execContext) execMerge(ctx context.Context, inst *mergeInst) error {
 		return err
 	}
 
-	if err := prepareMergeSourceOrder(sources, dataTypes, orders, collations); err != nil {
+	if err := ec.prepareMergeComparisons(ctx, sources, dataTypes, collations); err != nil {
 		return err
 	}
 
-	applyMergeComparisonTypes(sources, dataTypes[0], collations)
+	if err := prepareMergeSourceOrder(sources, orders); err != nil {
+		return err
+	}
 
-	groups, err := ec.nWayMerge(sources, orders)
+	groups, err := ec.nWayMerge(ctx, sources, orders)
 	if err != nil {
 		return err
 	}
@@ -454,190 +546,17 @@ func (ec *execContext) execMerge(ctx context.Context, inst *mergeInst) error {
 	return ec.executeMergeGroups(ctx, inst, groups)
 }
 
-// compareMergeKeysForVerify compares two merge key value arrays for
-// sort-order verification (XTDE2220). It behaves like compareMergeKeyValues
-// but, for a non-numeric key level with a declared collation, compares the
-// keys' string values under that collation. Merge keys selected from untyped
-// nodes atomize to xs:untypedAtomic and would otherwise compare by codepoint
-// through compareSingleMergeKey, ignoring the declared collation — so data
-// sorted for one collation and merged under another would be seen as sorted.
-func compareMergeKeysForVerify(a, b []mergeKeyValue, orders []mergeKeyOrder, colls []func(x, y string) int) (int, error) {
-	for i, ord := range orders {
-		if i >= len(a) || i >= len(b) {
-			break
-		}
-
-		var (
-			c   int
-			err error
-		)
-		if i < len(colls) && colls[i] != nil && mergeKeyStringLike(a[i]) && mergeKeyStringLike(b[i]) {
-			c, err = compareMergeKeyStringsColl(a[i], b[i], colls[i])
-		} else {
-			c, err = compareSingleMergeKey(a[i], b[i])
-		}
-
-		if err != nil {
-			return 0, err
-		}
-
-		if ord.desc {
-			c = -c
-		}
-
-		if c != 0 {
-			return c, nil
-		}
-	}
-
-	return 0, nil
-}
-
-// compareMergeKeyStringsColl compares two merge key values as strings under
-// the supplied collation compare function.
-func compareMergeKeyStringsColl(a, b mergeKeyValue, coll func(x, y string) int) (int, error) {
-	as, err := mergeKeyString(a)
-	if err != nil {
-		return 0, err
-	}
-
-	bs, err := mergeKeyString(b)
-	if err != nil {
-		return 0, err
-	}
-
-	return coll(as, bs), nil
-}
-
-// mergeKeyStringLike reports whether a merge key value should be compared as a
-// string under a declared collation. A key selected from an untyped node
-// (xs:untypedAtomic), a genuine xs:string/xs:anyURI, or a pure string fallback
-// qualifies; a data-type="number" key or a genuinely-ordered non-string atom
-// (numeric, date, boolean, …) does not — those keep their typed/codepoint
-// ordering via compareSingleMergeKey, matching the n-way merge comparison and
-// avoiding a spurious out-of-order verdict (e.g. "10" < "2").
-func mergeKeyStringLike(mkv mergeKeyValue) bool {
-	if mkv.numeric {
-		return false
-	}
-
-	if mkv.atom.TypeName == "" {
-		return true
-	}
-
-	switch mkv.atom.TypeName {
-	case xdm.TypeString, xdm.TypeUntypedAtomic, xdm.TypeAnyURI:
-		return true
-	default:
-		return false
-	}
-}
-
-// mergeKeyString returns the string value of a merge key value, atomizing a
-// typed atomic value when present and falling back to the recorded string.
-func mergeKeyString(mkv mergeKeyValue) (string, error) {
-	if mkv.atom.TypeName != "" {
-		s, err := xpath.AtomicToString(mkv.atom)
-		if err != nil {
-			return "", err
-		}
-
-		return s, nil
-	}
-
-	return mkv.str, nil
-}
-
-// applyNumericMergeKey converts a merge key value to numeric mode.
-// When data-type="number", the key's string value is parsed as a number.
-// Non-numeric values become NaN, and two NaN values are treated as equal
-// during comparison (per XSLT sort specification).
-func applyNumericMergeKey(mkv *mergeKeyValue) {
-	mkv.numeric = true
-
-	// If we have a typed atomic value, try to extract its numeric value.
-	if mkv.atom.TypeName != "" {
-		if mkv.atom.IsNumeric() {
-			f := mkv.atom.ToFloat64()
-			if math.IsNaN(f) {
-				mkv.isNaN = true
-				return
-			}
-
-			mkv.num = f
-
-			return
-		}
-		// Non-numeric atomic value: get string representation and parse.
-		s, err := xpath.AtomicToString(mkv.atom)
-		if err != nil {
-			mkv.isNaN = true
-			return
-		}
-
-		f := parseNumber(s)
-		if math.IsNaN(f) {
-			mkv.isNaN = true
-			return
-		}
-
-		mkv.num = f
-
-		return
-	}
-
-	// String fallback.
-	f := parseNumber(mkv.str)
-	if math.IsNaN(f) {
-		mkv.isNaN = true
-		return
-	}
-
-	mkv.num = f
-}
-
-func validateMergeDataTypes(perSourceDataTypes [][]string) error {
-	// XTDE2210: detect inconsistent data-type between sources.
-	// Per XSLT spec, if data-type differs between corresponding merge-key
-	// elements for different merge sources, the processor may raise XTDE2210.
-	if len(perSourceDataTypes) > 1 {
-		first := perSourceDataTypes[0]
-		for si := 1; si < len(perSourceDataTypes); si++ {
-			for k := range first {
-				if k < len(perSourceDataTypes[si]) && first[k] != perSourceDataTypes[si][k] {
-					return dynamicError(errCodeXTDE2210, "merge sources have inconsistent data-type for merge key %d: %q vs %q", k+1, first[k], perSourceDataTypes[si][k])
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
 func validateMergeSourceCollations(sources []*mergeSource) error {
-	// XTDE2210: detect inconsistent collation between sources.
-	// If corresponding merge-key elements specify different collations,
-	// lang, or case-order, raise XTDE2210.
-	if len(sources) > 1 {
-		firstKeys := sources[0].Keys
-		for si := 1; si < len(sources); si++ {
-			srcKeys := sources[si].Keys
-			for k := range firstKeys {
-				if k >= len(srcKeys) {
-					break
-				}
+	if len(sources) < 2 {
+		return nil
+	}
 
-				if firstKeys[k].Collation != srcKeys[k].Collation {
-					return dynamicError(errCodeXTDE2210, "merge sources have inconsistent collation for merge key %d: %q vs %q", k+1, firstKeys[k].Collation, srcKeys[k].Collation)
-				}
-
-				if firstKeys[k].Lang != srcKeys[k].Lang {
-					return dynamicError(errCodeXTDE2210, "merge sources have inconsistent lang for merge key %d: %q vs %q", k+1, firstKeys[k].Lang, srcKeys[k].Lang)
-				}
-
-				if firstKeys[k].CaseOrder != srcKeys[k].CaseOrder {
-					return dynamicError(errCodeXTDE2210, "merge sources have inconsistent case-order for merge key %d: %q vs %q", k+1, firstKeys[k].CaseOrder, srcKeys[k].CaseOrder)
-				}
+	for _, source := range sources[1:] {
+		for i, first := range sources[0].Keys {
+			other := source.Keys[i]
+			if first.specified != other.specified || first.Order != other.Order || first.DataType != other.DataType ||
+				first.Collation != other.Collation || first.Lang != other.Lang || first.CaseOrder != other.CaseOrder {
+				return dynamicError(errCodeXTDE2210, "merge sources have differing effective attributes for merge key %d", i+1)
 			}
 		}
 	}
@@ -645,19 +564,72 @@ func validateMergeSourceCollations(sources []*mergeSource) error {
 	return nil
 }
 
-func prepareMergeSourceOrder(sources []mergeSourceItems, dataTypes [][]string, orders []mergeKeyOrder, collations []func(a, b string) int) error {
+// Merge keys use the same globally promoted ordering as xsl:sort. Keep the
+// original atoms for current-merge-key(), and store comparison values separately.
+func (ec *execContext) prepareMergeComparisons(ctx context.Context, sources []mergeSourceItems, types []string, collations []func(a, b string) int) error {
+	for keyIndex, dataType := range types {
+		mode := dataTypeAuto
+		if dataType == lexicon.TypeNumber {
+			mode = dataTypeNumber
+		} else if dataType != "" {
+			mode = dataTypeText
+		}
+
+		var entries []keyed1[*mergeKeyValue]
+
+		for i := range sources {
+			for j := range sources[i].keys {
+				if err := xpath.Charge(ctx, 1); err != nil {
+					return err
+				}
+
+				key := &sources[i].keys[j][keyIndex]
+				sequence := mergeKeyValueToSequence(*key)
+				text := stringifySequence(sequence)
+				value := mergeComparisonValue(sequence, text, &mode, ec.currentTime.Location())
+				entries = append(entries, keyed1[*mergeKeyValue]{item: key, key: value})
+			}
+		}
+
+		if err := validateSortKeyTypes1(entries, mode, ec.stylesheet.xpathVersion()); err != nil {
+			return dynamicErrorCause(errCodeXTTE2230, err, "incomparable merge key values")
+		}
+
+		level := resolvedLevel{compare: collations[keyIndex]}
+		finalizeLevel1(&level, mode, entries)
+
+		for _, entry := range entries {
+			entry.item.comparison = entry.key
+			entry.item.level = &level
+		}
+	}
+
+	return nil
+}
+
+func mergeComparisonValue(sequence xdm.Sequence, text string, mode *dataTypeMode, timezone *time.Location) sortValue {
+	if *mode == dataTypeNumber || *mode == dataTypeNumberAuto {
+		value := extractNumericSortValue(sequence, text, *mode == dataTypeNumber, timezone)
+		if *mode == dataTypeNumberAuto {
+			return autoNumericSortValue(value, sequence, timezone)
+		}
+
+		return value
+	}
+
+	return textSortValue(sequence, text, xdm.SequenceLen(sequence) == 1, mode, timezone)
+}
+
+func prepareMergeSourceOrder(sources []mergeSourceItems, orders []mergeKeyOrder) error {
 	for i := range sources {
 		source := &sources[i]
 		if len(source.items) <= 1 {
 			continue
 		}
 
-		keys := mergeVerificationKeys(source.keys, dataTypes[source.sourceIdx])
 		if source.sortBeforeMerge {
-			if err := sortMergeSourceItems(source, keys, orders); err != nil {
-				return err
-			}
-		} else if err := verifyMergeSourceKeys(keys, orders, collations); err != nil {
+			sortMergeSourceItems(source, orders)
+		} else if err := verifyMergeSourceKeys(source.keys, orders); err != nil {
 			return err
 		}
 	}
@@ -665,23 +637,7 @@ func prepareMergeSourceOrder(sources []mergeSourceItems, dataTypes [][]string, o
 	return nil
 }
 
-func mergeVerificationKeys(keys [][]mergeKeyValue, dataTypes []string) [][]mergeKeyValue {
-	verification := make([][]mergeKeyValue, len(keys))
-	for i, key := range keys {
-		copyKey := append([]mergeKeyValue(nil), key...)
-		for k := range copyKey {
-			if k < len(dataTypes) && dataTypes[k] == lexicon.TypeNumber {
-				applyNumericMergeKey(&copyKey[k])
-			}
-		}
-
-		verification[i] = copyKey
-	}
-
-	return verification
-}
-
-func sortMergeSourceItems(src *mergeSourceItems, verifyKeys [][]mergeKeyValue, orders []mergeKeyOrder) error {
+func sortMergeSourceItems(src *mergeSourceItems, orders []mergeKeyOrder) {
 	type indexedEntry struct {
 		idx  int
 		item xdm.Item
@@ -691,28 +647,13 @@ func sortMergeSourceItems(src *mergeSourceItems, verifyKeys [][]mergeKeyValue, o
 	// sort-before-merge="yes": sort the items by merge keys.
 	entries := make([]indexedEntry, len(src.items))
 	for i := range src.items {
-		entries[i] = indexedEntry{idx: i, item: src.items[i], keys: verifyKeys[i]}
+		entries[i] = indexedEntry{idx: i, item: src.items[i], keys: src.keys[i]}
 	}
-
-	var sortErr error
 
 	slices.SortStableFunc(entries, func(a, b indexedEntry) int {
-		if sortErr != nil {
-			return 0
-		}
-
-		c, err := compareMergeKeyValues(a.keys, b.keys, orders)
-		if err != nil {
-			sortErr = err
-			return 0
-		}
-
-		return c
+		return compareMergeKeyValues(a.keys, b.keys, orders)
 	})
 
-	if sortErr != nil {
-		return sortErr
-	}
 	// Rebuild items and keys in sorted order using a temporary copy
 	// of the original keys to avoid in-place overwrite corruption.
 	origKeys := make([][]mergeKeyValue, len(src.keys))
@@ -722,20 +663,15 @@ func sortMergeSourceItems(src *mergeSourceItems, verifyKeys [][]mergeKeyValue, o
 		src.items[i] = e.item
 		src.keys[i] = origKeys[e.idx]
 	}
-
-	return nil
 }
 
-func verifyMergeSourceKeys(verifyKeys [][]mergeKeyValue, orders []mergeKeyOrder, keyCollations []func(a, b string) int) error {
+func verifyMergeSourceKeys(verifyKeys [][]mergeKeyValue, orders []mergeKeyOrder) error {
 	// Default: verify items are already sorted (XTDE2220). String
 	// keys are compared under the declared collation (e.g. a UCA
 	// collation with lang/case-order/alternate), so data sorted for
 	// one collation but merged under another is detected as unsorted.
 	for i := 1; i < len(verifyKeys); i++ {
-		cmp, cmpErr := compareMergeKeysForVerify(verifyKeys[i-1], verifyKeys[i], orders, keyCollations)
-		if cmpErr != nil {
-			return cmpErr
-		}
+		cmp := compareMergeKeyValues(verifyKeys[i-1], verifyKeys[i], orders)
 
 		if cmp > 0 {
 			return dynamicError(errCodeXTDE2220, "merge input is not sorted according to the declared merge key")
@@ -745,28 +681,11 @@ func verifyMergeSourceKeys(verifyKeys [][]mergeKeyValue, orders []mergeKeyOrder,
 	return nil
 }
 
-func applyMergeComparisonTypes(sources []mergeSourceItems, firstDTs []string, keyCollations []func(a, b string) int) {
-	for si := range sources {
-		src := &sources[si]
-		for i := range src.keys {
-			for k := range src.keys[i] {
-				if k < len(firstDTs) && firstDTs[k] == lexicon.TypeNumber {
-					applyNumericMergeKey(&src.keys[i][k])
-				}
-
-				if k < len(keyCollations) && keyCollations[k] != nil {
-					src.keys[i][k].collCompare = keyCollations[k]
-				}
-			}
-		}
-	}
-}
-
 func (ec *execContext) gatherAllMergeSources(ctx context.Context, definitions []*mergeSource) ([]mergeSourceItems, error) {
 	// 1. Gather items from all sources.
 	var allSources []mergeSourceItems
 
-	for srcIdx, src := range definitions {
+	for _, src := range definitions {
 		items, err := ec.gatherMergeSourceItems(ctx, src)
 		if err != nil {
 			return nil, err
@@ -782,59 +701,10 @@ func (ec *execContext) gatherAllMergeSources(ctx context.Context, definitions []
 			items[i].keys = keys
 		}
 
-		// Tag each mergeSourceItems with its source index for per-source
-		// data-type resolution during sort verification.
-		for i := range items {
-			items[i].sourceIdx = srcIdx
-		}
-
 		allSources = append(allSources, items...)
 	}
 
 	return allSources, nil
-}
-
-func (ec *execContext) evaluateMergeOrders(ctx context.Context, keyDefs []*mergeKey) ([]mergeKeyOrder, error) {
-	orders := make([]mergeKeyOrder, len(keyDefs))
-	for i, mk := range keyDefs {
-		orderStr := mk.Order
-		if mk.OrderAVT != nil {
-			evaluated, err := mk.OrderAVT.evaluate(ctx, ec.contextNode)
-			if err != nil {
-				return nil, err
-			}
-
-			orderStr = evaluated
-		}
-
-		orders[i] = mergeKeyOrder{desc: orderStr == lexicon.OutputDescending}
-	}
-
-	return orders, nil
-}
-
-func (ec *execContext) evaluateMergeDataTypes(ctx context.Context, sources []*mergeSource) ([][]string, error) {
-	perSourceDataTypes := make([][]string, len(sources))
-	for si, src := range sources {
-		dts := make([]string, len(src.Keys))
-		for k, mk := range src.Keys {
-			dt := mk.DataType
-			if mk.DataTypeAVT != nil {
-				evaluated, err := mk.DataTypeAVT.evaluate(ctx, ec.contextNode)
-				if err != nil {
-					return nil, err
-				}
-
-				dt = evaluated
-			}
-
-			dts[k] = dt
-		}
-
-		perSourceDataTypes[si] = dts
-	}
-
-	return perSourceDataTypes, nil
 }
 
 func (ec *execContext) resolveMergeCollations(ctx context.Context, keyDefs []*mergeKey) ([]func(a, b string) int, error) {
@@ -882,6 +752,18 @@ func (ec *execContext) installMergeFunctions(sources []*mergeSource) (*mergeActi
 	}
 }
 
+// setMergeFocus keeps node navigation and the XPath context item consistent.
+func (ec *execContext) setMergeFocus(item xdm.Item) {
+	ec.contextItem = item
+	ec.contextNode = nil
+	ec.currentNode = nil
+
+	if node, ok := item.(xdm.NodeItem); ok {
+		ec.contextNode = node.Node
+		ec.currentNode = node.Node
+	}
+}
+
 func (ec *execContext) executeMergeGroups(ctx context.Context, inst *mergeInst, groups []mergeGroup) error {
 	state, restoreFunctions := ec.installMergeFunctions(inst.Sources)
 	defer restoreFunctions()
@@ -889,14 +771,24 @@ func (ec *execContext) executeMergeGroups(ctx context.Context, inst *mergeInst, 
 	// Save/restore context.
 	savedCurrent := ec.currentNode
 	savedContext := ec.contextNode
+	savedItem := ec.contextItem
 	savedPos := ec.position
 	savedSize := ec.size
 	savedInMerge := ec.inMergeAction
 
 	ec.size = len(groups)
+
+	for _, source := range inst.Sources {
+		if source.StreamableAttr {
+			ec.size = -1 // XSLT 3.0 §15.7: context size is absent.
+			break
+		}
+	}
+
 	defer func() {
 		ec.currentNode = savedCurrent
 		ec.contextNode = savedContext
+		ec.contextItem = savedItem
 		ec.position = savedPos
 		ec.size = savedSize
 		ec.inMergeAction = savedInMerge
@@ -906,13 +798,8 @@ func (ec *execContext) executeMergeGroups(ctx context.Context, inst *mergeInst, 
 		ec.position = i + 1
 		state.group = g
 
-		// Context item is the first item in the group.
-		if len(g.allItems) > 0 {
-			if ni, ok := g.allItems[0].(xdm.NodeItem); ok {
-				ec.currentNode = ni.Node
-				ec.contextNode = ni.Node
-			}
-		}
+		// A merge group is nonempty; its first item establishes the action focus.
+		ec.setMergeFocus(g.allItems[0])
 
 		ec.inMergeAction = true
 		ec.pushVarScope()
@@ -963,9 +850,31 @@ func (ec *execContext) gatherMergeDocuments(ctx context.Context, src *mergeSourc
 		return nil, err
 	}
 
+	// Convert the complete URI sequence before any resource is opened (§15.3).
+	converted, err := ec.convertSequenceType(
+		ctx,
+		uris.Sequence(),
+		xdm.SequenceType{
+			ItemTest:   xdm.AtomicOrUnionType{Name: "Q{" + lexicon.NamespaceXSD + "}string"},
+			Occurrence: xdm.OccurrenceZeroOrMore,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	anchors := xdm.Materialize(converted)
+
+	savedPos, savedSize := ec.position, ec.size
+	defer func() { ec.position, ec.size = savedPos, savedSize }()
+
+	ec.size = len(anchors)
+
 	var sources []mergeSourceItems
 
-	for item := range xdm.SequenceItems(uris.Sequence()) {
+	for i, item := range anchors {
+		ec.position = i + 1
+
 		source, err := ec.gatherMergeDocument(ctx, src, item)
 		if err != nil {
 			return nil, err
@@ -978,15 +887,12 @@ func (ec *execContext) gatherMergeDocuments(ctx context.Context, src *mergeSourc
 }
 
 func (ec *execContext) gatherMergeDocument(ctx context.Context, src *mergeSource, uriItem xdm.Item) (mergeSourceItems, error) {
-	atomic, err := xpath.AtomizeItem(uriItem)
-	if err != nil {
-		return mergeSourceItems{}, err
+	atomic, ok := uriItem.(xdm.AtomicValue)
+	if !ok {
+		return mergeSourceItems{}, dynamicError(lexicon.ErrXPTY0004, "merge source URI must be a string")
 	}
 
-	uri, err := xpath.AtomicToString(atomic)
-	if err != nil {
-		return mergeSourceItems{}, err
-	}
+	uri := atomic.StringVal()
 
 	doc, err := ec.loadMergeDocument(ctx, uri, src.BaseURI)
 	if err != nil {
@@ -1015,9 +921,18 @@ func (ec *execContext) gatherMergeItems(ctx context.Context, src *mergeSource) (
 		return nil, err
 	}
 
+	anchors := xdm.Materialize(items.Sequence())
+
+	savedPos, savedSize := ec.position, ec.size
+	defer func() { ec.position, ec.size = savedPos, savedSize }()
+
+	ec.size = len(anchors)
+
 	var sources []mergeSourceItems
 
-	for item := range xdm.SequenceItems(items.Sequence()) {
+	for i, item := range anchors {
+		ec.position = i + 1
+
 		selection, err := ec.selectMergeSourceItem(ctx, src, item)
 		if err != nil {
 			return nil, err
@@ -1403,6 +1318,10 @@ func (ec *execContext) checkAccumulatorType(ctx context.Context, def *accumulato
 		return seq, nil
 	}
 
+	if def.Type != nil {
+		return ec.convertSequenceType(ctx, seq, *def.Type)
+	}
+
 	return checkSequenceType(ctx, seq, parseSequenceType(def.As), lexicon.ErrXPTY0004, "accumulator "+def.Name, ec)
 }
 
@@ -1425,7 +1344,7 @@ func (ec *execContext) loadMergeDocument(ctx context.Context, uri string, effect
 		effectiveBase = ec.stylesheet.baseURI
 	}
 
-	resolvedURI := resolveAgainstBaseURI(uri, effectiveBase)
+	resolvedURI := resolveAgainstBaseURI(uripath.EscapeResourceReference(uri), uripath.EscapeResourceReference(effectiveBase))
 
 	mergeCacheKey := ec.docCacheKey(resolvedURI)
 	if doc, ok := ec.docCache[mergeCacheKey]; ok {
@@ -1470,6 +1389,8 @@ func (ec *execContext) evaluateMergeSelect(ctx context.Context, src *mergeSource
 	savedSource := ec.sourceDoc
 	savedContext := ec.contextNode
 	savedCurrent := ec.currentNode
+	savedItem := ec.contextItem
+	ec.contextItem = nil
 	ec.sourceDoc = doc
 	ec.contextNode = doc
 
@@ -1478,6 +1399,7 @@ func (ec *execContext) evaluateMergeSelect(ctx context.Context, src *mergeSource
 		ec.sourceDoc = savedSource
 		ec.contextNode = savedContext
 		ec.currentNode = savedCurrent
+		ec.contextItem = savedItem
 	}()
 
 	result, err := ec.evalXPath(ctx, src.Select, doc)
@@ -1503,17 +1425,21 @@ func (ec *execContext) evaluateMergeSelectOnNode(ctx context.Context, src *merge
 	savedContext := ec.contextNode
 
 	savedCurrent := ec.currentNode
+	savedItem := ec.contextItem
+	ec.contextItem = nil
+
 	if doc, ok := node.(*xdm.Document); ok {
 		ec.sourceDoc = doc
 	}
 
 	ec.contextNode = node
-
 	ec.currentNode = node
+
 	defer func() {
 		ec.sourceDoc = savedSource
 		ec.contextNode = savedContext
 		ec.currentNode = savedCurrent
+		ec.contextItem = savedItem
 	}()
 
 	result, err := ec.evalXPath(ctx, src.Select, node)
@@ -1533,10 +1459,12 @@ func (ec *execContext) evaluateMergeSelectOnItem(ctx context.Context, src *merge
 	}
 
 	savedItem := ec.contextItem
+	savedNode, savedCurrent := ec.contextNode, ec.currentNode
 
-	ec.contextItem = item
+	ec.setMergeFocus(item)
 	defer func() {
 		ec.contextItem = savedItem
+		ec.contextNode, ec.currentNode = savedNode, savedCurrent
 	}()
 
 	result, err := ec.evalXPath(ctx, src.Select, nil)
@@ -1554,6 +1482,8 @@ func (ec *execContext) evaluateMergeKeys(ctx context.Context, src *mergeSourceIt
 	savedContext := ec.contextNode
 	savedCurrent := ec.currentNode
 	savedItem := ec.contextItem
+	savedPos, savedSize := ec.position, ec.size
+	ec.position, ec.size = 1, 1
 
 	savedMergeKey := ec.evaluatingMergeKey
 	defer func() {
@@ -1561,22 +1491,14 @@ func (ec *execContext) evaluateMergeKeys(ctx context.Context, src *mergeSourceIt
 		ec.currentNode = savedCurrent
 		ec.contextItem = savedItem
 		ec.evaluatingMergeKey = savedMergeKey
+		ec.position, ec.size = savedPos, savedSize
 	}()
 
 	for i, item := range src.items {
 		itemKeys := make([]mergeKeyValue, len(keyDefs))
 
-		var node xdm.Node
-
-		if ni, ok := item.(xdm.NodeItem); ok {
-			node = ni.Node
-			ec.contextNode = node
-			ec.currentNode = node
-			ec.contextItem = nil
-		} else {
-			// Atomic item (e.g., string from unparsed-text-lines).
-			ec.contextItem = item
-		}
+		ec.setMergeFocus(item)
+		node := ec.contextNode
 
 		for k, key := range keyDefs {
 			value, err := ec.evaluateSingleMergeKey(ctx, key, node)
@@ -1656,25 +1578,23 @@ func (ec *execContext) evaluateMergeKeySequence(ctx context.Context, mk *mergeKe
 // nWayMerge performs an n-way merge of pre-sorted sources, grouping items
 // that share the same key values. Returns XTTE2230 if keys from different
 // sources are not comparable.
-func (ec *execContext) nWayMerge(sources []mergeSourceItems, orders []mergeKeyOrder) ([]mergeGroup, error) {
+func (ec *execContext) nWayMerge(ctx context.Context, sources []mergeSourceItems, orders []mergeKeyOrder) ([]mergeGroup, error) {
 	cursors := make([]int, len(sources))
 
 	var groups []mergeGroup
 
 	for {
-		keys, found, err := minimumMergeKeys(sources, cursors, orders)
-		if err != nil {
+		if err := xpath.Charge(ctx, len(sources)); err != nil {
 			return nil, err
 		}
+
+		keys, found := minimumMergeKeys(sources, cursors, orders)
 
 		if !found {
 			break
 		}
 
-		group, err := collectMergeGroup(sources, cursors, keys, orders)
-		if err != nil {
-			return nil, err
-		}
+		group := collectMergeGroup(sources, cursors, keys, orders)
 
 		if len(keys) > 0 {
 			group.key = mergeKeyValuesToSequence(keys)
@@ -1686,7 +1606,7 @@ func (ec *execContext) nWayMerge(sources []mergeSourceItems, orders []mergeKeyOr
 	return groups, nil
 }
 
-func minimumMergeKeys(sources []mergeSourceItems, cursors []int, orders []mergeKeyOrder) ([]mergeKeyValue, bool, error) {
+func minimumMergeKeys(sources []mergeSourceItems, cursors []int, orders []mergeKeyOrder) ([]mergeKeyValue, bool) {
 	// Find the minimum key across all sources at their current cursor.
 	var minKeys []mergeKeyValue
 
@@ -1702,10 +1622,7 @@ func minimumMergeKeys(sources []mergeSourceItems, cursors []int, orders []mergeK
 			minKeys = curKeys
 			minFound = true
 		} else {
-			cmp, err := compareMergeKeyValues(curKeys, minKeys, orders)
-			if err != nil {
-				return nil, false, err
-			}
+			cmp := compareMergeKeyValues(curKeys, minKeys, orders)
 
 			if cmp < 0 {
 				minKeys = curKeys
@@ -1713,10 +1630,10 @@ func minimumMergeKeys(sources []mergeSourceItems, cursors []int, orders []mergeK
 		}
 	}
 
-	return minKeys, minFound, nil
+	return minKeys, minFound
 }
 
-func collectMergeGroup(sources []mergeSourceItems, cursors []int, minKeys []mergeKeyValue, orders []mergeKeyOrder) (mergeGroup, error) {
+func collectMergeGroup(sources []mergeSourceItems, cursors []int, minKeys []mergeKeyValue, orders []mergeKeyOrder) mergeGroup {
 	g := mergeGroup{
 		byName: make(map[string]xdm.ItemSlice),
 	}
@@ -1725,10 +1642,7 @@ func collectMergeGroup(sources []mergeSourceItems, cursors []int, minKeys []merg
 		for cursors[si] < len(src.items) {
 			curKeys := src.keys[cursors[si]]
 
-			cmp, err := compareMergeKeyValues(curKeys, minKeys, orders)
-			if err != nil {
-				return mergeGroup{}, err
-			}
+			cmp := compareMergeKeyValues(curKeys, minKeys, orders)
 
 			if cmp != 0 {
 				break
@@ -1745,7 +1659,7 @@ func collectMergeGroup(sources []mergeSourceItems, cursors []int, minKeys []merg
 		}
 	}
 
-	return g, nil
+	return g
 }
 
 // mergeKeyValuesToSequence converts the merge key tuple to the XPath sequence
@@ -1764,17 +1678,13 @@ func mergeKeyValueToSequence(mkv mergeKeyValue) xdm.Sequence {
 		return xdm.SingleAtomic(mkv.atom)
 	}
 
-	if mkv.str != "" {
-		return xdm.SingleString(mkv.str)
-	}
-
 	return xdm.EmptySequence()
 }
 
 // resolveMergeKeyCollation resolves the collation URI for a merge key
 // definition at runtime. Returns nil compare function if no collation is
 // specified or if the collation is the default codepoint collation.
-// Raises XTDE2220 if the collation URI is not recognized.
+// Raises XTDE1035 if the collation URI is not recognized.
 func (ec *execContext) resolveMergeKeyCollation(ctx context.Context, mk *mergeKey) (func(a, b string) int, error) {
 	cmpFn, _, err := ec.resolveMergeKeyCollationURI(ctx, mk)
 	return cmpFn, err
@@ -1782,155 +1692,65 @@ func (ec *execContext) resolveMergeKeyCollation(ctx context.Context, mk *mergeKe
 
 // resolveMergeKeyCollationURI is like resolveMergeKeyCollation but also
 // returns the resolved collation URI string for inspection.
-func (ec *execContext) resolveMergeKeyCollationURI(ctx context.Context, mk *mergeKey) (func(a, b string) int, string, error) {
-	collURI := mk.Collation
-	if mk.CollationAVT != nil {
-		evaluated, err := mk.CollationAVT.evaluate(ctx, ec.contextNode)
+func (ec *execContext) resolveMergeKeyCollationURI(ctx context.Context, key *mergeKey) (func(a, b string) int, string, error) {
+	collation := key.Collation
+	if key.CollationAVT != nil {
+		value, err := key.CollationAVT.evaluate(ctx, ec.contextNode)
 		if err != nil {
 			return nil, "", err
 		}
 
-		collURI = evaluated
+		collation = resolveAgainstBaseURI(strings.Trim(value, " \t\r\n"), key.BaseURI)
 	}
 
-	if collURI == "" {
-		// No explicit collation — use lang/case-order to build a UCA URI.
-		if mk.Lang != "" {
-			collURI = "http://www.w3.org/2013/collation/UCA?lang=" + mk.Lang
-			switch mk.CaseOrder {
-			case nameUpperFirst:
-				collURI += ";caseFirst=upper"
-			case nameLowerFirst:
-				collURI += ";caseFirst=lower"
-			}
+	if key.specified&mergeAttrCollation == 0 {
+		var parameters []string
+		if key.Lang != "" {
+			parameters = append(parameters, "lang="+key.Lang)
+		}
+
+		switch key.CaseOrder {
+		case nameUpperFirst:
+			parameters = append(parameters, "caseFirst=upper")
+		case nameLowerFirst:
+			parameters = append(parameters, "caseFirst=lower")
+		}
+
+		if len(parameters) > 0 {
+			collation = "http://www.w3.org/2013/collation/UCA?" + strings.Join(parameters, ";")
 		}
 	}
 
-	if collURI == "" || collURI == lexicon.CollationCodepoint {
-		return nil, collURI, nil
+	if collation == "" || collation == lexicon.CollationCodepoint {
+		return nil, collation, nil
 	}
 
-	cmpFn, err := xpath.ResolveCollationCompareFunc(collURI)
+	compare, err := xpath.ResolveCollationCompareFunc(collation)
 	if err != nil {
-		return nil, collURI, dynamicError(errCodeXTDE2220, "unsupported collation URI %q: %v", collURI, err)
+		return nil, collation, dynamicError(errCodeXTDE1035, "unsupported merge-key collation URI %q: %v", collation, err)
 	}
 
-	return cmpFn, collURI, nil
+	return compare, collation, nil
 }
 
 // compareMergeKeyValues compares two merge key value arrays using the
 // specified orders. Returns -1, 0, or +1. Returns an error (XTTE2230)
 // when keys from different sources have incompatible types.
-func compareMergeKeyValues(a, b []mergeKeyValue, orders []mergeKeyOrder) (int, error) {
+func compareMergeKeyValues(a, b []mergeKeyValue, orders []mergeKeyOrder) int {
 	for i, ord := range orders {
 		if i >= len(a) || i >= len(b) {
 			break
 		}
 
-		c, err := compareSingleMergeKey(a[i], b[i])
-		if err != nil {
-			return 0, err
-		}
+		c := compareSortValues(a[i].comparison, b[i].comparison, *a[i].level)
 
 		if ord.desc {
 			c = -c
 		}
 
 		if c != 0 {
-			return c, nil
+			return c
 		}
-	}
-
-	return 0, nil
-}
-
-// compareSingleMergeKey compares two single merge key values.
-// Returns XTTE2230 when the key types are incomparable.
-func compareSingleMergeKey(a, b mergeKeyValue) (int, error) {
-	// Numeric mode: use float64 comparison with NaN handling.
-	if a.numeric || b.numeric {
-		return compareNumericMergeKey(a, b), nil
-	}
-
-	// If both have typed atomic values, use XPath value comparison.
-	if a.atom.TypeName != "" && b.atom.TypeName != "" {
-		lt, err := xpath.ValueCompare(xpath.TokenLt, a.atom, b.atom)
-		if err == nil {
-			if lt {
-				return -1, nil
-			}
-
-			eq, err2 := xpath.ValueCompare(xpath.TokenEq, a.atom, b.atom)
-			if err2 == nil && eq {
-				return 0, nil
-			}
-
-			return 1, nil
-		}
-		// Types are incomparable — raise XTTE2230.
-		return 0, dynamicError(errCodeXTTE2230, "merge keys are not comparable: %s vs %s", a.atom.TypeName, b.atom.TypeName)
-	}
-
-	// Fall back to string comparison.
-	aStr := a.str
-	bStr := b.str
-
-	if a.atom.TypeName != "" {
-		s, err := xpath.AtomicToString(a.atom)
-		if err == nil {
-			aStr = s
-		}
-	}
-
-	if b.atom.TypeName != "" {
-		s, err := xpath.AtomicToString(b.atom)
-		if err == nil {
-			bStr = s
-		}
-	}
-	// Use collation compare function if available.
-	cmpFn := a.collCompare
-	if cmpFn == nil {
-		cmpFn = b.collCompare
-	}
-
-	if cmpFn != nil {
-		return cmpFn(aStr, bStr), nil
-	}
-
-	if aStr < bStr {
-		return -1, nil
-	}
-
-	if aStr > bStr {
-		return 1, nil
-	}
-
-	return 0, nil
-}
-
-func compareNumericMergeKey(a, b mergeKeyValue) int {
-	aNaN := a.isNaN
-
-	bNaN := b.isNaN
-	if aNaN && bNaN {
-		return 0
-	}
-
-	if aNaN {
-		return -1 // NaN sorts before non-NaN in ascending
-	}
-
-	if bNaN {
-		return 1
-	}
-
-	if a.num < b.num {
-		return -1
-	}
-
-	if a.num > b.num {
-		return 1
 	}
 
 	return 0

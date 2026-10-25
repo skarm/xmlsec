@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"strconv"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -569,20 +568,6 @@ func floatIntDigitCount(n float64) int {
 
 // roundHalfToEvenFloat rounds a float64 to the given precision using
 // half-to-even (banker's rounding). It uses big.Float to scale the value
-// floatToBigFloat converts a float64 to a big.Float using its shortest
-// decimal representation (matching Java's BigDecimal.valueOf behaviour).
-// This avoids rounding artifacts from the exact IEEE 754 binary value.
-func floatToBigFloat(n float64) *big.Float {
-	s := strconv.FormatFloat(n, 'G', -1, 64)
-
-	bf, _, err := new(big.Float).SetPrec(256).Parse(s, 10)
-	if err != nil {
-		return new(big.Float).SetPrec(256).SetFloat64(n)
-	}
-
-	return bf
-}
-
 // roundHalfUpFloat rounds a float64 using "half towards positive infinity"
 // semantics (XPath fn:round). Uses big.Float to preserve precision.
 func roundHalfUpFloat(n float64, precision int) float64 {
@@ -607,9 +592,9 @@ func roundHalfUpFloat(n float64, precision int) float64 {
 		return f
 	}
 
-	// Negative precision: use the shortest decimal representation to avoid
-	// artifacts from the exact IEEE 754 binary value at extreme magnitudes.
-	bf := floatToBigFloat(n)
+	// F&O requires rounding the actual binary value, including at coarse scales.
+	// Its shortest decimal representation can fall on the other side of a tie.
+	bf := new(big.Float).SetPrec(256).SetFloat64(n)
 	divisor := bigPow10(-precision)
 	scaled := new(big.Float).SetPrec(256).Quo(bf, divisor)
 

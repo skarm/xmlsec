@@ -262,13 +262,35 @@ func resolveFunctionInfo(ctx context.Context, ec *evalContext, prefix, name stri
 	return resolveFunctionByURIInfo(ctx, ec, uri, name, arity)
 }
 
+// CompatibilityFunctionResolver supplies a host's deferred foreign-function
+// error binding when XPath 1.0 compatibility applies. It is deliberately not
+// consulted by function-lookup or by strict dynamic-expression validation.
+type CompatibilityFunctionResolver interface {
+	ResolveCompatibilityFunction(context.Context, string, string, int) (Function, bool, error)
+}
+
+func resolveUnavailableFunction(ctx context.Context, ec *evalContext, uri, name string, arity int, cause error) (resolvedFunction, error) {
+	if resolver, ok := ec.functionResolver.(CompatibilityFunctionResolver); ok && ec.xpath10CompatMode() && uri != NSFn {
+		function, found, err := resolver.ResolveCompatibilityFunction(ctx, uri, name, arity)
+		if err != nil {
+			return resolvedFunction{}, err
+		}
+
+		if found {
+			return resolvedFunction{fn: function, uri: uri, name: name}, nil
+		}
+	}
+
+	return resolvedFunction{}, cause
+}
+
 func resolveFunctionByURIInfo(ctx context.Context, ec *evalContext, uri, name string, arity int) (resolvedFunction, error) {
 	// User functions by qualified name
 	if ec.fnsNS != nil {
 		qn := QualifiedName{URI: uri, Name: name}
 		if fn, ok := ec.fnsNS[qn]; ok {
 			if err := checkArity(fn, name, arity); err != nil {
-				return resolvedFunction{}, err
+				return resolveUnavailableFunction(ctx, ec, uri, name, arity, err)
 			}
 
 			return resolvedFunction{fn: fn, uri: uri, name: name}, nil
@@ -279,7 +301,7 @@ func resolveFunctionByURIInfo(ctx context.Context, ec *evalContext, uri, name st
 	qn := QualifiedName{URI: uri, Name: name}
 	if fn, ok := lookupBuiltin(qn); ok && functionVisible(ec.version, uri, name, arity) {
 		if err := checkArity(fn, name, arity); err != nil {
-			return resolvedFunction{}, err
+			return resolveUnavailableFunction(ctx, ec, uri, name, arity, err)
 		}
 
 		return resolvedFunction{fn: fn, uri: uri, name: name, isBuiltin: true}, nil
@@ -299,10 +321,10 @@ func resolveFunctionByURIInfo(ctx context.Context, ec *evalContext, uri, name st
 
 	cause := fmt.Errorf("%w: %s#%d", ErrUnknownFunction, name, arity)
 	if ec.version >= 20 {
-		return resolvedFunction{}, &xdm.Error{Code: lexicon.ErrXPST0017, Message: cause.Error(), Cause: cause}
+		return resolveUnavailableFunction(ctx, ec, uri, name, arity, &xdm.Error{Code: lexicon.ErrXPST0017, Message: cause.Error(), Cause: cause})
 	}
 
-	return resolvedFunction{}, cause
+	return resolveUnavailableFunction(ctx, ec, uri, name, arity, cause)
 }
 
 func resolvePrefix(ec *evalContext, prefix string) (string, error) {

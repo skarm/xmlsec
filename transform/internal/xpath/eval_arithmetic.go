@@ -430,6 +430,7 @@ func floatArith(op TokenType, la, ra xdm.AtomicValue) (xdm.Sequence, error) {
 	resultType := xdm.TypeDouble
 	if la.TypeName != xdm.TypeDouble && ra.TypeName != xdm.TypeDouble {
 		resultType = xdm.TypeFloat
+		ln, rn = float64(numericToFloat32(la)), float64(numericToFloat32(ra))
 	}
 
 	var result float64

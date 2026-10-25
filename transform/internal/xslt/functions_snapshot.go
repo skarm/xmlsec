@@ -10,163 +10,150 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+func copyFunctionInput(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	if len(args) != 0 {
+		return args[0], nil
+	}
+
+	item, err := xpath.FnContextItem(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return xdm.ItemSlice{item}, nil
+}
+
 func (ec *execContext) fnCopyOf(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	// copy-of() with argument: deep-copy the argument node(s)
-	// copy-of() with no args: deep-copy the context node (streaming snapshot)
-	var (
-		nodes   []xdm.Node
-		atomics xdm.ItemSlice
-	)
-
-	if len(args) > 0 {
-		// Explicit argument: copy the given node(s), pass atomics through.
-		// If the argument is empty, return empty (don't fall through to context).
-		if args[0] == nil || xdm.SequenceLen(args[0]) == 0 {
-			return xdm.EmptySequence(), nil
-		}
-
-		for item := range xdm.SequenceItems(args[0]) {
-			ni, ok := item.(xdm.NodeItem)
-			if !ok {
-				atomics = append(atomics, item)
-				continue
-			}
-
-			nodes = append(nodes, ni.Node)
-		}
-
-		if len(nodes) == 0 && len(atomics) > 0 {
-			return atomics, nil
-		}
-	} else {
-		// No argument: copy the context node (streaming snapshot).
-		// Prefer XPath dynamic context node (set by evaluator during path
-		// steps like transaction/copy-of()) over XSLT execution context.
-		if n := xpath.FnContextNode(ctx); n != nil {
-			nodes = append(nodes, n)
-		} else if ec.contextNode != nil {
-			nodes = append(nodes, ec.contextNode)
-		} else {
-			return nil, dynamicError(lexicon.ErrXPDY0002, "copy-of() with no arguments requires a context item")
-		}
+	input, err := copyFunctionInput(ctx, args)
+	if err != nil {
+		return nil, err
 	}
 
 	var result xdm.ItemSlice
 
-	if returned1ValueValue, matchedBranchBranchBranch := fnCopyOfNodes(ctx, nodes, ec, &result); matchedBranchBranchBranch {
-		return nil, returned1ValueValue
+	for item := range xdm.SequenceItems(input) {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return nil, err
+		}
+
+		if node, isNode := item.(xdm.NodeItem); isNode {
+			copied, err := ec.copyFunctionNode(ctx, node.Node)
+			if err != nil {
+				return nil, err
+			}
+
+			item = xdm.NodeItem{Node: copied}
+		}
+
+		result = append(result, item)
 	}
 
 	return result, nil
 }
 
-func fnCopyOfNodes(ctx context.Context, nodes []xdm.Node, ec *execContext, result *xdm.ItemSlice) (returned1ValueValue error, matchedBranchBranchBranch bool) {
-	for _, node := range nodes {
-		// XTTE0950: copying a standalone attribute with namespace-sensitive
-		// content (xs:QName, xs:NOTATION) via copy-of() loses namespace bindings.
-		if node.Type() == xdm.AttributeNode && ec.nodeHasNamespaceSensitiveContent(node) {
-			return dynamicError(errCodeXTTE0950,
-				"copy-of(): cannot copy attribute with namespace-sensitive content"), true
-		}
-
-		copied, err := xdm.CopyNode(node, ec.resultDoc)
-		if err != nil {
-			*result = append(*result, xdm.NodeItem{Node: node})
-			continue
-		}
-		// copy-of preserves all in-scope namespaces, not just those
-		// declared directly on the element.  CopyNode only copies the
-		// element's own nsDefs, so we must add inherited ones here.
-		if srcElem, ok := node.(*xdm.Element); ok {
-			if dstElem, ok2 := copied.(*xdm.Element); ok2 {
-				addInScopeNamespaces(srcElem, dstElem)
-			}
-		}
-		// Transfer type annotations from original to copy so that
-		// schema-aware functions (nilled(), instance of, etc.) work on copies.
-		if ec.typeAnnotations != nil {
-			ec.deepTransferAnnotations(node, copied)
-		}
-		// Transfer nilled status from original to copy so fn:nilled()
-		// works correctly on copied nodes.
-		ec.transferNilledStatus(node, copied)
-		// Transfer accumulator state from original to copy so that
-		// accumulator-before()/accumulator-after() work on the copy.
-		if len(ec.effectiveAccumulators()) > 0 {
-			_ = ec.ensureAccumulatorStates(ctx, node)
-			ec.transferAccumulatorStates(node, copied)
-			// Mark the copy's document as computed to prevent recomputation.
-			copyRoot := documentRoot(copied)
-
-			if ec.accumulatorComputedDocs == nil {
-				ec.accumulatorComputedDocs = make(map[xdm.Node]struct{})
-			}
-
-			ec.accumulatorComputedDocs[copyRoot] = struct{}{}
-		}
-
-		*result = append(*result, xdm.NodeItem{Node: copied})
+func (ec *execContext) copyFunctionNode(ctx context.Context, node xdm.Node) (xdm.Node, error) {
+	if node.Type() == xdm.AttributeNode && ec.nodeHasNamespaceSensitiveContent(node) {
+		return nil, dynamicError(errCodeXTTE0950, "copy-of(): cannot copy attribute with namespace-sensitive content")
 	}
 
-	return
+	var (
+		copied xdm.Node
+		err    error
+	)
+	if node.Type() == xdm.DocumentNode {
+		copied, err = ec.copyDocumentNode(node)
+	} else {
+		if err := xpath.ChargeTree(ctx, node); err != nil {
+			return nil, err
+		}
+
+		if node.Type() == xdm.NamespaceNode {
+			copied, err = xdm.CopyTree(node)
+		} else {
+			copied, err = xdm.CopyNode(node, ec.resultDoc)
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if source, isElement := node.(*xdm.Element); isElement {
+		if target, isElement := copied.(*xdm.Element); isElement {
+			addInScopeNamespaces(source, target)
+		}
+	}
+
+	if ec.typeAnnotations != nil {
+		ec.deepTransferAnnotations(node, copied)
+	}
+
+	ec.transferNilledStatus(node, copied)
+
+	if err := ec.copyAccumulatorState(ctx, node, copied); err != nil {
+		return nil, err
+	}
+
+	return copied, nil
 }
 
-// snapshot() produces a deep copy of the node that also preserves ancestor
-// information.  Each ancestor element is shallow-copied (name, attributes,
-// namespace declarations) and the chain is connected so that
-// ancestor::*/parent::*/.. navigation works on the snapshot.
+func (ec *execContext) copyAccumulatorState(ctx context.Context, original, copied xdm.Node) error {
+	if len(ec.effectiveAccumulators()) == 0 {
+		return nil
+	}
+
+	if err := ec.ensureAccumulatorStates(ctx, original); err != nil {
+		return err
+	}
+
+	ec.transferAccumulatorStates(original, copied)
+
+	if ec.accumulatorComputedDocs == nil {
+		ec.accumulatorComputedDocs = make(map[xdm.Node]struct{})
+	}
+
+	ec.accumulatorComputedDocs[documentRoot(copied)] = struct{}{}
+
+	return nil
+}
+
+// snapshot() copies each node with its ancestor shells and preserves non-nodes.
 func (ec *execContext) fnSnapshot(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) > 0 {
-		if args[0] == nil || xdm.SequenceLen(args[0]) == 0 {
-			return xdm.EmptySequence(), nil
-		}
-
-		var result xdm.ItemSlice
-
-		for item := range xdm.SequenceItems(args[0]) {
-			ni, ok := item.(xdm.NodeItem)
-			if !ok {
-				// Non-node items (atomics, functions) pass through unchanged.
-				result = append(result, item)
-				continue
-			}
-
-			snapped, err := ec.snapshotNode(ctx, ni.Node)
-			if err != nil {
-				result = append(result, xdm.NodeItem{Node: ni.Node})
-				continue
-			}
-
-			ec.transferNilledStatus(ni.Node, snapped)
-			result = append(result, xdm.NodeItem{Node: snapped})
-		}
-
-		return result, nil
-	}
-
-	// No argument: snapshot the context node.
-	var node xdm.Node
-	if n := xpath.FnContextNode(ctx); n != nil {
-		node = n
-	} else if ec.contextNode != nil {
-		node = ec.contextNode
-	} else {
-		return xdm.EmptySequence(), nil
-	}
-
-	snapped, err := ec.snapshotNode(ctx, node)
+	input, err := copyFunctionInput(ctx, args)
 	if err != nil {
-		return xdm.ItemSlice{xdm.NodeItem{Node: node}}, nil //nolint:nilerr // snapshot falls back to original node on failure
+		return nil, err
 	}
 
-	ec.transferNilledStatus(node, snapped)
+	var result xdm.ItemSlice
 
-	return xdm.ItemSlice{xdm.NodeItem{Node: snapped}}, nil
+	for item := range xdm.SequenceItems(input) {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return nil, err
+		}
+
+		if node, isNode := item.(xdm.NodeItem); isNode {
+			copied, err := ec.snapshotNode(ctx, node.Node)
+			if err != nil {
+				return nil, err
+			}
+
+			ec.transferNilledStatus(node.Node, copied)
+
+			if err := ec.copyAccumulatorState(ctx, node.Node, copied); err != nil {
+				return nil, err
+			}
+
+			item = xdm.NodeItem{Node: copied}
+		}
+
+		result = append(result, item)
+	}
+
+	return result, nil
 }
 
 // snapshotNode creates a deep copy of node and wraps it in shallow copies

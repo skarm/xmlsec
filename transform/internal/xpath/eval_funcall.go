@@ -630,14 +630,20 @@ func evalMapConstructorExpr(evalFn exprEvaluator, ctx context.Context, ec *evalC
 			return nil, err
 		}
 
-		if xdm.SequenceLen(keySeq) != 1 {
-			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "map key must be a single atomic value"}
-		}
+		var keyAtoms []xdm.AtomicValue
 
-		ka, err := AtomizeItem(keySeq.Get(0))
-		if err != nil {
+		if err := atomizeBounded(ctx, ec, keySeq, func(atom xdm.AtomicValue) (bool, error) {
+			keyAtoms = append(keyAtoms, atom)
+			return len(keyAtoms) < 2, nil
+		}); err != nil {
 			return nil, err
 		}
+
+		if len(keyAtoms) != 1 {
+			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "map key must atomize to a single atomic value"}
+		}
+
+		ka := keyAtoms[0]
 		// Per XPath 3.1, duplicate keys in a map constructor raise XQDY0137
 		nk := xdm.NormalizeMapKey(ka)
 		if _, dup := seen[nk]; dup {

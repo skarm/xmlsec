@@ -78,6 +78,12 @@ func attributeNames(names ...string) func(string) bool {
 // In forwards-compatible mode (version > 3.0), unknown attributes are silently ignored
 // per XSLT 3.0 §3.8.
 func (c *compiler) validateXSLTAttrs(ctx context.Context, elem *xdm.Element, allowed func(string) bool) error {
+	if c.stylesheet.processorLanguage() >= 20 {
+		if err := checkComponentNames(elem, c.stylesheet.processorLanguage()); err != nil {
+			return err
+		}
+	}
+
 	if err := c.checkDefaultModeAttribute(ctx, elem); err != nil {
 		return err
 	}
@@ -200,17 +206,7 @@ func (c *compiler) compileInstruction(ctx context.Context, elem *xdm.Element) (i
 	// Handle version inheritance. On an XSLT element this is the unqualified
 	// version attribute; on a literal result element it is xsl:version (an
 	// unqualified version there is a result attribute, not an XSLT version).
-	savedVersion := c.effectiveVersion
-	if ver := elementXSLTVersion(elem); ver != "" {
-		c.effectiveVersion = ver
-	}
-	defer func() { c.effectiveVersion = savedVersion }()
-
-	savedPreserve := c.preserveSpace
-	if xs := getAttr(elem, lexicon.QNameXMLSpace); xs != "" {
-		c.preserveSpace = xs == lexicon.SpacePreserve
-	}
-	defer func() { c.preserveSpace = savedPreserve }()
+	defer c.pushElementVersion(elem)()
 
 	// Handle expand-text inheritance (check both unprefixed and xsl:-prefixed for LREs)
 	savedExpandText := c.expandText
@@ -236,20 +232,17 @@ func (c *compiler) compileInstruction(ctx context.Context, elem *xdm.Element) (i
 
 	savedDefaultCollation := c.defaultCollation
 
-	c.setInstructionDefaultCollation(elem)
+	if err := c.setInstructionDefaultCollation(elem); err != nil {
+		return nil, err
+	}
 
 	defer func() { c.defaultCollation = savedDefaultCollation }()
 
-	// Handle extension-element-prefixes on both XSLT instructions and LREs.
-	// On XSLT elements: extension-element-prefixes="..."
-	// On LREs: xsl:extension-element-prefixes="..." — must be processed
-	// before the extension element check so that an LRE declaring its own
-	// namespace as extension is recognized as an extension element.
-	savedExtURIs := c.extensionURIs
-
-	c.setInstructionExtensionURIs(elem)
-
-	defer func() { c.extensionURIs = savedExtURIs }()
+	restorePolicy, err := c.pushResultNamespacePolicy(elem)
+	if err != nil {
+		return nil, err
+	}
+	defer restorePolicy()
 
 	inst, decorate, err := c.compileInstructionPayload(ctx, elem)
 	if err != nil {
@@ -298,7 +291,7 @@ func (c *compiler) compileInstructionPayload(ctx context.Context, elem *xdm.Elem
 
 	if uri := elem.URI(); uri != "" && c.extensionURIs != nil {
 		if _, isExt := c.extensionURIs[uri]; isExt {
-			inst, err := c.compileForwardsCompat(ctx, elem)
+			inst, err := c.compileFallback(ctx, elem)
 			return inst, false, err
 		}
 	}
@@ -390,44 +383,42 @@ func (c *compiler) setInstructionXPathDefaultNS(elem *xdm.Element) bool {
 	return hasLocalXPNS
 }
 
-func (c *compiler) setInstructionDefaultCollation(elem *xdm.Element) {
-	if dc, ok := elem.GetAttribute(nameDefaultCollation); elem.URI() == lexicon.NamespaceXSLT && ok {
-		if uri := resolveDefaultCollation(dc); uri != "" {
-			c.defaultCollation = uri
-		}
-	} else if dc, ok := elem.GetAttributeNS(nameDefaultCollation, lexicon.NamespaceXSLT); ok {
-		if uri := resolveDefaultCollation(dc); uri != "" {
-			c.defaultCollation = uri
-		}
+func (c *compiler) setInstructionDefaultCollation(elem *xdm.Element) error {
+	collation, err := c.declarationDefaultCollation(elem)
+	if err != nil {
+		return err
 	}
+
+	c.defaultCollation = collation
+
+	return nil
 }
 
 func (c *compiler) setInstructionExtensionURIs(elem *xdm.Element) {
-	if elem.URI() == lexicon.NamespaceXSLT {
-		if eep := getAttr(elem, nameExtensionElementPrefixes); eep != "" {
-			newExtURIs := make(map[string]struct{})
-			maps.Copy(newExtURIs, c.extensionURIs)
+	eep := getAttr(elem, nameExtensionElementPrefixes)
 
-			for prefix := range strings.FieldsSeq(eep) {
-				if uri, ok := c.nsBindings[prefix]; ok && uri != "" {
-					newExtURIs[uri] = struct{}{}
-				}
-			}
-
-			c.extensionURIs = newExtURIs
-		}
-	} else if eep, ok := elem.GetAttributeNS(nameExtensionElementPrefixes, lexicon.NamespaceXSLT); ok {
-		newExtURIs := make(map[string]struct{})
-		maps.Copy(newExtURIs, c.extensionURIs)
-
-		for prefix := range strings.FieldsSeq(eep) {
-			if uri, uriOK := c.nsBindings[prefix]; uriOK && uri != "" {
-				newExtURIs[uri] = struct{}{}
-			}
-		}
-
-		c.extensionURIs = newExtURIs
+	if elem.URI() != lexicon.NamespaceXSLT {
+		eep, _ = elem.GetAttributeNS(nameExtensionElementPrefixes, lexicon.NamespaceXSLT)
 	}
+
+	if eep == "" {
+		return
+	}
+
+	newExtURIs := make(map[string]struct{})
+	maps.Copy(newExtURIs, c.extensionURIs)
+
+	for prefix := range strings.FieldsSeq(eep) {
+		if prefix == lexicon.ModeDefault {
+			prefix = ""
+		}
+
+		if uri := c.nsBindings[prefix]; uri != "" {
+			newExtURIs[uri] = struct{}{}
+		}
+	}
+
+	c.extensionURIs = newExtURIs
 }
 
 func (c *compiler) recordInstructionSource(elem *xdm.Element, inst instruction) {
@@ -539,7 +530,13 @@ func (c *compiler) evaluateUseWhen(ctx context.Context, expr string) (bool, erro
 	}
 
 	compiled = compiled.BindNamespaceContext(c.xpathNamespaces(c.nsBindings), c.nsBindings[""])
+
 	eval := c.useWhenEvaluator(ctx)
+	if c.stylesheet.processorLanguage() >= 20 {
+		if err := eval.ValidateExpression(ctx, compiled); err != nil {
+			return false, err
+		}
+	}
 
 	result, err := eval.Evaluate(ctx, compiled, nil)
 	if err != nil {
@@ -558,7 +555,7 @@ func (c *compiler) evaluateUseWhen(ctx context.Context, expr string) (bool, erro
 }
 
 func useWhenFunctionAvailable(ctx context.Context, args []xdm.Sequence, processor int) (xdm.Sequence, error) {
-	name, err := introspectionArgumentName(ctx, args, xpath.NSFn, errCodeXTDE1400)
+	name, err := introspectionArgumentName(ctx, args, xpath.NSFn, errCodeXTDE1400, processor)
 	if err != nil {
 		return nil, err
 	}
@@ -566,6 +563,10 @@ func useWhenFunctionAvailable(ctx context.Context, args []xdm.Sequence, processo
 	arity, valid := functionAvailableArity(args)
 	if !valid {
 		return xdm.SingleBoolean(false), nil
+	}
+
+	if function := xpath.FnRegisteredFunction(ctx, name.URI, name.Local); function != nil {
+		return xdm.SingleBoolean(functionAvailableAtArity(function, arity)), nil
 	}
 
 	if name.URI == xpath.NSFn {
@@ -678,7 +679,7 @@ func (c *compiler) compileXSLTInstruction(ctx context.Context, elem *xdm.Element
 		return c.compileAnalyzeString(ctx, elem)
 	case lexicon.XSLTElementEvaluate:
 		if c.stylesheet.dynamicEvaluationDisabled {
-			fallback, err := c.compileForwardsCompat(ctx, elem)
+			fallback, err := c.compileFallback(ctx, elem)
 			if err != nil {
 				return nil, err
 			}
@@ -719,7 +720,11 @@ func (c *compiler) compileConditionalContent(ctx context.Context, elem *xdm.Elem
 		err        error
 	)
 
-	if selectAttr := getAttr(elem, xslAttrSelect); selectAttr != "" {
+	if selectAttr, present := elem.GetAttribute(xslAttrSelect); present {
+		if hasSignificantChildren(elem) {
+			return nil, staticError(errCodeXTSE3185, "xsl:%s with @select must not have content other than xsl:fallback", elem.LocalName())
+		}
+
 		selectExpr, err = c.compileXPath(selectAttr, c.nsBindings)
 	} else {
 		body, err = c.compileChildren(ctx, elem)
@@ -1051,11 +1056,25 @@ func (c *compiler) compileResultDocumentParameters(ctx context.Context, elem *xd
 	return nil
 }
 
-// compileForwardsCompat compiles an unknown XSLT instruction under
-// forwards-compatible processing rules (XSLT 3.0 §3.8).
-// It collects xsl:fallback children as the body. At runtime, if the body
-// is empty, XTDE1450 is raised.
+// compileForwardsCompat requires fallback for an unknown XSLT instruction,
+// including unreachable instructions (XSLT 2.0 §3.9 and XSLT 3.0 §3.10).
+// XSLT 1.0 retains its dynamic failure when no fallback is instantiated.
 func (c *compiler) compileForwardsCompat(ctx context.Context, elem *xdm.Element) (*fallbackInst, error) {
+	inst, err := c.compileFallback(ctx, elem)
+	if err != nil {
+		return nil, err
+	}
+
+	if !inst.HasFallback && c.stylesheet.processorLanguage() >= 20 {
+		return nil, staticError(errCodeXTSE0010, "unknown XSLT instruction xsl:%s has no xsl:fallback", elem.LocalName())
+	}
+
+	return inst, nil
+}
+
+// Extension instructions and disabled xsl:evaluate defer a missing fallback
+// error until evaluation. An empty xsl:fallback is still a valid fallback.
+func (c *compiler) compileFallback(ctx context.Context, elem *xdm.Element) (*fallbackInst, error) {
 	inst := &fallbackInst{
 		Name: "xsl:" + elem.LocalName(),
 	}
@@ -1112,14 +1131,13 @@ func (c *compiler) compileFallbackBody(ctx context.Context, elem *xdm.Element) (
 		return nil, false, err
 	}
 
-	preserve, collation, extensions := c.preserveSpace, c.defaultCollation, c.extensionURIs
-	defer func() { c.preserveSpace, c.defaultCollation, c.extensionURIs = preserve, collation, extensions }()
+	collation, extensions := c.defaultCollation, c.extensionURIs
+	defer func() { c.defaultCollation, c.extensionURIs = collation, extensions }()
 
-	if space := getAttr(elem, lexicon.QNameXMLSpace); space != "" {
-		c.preserveSpace = space == lexicon.SpacePreserve
+	if err := c.setInstructionDefaultCollation(elem); err != nil {
+		return nil, false, err
 	}
 
-	c.setInstructionDefaultCollation(elem)
 	c.setInstructionExtensionURIs(elem)
 
 	if err := c.checkDefaultModeAttribute(ctx, elem); err != nil {
@@ -1142,6 +1160,12 @@ func (c *compiler) compileFallbackBody(ctx context.Context, elem *xdm.Element) (
 }
 
 func (c *compiler) compileChildren(ctx context.Context, parent *xdm.Element) ([]instruction, error) {
+	restorePolicy, err := c.pushResultNamespacePolicy(parent)
+	if err != nil {
+		return nil, err
+	}
+	defer restorePolicy()
+
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -1180,7 +1204,7 @@ func (c *compiler) compileChildren(ctx context.Context, parent *xdm.Element) ([]
 				return nil, err
 			}
 
-			inst, err := c.compileLiteralText(text)
+			inst, err := c.compileLiteralTextAt(child, text)
 			if err != nil {
 				return nil, err
 			}
@@ -1234,6 +1258,10 @@ func (c *compiler) compileLocalVariable(ctx context.Context, elem *xdm.Element) 
 		return nil, staticError(errCodeXTSE0010, "xsl:variable requires name attribute")
 	}
 
+	if err := c.checkQNamePrefix(ctx, name, "xsl:variable"); err != nil {
+		return nil, err
+	}
+
 	asAttr := c.resolveAsType(ctx, getAttr(elem, "as"))
 	if err := c.validateAsSequenceType(ctx, elem, asAttr, "xsl:variable "+name); err != nil {
 		return nil, err
@@ -1250,8 +1278,8 @@ func (c *compiler) compileLocalVariable(ctx context.Context, elem *xdm.Element) 
 		inst.StaticBaseURI = effectiveBase
 	}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
+	if hasSelect {
 		// XTSE0620: select and non-empty content are mutually exclusive.
 		if err := c.validateEmptyElement(ctx, elem, "xsl:variable"); err != nil {
 			return nil, staticError(errCodeXTSE0620, "xsl:variable %q has both @select and content", name)
@@ -1354,8 +1382,8 @@ func (c *compiler) compileMap(ctx context.Context, elem *xdm.Element) (*mapInst,
 func (c *compiler) compileMapEntry(ctx context.Context, elem *xdm.Element) (*mapEntryInst, error) {
 	inst := &mapEntryInst{}
 
-	keyAttr := getAttr(elem, nameKey2)
-	if keyAttr != "" {
+	keyAttr, hasKey := elem.GetAttribute(nameKey2)
+	if hasKey {
 		expr, err := c.compileXPath(keyAttr, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -1366,14 +1394,14 @@ func (c *compiler) compileMapEntry(ctx context.Context, elem *xdm.Element) (*map
 		return nil, staticError(errCodeXTSE0010, "xsl:map-entry requires key attribute")
 	}
 
-	selectAttr := getAttr(elem, xslAttrSelect)
+	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
 
 	hasBody := hasSignificantChildren(elem)
-	if selectAttr != "" && hasBody {
+	if hasSelect && hasBody {
 		return nil, staticError(errCodeXTSE3280, "xsl:map-entry must not have both a select attribute and a sequence constructor body")
 	}
 
-	if selectAttr != "" {
+	if hasSelect {
 		expr, err := c.compileXPath(selectAttr, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -1397,8 +1425,8 @@ func (c *compiler) compileMapEntry(ctx context.Context, elem *xdm.Element) (*map
 // Optional attributes: select, error-code.
 // The body provides the error message if no select attribute is present.
 func (c *compiler) compileAssert(ctx context.Context, elem *xdm.Element) (instruction, error) {
-	testAttr := getAttr(elem, lexicon.AttrTest)
-	if testAttr == "" {
+	testAttr, hasTest := elem.GetAttribute(lexicon.AttrTest)
+	if !hasTest {
 		return nil, staticError(errCodeXTSE0010, "xsl:assert requires a test attribute")
 	}
 

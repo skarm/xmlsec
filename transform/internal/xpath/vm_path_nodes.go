@@ -586,13 +586,17 @@ func (v *vm) applyFilterPredicate(ctx context.Context, ec *evalContext, nodes []
 	}
 
 	ec.depth--
-	// predicateTrue keeps the node at position i+1 when the number equals it.
-	f := av.ToFloat64()
-
+	// Use the same numeric eq rule as every other predicate path; converting
+	// an exact decimal to double could round a non-integer to this position.
 	var result []xdm.Node
 
 	for i, n := range nodes {
-		if f == float64(i+1) {
+		match, err := predicateTrue(seq, i+1)
+		if err != nil {
+			return nil, err
+		}
+
+		if match {
 			result = append(result, n)
 		}
 	}

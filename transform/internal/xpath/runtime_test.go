@@ -414,6 +414,94 @@ func TestNumericPreflightBudgets(t *testing.T) {
 	}
 }
 
+type castContractSchema struct {
+	SchemaDeclarations
+	failure error
+}
+
+func (s castContractSchema) LookupSchemaType(local, _ string) (string, bool) {
+	switch local {
+	case "decimal":
+		return xdm.TypeDecimal, true
+	case "qname":
+		return xdm.TypeQName, true
+	}
+
+	return "", false
+}
+
+func (s castContractSchema) ListItemType(name string) (string, bool) {
+	return xdm.TypeInteger, name == "Q{urn:cast}list"
+}
+
+func (s castContractSchema) UnionMemberTypes(name string) []string {
+	if name == "Q{urn:cast}union" {
+		return []string{"Q{urn:cast}decimal", xdm.TypeString}
+	}
+
+	return nil
+}
+
+func (s castContractSchema) ValidateCastWithNS(context.Context, string, string, map[string]string) error {
+	return s.failure
+}
+
+func TestSchemaCastResourceFailures(t *testing.T) {
+	for _, failure := range []error{ErrBudget, ErrOpLimit, ErrNodeSetLimit, ErrRecursionLimit, context.Canceled, context.DeadlineExceeded} {
+		ec := &evalContext{version: 31, schemaDeclarations: castContractSchema{failure: failure}}
+		for _, target := range []string{"Q{urn:cast}decimal", "Q{urn:cast}qname", "Q{urn:cast}union"} {
+			_, err := schemaAwareCast(t.Context(), ec, xdm.AtomicValue{TypeName: xdm.TypeString, Value: "1"}, target)
+			if !errors.Is(err, failure) {
+				t.Fatal(target, failure, err)
+			}
+		}
+
+		_, err := castToUserList(t.Context(), ec, xdm.AtomicValue{TypeName: xdm.TypeString, Value: "1 2"}, "Q{urn:cast}list", xdm.TypeInteger)
+		if !errors.Is(err, failure) {
+			t.Fatal("list validation", failure, err)
+		}
+	}
+
+	for _, source := range []string{`'1 2' cast as t:list`, `'1 2' castable as t:list`} {
+		expression, err := NewCompiler().Language(31, map[string]string{"t": "urn:cast"}).Compile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, mode := range []string{runtimeASTMode, "VM"} {
+			t.Run(mode+source, func(t *testing.T) {
+				evaluator := NewEvaluator(DefaultEvaluatorOptions).Namespaces(map[string]string{"t": "urn:cast"}).SchemaDeclarations(castContractSchema{})
+				ctx := WithBudget(t.Context(), 1000, 1, 1024, 32)
+				if mode == runtimeASTMode {
+					ec := evaluator.newEvalCtx(nil)
+					ec.version = 31
+					ec.namespaces = map[string]string{"t": "urn:cast"}
+					applyBudget(ctx, ec)
+					_, err = evaluateRuntimeAST(ctx, ec, expression.astExpr())
+				} else {
+					_, err = evaluator.Evaluate(ctx, expression, nil)
+				}
+
+				if !errors.Is(err, ErrNodeSetLimit) {
+					t.Fatal("user list allocation ignored node budget", err)
+				}
+			})
+		}
+	}
+
+	_, err := castToUserList(t.Context(), &evalContext{schemaDeclarations: castContractSchema{}}, xdm.AtomicValue{TypeName: xdm.TypeBoolean, Value: true}, "Q{urn:cast}list", xdm.TypeInteger)
+	var detail *xdm.Error
+	if !errors.As(err, &detail) || detail.Code != lexicon.ErrXPTY0004 {
+		t.Fatal("non-string user list source must raise a type error", err)
+	}
+
+	derived := xdm.AtomicValue{TypeName: "Q{urn:cast}number", BaseType: xdm.TypeInteger, Value: big.NewInt(7)}
+	member, err := castToNumeric(t.Context(), derived)
+	if err != nil || member.TypeName != derived.TypeName || member.BaseType != derived.BaseType || member.Value != derived.Value {
+		t.Fatal("numeric constructor changed an existing derived member", member, err)
+	}
+}
+
 func TestNumericBudgetASTAndVM(t *testing.T) {
 	const source = `fold-left(1 to 12, 2, function($a,$b){$a*$a}) mod 2`
 
@@ -461,6 +549,17 @@ func evaluateRuntimeAST(ctx context.Context, ec *evalContext, expr Expr) (xdm.Se
 func TestVersionedContractsASTAndVM(t *testing.T) {
 	for _, version := range []int{20, 30, 31} {
 		for _, tc := range []struct{ source, oldCode, modernCode string }{
+			{`'x' cast as xs:anyType`, "XPST0051", "XQST0052"},
+			{`'x' castable as xs:untyped`, "XPST0051", "XQST0052"},
+			{`'x' cast as xs:missing`, "XPST0051", "XQST0052"},
+			{`'x' castable as xs:anySimpleType`, "XPST0051", "XPST0080"},
+			{`'x' cast as xs:anyAtomicType`, "XPST0080", "XPST0080"},
+			{`'x' castable as xs:NOTATION`, "XPST0080", "XPST0080"},
+			{`'x' cast as missing:integer`, errCodeXPST0081, errCodeXPST0081},
+			{`'x' castable as missing:string`, errCodeXPST0081, errCodeXPST0081},
+			{`'2' cast as xs:numeric`, errCodeXPST0051, ""},
+			{`'2' castable as xs:numeric`, errCodeXPST0051, ""},
+			{`xs:numeric(1) instance of xs:integer`, "XPST0017", ""},
 			{`string-join((1,2),'')`, lexicon.ErrXPTY0004, ""},
 			{`error(())`, lexicon.ErrXPTY0004, "FOER0000"},
 			{`error((),'description')`, "FOER0000", "FOER0000"},
@@ -471,6 +570,12 @@ func TestVersionedContractsASTAndVM(t *testing.T) {
 			want := tc.modernCode
 			if version < 31 && (strings.HasPrefix(tc.source, "string-join") || tc.source == `error(())`) || version == 20 {
 				want = tc.oldCode
+			}
+			if version < 31 && strings.Contains(tc.source, "xs:numeric") {
+				want = tc.oldCode
+				if version == 30 && strings.Contains(tc.source, " cast") {
+					want = "XQST0052"
+				}
 			}
 
 			ast, err := Parse(tc.source)
@@ -528,6 +633,7 @@ func TestEvaluationErrorCodesASTAndVM(t *testing.T) {
 		{`(function($fs as (function(xs:string) as xs:string)*) {true()})((upper-case#1,concat#2))`, lexicon.ErrXPTY0004, nil},
 		{`(function($fs as (function(xs:string) as xs:string)*) {for $f in $fs return $f('x')})((upper-case#1,function($x){1}))`, lexicon.ErrXPTY0004, nil},
 		{`format-date(xs:date('2026-01-01'), '[b]')`, "FOFD1340", nil},
+		{`format-time(xs:time('12:00:00'), '[f,1x]')`, "FOFD1340", nil},
 		{`load-xquery-module('urn:module')`, "FOQM0006", nil},
 		{`() union ()`, "", nil},
 	} {
@@ -566,6 +672,54 @@ func TestEvaluationErrorCodesASTAndVM(t *testing.T) {
 					t.Fatal("error code or category was lost", evalErr)
 				}
 			})
+		}
+	}
+}
+
+func TestAnyURIDatatypeEditionsASTAndVM(t *testing.T) {
+	for _, edition := range []int{10, 11} {
+		ctx := WithXMLSchemaVersion(t.Context(), edition)
+		for _, source := range []string{`xs:anyURI('####')`, `'####' cast as xs:anyURI`, `xs:anyURI#1('####')`, `xs:anyURI('urn:a\b^c')`} {
+			ast, err := Parse(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, mode := range []string{runtimeASTMode, "VM"} {
+				var result xdm.Sequence
+				var evalErr error
+				if mode == runtimeASTMode {
+					ec := NewEvaluator(DefaultEvaluatorOptions).newEvalCtx(nil)
+					ec.version, ec.xmlSchemaVersion = 31, edition
+					result, evalErr = evaluateRuntimeAST(ctx, ec, ast)
+				} else {
+					compiled, compileErr := NewCompiler().Language(31, nil).CompileExpr(ast)
+					if compileErr != nil {
+						t.Fatal(compileErr)
+					}
+					var value *Result
+					value, evalErr = NewEvaluator(DefaultEvaluatorOptions).Evaluate(ctx, compiled, nil)
+					if evalErr == nil {
+						result = value.Sequence()
+					}
+				}
+				if edition == 10 && strings.Contains(source, "####") {
+					var detail *xdm.Error
+					if !errors.As(evalErr, &detail) || detail.Code != errCodeFORG0001 {
+						t.Fatal(edition, mode, source, result, evalErr)
+					}
+					continue
+				} else if evalErr != nil || result == nil || result.Len() != 1 {
+					t.Fatal(edition, mode, source, result, evalErr)
+				}
+				value, ok := result.Get(0).(xdm.AtomicValue)
+				want := "####"
+				if !strings.Contains(source, want) {
+					want = `urn:a\b^c`
+				}
+				if !ok || value.TypeName != xdm.TypeAnyURI || value.StringVal() != want {
+					t.Fatal(edition, mode, source, result, evalErr)
+				}
+			}
 		}
 	}
 }
@@ -895,6 +1049,47 @@ func TestGeneratedIDConcurrentSnapshot(t *testing.T) {
 	for id := range ids {
 		if id != want {
 			t.Fatal("concurrent identity changed", id, want)
+		}
+	}
+}
+
+func TestNumericPredicateASTAndVM(t *testing.T) {
+	for _, source := range []string{
+		`count((1,2)[1.00000000000000000000000000000000000000001]) eq 0`,
+		`count(parse-xml('<r><n/><n/></r>')/*/*[1.00000000000000000000000000000000000000001]) eq 0`,
+		`count((parse-xml('<r><n/><n/></r>')/*/*)[1.00000000000000000000000000000000000000001]) eq 0`,
+		`map{([], [1]): 'value'}?1 eq 'value'`,
+		`string-join([10,20]?([1,2]) ! string(), ',') eq '10,20'`,
+	} {
+		ast, err := Parse(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, mode := range []string{runtimeASTMode, "VM"} {
+			t.Run(mode+source, func(t *testing.T) {
+				var result *Result
+				var evalErr error
+				if mode == runtimeASTMode {
+					ec := NewEvaluator(DefaultEvaluatorOptions).newEvalCtx(nil)
+					ec.version = 31
+					seq, err := evaluateRuntimeAST(t.Context(), ec, ast)
+					evalErr = err
+					result = &Result{seq: seq}
+				} else {
+					compiled, err := NewCompiler().Language(31, nil).CompileExpr(ast)
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, evalErr = NewEvaluator(DefaultEvaluatorOptions).Evaluate(t.Context(), compiled, nil)
+				}
+				if evalErr != nil {
+					t.Fatal(evalErr)
+				}
+				value, err := result.EBV()
+				if err != nil || !value {
+					t.Fatal(value, err)
+				}
+			})
 		}
 	}
 }

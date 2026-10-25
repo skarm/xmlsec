@@ -1,4 +1,5 @@
 // Copyright (c) 2026 xmlsec contributors. MIT License.
+
 package xpath
 
 import (

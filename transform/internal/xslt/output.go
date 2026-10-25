@@ -386,12 +386,8 @@ func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xd
 			"undeclare-prefixes=\"yes\" is not allowed with version=\"1.0\"")
 	}
 
-	// SEPM0016: invalid doctype-public (contains non-pubid characters)
-	if outDef.DoctypePublic != "" {
-		if !isValidPublicID(outDef.DoctypePublic) {
-			return dynamicError(lexicon.ErrSEPM0016,
-				"doctype-public %q contains invalid characters", outDef.DoctypePublic)
-		}
+	if !isValidPublicID(outDef.DoctypePublic) || !xmloutput.ValidSystemID(outDef.DoctypeSystem) {
+		return dynamicError(lexicon.ErrSEPM0016, "invalid doctype identifier")
 	}
 
 	enc := strings.ToLower(outDef.Encoding)

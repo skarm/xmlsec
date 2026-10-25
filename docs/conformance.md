@@ -129,8 +129,10 @@ The profile records are the maintained backlog. In particular:
   this does not implement transport of unsupported mandatory TripleDES keys.
   RSA-v1.5 is optional in that edition.
 - Each XPath version and Basic XSLT have clause/function and pinned suite
-  inventories. Applicable language failures and incomplete independent clause
-  evidence remain open. Schema awareness and W3C streamability are separate roles.
+  inventories. The P3 audit distinguishes repaired language defects from visible
+  resource, input-model, optional-feature and permitted/invalid-fixture outcomes.
+  Complete independent clause evidence remains open. Schema awareness and W3C
+  streamability are separate roles.
 - SAML role duties include encrypted counterparts of plaintext elements handled
   by a mode, including applicable IDs and attributes. Approved Errata 05 is
   selected and linked per base document and role. Mandatory Artifact/SOAP, ECP,
@@ -233,56 +235,71 @@ missing XML preprocessing. C14N 1.1 base fix-up still rejects whitespace-bearing
 URI references. These input/model restrictions remain recorded separately from
 the tested canonical byte rules. No full XML processor profile is claimed.
 
-## Stage 3 diagnostic acceptance record
+## Stage 3 acceptance record
 
-The roadmap's systematic review covers all six language areas below. Pinned,
-unmodified QT3 and xslt30-test catalogs exercise the public APIs for XPath
-2.0/3.0/3.1 and XSLT 2.0/3.0. The full-catalog [baseline](language-baseline.md)
-records reproducible outcomes and a measurable backlog. This completes the
-diagnostic review and reporting deliverables; complete XPath and Basic XSLT
-conformance remain open in the normative register.
+The P3 review covers the selected XPath 2.0/3.0/3.1 and Basic XSLT 2.0/3.0
+roles. Each numbered clause and function/operator contract has a source/code
+review, with implementation and evidence states recorded separately. Aggregate
+records depend on their child clauses. The review does not promote these profiles
+to a full conformance claim: broad clause evidence remains partial, and the
+input-model, resource and optional-role boundaries stay explicit.
 
-1. Numeric types, precision, casts and budgets: finite decimal/duration division,
-   exact integer boundaries and shared intermediate accounting have local
-   regressions. `TestNumericBudgetASTAndVM` compares actual AST/VM paths;
-   `TestNumericBudgetBindingsAndXSLT` covers public bindings and XSLT.
-2. Function contracts: versioned signatures, cardinality, promotion and expanded
-   error codes have direct/named/lookup/partial-call controls.
-   `TestVersionedContractsASTAndVM` and `TestEvaluationErrorCodesASTAndVM`
-   compare runtimes; Saxon function-argument/return controls remain independent.
+The six review queues have the following controls:
+
+1. Numeric types, casts and budgets: exact integer/decimal operations, direct
+   float rounding, numeric predicates, duration arithmetic, calendar overflow,
+   binary comparison editions and shared AST/VM intermediate accounting.
+2. Function contracts: versioned signatures, cardinality, atomization, promotion,
+   subtype tests and expanded error codes through direct, named, lookup, partial
+   and escaped calls. Map/array function types and immutable RNG state have
+   explicit controls.
 3. Sequences, focus and names: raw/document/serialized results, text coalescence,
-   QName resolution, node identity and global versus selection context have
-   positive/negative controls. `TestXSLTExplicitGlobalContext` compares direct
-   invocation with `fn:transform`; immutable-input and GC/concurrency tests guard
-   preparation and identity.
-4. Language versions: processor selection is separate from module declarations;
-   local compatibility and static preprocessing retain declaration context.
-   `TestXSLTProcessorVersionModules`, `TestXSLTVersionBoundaries` and independent
-   Saxon 9.4/12.10 controls cover 2.0/3.0 and compatibility differences.
-5. Dates, collation, regex, Unicode and serialization: calendar/duration overflow,
-   collation resources, edition-specific regex and zero-width anchors have local
-   controls. Shared six-method serialization tests cover normalization, encodings,
-   character expansion, writer failures and allocation bounds; Saxon comparisons
-   retain permitted and disputed differences separately.
-6. Resources, callbacks, packages and collections: typed bounded resource reads,
-   invocation scopes, escaped functions, package visibility/version selection and
-   stable document/text/query collections have public regressions. Adapter tests
-   cover source options, scoped queries and failures during preparation/assertions.
+   grouping equality and grouping-key types, document/namespace copies, lexical
+   namespaces, global versus selection context and node identity.
+4. Versions and compatibility: selected processor editions remain distinct from
+   stylesheet declarations. Static scopes, preprocessing, reserved namespaces,
+   forward/backward compatibility, host function names and output attributes are
+   checked using selected 2.0 and 3.0 processors. QT3's compatibility default
+   applies only when its catalog explicitly declares that dependency.
+5. Dates, collation, regex, Unicode and serialization: implicit timezone,
+   locale/calendar domains, collation resources, edition-specific regex, widths,
+   six-method serialization and parameter extraction have positive/error controls.
+   Published SER30/31 parameter schemas are independently checked with ready
+   xmllint; the 3.0 whole-document and 3.1 selected-child validation rules differ.
+6. Resources, callbacks, packages and collections: bounded reads, invocation
+   snapshots, escaped functions, lexical resource URIs, file URI identity,
+   package visibility/version selection and stable collections have direct and
+   nested public controls. Policy, cancellation and budget checks remain live
+   when retained resource values are reused within an invocation.
 
-The [adapter contract](language-suites.md) fixes licenses, dependency semantics,
-implementation settings, deterministic context, resolver policy and limits.
-Reports identify the suite revision, executable/source digests and actual
-execution version. Source or suite changes invalidate a run. Required failures,
-unknown conditions, unsupported assertions and schema validation remain visible;
-optional source streaming and XInclude requests are distinguished before loading.
-Resource errors keep their causes through harness wrappers and cannot satisfy
-wildcard/negated assertions during preparation or assertion-expression evaluation.
+New regressions extend existing test files. Named cases are shared with pinned
+Saxon 9.4/12.10 comparisons; ready libxml2/libxslt binaries check the declared
+intersection. Native/oracle disagreements are explicit diagnostics and never
+count as exact agreements. Published schemas and literal REC rules provide
+additional controls where processor behavior differs. Local tests compare actual
+AST/VM paths, public bindings, direct XSLT and nested `fn:transform` execution.
 
-Repository checks, lint, race and the complete Docker libxml2/libxslt/Saxon
-comparisons pass. Native/oracle differences are recorded without changing
-publisher fixtures. These checks establish their stated regressions, not full
-clause coverage. Schema awareness and normative W3C streamability remain separate
-directions; materialized streaming annotations do not establish streamability.
+The [adapter contract](language-suites.md) pins licenses, revisions, dependencies,
+implementation choices, resolver policy and limits. Reports identify source and
+executable hashes and actual execution versions. Full catalogs remain unmodified,
+without filters or case limits; mandatory failures, unknown conditions and
+unsupported assertions remain visible. Schema declarations imply the catalog's
+optional schema-awareness dependency, without stripping annotations. XSD 1.0/1.1
+selection changes datatype and regex rules; it does not enable schema validation.
+
+The compact [baseline](language-baseline.md) records full-catalog outcomes and the
+case audit. Residual failures retain their resource, fixture/input,
+optional-feature or permitted-outcome classifications. For example, the empty
+serialized principal in `fn-transform-43` is a permitted XML parsed entity;
+`parse-xml` requires a document, and quantified evaluation may encounter its error
+before a successful witness. Strict 2.0 output/name failures and SER30/31
+parameter-schema differences remain visible instead of changing publisher files.
+Resource failures cannot satisfy wildcard or negated semantic-error assertions.
+
+Schema awareness and normative W3C streamability remain separate roles.
+Materialized streaming annotations do not establish streamability. Repository,
+lint, race, external-consumer and independent-engine checks validate the stated
+regressions; passing them does not establish complete independent clause evidence.
 
 ## Stage 4 acceptance record
 

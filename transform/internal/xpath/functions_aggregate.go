@@ -78,7 +78,7 @@ func aggregateTypeFamilyByName(typeName string) string {
 		return lexicon.TypeDuration
 	case xdm.TypeDate:
 		return lexicon.TypeDate
-	case xdm.TypeDateTime:
+	case xdm.TypeDateTime, xdm.TypeDateTimeStamp:
 		return lexicon.TypeDateTime
 	case xdm.TypeTime:
 		return lexicon.TypeTime
@@ -136,7 +136,10 @@ func fnAvg(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	var sumFloat float64
 
-	widest := xdm.TypeInteger
+	widest, err := prepareAggregateNumericValues(ctx, atoms)
+	if err != nil {
+		return nil, err
+	}
 
 	for i, a := range atoms {
 		// Charge bounded batches before work; exact arithmetic below also
@@ -167,13 +170,14 @@ func fnAvg(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 			widest = a.TypeName
 		}
 
-		term, exact, err := addAverageNumber(ctx, sumRat, a)
+		term, exact, err := addAverageNumber(ctx, sumRat, a, widest)
 		if err != nil {
 			return nil, err
 		}
 
 		allDecOrInt = allDecOrInt && exact
-		sumFloat += term
+
+		sumFloat = addAverageFloat(sumFloat, term, widest)
 	}
 
 	if family == xdm.FamilyDurationYM || family == xdm.FamilyDurationDT {
@@ -198,13 +202,21 @@ func fnAvg(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	// Float/double path
 	avg := sumFloat / float64(count)
 	if widest == xdm.TypeFloat {
-		return xdm.SingleFloat(avg), nil
+		return xdm.SingleFloat(float64(float32(sumFloat) / float32(count))), nil
 	}
 
 	return xdm.SingleDouble(avg), nil
 }
 
-func addAverageNumber(ctx context.Context, sum *big.Rat, value xdm.AtomicValue) (float64, bool, error) {
+func addAverageFloat(sum, term float64, widest string) float64 {
+	if widest == xdm.TypeFloat {
+		return float64(float32(sum) + float32(term))
+	}
+
+	return sum + term
+}
+
+func addAverageNumber(ctx context.Context, sum *big.Rat, value xdm.AtomicValue, widest string) (float64, bool, error) {
 	exact := xdm.IsIntegerDerived(value.TypeName) || value.TypeName == xdm.TypeDecimal
 	if exact {
 		term := toRat(value)
@@ -219,7 +231,33 @@ func addAverageNumber(ctx context.Context, sum *big.Rat, value xdm.AtomicValue) 
 		}
 	}
 
+	if widest == xdm.TypeFloat {
+		return float64(numericToFloat32(value)), exact, nil
+	}
+
 	return value.ToFloat64(), exact, nil
+}
+
+func prepareAggregateNumericValues(ctx context.Context, atoms []xdm.AtomicValue) (string, error) {
+	widest := xdm.TypeInteger
+
+	for i, original := range atoms {
+		if err := Charge(ctx, 1); err != nil {
+			return "", err
+		}
+
+		value, err := promoteForAggregate(ctx, original)
+		if err != nil {
+			return "", err
+		}
+
+		atoms[i] = value
+		if numericTypeWidth(value.TypeName) > numericTypeWidth(widest) {
+			widest = value.TypeName
+		}
+	}
+
+	return widest, nil
 }
 
 func avgDurations(ctx context.Context, seq xdm.Sequence, family string) (xdm.Sequence, error) {
@@ -416,6 +454,10 @@ func maxMinCommon(ctx context.Context, atoms []xdm.AtomicValue, isMax bool, coll
 	}
 
 	state := maxMinAccumulator{fnName: fnName, isMax: isMax, coll: coll, widest: xdm.TypeInteger, first: true}
+	if ec := getFnContext(ctx); ec != nil {
+		state.implicitTZ = ec.getImplicitTimezone()
+	}
+
 	for _, original := range atoms {
 		if err := state.add(ctx, original); err != nil {
 			return nil, err
@@ -436,7 +478,7 @@ func maxMinSingle(ctx context.Context, value xdm.AtomicValue, fnName string) (xd
 		}
 	}
 
-	if _, err := maxMinTypeFamily(value, fnName); err != nil {
+	if _, err := maxMinTypeFamily(ctx, value, fnName); err != nil {
 		return nil, err
 	}
 
@@ -447,6 +489,7 @@ type maxMinAccumulator struct {
 	fnName          string
 	isMax           bool
 	coll            *collationImpl
+	implicitTZ      *time.Location
 	family          string
 	best, bestOrig  xdm.AtomicValue
 	widest          string
@@ -460,7 +503,7 @@ func (s *maxMinAccumulator) add(ctx context.Context, original xdm.AtomicValue) e
 		return err
 	}
 
-	family, err := maxMinTypeFamily(value, s.fnName)
+	family, err := maxMinTypeFamily(ctx, value, s.fnName)
 	if err != nil {
 		return err
 	}
@@ -505,9 +548,15 @@ func (s *maxMinAccumulator) add(ctx context.Context, original xdm.AtomicValue) e
 	return nil
 }
 
-func maxMinTypeFamily(value xdm.AtomicValue, fnName string) (string, error) {
+func maxMinTypeFamily(ctx context.Context, value xdm.AtomicValue, fnName string) (string, error) {
 	family := aggregateTypeFamily(value)
-	if family == "" || family == lexicon.TypeDuration {
+
+	legacyBinary := false
+	if ec := getFnContext(ctx); ec != nil && ec.version != 0 && ec.version < 31 {
+		legacyBinary = family == lexicon.TypeBase64Binary || family == lexicon.TypeHexBinary
+	}
+
+	if family == "" || family == lexicon.TypeDuration || legacyBinary {
 		return "", &xdm.Error{
 			Code:    errCodeFORG0006,
 			Message: fmt.Sprintf("invalid type %s for %s", value.TypeName, fnName),
@@ -528,7 +577,7 @@ func (s *maxMinAccumulator) selects(value xdm.AtomicValue) (bool, error) {
 		operator = TokenGt
 	}
 
-	return ValueCompare(operator, value, s.best)
+	return ValueCompareWithImplicitTimezone(operator, value, s.best, s.implicitTZ)
 }
 
 func (s *maxMinAccumulator) result() xdm.Sequence {
@@ -564,7 +613,7 @@ func promoteResult(best xdm.AtomicValue, widest string) xdm.AtomicValue {
 	// typed xs:float: a schema-derived xs:float can be backed by a double-precision
 	// FloatValue that must be narrowed to single precision.
 	if widest == xdm.TypeFloat {
-		return xdm.AtomicValue{TypeName: xdm.TypeFloat, Value: xdm.NewFloat(best.ToFloat64())}
+		return xdm.AtomicValue{TypeName: xdm.TypeFloat, Value: xdm.NewFloat(float64(numericToFloat32(best)))}
 	}
 
 	if best.TypeName == widest {
@@ -606,8 +655,13 @@ func fnSum(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return sumSingle(ctx, atoms[0])
 	}
 
+	widest, err := prepareAggregateNumericValues(ctx, atoms)
+	if err != nil {
+		return nil, err
+	}
+
 	sum := aggregateSum{
-		allInt: true, allDecOrInt: true, widest: xdm.TypeInteger,
+		allInt: true, allDecOrInt: true, widest: widest,
 		sumInt: new(big.Int), sumRat: new(big.Rat),
 	}
 
@@ -746,28 +800,35 @@ func (s *aggregateSum) addNumeric(value xdm.AtomicValue) {
 	s.allInt = false
 	if value.TypeName == xdm.TypeDecimal {
 		s.sumRat.Add(s.sumRat, value.BigRat())
-		number, _ := value.BigRat().Float64()
-		s.sumFloat += number
+		s.addFloating(value)
 
 		return
 	}
 
 	s.allDecOrInt = false
-	s.sumFloat += value.ToFloat64()
+	s.addFloating(value)
+}
+
+func (s *aggregateSum) addFloating(value xdm.AtomicValue) {
+	if s.widest == xdm.TypeFloat {
+		s.sumFloat = float64(float32(s.sumFloat) + numericToFloat32(value))
+	} else {
+		s.sumFloat += value.ToFloat64()
+	}
 }
 
 func (s *aggregateSum) addInteger(value xdm.AtomicValue) {
 	if number, ok := value.Value.(int64); ok {
 		s.sumInt.Add(s.sumInt, big.NewInt(number))
 		s.sumRat.Add(s.sumRat, new(big.Rat).SetInt64(number))
-		s.sumFloat += float64(number)
+		s.addFloating(value)
 
 		return
 	}
 
 	s.sumInt.Add(s.sumInt, value.BigInt())
 	s.sumRat.Add(s.sumRat, new(big.Rat).SetInt(value.BigInt()))
-	s.sumFloat += value.ToFloat64()
+	s.addFloating(value)
 }
 
 func (s *aggregateSum) numericResult() xdm.Sequence {

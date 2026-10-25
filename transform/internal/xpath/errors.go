@@ -12,6 +12,7 @@ import (
 )
 
 const (
+	errCodeXPST0051 = "XPST0051" // unknown atomic or union type
 	errCodeXPDY0050 = "XPDY0050"
 	errCodeXPST0080 = "XPST0080"
 	errCodeXPST0081 = "XPST0081"

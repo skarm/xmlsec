@@ -38,6 +38,39 @@ both Saxon classpaths for a complete `-run '^TestCompare'` Docker run. Use
 `-timeout=20m` for the complete transform comparison; each JVM startup contributes
 to the suite runtime. `make interop` supplies this overall test timeout.
 
+`TestCompareSerializationParameterSchemas` checks the shared serialization cases
+with ready `xmllint` and the schemas embedded in the pinned Serialization
+[3.0 REC](https://www.w3.org/TR/2014/REC-xslt-xquery-serialization-30-20140408/#serparams-schema)
+and [3.1 REC](https://www.w3.org/TR/2017/REC-xslt-xquery-serialization-31-20170321/#serparams-schema).
+It validates the whole 3.0 document and only selected standard parameters in 3.1,
+as each edition prescribes. Saxon's different extraction diagnostics remain
+separate. Schemas and generated reports stay outside the repository.
+
+Prepare the document-licensed W3C schemas once, then run without network access:
+
+```sh
+python3 - <<'PY'
+import html, pathlib, re, urllib.request
+root = pathlib.Path('/tmp/xmlsec-serialization-schemas')
+root.mkdir(exist_ok=True)
+for edition, date in [('30', '20140408'), ('31', '20170321')]:
+    year = date[:4]
+    url = f'https://www.w3.org/TR/{year}/REC-xslt-xquery-serialization-{edition}-{date}/'
+    source = html.unescape(urllib.request.urlopen(url).read().decode())
+    start = source.index('<xs:schema')
+    end = source.index('</xs:schema>', start) + len('</xs:schema>')
+    schema = re.sub(r'</?(?:a|span)[^>]*>', '', source[start:end])
+    (root / f'ser{edition}.xsd').write_text(schema)
+PY
+SERIALIZATION_SCHEMA_DIR=/tmp/xmlsec-serialization-schemas \
+  go test -tags=interop -count=1 ./transform -run '^TestCompareSerializationParameterSchemas$'
+```
+
+The test pins extracted-schema SHA-256 values `1cbcc49ac5ed8942ba58276699254469ca2144e229f68faeeb48f784c1037953`
+and `256736a2f4e7923e888047dee757c17bc3ee707e285f00639fd8fb1d962d11b0`.
+An absent directory option leaves this optional external check unconfigured;
+a configured missing or changed schema fails the check.
+
 [CI](../.github/workflows/ci.yml) defines tool versions and platform checks.
 The Go development runner also works without make:
 

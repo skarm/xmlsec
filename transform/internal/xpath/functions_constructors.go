@@ -25,7 +25,7 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 	}{
 		{lexicon.TypeString, xdm.TypeString},
 		{fnNameBoolean, xdm.TypeBoolean},
-		{"decimal", xdm.TypeDecimal},
+		{lexicon.TypeDecimal, xdm.TypeDecimal},
 		{"double", xdm.TypeDouble},
 		{"float", xdm.TypeFloat},
 		{"integer", xdm.TypeInteger},
@@ -33,12 +33,12 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 		{lexicon.TypeDateTime, xdm.TypeDateTime},
 		{lexicon.TypeTime, xdm.TypeTime},
 		{lexicon.TypeDuration, xdm.TypeDuration},
-		{"dayTimeDuration", xdm.TypeDayTimeDuration},
-		{"yearMonthDuration", xdm.TypeYearMonthDuration},
+		{lexicon.TypeDayTimeDuration, xdm.TypeDayTimeDuration},
+		{lexicon.TypeYearMonthDuration, xdm.TypeYearMonthDuration},
 		{"anyURI", xdm.TypeAnyURI},
 		{lexicon.TypeBase64Binary, xdm.TypeBase64Binary},
 		{lexicon.TypeHexBinary, xdm.TypeHexBinary},
-		{"untypedAtomic", xdm.TypeUntypedAtomic},
+		{lexicon.TypeUntypedAtomic, xdm.TypeUntypedAtomic},
 	} {
 		if requestedName == entry.name {
 			return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSConstructor(entry.targetType)}, true
@@ -102,8 +102,8 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 		{"language", xdm.TypeLanguage, reLang},
 		{lexicon.TypeName, xdm.TypeName, reName},
 		{"NCName", xdm.TypeNCName, reNCName},
-		{"NMTOKEN", xdm.TypeNMTOKEN, reNMTOKEN},
-		{"ENTITY", xdm.TypeENTITY, reNCName},
+		{lexicon.TypeNMToken, xdm.TypeNMTOKEN, reNMTOKEN},
+		{lexicon.TypeENTITY, xdm.TypeENTITY, reNCName},
 		{"ID", xdm.TypeID, reNCName},
 		{"IDREF", xdm.TypeIDREF, reNCName},
 	} {
@@ -144,7 +144,7 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 
 	// xs:dateTimeStamp — dateTime with required timezone. CastAtomic enforces
 	// the mandatory-timezone rule, so the generic constructor suffices.
-	if requestedName == "dateTimeStamp" {
+	if requestedName == lexicon.TypeDateTimeStamp {
 		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSConstructor(xdm.TypeDateTimeStamp)}, true
 	}
 
@@ -153,9 +153,9 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: fnXSError}, true
 	}
 
-	// xs:numeric — cast to double (xs:numeric is an abstract union type)
-	if requestedName == "numeric" {
-		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSConstructor(xdm.TypeDouble)}, true
+	// xs:numeric preserves numeric members and otherwise selects xs:double.
+	if requestedName == lexicon.TypeNumeric {
+		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSConstructor(xdm.TypeNumeric)}, true
 	}
 
 	return nil, false
@@ -173,7 +173,13 @@ func makeXSConstructor(targetType string) func(context.Context, []xdm.Sequence) 
 			return nil, nil
 		}
 
-		result, err := CastAtomicContext(ctx, a, targetType)
+		var result xdm.AtomicValue
+		if targetType == xdm.TypeNumeric {
+			result, err = castToNumeric(ctx, a)
+		} else {
+			result, err = CastAtomicContext(ctx, a, targetType)
+		}
+
 		if err != nil {
 			return nil, err
 		}
@@ -242,7 +248,7 @@ func (f lexicalCheck) MatchString(s string) bool { return f(s) }
 func reNCName(s string) bool { return xmlchar.IsValidNCName(s) }
 func reName(s string) bool   { return xmlchar.IsValidName(s) }
 func reNMTOKEN(s string) bool {
-	return valuepkg.ValidateBuiltin(s, "NMTOKEN", valuepkg.Version11) == nil
+	return valuepkg.ValidateBuiltin(s, lexicon.TypeNMToken, valuepkg.Version11) == nil
 }
 func reLang(s string) bool { return valuepkg.ValidLanguage(s) }
 
@@ -294,35 +300,57 @@ func makeXSTokenList(listType, itemType string, tokenRe lexicalCheck) func(conte
 			return nil, nil
 		}
 
-		s, err := atomicToString(a)
-		if err != nil {
-			return nil, err
+		source := normalizeCastSource(a)
+		if source.TypeName != xdm.TypeUntypedAtomic && !xdm.IsStringDerived(source.TypeName) {
+			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "cannot cast " + a.TypeName + " to " + listType}
 		}
 
-		s = strings.Trim(s, " \t\r\n")
+		s := strings.Trim(source.StringVal(), lexicon.XMLWhitespace)
 		if s == "" {
-			return nil, &xdm.Error{
-				Code:    errCodeFORG0001,
-				Message: fmt.Sprintf("cannot cast empty string to %s", listType),
-			}
+			return nil, castError(s, listType)
 		}
 
-		tokens := splitXMLWhitespace(s)
+		ec := getFnContext(ctx)
+		limit := NodeLimit(ctx, fnMaxNodes(ec))
+		result := make(xdm.ItemSlice, 0, min(limit, 8))
 
-		result := make(xdm.ItemSlice, len(tokens))
-		for i, tok := range tokens {
-			if !tokenRe.MatchString(tok) {
-				return nil, &xdm.Error{
-					Code:    errCodeFORG0001,
-					Message: fmt.Sprintf("invalid token %q in %s", tok, listType),
-				}
+		for token := range strings.FieldsFuncSeq(s, xmlchar.IsSpace) {
+			if len(result) >= limit {
+				return nil, ErrNodeSetLimit
 			}
 
-			result[i] = xdm.AtomicValue{TypeName: itemType, Value: strings.Clone(tok)}
+			if ec != nil {
+				if err := ec.countOps(ctx, 1); err != nil {
+					return nil, err
+				}
+			} else if err := Charge(ctx, 1); err != nil {
+				return nil, err
+			}
+
+			if !tokenRe.MatchString(token) {
+				return nil, castError(token, listType)
+			}
+
+			result = append(result, xdm.AtomicValue{TypeName: itemType, Value: strings.Clone(token)})
 		}
 
 		return result, nil
 	}
+}
+
+func isBuiltinListType(target string) bool {
+	return target == xdm.TypeENTITIES || target == xdm.TypeIDREFS || target == xdm.TypeNMTOKENS
+}
+
+// Builtin list casts and constructors use one bounded token/member builder.
+func castToBuiltinList(ctx context.Context, ec *evalContext, value xdm.AtomicValue, target string) (xdm.Sequence, error) {
+	constructor, _ := lookupConstructor(strings.TrimPrefix(target, "xs:"))
+
+	if ec != nil {
+		ctx = withFnContext(ctx, ec)
+	}
+
+	return constructor.fn(ctx, []xdm.Sequence{xdm.SingleAtomic(value)})
 }
 
 func reGDay(s string) bool {

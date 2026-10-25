@@ -47,6 +47,12 @@ import (
 // process memory through an unbounded io.ReadAll.
 const DefaultMaxBytes int64 = 10 << 20 // 10 MiB
 
+const (
+	encodingUTF8    = "utf-8"
+	encodingUTF16BE = "utf-16be"
+	encodingUTF16LE = "utf-16le"
+)
+
 // Error codes defined by the XPath 3.1 specification for unparsed-text functions.
 const (
 	// ErrCodeRetrieval is FOUT1170: the resource cannot be retrieved.
@@ -74,6 +80,15 @@ type Config struct {
 	// CheckBytes charges decoded text before retaining it. Nil applies only
 	// MaxBytes, which also caps the decoded UTF-8 representation.
 	CheckBytes func(int) error
+	// ReadBytes observes encoded bytes consumed from the resource, without
+	// retaining them or charging decoded output storage.
+	ReadBytes func(int)
+	// DecodedBytes observes the Unicode representation before json-doc escapes
+	// non-XML characters into its internal JSON source representation.
+	DecodedBytes func(int)
+	// ControlFailure preserves host work and cancellation failures in availability
+	// probes, which otherwise convert ordinary retrieval failures to false.
+	ControlFailure func(context.Context, error) error
 }
 
 // Error represents a typed error from the unparsed-text pipeline.
@@ -109,6 +124,12 @@ func LoadText(ctx context.Context, cfg *Config, href, encoding string) (string, 
 	}
 
 	return text.String(), nil
+}
+
+// ReadText validates and decodes incrementally, allowing a consumer to stop
+// before reading the remainder or retain only a bounded portion of the text.
+func ReadText(ctx context.Context, cfg *Config, href, encoding string, consume func([]byte) error) error {
+	return loadText(ctx, cfg, href, encoding, consume)
 }
 
 // LoadTextLines reads and validates text incrementally, retaining only the
@@ -156,6 +177,15 @@ func CheckAvailability(ctx context.Context, cfg *Config, href, encoding string) 
 	}
 
 	err := loadText(ctx, cfg, href, encoding, func([]byte) error { return nil })
+	if cfg != nil && cfg.ControlFailure != nil {
+		if failure := cfg.ControlFailure(ctx, err); failure != nil {
+			return false, failure
+		}
+	}
+
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, tree.ErrLimit) {
+		return false, err
+	}
 
 	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
 		return false, err
@@ -298,6 +328,169 @@ func ReadURI(ctx context.Context, cfg *Config, uri string) (text string, err err
 			return "", retrievalError(readErr)
 		}
 	}
+}
+
+// ReadJSONText applies json-doc's Unicode detection and escapes non-XML
+// characters before parsing. compatible reports whether default unparsed-text
+// would produce the same Unicode source with its narrower character rules.
+func ReadJSONText(ctx context.Context, cfg *Config, uri string, consume func([]byte) error) (compatible bool, err error) {
+	rc, hint, err := openURI(ctx, cfg, uri)
+	if err != nil {
+		return false, retrievalError(err)
+	}
+	defer func() {
+		if final := errors.Join(rc.Close(), ctx.Err()); final != nil {
+			err = errors.Join(err, retrievalError(final))
+		}
+	}()
+
+	reader, compatible, err := decodedJSONReader(rc, hint)
+	if err != nil {
+		return false, err
+	}
+
+	err = readDecodedText(ctx, reader, effectiveMaxBytes(cfg), false, func(chunk []byte) error {
+		if cfg != nil && cfg.DecodedBytes != nil {
+			cfg.DecodedBytes(len(chunk))
+		}
+
+		converted, changed, err := jsonCharacterChunk(cfg, chunk)
+		if err != nil {
+			return err
+		}
+
+		compatible = compatible && !changed
+
+		return consume(converted)
+	})
+
+	return compatible, err
+}
+
+func jsonCharacterChunk(cfg *Config, chunk []byte) ([]byte, bool, error) {
+	size := len(chunk)
+	for offset := 0; offset < len(chunk); {
+		value, width := utf8.DecodeRune(chunk[offset:])
+		if !IsValidXMLChar(value) {
+			size += 6 - width
+		}
+
+		offset += width
+	}
+
+	if cfg != nil && cfg.CheckBytes != nil {
+		if err := cfg.CheckBytes(size); err != nil {
+			return nil, false, err
+		}
+	}
+
+	if size == len(chunk) {
+		return chunk, false, nil
+	}
+
+	const hex = "0123456789ABCDEF"
+
+	converted := make([]byte, 0, size)
+
+	for len(chunk) > 0 {
+		value, width := utf8.DecodeRune(chunk)
+		if IsValidXMLChar(value) {
+			converted = append(converted, chunk[:width]...)
+		} else {
+			converted = append(converted, '\\', 'u', hex[value>>12&15], hex[value>>8&15], hex[value>>4&15], hex[value&15])
+		}
+
+		chunk = chunk[width:]
+	}
+
+	return converted, true, nil
+}
+
+func decodedJSONReader(src io.Reader, contentType string) (io.Reader, bool, error) {
+	charset, _, err := textMediaType(contentType)
+	if err != nil {
+		return nil, false, err
+	}
+
+	reader := bufio.NewReaderSize(src, 4096)
+
+	prefix, err := reader.Peek(4)
+	if err != nil && err != io.EOF {
+		return nil, false, err
+	}
+
+	detected, skip := jsonBOMEncoding(prefix)
+
+	effective, compatible := "", false
+	if charset != "" {
+		effective = resolveEncoding(charset, detected)
+		if normalizeEncodingName(charset) == "utf32" && strings.HasPrefix(detected, "utf-32") {
+			effective = detected
+		}
+
+		compatible = !strings.HasPrefix(detected, "utf-32")
+	} else if detected != "" {
+		effective = detected
+		compatible = !strings.HasPrefix(detected, "utf-32")
+	} else {
+		effective = jsonInitialEncoding(prefix)
+		compatible = effective == encodingUTF8
+	}
+
+	if effective == "" {
+		return nil, false, &Error{Code: ErrCodeEncoding, Message: "JSON transport encoding conflicts with byte order mark"}
+	}
+
+	if skip > 0 {
+		if _, err := reader.Discard(skip); err != nil {
+			return nil, false, err
+		}
+	}
+
+	decoded, err := encodingReader(reader, effective)
+
+	return decoded, compatible, err
+}
+
+func jsonBOMEncoding(prefix []byte) (string, int) {
+	if bytes.HasPrefix(prefix, []byte{0, 0, 0xfe, 0xff}) {
+		return "utf-32be", 4
+	}
+
+	if bytes.HasPrefix(prefix, []byte{0xff, 0xfe, 0, 0}) {
+		return "utf-32le", 4
+	}
+
+	encoding, clean := detectBOM(prefix)
+
+	return encoding, len(prefix) - len(clean)
+}
+
+func jsonInitialEncoding(prefix []byte) string {
+	if len(prefix) >= 4 {
+		switch {
+		case prefix[0] == 0 && prefix[1] == 0 && prefix[2] == 0:
+			return "utf-32be"
+		case prefix[1] == 0 && prefix[2] == 0 && prefix[3] == 0:
+			return "utf-32le"
+		case prefix[0] == 0 && prefix[2] == 0:
+			return encodingUTF16BE
+		case prefix[1] == 0 && prefix[3] == 0:
+			return encodingUTF16LE
+		}
+	}
+
+	if len(prefix) == 2 {
+		if prefix[0] == 0 {
+			return encodingUTF16BE
+		}
+
+		if prefix[1] == 0 {
+			return encodingUTF16LE
+		}
+	}
+
+	return encodingUTF8
 }
 
 // DecodeText decodes raw bytes to a string, handling BOM detection,
@@ -457,7 +650,7 @@ func loadText(ctx context.Context, cfg *Config, href, encoding string, emit func
 	}
 	defer func() {
 		if final := errors.Join(rc.Close(), ctx.Err()); final != nil {
-			err = errors.Join(err, final)
+			err = errors.Join(err, retrievalError(final))
 		}
 	}()
 
@@ -549,15 +742,27 @@ func openURI(ctx context.Context, cfg *Config, uri string) (io.ReadCloser, strin
 		maximum = math.MaxInt64
 	}
 
-	limited := &streamio.Reader{Context: ctx, Source: &retrievalReader{Reader: rc}, Limit: maximum, LimitError: textLimitError()}
+	var observe func(int)
+	if cfg != nil {
+		observe = cfg.ReadBytes
+	}
+
+	limited := &streamio.Reader{Context: ctx, Source: &retrievalReader{Reader: rc, observe: observe}, Limit: maximum, LimitError: textLimitError()}
 
 	return &resourceReader{Reader: limited, Closer: rc}, hint, nil
 }
 
-type retrievalReader struct{ io.Reader }
+type retrievalReader struct {
+	io.Reader
+	observe func(int)
+}
 
 func (r *retrievalReader) Read(p []byte) (int, error) {
 	n, err := r.Reader.Read(p)
+	if n > 0 && r.observe != nil {
+		r.observe(n)
+	}
+
 	if err != nil && err != io.EOF {
 		err = retrievalError(err)
 	}
@@ -619,15 +824,15 @@ func textMediaType(contentType string) (string, bool, error) {
 // name and data with the BOM stripped.
 func detectBOM(data []byte) (string, []byte) {
 	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
-		return "utf-8", data[3:]
+		return encodingUTF8, data[3:]
 	}
 
 	if len(data) >= 2 && data[0] == 0xFF && data[1] == 0xFE {
-		return "utf-16le", data[2:]
+		return encodingUTF16LE, data[2:]
 	}
 
 	if len(data) >= 2 && data[0] == 0xFE && data[1] == 0xFF {
-		return "utf-16be", data[2:]
+		return encodingUTF16BE, data[2:]
 	}
 
 	return "", data
@@ -702,7 +907,7 @@ func resolveEncoding(specified, detected string) string {
 		return detected
 	}
 
-	return "utf-8"
+	return encodingUTF8
 }
 
 // decodedReader sniffs only the bounded declaration prefix, then keeps one
@@ -778,6 +983,10 @@ func encodingReader(src io.Reader, name string) (io.Reader, error) {
 // readText validates UTF-8/XML characters across chunk boundaries before
 // retaining output. The decoded byte cap is checked before calling emit.
 func readText(ctx context.Context, reader io.Reader, maximum int64, emit func([]byte) error) error {
+	return readDecodedText(ctx, reader, maximum, true, emit)
+}
+
+func readDecodedText(ctx context.Context, reader io.Reader, maximum int64, xmlOnly bool, emit func([]byte) error) error {
 	var buffer [32<<10 + utf8.UTFMax]byte
 
 	pending, used := 0, int64(0)
@@ -797,7 +1006,7 @@ func readText(ctx context.Context, reader io.Reader, maximum int64, emit func([]
 			}
 
 			r, size := utf8.DecodeRune(buffer[valid:end])
-			if r == utf8.RuneError && size == 1 || !IsValidXMLChar(r) {
+			if r == utf8.RuneError && size == 1 || xmlOnly && !IsValidXMLChar(r) {
 				return &Error{Code: ErrCodeEncoding, Message: "invalid UTF-8 or XML character in text resource"}
 			}
 

@@ -66,7 +66,7 @@ func (ec *execContext) initGlobalVars(ctx context.Context, cfg *transformConfig)
 	// the caller must raise an error immediately, even if never referenced.
 	for _, p := range ec.globalParamDefs {
 		if p.Required || p.implicitlyMandatory() {
-			return dynamicError(errCodeXTDE0050, "required stylesheet parameter $%s was not supplied", p.Name)
+			return ec.missingGlobalParam(p)
 		}
 	}
 
@@ -76,6 +76,15 @@ func (ec *execContext) initGlobalVars(ctx context.Context, cfg *transformConfig)
 	}
 
 	return nil
+}
+
+func (ec *execContext) missingGlobalParam(p *param) error {
+	code := errCodeXTDE0050
+	if ec.stylesheet.processorLanguage() == 20 && !p.Required {
+		code = "XTDE0610"
+	}
+
+	return dynamicError(code, "required stylesheet parameter $%s was not supplied", p.Name)
 }
 
 // validateGlobalContextItem checks the source document against the
@@ -574,7 +583,7 @@ func (ec *execContext) computeGlobalParam(ctx context.Context, p *param) (xdm.Se
 	// XTDE0050: required stylesheet parameter not supplied by the caller.
 	// If we reach here (not set in initGlobalVars), no external value was given.
 	if p.Required || p.implicitlyMandatory() {
-		return nil, dynamicError(errCodeXTDE0050, "required stylesheet parameter $%s was not supplied", p.Name)
+		return nil, ec.missingGlobalParam(p)
 	}
 
 	if p.Select != nil {
@@ -631,66 +640,6 @@ func (ec *execContext) computeGlobalParam(ctx context.Context, p *param) (xdm.Se
 	return val, nil
 }
 
-// evaluateBody executes instructions and captures the result as a sequence.
-// When instructions produce nodes, they are wrapped as a temporary tree.
-func (ec *execContext) evaluateBody(ctx context.Context, body []instruction) (xdm.Sequence, error) {
-	tmpDoc := xdm.NewDefaultDocument()
-
-	tmpRoot, err := tmpDoc.CreateElement("_tmp")
-	if err != nil {
-		return nil, err
-	}
-
-	if err := tmpDoc.AddChild(tmpRoot); err != nil {
-		return nil, err
-	}
-
-	// Push a new output frame with capture mode enabled
-	frame := &outputFrame{doc: tmpDoc, current: tmpRoot, captureItems: true}
-
-	ec.outputStack = append(ec.outputStack, frame)
-	defer func() {
-		ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
-	}()
-
-	if err := ec.executeSequenceConstructor(ctx, body); err != nil {
-		return nil, err
-	}
-
-	// If we captured atomic items via xsl:sequence, return them directly
-	if len(frame.pendingItems) > 0 {
-		if tmpRoot.FirstChild() != nil {
-			var seq xdm.ItemSlice
-			for child := range xdm.Children(tmpRoot) {
-				seq = append(seq, xdm.NodeItem{Node: child})
-			}
-
-			seq = append(seq, frame.pendingItems...)
-
-			return seq, nil
-		}
-
-		return frame.pendingItems, nil
-	}
-
-	// Return all children as node items
-	var seq xdm.ItemSlice
-	for child := range xdm.Children(tmpRoot) {
-		seq = append(seq, xdm.NodeItem{Node: child})
-	}
-	// Also collect attributes that were set on the temporary root
-	// (e.g., from xsl:attribute with as="attribute()")
-	for _, attr := range tmpRoot.Attributes() {
-		seq = append(seq, xdm.NodeItem{Node: attr})
-	}
-
-	if len(seq) > 0 {
-		return seq, nil
-	}
-
-	return xdm.EmptySequence(), nil
-}
-
 // evaluateBodyForAttr evaluates the body capturing each text fragment and
 // atomic value as separate items in pendingItems. Consecutive atomics are
 // NOT space-separated (itemSeparator=""); the caller controls the join
@@ -734,7 +683,7 @@ func (ec *execContext) evaluateBodyForAttr(ctx context.Context, body []instructi
 	return xdm.EmptySequence(), nil
 }
 
-// evaluateBodySeparateText is like evaluateBody but keeps each produced
+// evaluateBodySeparateText keeps each produced
 // text node as a separate string item instead of letting the DOM merge
 // adjacent text nodes.  This is needed by xsl:value-of with separator
 // so that each text value is a distinct item for separator insertion.

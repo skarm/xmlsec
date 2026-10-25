@@ -104,7 +104,7 @@ func (c *compiler) compileTopLevel(ctx context.Context, root *xdm.Element) error
 
 func validateTopLevelText(root *xdm.Element) error {
 	for child := range xdm.Children(root) {
-		if child.Type() == xdm.TextNode && !isXMLWhitespaceOnly(xdm.CharacterData(child)) {
+		if child.Type() == xdm.TextNode && xdm.CharacterData(child) != "" {
 			return staticError(errCodeXTSE0120, "non-whitespace text node in xsl:stylesheet")
 		}
 	}
@@ -131,6 +131,7 @@ func (c *compiler) collectLocalComponentNames(ctx context.Context, root *xdm.Ele
 	c.localTemplateNames = make(map[string]struct{})
 	c.localVarNames = make(map[string]struct{})
 	c.localModeNames = make(map[string]struct{})
+	c.localFunctionNames = make(map[funcKey]struct{})
 
 	return c.collectModuleComponentNames(ctx, root)
 }
@@ -181,6 +182,21 @@ func (c *compiler) collectLocalComponentName(elem *xdm.Element) {
 				c.localModeNames[resolveQName(m, namespaces)] = struct{}{}
 			}
 		}
+	case lexicon.XSLTElementFunction:
+		qualified, err := functionName(name, namespaces)
+		if err != nil {
+			return // The normal declaration compiler reports the invalid name.
+		}
+
+		arity := 0
+
+		for child := range xdm.ChildElements(elem) {
+			if child.URI() == lexicon.NamespaceXSLT && child.LocalName() == xslElemParam {
+				arity++
+			}
+		}
+
+		c.localFunctionNames[funcKey{Name: qualified, Arity: arity}] = struct{}{}
 	case lexicon.XSLTElementVariable, xslElemParam:
 		if n := getAttr(elem, xslAttrName); n != "" {
 			c.localVarNames[resolveQName(n, namespaces)] = struct{}{}
@@ -197,19 +213,33 @@ func (c *compiler) evaluateStaticSelect(ctx context.Context, elem *xdm.Element) 
 	restore := c.enterStaticElementContext(elem)
 	defer restore()
 
+	compiled, err := c.compileStaticSelect(ctx, elem)
+	if err != nil {
+		return nil, err
+	}
+
+	evaluator := c.staticEvaluator(ctx)
+
+	result, err := evaluator.Evaluate(ctx, compiled, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.convertStaticDeclarationValue(ctx, elem, result.Sequence())
+}
+
+func (c *compiler) compileStaticSelect(ctx context.Context, elem *xdm.Element) (*xpath.Expression, error) {
 	compiled, err := xpath.NewCompiler().Context(ctx).Language(c.stylesheet.xpathVersion(), c.xpathNamespaces(c.nsBindings)).Compile(getAttr(elem, xslAttrSelect))
 	if err != nil {
 		return nil, err
 	}
 
 	compiled = compiled.BindNamespaceContext(c.xpathNamespaces(c.nsBindings), c.nsBindings[""])
-
-	result, err := c.staticEvaluator(ctx).Evaluate(ctx, compiled, nil)
-	if err != nil {
+	if err := c.staticEvaluator(ctx).ValidateExpression(ctx, compiled); err != nil {
 		return nil, err
 	}
 
-	return c.convertStaticDeclarationValue(ctx, elem, result.Sequence())
+	return compiled, nil
 }
 
 // Static values must be converted before another declaration, use-when or

@@ -393,6 +393,14 @@ func deepEqualSequence(a, b xdm.Sequence, opts deepEqualOptions) (bool, error) {
 }
 
 func deepEqualItem(a, b xdm.Item, opts deepEqualOptions) (bool, error) {
+	if _, function := a.(xdm.FunctionItem); function {
+		return false, &xdm.Error{Code: "FOTY0015", Message: "deep-equal: cannot compare function items"}
+	}
+
+	if _, function := b.(xdm.FunctionItem); function {
+		return false, &xdm.Error{Code: "FOTY0015", Message: "deep-equal: cannot compare function items"}
+	}
+
 	switch av := a.(type) {
 	case xdm.AtomicValue:
 		bv, ok := b.(xdm.AtomicValue)
@@ -422,12 +430,6 @@ func deepEqualItem(a, b xdm.Item, opts deepEqualOptions) (bool, error) {
 		}
 
 		return deepEqualArray(av, bv, opts)
-	case xdm.FunctionItem:
-		if _, ok := b.(xdm.FunctionItem); ok {
-			return false, &xdm.Error{Code: "FOTY0015", Message: "deep-equal: cannot compare function items"}
-		}
-
-		return false, nil
 	default:
 		return false, nil
 	}
@@ -462,7 +464,7 @@ func deepEqualAtomic(a, b xdm.AtomicValue, opts deepEqualOptions) (bool, error) 
 }
 
 func deepEqualNode(a, b xdm.Node, opts deepEqualOptions) bool {
-	if a.Type() != b.Type() {
+	if deepEqualNodeKind(a) != deepEqualNodeKind(b) {
 		return false
 	}
 
@@ -485,6 +487,14 @@ func deepEqualNode(a, b xdm.Node, opts deepEqualOptions) bool {
 	default:
 		return false
 	}
+}
+
+func deepEqualNodeKind(node xdm.Node) xdm.ElementType {
+	if node.Type() == xdm.CDATASectionNode {
+		return xdm.TextNode
+	}
+
+	return node.Type()
 }
 
 func deepEqualElementNodes(a, b xdm.Node, opts deepEqualOptions) bool {
@@ -537,19 +547,32 @@ func deepEqualAttribute(a, b *xdm.Attribute, opts deepEqualOptions) bool {
 }
 
 func deepEqualChildren(a, b xdm.Node, opts deepEqualOptions) bool {
-	ac := a.FirstChild()
+	ac := nextDeepEqualChild(a.FirstChild())
 
-	bc := b.FirstChild()
+	bc := nextDeepEqualChild(b.FirstChild())
 	for ac != nil && bc != nil {
 		if !deepEqualNode(ac, bc, opts) {
 			return false
 		}
 
-		ac = ac.NextSibling()
-		bc = bc.NextSibling()
+		ac = nextDeepEqualChild(ac.NextSibling())
+		bc = nextDeepEqualChild(bc.NextSibling())
 	}
 
 	return ac == nil && bc == nil
+}
+
+func nextDeepEqualChild(node xdm.Node) xdm.Node {
+	for node != nil {
+		switch node.Type() {
+		case xdm.ElementNode, xdm.TextNode, xdm.CDATASectionNode:
+			return node
+		}
+
+		node = node.NextSibling()
+	}
+
+	return nil
 }
 
 func deepEqualMap(a, b xdm.MapItem, opts deepEqualOptions) (bool, error) {
@@ -644,16 +667,9 @@ func fnIndexOf(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 			a = xdm.AtomicValue{TypeName: xdm.TypeString, Value: a.StringVal()}
 		}
 
-		var eq bool
-		if coll != nil && xdm.IsStringDerived(a.TypeName) && xdm.IsStringDerived(search.TypeName) {
-			eq = coll.compare(a.StringVal(), search.StringVal()) == 0
-		} else {
-			matched, cmpErr := compareAtomic(TokenEq, a, search)
-			if cmpErr != nil {
-				continue // incomparable types are silently skipped
-			}
-
-			eq = matched
+		eq, cmpErr := compareAtomicInContext(TokenEq, a, search, coll, getFnContext(ctx))
+		if cmpErr != nil {
+			continue // incomparable types are silently skipped
 		}
 
 		if eq {
@@ -666,8 +682,8 @@ func fnIndexOf(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 func fnLast(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 	fc := getFnContext(ctx)
-	if fc == nil || (fc.node == nil && fc.contextItem == nil) {
-		return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: "last() requires a focus (context item)"}
+	if fc == nil || (fc.node == nil && fc.contextItem == nil) || fc.size <= 0 {
+		return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: "last() requires a context size"}
 	}
 
 	return xdm.SingleInteger(int64(fc.size)), nil

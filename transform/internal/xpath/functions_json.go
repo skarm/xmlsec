@@ -9,12 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
 const (
@@ -707,14 +707,7 @@ func fnJSONDoc(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return nil, nil
 	}
 
-	cfg := unparsedTextConfig(ctx)
-
-	resolvedURI, err := unparsedtext.ResolveURI(ctx, cfg, uri)
-	if err != nil {
-		return nil, fmt.Errorf("json-doc: %w", wrapUnparsedTextError(err))
-	}
-
-	body, err := unparsedtext.ReadURI(ctx, cfg, resolvedURI)
+	body, err := loadTextResource(ctx, uri, "", false, textResourceJSON, 0, nil)
 	if err != nil {
 		return nil, fmt.Errorf("json-doc: %w", wrapUnparsedTextError(err))
 	}
@@ -741,7 +734,9 @@ func jsonToXDM(v any) (xdm.Item, error) {
 		s := val.String()
 
 		f, err := val.Float64()
-		if err != nil {
+		// The decoder already checked JSON grammar. xs:string to xs:double
+		// conversion permits overflow to infinity (F&O 3.1 section 17.5.1).
+		if err != nil && !errors.Is(err, strconv.ErrRange) {
 			return nil, &xdm.Error{Code: errCodeFOJS0001, Message: "invalid JSON number: " + s}
 		}
 

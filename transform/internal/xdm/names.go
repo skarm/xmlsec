@@ -130,7 +130,7 @@ func LookupNSURI(start Node, uri string) (*Namespace, bool) {
 	return nil, false
 }
 
-// SplitLexicalQName trims surrounding whitespace from s, splits it at the first
+// SplitLexicalQName trims surrounding XML whitespace from s, splits it at the first
 // ':' into prefix and local, and validates each part as an NCName. It is
 // error-code free: callers map a failure to whatever XPath error code
 // (FORG0001, FOCA0002, ...) applies in their context. hadColon reports whether
@@ -138,7 +138,7 @@ func LookupNSURI(start Node, uri string) (*Namespace, bool) {
 // true but prefix is empty). validNC reports whether prefix (when present) and
 // local are both valid NCNames.
 func SplitLexicalQName(s string) (prefix, local string, hadColon, validNC bool) {
-	s = strings.TrimSpace(s)
+	s = strings.Trim(s, lexicon.XMLWhitespace)
 	prefix = ""
 
 	local = s

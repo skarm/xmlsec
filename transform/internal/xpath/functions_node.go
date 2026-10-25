@@ -100,6 +100,10 @@ func fnNodeName(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 			Value:    xdm.QNameValue{Local: n.Name()},
 		}), nil
 	case xdm.NamespaceNode:
+		if n.Name() == "" {
+			return nil, nil
+		}
+
 		return xdm.SingleAtomic(xdm.AtomicValue{
 			TypeName: xdm.TypeQName,
 			Value:    xdm.QNameValue{Local: n.Name()},
@@ -566,7 +570,7 @@ func buildNodePath(n xdm.Node) string {
 			pos := commentPosition(cur)
 			parts = append(parts, fmt.Sprintf("comment()[%d]", pos))
 		case xdm.ProcessingInstructionNode:
-			parts = append(parts, fmt.Sprintf("processing-instruction(%s)[1]", cur.Name()))
+			parts = append(parts, fmt.Sprintf("processing-instruction(%s)[%d]", cur.Name(), processingInstructionPosition(cur)))
 		case xdm.NamespaceNode:
 			if cur.Name() == "" {
 				parts = append(parts, fmt.Sprintf(`namespace::*[Q{%s}local-name()=""]`, NSFn))
@@ -631,6 +635,18 @@ func commentPosition(n xdm.Node) int {
 
 	for sib := n.PrevSibling(); sib != nil; sib = sib.PrevSibling() {
 		if sib.Type() == xdm.CommentNode {
+			pos++
+		}
+	}
+
+	return pos
+}
+
+func processingInstructionPosition(n xdm.Node) int {
+	pos := 1
+
+	for sibling := n.PrevSibling(); sibling != nil; sibling = sibling.PrevSibling() {
+		if sibling.Type() == xdm.ProcessingInstructionNode && sibling.Name() == n.Name() {
 			pos++
 		}
 	}

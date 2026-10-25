@@ -44,6 +44,7 @@ type pattern struct {
 	// empty xpathDefaultNS, which RESETS an inherited default to no-namespace —
 	// distinct from no xpath-default-namespace ever being declared (false).
 	xpathDefaultNS    string
+	defaultCollation  string
 	Alternatives      []*patternAlt
 	hasXPathDefaultNS bool
 	// compat is true when the pattern was compiled under backwards-compatible
@@ -100,18 +101,22 @@ func (p *pattern) matchPatternProbe(ctx context.Context, ec *execContext, node x
 	savedPatternNS := ec.patternNamespaces
 	savedPatternCompat := ec.patternCompat
 	savedPatternPreds := ec.patternPredicates
+	savedCollation := ec.defaultCollation
 	ec.xpathDefaultNS = p.xpathDefaultNS
 	ec.hasXPathDefaultNS = p.hasXPathDefaultNS
 	ec.patternNamespaces = p.nsBindings
 	ec.patternCompat = p.compat
 
 	ec.patternPredicates = p.predicates
+
+	ec.defaultCollation = p.defaultCollation
 	defer func() {
 		ec.xpathDefaultNS = saved
 		ec.hasXPathDefaultNS = savedHas
 		ec.patternNamespaces = savedPatternNS
 		ec.patternCompat = savedPatternCompat
 		ec.patternPredicates = savedPatternPreds
+		ec.defaultCollation = savedCollation
 	}()
 
 	for _, alt := range p.Alternatives {
@@ -1651,9 +1656,15 @@ type patternAlt struct {
 // below 2.0.
 func (c *compiler) compilePattern(s string, elem *xdm.Element, xpathDefaultNS string, hasXPathDefaultNS bool) (*pattern, error) {
 	nsBindings := c.internPatternNamespaces(inScopeNamespaces(elem))
+
+	collation, err := c.declarationDefaultCollation(elem)
+	if err != nil {
+		return nil, err
+	}
+
 	compat := c.backwardsCompatible()
 	decls := c.schemaDeclsForValidation()
-	p := &pattern{source: s, xpathDefaultNS: xpathDefaultNS, hasXPathDefaultNS: hasXPathDefaultNS, nsBindings: nsBindings, compat: compat}
+	p := &pattern{source: s, xpathDefaultNS: xpathDefaultNS, hasXPathDefaultNS: hasXPathDefaultNS, nsBindings: nsBindings, compat: compat, defaultCollation: collation}
 
 	version := c.stylesheet.xpathVersion()
 
@@ -1682,6 +1693,10 @@ func (c *compiler) compilePattern(s string, elem *xdm.Element, xpathDefaultNS st
 		// This keeps compile-time and runtime prefix resolution symmetric.
 		if valErr := compiled.ValidateWithSchema(validateNS, decls); valErr != nil {
 			return nil, patternCompilationError(c.invocation, alt, valErr)
+		}
+
+		if err := c.recordVariableReferences(compiled.StaticReferences(validateNS).FreeVariables, validateNS, elem, elem.LocalName() == lexicon.XSLTElementAccumulatorRule); err != nil {
+			return nil, err
 		}
 
 		ast := compiled.AST()

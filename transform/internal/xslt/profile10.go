@@ -1,4 +1,5 @@
 // Copyright (c) 2026 xmlsec contributors. MIT License.
+
 package xslt
 
 import (
@@ -119,7 +120,7 @@ func ignoredOptional10(e *xdm.Element, a *xdm.Attribute) bool {
 	def := elementXSLTDef(e.LocalName()).attrs[a.LocalName()]
 	// Only these closed enumerations are AVTs in 1.0. In particular,
 	// xsl:message/@terminate became an AVT in a later language version.
-	avt10 := e.LocalName() == nameSort && contains10Word("order case-order", a.LocalName()) || e.LocalName() == lexicon.TypeNumber && a.LocalName() == "letter-value"
+	avt10 := e.LocalName() == nameSort && contains10Word("order case-order", a.LocalName()) || e.LocalName() == lexicon.TypeNumber && a.LocalName() == nameLetterValue
 	if e.LocalName() == nameOutput && a.LocalName() == lexicon.SerializationStandalone {
 		def.values = []string{lexicon.ValueYes, "no"}
 	}
@@ -141,8 +142,8 @@ func ignoredOptional10(e *xdm.Element, a *xdm.Attribute) bool {
 	return true
 }
 
-// prepareModule privately expands simplified modules and modern shadow
-// attributes, or hides future attributes from older processors. The original
+// prepareModule privately normalizes stylesheet text, expands simplified modules
+// and modern shadow attributes, or hides future attributes from older processors. The original
 // source remains available to document(""); unchanged modules reuse their storage.
 func prepareModule(ctx context.Context, doc *xdm.Document, processor int) (*xdm.Document, error) {
 	root := doc.DocumentElement()
@@ -162,7 +163,7 @@ func prepareModule(ctx context.Context, doc *xdm.Document, processor int) (*xdm.
 		ignored = unknownAttribute10
 	}
 
-	needed, err := inspectModuleAttributes(ctx, root, false, func(elem *xdm.Element, attr *xdm.Attribute) bool {
+	needed, err := inspectModulePreparation(ctx, root, false, func(elem *xdm.Element, attr *xdm.Attribute) bool {
 		conditional := attr.LocalName() == xslAttrUseWhen && (elem.URI() == lexicon.NamespaceXSLT && attr.URI() == "" || elem.URI() != lexicon.NamespaceXSLT && attr.URI() == lexicon.NamespaceXSLT)
 		return ignored(elem, attr) || processor >= 20 && conditional
 	})
@@ -194,6 +195,10 @@ func prepareModule(ctx context.Context, doc *xdm.Document, processor int) (*xdm.
 		return nil, err
 	}
 
+	if err := normalizeStylesheetDocument(ctx, clone); err != nil {
+		return nil, err
+	}
+
 	prepared, err := xdm.WrapDocument(ctx, clone)
 	if err != nil {
 		return nil, err
@@ -222,7 +227,7 @@ func unknownAttribute10(elem *xdm.Element, attr *xdm.Attribute) bool {
 	return attr.URI() == lexicon.NamespaceXSLT && !contains10Word("version extension-element-prefixes exclude-result-prefixes use-attribute-sets", attr.LocalName())
 }
 
-func inspectModuleAttributes(ctx context.Context, elem *xdm.Element, needed bool, ignored func(*xdm.Element, *xdm.Attribute) bool) (bool, error) {
+func inspectModulePreparation(ctx context.Context, elem *xdm.Element, needed bool, ignored func(*xdm.Element, *xdm.Attribute) bool) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return needed, err
 	}
@@ -231,16 +236,146 @@ func inspectModuleAttributes(ctx context.Context, elem *xdm.Element, needed bool
 		needed = needed || ignored(elem, attr)
 	}
 
+	for child := range xdm.Children(elem) {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return needed, err
+		}
+
+		if child.Type() == xdm.CommentNode || child.Type() == xdm.ProcessingInstructionNode ||
+			(child.Type() == xdm.TextNode || child.Type() == xdm.CDATASectionNode) && isXMLWhitespaceOnly(xdm.CharacterData(child)) {
+			needed = true
+		}
+	}
+
 	for child := range xdm.ChildElements(elem) {
 		var err error
 
-		needed, err = inspectModuleAttributes(ctx, child, needed, ignored)
+		needed, err = inspectModulePreparation(ctx, child, needed, ignored)
 		if err != nil {
 			return needed, err
 		}
 	}
 
 	return needed, nil
+}
+
+// normalizeStylesheetDocument applies XSLT §4.3 to a private draft before
+// conditional/static processing. The original document remains available to
+// document("") and callers that supplied a stylesheet node.
+func normalizeStylesheetDocument(ctx context.Context, doc *tree.Document) error {
+	root := &tree.Node{Kind: tree.DocumentNode, Children: tree.Children(doc)}
+	if err := normalizeStylesheetChildren(ctx, root, false); err != nil {
+		return err
+	}
+
+	tree.SetDraftChildren(doc, root.Children)
+
+	return nil
+}
+
+func normalizeStylesheetChildren(ctx context.Context, parent *tree.Node, preserve bool) error {
+	for _, attr := range parent.Attrs {
+		if attr.Name.Space == lexicon.NamespaceXML && attr.Name.Local == lexicon.AttrSpace {
+			switch attr.Value {
+			case lexicon.SpacePreserve:
+				preserve = true
+			case lexicon.SpaceDefault:
+				preserve = false
+			}
+		}
+	}
+
+	// Remove comments/PIs and coalesce text before deciding which whitespace
+	// nodes to remove; a whitespace fragment can belong to significant text.
+	children := parent.Children
+	merged := children[:0]
+
+	var text *tree.Node
+
+	for _, child := range children {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		if child.Kind == tree.CommentNode || child.Kind == tree.PINode {
+			continue
+		}
+
+		if child.Kind == tree.TextNode {
+			if text != nil {
+				tree.AppendTextData(text, child.Data)
+				continue
+			}
+
+			text = child
+		} else {
+			text = nil
+		}
+
+		merged = append(merged, child)
+	}
+
+	clear(children[len(merged):])
+
+	kept := merged[:0]
+	for i, child := range merged {
+		if stripStylesheetWhitespace(parent, merged, i, preserve) {
+			continue
+		}
+
+		if child.Kind == tree.ElementNode {
+			if err := normalizeStylesheetChildren(ctx, child, preserve); err != nil {
+				return err
+			}
+		}
+
+		kept = append(kept, child)
+	}
+
+	clear(merged[len(kept):])
+	parent.Children = kept
+
+	return nil
+}
+
+func stripStylesheetWhitespace(parent *tree.Node, siblings []*tree.Node, index int, preserve bool) bool {
+	child := siblings[index]
+	if child.Kind != tree.TextNode || !tree.IsXMLSpace(child.Data) {
+		return false
+	}
+
+	if parent.Name.Space == lexicon.NamespaceXSLT && parent.Name.Local == lexicon.XSLTElementText {
+		return false
+	}
+
+	if !preserve || stylesheetWhitespaceParent(parent) {
+		return true
+	}
+
+	if index+1 < len(siblings) {
+		next := siblings[index+1]
+		if next.Name.Space == lexicon.NamespaceXSLT {
+			switch next.Name.Local {
+			case lexicon.XSLTElementParam, lexicon.XSLTElementSort, nameContextItem, lexicon.XSLTElementOnCompletion:
+				return true
+			}
+		}
+	}
+
+	return index > 0 && siblings[index-1].Name.Space == lexicon.NamespaceXSLT && siblings[index-1].Name.Local == lexicon.XSLTElementCatch
+}
+
+func stylesheetWhitespaceParent(parent *tree.Node) bool {
+	if parent.Name.Space != lexicon.NamespaceXSLT {
+		return false
+	}
+
+	switch parent.Name.Local {
+	case lexicon.XSLTElementAccumulator, lexicon.XSLTElementAnalyzeString, lexicon.XSLTElementApplyImports, lexicon.XSLTElementApplyTemplates, lexicon.XSLTElementAttributeSet, lexicon.XSLTElementCallTemplate, lexicon.XSLTElementCharacterMap, lexicon.XSLTElementChoose, lexicon.XSLTElementEvaluate, lexicon.XSLTElementFork, lexicon.XSLTElementMerge, lexicon.XSLTElementMergeSource, lexicon.XSLTElementMode, lexicon.XSLTElementNextIteration, lexicon.XSLTElementNextMatch, lexicon.XSLTElementOverride, lexicon.XSLTElementPackage, nameStylesheet, fnNameTransform, lexicon.XSLTElementUsePackage:
+		return true
+	}
+
+	return false
 }
 
 func filterModuleAttributes(elem *xdm.Element, ignored func(*xdm.Element, *xdm.Attribute) bool) {

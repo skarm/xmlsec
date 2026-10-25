@@ -485,6 +485,7 @@ type iterateParam struct {
 	Select *xpath.Expression
 	Body   []instruction
 	As     string // type declaration (e.g., "element()*")
+	Type   *xdm.SequenceType
 }
 
 type iterateInst struct {
@@ -529,6 +530,7 @@ type forEachGroupInst struct {
 	GroupStartingWith *pattern
 	GroupEndingWith   *pattern
 	Collation         *avt
+	DefaultCollation  string
 	Composite         bool
 	Sort              []*sortKey
 	Body              []instruction
@@ -552,16 +554,20 @@ type mergeSource struct {
 
 type mergeKey struct {
 	Select       *xpath.Expression
-	Body         []instruction // used when select is absent
+	OrderAVT     *avt // non-nil when order is an avt
+	DataTypeAVT  *avt // non-nil when data-type is an avt
+	CollationAVT *avt // non-nil when collation is an AVT
+	LangAVT      *avt
+	CaseOrderAVT *avt
+	BaseURI      string
 	Order        string        // "ascending" or "descending" (static)
-	OrderAVT     *avt          // non-nil when order is an avt
 	DataType     string        // "text" or "number" (static)
-	DataTypeAVT  *avt          // non-nil when data-type is an avt
-	HasCollation bool          // true when lang, collation, or case-order is specified
 	Collation    string        // collation URI (for XTDE2210 mismatch detection)
-	CollationAVT *avt          // non-nil when collation is an AVT
-	Lang         string        // lang attribute value
-	CaseOrder    string        // case-order attribute value
+	Lang         string        // effective lang attribute value
+	CaseOrder    string        // effective case-order attribute value
+	Body         []instruction // used when select is absent
+	specified    uint8
+	HasCollation bool // true when lang, collation, or case-order is specified
 }
 
 type mergeInst struct {

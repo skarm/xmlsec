@@ -2,12 +2,68 @@ package xslt
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"strings"
 	"sync"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
+
+const fnNameUnparsedTextAvailable = "unparsed-text-available"
+
+// legacyTextFunction retains the XSLT 2.0 host contract, before the text
+// functions joined the F&O library with different signatures and error names.
+type legacyTextFunction struct {
+	xpath.TypedFunctionByArity
+	name string
+}
+
+func newLegacyTextFunction(name string) xpath.Function {
+	return &legacyTextFunction{TypedFunctionByArity: xpath.HostBuiltin(20, name), name: name}
+}
+
+func (f *legacyTextFunction) FuncParamTypesForArity(arity int) []xdm.SequenceType {
+	params := f.TypedFunctionByArity.FuncParamTypesForArity(arity)
+	if f.name == fnNameUnparsedTextAvailable && arity == 2 {
+		params = slices.Clone(params)
+		params[1].Occurrence = xdm.OccurrenceZeroOrOne
+	}
+
+	return params
+}
+
+func (f *legacyTextFunction) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	if f.name == fnNameUnparsedTextAvailable && len(args) == 2 && xdm.SequenceLen(args[1]) == 0 {
+		args = args[:1]
+	}
+
+	result, err := f.TypedFunctionByArity.Call(ctx, args)
+	if failure := preserveControlFailure(ctx, err); failure != nil {
+		return nil, failure
+	}
+
+	if detail, ok := errors.AsType[*xdm.Error](err); ok && detail.CodeQName().URI == lexicon.NamespaceErr {
+		code := ""
+
+		switch detail.Code {
+		case "FOUT1170":
+			code = "XTDE1170"
+		case "FOUT1190":
+			code = "XTDE1190"
+		case "FOUT1200":
+			code = "XTDE1200"
+		}
+
+		if code != "" {
+			return nil, dynamicErrorCause(code, err, "%s: %s", f.name, detail.Message)
+		}
+	}
+
+	return result, err
+}
 
 type functionTypeKey struct {
 	name  string

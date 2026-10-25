@@ -64,12 +64,7 @@ func generalCompareWithCollation(ctx context.Context, op TokenType, left, right 
 				return false, err
 			}
 
-			var implTZ *time.Location
-			if ec != nil {
-				implTZ = ec.getImplicitTimezone()
-			}
-
-			match, err := compareAtomicCollation(op, pa, pb, implTZ, coll)
+			match, err := compareAtomicInContext(op, pa, pb, coll, ec)
 			if err != nil {
 				return false, err
 			}
@@ -132,6 +127,42 @@ func castUntypedToType(ctx context.Context, untyped xdm.AtomicValue, targetType 
 	}
 
 	return CastFromStringContext(ctx, stringFromAtomic(untyped), targetType)
+}
+
+// Binary ordering operators were introduced by F&O 3.1; earlier editions
+// define binary equality alone. Keep this check at the language evaluation
+// boundary because exported atomic helpers use the current operator library.
+func validateComparisonEdition(op TokenType, a, b xdm.AtomicValue, ec *evalContext) error {
+	if ec == nil || ec.version == 0 || ec.version >= 31 {
+		return nil
+	}
+
+	op = normalizeCompareOp(op)
+	if op == TokenEq || op == TokenNe {
+		return nil
+	}
+
+	for _, value := range []xdm.AtomicValue{a, b} {
+		value = promoteSchemaForCompare(value)
+		if value.TypeName == xdm.TypeHexBinary || value.TypeName == xdm.TypeBase64Binary {
+			return &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "binary ordering requires XPath 3.1"}
+		}
+	}
+
+	return nil
+}
+
+func compareAtomicInContext(op TokenType, a, b xdm.AtomicValue, coll *collationImpl, ec *evalContext) (bool, error) {
+	if err := validateComparisonEdition(op, a, b, ec); err != nil {
+		return false, err
+	}
+
+	var implicitTZ *time.Location
+	if ec != nil {
+		implicitTZ = ec.getImplicitTimezone()
+	}
+
+	return compareAtomicCollation(op, a, b, implicitTZ, coll)
 }
 
 // compareAtomicCollation compares two atomic values using the given collation
@@ -478,7 +509,7 @@ func evalValueComparison(evalFn exprEvaluator, ctx context.Context, ec *evalCont
 	pa, pb := promoteForValueComparison(la, ra)
 	coll := ec.resolveDefaultCollation()
 
-	result, err := compareAtomicCollation(e.Op, pa, pb, ec.getImplicitTimezone(), coll)
+	result, err := compareAtomicInContext(e.Op, pa, pb, coll, ec)
 	if err != nil {
 		return nil, err
 	}
@@ -795,12 +826,6 @@ func stringFromAtomic(a xdm.AtomicValue) string {
 	s, _ := atomicToString(a)
 
 	return s
-}
-
-// compareAtomic compares two (already promoted) atomic values.
-// Returns XPTY0004 if types are not comparable.
-func compareAtomic(op TokenType, a, b xdm.AtomicValue) (bool, error) {
-	return compareAtomicWithImplicitTimezone(op, a, b, nil)
 }
 
 // coerceTimePair safely extracts time.Time from two AtomicValues,
@@ -1314,7 +1339,7 @@ func compareNumeric(op TokenType, a, b xdm.AtomicValue) (bool, error) {
 
 	bIsFloat := b.TypeName == xdm.TypeFloat
 	if (aIsFloat || bIsFloat) && a.TypeName != xdm.TypeDouble && b.TypeName != xdm.TypeDouble {
-		return compareFloats(op, float64(float32(a.ToFloat64())), float64(float32(b.ToFloat64()))), nil
+		return compareFloats(op, float64(numericToFloat32(a)), float64(numericToFloat32(b))), nil
 	}
 	// Otherwise → float64 (handles double, float, NaN, ±Inf)
 	return compareFloats(op, a.ToFloat64(), b.ToFloat64()), nil

@@ -504,21 +504,8 @@ func applySequencePredicate(evalFn exprEvaluator, ctx context.Context, ec *evalC
 		if err != nil {
 			return nil, err
 		}
-		// Numeric predicate: position match
-		if xdm.SequenceLen(r) == 1 {
-			if a, ok := r.Get(0).(xdm.AtomicValue); ok && a.IsNumeric() {
-				f := a.ToFloat64()
-				if f == float64(i+1) {
-					result = append(result, item)
-				}
 
-				i++
-
-				continue
-			}
-		}
-		// Boolean predicate
-		b, err := EBV(r)
+		b, err := predicateTrue(r, i+1)
 		if err != nil {
 			return nil, err
 		}

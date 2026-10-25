@@ -5,9 +5,11 @@ package xslt
 import (
 	"errors"
 	"math/big"
+	"slices"
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 	"github.com/skarm/xmlsec/transform/internal/xslt/internal/elements"
@@ -33,12 +35,13 @@ func CheckProcessorLanguage(d *xdm.Document, want, processor int) (int, error) {
 
 	root := d.DocumentElement()
 
-	declaration := languageVersionAttribute(root)
+	declaration, hasDeclaration := elementXSLTVersionAttribute(root)
 	if _, shadow := root.GetAttribute("_version"); shadow && root.URI() == lexicon.NamespaceXSLT && (processor == 0 || processor == 30) {
 		declaration = lexicon.XSLTVersion30
+		hasDeclaration = true
 	}
 
-	if declaration == "" {
+	if !hasDeclaration {
 		if root.URI() == lexicon.NamespaceXSLT {
 			return 0, staticError("XTSE0010", "stylesheet requires a version attribute")
 		}
@@ -113,18 +116,23 @@ func languageVersionAttribute(elem *xdm.Element) string {
 }
 
 func checkModernLanguage(elem *xdm.Element, effective string, selected int) error {
+	if isUserDefinedDataElement(elem) {
+		return nil
+	}
+
 	// Conditional inclusion and shadow attributes are evaluated by the compiler
 	// with the declaration's static scope. Validate this subtree after that pass.
 	if hasConditionalAttributes(elem, selected) {
 		return nil
 	}
 
-	own := languageVersionAttribute(elem)
+	own, hasOwn := elementXSLTVersionAttribute(elem)
 	if _, shadow := elem.GetAttribute("_version"); shadow && elem.URI() == lexicon.NamespaceXSLT && selected >= 30 {
 		own = lexicon.XSLTVersion30
+		hasOwn = true
 	}
 
-	if own != "" {
+	if hasOwn {
 		if _, valid := declaredLanguageProfile(own); !valid {
 			return staticError("XTSE0110", "invalid XSLT version")
 		}
@@ -136,15 +144,17 @@ func checkModernLanguage(elem *xdm.Element, effective string, selected int) erro
 
 	forwards := comparison > 0
 	if elem.URI() == lexicon.NamespaceXSLT && unavailableInstruction(elem.LocalName(), selected) && forwards {
-		for child := range xdm.ChildElements(elem) {
-			if child.URI() == lexicon.NamespaceXSLT && child.LocalName() == "fallback" {
-				if err := checkModernLanguage(child, effective, selected); err != nil {
-					return err
-				}
-			}
-		}
+		return checkFutureInstructionFallbacks(elem, effective, selected)
+	}
 
-		return nil
+	if err := checkExtensionNamespaceAttribute(elem, selected); err != nil {
+		return err
+	}
+
+	if selected >= 20 {
+		if err := checkExclusionNamespaceAttribute(elem); err != nil {
+			return err
+		}
 	}
 
 	if err := checkModernElementLanguage(elem, selected); err != nil {
@@ -156,6 +166,74 @@ func checkModernLanguage(elem *xdm.Element, effective string, selected int) erro
 			if err := checkModernLanguage(element, effective, selected); err != nil {
 				return err
 			}
+		}
+	}
+
+	return nil
+}
+
+func checkFutureInstructionFallbacks(elem *xdm.Element, effective string, selected int) error {
+	for child := range xdm.ChildElements(elem) {
+		if child.URI() == lexicon.NamespaceXSLT && child.LocalName() == "fallback" {
+			if err := checkModernLanguage(child, effective, selected); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func checkExclusionNamespaceAttribute(elem *xdm.Element) error {
+	value := getAttr(elem, nameExcludeResultPrefixes)
+	if elem.URI() != lexicon.NamespaceXSLT {
+		value, _ = elem.GetAttributeNS(nameExcludeResultPrefixes, lexicon.NamespaceXSLT)
+	}
+
+	if value == "" || value == lexicon.ModeAll {
+		return nil
+	}
+
+	namespaces := inScopeNamespaces(elem)
+	for prefix := range strings.FieldsSeq(value) {
+		if prefix == lexicon.ModeDefault {
+			if namespaces[""] == "" {
+				return staticError(errCodeXTSE0809, "#default in exclude-result-prefixes but no default namespace is declared")
+			}
+		} else if namespaces[prefix] == "" {
+			return staticError(errCodeXTSE0808, "undeclared namespace prefix %q in exclude-result-prefixes", prefix)
+		}
+	}
+
+	return nil
+}
+
+func checkExtensionNamespaceAttribute(elem *xdm.Element, selected int) error {
+	value := getAttr(elem, nameExtensionElementPrefixes)
+
+	if elem.URI() != lexicon.NamespaceXSLT {
+		value, _ = elem.GetAttributeNS(nameExtensionElementPrefixes, lexicon.NamespaceXSLT)
+	}
+
+	if value == "" {
+		return nil
+	}
+
+	namespaces := inScopeNamespaces(elem)
+
+	for prefix := range strings.FieldsSeq(value) {
+		lookup := prefix
+		if prefix == lexicon.ModeDefault {
+			lookup = ""
+		}
+
+		uri := namespaces[lookup]
+		if uri == "" {
+			return staticError(errCodeXTSE1430, "undeclared extension namespace prefix %q", prefix)
+		}
+
+		if selected >= 30 && isReservedNamespace(uri) {
+			return staticError("XTSE0085", "reserved namespace %q must not be used as an extension namespace", uri)
 		}
 	}
 
@@ -181,6 +259,10 @@ func checkModernElementLanguage(elem *xdm.Element, effective int) error {
 		return staticError("XTSE0010", "xsl:%s requires XSLT 3.0", name)
 	}
 
+	if err := checkComponentNames(elem, effective); err != nil {
+		return err
+	}
+
 	for _, attribute := range elem.Attributes() {
 		if attribute.URI() != "" {
 			continue
@@ -201,13 +283,84 @@ func checkModernElementLanguage(elem *xdm.Element, effective int) error {
 
 	if effective < 30 {
 		for attribute, metadata := range def.attrs {
-			if metadata.optional30 && getAttr(elem, attribute) == "" {
+			if _, present := elem.GetAttribute(attribute); metadata.optional30 && !present {
 				return staticError("XTSE0010", "xsl:%s requires %s in XSLT 2.0", name, attribute)
 			}
 		}
 	}
 
+	return checkStaticBindingPosition(elem, effective)
+}
+
+func checkStaticBindingPosition(elem *xdm.Element, processor int) error {
+	name := elem.LocalName()
+	if processor >= 30 && (name == nameVariable || name == nameParam) && xsdBoolTrue(getAttr(elem, nameStatic)) {
+		parent, ok := elem.Parent().(*xdm.Element)
+		if !ok || parent.URI() != lexicon.NamespaceXSLT || !isStaticBindingParent(parent.LocalName()) {
+			return staticError(errCodeXTSE0020, "static=\"yes\" is permitted only on a top-level variable or parameter")
+		}
+	}
+
 	return nil
+}
+
+// Stylesheet object names cannot use a reserved namespace. The 3.0
+// namespace set is larger than the set reserved by an actual 2.0 processor.
+func checkComponentNames(element *xdm.Element, processor int) error {
+	if element.LocalName() == nameTemplate {
+		for _, mode := range strings.FieldsFunc(getAttr(element, lexicon.AttrMode), xmlchar.IsSpace) {
+			if err := checkReservedComponentName(element, mode, processor, false); err != nil {
+				return err
+			}
+		}
+	}
+
+	switch element.LocalName() {
+	case nameTemplate, lexicon.XSLTElementMode, nameAttributeSet, nameKey2, lexicon.XSLTElementDecimalFormat,
+		nameVariable, nameParam, lexicon.XSLTElementFunction, nameOutput, lexicon.XSLTElementCharacterMap, lexicon.XSLTElementAccumulator:
+	default:
+		return nil
+	}
+
+	if _, shadow := element.GetAttribute("_name"); shadow && processor >= 30 {
+		return nil
+	}
+
+	name, present := element.GetAttribute(xslAttrName)
+	if !present {
+		return nil // Required-attribute checks retain their own prescribed errors.
+	}
+
+	name = strings.TrimFunc(name, xmlchar.IsSpace)
+	if element.LocalName() == lexicon.XSLTElementMode && name == modeUnnamed {
+		return nil
+	}
+
+	if !xmlchar.IsValidQName(name) && !(processor >= 30 && isValidEQName(name)) {
+		return staticError(errCodeXTSE0020, "invalid name %q on xsl:%s", name, element.LocalName())
+	}
+
+	return checkReservedComponentName(element, name, processor, element.LocalName() == nameTemplate)
+}
+
+func checkReservedComponentName(element *xdm.Element, name string, processor int, namedTemplate bool) error {
+	expanded := resolveQName(name, inScopeNamespaces(element))
+	if namedTemplate && processor >= 30 && expanded == xdm.ClarkName(lexicon.NamespaceXSLT, "initial-template") {
+		return nil
+	}
+
+	if strings.HasPrefix(expanded, "{") {
+		uri, _, _ := strings.Cut(expanded[1:], "}")
+		if reservedNamespaceForProcessor(uri, processor) {
+			return staticError(errCodeXTSE0080, "name %q on xsl:%s uses a reserved namespace", name, element.LocalName())
+		}
+	}
+
+	return nil
+}
+
+func isStaticBindingParent(name string) bool {
+	return name == lexicon.XSLTElementStylesheet || name == lexicon.XSLTElementTransform || name == lexicon.XSLTElementPackage || name == lexicon.XSLTElementOverride
 }
 
 func checkLiteralElementLanguage(elem *xdm.Element, effective int) error {
@@ -226,6 +379,12 @@ func checkLiteralElementLanguage(elem *xdm.Element, effective int) error {
 
 		if effective < 30 && attribute.LocalName() == nameExpandText {
 			return staticError("XTSE0090", "expand-text requires XSLT 3.0")
+		}
+
+		if effective == 20 && attribute.LocalName() == nameInheritNamespaces {
+			if err := checkBoolean20Attribute(nameInheritNamespaces, xdm.CharacterData(attribute), elementXSLTDef(lexicon.XSLTElementElement)); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -298,6 +457,10 @@ func checkModernAttributeLanguage(attribute, value, element string, def elementD
 		if attribute == nameExpandText || attribute == nameDefaultMode || attribute == nameUseAccumulators {
 			return staticError("XTSE0090", "%s requires XSLT 3.0", attribute)
 		}
+
+		if err := checkBoolean20Attribute(attribute, value, def); err != nil {
+			return err
+		}
 	}
 
 	if attribute == "as" {
@@ -313,6 +476,45 @@ func checkModernAttributeLanguage(attribute, value, element string, def elementD
 		}
 
 		return xpath.CheckTypeLanguage(sequenceType, map[int]int{20: 20, 30: 31}[effective])
+	}
+
+	return nil
+}
+
+// XSLT 2.0 enumerates yes/no; XSLT 3.0 admits the four xs:boolean aliases,
+// including when a 3.0 processor evaluates a version="2.0" stylesheet.
+func parseXSLTBoolean(value string, processor int) (bool, bool) {
+	if processor == 20 {
+		switch strings.Trim(value, " \t\r\n") {
+		case lexicon.ValueYes:
+			return true, true
+		case lexicon.ValueNo:
+			return false, true
+		default:
+			return false, false
+		}
+	}
+
+	return parseXSDBool(value)
+}
+
+func checkBoolean20Attribute(name, value string, def elementDef) error {
+	metadata, known := def.attrs[name]
+	if !known || !slices.Contains(metadata.values, lexicon.ValueYes) || !slices.Contains(metadata.values, lexicon.ValueNo) {
+		return nil
+	}
+
+	if metadata.avt && strings.ContainsAny(value, "{}") {
+		return nil // Computed values are checked after AVT evaluation.
+	}
+
+	value = strings.Trim(value, " \t\r\n")
+	if value == lexicon.ValueOmit && slices.Contains(metadata.values, lexicon.ValueOmit) {
+		return nil
+	}
+
+	if _, valid := parseXSLTBoolean(value, 20); !valid {
+		return staticError(errCodeXTSE0020, "%q is not a valid XSLT 2.0 value for @%s", value, name)
 	}
 
 	return nil

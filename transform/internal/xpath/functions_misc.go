@@ -5,9 +5,11 @@ package xpath
 
 import (
 	"context"
+	"hash/maphash"
 	"math/big"
 	"math/rand"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -62,10 +64,7 @@ func fnDefaultCollation(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, er
 		uri = ec.defaultCollation
 	}
 
-	return xdm.SingleAtomic(xdm.AtomicValue{
-		TypeName: xdm.TypeAnyURI,
-		Value:    uri,
-	}), nil
+	return xdm.SingleString(uri), nil
 }
 
 func fnAvailableEnvVars(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
@@ -130,6 +129,9 @@ func currentTimeFromCtx(ctx context.Context) time.Time {
 	return time.Now()
 }
 
+//nolint:gochecknoglobals // One immutable process seed hashes canonical atomic values consistently.
+var randomSeedHash = sync.OnceValue(maphash.MakeSeed)
+
 func fnRandomNumberGenerator(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	var seed int64
 
@@ -139,11 +141,7 @@ func fnRandomNumberGenerator(ctx context.Context, args []xdm.Sequence) (xdm.Sequ
 			return nil, err
 		}
 
-		s, _ := atomicToString(a)
-		// Use string hash as seed for reproducibility
-		for _, c := range s {
-			seed = seed*31 + int64(c)
-		}
+		seed = randomAtomicSeed(a)
 	} else {
 		seed = currentTimeFromCtx(ctx).UnixNano()
 	}
@@ -151,22 +149,40 @@ func fnRandomNumberGenerator(ctx context.Context, args []xdm.Sequence) (xdm.Sequ
 	return xdm.ItemSlice{makeRNGMap(seed)}, nil
 }
 
+// Equal atomic seed values select equivalent generators. Timezone-optional
+// types deliberately share a seed per dynamic type: their eq relation can use
+// any implicit timezone, while the RNG itself must remain context-independent.
+// Distinct seed values need not select distinct generators. dateTimeStamp has
+// a mandatory timezone and retains value-sensitive canonical UTC hashing.
+func randomAtomicSeed(value xdm.AtomicValue) int64 {
+	switch xdm.PromoteSchemaType(value).TypeName {
+	case xdm.TypeDateTime, xdm.TypeDate, xdm.TypeTime,
+		xdm.TypeGYear, xdm.TypeGYearMonth, xdm.TypeGMonth, xdm.TypeGMonthDay, xdm.TypeGDay:
+		return int64(maphash.Comparable(randomSeedHash(), value.TypeName))
+	default:
+		return int64(maphash.Comparable(randomSeedHash(), xdm.NormalizeMapKey(value)))
+	}
+}
+
 func makeRNGMap(seed int64) xdm.MapItem {
 	rng := rand.New(rand.NewSource(seed))
 	number := rng.Float64()
+	nextSeed := rng.Int63()
+	itemType := stItem(xdm.OccurrenceExactlyOne)
+	itemsType := stItem(xdm.OccurrenceZeroOrMore)
+	generatorType := xdm.SequenceType{ItemTest: xdm.MapTest{
+		KeyType: stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne).ItemTest, ValType: itemType,
+	}}
 
 	nextFn := xdm.FunctionItem{
-		Arity: 0,
-		Name:  "next",
+		Arity: 0, ReturnType: &generatorType,
 		Invoke: func(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
-			nextSeed := rng.Int63()
 			return xdm.ItemSlice{makeRNGMap(nextSeed)}, nil
 		},
 	}
 
 	permuteFn := xdm.FunctionItem{
-		Arity: 1,
-		Name:  "permute",
+		Arity: 1, ParamTypes: []xdm.SequenceType{itemsType}, ReturnType: &itemsType,
 		Invoke: func(_ context.Context, callArgs []xdm.Sequence) (xdm.Sequence, error) {
 			seq := callArgs[0]
 			perm := make(xdm.ItemSlice, xdm.SequenceLen(seq))
@@ -174,8 +190,8 @@ func makeRNGMap(seed int64) xdm.MapItem {
 
 			localRng := rand.New(rand.NewSource(seed))
 
-			sort.SliceStable(perm, func(i, j int) bool {
-				return localRng.Intn(2) == 0
+			localRng.Shuffle(len(perm), func(i, j int) {
+				perm[i], perm[j] = perm[j], perm[i]
 			})
 
 			return perm, nil

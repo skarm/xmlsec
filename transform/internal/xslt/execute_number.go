@@ -92,22 +92,61 @@ func (ec *execContext) execNumber(ctx context.Context, inst *numberInst) error {
 }
 
 func parseStartAt(value string) ([]*big.Int, bool) {
-	parts := strings.Fields(value)
+	parts := strings.FieldsFunc(strings.Trim(value, " \t\r\n"), func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' })
 	if len(parts) == 0 {
 		return nil, false
 	}
 
 	numbers := make([]*big.Int, len(parts))
 	for i, part := range parts {
-		n, ok := new(big.Int).SetString(part, 10)
-		if !ok {
+		if !decimalIntegerLexical(part, false) {
 			return nil, false
 		}
 
-		numbers[i] = n
+		numbers[i], _ = new(big.Int).SetString(part, 10)
 	}
 
 	return numbers, true
+}
+
+func decimalIntegerLexical(value string, allowPlus bool) bool {
+	if value == "" {
+		return false
+	}
+
+	if value[0] == '-' || allowPlus && value[0] == '+' {
+		value = value[1:]
+	}
+
+	if value == "" {
+		return false
+	}
+
+	for i := range len(value) {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+
+	return true
+}
+
+func validNumberOption(name, value string) bool {
+	value = strings.Trim(value, " \t\r\n")
+
+	switch name {
+	case nameGroupingSize:
+		return decimalIntegerLexical(value, true)
+	case nameLetterValue:
+		return value == "alphabetic" || value == "traditional"
+	case lexicon.AttrLang:
+		return value == "" || valuepkg.ValidLanguage(value)
+	case nameStartAt:
+		_, valid := parseStartAt(value)
+		return valid
+	default:
+		return true
+	}
 }
 
 func isAlphanumeric(r rune) bool {
@@ -858,15 +897,14 @@ func (ec *execContext) evaluateNumberValues(ctx context.Context, inst *numberIns
 		return []*big.Int{number}, false, nil
 	}
 
-	var numbers []*big.Int
+	atoms, err := xpath.AtomizeSequence(seq)
+	if err != nil {
+		return nil, false, err
+	}
 
-	for item := range xdm.SequenceItems(seq) {
-		av, err := xpath.AtomizeItem(item)
-		if err != nil {
-			return nil, false, dynamicError(errCodeXTDE0980, "xsl:number value is not numeric")
-		}
-
-		number, err := atomicToBigInt(av)
+	numbers := make([]*big.Int, 0, len(atoms))
+	for _, atom := range atoms {
+		number, err := atomicToBigInt(atom)
 		if err != nil {
 			return nil, false, err
 		}
@@ -897,71 +935,29 @@ func compatNumberValue(seq xdm.Sequence) (*big.Int, error) {
 	return nil, nil
 }
 
-// atomicToBigInt converts an atomic value to *big.Int for xsl:number formatting.
-// Integer types are used directly; decimals are rounded; doubles/floats are rounded
-// then converted. Returns an error for NaN, Inf, or negative values.
-func atomicToBigInt(av xdm.AtomicValue) (*big.Int, error) {
-	switch v := av.Value.(type) {
-	case *big.Int:
-		// Integer type — use directly without float64 conversion
-		if v.Sign() < 0 {
-			return nil, dynamicError(errCodeXTDE0980,
-				"xsl:number value is not a non-negative integer: %v", v)
-		}
-
-		return new(big.Int).Set(v), nil
-	case *big.Rat:
-		// Decimal type — round half-away-from-zero (fn:round semantics per XSLT spec)
-		// Truncate toward zero to get integer part
-		intPart := new(big.Int).Quo(v.Num(), v.Denom())
-		rem := new(big.Rat).Sub(v, new(big.Rat).SetInt(intPart))
-		absRem := new(big.Rat).Abs(rem)
-
-		half := new(big.Rat).SetFrac64(1, 2)
-		if absRem.Cmp(half) >= 0 {
-			// Round away from zero
-			if v.Sign() >= 0 {
-				intPart.Add(intPart, big.NewInt(1))
-			} else {
-				intPart.Sub(intPart, big.NewInt(1))
-			}
-		}
-
-		if intPart.Sign() < 0 {
-			return nil, dynamicError(errCodeXTDE0980,
-				"xsl:number value is not a non-negative integer: %v", v)
-		}
-
-		return intPart, nil
-	default:
-		// Double/float — cast to double first
-		dv, err := xpath.CastAtomic(av, xdm.TypeDouble)
-		if err != nil {
-			return nil, dynamicError(errCodeXTDE0980,
-				"xsl:number value %q cannot be converted to a number", av.StringVal())
-		}
-
-		f := math.Round(dv.DoubleVal())
-		if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 {
-			return nil, dynamicError(errCodeXTDE0980,
-				"xsl:number value is not a non-negative integer: %v", dv.DoubleVal())
-		}
-		// Use strconv to get the scientific-notation string, then parse
-		// with big.Float at high precision. This avoids the float64
-		// mantissa noise that SetFloat64 would preserve (e.g. 1e100
-		// as float64 is not exactly 10^100).
-		s := strconv.FormatFloat(f, 'e', -1, 64)
-
-		bf, _, err := new(big.Float).SetPrec(512).Parse(s, 10)
-		if err != nil {
-			return nil, dynamicError(errCodeXTDE0980,
-				"xsl:number value %q cannot be converted to integer", s)
-		}
-
-		bi, _ := bf.Int(nil)
-
-		return bi, nil
+// atomicToBigInt implements xs:integer(round(number($V))) (REC §12.2).
+// Conversion to xs:double precedes rounding, including for integers/decimals.
+func atomicToBigInt(value xdm.AtomicValue) (*big.Int, error) {
+	double, err := xpath.CastAtomic(value, xdm.TypeDouble)
+	if err != nil {
+		return nil, dynamicError(errCodeXTDE0980, "xsl:number value cannot be converted to a number")
 	}
+
+	rounded := math.Round(double.DoubleVal())
+	if double.DoubleVal() == -0.5 {
+		rounded = 0 // fn:round resolves ties toward positive infinity.
+	}
+
+	if math.IsNaN(rounded) || math.IsInf(rounded, 0) || rounded < 0 {
+		return nil, dynamicError(errCodeXTDE0980, "xsl:number value is not a non-negative integer: %v", double.DoubleVal())
+	}
+
+	integer, err := xpath.CastAtomic(xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: rounded}, xdm.TypeInteger)
+	if err != nil {
+		return nil, dynamicErrorCause(errCodeXTDE0980, err, "xsl:number value cannot be converted to an integer")
+	}
+
+	return integer.BigInt(), nil
 }
 
 func (ec *execContext) numberNodeValues(ctx context.Context, inst *numberInst, node xdm.Node) []int {
@@ -985,31 +981,63 @@ func (ec *execContext) evaluateNumberFormatOptions(ctx context.Context, inst *nu
 		return numberFormatOptions{}, err
 	}
 
-	options.groupingSeparator, err = ec.evaluateNumberAVT(ctx, inst.GroupingSeparator, "")
-	if err != nil {
-		return numberFormatOptions{}, err
-	}
+	if inst.GroupingSeparator != nil && inst.GroupingSize != nil {
+		options.groupingSeparator, err = ec.evaluateNumberAVT(ctx, inst.GroupingSeparator, "")
+		if err != nil {
+			return numberFormatOptions{}, err
+		}
 
-	groupSize, err := ec.evaluateNumberAVT(ctx, inst.GroupingSize, "")
-	if err != nil {
-		return numberFormatOptions{}, err
-	}
+		groupSize, err := ec.evaluateNumberAVT(ctx, inst.GroupingSize, "")
+		if err != nil {
+			return numberFormatOptions{}, err
+		}
 
-	options.groupingSize, _ = strconv.Atoi(groupSize)
+		groupSize = strings.Trim(groupSize, " \t\r\n")
+		if !validNumberOption(nameGroupingSize, groupSize) {
+			return numberFormatOptions{}, dynamicError(errCodeXTDE0030, "invalid xsl:number grouping-size %q", groupSize)
+		}
+
+		// A size beyond the native integer range is larger than any bounded
+		// output supported here and therefore cannot insert a separator.
+		if decimalIntegerLexical(groupSize, true) {
+			if size, err := strconv.Atoi(groupSize); err == nil && size > 0 {
+				options.groupingSize = size
+			}
+		}
+	}
 
 	options.lang, err = ec.evaluateNumberAVT(ctx, inst.Lang, "")
 	if err != nil {
 		return numberFormatOptions{}, err
 	}
 
-	if options.lang != "" && !valuepkg.ValidLanguage(options.lang) {
+	options.lang = strings.Trim(options.lang, " \t\r\n")
+	if !validNumberOption(lexicon.AttrLang, options.lang) {
 		return numberFormatOptions{}, dynamicError(errCodeXTDE0030,
 			"xsl:number lang attribute is not a valid language code: %q", options.lang)
+	}
+
+	if inst.LetterValue != nil {
+		letterValue, err := ec.evaluateNumberAVT(ctx, inst.LetterValue, "")
+		if err != nil {
+			return numberFormatOptions{}, err
+		}
+
+		if !validNumberOption(nameLetterValue, letterValue) {
+			return numberFormatOptions{}, dynamicError(errCodeXTDE0030, "invalid xsl:number letter-value %q", letterValue)
+		}
 	}
 
 	options.ordinal, err = ec.evaluateNumberAVT(ctx, inst.Ordinal, "")
 	if err != nil {
 		return numberFormatOptions{}, err
+	}
+
+	if ec.stylesheet.processorLanguage() >= 30 {
+		switch strings.Trim(options.ordinal, " \t\r\n") {
+		case lexicon.ValueNo, lexicon.ValueFalse, "0":
+			options.ordinal = ""
+		}
 	}
 
 	return options, nil

@@ -112,10 +112,9 @@ func (c *compiler) pushStandardAttrs(ctx context.Context, elem *xdm.Element) (st
 		c.hasXPathDefaultNS = true
 	}
 
-	if dc := getAttr(elem, nameDefaultCollation); dc != "" {
-		if uri := resolveDefaultCollation(dc); uri != "" {
-			c.defaultCollation = uri
-		}
+	if err := c.setInstructionDefaultCollation(elem); err != nil {
+		c.restoreStandardAttrs(saved)
+		return saved, err
 	}
 
 	return saved, nil
@@ -643,7 +642,7 @@ func checkOverrideModeVisibility(mode, displayMode string, pkg *Stylesheet) erro
 func compileOverrideTemplateModes(modes []string, tmpl *template, pkg *Stylesheet) error {
 	for _, m := range modes {
 		// Resolve special names to empty string for lookup
-		if m == modeUnnamed || m == "#default" {
+		if m == modeUnnamed || m == modeDefault {
 			m = ""
 		}
 
@@ -764,6 +763,8 @@ func (c *compiler) compileOverrideVariable(ctx context.Context, elem *xdm.Elemen
 		v.Body = body
 	}
 
+	c.recordGlobalBindingSource(elem, v.binding())
+
 	return v, nil
 }
 
@@ -825,6 +826,7 @@ func (c *compiler) compileOverrideParam(ctx context.Context, elem *xdm.Element, 
 	p.OwnerPackage, p.Original, p.Visibility = c.stylesheet, base, visPublic
 	p.TypeNamespaces = inScopeNamespaces(elem)
 	p.XPathDefaultNS, p.HasXPathDefaultNS = c.declarationDefaultNamespace(elem)
+	c.recordGlobalBindingSource(elem, p.binding())
 
 	return p, nil
 }

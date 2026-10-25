@@ -57,7 +57,7 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 		nameUnparsedEntityPublicId: &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityPublicID},
 		fnNameElementAvailable:     newIntrospectionFunc(fnNameElementAvailable, ec.fnElementAvailable),
 		fnNameFunctionAvailable:    newIntrospectionFunc(fnNameFunctionAvailable, ec.fnFunctionAvailable),
-		fnNameTypeAvailable:        newIntrospectionFunc(fnNameTypeAvailable, fnTypeAvailable),
+		fnNameTypeAvailable:        newIntrospectionFunc(fnNameTypeAvailable, ec.fnTypeAvailable),
 		fnNameCurrentGroup:         &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentGroup, noDynRef: true, dynRefError: errCodeXTDE1061},
 		fnNameCurrentGroupingKey:   &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentGroupingKey, noDynRef: true, dynRefError: errCodeXTDE1071},
 		nameAccumulatorBefore: &xsltFunc{min: 1, max: 1, fn: func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -81,6 +81,12 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 	if ec.stylesheet.processorLanguage() <= 20 {
 		for _, name := range []string{lexicon.FnFormatNumber, "format-date", "format-dateTime", "format-time"} {
 			ec.cachedFns[name] = newLegacyFormatFunction(ec.stylesheet.xpathVersion(), name)
+		}
+	}
+
+	if ec.stylesheet.processorLanguage() == 20 {
+		for _, name := range []string{"unparsed-text", fnNameUnparsedTextAvailable} {
+			ec.cachedFns[name] = newLegacyTextFunction(name)
 		}
 	}
 
@@ -316,6 +322,8 @@ func (ec *execContext) documentItemNodes(ctx context.Context, item xdm.Item, arg
 // documentItemURI resolves only relative references against the selected node
 // or expression base. Absolute URIs do not require a base node to have a URI.
 func (ec *execContext) documentItemURI(ctx context.Context, uri string, item xdm.Item, args []xdm.Sequence) (string, error) {
+	uri = uripath.EscapeResourceReference(uri)
+
 	if uripath.URIScheme(uri) != "" {
 		return xpath.ResolveURIReference(uri, "")
 	}
@@ -349,7 +357,7 @@ func (ec *execContext) documentItemURI(ctx context.Context, uri string, item xdm
 		return resolveModuleURI(uri, base)
 	}
 
-	return xpath.ResolveURIReference(uri, base)
+	return xpath.ResolveURIReference(uri, uripath.EscapeResourceReference(base))
 }
 
 // fnDoc is an XSLT-aware wrapper around fn:doc() that applies
@@ -369,7 +377,7 @@ func (ec *execContext) fnDoc(ctx context.Context, args []xdm.Sequence) (xdm.Sequ
 		return nil, err
 	}
 
-	uri, err = xpath.ResolveDocumentURI(ctx, uri)
+	uri, err = xpath.ResolveDocumentURI(ctx, uripath.EscapeResourceReference(uri))
 	if err != nil {
 		return nil, err
 	}
@@ -606,7 +614,17 @@ func (ec *execContext) retrieveDocumentReader(ctx context.Context, uri string) (
 	return reader, nil
 }
 
+// resourceURIResolver leaves the XPath/static IRI context intact and applies
+// XSLT resource escaping only when the application is asked to fetch a resource.
+type resourceURIResolver struct{ xpath.URIResolver }
+
+func (r resourceURIResolver) Resolve(ctx context.Context, reference string) (io.ReadCloser, error) {
+	return r.URIResolver.Resolve(ctx, uripath.EscapeResourceReference(reference))
+}
+
 func openDocumentVia(ctx context.Context, uri string, resolver xpath.URIResolver, client *http.Client) (io.ReadCloser, error) {
+	uri = uripath.EscapeResourceReference(uri)
+
 	if !isHTTPURI(uri) || client == nil {
 		if resolver == nil {
 			return nil, fmt.Errorf("no URIResolver configured for %q", uri)
@@ -661,6 +679,9 @@ func (ec *execContext) inputParseOptions() *xdm.ParseOptions {
 
 // resolveDocumentURI resolves a URI against a base directory.
 func (ec *execContext) resolveDocumentURI(uri string, baseDir string) string {
+	uri = uripath.EscapeResourceReference(uri)
+	baseDir = uripath.EscapeResourceReference(baseDir)
+
 	if uri == "" {
 		return ""
 	}
@@ -669,26 +690,9 @@ func (ec *execContext) resolveDocumentURI(uri string, baseDir string) string {
 	if idx := strings.IndexByte(cleanURI, '#'); idx >= 0 {
 		cleanURI = cleanURI[:idx]
 	}
-	// Convert file:// URIs to local paths. Use uripath.FileURIToPath so a Windows
-	// drive-letter URI ("file:///D:/a/b") yields a drive path ("D:\\a\\b" on
-	// Windows), and no spurious leading-slash path ("/D:/a/b"). The result
-	// is then normalized with uripath.ToSlash so a non-drive POSIX-shaped URI
-	// ("file:///abs/x.xml") resolves to a forward-slash path ("/abs/x.xml") on
-	// EVERY OS — FileURIToPath would otherwise emit "\\abs\\x.xml" on Windows.
-	// The forward-slash form is what every other helium resolver consumes (Win32
-	// accepts '/'); POSIX behavior is unchanged. On parse failure, fall back to
-	// the original strip.
-	if strings.HasPrefix(cleanURI, "file:///") {
-		if p, err := uripath.FileURIToPath(cleanURI); err == nil {
-			return uripath.ToSlash(p)
-		}
-		// On conversion failure (e.g. a "file:////server/share" UNC URI that
-		// FileURIToPath rejects) do NOT strip the "file://" prefix: that would
-		// yield "//server/share/..." which becomes a UNC path on Windows,
-		// bypassing the local-only policy. Return the original file: URI so a
-		// downstream local-path loader rejects it.
-		return cleanURI
-	}
+	// Keep file: references as URIs, including drive letters and escaped path
+	// characters. The application resolver owns local-path conversion and its
+	// authority/UNC policy; converting here would also change document identity.
 	// Decide absoluteness with uripath.URIScheme (RFC 3986), not a "://" substring
 	// check or filepath.IsAbs: an absolute-URI ref may carry a scheme with no
 	// "//" authority (e.g. document('urn:doc'), doc('file:/x.xml')) and must be

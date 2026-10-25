@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
@@ -220,7 +221,7 @@ func schemaAwareCastRec(ctx context.Context, ec *evalContext, av xdm.AtomicValue
 		return result, nil
 	}
 
-	if errors.Is(err, ErrBudget) || ctx.Err() != nil {
+	if castControlFailure(ctx, err) {
 		return xdm.AtomicValue{}, errors.Join(err, ctx.Err())
 	}
 
@@ -235,23 +236,22 @@ func schemaAwareCastRec(ctx context.Context, ec *evalContext, av xdm.AtomicValue
 	seen[targetType] = struct{}{}
 	defer delete(seen, targetType)
 
-	schemaErr := err
+	result, schemaErr := schemaAwareCastBase(ctx, ec, av, targetType, err)
+	if schemaErr == nil {
+		return result, nil
+	}
 
-	if local, ns, ok := xdm.SchemaAnnotationParts(targetType); ok {
-		annName := xdm.QAnnotation(ns, local)
-		if builtinBase := resolveToBuiltinBase(local, ns, ec.schemaDeclarations); builtinBase != "" {
-			result, baseErr := schemaAwareCastViaBuiltin(ctx, ec, av, targetType, annName, builtinBase, err)
-			if baseErr == nil {
-				return result, nil
-			}
-
-			schemaErr = baseErr
-		}
+	if castControlFailure(ctx, schemaErr) {
+		return xdm.AtomicValue{}, errors.Join(schemaErr, ctx.Err())
 	}
 
 	if members := ec.schemaDeclarations.UnionMemberTypes(targetType); len(members) > 0 {
 		for _, memberType := range members {
 			result, castErr := schemaAwareCastRec(ctx, ec, av, memberType, seen)
+			if castControlFailure(ctx, castErr) {
+				return xdm.AtomicValue{}, errors.Join(castErr, ctx.Err())
+			}
+
 			if castErr == nil {
 				// F&O 3.1 §19.3.5 allows already-typed values to cast to the
 				// first castable atomic member of a union. Any facets on the target
@@ -275,6 +275,20 @@ func schemaAwareCastRec(ctx context.Context, ec *evalContext, av xdm.AtomicValue
 	return xdm.AtomicValue{}, schemaErr
 }
 
+func schemaAwareCastBase(ctx context.Context, ec *evalContext, av xdm.AtomicValue, targetType string, fallback error) (xdm.AtomicValue, error) {
+	local, ns, ok := xdm.SchemaAnnotationParts(targetType)
+	if !ok {
+		return xdm.AtomicValue{}, fallback
+	}
+
+	builtinBase := resolveToBuiltinBase(local, ns, ec.schemaDeclarations)
+	if builtinBase == "" {
+		return xdm.AtomicValue{}, fallback
+	}
+
+	return schemaAwareCastViaBuiltin(ctx, ec, av, targetType, xdm.QAnnotation(ns, local), builtinBase, fallback)
+}
+
 func schemaAwareValidateTarget(ctx context.Context, ec *evalContext, av xdm.AtomicValue, targetType string) error {
 	local, ns, ok := xdm.SchemaAnnotationParts(targetType)
 	if !ok {
@@ -285,6 +299,10 @@ func schemaAwareValidateTarget(ctx context.Context, ec *evalContext, av xdm.Atom
 
 	annName := xdm.QAnnotation(ns, local)
 	if err := ec.schemaDeclarations.ValidateCastWithNS(ctx, s, annName, nsForCast); err != nil {
+		if castControlFailure(ctx, err) {
+			return errors.Join(err, ctx.Err())
+		}
+
 		return &xdm.Error{Code: errCodeFORG0001, Message: fmt.Sprintf("cannot cast %q to %s: %v", s, targetType, err)}
 	}
 
@@ -320,6 +338,10 @@ func schemaAwareCastViaBuiltin(ctx context.Context, ec *evalContext, av xdm.Atom
 
 		s, nsForCast := schemaAwareCastLexical(av, ec.namespaces)
 		if vErr := ec.schemaDeclarations.ValidateCastWithNS(ctx, s, annName, nsForCast); vErr != nil {
+			if castControlFailure(ctx, vErr) {
+				return xdm.AtomicValue{}, errors.Join(vErr, ctx.Err())
+			}
+
 			return xdm.AtomicValue{}, &xdm.Error{Code: errCodeFORG0001, Message: fmt.Sprintf("cannot cast %q to %s: %v", s, targetType, vErr)}
 		}
 
@@ -341,6 +363,10 @@ func schemaAwareCastViaBuiltin(ctx context.Context, ec *evalContext, av xdm.Atom
 
 	s, nsForCast := schemaAwareFacetLexical(av, result, ec.namespaces)
 	if facetErr := ec.schemaDeclarations.ValidateCastWithNS(ctx, s, annName, nsForCast); facetErr != nil {
+		if castControlFailure(ctx, facetErr) {
+			return xdm.AtomicValue{}, errors.Join(facetErr, ctx.Err())
+		}
+
 		return xdm.AtomicValue{}, &xdm.Error{Code: errCodeFORG0001, Message: fmt.Sprintf("cannot cast %q to %s: %v", s, targetType, facetErr)}
 	}
 
@@ -351,13 +377,11 @@ func schemaAwareCastViaBuiltin(ctx context.Context, ec *evalContext, av xdm.Atom
 }
 
 func evalCastExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e CastExpr) (xdm.Sequence, error) {
-	targetType := resolveAtomicTypeName(e.Type, ec)
-	if isAbstractCastTarget(targetType) {
-		return nil, &xdm.Error{
-			Code:    errCodeXPST0080,
-			Message: fmt.Sprintf("cannot use abstract type %s as cast target", targetType),
-		}
+	if err := validateCastTarget(e.Type, ec.namespaces, ec.schemaDeclarations, ec.version, ec.strictPrefixes || ec.version == 10); err != nil {
+		return nil, err
 	}
+
+	targetType := resolveAtomicTypeName(e.Type, ec)
 
 	seq, err := evalFn(ctx, ec, e.Expr)
 	if err != nil {
@@ -398,13 +422,13 @@ func evalCastExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e 
 
 		return xdm.SingleAtomic(result), nil
 	}
+
+	if isBuiltinListType(targetType) {
+		return castToBuiltinList(ctx, ec, av, targetType)
+	}
 	// xs:numeric is a union type: if already numeric return as-is, else cast to double
 	if targetType == xdm.TypeNumeric {
-		if av.IsNumeric() {
-			return xdm.SingleAtomic(av), nil
-		}
-
-		result, err := CastAtomicContext(ctx, av, xdm.TypeDouble)
+		result, err := castToNumeric(ctx, av)
 		if err != nil {
 			return nil, err
 		}
@@ -429,14 +453,11 @@ func evalCastExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e 
 }
 
 func evalCastableExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e CastableExpr) (xdm.Sequence, error) {
-	targetType := resolveAtomicTypeName(e.Type, ec)
-	// Abstract types raise a static error even for castable (XPST0080)
-	if isAbstractCastTarget(targetType) {
-		return nil, &xdm.Error{
-			Code:    errCodeXPST0080,
-			Message: fmt.Sprintf("cannot use abstract type %s as castable target", targetType),
-		}
+	if err := validateCastTarget(e.Type, ec.namespaces, ec.schemaDeclarations, ec.version, ec.strictPrefixes || ec.version == 10); err != nil {
+		return nil, err
 	}
+
+	targetType := resolveAtomicTypeName(e.Type, ec)
 
 	seq, err := evalFn(ctx, ec, e.Expr)
 	if err != nil {
@@ -479,25 +500,19 @@ func evalCastableExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext
 
 		return xdm.SingleBoolean(castErr == nil), nil
 	}
-	// xs:ENTITIES, xs:IDREFS, xs:NMTOKENS are list types:
-	// castable returns true if the string is a whitespace-separated list of
-	// at least one valid member (NCName for ENTITIES/IDREFS, NMTOKEN for NMTOKENS).
-	if targetType == xdm.TypeENTITIES || targetType == xdm.TypeIDREFS || targetType == xdm.TypeNMTOKENS {
-		s, err := AtomicToString(av)
-		if err != nil {
-			return xdm.SingleBoolean(false), nil //nolint:nilerr // castable returns false on conversion failure
+
+	if isBuiltinListType(targetType) {
+		_, castErr := castToBuiltinList(ctx, ec, av, targetType)
+		if castControlFailure(ctx, castErr) {
+			return nil, errors.Join(castErr, ctx.Err())
 		}
 
-		return xdm.SingleBoolean(isValidListCastable(s, targetType)), nil
+		return xdm.SingleBoolean(castErr == nil), nil
 	}
 	// xs:numeric is a union type
 	if targetType == xdm.TypeNumeric {
-		if av.IsNumeric() {
-			return xdm.SingleBoolean(true), nil
-		}
-
-		_, castErr := CastAtomicContext(ctx, av, xdm.TypeDouble)
-		if errors.Is(castErr, ErrBudget) || ctx.Err() != nil {
+		_, castErr := castToNumeric(ctx, av)
+		if castControlFailure(ctx, castErr) {
 			return nil, errors.Join(castErr, ctx.Err())
 		}
 
@@ -509,69 +524,66 @@ func evalCastableExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext
 	// list-typed source was rejected by the singleton cardinality check above.
 	if ec != nil && ec.schemaDeclarations != nil {
 		if itemType, ok := ec.schemaDeclarations.ListItemType(targetType); ok {
-			return xdm.SingleBoolean(castableToUserList(ctx, ec, av, targetType, itemType)), nil
+			_, castErr := castToUserList(ctx, ec, av, targetType, itemType)
+			if castControlFailure(ctx, castErr) {
+				return nil, errors.Join(castErr, ctx.Err())
+			}
+
+			return xdm.SingleBoolean(castErr == nil), nil
 		}
 	}
 
 	_, castErr := schemaAwareCast(ctx, ec, av, targetType)
-	if errors.Is(castErr, ErrBudget) || ctx.Err() != nil {
+	if castControlFailure(ctx, castErr) {
 		return nil, errors.Join(castErr, ctx.Err())
 	}
 
 	return xdm.SingleBoolean(castErr == nil), nil
 }
 
-// castableToUserList reports whether av is castable to a user-defined list type
-// (F&O 3.1 §19.1.2): a string/untypedAtomic source is split on XSD whitespace and
-// each token must be castable to the list's item type, then the whole normalized
-// value must satisfy the list type's own facets (length/pattern). Any other
-// already-typed atomic source is not castable to a list (its lexical is not a list
-// literal). An empty token set (an empty/whitespace-only source) is the empty list,
-// castable iff the list facets accept zero items.
-func castableToUserList(ctx context.Context, ec *evalContext, av xdm.AtomicValue, listType, itemType string) bool {
-	if av.TypeName != xdm.TypeString && av.TypeName != xdm.TypeUntypedAtomic {
-		return false
-	}
-
-	s, err := AtomicToString(av)
-	if err != nil {
-		return false
-	}
-
-	for _, tok := range xsdListFields(s) {
-		if _, castErr := schemaAwareCast(ctx, ec, xdm.AtomicValue{TypeName: xdm.TypeString, Value: tok}, itemType); castErr != nil {
-			return false
-		}
-	}
-
-	return ec.schemaDeclarations.ValidateCastWithNS(ctx, s, listType, ec.namespaces) == nil
-}
-
 // castToUserList casts a string/untypedAtomic source to a user-defined list type,
-// returning the sequence of item atoms (each typed as the item type). Mirrors
-// castableToUserList's tokenize-and-cast semantics; a token that is not castable
-// to the item type, a non-string source, or a list-facet violation is FORG0001.
+// returning the sequence of item atoms (each typed as the item type). A token
+// that is not castable or a facet violation is FORG0001; a non-string source
+// is XPTY0004 because the source/target type pair does not support casting.
+// Empty lists are valid when the user type's facets permit zero members.
 func castToUserList(ctx context.Context, ec *evalContext, av xdm.AtomicValue, listType, itemType string) (xdm.Sequence, error) {
-	if av.TypeName != xdm.TypeString && av.TypeName != xdm.TypeUntypedAtomic {
-		return nil, &xdm.Error{Code: errCodeFORG0001, Message: fmt.Sprintf("cannot cast %s to list type %s", av.TypeName, listType)}
+	source := normalizeCastSource(av)
+	if source.TypeName != xdm.TypeUntypedAtomic && !xdm.IsStringDerived(source.TypeName) {
+		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("cannot cast %s to list type %s", av.TypeName, listType)}
 	}
 
-	s, err := AtomicToString(av)
+	s, err := AtomicToString(source)
 	if err != nil {
 		return nil, err
 	}
 
 	if vErr := ec.schemaDeclarations.ValidateCastWithNS(ctx, s, listType, ec.namespaces); vErr != nil {
+		if castControlFailure(ctx, vErr) {
+			return nil, errors.Join(vErr, ctx.Err())
+		}
+
 		return nil, &xdm.Error{Code: errCodeFORG0001, Message: fmt.Sprintf("cannot cast %q to %s: %v", s, listType, vErr)}
 	}
 
-	tokens := xsdListFields(s)
+	limit := NodeLimit(ctx, fnMaxNodes(ec))
+	items := make(xdm.ItemSlice, 0, min(limit, 8))
 
-	items := make(xdm.ItemSlice, 0, len(tokens))
-	for _, tok := range tokens {
-		cast, castErr := schemaAwareCast(ctx, ec, xdm.AtomicValue{TypeName: xdm.TypeString, Value: tok}, itemType)
+	for token := range strings.FieldsFuncSeq(s, xmlchar.IsSpace) {
+		if len(items) >= limit {
+			return nil, ErrNodeSetLimit
+		}
+
+		if err := fnCountOps(ctx, ec, 1); err != nil {
+			return nil, err
+		}
+
+		cast, castErr := schemaAwareCast(ctx, ec, xdm.AtomicValue{TypeName: xdm.TypeString, Value: strings.Clone(token)}, itemType)
 		if castErr != nil {
-			return nil, &xdm.Error{Code: errCodeFORG0001, Message: fmt.Sprintf("cannot cast token %q to %s: %v", tok, itemType, castErr)}
+			if castControlFailure(ctx, castErr) {
+				return nil, errors.Join(castErr, ctx.Err())
+			}
+
+			return nil, &xdm.Error{Code: errCodeFORG0001, Message: fmt.Sprintf("cannot cast token %q to %s: %v", token, itemType, castErr)}
 		}
 
 		items = append(items, cast)
@@ -580,31 +592,10 @@ func castToUserList(ctx context.Context, ec *evalContext, av xdm.AtomicValue, li
 	return items, nil
 }
 
-// isValidListCastable checks whether a string value is castable to
-// a list type (xs:ENTITIES, xs:IDREFS, xs:NMTOKENS). The string must
-// contain at least one whitespace-separated token, and each token must
-// be valid for the list's member type (NCName for ENTITIES/IDREFS,
-// NMTOKEN for NMTOKENS).
-func isValidListCastable(s string, listType string) bool {
-	tokens := xsdListFields(s)
-	if len(tokens) == 0 {
-		return false
-	}
-
-	for _, tok := range tokens {
-		switch listType {
-		case xdm.TypeENTITIES, xdm.TypeIDREFS:
-			if !reNCName(tok) {
-				return false
-			}
-		case xdm.TypeNMTOKENS:
-			if !reNMTOKEN(tok) {
-				return false
-			}
-		}
-	}
-
-	return true
+// castControlFailure separates failed type conversion from an interrupted or
+// bounded evaluation; castable must never turn resource exhaustion into false.
+func castControlFailure(ctx context.Context, err error) bool {
+	return ControlFailure(ctx, err) != nil
 }
 
 func evalTreatAsExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e TreatAsExpr) (xdm.Sequence, error) {
@@ -1299,7 +1290,9 @@ func matchesFunctionItemTest(item xdm.Item, test xdm.FunctionTest, ec *evalConte
 	case xdm.MapItem:
 		return matchesMapFunctionItem(value, test, ec)
 	case xdm.ArrayItem:
-		return len(test.ParamTypes) == 1 && arrayMembersMatchType(value, test.ReturnType, ec)
+		return len(test.ParamTypes) == 1 &&
+			isSequenceSubtype(test.ParamTypes[0], stAtomic(xdm.TypeInteger, xdm.OccurrenceExactlyOne), ec) &&
+			arrayMembersMatchType(value, test.ReturnType, ec)
 	default:
 		return false
 	}
@@ -1328,7 +1321,8 @@ func matchesTypedFunctionItem(value xdm.FunctionItem, test xdm.FunctionTest, ec 
 }
 
 func matchesMapFunctionItem(value xdm.MapItem, test xdm.FunctionTest, ec *evalContext) bool {
-	if len(test.ParamTypes) != 1 {
+	if len(test.ParamTypes) != 1 ||
+		!isSequenceSubtype(test.ParamTypes[0], stAtomic(xdm.TypeAnyAtomicType, xdm.OccurrenceExactlyOne), ec) {
 		return false
 	}
 
@@ -1339,8 +1333,8 @@ func matchesMapFunctionItem(value xdm.MapItem, test xdm.FunctionTest, ec *evalCo
 	}
 
 	allMatch := true
-	_ = value.ForEachView(func(key xdm.AtomicValue, val xdm.Sequence) error {
-		if matchesItemType(key, test.ParamTypes[0].ItemTest, ec) && !matchesSequenceType(val, rt, ec) {
+	_ = value.ForEachView(func(_ xdm.AtomicValue, val xdm.Sequence) error {
+		if !matchesSequenceType(val, rt, ec) {
 			allMatch = false
 		}
 
@@ -1389,6 +1383,24 @@ func arrayMembersMatchType(array xdm.ArrayItem, memberType xdm.SequenceType, ec 
 // isSequenceSubtype checks if type A is a subtype of type B.
 // This is used for function subtyping checks.
 func isSequenceSubtype(a, b xdm.SequenceType, ec *evalContext) bool {
+	// REC 3.1 §2.5.6.1 gives xs:error/+: the bottom sequence type,
+	// while xs:error?/* are equivalent to empty-sequence().
+	if isErrorItemType(a.ItemTest, ec) {
+		if a.Occurrence == xdm.OccurrenceExactlyOne || a.Occurrence == xdm.OccurrenceOneOrMore {
+			return true
+		}
+
+		a.Void = true
+	}
+
+	if isErrorItemType(b.ItemTest, ec) {
+		if b.Occurrence == xdm.OccurrenceExactlyOne || b.Occurrence == xdm.OccurrenceOneOrMore {
+			return false
+		}
+
+		b.Void = true
+	}
+
 	// Void (empty-sequence()) is subtype of anything with ZeroOrMore or ZeroOrOne occurrence
 	if a.Void {
 		return b.Void || b.Occurrence == xdm.OccurrenceZeroOrMore || b.Occurrence == xdm.OccurrenceZeroOrOne
@@ -1403,6 +1415,12 @@ func isSequenceSubtype(a, b xdm.SequenceType, ec *evalContext) bool {
 	}
 
 	return isItemTypeSubtype(a.ItemTest, b.ItemTest, ec)
+}
+
+func isErrorItemType(test xdm.NodeTest, ec *evalContext) bool {
+	typeName, atomic := test.(xdm.AtomicOrUnionType)
+
+	return atomic && resolveAtomicTypeName(AtomicTypeName(typeName), ec) == xdm.TypeError
 }
 
 func occurrenceSubtype(a, b xdm.Occurrence) bool {
@@ -1439,6 +1457,10 @@ func isItemTypeSubtype(a, b xdm.NodeTest, ec *evalContext) bool {
 		aType := resolveAtomicTypeName(AtomicTypeName(at), ec)
 		bType := resolveAtomicTypeName(AtomicTypeName(bt), ec)
 
+		if aType == xdm.TypeError {
+			return true // xs:error is below every generalized atomic type.
+		}
+
 		return xdm.IsSubtypeOf(aType, bType)
 	case xdm.MapTest:
 		return isMapTestSubtype(a, bt, ec)
@@ -1468,16 +1490,13 @@ func isItemTypeSubtype(a, b xdm.NodeTest, ec *evalContext) bool {
 
 		return bt.Inner == nil || at.Inner != nil && isItemTypeSubtype(at.Inner, bt.Inner, ec)
 	case xdm.AttributeTest:
-		at, ok := a.(xdm.AttributeTest)
-		if !ok {
-			return false
-		}
-
-		if bt.Name == "" {
-			return true
-		}
-
-		return sameTypeTestName(at.Name, bt.Name, ec, true)
+		return isAttributeTestSubtype(a, bt, ec)
+	case xdm.PITest:
+		at, ok := a.(xdm.PITest)
+		return ok && (!bt.HasTarget || at.HasTarget && at.Target == bt.Target)
+	case xdm.NamespaceNodeTest:
+		_, ok := a.(xdm.NamespaceNodeTest)
+		return ok
 	case xdm.FunctionTest:
 		return isFunctionTestSubtype(a, bt, ec)
 	}
@@ -1497,7 +1516,9 @@ func isMapTestSubtype(a xdm.NodeTest, bt xdm.MapTest, ec *evalContext) bool {
 	}
 
 	if at.AnyType {
-		return false // map(*) is not subtype of typed map
+		// REC §2.5.5.2 defines this equivalence, including formal subtyping.
+		at.KeyType = stAtomic(xdm.TypeAnyAtomicType, xdm.OccurrenceExactlyOne).ItemTest
+		at.ValType = stItem(xdm.OccurrenceZeroOrMore)
 	}
 
 	return isItemTypeSubtype(at.KeyType, bt.KeyType, ec) &&
@@ -1526,7 +1547,8 @@ func isNodeKindTestSubtype(a xdm.NodeTest, bt xdm.TypeTest) bool {
 	if bt.Kind == xdm.NodeKindNode {
 		// node() is supertype of all node-related tests
 		switch a.(type) {
-		case xdm.TypeTest, xdm.ElementTest, xdm.AttributeTest, xdm.DocumentTest, xdm.NameTest:
+		case xdm.TypeTest, xdm.ElementTest, xdm.AttributeTest, xdm.DocumentTest, xdm.NameTest,
+			xdm.PITest, xdm.NamespaceNodeTest, xdm.SchemaElementTest, xdm.SchemaAttributeTest:
 			return true
 		}
 
@@ -1559,11 +1581,11 @@ func isElementTestSubtype(a xdm.NodeTest, bt xdm.ElementTest, ec *evalContext) b
 	// is equivalent to element(N, xs:anyType?) (nillable), which
 	// is NOT a subtype of element(N, T) (non-nillable).
 	if bt.TypeName != "" {
+		bType := resolveTestTypeName(bt.TypeName, ec)
 		if at.TypeName == "" {
-			return false // untyped element(N) is not subtype of typed element(N, T)
+			return bType == xdm.TypeAnyType && bt.Nillable
 		}
 
-		bType := resolveTestTypeName(bt.TypeName, ec)
 		if !matchesAnnotationSubtype(resolveTestTypeName(at.TypeName, ec), bType, ec) {
 			return false
 		}
@@ -1574,6 +1596,28 @@ func isElementTestSubtype(a xdm.NodeTest, bt xdm.ElementTest, ec *evalContext) b
 	}
 
 	return true
+}
+
+func isAttributeTestSubtype(a xdm.NodeTest, bt xdm.AttributeTest, ec *evalContext) bool {
+	at, ok := a.(xdm.AttributeTest)
+	if !ok {
+		return false
+	}
+
+	if bt.Name != "" && bt.Name != "*" && !sameTypeTestName(at.Name, bt.Name, ec, true) {
+		return false
+	}
+
+	if bt.TypeName == "" {
+		return true
+	}
+
+	bType := resolveTestTypeName(bt.TypeName, ec)
+	if at.TypeName == "" {
+		return bType == xdm.TypeAnyType
+	}
+
+	return matchesAnnotationSubtype(resolveTestTypeName(at.TypeName, ec), bType, ec)
 }
 
 func sameTypeTestName(a, b string, ec *evalContext, attribute bool) bool {
@@ -1613,18 +1657,32 @@ func isFunctionTestSubtype(a xdm.NodeTest, bt xdm.FunctionTest, ec *evalContext)
 
 		return isSequenceSubtype(at.ReturnType, bt.ReturnType, ec)
 	case xdm.MapTest:
-		// Map is function(xs:anyAtomicType) as item()*
-		if len(bt.ParamTypes) != 1 {
-			return false
+		result := stItem(xdm.OccurrenceZeroOrMore)
+		if !at.AnyType {
+			result = at.ValType
+			// Missing keys add the empty sequence to every map result type.
+			switch result.Occurrence {
+			case xdm.OccurrenceExactlyOne:
+				result.Occurrence = xdm.OccurrenceZeroOrOne
+			case xdm.OccurrenceOneOrMore:
+				result.Occurrence = xdm.OccurrenceZeroOrMore
+			}
 		}
 
-		return true // Maps can be subtype of compatible function tests
+		return isFunctionTestSubtype(xdm.FunctionTest{
+			ParamTypes: []xdm.SequenceType{stAtomic(xdm.TypeAnyAtomicType, xdm.OccurrenceExactlyOne)},
+			ReturnType: result,
+		}, bt, ec)
 	case xdm.ArrayTest:
-		if len(bt.ParamTypes) != 1 {
-			return false
+		result := stItem(xdm.OccurrenceZeroOrMore)
+		if !at.AnyType {
+			result = at.MemberType
 		}
 
-		return true
+		return isFunctionTestSubtype(xdm.FunctionTest{
+			ParamTypes: []xdm.SequenceType{stAtomic(xdm.TypeInteger, xdm.OccurrenceExactlyOne)},
+			ReturnType: result,
+		}, bt, ec)
 	}
 
 	return false
@@ -1668,6 +1726,10 @@ func castToQName(v xdm.AtomicValue, ec *evalContext) (xdm.AtomicValue, error) {
 		return xdm.AtomicValue{TypeName: xdm.TypeQName, Value: v.Value}, nil
 	}
 
+	if xdm.IsStringDerived(v.TypeName) && v.TypeName != xdm.TypeString {
+		v = xdm.AtomicValue{TypeName: xdm.TypeString, Value: v.Value}
+	}
+
 	// Only string and untypedAtomic can be cast to QName
 	if v.TypeName != xdm.TypeString && v.TypeName != xdm.TypeUntypedAtomic {
 		return xdm.AtomicValue{}, &xdm.Error{
@@ -1688,15 +1750,14 @@ func castToQName(v xdm.AtomicValue, ec *evalContext) (xdm.AtomicValue, error) {
 
 	if prefix != "" {
 		resolved := false
+		bindingPresent := false
 
 		if ec != nil && ec.namespaces != nil {
-			if ns, ok := ec.namespaces[prefix]; ok {
-				uri = ns
-				resolved = true
-			}
+			uri, bindingPresent = ec.namespaces[prefix]
+			resolved = bindingPresent && uri != ""
 		}
 
-		if !resolved {
+		if !bindingPresent {
 			// Fall back to default prefix mappings (fn, xs, math, map, array, err)
 			if ns, ok := PredeclaredNamespace(prefix); ok {
 				uri = ns

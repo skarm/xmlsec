@@ -97,6 +97,10 @@ func fnArrayGet(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 // extractArrayIndex extracts a single xs:integer index from a sequence, validating
 // that it is exactly one integer (not a decimal, sequence, etc.).
 func extractArrayIndex(seq xdm.Sequence) (int, error) {
+	return extractArrayInteger(seq, lexicon.ErrFOAY0001)
+}
+
+func extractArrayInteger(seq xdm.Sequence, negativeOverflowCode string) (int, error) {
 	if xdm.SequenceLen(seq) != 1 {
 		return 0, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "array index must be a single xs:integer"}
 	}
@@ -112,7 +116,12 @@ func extractArrayIndex(seq xdm.Sequence) (int, error) {
 
 	iv, ok := av.Int64Val()
 	if !ok {
-		return 0, &xdm.Error{Code: lexicon.ErrFOAY0001, Message: textArrayIndexOutOfRange}
+		code := lexicon.ErrFOAY0001
+		if av.BigInt().Sign() < 0 {
+			code = negativeOverflowCode
+		}
+
+		return 0, &xdm.Error{Code: code, Message: textArrayIndexOutOfRange}
 	}
 	// On 64-bit platforms int(iv) is exact; on 32-bit, clamp out-of-int values
 	// to the int extremes so the caller's 1..size bounds check still rejects
@@ -170,7 +179,9 @@ func fnArraySubarray(_ context.Context, args []xdm.Sequence) (xdm.Sequence, erro
 
 	length := a.Size() - start + 1
 	if len(args) > 2 {
-		length, err = extractArrayIndex(args[2])
+		// A negative length remains FOAY0002 even beyond the machine index
+		// range; positive out-of-range lengths and positions use FOAY0001.
+		length, err = extractArrayInteger(args[2], "FOAY0002")
 		if err != nil {
 			return nil, err
 		}

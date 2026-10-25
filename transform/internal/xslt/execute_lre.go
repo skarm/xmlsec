@@ -327,7 +327,7 @@ func (ec *execContext) applyOneAttributeSet(ctx context.Context, asDef *attribut
 	defer func() { ec.depth-- }()
 
 	if ec.depth > xpath.DepthLimit(ctx, maxRecursionDepth) {
-		return dynamicErrorCause(errCodeXTDE0640, xpath.ErrBudget, "attribute-set recursion depth exceeded")
+		return xpath.ErrRecursionLimit
 	}
 
 	name := asDef.Name

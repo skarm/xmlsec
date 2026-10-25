@@ -6,6 +6,7 @@ package xslt
 import (
 	"context"
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 
@@ -259,10 +260,10 @@ func (ec *execContext) execForEachGroup(ctx context.Context, inst *forEachGroupI
 		if err != nil {
 			return dynamicErrorCause(errCodeXTDE1110, err, "unsupported grouping collation %q", collationURI)
 		}
-	} else if ec.defaultCollation != "" {
-		collationKeyFn, err = xpath.ResolveCollationKeyFunc(ec.defaultCollation)
+	} else if inst.DefaultCollation != "" {
+		collationKeyFn, err = xpath.ResolveCollationKeyFunc(inst.DefaultCollation)
 		if err != nil {
-			return dynamicErrorCause(errCodeXTDE1110, err, "unsupported grouping collation %q", ec.defaultCollation)
+			return dynamicErrorCause(errCodeXTDE1110, err, "unsupported grouping collation %q", inst.DefaultCollation)
 		}
 	}
 
@@ -410,15 +411,12 @@ func (ec *execContext) withSortGroupContext(groups []fegGroup, hasKey bool, fn f
 	return nil
 }
 
-// groupBy implements group-by: items are grouped by the string value of the
-// group-by expression evaluated with each item as context. When composite is
-// false and the expression returns a sequence of multiple values, the item is
-// added to a group for each value. When composite is true, the entire sequence
-// is treated as a single composite key.
+// groupBy compares atomized keys using deep-equal's atomic comparison rules.
+// Collations affect string-like values only, not numeric, QName or temporal keys.
 func (ec *execContext) groupBy(ctx context.Context, seq xdm.Sequence, groupByExpr *xpath.Expression, composite bool, collationKeyFn func(string) string) ([]fegGroup, error) {
-	groups := groupByAccumulator{
-		byKey:        make(map[string]*groupByEntry),
-		collationKey: collationKeyFn,
+	groups := groupByAccumulator{byKey: make(map[string][]*groupByEntry), collationKey: collationKeyFn, limit: xpath.NodeLimit(ctx, xdm.DefaultMaxNodeSetLength)}
+	groups.equal = func(a, b xdm.Sequence) (bool, error) {
+		return ec.groupingKeysEqual(ctx, a, b, collationKeyFn)
 	}
 
 	defer ec.restoreExecutionFocus(ec.captureExecutionFocus())
@@ -433,31 +431,37 @@ func (ec *execContext) groupBy(ctx context.Context, seq xdm.Sequence, groupByExp
 			return nil, err
 		}
 
-		keys := result.Sequence()
-		if xdm.SequenceLen(keys) == 0 {
-			continue
+		atoms, err := xpath.FnAtomize(ctx, result.Sequence())
+		if err != nil {
+			return nil, err
 		}
 
+		keys := atomicGroupingSequence(atoms)
 		if composite {
-			groups.addComposite(item, keys)
+			err = groups.addComposite(ctx, item, keys)
 		} else {
-			groups.addKeys(item, keys)
+			err = groups.addKeys(ctx, item, keys)
+		}
+
+		if err != nil {
+			return nil, err
 		}
 	}
 
 	return groups.result(), nil
 }
 
-// groupAdjacent implements group-adjacent: consecutive items with equal
-// grouping key values form a group. When composite is true, the key
-// expression returns a sequence treated as a single composite key.
+// groupAdjacent compares with the preceding population item's key, while the
+// exposed current-grouping-key remains the initial item's key.
 func (ec *execContext) groupAdjacent(ctx context.Context, seq xdm.Sequence, adjExpr *xpath.Expression, composite bool, collationKeyFn func(string) string) ([]fegGroup, error) {
 	var (
-		groups        []fegGroup
-		currentKey    string
-		currentKeySeq xdm.Sequence
-		currentItems  xdm.ItemSlice
+		groups                  []fegGroup
+		initialKey, previousKey xdm.Sequence
+		currentItems            xdm.ItemSlice
 	)
+
+	retainedKeys := 0
+	limit := xpath.NodeLimit(ctx, xdm.DefaultMaxNodeSetLength)
 
 	defer ec.restoreExecutionFocus(ec.captureExecutionFocus())
 
@@ -471,61 +475,116 @@ func (ec *execContext) groupAdjacent(ctx context.Context, seq xdm.Sequence, adjE
 			return nil, err
 		}
 
-		lookupKey, keySeq, err := adjacentGroupingKey(result.Sequence(), composite)
+		atoms, err := xpath.FnAtomize(ctx, result.Sequence())
 		if err != nil {
 			return nil, err
 		}
 
-		if collationKeyFn != nil {
-			value, err := stringifyResult(ctx, result)
-			if err != nil {
-				return nil, err
-			}
-
-			lookupKey = collationKeyFn(value)
+		if !composite && len(atoms) != 1 {
+			return nil, dynamicError(errCodeXTTE1100, "group-adjacent key must atomize to exactly one value")
 		}
 
-		if lookupKey == currentKey && len(currentItems) > 0 {
+		keys := atomicGroupingSequence(atoms)
+
+		equal, err := ec.groupingKeysEqual(ctx, keys, previousKey, collationKeyFn)
+		if err != nil {
+			return nil, err
+		}
+
+		previousKey = keys
+
+		if equal && len(currentItems) > 0 {
 			currentItems = append(currentItems, item)
 			continue
 		}
 
-		groups = appendAdjacentGroup(groups, currentKey, currentKeySeq, currentItems)
-		currentKey = lookupKey
-		currentKeySeq = keySeq
+		if len(atoms) > limit-retainedKeys {
+			return nil, xpath.ErrBudget
+		}
+
+		retainedKeys += len(atoms)
+		groups = appendAdjacentGroup(groups, initialKey, currentItems)
+		initialKey = keys
 		currentItems = xdm.ItemSlice{item}
 	}
 
-	return appendAdjacentGroup(groups, currentKey, currentKeySeq, currentItems), nil
+	return appendAdjacentGroup(groups, initialKey, currentItems), nil
 }
 
-func adjacentGroupingKey(keys xdm.Sequence, composite bool) (string, xdm.Sequence, error) {
-	if composite {
-		return compositeKeyString(keys), atomizeSequence(keys), nil
+func atomicGroupingSequence(atoms []xdm.AtomicValue) xdm.Sequence {
+	keys := make(xdm.ItemSlice, len(atoms))
+	for i, atom := range atoms {
+		// XSLT grouping normalizes untypedAtomic keys to xs:string,
+		// including the value exposed by current-grouping-key().
+		if atom.TypeName == xdm.TypeUntypedAtomic {
+			atom.TypeName = xdm.TypeString
+		}
+
+		keys[i] = atom
 	}
 
-	if xdm.SequenceLen(keys) == 0 {
-		return "", nil, dynamicError(errCodeXTTE1100,
-			"group-adjacent key is an empty sequence")
-	}
-
-	if xdm.SequenceLen(keys) > 1 {
-		return "", nil, dynamicError(errCodeXTTE1100,
-			"group-adjacent key has %d items (expected 1)", xdm.SequenceLen(keys))
-	}
-
-	lookupKey, keySeq := groupLookupKey(keys.Get(0), nil)
-
-	return lookupKey, keySeq, nil
+	return keys
 }
 
-func appendAdjacentGroup(groups []fegGroup, key string, keySeq xdm.Sequence, items xdm.ItemSlice) []fegGroup {
+func (ec *execContext) groupingKeysEqual(ctx context.Context, a, b xdm.Sequence, collationKey func(string) string) (bool, error) {
+	if err := xpath.Charge(ctx, 1); err != nil {
+		return false, err
+	}
+
+	if xdm.SequenceLen(a) != xdm.SequenceLen(b) {
+		return false, nil
+	}
+
+	for i := range xdm.SequenceLen(a) {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return false, err
+		}
+
+		first, firstOK := a.Get(i).(xdm.AtomicValue)
+
+		second, secondOK := b.Get(i).(xdm.AtomicValue)
+		if !firstOK || !secondOK || !ec.groupingAtomicEqual(first, second, collationKey) {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+func (ec *execContext) groupingAtomicEqual(a, b xdm.AtomicValue, collationKey func(string) string) bool {
+	a, b = xdm.PromoteSchemaType(a), xdm.PromoteSchemaType(b)
+	first, firstString := groupingString(a)
+
+	second, secondString := groupingString(b)
+	if firstString && secondString {
+		if collationKey != nil {
+			return collationKey(first) == collationKey(second)
+		}
+
+		return first == second
+	}
+
+	if a.IsNumeric() && b.IsNumeric() && math.IsNaN(a.ToFloat64()) && math.IsNaN(b.ToFloat64()) {
+		return true
+	}
+
+	equal, err := xpath.ValueCompareWithImplicitTimezone(xpath.TokenEq, a, b, ec.dynamicProperties.Timezone)
+
+	return err == nil && equal // Incomparable atomic types belong to different groups.
+}
+
+func groupingString(value xdm.AtomicValue) (string, bool) {
+	value = xdm.PromoteSchemaType(value)
+	if xdm.IsStringDerived(value.TypeName) || value.TypeName == xdm.TypeUntypedAtomic || value.TypeName == xdm.TypeAnyURI {
+		return value.StringVal(), true
+	}
+
+	return "", false
+}
+
+func appendAdjacentGroup(groups []fegGroup, keySeq xdm.Sequence, items xdm.ItemSlice) []fegGroup {
 	if len(items) == 0 {
 		return groups
-	}
-
-	if keySeq == nil {
-		keySeq = xdm.SingleString(key)
 	}
 
 	return append(groups, fegGroup{key: keySeq, items: items})
@@ -713,132 +772,149 @@ type fegGroup struct {
 	items xdm.ItemSlice
 }
 
-func groupLookupKey(item xdm.Item, collationKeyFn func(string) string) (string, xdm.Sequence) {
-	av, err := xpath.AtomizeItem(item)
-	if err != nil {
-		s := stringifyItem(item)
-		if collationKeyFn != nil {
-			return collationKeyFn(s), xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeString, Value: s}}
-		}
-
-		return s, xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeString, Value: s}}
-	}
-
-	s, err := xpath.AtomicToString(av)
-	if err != nil {
-		s = ""
-	}
-
-	if collationKeyFn != nil {
-		return collationKeyFn(s), xdm.ItemSlice{av}
-	}
-
-	return canonicalKey(av), xdm.ItemSlice{av}
-}
-
 type groupByEntry struct {
-	keyAtom  xdm.AtomicValue
 	keySeq   xdm.Sequence
 	items    xdm.ItemSlice
 	orderIdx int
 }
 
-// groupByAccumulator retains first-appearance order and the original atomic
-// keys. Numeric entries also need a value-comparison scan because equality
-// across float/double/decimal is non-transitive (XSLT erratum E25).
+// Typed buckets retain first-appearance order. Numeric/date/QName equality is
+// refined by value comparison; a collation key is only a string lookup key.
 type groupByAccumulator struct {
-	order        []string
-	byKey        map[string]*groupByEntry
-	numeric      []*groupByEntry
-	collationKey func(string) string
+	order                        []*groupByEntry
+	byKey                        map[string][]*groupByEntry
+	collationKey                 func(string) string
+	equal                        func(xdm.Sequence, xdm.Sequence) (bool, error)
+	limit, members, retainedKeys int
 }
 
-func (groups *groupByAccumulator) addComposite(item xdm.Item, keys xdm.Sequence) {
-	lookupKey := compositeKeyString(keys)
-	if groups.collationKey != nil {
-		lookupKey = groups.collationKey(lookupKey)
+func (groups *groupByAccumulator) addComposite(ctx context.Context, item xdm.Item, keys xdm.Sequence) error {
+	entry, err := groups.entryForKeys(ctx, keys)
+	if err != nil {
+		return err
 	}
 
-	if entry, ok := groups.byKey[lookupKey]; ok {
-		entry.items = append(entry.items, item)
-		return
-	}
-
-	groups.byKey[lookupKey] = &groupByEntry{
-		keySeq: atomizeSequence(keys),
-		items:  xdm.ItemSlice{item},
-	}
-	groups.order = append(groups.order, lookupKey)
+	return groups.addMember(ctx, entry, item)
 }
 
-func (groups *groupByAccumulator) addKeys(item xdm.Item, keys xdm.Sequence) {
-	// Duplicate key values must not add the same population item twice.
+func (groups *groupByAccumulator) addKeys(ctx context.Context, item xdm.Item, keys xdm.Sequence) error {
 	added := make(map[int]struct{})
 
 	for key := range xdm.SequenceItems(keys) {
-		entry := groups.entryForKey(key)
+		entry, err := groups.entryForKeys(ctx, xdm.ItemSlice{key})
+		if err != nil {
+			return err
+		}
+
 		if _, already := added[entry.orderIdx]; already {
 			continue
 		}
 
-		entry.items = append(entry.items, item)
+		if err := groups.addMember(ctx, entry, item); err != nil {
+			return err
+		}
+
 		added[entry.orderIdx] = struct{}{}
 	}
+
+	return nil
 }
 
-func (groups *groupByAccumulator) entryForKey(key xdm.Item) *groupByEntry {
-	av, err := xpath.AtomizeItem(key)
-	if err == nil && av.IsNumeric() && groups.collationKey == nil {
-		return groups.numericEntry(av)
+func (groups *groupByAccumulator) addMember(ctx context.Context, entry *groupByEntry, item xdm.Item) error {
+	if groups.members >= groups.limit {
+		return xpath.ErrBudget
 	}
 
-	lookupKey, keySeq := groupLookupKey(key, groups.collationKey)
-	if entry, ok := groups.byKey[lookupKey]; ok {
-		return entry
+	if err := xpath.Charge(ctx, 1); err != nil {
+		return err
 	}
 
-	entry := &groupByEntry{keySeq: keySeq, orderIdx: len(groups.order)}
-	groups.byKey[lookupKey] = entry
-	groups.order = append(groups.order, lookupKey)
+	entry.items = append(entry.items, item)
+	groups.members++
 
-	return entry
+	return nil
 }
 
-func (groups *groupByAccumulator) numericEntry(key xdm.AtomicValue) *groupByEntry {
-	for _, entry := range groups.numeric {
-		if xpath.AtomicEquals(key, entry.keyAtom) {
-			return entry
+func (groups *groupByAccumulator) entryForKeys(ctx context.Context, keys xdm.Sequence) (*groupByEntry, error) {
+	bucket, err := groupingBucket(ctx, keys, groups.collationKey)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, entry := range groups.byKey[bucket] {
+		equal, err := groups.equal(keys, entry.keySeq)
+		if err != nil {
+			return nil, err
+		}
+
+		if equal {
+			return entry, nil
 		}
 	}
 
-	index := len(groups.order)
-	lookupKey := "N:" + strconv.Itoa(index)
-	entry := &groupByEntry{keyAtom: key, keySeq: xdm.ItemSlice{key}, orderIdx: index}
-	groups.byKey[lookupKey] = entry
-	groups.numeric = append(groups.numeric, entry)
-	groups.order = append(groups.order, lookupKey)
+	length := xdm.SequenceLen(keys)
+	if length > groups.limit-groups.retainedKeys {
+		return nil, xpath.ErrBudget
+	}
 
-	return entry
+	entry := &groupByEntry{keySeq: keys, orderIdx: len(groups.order)}
+	groups.retainedKeys += length
+	groups.byKey[bucket] = append(groups.byKey[bucket], entry)
+	groups.order = append(groups.order, entry)
+
+	return entry, nil
+}
+
+func groupingBucket(ctx context.Context, keys xdm.Sequence, collationKey func(string) string) (string, error) {
+	var bucket strings.Builder
+
+	for item := range xdm.SequenceItems(keys) {
+		value, ok := item.(xdm.AtomicValue)
+		if !ok {
+			return "", dynamicError("XPTY0004", "grouping key must be atomic")
+		}
+
+		value = xdm.PromoteSchemaType(value)
+
+		part := value.TypeName
+		if text, stringLike := groupingString(value); stringLike {
+			if err := xpath.Charge(ctx, max(len(text), 1)); err != nil {
+				return "", err
+			}
+
+			if collationKey != nil {
+				text = collationKey(text)
+			}
+
+			part = "S:" + text
+		} else if value.IsNumeric() {
+			part = "N"
+		} else {
+			switch value.TypeName {
+			case xdm.TypeDateTimeStamp:
+				part = xdm.TypeDateTime
+			case xdm.TypeYearMonthDuration, xdm.TypeDayTimeDuration:
+				part = xdm.TypeDuration
+			}
+		}
+
+		bucket.WriteString(strconv.Itoa(len(part)))
+		bucket.WriteByte(':')
+		bucket.WriteString(part)
+	}
+
+	if err := xpath.ChargeString(ctx, bucket.Len()); err != nil {
+		return "", err
+	}
+
+	return bucket.String(), nil
 }
 
 func (groups *groupByAccumulator) result() []fegGroup {
 	result := make([]fegGroup, len(groups.order))
-	for i, key := range groups.order {
-		entry := groups.byKey[key]
+	for i, entry := range groups.order {
 		result[i] = fegGroup{key: entry.keySeq, items: entry.items}
 	}
 
 	return result
-}
-
-// compositeKeyString creates a canonical string representation of a composite
-// key for use as a map key. Items are separated by a NUL byte to avoid
-// collisions.
-func compositeKeyString(seq xdm.Sequence) string {
-	parts := make([]string, xdm.SequenceLen(seq))
-	for i := range xdm.SequenceLen(seq) {
-		parts[i] = stringifyItem(seq.Get(i))
-	}
-
-	return strings.Join(parts, "\x00")
 }

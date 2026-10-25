@@ -94,7 +94,7 @@ const (
 	errCodeXTDE3160 = "XTDE3160" // xsl:evaluate runtime error
 	errCodeXTDE3175 = "XTDE3175" // xsl:evaluate is disabled
 	errCodeXTDE3340 = "XTDE3340" // unknown accumulator name
-	errCodeXTDE3350 = "XTDE3350" // accumulator-before/after called via dynamic function reference
+	errCodeXTDE3350 = "XTDE3350" // accumulator-before/after called with no context item
 	errCodeXTDE3362 = "XTDE3362" // streaming accumulator error
 	errCodeXTDE3365 = "XTDE3365" // duplicate key in xsl:map construction
 	errCodeXTDE3400 = "XTDE3400" // cyclic accumulator dependency

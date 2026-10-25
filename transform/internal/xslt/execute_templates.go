@@ -41,7 +41,7 @@ func (ec *execContext) applyTemplates(ctx context.Context, node xdm.Node, mode s
 	ec.depth++
 	if ec.depth > xpath.DepthLimit(ctx, maxRecursionDepth) {
 		ec.depth--
-		return dynamicErrorCause(errCodeXTDE0820, xpath.ErrBudget, "recursion depth exceeded")
+		return xpath.ErrRecursionLimit
 	}
 	defer func() { ec.depth-- }()
 

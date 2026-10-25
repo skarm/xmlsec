@@ -1,167 +1,114 @@
 # Language suite baseline
 
-Recorded on 2026-10-24 with Go 1.27.3, darwin/arm64 and `GOMAXPROCS=2`.
-Tested Go sources, module manifests and suite pins have SHA-256
-`84db9ff7b741bdd2547150305e85c309c82f4f8f4bdc17989a4ec6f77f9f02ae`.
-Reports identify the working tree as based on `a5421e7`,
-`library_modified=true`; documentation is outside the source checksum.
+Recorded on 2026-10-25 with Go 1.27.3, darwin/arm64 and `GOMAXPROCS=2`.
+Source/module/pin SHA-256:
+`bd9dacd6dd358be81a5b2d5711d89e8cf4c71f5684a5539839701ad24c7a4693`.
+Reports identify revision `9c30954`, `library_modified=true`; documentation is
+outside this checksum. This is the current snapshot; history belongs in Git.
+The selected profiles retain restricted claims, with clause evidence tracked
+separately from implementation in [the register](conformance.md).
 
-Complete XPath and Basic XSLT conformance remain open. These diagnostics and
-repository checks do not establish normative coverage. Keep this file as the
-current snapshot; implementation history is available in Git.
+## Full catalogs
 
-## Full-catalog outcomes
+All runs traverse unmodified pinned catalogs without filters or case limits.
+Main runs select XSD 1.0 datatype/regex rules, assertions enabled, public default
+budgets and a one-second case deadline. Every run below has **zero skips**.
+Counts are passed / failed / not-applicable:
 
-All runs traverse the full pinned catalogs without filters or case-count limits.
-The five main runs use XSD 1.0 datatype/regex rules and `-assertions`:
+- XPath 2.0: **15,219 / 9 / 16,593** (31,821).
+- XPath 3.0: **19,278 / 20 / 12,523** (31,821).
+- XPath 3.1: **22,034 / 16 / 9,771** (31,821).
+- XSLT 2.0: **5,672 / 60 / 8,869** (14,601).
+- XSLT 3.0: **8,001 / 86 / 6,514** (14,601).
 
-- QT3, XPath 2.0: 15,220 passed, 78 failed, 0 skipped, 16,523 not-applicable, out of 31,821 cases.
-- QT3, XPath 3.0: 19,292 passed, 82 failed, 0 skipped, 12,447 not-applicable, out of 31,821 cases.
-- QT3, XPath 3.1: 22,039 passed, 109 failed, 0 skipped, 9,673 not-applicable, out of 31,821 cases.
-- xslt30-test, XSLT 2.0: 5,663 passed, 69 failed, 0 skipped, 8,869 not-applicable, out of 14,601 cases.
-- xslt30-test, XSLT 3.0: 7,986 passed, 101 failed, 0 skipped, 6,514 not-applicable, out of 14,601 cases.
+Controls retain the same deadline and catalogs:
 
-Controls with the same sources and budgets:
+- XSD 1.1, XPath 3.1: **22,078 / 16 / 9,727**.
+- XSD 1.1, XSLT 3.0: **8,006 / 85 / 6,510**.
+- Assertions disabled, XSLT 3.0: **7,990 / 86 / 6,525**.
+- Expanded `-limits=language`, XPath 3.1: **22,037 / 13 / 9,771**.
+- Expanded `-limits=language`, XSLT 3.0: **8,003 / 84 / 6,514**.
+- `-xpath10-compatibility`, XPath 2.0: **0 / 0 / 31,821**.
+- The same flag, XPath 3.0 and 3.1: **5 / 0 / 31,816**, each.
 
-- XSD 1.1, XPath 3.1: 22,083 passed, 109 failed, 0 skipped, 9,629 not-applicable.
-- XSD 1.1, XSLT 3.0: 7,991 passed, 100 failed, 0 skipped, 6,510 not-applicable.
-- Assertions disabled, XSD 1.0, XSLT 3.0: 7,975 passed, 101 failed, 0 skipped, 6,525 not-applicable.
+QT3 compatibility applies only to explicit catalog dependencies; ordinary cases
+remain strict. The 2.0 compatibility control has no applicable cases and exits
+unsuccessfully; the 3.0/3.1 controls succeed. Runs with visible failures exit
+unsuccessfully. XSD selection does not enable schema validation. Expanded budgets
+retain timeout/work/size controls; no uncaught panic occurred.
 
-Source metadata excludes fifteen normative-streaming cases and one XInclude
-case from the XSLT 3.0 selections. Fourteen previously counted passes and two
-failures had ignored that preprocessing. This is an applicability correction.
+## Failure backlog
 
-The last control's eleven-case difference reflects assertion policy and catalog
-applicability. Public and adapter assertion checking default to disabled;
-nested `fn:transform` independently uses its standard option, also default false.
-The XSD selection controls builtin datatype/regex rules, without schema validation
-or schema-aware processing. No recovered panic occurred; every run exits unsuccessfully because failures remain.
+Main-run categories are assertion / harness / resource-limit, not defect counts:
 
-An additional full-catalog `-limits=language` control, with the same one-second
-case deadline, gives XPath 3.1: 22,042 passed, 106 failed; XSLT 3.0: 7,988 passed,
-99 failed. Both have zero skips and unchanged applicability. Three XPath and two
-XSLT resource failures pass; `fn-transform-27` instead reaches a failing assertion
-because its timing/cache expectation sees the fixed clock. The
-[F&O cache option](https://www.w3.org/TR/2017/REC-xpath-functions-31-20170321/#func-transform)
-is an efficiency hint. That diagnostic remains failed, without changing the clock
-or publisher expectation. Expanded-budget results do not replace default results.
+- XPath 2.0: **0 / 0 / 9**.
+- XPath 3.0: **13 / 0 / 7**.
+- XPath 3.1: **4 / 1 / 11**.
+- XSLT 2.0: **49 / 0 / 11**.
+- XSLT 3.0: **64 / 5 / 17**.
 
-## Reproduction
+The case audit covers all **34 distinct QT3** and **119 distinct XSLT** residual
+failures across these profiles and controls. Each has a resource, fixture/input,
+optional-feature or permitted-outcome disposition; none is silently skipped.
+No unclassified concrete mandatory defect remains in this reviewed failure set.
+Source review also covers the selected clause/function inventory; incomplete
+local and independent evidence retains its own states in the register.
 
-Use clean external checkouts at these revisions:
+Edition differences explain several visible assertions:
 
-- QT3: `201a6e466940cdfc727f4babfedcde5332b9f578`.
-- xslt30-test: `fddf1cf920087e791f13315d68dfbe874d97dc56`.
+- Ten XPath 3.0 date/fraction fixtures were updated in 2016 for F&O 3.1 bugs
+  29749/29788 while retaining `XP30+` dependencies. The selected 2014 REC requires
+  half-even rounding; 3.1 truncates. Native 3.1 matches all ten expectations;
+  native 3.0 matches the older independent Saxon 9.4 algorithm. The old overflow
+  rule in `millisecs-022` is ambiguous; its historical result is an explicit
+  interpretation rather than a uniquely prescribed answer.
+- SER31 `serialize-xml-007b/015b/016b/020b` retain whole-document validation
+  expectations, while the published 3.1 extraction validates selected children.
+  SER30 `007c/026b` assume extension schema declarations absent from this host;
+  `025b` also contains simultaneous schema and duplicate errors. Ready xmllint
+  checks the pinned schemas and extraction rules independently.
+- Eight selected-2.0 XSLT fixtures use 3.0-only names/output features or accept
+  only one of several static errors. They remain failures. `number-0111` differs
+  from the published `xs:integer(round(number($V)))` conversion for a huge value.
 
-[Pins and license references](../build/w3c-suites.json) and the
-[adapter contract](language-suites.md) describe checkout validation, dependencies,
-resource policy and report fields. Publisher fixtures and generated JSON reports
-stay outside this repository.
+Other retained boundaries include DTD whitespace metadata/source construction,
+missing publisher resources, optional EXSLT and directory-query collections,
+older-edition error codes and simultaneous errors. HTML URI/namespace fixtures
+include the disagreement tracked by [qtspecs issue 21](https://github.com/w3c/qtspecs/issues/21).
+Literal `>` in XML attributes is permitted; its escaped-only fixtures stay visible.
+The five warning harness cases require an optional channel (§6.6.1).
+`unparsed-text-2003` needs offline-unavailable HTTP bytes.
+
+`fn-transform-43` parses a valid empty serialized entity as a complete document;
+quantified evaluation may encounter that error before a successful witness.
+`fn-transform-27` expects different compilation times despite the runner's fixed
+clock; `cache=false` is an efficiency hint. `cbcl-matches-004` uses a valid giant
+quantifier beyond the regex bound, retaining a resource failure rather than
+invalid-syntax success. Schema awareness, W3C streamability and general XML
+processor conformance remain separate roles.
+
+## Reproduction and local evidence
+
+Pins: QT3 `201a6e466940cdfc727f4babfedcde5332b9f578`; xslt30-test
+`fddf1cf920087e791f13315d68dfbe874d97dc56`. See the
+[adapter contract](language-suites.md) and [license/pin file](../build/w3c-suites.json).
+Publisher files and generated JSON reports stay outside this repository.
 
 ```sh
 go build -o /tmp/xmlsec-suites ./tests/cmd/dev
 GOMAXPROCS=2 /tmp/xmlsec-suites suites -suite=qt3 -dir=/absolute/path/to/qt3tests \
-  -version=3.1 -xsd-version=1.0 -limits=default -timeout=1s -assertions -report=/tmp/qt3-31.json
+  -version=3.1 -xsd-version=1.0 -limits=default -timeout=1s -assertions -report=/tmp/qt31.json
 GOMAXPROCS=2 /tmp/xmlsec-suites suites -suite=xslt30 -dir=/absolute/path/to/xslt30-test \
-  -version=3.0 -xsd-version=1.0 -limits=default -timeout=1s -assertions -report=/tmp/xslt-30.json
+  -version=3.0 -xsd-version=1.0 -limits=default -timeout=1s -assertions -report=/tmp/xslt30.json
 ```
 
-Repeat QT3 with versions 2.0 and 3.0, and XSLT with 2.0. For the controls, select
-`-xsd-version=1.1` or omit `-assertions`. Reports are written before the expected
-nonzero exit. Use the stated toolchain and public default budgets, plus the
-one-second case deadline; deadline-sensitive failures need investigation on
-another machine. The default fixed clock is `2026-01-01T00:00:00Z`, timezone UTC.
+Repeat for XPath 2.0/3.0 and XSLT 2.0. Controls change `-xsd-version`, omit
+`-assertions`, select `-limits=language`, or add `-xpath10-compatibility`.
+Clock: `2026-01-01T00:00:00Z`, UTC; Unicode 17.0. Reports record actual versions,
+budgets, source/executable hashes, checkout state and decoding policy.
 
-The adapter enables bounded single-byte XML decoding and language DTD input;
-Engine.Parse, record input and XMLDSig retain DTD-free UTF-8/UTF-16. Reports record Unicode 17.0, actual `execution_version`,
-source/executable digests, suite checkout state, clock, timezone, limits and
-decoding policy. A source change or modified suite invalidates the run.
-
-## Failure backlog by reporting category
-
-- QT3, XPath 2.0: 0 assertion, 70 harness, 8 resource-limit.
-- QT3, XPath 3.0: 0 assertion, 76 harness, 6 resource-limit.
-- QT3, XPath 3.1: 0 assertion, 99 harness, 10 resource-limit.
-- xslt30-test, XSLT 2.0: 53 assertion, 5 harness, 11 resource-limit.
-- xslt30-test, XSLT 3.0: 74 assertion, 10 harness, 17 resource-limit.
-
-A category identifies the failing phase, not a confirmed engine defect.
-Schema-bearing environments, unsupported harness assertions and
-missing language behavior remain visible failures.
-XPath 3.1 retains 98 schema/validation preparation failures, one assertion-query
-error and ten resource failures. XSLT 3.0 retains five unsupported warning
-assertions, four unmapped remote sources and one missing-source declaration;
-its seventeen resource failures include two parameter-compilation budgets.
-Missing mandatory implementation must not be reclassified as not-applicable.
-XML/serialization mismatches include a bounded excerpt of the differing bytes;
-a failed transformation remains the cause of secondary-result assertion failure.
-
-Specific unresolved cases:
-
-- `fn-transform-43`: its quantified assertion can parse an empty principal value;
-  the resulting assertion-evaluation error remains a harness failure.
-- XSLT `output-0102c` and `output-0103c`: fixtures require `&gt;` where native emits
-  a permitted literal `>` in an attribute. Publisher fixtures remain unchanged.
-- XSLT `static-012` and `static-013`: expected codes differ from the native
-  global-parameter missing-value/type errors (`XTDE0050`/`XTTE0590`).
-- XSLT `static-013c`: `select="111"` supplies an integer; its catalog
-  `as="xs:string"` hint does not convert it. The expected type error remains a failure.
-- XSLT 2.0 `collection-005`: the stylesheet uses XSLT 3.0 `xsl:mode`; the visible
-  `XTSE0010` assertion failure remains after source loading was corrected.
-- HTML `output-0602a`/`-0603a` require namespace removal/redeclaration beyond the
-  published rules; the former's publisher comment acknowledges that interpretation.
-  `output-0724` and `attribute-0301` require an unescaped
-  `input/@value`, contrary to the published Appendix D; [W3C qtspecs issue 21](https://github.com/w3c/qtspecs/issues/21)
-  remains open. No fixture or outcome has been suppressed.
-
-## Six-area review
-
-The stage's diagnostic review and reproducible reporting cover all six roadmap
-areas. [The acceptance record](conformance.md#stage-3-diagnostic-acceptance-record)
-links the evidence; [the normative register](conformance.md) retains incomplete
-implementation and clause-coverage states.
-
-1. Numeric types/casts: finite decimal and duration division, exact integer
-   boundaries and cumulative numeric budgets across AST, VM, bindings and XSLT.
-2. Function contracts: versioned signatures/cardinality, promotions and expanded
-   error codes across direct, named, lookup, partial and converted calls.
-3. Sequences/focus/names: raw/document/serialized delivery, normalized text,
-   namespace/QName scope, global/selection context and GC-safe node identity.
-4. Versions/compatibility: selected processor versus module declarations,
-   local backwards/forwards processing, static preprocessing and import scopes.
-5. Dates/collation/regex/Unicode/serialization: calendar overflow, edition rules,
-   bounded regex and six shared serialization methods. Character maps expand
-   original characters under budgets; JSON normalizes before escaping, and
-   adaptive serialization delegates XML parameters and uses UTF-8 recovery for
-   unencodable markup before writing. Invalid XML characters still fail.
-6. Resources/callbacks/packages/collections: scoped typed resource reads,
-   visibility/version selection, stable document/text/query members and bounded
-   source preparation, including declared optional preprocessing.
-
-The backlog above remains the acceptance boundary for further language work.
-Close schema-bearing/strict-validation cases with an explicit typed-input model
-and its own requirements; do not strip annotations to make cases pass. Resolve
-remaining assertion differences against the pinned REC/errata before changing
-code or expectations. Re-run resource failures under a separately reported
-budget to distinguish a bound from incorrect behavior. Complete clause-specific
-positive, negative and independent evidence is still required for a full claim.
-General XML processor conformance, schema-aware XSLT and normative W3C
-streamability are separate work.
-
-## Validation and independent engines
-
-`make check`, zero-issue lint and relevant race checks pass. External consumer
-checks, including race and writer allocation/error bounds, pass. The complete
-Docker transform comparison passed before the vocabulary relocation, without
-skips, using ready Saxon HE 12.10,
-Saxon HE 9.4.0.9J in XSLT 2.0 mode, libxml2 and libxslt, with networking disabled.
-See [testing instructions](testing.md) and the existing
-[comparison tests](../transform/comparison_v1_test.go).
-
-Comparisons distinguish permitted lexical alternatives from exact agreements.
-Separate native/oracle diagnostics retain edition/error-code choices, focus and
-resource identity, HTML/XHTML namespaces and URI handling, DTD normalization and
-copied flags, detached CDATA text, coalescing before Unicode normalization and
-adaptive character-map/repertoire recovery. Publisher fixtures remain unchanged.
-DTD fuzzing completed 538,965 inputs without failure. Complete clause evidence
-and applicable failures remain open.
+New regressions extend existing test files. `make check`, root race (including
+the external consumer), zero-issue lint and all 83 Docker independent-engine
+groups pass. [Testing](testing.md) documents ready Saxon 9.4/12.10,
+libxml2/libxslt and published-schema controls. Explicit oracle diagnostics remain
+separate from exact agreement and do not establish complete clause evidence.

@@ -86,6 +86,38 @@ func ResolveSchemaURI(ref, base string) (string, error) {
 	return p, nil
 }
 
+// EscapeResourceReference applies XLink/RFC 3986 escaping when an IRI is
+// used to access an external resource. Existing percent escapes and URI
+// delimiters are retained; namespace names, collations, XML Base values and
+// fn:resolve-uri results must not be changed merely for being IRIs.
+func EscapeResourceReference(reference string) string {
+	var encoded strings.Builder
+
+	for index := 0; index < len(reference); index++ {
+		value := reference[index]
+		if value > 0x7e || value <= 0x20 || strings.ContainsRune("\"<>{}|\\^`", rune(value)) {
+			if encoded.Len() == 0 {
+				encoded.Grow(len(reference))
+				encoded.WriteString(reference[:index])
+			}
+
+			const hex = "0123456789ABCDEF"
+
+			encoded.WriteByte('%')
+			encoded.WriteByte(hex[value>>4])
+			encoded.WriteByte(hex[value&0xf])
+		} else if encoded.Len() != 0 {
+			encoded.WriteByte(value)
+		}
+	}
+
+	if encoded.Len() == 0 {
+		return reference
+	}
+
+	return encoded.String()
+}
+
 // ResolveIRIReference implements RFC 3986 section 5.2 without escaping Unicode
 // or discarding empty query/fragment delimiters. It is shared by XML base,
 // schema/module resources and XPath URI functions.

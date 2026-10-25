@@ -6,6 +6,7 @@ package xslt
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"strings"
 
@@ -58,6 +59,10 @@ func (ec *execContext) execAnalyzeString(ctx context.Context, inst *analyzeStrin
 	// Compile the regex using XPath regex semantics
 	re, err := xpath.CompileRegexContext(ctx, regex, flags)
 	if err != nil {
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return failure
+		}
+
 		// Map XPath regex errors to XSLT error codes
 		var detail *xdm.Error
 		if errors.As(err, &detail) && detail.Code == "FORX0001" {
@@ -138,8 +143,7 @@ func countAnalyzeStringSegments(ctx context.Context, re *xpath.Regex, input stri
 
 		matchCount++
 		if maxMatches >= 0 && matchCount > maxMatches {
-			earlyErr = dynamicErrorCause(errCodeXTDE1140, ErrResourceTooLarge,
-				"xsl:analyze-string produced more than %d matches, exceeding the configured resource limit", maxMatches)
+			earlyErr = fmt.Errorf("xsl:analyze-string produced more than %d matches: %w", maxMatches, ErrResourceTooLarge)
 
 			return false
 		}
@@ -159,6 +163,10 @@ func countAnalyzeStringSegments(ctx context.Context, re *xpath.Regex, input stri
 	}
 
 	if countErr != nil {
+		if failure := preserveControlFailure(ctx, countErr); failure != nil {
+			return 0, failure
+		}
+
 		return 0, dynamicErrorCause(errCodeXTDE1140, countErr, "xsl:analyze-string regex match error: %v", countErr)
 	}
 
@@ -330,6 +338,10 @@ func (ec *execContext) executeAnalyzeStringSegments(ctx context.Context, inst *a
 	}
 
 	if execIterErr != nil {
+		if failure := preserveControlFailure(ctx, execIterErr); failure != nil {
+			return failure
+		}
+
 		return dynamicErrorCause(errCodeXTDE1140, execIterErr, "xsl:analyze-string regex match error: %v", execIterErr)
 	}
 
@@ -1018,7 +1030,7 @@ func (ec *execContext) dynamicXPathEvaluator(vars map[string]xdm.Sequence, nsBin
 
 	if ec.transformConfig != nil {
 		if r := ec.transformConfig.uriResolver; r != nil {
-			eval = eval.URIResolver(r)
+			eval = eval.URIResolver(resourceURIResolver{r})
 		}
 
 		if c := ec.transformConfig.httpClient; c != nil {

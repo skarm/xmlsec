@@ -187,6 +187,16 @@ func NewEngine(config Config) (*Engine, error) {
 	return e, nil
 }
 
+// executionControlCause carries public limits across the internal callback and
+// resource interfaces, where language handlers must not recover from exhaustion.
+func executionControlCause(err error) error {
+	if errors.Is(err, ErrLimit) && !errors.Is(err, xpath.ErrBudget) {
+		return errors.Join(xpath.ErrBudget, err)
+	}
+
+	return err
+}
+
 func wrap(operation string, err error) error {
 	if err == nil {
 		return nil

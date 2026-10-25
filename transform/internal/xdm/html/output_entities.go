@@ -1,5 +1,5 @@
 // Adapted from helium under the MIT license; see licenses/MIT-helium.txt at the repository root.
-// Output-only single-codepoint entity names; no HTML parseOptions is retained.
+
 package html
 
 const (
@@ -15,6 +15,8 @@ func (d *htmlDumper) lookupEntityByRune(r rune) string {
 	return d.entities[r]
 }
 
+// newHTMLEntityTable returns output-only single-codepoint entity names;
+// no HTML parseOptions is retained.
 func newHTMLEntityTable() map[rune]string {
 	return map[rune]string{
 		160:    "NonBreakingSpace",

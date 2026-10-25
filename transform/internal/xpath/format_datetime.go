@@ -15,15 +15,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
-
-// maxPictureMinWidth is the largest minimum width a picture's width modifier
-// may request. F&O 3.1 §9.8.4.2 sets no upper bound, so the limit is
-// implementation-defined: a larger minimum width raises FOFD1340 instead of
-// producing that many padding characters. A maximum width has no limit,
-// because it only ever shortens the output.
-const maxPictureMinWidth = 1000
 
 // maxInt64Digits is the number of decimal digits in math.MaxInt64.
 const maxInt64Digits = 19
@@ -74,16 +68,14 @@ func formatDateTimeCommon(ctx context.Context, args []xdm.Sequence, typeName str
 		lang = ec.getDefaultLanguage()
 	}
 
+	defaultLanguage := lang
+
 	calendar := ""
 
 	if len(args) > 2 && xdm.SequenceLen(args[2]) > 0 {
 		lang, err = coerceArgToString(ctx, args[2])
 		if err != nil {
 			return nil, err
-		}
-
-		if lang == "" {
-			return nil, &xdm.Error{Code: errCodeFOFD1340, Message: "format-dateTime: language argument must not be empty"}
 		}
 	}
 
@@ -93,7 +85,8 @@ func formatDateTimeCommon(ctx context.Context, args []xdm.Sequence, typeName str
 			return nil, err
 		}
 
-		if err := validateCalendarName(calendar); err != nil {
+		calendar, err = resolveCalendarName(ctx, calendar)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -103,7 +96,12 @@ func formatDateTimeCommon(ctx context.Context, args []xdm.Sequence, typeName str
 		return nil, err
 	}
 
-	result, err := formatDateTimePicture(t, picture, lang, calendar, typeName)
+	legacy := false
+	if ec := getFnContext(ctx); ec != nil {
+		legacy = ec.version == 20 || ec.version == 30
+	}
+
+	result, err := formatDateTimePicture(ctx, t, picture, lang, calendar, typeName, defaultLanguage, legacy)
 	if err != nil {
 		return nil, err
 	}
@@ -119,15 +117,15 @@ func applyFormatPlace(ctx context.Context, args []xdm.Sequence, t time.Time) (ti
 		}
 
 		if place != "" {
+			// F&O 9.8.4.8 uses the default place when a country code or
+			// timezone is not recognized, including an invalid place form.
 			loc, err := time.LoadLocation(place)
-			if err != nil {
-				return t, &xdm.Error{Code: errCodeFOFD1340, Message: fmt.Sprintf("format-dateTime: invalid place: %s", place)}
-			}
-
-			if !xdm.HasTimezone(t) {
-				t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), loc)
-			} else {
-				t = t.In(loc)
+			if err == nil {
+				if !xdm.HasTimezone(t) {
+					t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), loc)
+				} else {
+					t = t.In(loc)
+				}
 			}
 		}
 	}
@@ -135,30 +133,19 @@ func applyFormatPlace(ctx context.Context, args []xdm.Sequence, t time.Time) (ti
 	return t, nil
 }
 
-func formatDateTimePicture(t time.Time, picture, lang, calendar, typeName string) (string, error) {
+func formatDateTimePicture(ctx context.Context, t time.Time, picture, lang, calendar, typeName, defaultLanguage string, legacy bool) (string, error) {
+	if err := Charge(ctx, len(picture)); err != nil {
+		return "", err
+	}
+
+	if err := ChargeString(ctx, len(picture)); err != nil {
+		return "", err
+	}
+
 	var b strings.Builder
 
-	// Language fallback: if the requested language is not "en", fall back
-	// and prepend [Language: en] per XPath F&O §9.8.4.
-	effectiveLang := lang
-	if effectiveLang == "" {
-		effectiveLang = "en"
-	}
-
-	if !isSupportedLanguage(effectiveLang) {
-		b.WriteString("[Language: en]")
-
-		effectiveLang = "en"
-	}
-
-	// Calendar fallback: if a non-ISO calendar is requested, fall back
-	// to the Gregorian/AD calendar and prepend [Calendar: AD].
-	effectiveCalendar := calendar
-	if effectiveCalendar != "" && !isISOCalendar(effectiveCalendar) {
-		b.WriteString("[Calendar: AD]")
-
-		effectiveCalendar = nameISO
-	}
+	effectiveLang, effectiveCalendar, prefix := dateFormattingDefaults(lang, calendar, defaultLanguage)
+	b.WriteString(prefix)
 
 	i := 0
 	runes := []rune(picture)
@@ -189,7 +176,7 @@ func formatDateTimePicture(t time.Time, picture, lang, calendar, typeName string
 
 			component := string(runes[i+1 : end])
 
-			formatted, err := formatComponent(t, component, effectiveLang, effectiveCalendar, typeName)
+			formatted, err := formatComponent(ctx, t, component, effectiveLang, effectiveCalendar, typeName, legacy)
 			if err != nil {
 				return "", err
 			}
@@ -214,7 +201,35 @@ func formatDateTimePicture(t time.Time, picture, lang, calendar, typeName string
 		}
 	}
 
-	return b.String(), nil
+	result := b.String()
+	if err := ChargeString(ctx, len(result)); err != nil {
+		return "", err
+	}
+
+	return result, nil
+}
+
+// Unsupported languages and calendars use an identified fallback (F&O 9.8.4.8).
+func dateFormattingDefaults(lang, calendar, defaultLanguage string) (string, string, string) {
+	effectiveLang := strings.ToLower(lang)
+	prefix := ""
+
+	if !isSupportedLanguage(effectiveLang) {
+		effectiveLang = strings.ToLower(defaultLanguage)
+		if !isSupportedLanguage(effectiveLang) {
+			effectiveLang = "en"
+		}
+
+		prefix = "[Language: " + effectiveLang + "]"
+	}
+
+	effectiveCalendar := calendar
+	if effectiveCalendar != "" && !isISOCalendar(effectiveCalendar) {
+		prefix += "[Calendar: AD]"
+		effectiveCalendar = nameISO
+	}
+
+	return effectiveLang, effectiveCalendar, prefix
 }
 
 func isSupportedLanguage(lang string) bool {
@@ -226,7 +241,7 @@ func isSupportedLanguage(lang string) bool {
 	}
 }
 
-func formatComponent(t time.Time, spec, lang, calendar, typeName string) (string, error) {
+func formatComponent(ctx context.Context, t time.Time, spec, lang, calendar, typeName string, legacy bool) (string, error) {
 	// Strip whitespace within the spec
 	spec = stripSpaces(spec)
 
@@ -247,6 +262,10 @@ func formatComponent(t time.Time, spec, lang, calendar, typeName string) (string
 
 	// Validate format token and width
 	if err := validateDateFormatToken(compChar, presentation, width); err != nil {
+		return "", err
+	}
+
+	if err := chargeDateMinimumWidth(ctx, width.minWidth); err != nil {
 		return "", err
 	}
 
@@ -279,7 +298,7 @@ func formatComponent(t time.Time, spec, lang, calendar, typeName string) (string
 	case 's':
 		value = int64(t.Second())
 	case 'f':
-		return formatFractionalSeconds(t, presentation, width), nil
+		return formatFractionalSeconds(t, presentation, width, legacy), nil
 	case 'Z', 'z':
 		return formatTimezone(t, compChar, presentation, width), nil
 	case 'W':
@@ -300,6 +319,24 @@ func formatComponent(t time.Time, spec, lang, calendar, typeName string) (string
 	}
 
 	return formatDateTimeValue(value, compChar, presentation, width, lang), nil
+}
+
+// The REC puts no fixed upper bound on a positive width. Reserve the possible
+// UTF-8 padding before formatting, and keep resource exhaustion a control error.
+func chargeDateMinimumWidth(ctx context.Context, width int) error {
+	if width <= 0 {
+		return ctx.Err()
+	}
+
+	if width > math.MaxInt/utf8.UTFMax {
+		return ErrBudget
+	}
+
+	if err := ChargeString(ctx, width*utf8.UTFMax); err != nil {
+		return err
+	}
+
+	return Charge(ctx, width)
 }
 
 func stripSpaces(s string) string {
@@ -329,6 +366,8 @@ type dtWidth struct {
 	minWidth   int  // -1 = no explicit minimum
 	maxWidth   int  // -1 = unlimited
 	maxOmitted bool // the modifier has no "-" max-width part
+	present    bool // a width modifier was explicitly supplied
+	invalid    bool // malformed width grammar
 }
 
 func parseDatePresentation(rest string) (dtPresentation, dtWidth) {
@@ -352,7 +391,12 @@ func parseDatePresentation(rest string) (dtPresentation, dtWidth) {
 		presentation.format, presentation.implicit = format, false
 	}
 
-	return presentation, parseDateWidth(widthPart)
+	width = parseDateWidth(widthPart)
+	if strings.Contains(rest, ",") && widthPart == "" {
+		width.present, width.invalid = true, true
+	}
+
+	return presentation, width
 }
 
 func splitDatePresentationModifiers(format string) (string, string) {
@@ -380,24 +424,39 @@ func parseDateWidth(value string) dtWidth {
 		return width
 	}
 
-	parts := strings.Split(value, "-")
-	switch len(parts) {
-	case 1:
-		width.maxOmitted = true
+	width.present = true
 
-		if parts[0] != "*" {
-			if minimum := parseSimpleInt(parts[0]); minimum > 0 {
-				width.minWidth = minimum
+	parts := strings.Split(value, "-")
+	if len(parts) > 2 {
+		width.invalid = true
+		return width
+	}
+
+	for _, part := range parts {
+		if part == "*" {
+			continue
+		}
+
+		if part == "" {
+			width.invalid = true
+			return width
+		}
+
+		for _, digit := range part {
+			if digit < '0' || digit > '9' {
+				width.invalid = true
+				return width
 			}
 		}
-	case 2:
-		if parts[0] != "*" {
-			width.minWidth = parseSimpleInt(parts[0])
-		}
+	}
 
-		if parts[1] != "*" {
-			width.maxWidth = parseSimpleInt(parts[1])
-		}
+	if parts[0] != "*" {
+		width.minWidth = parseSimpleInt(parts[0])
+	}
+
+	width.maxOmitted = len(parts) == 1
+	if len(parts) == 2 && parts[1] != "*" {
+		width.maxWidth = parseSimpleInt(parts[1])
 	}
 
 	return width
@@ -788,11 +847,30 @@ type fractionalPicture struct {
 	groups          []fractionGroup
 }
 
-func formatFractionalSeconds(t time.Time, p dtPresentation, w dtWidth) string {
+func formatFractionalSeconds(t time.Time, p dtPresentation, w dtWidth, legacy bool) string {
 	picture := parseFractionalPicture(p.format)
-	minimum, maximum := fractionalPrecision(picture, w)
+	minimum, maximum := fractionalPrecision(picture, w, legacy)
 
-	value := fmt.Sprintf("%09d", t.Nanosecond())[:maximum]
+	nanos := t.Nanosecond()
+
+	if legacy && maximum < 9 {
+		// XSLT 2.0 §16.5.1 and F&O 3.0 §9.8.4.1 round this component;
+		// it does not carry into other displayed date/time components.
+		scale := int(math.Pow10(9 - maximum))
+
+		quotient, remainder := nanos/scale, nanos%scale
+		if remainder > scale/2 || remainder == scale/2 && quotient%2 != 0 {
+			quotient++
+		}
+
+		nanos = quotient * scale % 1_000_000_000
+	}
+
+	value := fmt.Sprintf("%09d", nanos)[:maximum]
+	if len(value) < minimum {
+		value += strings.Repeat("0", minimum-len(value))
+	}
+
 	for len(value) > minimum && value[len(value)-1] == '0' {
 		value = value[:len(value)-1]
 	}
@@ -839,7 +917,7 @@ func parseFractionalPicture(format string) fractionalPicture {
 	}
 }
 
-func fractionalPrecision(picture fractionalPicture, w dtWidth) (int, int) {
+func fractionalPrecision(picture fractionalPicture, w dtWidth, legacy bool) (int, int) {
 	// For fractional seconds:
 	// - Single digit format token ("1") → min=1, max=9 (show all significant)
 	// - Multi-digit format token → exact precision (min=max=digitCount)
@@ -869,6 +947,24 @@ func fractionalPrecision(picture fractionalPicture, w dtWidth) (int, int) {
 	// every significant digit.
 	if w.maxOmitted && w.minWidth > 0 {
 		maxPlaces = w.minWidth
+	}
+
+	if w.present && !w.maxOmitted && w.maxWidth < 0 {
+		// An explicit * maximum permits every significant fractional digit.
+		maxPlaces = 9
+	}
+
+	if legacy && w.present {
+		// In XSLT 2.0 and F&O 3.0 an explicit width replaces the picture's widths;
+		// an omitted maximum means unbounded, including [f,3].
+		minPlaces, maxPlaces = 1, 9
+		if w.minWidth > 0 {
+			minPlaces = w.minWidth
+		}
+
+		if w.maxWidth > 0 {
+			maxPlaces = w.maxWidth
+		}
 	}
 
 	if maxPlaces < minPlaces {
@@ -1148,67 +1244,44 @@ func isISOCalendar(calendar string) bool {
 	}
 }
 
-func validateCalendarName(calendar string) error {
-	if calendar == "" {
-		return nil
-	}
-
+func resolveCalendarName(ctx context.Context, calendar string) (string, error) {
 	if isKnownCalendarName(calendar) {
-		return nil
+		return calendar, nil
 	}
 
 	if strings.HasPrefix(calendar, "Q{") {
-		end := strings.Index(calendar, "}")
-		if end < 0 || end == len(calendar)-1 {
-			return &xdm.Error{Code: errCodeFOFD1340, Message: fmt.Sprintf("format-dateTime: invalid calendar: %s", calendar)}
+		if ec := getFnContext(ctx); ec != nil && ec.version == 20 {
+			return "", invalidCalendarName(calendar)
 		}
 
-		uri := calendar[2:end]
-
-		local := calendar[end+1:]
-		if !isNCName(local) {
-			return &xdm.Error{Code: errCodeFOFD1340, Message: fmt.Sprintf("format-dateTime: invalid calendar: %s", calendar)}
+		uri, local, ok := parseEQNameToken(calendar)
+		if !ok || !xmlchar.IsValidNCName(local) {
+			return "", invalidCalendarName(calendar)
 		}
 
+		uri = collapseWhitespace(uri)
 		if uri == "" && !isKnownCalendarName(local) {
-			return &xdm.Error{Code: errCodeFOFD1340, Message: fmt.Sprintf("format-dateTime: invalid calendar: %s", calendar)}
+			return "", invalidCalendarName(calendar)
 		}
 
-		return nil
+		return "Q{" + uri + "}" + local, nil
 	}
 
-	if strings.Contains(calendar, ":") {
-		parts := strings.Split(calendar, ":")
-		if len(parts) != 2 || !isNCName(parts[0]) || !isNCName(parts[1]) {
-			return &xdm.Error{Code: errCodeFOFD1340, Message: fmt.Sprintf("format-dateTime: invalid calendar: %s", calendar)}
-		}
-
-		return nil
+	prefix, local, err := parseLexicalQName(calendar)
+	if err != nil || prefix == "" {
+		return "", invalidCalendarName(calendar)
 	}
 
-	return &xdm.Error{Code: errCodeFOFD1340, Message: fmt.Sprintf("format-dateTime: invalid calendar: %s", calendar)}
+	uri, ok := FnNamespace(ctx, prefix)
+	if !ok || uri == "" {
+		return "", invalidCalendarName(calendar)
+	}
+
+	return "Q{" + uri + "}" + local, nil
 }
 
-func isNCName(s string) bool {
-	if s == "" {
-		return false
-	}
-
-	for i, r := range s {
-		if i == 0 {
-			if !unicode.IsLetter(r) && r != '_' {
-				return false
-			}
-
-			continue
-		}
-
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '-' && r != '.' {
-			return false
-		}
-	}
-
-	return true
+func invalidCalendarName(calendar string) error {
+	return &xdm.Error{Code: errCodeFOFD1340, Message: fmt.Sprintf("format-dateTime: invalid calendar: %s", calendar)}
 }
 
 func isoWeekStart(t time.Time) time.Time {
@@ -1237,9 +1310,9 @@ func isoMonthWeekOneStart(t time.Time) time.Time {
 
 func isKnownCalendarName(calendar string) bool {
 	switch calendar {
-	case nameISO, "AD", "AH", "AM", "AP", "AS", "BE", "CB", "CE", "CL",
+	case nameISO, "AD", "AH", "AME", "AM", "AP", "AS", "BE", "CB", "CE", "CL",
 		"CS", "EE", "FE", "JE", "KE", "KY", "ME", "MS", "NS",
-		"OS", "RS", "SE", "SH", "SS", "TE", "US":
+		"OS", "RS", "SE", "SH", "SS", "TE", "VE", "VS":
 		return true
 	default:
 		return false
@@ -1278,6 +1351,10 @@ func validateComponentForType(comp byte, typeName string) error {
 
 // validateDateFormatToken validates the format token and width for FOFD1340 errors.
 func validateDateFormatToken(comp byte, p dtPresentation, w dtWidth) error {
+	if w.invalid {
+		return &xdm.Error{Code: errCodeFOFD1340, Message: "invalid date/time width modifier"}
+	}
+
 	if err := validateDateDigitFamilies(p.format); err != nil {
 		return err
 	}
@@ -1297,10 +1374,6 @@ func validateDateFormatToken(comp byte, p dtPresentation, w dtWidth) error {
 
 	if w.minWidth > 0 && w.maxWidth > 0 && w.minWidth > w.maxWidth {
 		return &xdm.Error{Code: errCodeFOFD1340, Message: "minimum width exceeds maximum width"}
-	}
-
-	if w.minWidth > maxPictureMinWidth {
-		return &xdm.Error{Code: errCodeFOFD1340, Message: fmt.Sprintf("minimum width exceeds the implementation limit of %d", maxPictureMinWidth)}
 	}
 
 	return nil

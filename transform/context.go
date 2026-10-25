@@ -7,7 +7,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	value "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -130,7 +132,9 @@ type DynamicContext struct {
 	// ImplicitTimezone defaults to CurrentTime.Location(). Its offset at the
 	// invocation time must be a whole minute within -14 to +14 hours.
 	ImplicitTimezone *time.Location
-	DefaultLanguage  string
+	// DefaultLanguage is an xs:language value; XML whitespace is collapsed.
+	// Empty selects the default language, en.
+	DefaultLanguage string
 	// TraceWriter receives XPath trace and XSLT trace output. Nil discards it.
 	// The caller owns the writer and synchronizes concurrent invocations.
 	TraceWriter io.Writer
@@ -149,6 +153,14 @@ type CollectionResolver interface {
 }
 
 func (e *Engine) dynamicContext(ctx context.Context, options DynamicContext) (context.Context, error) {
+	language := options.DefaultLanguage
+	if language != "" {
+		language = xmlchar.CollapseSpace(language)
+		if !value.ValidLanguage(language) {
+			return nil, ErrInput
+		}
+	}
+
 	now := options.CurrentTime
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -167,7 +179,7 @@ func (e *Engine) dynamicContext(ctx context.Context, options DynamicContext) (co
 	zone = time.FixedZone("", offset)
 	now = now.In(zone)
 
-	return xpath.WithEvaluationContext(ctx, xpath.EvaluationContext{CurrentTime: now, Timezone: zone, Language: options.DefaultLanguage, Trace: checkedTrace{ctx: ctx, writer: traceWriter(options.TraceWriter)}, Collections: e.collectionResolver()}), nil
+	return xpath.WithEvaluationContext(ctx, xpath.EvaluationContext{CurrentTime: now, Timezone: zone, Language: language, Trace: checkedTrace{ctx: ctx, writer: traceWriter(options.TraceWriter)}, Collections: e.collectionResolver()}), nil
 }
 
 func (e *Engine) collectionResolver() xpath.CollectionResolver {

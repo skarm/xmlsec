@@ -120,11 +120,12 @@ func lookupItem(evalFn exprEvaluator, ctx context.Context, ec *evalContext, item
 
 		var result xdm.ItemSlice
 
-		for keyItem := range xdm.SequenceItems(keySeq) {
-			ka, err := AtomizeItem(keyItem)
-			if err != nil {
-				return nil, err
-			}
+		keys, err := FnAtomize(ctx, keySeq)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, ka := range keys {
 			// Use get0 to borrow the stored value WITHOUT cloning, then drain it
 			// through appendBoundedClonedSeq so maxNodes / OpLimit / cancellation
 			// fire BEFORE the value is materialized (public Get deep-clones by
@@ -468,12 +469,12 @@ func lookupItemArrayItem(ctx context.Context, all bool, v *xdm.ArrayItem, ec *ev
 
 	var result xdm.ItemSlice
 
-	for keyItem := range xdm.SequenceItems(keySeq) {
-		ka, err := AtomizeItem(keyItem)
-		if err != nil {
-			return nil, err
-		}
+	keys, err := FnAtomize(ctx, keySeq)
+	if err != nil {
+		return nil, err
+	}
 
+	for _, ka := range keys {
 		if ka.TypeName == xdm.TypeUntypedAtomic {
 			converted, err := CastAtomic(ka, xdm.TypeInteger)
 			if err != nil {

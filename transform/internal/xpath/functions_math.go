@@ -6,6 +6,7 @@ package xpath
 import (
 	"context"
 	"math"
+	"math/big"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
@@ -114,7 +115,87 @@ func fnMathPow(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return nil, nil
 	}
 
+	exponent, err := promoteToNumeric(args[1].Get(0))
+	if err != nil {
+		return nil, err
+	}
+
+	if xdm.IsIntegerDerived(exponent.TypeName) {
+		result, err := mathIntegerPower(ctx, a, exponent.BigInt())
+		if err != nil {
+			return nil, err
+		}
+
+		return xdm.SingleDouble(result), nil
+	}
+
 	return xdm.SingleDouble(math.Pow(a, b)), nil
+}
+
+// mathIntegerPower implements the integer-exponent pown operation required by
+// F&O 4.8.6 without first rounding the exponent to xs:double. The wider working
+// precision also avoids accumulating binary64 rounding at every multiplication.
+func mathIntegerPower(ctx context.Context, base float64, exponent *big.Int) (float64, error) {
+	if err := fnCountOp(ctx, getFnContext(ctx)); err != nil {
+		return 0, err
+	}
+
+	if exponent.Sign() == 0 {
+		return 1, nil
+	}
+
+	negative := math.Signbit(base) && exponent.Bit(0) != 0
+	if math.IsNaN(base) {
+		return math.NaN(), nil
+	}
+
+	if base == 0 || math.IsInf(base, 0) || math.Abs(base) == 1 {
+		surrogate := 2.0
+		if negative {
+			surrogate = 1
+		}
+
+		if exponent.Sign() < 0 {
+			surrogate = -surrogate
+		}
+
+		return math.Pow(base, surrogate), nil
+	}
+
+	if err := preflightNumeric(ctx, exponent.BitLen(), 256); err != nil {
+		return 0, err
+	}
+
+	magnitude := new(big.Int).Abs(exponent)
+	factor := new(big.Float).SetPrec(256).SetFloat64(math.Abs(base))
+	result := new(big.Float).SetPrec(256).SetInt64(1)
+
+	if exponent.Sign() < 0 {
+		factor.Quo(result, factor)
+	}
+
+	for bit := magnitude.BitLen() - 1; bit >= 0; bit-- {
+		if err := fnCountOp(ctx, getFnContext(ctx)); err != nil {
+			return 0, err
+		}
+
+		result.Mul(result, result)
+
+		if magnitude.Bit(bit) != 0 {
+			result.Mul(result, factor)
+		}
+
+		value, _ := result.Float64()
+		if value == 0 || math.IsInf(value, 0) || bit == 0 {
+			if negative {
+				value = -value
+			}
+
+			return value, nil
+		}
+	}
+
+	return 1, nil
 }
 
 func fnMathSqrt(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
