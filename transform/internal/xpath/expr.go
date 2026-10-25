@@ -335,6 +335,7 @@ type InlineFunctionExpr struct {
 	Params     []FunctionParam
 	ReturnType *xdm.SequenceType // nil if not specified
 	Body       Expr
+	EmptyBody  bool // lexically empty FunctionBody, distinct from { () }
 }
 
 func (InlineFunctionExpr) exprNode() {}

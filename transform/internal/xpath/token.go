@@ -189,7 +189,7 @@ func (t TokenType) String() string {
 		TokenCastableAs:  nameCastable,
 		TokenTreatAs:     nameTreat,
 		TokenAs:          "as",
-		TokenFunction:    "function",
+		TokenFunction:    nameFunction,
 		TokenMap:         keywordMap,
 		TokenArray:       keywordArray,
 		TokenIs:          "is",

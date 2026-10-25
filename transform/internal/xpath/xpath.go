@@ -338,7 +338,7 @@ func (c Compiler) Compile(expr string) (*Expression, error) {
 
 	l, err := newVersionLexer(expr, version)
 	if err != nil {
-		return nil, err
+		return nil, syntaxError(err, version)
 	}
 
 	if c.cfg != nil && c.cfg.context != nil {
@@ -358,7 +358,7 @@ func (c Compiler) Compile(expr string) (*Expression, error) {
 
 		ast, err := parseWithLexer(l)
 		if err != nil {
-			return nil, err
+			return nil, syntaxError(err, version)
 		}
 
 		if err := validateVersionExpr(ast, c.cfg.version, c.cfg.namespaces); err != nil {
@@ -380,7 +380,7 @@ func (c Compiler) Compile(expr string) (*Expression, error) {
 
 	program, prefixPlan, err := compileFromLexer(l)
 	if err != nil {
-		return nil, err
+		return nil, syntaxError(err, version)
 	}
 
 	return &Expression{

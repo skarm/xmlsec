@@ -439,7 +439,7 @@ func TestJSONNodeSerializationKeepsEncoding(t *testing.T) {
 		t.Fatal(err)
 	}
 	decoded, err := io.ReadAll(texttransform.NewReader(&output, textunicode.UTF16(textunicode.BigEndian, textunicode.ExpectBOM).NewDecoder()))
-	if err != nil || string(decoded) != `{"n":"é"}` {
+	if err != nil || string(decoded) != `{"n":"<r>é<\/r>"}` {
 		t.Fatalf("JSON node encoding: %q %v", decoded, err)
 	}
 }
@@ -451,7 +451,7 @@ func TestWriterSerializationSupportsBufferedOptions(t *testing.T) {
 		{`method="html" normalization-form="NFC"`, `<p>e&#x301;</p>`, `<p>é</p>`},
 		{`method="text" normalization-form="FULLY-NORMALIZED"`, `<p>e&#x301;</p>`, `é`},
 		{`method="adaptive"`, `<xsl:sequence select="(1,2)"/>`, "1\n2"},
-		{`method="json"`, `<xsl:variable name="n"><r/></xsl:variable><xsl:sequence select="map{'n':$n}"/>`, `{"n":""}`},
+		{`method="json"`, `<xsl:variable name="n"><r/></xsl:variable><xsl:sequence select="map{'n':$n}"/>`, `{"n":"<r\/>"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.output, func(t *testing.T) {

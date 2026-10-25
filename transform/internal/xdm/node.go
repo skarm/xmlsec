@@ -70,7 +70,12 @@ func CopyNode(src Node, d *Document) (Node, error) {
 		return d.CreateAttribute(a.LocalName(), a.Value(), a.Namespace())
 	}
 
-	draft := tree.FromNodes([]*tree.Node{src.view().raw}, tree.DefaultLimits())
+	root := src.view().raw
+	if root.Kind == tree.ElementNode {
+		root = tree.ImportSubtree(root)
+	}
+
+	draft := tree.FromNodes([]*tree.Node{root}, tree.DefaultLimits())
 
 	cp, err := tree.Clone(context.Background(), draft)
 	if err != nil {

@@ -28,7 +28,7 @@ func enterPackage(ctx context.Context, doc *xdm.Document) (context.Context, erro
 	}
 
 	parsed := ParsePackageVersion(version)
-	if !parsed.valid {
+	if !parsed.Valid() {
 		return nil, staticError(errCodeXTSE3000, "invalid package version %q", version)
 	}
 

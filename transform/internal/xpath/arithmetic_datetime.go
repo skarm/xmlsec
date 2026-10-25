@@ -595,7 +595,7 @@ func arithmeticDurationDivDuration(la, ra xdm.AtomicValue) (xdm.Sequence, bool, 
 	rRat := xdm.DurationToRat(rd, ra.TypeName == xdm.TypeYearMonthDuration)
 
 	if rRat.Sign() == 0 {
-		return nil, true, &xdm.Error{Code: errCodeFOAR0002, Message: "division of duration by zero duration"}
+		return nil, true, &xdm.Error{Code: errCodeFOAR0001, Message: "division of duration by zero duration"}
 	}
 
 	r := new(big.Rat).Quo(lRat, rRat)

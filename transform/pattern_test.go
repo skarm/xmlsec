@@ -9,7 +9,38 @@ import (
 	"github.com/skarm/xmlsec/transform"
 )
 
-const nameFalse = "false"
+const (
+	nameFalse       = "false"
+	errCodeFORX0003 = "FORX0003"
+)
+
+func TestXPathQuantifiedAnchors(t *testing.T) {
+	e := engine(t, transform.Config{})
+
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for expression, want := range map[string]string{
+			`matches('alpha', 'alp^?ha')`:     nameTrue,
+			`matches('alpha', 'alp^+ha')`:     nameFalse,
+			`matches('alpha', '^{2}alpha')`:   nameTrue,
+			`matches('zalpha', '^{2}alpha')`:  nameFalse,
+			`matches('alpha', 'alp$?ha')`:     nameTrue,
+			`matches('alpha', 'alp${2,4}ha')`: nameFalse,
+			`matches('alpha', 'alpha$+')`:     nameTrue,
+			`matches('alphax', 'alpha$+')`:    nameFalse,
+			`replace('alpha', '^*', 'x')`:     "error",
+		} {
+			value, err := query(t, e, expression, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if want == "error" {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != errCodeFORX0003 {
+					t.Fatal(expression, value, err)
+				}
+			} else if err != nil || text(t, value) != want {
+				t.Fatal(version, expression, value, err)
+			}
+		}
+	}
+}
 
 // TestXPathPatternFunctions checks F&O 3.1 §5.6 pattern semantics.
 func TestXPathPatternFunctions(t *testing.T) {
@@ -70,8 +101,8 @@ func TestXPathPatternFunctions(t *testing.T) {
 		`matches('a', '.', 'invalid')`: "FORX0001",
 		`matches('a', '[a')`:           errCodeFORX0002,
 		`matches('a', '(a\1)')`:        errCodeFORX0002,
-		`replace('a', 'a*', 'b')`:      "FORX0003",
-		`tokenize('a', 'a?')`:          "FORX0003",
+		`replace('a', 'a*', 'b')`:      errCodeFORX0003,
+		`tokenize('a', 'a?')`:          errCodeFORX0003,
 		`replace('a', 'a', '$')`:       "FORX0004",
 	} {
 		_, err := query(t, e, source, transform.XPath31).Evaluate(context.Background(), nil, transform.XPathContext{})

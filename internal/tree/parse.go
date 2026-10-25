@@ -26,15 +26,17 @@ type parseFrame struct {
 }
 
 type documentParser struct {
-	doc         *Document
-	decoder     *xmlTokenizer
-	input       *xmlInput
-	encoding    sourceEncoding
-	stack       []parseFrame
-	scope       namespaceContext
-	count       int
-	seenDecl    bool
-	pendingText strings.Builder
+	doc                 *Document
+	decoder             *xmlTokenizer
+	input               *xmlInput
+	scope               namespaceContext
+	pendingText         strings.Builder
+	encoding            sourceEncoding
+	stack               []parseFrame
+	count               int
+	seenDecl            bool
+	characterInput      bool
+	singleByteEncodings bool
 }
 
 func (p *documentParser) parse(ctx context.Context) (*Document, error) {
@@ -333,7 +335,7 @@ func (p *documentParser) processingInstruction(instruction xml.ProcInst, offset 
 			return fmt.Errorf("%w: XML declaration position", ErrMalformed)
 		}
 
-		if err := validateDeclaration(string(instruction.Inst), p.encoding); err != nil {
+		if err := p.declaration(string(instruction.Inst)); err != nil {
 			return err
 		}
 
@@ -583,49 +585,99 @@ func lexicalSpaceEnd(out []byte, index int) int {
 
 func spaceByte(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\r' }
 
-func validateDeclaration(s string, encoding sourceEncoding) error {
-	if strings.ContainsAny(s, "&<>") {
-		return fmt.Errorf("%w: declaration content", ErrMalformed)
-	}
-	// Parse declaration pseudo-attributes with the same lexical checks.
-	b, err := normalizeLexical([]byte("<decl " + s + "/>"))
+func (p *documentParser) declaration(s string) error {
+	label, err := validateDeclaration(s)
 	if err != nil {
 		return err
 	}
 
-	el, _, err := startToken(b)
-	if err != nil || len(el.Attr) == 0 || len(el.Attr) > 3 {
-		return fmt.Errorf("%w: declaration", ErrMalformed)
+	if label == "" {
+		if p.encoding.name != nameUTF8 && !p.encoding.bom {
+			return fmt.Errorf("%w: missing endian-specific encoding declaration", ErrMalformed)
+		}
+
+		return nil
 	}
 
-	if el.Attr[0].Name != (xml.Name{Local: "version"}) || el.Attr[0].Value != "1.0" {
-		return fmt.Errorf("%w: XML 1.0 is required", ErrUnsupported)
+	if p.characterInput || p.encoding.accepts(label) {
+		return nil
 	}
+
+	if !p.singleByteEncodings || p.encoding.name != nameUTF8 || p.encoding.bom {
+		return fmt.Errorf("%w: unsupported or conflicting encoding declaration", ErrUnsupported)
+	}
+
+	return p.input.singleByteEncoding(label)
+}
+
+func validateDeclaration(s string) (string, error) {
+	attrs, err := declarationAttributes(s)
+	if err != nil {
+		return "", err
+	}
+
+	if attrs[0].Name != (xml.Name{Local: "version"}) || attrs[0].Value != "1.0" {
+		return "", fmt.Errorf("%w: XML 1.0 is required", ErrUnsupported)
+	}
+
+	label := ""
 
 	at := 1
-	if at < len(el.Attr) && el.Attr[at].Name == (xml.Name{Local: "encoding"}) {
-		if !encoding.accepts(el.Attr[at].Value) {
-			return fmt.Errorf("%w: unsupported or conflicting encoding declaration", ErrUnsupported)
-		}
-
-		at++
-	} else if encoding.name != nameUTF8 && !encoding.bom {
-		return fmt.Errorf("%w: missing endian-specific encoding declaration", ErrMalformed)
-	}
-
-	if at < len(el.Attr) && el.Attr[at].Name == (xml.Name{Local: "standalone"}) {
-		if v := el.Attr[at].Value; v != "yes" && v != "no" {
-			return fmt.Errorf("%w: standalone value", ErrMalformed)
+	if at < len(attrs) && attrs[at].Name == (xml.Name{Local: "encoding"}) {
+		label = attrs[at].Value
+		if !validEncodingName(label) {
+			return "", fmt.Errorf("%w: encoding name", ErrMalformed)
 		}
 
 		at++
 	}
 
-	if at != len(el.Attr) {
-		return fmt.Errorf("%w: declaration attributes", ErrMalformed)
+	if at < len(attrs) && attrs[at].Name == (xml.Name{Local: "standalone"}) {
+		if v := attrs[at].Value; v != "yes" && v != "no" {
+			return "", fmt.Errorf("%w: standalone value", ErrMalformed)
+		}
+
+		at++
 	}
 
-	return nil
+	if at != len(attrs) {
+		return "", fmt.Errorf("%w: declaration attributes", ErrMalformed)
+	}
+
+	return label, nil
+}
+
+func declarationAttributes(s string) ([]xml.Attr, error) {
+	if strings.ContainsAny(s, "&<>") {
+		return nil, fmt.Errorf("%w: declaration content", ErrMalformed)
+	}
+	// Parse declaration pseudo-attributes with the same lexical checks.
+	b, err := normalizeLexical([]byte("<decl " + s + "/>"))
+	if err != nil {
+		return nil, err
+	}
+
+	el, _, err := startToken(b)
+	if err != nil || len(el.Attr) == 0 || len(el.Attr) > 3 {
+		return nil, fmt.Errorf("%w: declaration", ErrMalformed)
+	}
+
+	return el.Attr, nil
+}
+
+func validEncodingName(label string) bool {
+	if label == "" {
+		return false
+	}
+
+	for i, b := range []byte(label) {
+		letter := b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
+		if !letter && (i == 0 || !(b >= '0' && b <= '9' || b == '.' || b == '_' || b == '-')) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // validateCharReference rejects non-XML scalars before entity expansion.

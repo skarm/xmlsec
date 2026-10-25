@@ -28,7 +28,7 @@ func main() {
 
 func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: go run ./tests/cmd/dev {docs|examples|fuzz} [options]")
+		return errors.New("usage: go run ./tests/cmd/dev {docs|examples|fuzz|suites} [options]")
 	}
 
 	root, err := repositoryRoot()
@@ -47,6 +47,8 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 		return runExamples(ctx, root, args[1:], out, stderr)
 	case "fuzz":
 		return runFuzz(ctx, root, args[1:], out, stderr)
+	case "suites":
+		return runSuites(ctx, root, args[1:], out, stderr)
 	default:
 		return fmt.Errorf("unknown development command %q", args[0])
 	}

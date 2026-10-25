@@ -3,8 +3,8 @@
 These primary sources define supported profiles. Listing a standard does not claim
 complete conformance. [conformance.json](conformance.json) pins editions and errata
 sources, selected correction identifiers and their review date. Every declared
-profile has a document/role/mode matrix; assessed requirements and remaining clause
-regions keep the individual-clause inventory boundaries explicit.
+profile has a document/role/mode matrix and a named clause/contract inventory.
+Implementation and local/independent evidence gaps remain explicit.
 [Normative traceability](conformance.md) explains its states and acceptance rules;
 [compatibility](compatibility.md) records exclusions and oracle differences.
 
@@ -34,6 +34,10 @@ regions keep the individual-clause inventory boundaries explicit.
 ## Trust and evidence
 
 - [RFC 5280](https://www.rfc-editor.org/rfc/rfc5280.html): PKIX and CRL
+- [RFC 10007](https://www.rfc-editor.org/rfc/rfc10007.html), June 2026:
+  selected update requiring explicit `keyUsage/cRLSign` in version 3 certificates
+  of CRL issuers;
+  this selection does not imply implementation of every other RFC 5280 update
 - [RFC 5652](https://www.rfc-editor.org/rfc/rfc5652.html): CMS
 - [RFC 6211](https://www.rfc-editor.org/rfc/rfc6211.html): Algorithm Identifier Protection
 - [RFC 5035](https://www.rfc-editor.org/rfc/rfc5035.html): ESSCertIDv2

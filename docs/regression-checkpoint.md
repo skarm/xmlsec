@@ -1,8 +1,8 @@
 # Regression checkpoint: 22 October 2026
 
-The R1–R6 fixes are in commit `9e1af15`. The working tree was clean at the start
+The R1–R6 fixes are in commit `5685a39`. The working tree was clean at the start
 of this follow-up. Verification used Go 1.27.3 on macOS/arm64. The normative
-register infrastructure was subsequently committed as `3ac496a`; its clause
+register infrastructure was subsequently committed as `4e48519`; its clause
 inventory remains partial.
 
 Two separate review passes checked the corrected behavior:

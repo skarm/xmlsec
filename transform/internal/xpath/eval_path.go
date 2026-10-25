@@ -31,27 +31,12 @@ func evalLiteral(e LiteralExpr) (xdm.Sequence, error) {
 
 func evalVariable(ctx context.Context, ec *evalContext, e VariableExpr) (xdm.Sequence, error) {
 	if ec.vars != nil {
-		// Try exact name first
-		if v, ok := ec.vars.Lookup(e.Name); ok {
-			return enrichNodeItems(ctx, ec, v), nil
+		if value, ok := ec.vars.Lookup(VariableKey(e.Name, ec.namespaces)); ok {
+			return enrichNodeItems(ctx, ec, value), nil
 		}
-		// If EQName (Q{uri}local), normalize to {uri}local and retry
-		if strings.HasPrefix(e.Name, "Q{") {
-			resolved := e.Name[1:] // strip leading "Q"
-			if v, ok := ec.vars.Lookup(resolved); ok {
-				return enrichNodeItems(ctx, ec, v), nil
-			}
-		}
-		// If prefixed, resolve to {uri}local and retry
-		if e.Prefix != "" {
-			if uri, ok := ec.namespaces[e.Prefix]; ok {
-				local := e.Name[len(e.Prefix)+1:] // strip "prefix:"
 
-				resolved := xdm.ClarkName(uri, local)
-				if v, ok := ec.vars.Lookup(resolved); ok {
-					return enrichNodeItems(ctx, ec, v), nil
-				}
-			}
+		if value, ok := ec.vars.Lookup(e.Name); ok {
+			return enrichNodeItems(ctx, ec, value), nil
 		}
 	}
 	// Fallback to lazy variable resolver (e.g. for XSLT global variables)
@@ -66,7 +51,7 @@ func evalVariable(ctx context.Context, ec *evalContext, e VariableExpr) (xdm.Seq
 		}
 	}
 
-	return nil, fmt.Errorf("%w: $%s", ErrUndefinedVariable, e.Name)
+	return nil, UndefinedVariableError(e.Name, ec.version)
 }
 
 // enrichNodeItems ensures NodeItems in a sequence have their TypeAnnotation

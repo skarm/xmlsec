@@ -29,47 +29,27 @@ func (p prefixValidationPlan) Validate(namespaces map[string]string, strict bool
 	}
 
 	for _, req := range p.atomicTypes {
-		if req.prefix == "" {
-			// Unprefixed type names are allowed when schema declarations
-			// are available (XSLT schema-aware mode) and the type exists.
-			if decls != nil {
-				// Schema declarations present — allow unprefixed names.
-				// They may be resolved via default namespace or as
-				// no-namespace schema types at evaluation time.
+		lexical := joinQName(req.prefix, req.name)
+
+		prefix, local := splitEQName(lexical)
+		if !strings.HasPrefix(lexical, "Q{") {
+			if err := validatePrefix(prefix, namespaces, strict); err != nil {
+				return err
+			}
+		}
+
+		uri := resolveStaticNameURI(lexical, namespaces, namespaces[""])
+		if uri == lexicon.NamespaceXSD {
+			if knownXSTypeNames(local) && local != nameNMTOKENS && local != nameIDREFS && local != nameENTITIES {
 				continue
 			}
-			// No schema declarations: unprefixed non-builtin names are
-			// an error (XPST0081) in pure XPath mode.
-			if namespaces == nil || namespaces[""] == "" {
-				return &xdm.Error{
-					Code:    errCodeXPST0081,
-					Message: fmt.Sprintf("unprefixed type name %q requires a default element namespace", req.name),
-				}
-			}
-
-			continue
-		}
-
-		if req.prefix == "xs" || req.prefix == lexicon.PrefixXSD {
-			switch req.name {
-			case nameNMTOKENS, nameIDREFS, nameENTITIES:
-				return &xdm.Error{
-					Code:    "XPST0051",
-					Message: fmt.Sprintf("xs:%s is a list type and cannot be used as an atomic type", req.name),
-				}
-			}
-
-			if ok := knownXSTypeNames(req.name); !ok {
-				return &xdm.Error{
-					Code:    "XPST0051",
-					Message: fmt.Sprintf("unknown type xs:%s", req.name),
-				}
+		} else if decls != nil {
+			if _, ok := decls.LookupSchemaType(local, uri); ok {
+				continue
 			}
 		}
 
-		if err := validatePrefix(req.prefix, namespaces, strict); err != nil {
-			return err
-		}
+		return &xdm.Error{Code: "XPST0051", Message: fmt.Sprintf("unknown atomic or union type %s", lexical)}
 	}
 
 	return nil
@@ -94,8 +74,12 @@ func validatePrefix(prefix string, namespaces map[string]string, strict bool) er
 	}
 
 	if namespaces != nil {
-		if _, ok := namespaces[prefix]; ok {
-			return nil
+		if uri, ok := namespaces[prefix]; ok {
+			if uri != "" {
+				return nil
+			}
+
+			return undefinedPrefixError(prefix)
 		}
 	}
 
@@ -105,10 +89,14 @@ func validatePrefix(prefix string, namespaces map[string]string, strict bool) er
 		}
 	}
 
-	if prefix == lexicon.PrefixXML || prefix == "xmlns" {
+	if prefix == lexicon.PrefixXML {
 		return nil
 	}
 
+	return undefinedPrefixError(prefix)
+}
+
+func undefinedPrefixError(prefix string) error {
 	return &xdm.Error{
 		Code:    errCodeXPST0081,
 		Message: "undeclared namespace prefix: " + prefix,
@@ -412,14 +400,6 @@ func addCastTypePrefixCheck(plan *prefixPlanBuilder, t AtomicTypeName) {
 }
 
 func addAtomicOrUnionTypeCheck(plan *prefixPlanBuilder, t xdm.AtomicOrUnionType) {
-	// A braced-URI type name (Q{uri}local) carries its namespace literally and needs
-	// no prefix binding — like the variable/function/catch-code paths, skip the
-	// prefix check. The parseOptions splits the single Q{uri}local token on its first colon,
-	// so reconstruct the lexical form before testing for the Q{ marker.
-	if strings.HasPrefix(joinQName(t.Prefix, t.Name), "Q{") {
-		return
-	}
-
 	req := atomicTypeRequirement{prefix: t.Prefix, name: t.Name}
 
 	if plan.seenAtomicTypes == nil {

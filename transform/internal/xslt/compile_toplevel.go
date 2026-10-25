@@ -73,16 +73,6 @@ func (c *compiler) compileTopLevel(ctx context.Context, root *xdm.Element) error
 		}
 	}
 
-	// External parameters are available to _static AVTs and default expressions,
-	// and are merged again afterward so defaults cannot replace their values.
-	if len(c.externalStaticParams) > 0 {
-		if c.staticVars == nil {
-			c.staticVars = make(map[string]xdm.Sequence, len(c.externalStaticParams))
-		}
-
-		maps.Copy(c.staticVars, c.externalStaticParams)
-	}
-
 	if err := c.resolveStaticDeclarationShadows(ctx, root); err != nil {
 		return err
 	}
@@ -93,10 +83,6 @@ func (c *compiler) compileTopLevel(ctx context.Context, root *xdm.Element) error
 
 	if err := c.evaluateModuleStaticDeclarations(ctx, root); err != nil {
 		return err
-	}
-
-	if len(c.externalStaticParams) > 0 {
-		maps.Copy(c.staticVars, c.externalStaticParams)
 	}
 
 	// Only this module's aliases acquire its final import precedence. Imported
@@ -195,6 +181,11 @@ func (c *compiler) collectLocalComponentNames(root *xdm.Element) {
 // pass to diagnose. Evaluation errors are returned so the early pass can detect
 // forbidden forward references before imports and shadow attributes are resolved.
 func (c *compiler) tryEvaluateStaticSelect(ctx context.Context, elem *xdm.Element) (xdm.Sequence, bool, error) {
+	savedNS := c.nsBindings
+
+	c.nsBindings = inScopeNamespaces(elem)
+	defer func() { c.nsBindings = savedNS }()
+
 	compiled, err := xpath.NewCompiler().Compile(getAttr(elem, xslAttrSelect))
 	if err != nil {
 		return nil, false, nil //nolint:nilerr // This speculative pass defers syntax errors to main compilation.
@@ -217,10 +208,37 @@ func (c *compiler) tryEvaluateStaticSelect(ctx context.Context, elem *xdm.Elemen
 	return result.Sequence(), true, nil
 }
 
+// bindExternalStaticParam establishes the supplied value at the declaration's
+// position in static scope. Undeclared external names never enter that scope,
+// and a supplied parameter's default cannot replace its value for dependants.
+func (c *compiler) bindExternalStaticParam(ctx context.Context, elem *xdm.Element) (bool, error) {
+	if elem.LocalName() != nameParam {
+		return false, nil
+	}
+
+	name := resolveQName(getAttr(elem, xslAttrName), inScopeNamespaces(elem))
+
+	value, supplied := c.externalStaticParams[name]
+	if !supplied {
+		return false, nil
+	}
+
+	return true, c.setStaticVarWithKind(ctx, name, nameParam, value)
+}
+
 func (c *compiler) preEvaluateStaticDeclarations(ctx context.Context, root *xdm.Element, moduleStaticNames []string) error {
 	for child := range xdm.Children(root) {
 		elem, ok := child.(*xdm.Element)
 		if !ok || !isStaticTopLevelDeclaration(elem) {
+			continue
+		}
+
+		supplied, err := c.bindExternalStaticParam(ctx, elem)
+		if err != nil {
+			return err
+		}
+
+		if supplied {
 			continue
 		}
 
@@ -229,11 +247,9 @@ func (c *compiler) preEvaluateStaticDeclarations(ctx context.Context, root *xdm.
 			continue
 		}
 
-		_, hasExternal := c.externalStaticParams[name]
-
 		value, evaluated, err := c.tryEvaluateStaticSelect(ctx, elem)
 		if err != nil {
-			if errors.Is(err, xpath.ErrUndefinedVariable) && !hasExternal && isForwardRef(err, moduleStaticNames, name) {
+			if errors.Is(err, xpath.ErrUndefinedVariable) && isForwardRef(err, moduleStaticNames, name) {
 				return staticError(errCodeXPST0008,
 					"static %s %q references undefined variable: %v", elem.LocalName(), name, err)
 			}
@@ -242,7 +258,7 @@ func (c *compiler) preEvaluateStaticDeclarations(ctx context.Context, root *xdm.
 		}
 
 		if evaluated {
-			if err := c.setStaticVarWithKind(ctx, name, elem.LocalName(), value); err != nil {
+			if err := c.setStaticVarWithKind(ctx, resolveQName(name, inScopeNamespaces(elem)), elem.LocalName(), value); err != nil {
 				return err
 			}
 		}
@@ -359,7 +375,16 @@ func (c *compiler) evaluateModuleStaticDeclarations(ctx context.Context, root *x
 			continue
 		}
 
-		name := getAttr(elem, xslAttrName)
+		supplied, err := c.bindExternalStaticParam(ctx, elem)
+		if err != nil {
+			return err
+		}
+
+		if supplied {
+			continue
+		}
+
+		name := resolveQName(getAttr(elem, xslAttrName), inScopeNamespaces(elem))
 		if name == "" {
 			continue
 		}
@@ -462,7 +487,7 @@ func (c *compiler) topLevelDeclarationIncluded(ctx context.Context, elem *xdm.El
 // evaluation so self references report XPST0008, then restores the static scope.
 func (c *compiler) evaluateDeclarationUseWhen(ctx context.Context, elem *xdm.Element, uw string) (bool, error) {
 	if isStaticTopLevelDeclaration(elem) {
-		if selfName := getAttr(elem, xslAttrName); selfName != "" {
+		if selfName := resolveQName(getAttr(elem, xslAttrName), inScopeNamespaces(elem)); selfName != "" {
 			if oldVal, had := c.staticVars[selfName]; had {
 				delete(c.staticVars, selfName)
 

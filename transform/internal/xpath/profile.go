@@ -12,6 +12,7 @@ import (
 
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // CheckTypeLanguage applies the same version boundaries to standalone types.
@@ -39,6 +40,19 @@ func profileError(code, feature string, version int) error {
 // ValidNCName checks a prefix-free XML name used by the public API.
 func ValidNCName(name string) bool { return xmlchar.IsValidNCName(name) }
 
+// CheckStaticNamespaces rejects reserved namespace bindings in XPath 2.0+.
+func CheckStaticNamespaces(namespaces map[string]string) error {
+	for prefix, uri := range namespaces {
+		if prefix == lexicon.PrefixXML && uri != lexicon.NamespaceXML ||
+			prefix != "" && prefix != lexicon.PrefixXML && uri == lexicon.NamespaceXML ||
+			prefix == "xmlns" || uri == lexicon.NamespaceXMLNS {
+			return &xdm.Error{Code: "XQST0070", Message: "invalid reserved namespace binding: " + prefix}
+		}
+	}
+
+	return nil
+}
+
 // CheckStandaloneFunctions rejects unknown and non-standard static calls in
 // the standalone API. XSLT supplies its own user functions and validates them
 // through its compiler, so it does not use this check.
@@ -53,6 +67,8 @@ func CheckStandaloneFunctions(expr *Expression, namespaces map[string]string, ex
 			prefix, name, arity = n.Prefix, n.Name, len(n.Args)
 		case NamedFunctionRef:
 			prefix, name, arity = n.Prefix, n.Name, n.Arity
+		case xdm.SchemaElementTest, xdm.SchemaAttributeTest:
+			return &xdm.Error{Code: errCodeXPST0008, Message: "no schema declarations in the standalone static context"}
 		}
 
 		return checkStandaloneCall(expr.version, prefix, name, arity, namespaces, extensions)
@@ -202,7 +218,7 @@ func validateVersionExpr(ast Expr, version int, namespaces map[string]string) er
 
 func lookupfunctions30(key string) (bool, bool) {
 	switch key {
-	case fnNameHead, nameTail, nameHasChildren, "innermost", "outermost", namePath, "analyze-string", nameGenerateId, "format-integer", "function-name", "function-arity", "function-lookup", nameForEach, nameFilter, nameFoldLeft, nameFoldRight, nameForEachPair, "environment-variable", "available-environment-variables", "uri-collection", "serialize", "parse-xml", "parse-xml-fragment", "unparsed-text-lines":
+	case fnNameHead, nameTail, nameHasChildren, "innermost", "outermost", namePath, "analyze-string", nameGenerateId, "format-integer", "function-name", "function-arity", "function-lookup", nameForEach, nameFilter, nameFoldLeft, nameFoldRight, nameForEachPair, "environment-variable", "available-environment-variables", "uri-collection", "serialize", "parse-xml", "parse-xml-fragment", nameUnparsedTextLines:
 		return true, true
 	}
 
@@ -215,7 +231,7 @@ func functions30(key string) bool { value, _ := lookupfunctions30(key); return v
 
 func lookupfunctions31(key string) (bool, bool) {
 	switch key {
-	case "parse-json", "json-doc", "json-to-xml", "xml-to-json", "transform", "default-language", "load-xquery-module", "apply", "collation-key", "contains-token", "parse-ietf-date", "random-number-generator", nameSort:
+	case "parse-json", "json-doc", "json-to-xml", "xml-to-json", "transform", "default-language", nameLoadXQueryModule, "apply", "collation-key", "contains-token", "parse-ietf-date", "random-number-generator", nameSort:
 		return true, true
 	}
 
@@ -266,6 +282,13 @@ func functionVisible(version int, uri, name string, arity int) bool {
 	return true
 }
 
+// BuiltinFunctionAvailable reports the selected language's standard function
+// library, including version-specific arities, for host introspection.
+func BuiltinFunctionAvailable(version int, uri, name string, arity int) bool {
+	return functionVisible(version, uri, name, arity) && IsBuiltinFunctionNS(uri, name) &&
+		(arity < 0 || BuiltinFunctionAcceptsArity(uri, name, arity))
+}
+
 func checkVersionRegex(ctx context.Context, pattern, flags string) error {
 	ec := getFnContext(ctx)
 	if ec == nil || ec.version != 20 {
@@ -305,6 +328,10 @@ func checkVersionRegex(ctx context.Context, pattern, flags string) error {
 }
 
 func validateProfileNode(node any, version int, namespaces map[string]string) error {
+	if err := validateFunctionSyntax(node, version, namespaces); err != nil {
+		return err
+	}
+
 	switch node.(type) {
 	case ConcatExpr, SimpleMapExpr, LetClause, NamedFunctionRef, DynamicFunctionCall, InlineFunctionExpr, PlaceholderExpr, xdm.FunctionTest, xdm.NamespaceNodeTest:
 		if version < 30 {
@@ -367,4 +394,56 @@ func validateProfileNode(node any, version int, namespaces map[string]string) er
 	}
 
 	return nil
+}
+
+func validateFunctionSyntax(node any, version int, namespaces map[string]string) error {
+	var prefix, name string
+
+	switch n := node.(type) {
+	case InlineFunctionExpr:
+		if n.EmptyBody && version < 31 {
+			return profileError(errCodeXPST0003, "empty inline function body", version)
+		}
+
+		if err := checkInlineParameterNames(n.Params, namespaces); err != nil {
+			return err
+		}
+	case NamedFunctionRef:
+		prefix, name = n.Prefix, n.Name
+	case FunctionCall:
+		prefix, name = n.Prefix, n.Name
+	}
+
+	if prefix == "" && reservedFunctionName(name, version) {
+		return profileError(errCodeXPST0003, "reserved unprefixed function name", version)
+	}
+
+	return nil
+}
+
+func checkInlineParameterNames(params []FunctionParam, namespaces map[string]string) error {
+	seen := make(map[string]bool, len(params))
+	for _, param := range params {
+		key := VariableKey(param.Name, namespaces)
+		if seen[key] {
+			return &xdm.Error{Code: "XQST0039", Message: "duplicate inline function parameter: " + param.Name}
+		}
+
+		seen[key] = true
+	}
+
+	return nil
+}
+
+func reservedFunctionName(name string, version int) bool {
+	switch name {
+	case lexicon.KindAttribute, lexicon.KindComment, lexicon.KindDocumentNode, lexicon.KindElement, nameEmptySequence, "if", lexicon.KindItem, lexicon.KindNode, lexicon.KindPI, lexicon.KindSchemaAttribute, lexicon.KindSchemaElement, lexicon.KindText, "typeswitch":
+		return true
+	case nameFunction, lexicon.KindNamespaceNode, "switch":
+		return version >= 30
+	case "array", "map":
+		return version >= 31
+	}
+
+	return false
 }

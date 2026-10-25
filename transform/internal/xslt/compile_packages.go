@@ -26,7 +26,7 @@ func (c *compiler) compileUsePackage(ctx context.Context, elem *xdm.Element) err
 	}
 
 	pkgVersion := getAttr(elem, namePackageVersion)
-	if !ParseVersionConstraint(pkgVersion).valid {
+	if !ParseVersionConstraint(pkgVersion).Valid() {
 		return staticError(errCodeXTSE3000, "invalid package version range %q", pkgVersion)
 	}
 
@@ -52,6 +52,7 @@ func (c *compiler) compileUsePackage(ctx context.Context, elem *xdm.Element) err
 
 	// Compile the package with its own compiler
 	pkgCfg := &compileConfig{
+		processorVersion: c.stylesheet.processorLanguage(),
 		baseURI:          pkgBaseURI,
 		resolver:         c.resolver,
 		packageResolver:  c.packageResolver,

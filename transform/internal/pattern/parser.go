@@ -197,10 +197,6 @@ func (p *btParser) parsePiece() (btNode, error) {
 		}}, nil
 	}
 
-	if _, isAnchor := atom.(*btAnchor); isAnchor {
-		return nil, p.errf("a quantifier may not follow an anchor")
-	}
-
 	return &btRepeat{node: atom, least: least, most: most, lazy: lazy}, nil
 }
 

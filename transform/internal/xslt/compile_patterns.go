@@ -1665,7 +1665,7 @@ func (c *compiler) compilePattern(s string, elem *xdm.Element, xpathDefaultNS st
 	p := &pattern{source: s, xpathDefaultNS: xpathDefaultNS, hasXPathDefaultNS: hasXPathDefaultNS, nsBindings: nsBindings, compat: compat}
 
 	version := 0
-	if isBackwardsCompatible(c.stylesheet.version) {
+	if c.stylesheet.processorLanguage() == 10 {
 		version = 10
 	}
 

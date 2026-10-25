@@ -94,7 +94,7 @@ func (p *parseOptions) tryParseDirectFunctionCall() (Expr, bool, error) {
 		switch tok.Value {
 		case lexicon.KindNode, lexicon.KindText, lexicon.KindComment, lexicon.KindPI,
 			lexicon.KindElement, lexicon.KindAttribute, lexicon.KindDocumentNode, lexicon.KindSchemaElement,
-			lexicon.KindSchemaAttribute, lexicon.KindNamespaceNode, "item", "empty-sequence":
+			lexicon.KindSchemaAttribute, lexicon.KindNamespaceNode, "item", nameEmptySequence:
 			return nil, false, nil
 		}
 	}
@@ -104,11 +104,11 @@ func (p *parseOptions) tryParseDirectFunctionCall() (Expr, bool, error) {
 	prefix := ""
 	name := tok.Value
 
-	if p.lexer.Peek().Type == TokenColon {
+	if p.joinedQNameAt(0) {
 		p.lexer.Next()
 
 		localTok := p.lexer.Peek()
-		if !isNameLikeToken(localTok.Type) {
+		if !isNameLikeToken(localTok.Type) || localTok.SpaceBefore {
 			return nil, false, nil
 		}
 
@@ -291,7 +291,7 @@ func (p *parseOptions) tryParseDirectNodeTest(axis AxisType) (xdm.NodeTest, bool
 
 	switch tok.Type {
 	case TokenStar:
-		if p.lexer.PeekAt(1).Type == TokenColon {
+		if p.joinedQNameAt(1) {
 			localTok := p.lexer.PeekAt(2)
 			if !isNameLikeToken(localTok.Type) {
 				return nil, false, nil
@@ -335,7 +335,7 @@ func (p *parseOptions) tryParseDirectNodeTest(axis AxisType) (xdm.NodeTest, bool
 		return xdm.NameTest{URI: uri, Local: local}, true, nil
 	}
 
-	if p.lexer.PeekAt(1).Type == TokenColon {
+	if p.joinedQNameAt(1) {
 		next := p.lexer.PeekAt(2)
 		if next.Type == TokenStar {
 			p.lexer.Next()

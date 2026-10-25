@@ -144,6 +144,9 @@ func fnString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 func fnCodepointsToString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	seq := args[0]
+	if err := fnCountOps(ctx, getFnContext(ctx), xdm.SequenceLen(seq)); err != nil {
+		return nil, err
+	}
 
 	xml11 := false
 	if ec := getFnContext(ctx); ec != nil {
@@ -182,83 +185,42 @@ func fnCodepointsToString(ctx context.Context, args []xdm.Sequence) (xdm.Sequenc
 			return nil, &xdm.Error{Code: lexicon.ErrFOCH0001, Message: fmt.Sprintf("invalid XML character [x%X]", cp)}
 		}
 
+		if err := ChargeString(ctx, utf8.RuneLen(rune(cp))); err != nil {
+			return nil, err
+		}
+
 		b.WriteRune(rune(cp))
 	}
 
 	return xdm.SingleString(b.String()), nil
 }
 
-// itemToCodepoint extracts an integer codepoint from an item, avoiding
-// expensive big.Float conversion when the value is already a *big.Int.
+// itemToCodepoint enforces xs:integer, without narrowing arbitrary-precision
+// input until its value is known to fit the Unicode scalar range.
 func itemToCodepoint(item xdm.Item) (int, error) {
 	a, err := AtomizeItem(item)
 	if err != nil {
 		return 0, err
 	}
 
+	a = xdm.PromoteSchemaType(a)
 	if a.TypeName == xdm.TypeUntypedAtomic {
 		a, err = CastAtomic(a, xdm.TypeInteger)
 		if err != nil {
 			return 0, err
 		}
 	}
-	// Fast path: extract int64 directly from *big.Int (avoids big.Float allocation)
-	if xdm.IsIntegerDerived(a.TypeName) {
-		if n, ok := a.Value.(*big.Int); ok {
-			// A value beyond int64 range cannot be a valid XML codepoint;
-			// Int64() would silently wrap mod 2^64, so reject it here.
-			if !n.IsInt64() {
-				return 0, &xdm.Error{Code: lexicon.ErrFOCH0001, Message: fmt.Sprintf("invalid XML character [%s]", n.String())}
-			}
 
-			v := n.Int64()
-			// Validate the codepoint range BEFORE the int conversion: on 32-bit
-			// platforms int(v) for an out-of-range v wraps/truncates, which would
-			// let a spurious value pass the later isValid check.
-			if v < 0 || v > utf8.MaxRune {
-				return 0, &xdm.Error{Code: lexicon.ErrFOCH0001, Message: fmt.Sprintf("invalid XML character [%d]", v)}
-			}
-
-			return int(v), nil
-		}
-	}
-	// xs:decimal is stored as *big.Rat. Check integrality exactly here rather
-	// than via float64: a high-precision fractional decimal such as
-	// 65.000000000000000000000000001 rounds to an integer float64 and would
-	// otherwise slip past the fractional check below.
-	if r, ok := a.Value.(*big.Rat); ok {
-		if !r.IsInt() {
-			return 0, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("codepoints-to-string: non-integer codepoint %s", r.RatString())}
-		}
-
-		n := r.Num()
-		if !n.IsInt64() {
-			return 0, &xdm.Error{Code: lexicon.ErrFOCH0001, Message: fmt.Sprintf("invalid XML character [%s]", n.String())}
-		}
-
-		v := n.Int64()
-		if v < 0 || v > utf8.MaxRune {
-			return 0, &xdm.Error{Code: lexicon.ErrFOCH0001, Message: fmt.Sprintf("invalid XML character [%d]", v)}
-		}
-
-		return int(v), nil
-	}
-	// Non-integer fallback: a fractional value is not a valid codepoint.
-	// Reject it as a type error, but keep accepting integer-valued floats
-	// (e.g. 65.0) so arithmetic-derived integer values still work.
-	f := a.ToFloat64()
-	if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
-		return 0, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("codepoints-to-string: non-integer codepoint %v", f)}
-	}
-	// Validate the codepoint range BEFORE the int conversion: converting an
-	// out-of-range float64 to int is implementation-defined in Go (it can wrap
-	// or overflow, especially on 32-bit platforms), which would let a spurious
-	// value slip past the later isValid check.
-	if f < 0 || f > utf8.MaxRune {
-		return 0, &xdm.Error{Code: lexicon.ErrFOCH0001, Message: fmt.Sprintf("invalid XML character [%v]", f)}
+	if !xdm.IsIntegerDerived(a.TypeName) {
+		return 0, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "codepoints-to-string requires xs:integer values"}
 	}
 
-	return int(f), nil
+	value, fits := a.Int64Val()
+	if !fits || value < 0 || value > utf8.MaxRune {
+		return 0, &xdm.Error{Code: lexicon.ErrFOCH0001, Message: "codepoint is outside the Unicode scalar range"}
+	}
+
+	return int(value), nil
 }
 
 // isValidXMLCodepoint returns true if the codepoint is a valid XML character.

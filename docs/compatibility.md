@@ -63,6 +63,13 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
   `XPDY0130` when no more specific standard code applies. Pinned
   [suite diagnostics](language-suites.md) retain mandatory and harness failures.
   See [transforms](transforms.md) and [streaming](streaming.md).
+  Explicit `transform.Config.AllowSingleByteEncodings` additionally permits
+  ASCII-compatible IANA single-byte XML encodings under the same raw/decoded
+  input limits. Default XML byte parsing remains UTF-8/UTF-16 and DTD-free.
+  `XSLTOptions.ProcessorVersion` selects a modern processor independently of lower
+  stylesheet declarations, preserving local backwards-compatible behavior and
+  module semantics. Complete forwards-compatible processing remains open; a 2.0
+  processor with a principal 3.0 declaration is still rejected.
 - PKIX with explicit roots/time, direct complete offline CRLs and restricted
   OCSP; definite-length CMS SignedData and RFC 3161/5816 timestamps. Explicit
   CMS `ParseBER`/`ParseBERReader` also accept indefinite envelope/SignedData/
@@ -73,7 +80,7 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
 - Closed XAdES basic/T/LT/LTA current-time and separate with-time B-T profiles.
   A complete historical EN 319 102-1 evidence engine is unsupported.
 - Signed SAML metadata, POST/Redirect and solicited WebSSO. SLO, Artifact/ECP,
-  queries, unsolicited SSO and encrypted Assertion/NameID profiles are unsupported.
+  queries, unsolicited SSO and encrypted Assertion/NameID/Attribute profiles are unsupported.
   SAML/XAdES dateTime values use UTC, positive four-digit years and at most nine
   fractional digits; `24:00:00` is normalized. Metadata cache durations use a
   positive day/time profile, capped at 365 days and nine fractional digits.
@@ -97,6 +104,12 @@ for review rules and remaining gaps; [standards](standards.md) lists primary sou
 General key-manager persistence, HSM management, XMLDSig decryption transforms,
 CipherReference XPath/XSLT pipelines and arbitrary XPointer are unsupported.
 The bounded URI profile accepts `#xpointer(/)` and `#xpointer(id(...))`.
+
+JSON serialization uses XML as the default output method for node values;
+applications that need node string values can select `json-node-output-method="text"`.
+Use explicit arrays for multiple JSON values. A sequence of multiple items at the
+result, map-value or array-member level raises `SERE0023`. See the shared
+[serialization contract](transforms.md#xslt-results-and-xml-identity).
 
 ## Unicode normalization
 
@@ -141,6 +154,15 @@ and assert these differences separately:
   API authenticates empty GCM input and returns size zero. Empty Go byte/Content
   plaintext is supported. Empty native XML replacements are diagnostic cases,
   excluded from successful exchanges.
+- Saxon HE 12.10 accepts a malformed encoding name in `fn:parse-xml` after
+  removing the encoding pseudo-attribute. The native character-input parser
+  retains XML 1.0 production [81] validation and reports `FODC0006`. This case is
+  a separate diagnostic, excluded from successful query agreement counts.
+- Saxon HE 12.10 and two QT3 case-conversion expectations retain older Greek
+  U+037F/U+03F3 mappings. The native Unicode 17.0 mappings agree with the
+  Unicode 7.0 data selected by those catalog cases. Their official failures and
+  the separate Saxon diagnostic remain visible; no engine workaround or fixture
+  rewrite is used to produce agreement.
 
 The libxml2 adapter translates empty default-namespace markers without changing
 Go selections or expected output. JDK arbitrary DOM namespace-axis selections

@@ -49,6 +49,33 @@ func TestXMLWriterRestoresNamespaceScopes(t *testing.T) {
 	}
 }
 
+func TestXMLWriterReconcilesEmptyDefaultNamespace(t *testing.T) {
+	doc, err := treepkg.Parse(t.Context(), []byte(`<p:r xmlns:p="urn:p" xmlns=""/>`), treepkg.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		reconcile bool
+		inherited string
+		reset     bool
+	}{
+		{true, "", false}, {true, "urn:destination", true}, {false, "", true},
+	} {
+		var output bytes.Buffer
+
+		_, err := treepkg.WriteXMLFragmentOptions(t.Context(), &output, treepkg.Children(doc), 1024,
+			treepkg.XMLWriteOptions{Reconcile: test.reconcile, SelfClose: true, InheritedNamespaces: map[string]string{"": test.inherited}})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if strings.Contains(output.String(), `xmlns=""`) != test.reset {
+			t.Errorf("reconcile=%v inherited=%q: %s", test.reconcile, test.inherited, output.String())
+		}
+	}
+}
+
 func TestXMLWriterCDATAUsesSharedEscapingAndNormalization(t *testing.T) {
 	ctx := context.Background()
 

@@ -426,14 +426,14 @@ func (v *vm) unionNodes(ctx context.Context, ec *evalContext, e UnionExpr) ([]xd
 	// can return it as is when it is already in document order.
 	nodes, ok := left.appendNodes(make([]xdm.Node, 0, left.length()+right.length()))
 	if !ok {
-		return nil, ErrUnionNotNodeSet
+		return nil, languageError(ErrUnionNotNodeSet, errCodeXPTY0004, ec.version)
 	}
 
 	split := len(nodes)
 
 	nodes, ok = right.appendNodes(nodes)
 	if !ok {
-		return nil, ErrUnionNotNodeSet
+		return nil, languageError(ErrUnionNotNodeSet, errCodeXPTY0004, ec.version)
 	}
 
 	return xdm.UnionNodeSets(nodes, split, ec.docOrder, ec.maxNodes)
@@ -456,7 +456,7 @@ func (v *vm) intersectExceptNodes(ctx context.Context, ec *evalContext, e Inters
 
 	rightNodes, ok2 := right.nodeList()
 	if !ok1 || !ok2 {
-		return nil, ErrUnionNotNodeSet
+		return nil, languageError(ErrUnionNotNodeSet, errCodeXPTY0004, ec.version)
 	}
 
 	return intersectExceptNodes(ec, e.Op, leftNodes, rightNodes)

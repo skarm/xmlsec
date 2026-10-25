@@ -36,7 +36,7 @@ func lookupFunctionsMisc(name string) (*builtinFunc, bool) {
 		return &builtinFunc{name: name, min: 0, max: 0, fn: fnDefaultLanguage}, true
 	case "random-number-generator":
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnRandomNumberGenerator}, true
-	case "load-xquery-module":
+	case nameLoadXQueryModule:
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnLoadXQueryModule}, true
 	case "transform":
 		return &builtinFunc{name: name, min: 1, max: 1, fn: fnTransform}, true
@@ -223,7 +223,7 @@ func fnImplicitTimezone(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, er
 }
 
 func fnLoadXQueryModule(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
-	return nil, &xdm.Error{Code: errCodeFOER0000, Message: "fn:load-xquery-module is not implemented"}
+	return nil, &xdm.Error{Code: "FOQM0006", Message: "the selected profile has no XQuery processor"}
 }
 
 func fnTransform(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {

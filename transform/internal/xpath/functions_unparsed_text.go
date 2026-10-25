@@ -17,7 +17,7 @@ func lookupFunctionsUnparsedText(name string) (*builtinFunc, bool) {
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnUnparsedText}, true
 	case "unparsed-text-available":
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnUnparsedTextAvailable}, true
-	case "unparsed-text-lines":
+	case nameUnparsedTextLines:
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnUnparsedTextLines}, true
 	}
 

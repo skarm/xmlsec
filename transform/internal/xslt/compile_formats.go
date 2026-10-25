@@ -217,7 +217,7 @@ func (c *compiler) compileKeyValue(ctx context.Context, elem *xdm.Element, kd *k
 			return err
 		}
 
-		if isBackwardsCompatible(c.stylesheet.version) {
+		if c.stylesheet.processorLanguage() == 10 {
 			if err := validateLegacyKeyUse(useExpr, c.nsBindings); err != nil {
 				return err
 			}
@@ -292,10 +292,9 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 
 	// Determine the accepted lexical space for boolean serialization parameters.
 	// XSLT 2.0 (and 1.0) restrict them to yes/no; XSLT 3.0+ accepts the full
-	// xs:boolean lexical space. The governing XSLT version is the effective
-	// (in-scope module) version — NOT the xsl:output element's own @version,
-	// which is the serialization (output XML/HTML version) parameter.
-	yesNoOnly := serializationYesNoOnly(c.effectiveVersion)
+	// xs:boolean lexical space. The selected processor governs these rules;
+	// XSLT 3.0 defines no differing behavior for a 2.0 declaration.
+	yesNoOnly := c.stylesheet.processorLanguage() < 30
 
 	if err := compileOutputBooleans(elem, outDef, yesNoOnly); err != nil {
 		return err
@@ -347,26 +346,6 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 	c.outputAllowDupExplicit[name] = adnExplicit
 
 	return nil
-}
-
-// serializationYesNoOnly reports whether an effective XSLT version predates the
-// Serialization 3.0 widening of the boolean serialization-parameter value space.
-// XSLT 2.0 (and 1.0) restrict xsl:output boolean parameters — and standalone's
-// boolean synonyms — to the yes/no lexical space; XSLT 3.0+ accepts the full
-// xs:boolean lexical space. An absent/unparseable version defaults to 3.0
-// (permissive), matching the compiler's default effective version.
-func serializationYesNoOnly(ver string) bool {
-	ver = strings.TrimSpace(ver)
-	if ver == "" {
-		return false
-	}
-
-	f, err := strconv.ParseFloat(ver, 64)
-	if err != nil {
-		return false
-	}
-
-	return f < 3.0
 }
 
 func validateOutputMethod(method string) error {
@@ -932,7 +911,7 @@ func (c *compiler) compileDecimalFormat(ctx context.Context, elem *xdm.Element) 
 			namePerMille, nameZeroDigit, nameDigit, namePatternSeparator, nameExponentSeparator,
 			nameInfinity, valueNaN, nameMinusSign,
 		} {
-			if getAttr(elem, attr) != "" {
+			if elem.HasAttribute(attr) {
 				setProps[attr] = struct{}{}
 			}
 		}
@@ -996,11 +975,11 @@ func applyDecimalFormatAttributes(df *xpath.DecimalFormat, elem *xdm.Element) {
 		df.ExponentSeparator = firstRune(v)
 	}
 
-	if v := getAttr(elem, nameInfinity); v != "" {
+	if v, present := elem.GetAttribute(nameInfinity); present {
 		df.Infinity = v
 	}
 
-	if v := getAttr(elem, valueNaN); v != "" {
+	if v, present := elem.GetAttribute(valueNaN); present {
 		df.NaN = v
 	}
 
@@ -1010,10 +989,7 @@ func applyDecimalFormatAttributes(df *xpath.DecimalFormat, elem *xdm.Element) {
 }
 
 func isDigitZero(r rune) bool {
-	// Unicode digit blocks are contiguous runs of 10 codepoints.
-	// The zero digit is at a position where (r - block_start) == 0.
-	// We check that r-1 is NOT a digit (meaning r is the first in its block).
-	return r == '0' || (r > '0' && unicode.IsDigit(r) && !unicode.IsDigit(r-1))
+	return xpath.DecimalZeroDigit(r)
 }
 
 // checkDecimalFormatConflictExplicit raises XTSE1290 if any property
@@ -1054,7 +1030,7 @@ func checkDecimalFormatConflictExplicit(existing xpath.DecimalFormat, elem *xdm.
 		}
 	}
 	// String properties
-	if v := getAttr(elem, nameInfinity); v != "" {
+	if v, present := elem.GetAttribute(nameInfinity); present {
 		if _, wasSet := prevSet[nameInfinity]; wasSet && v != existing.Infinity {
 			return staticError(errCodeXTSE1290,
 				"conflicting xsl:decimal-format declarations: infinity was %q, now %q",
@@ -1062,7 +1038,7 @@ func checkDecimalFormatConflictExplicit(existing xpath.DecimalFormat, elem *xdm.
 		}
 	}
 
-	if v := getAttr(elem, valueNaN); v != "" {
+	if v, present := elem.GetAttribute(valueNaN); present {
 		if _, wasSet := prevSet[valueNaN]; wasSet && v != existing.NaN {
 			return staticError(errCodeXTSE1290,
 				"conflicting xsl:decimal-format declarations: NaN was %q, now %q",

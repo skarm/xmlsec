@@ -1,0 +1,20 @@
+{
+  "qt3": {
+    "repository": "https://github.com/w3c/qt3tests",
+    "revision": "201a6e466940cdfc727f4babfedcde5332b9f578",
+    "catalog": "catalog.xml",
+    "namespace": "http://www.w3.org/2010/09/qt-fots-catalog",
+    "license": "https://www.w3.org/Consortium/Legal/2008/04-testsuite-copyright",
+    "license_reference": "guide/running.html",
+    "use": "Unmodified external tests for development diagnostics; no authoritative W3C conformance or performance claim."
+  },
+  "xslt30": {
+    "repository": "https://github.com/w3c/xslt30-test",
+    "revision": "fddf1cf920087e791f13315d68dfbe874d97dc56",
+    "catalog": "catalog.xml",
+    "namespace": "http://www.w3.org/2012/10/xslt-test-catalog",
+    "license": "https://www.w3.org/Consortium/Legal/2008/04-testsuite-copyright",
+    "license_reference": "readme.md",
+    "use": "Unmodified external tests for development diagnostics; retain publisher/contributor notices and selected license terms."
+  }
+}

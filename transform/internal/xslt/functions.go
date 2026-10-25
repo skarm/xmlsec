@@ -75,7 +75,7 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 		nameStreamAvailable:           &xsltFunc{min: 1, max: 1, fn: ec.fnStreamAvailable},
 		fnNameCurrentOutputURI:        &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentOutputURI},
 	}
-	if isBackwardsCompatible(ec.stylesheet.version) {
+	if ec.stylesheet.processorLanguage() == 10 {
 		ec.cachedFns["format-number"] = &xsltFunc{min: 2, max: 3, fn: xpath.FormatNumber}
 		for name, fn := range ec.cachedFns {
 			if _, ok := lookupxslt10Functions(name); ok {
@@ -86,7 +86,26 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 		}
 	}
 
+	if ec.stylesheet.processorLanguage() == 20 {
+		for name := range ec.cachedFns {
+			if xslt30Function(name) {
+				delete(ec.cachedFns, name)
+			}
+		}
+	}
+
 	return ec.cachedFns
+}
+
+func xslt30Function(name string) bool {
+	switch name {
+	case nameAccumulatorBefore, nameAccumulatorAfter, fnNameCopyOf, funcSnapshot,
+		fnNameTransform, funcAvailableSystemProperties, nameStreamAvailable,
+		fnNameCurrentOutputURI, nameCurrentMergeGroup, nameCurrentMergeKey:
+		return true
+	default:
+		return false
+	}
 }
 
 // fnNilled overrides the XPath nilled() function to support schema-aware

@@ -15,11 +15,11 @@ const (
 	// FODC — Functions and Operators: Document Collection
 	errCodeFODC0002 = "FODC0002" // document() / xsl:source-document load or parse error
 	errCodeFOTY0013 = "FOTY0013" // atomization of map/function items
-	errCodeFOXT0001 = "FOXT0001" // fn:transform invalid argument shape
+	errCodeFOXT0001 = "FOXT0001" // no suitable XSLT processor satisfies the request
 	errCodeFOXT0002 = "FOXT0002" // fn:transform missing required option or resolver
 	errCodeFOXT0003 = "FOXT0003" // fn:transform stylesheet/package/serialization failure
 	errCodeFOXT0004 = "FOXT0004" // fn:transform recursion depth exceeded
-	errCodeFOXT0006 = "FOXT0006" // fn:transform requested property cannot be satisfied
+	errCodeFOXT0006 = "FOXT0006" // fn:transform output contains unsupported XML 1.1 characters
 
 	// SEPM/SERE/SESU — Serialization errors
 	errCodeSEPM0004 = "SEPM0004" // version/standalone constraint violation
@@ -64,7 +64,7 @@ const (
 	errCodeXTDE0555 = "XTDE0555" // on-no-match=fail with no matching template
 	errCodeXTDE0560 = "XTDE0560" // copy-of type error
 	errCodeXTDE0640 = "XTDE0640" // circular reference
-	errCodeXTDE0700 = "XTDE0700" // sort key error
+	errCodeXTDE0700 = "XTDE0700" // required template parameter was not supplied
 	errCodeXTDE0820 = "XTDE0820" // dynamic type error in template match
 	errCodeXTDE0830 = "XTDE0830" // undeclared prefix in computed element name
 	errCodeXTDE0835 = "XTDE0835" // xsl:message terminate=yes
@@ -146,12 +146,13 @@ const (
 	errCodeXTSE0270 = "XTSE0270" // conflicting strip-space/preserve-space
 	errCodeXTSE0280 = "XTSE0280" // element not allowed in context
 	errCodeXTSE0340 = "XTSE0340" // unknown attribute on XSLT element
-	errCodeXTSE0350 = "XTSE0350" // value-of with content and select
+	errCodeXTSE0350 = "XTSE0350" // unmatched opening brace in value template
+	errCodeXTSE0370 = "XTSE0370" // unescaped closing brace in value template
 	errCodeXTSE0500 = "XTSE0500" // invalid pattern
 	errCodeXTSE0530 = "XTSE0530" // priority is not a valid xs:decimal
 	errCodeXTSE0545 = "XTSE0545" // conflicting xsl:mode declarations
 	errCodeXTSE0550 = "XTSE0550" // invalid mode name on xsl:template
-	errCodeXTSE0580 = "XTSE0580" // invalid avt / duplicate parameter name
+	errCodeXTSE0580 = "XTSE0580" // duplicate parameter name
 	errCodeXTSE0590 = "XTSE0590" // as= references undeclared schema type/element/attribute
 	errCodeXTSE0620 = "XTSE0620" // cannot write to output
 	errCodeXTSE0630 = "XTSE0630" // duplicate global variable or parameter
@@ -169,6 +170,7 @@ const (
 	errCodeXTSE0809 = "XTSE0809" // #default in exclude-result-prefixes with no default namespace
 	errCodeXTSE0810 = "XTSE0810" // conflicting namespace-alias declarations
 	errCodeXTSE0840 = "XTSE0840" // xsl:attribute with select and non-empty content
+	errCodeXTSE0870 = "XTSE0870" // xsl:value-of with select and non-empty content
 	errCodeXTSE0910 = "XTSE0910" // xsl:namespace select/content exclusivity
 	errCodeXTSE0940 = "XTSE0940" // select+content exclusivity on comment/PI
 	errCodeXTSE0975 = "XTSE0975" // xsl:number value with select/level/count/from

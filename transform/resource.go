@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/skarm/xmlsec/internal/nilcheck"
+	"github.com/skarm/xmlsec/resource"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -108,6 +109,14 @@ type resourceStream struct {
 	closed    bool
 	closeErr  error
 	stalled   int
+}
+
+func (r *resourceStream) MediaType() string {
+	if typed, ok := r.reader.(resource.TypedReader); ok {
+		return typed.MediaType()
+	}
+
+	return ""
 }
 
 func (r *resourceStream) Read(p []byte) (int, error) {

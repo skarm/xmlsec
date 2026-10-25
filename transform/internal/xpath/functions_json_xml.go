@@ -304,17 +304,17 @@ func parseJSONToXMLOptions(ctx context.Context, args []xdm.Sequence) (jsonOption
 
 	var err error
 
-	opts.liberal, err = parseJSONXMLBooleanOption(options, "liberal")
+	opts.liberal, err = parseJSONBooleanOption(ctx, options, "liberal")
 	if err != nil {
 		return opts, err
 	}
 
-	opts.validate, err = parseJSONXMLBooleanOption(options, "validate")
+	opts.validate, err = parseJSONBooleanOption(ctx, options, "validate")
 	if err != nil {
 		return opts, err
 	}
 
-	opts.escape, err = parseJSONXMLBooleanOption(options, "escape")
+	opts.escape, err = parseJSONBooleanOption(ctx, options, "escape")
 	if err != nil {
 		return opts, err
 	}
@@ -334,34 +334,11 @@ func parseJSONToXMLOptions(ctx context.Context, args []xdm.Sequence) (jsonOption
 		return opts, &xdm.Error{Code: errCodeFOJS0005, Message: "json-to-xml: 'validate' cannot be combined with duplicates='retain'"}
 	}
 
-	opts.fallback, err = parseJSONFallbackOption(options, lexicon.ErrXPTY0004)
-	if err != nil {
+	if err := finalizeJSONFallbackOption(ctx, options, &opts); err != nil {
 		return opts, err
 	}
 
-	if opts.escape && opts.fallback != nil {
-		return opts, &xdm.Error{Code: errCodeFOJS0005, Message: "fallback cannot be combined with escape=true()"}
-	}
-
 	return opts, nil
-}
-
-func parseJSONXMLBooleanOption(options xdm.MapItem, name string) (bool, error) {
-	value, found := options.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: name})
-	if !found {
-		return false, nil
-	}
-
-	if xdm.SequenceLen(value) != 1 {
-		return false, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("option '%s' must be a single xs:boolean", name)}
-	}
-
-	atom, ok := value.Get(0).(xdm.AtomicValue)
-	if !ok || atom.TypeName != xdm.TypeBoolean {
-		return false, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("option '%s' must be xs:boolean", name)}
-	}
-
-	return atom.BooleanVal(), nil
 }
 
 func parseJSONXMLDuplicatesOption(ctx context.Context, options xdm.MapItem) (string, bool, error) {
@@ -407,7 +384,7 @@ type xmlJSONMeta struct {
 	keyEncoded string
 }
 
-func fnXMLToJSON(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnXMLToJSON(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	if xdm.SequenceLen(args[0]) == 0 {
 		return nil, nil
 	}
@@ -416,7 +393,7 @@ func fnXMLToJSON(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "xml-to-json expects zero or one node"}
 	}
 
-	opts, err := parseXMLToJSONOptions(args)
+	opts, err := parseXMLToJSONOptions(ctx, args)
 	if err != nil {
 		return nil, err
 	}
@@ -439,7 +416,7 @@ func fnXMLToJSON(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	return xdm.SingleString(jsonText), nil
 }
 
-func parseXMLToJSONOptions(args []xdm.Sequence) (xmlToJSONOptions, error) {
+func parseXMLToJSONOptions(ctx context.Context, args []xdm.Sequence) (xmlToJSONOptions, error) {
 	var opts xmlToJSONOptions
 	if len(args) <= 1 {
 		return opts, nil
@@ -456,7 +433,7 @@ func parseXMLToJSONOptions(args []xdm.Sequence) (xmlToJSONOptions, error) {
 
 	var err error
 
-	opts.indent, err = parseJSONXMLBooleanOption(m, "indent")
+	opts.indent, err = parseJSONBooleanOption(ctx, m, "indent")
 
 	return opts, err
 }

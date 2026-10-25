@@ -837,7 +837,7 @@ func (b *vmBuilder) lowerInlineFunctionExpr(expr InlineFunctionExpr) (Expr, erro
 
 	params := append([]FunctionParam(nil), expr.Params...)
 
-	return InlineFunctionExpr{Params: params, ReturnType: expr.ReturnType, Body: body}, nil
+	return InlineFunctionExpr{Params: params, ReturnType: expr.ReturnType, Body: body, EmptyBody: expr.EmptyBody}, nil
 }
 
 func (b *vmBuilder) lowerMapConstructorExpr(expr MapConstructorExpr) (Expr, error) {

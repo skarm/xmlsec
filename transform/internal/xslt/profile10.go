@@ -232,7 +232,7 @@ func (c *compiler) sourceModule(doc *xdm.Document) *xdm.Document {
 }
 
 func (c *compiler) checkFragment10(doc *xdm.Document, fragment string) error {
-	if fragment == "" || !isBackwardsCompatible(c.stylesheet.version) {
+	if fragment == "" || c.stylesheet.processorLanguage() != 10 {
 		return nil
 	}
 
@@ -334,7 +334,7 @@ func contains10Word(words, word string) bool {
 }
 
 func (c *compiler) forwardsCompatible(version string) bool {
-	if isBackwardsCompatible(c.stylesheet.version) {
+	if c.stylesheet.processorLanguage() == 10 {
 		v, err := strconv.ParseFloat(version, 64)
 		return err == nil && v > 1
 	}
@@ -558,7 +558,7 @@ func checkFunctionPattern10(e xpath.FunctionCall) error {
 }
 
 func finalizeOutput10(s *Stylesheet) {
-	if !isBackwardsCompatible(s.version) {
+	if s.processorLanguage() != 10 {
 		return
 	}
 

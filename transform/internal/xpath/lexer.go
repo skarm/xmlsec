@@ -6,10 +6,11 @@ package xpath
 import (
 	"fmt"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/xmlchar"
+	"github.com/skarm/xmlsec/transform/internal/xdm"
+	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 const (
@@ -114,14 +115,18 @@ func (l *lexer) tokenize() error {
 		posBefore := l.pos
 		l.skipWhitespace()
 
-		l.hadSpace = l.pos > posBefore
+		l.hadSpace = l.hadSpace || l.pos > posBefore
 		if l.pos >= len(l.input) {
 			break
 		}
 
+		tokenCount := len(l.tokens)
 		if err := l.scanToken(); err != nil {
 			return err
 		}
+		// A comment separates tokens just like whitespace. Keep that boundary
+		// until the next token is emitted, including across adjacent comments.
+		l.hadSpace = len(l.tokens) == tokenCount
 	}
 
 	return nil
@@ -161,7 +166,7 @@ func (l *lexer) scanToken() error {
 			return fmt.Errorf("%w: %q at position %d", ErrUnexpectedChar, string(r), l.pos)
 		}
 
-		l.scanNameOrKeyword()
+		return l.scanNameOrKeyword()
 	}
 
 	return nil
@@ -291,25 +296,12 @@ func (l *lexer) scanVariableReference() error {
 	}
 	// URIQualifiedName: $Q{uri}local
 	if name == "Q" && l.pos < len(l.input) && l.input[l.pos] == '{' {
-		l.pos++ // consume '{'
-
-		braceStart := l.pos
-		for l.pos < len(l.input) && l.input[l.pos] != '}' {
-			l.pos++
+		qualified, err := l.scanURIQualifiedName(false)
+		if err != nil {
+			return err
 		}
 
-		if l.pos < len(l.input) {
-			uri := collapseWhitespace(l.input[braceStart:l.pos])
-			l.pos++ // consume '}'
-
-			local := l.scanNCName()
-			if uri == "" {
-				// Q{}local with empty URI is equivalent to unprefixed local
-				name = local
-			} else {
-				name = "Q{" + uri + "}" + local
-			}
-		}
+		name = qualified
 	} else if l.pos < len(l.input) && l.input[l.pos] == ':' && l.pos+1 < len(l.input) {
 		// Check for QName (prefix:local) — e.g., $err:code
 		r2, _ := utf8.DecodeRuneInString(l.input[l.pos+1:])
@@ -341,11 +333,7 @@ func (l *lexer) emit(typ TokenType, value string) {
 func (l *lexer) skipWhitespace() {
 	for l.pos < len(l.input) {
 		r, size := utf8.DecodeRuneInString(l.input[l.pos:])
-		if !unicode.IsSpace(r) {
-			break
-		}
-
-		if l.version == 10 && r != ' ' && r != '\t' && r != '\n' && r != '\r' {
+		if r != ' ' && r != '\t' && r != '\n' && r != '\r' {
 			break
 		}
 
@@ -452,8 +440,13 @@ func (l *lexer) scanNumber() error {
 			l.pos++
 		}
 
+		digits := l.pos
 		for l.pos < len(l.input) && l.input[l.pos] >= '0' && l.input[l.pos] <= '9' {
 			l.pos++
+		}
+
+		if l.pos == digits {
+			return fmt.Errorf("%w: exponent digits expected at position %d", ErrUnexpectedToken, digits)
 		}
 	}
 	// XPath 3.1 A.2.1: a numeric literal immediately followed by a name start
@@ -472,38 +465,19 @@ func (l *lexer) scanNumber() error {
 
 // scanNameOrKeyword scans an NCName and determines if it's a keyword or name.
 // Colon handling is done in the main tokenize loop, not here.
-func (l *lexer) scanNameOrKeyword() {
+func (l *lexer) scanNameOrKeyword() error {
 	name := l.scanNCName()
 
 	// URIQualifiedName: Q{uri}local
 	if name == "Q" && l.pos < len(l.input) && l.input[l.pos] == '{' {
-		l.pos++ // consume '{'
-
-		braceStart := l.pos
-		for l.pos < len(l.input) && l.input[l.pos] != '}' {
-			l.pos++
+		qualified, err := l.scanURIQualifiedName(true)
+		if err != nil {
+			return err
 		}
 
-		if l.pos >= len(l.input) {
-			// Unterminated — emit what we have; parseOptions will error
-			l.emit(TokenName, name)
-			return
-		}
+		l.emit(TokenName, qualified)
 
-		uri := collapseWhitespace(l.input[braceStart:l.pos])
-
-		l.pos++ // consume '}'
-		if l.pos < len(l.input) && l.input[l.pos] == '*' {
-			l.pos++
-			l.emit(TokenName, "Q{"+uri+"}*")
-
-			return
-		}
-
-		local := l.scanNCName()
-		l.emit(TokenName, "Q{"+uri+"}"+local)
-
-		return
+		return nil
 	}
 
 	// Disambiguate operator keywords from names.
@@ -512,7 +486,7 @@ func (l *lexer) scanNameOrKeyword() {
 	if l.isOperatorContext() {
 		if tokType, ok := lookupOperatorKeyword(name); ok {
 			l.emit(tokType, name)
-			return
+			return nil
 		}
 	}
 
@@ -523,16 +497,54 @@ func (l *lexer) scanNameOrKeyword() {
 	if tokType, ok := lookupAlwaysKeyword(name); ok {
 		if !l.isNameTestContext() {
 			l.emit(tokType, name)
-			return
+			return nil
 		}
 		// After '/', array{ and map{ are still constructors, not name tests
 		if (tokType == TokenArray || tokType == TokenMap) && l.pos < len(l.input) && l.input[l.pos] == '{' {
 			l.emit(tokType, name)
-			return
+			return nil
 		}
 	}
 
 	l.emit(TokenName, name)
+
+	return nil
+}
+
+func (l *lexer) scanURIQualifiedName(wildcard bool) (string, error) {
+	l.pos++ // '{' after Q
+
+	start := l.pos
+	for l.pos < len(l.input) && l.input[l.pos] != '}' {
+		if l.input[l.pos] == '{' {
+			return "", fmt.Errorf("%w: '{' in braced URI", ErrUnexpectedToken)
+		}
+
+		l.pos++
+	}
+
+	if l.pos == len(l.input) {
+		return "", fmt.Errorf("%w: unterminated braced URI", ErrUnexpectedToken)
+	}
+
+	uri := collapseWhitespace(l.input[start:l.pos])
+	l.pos++ // '}'
+
+	if uri == lexicon.NamespaceXMLNS {
+		return "", &xdm.Error{Code: "XQST0070", Message: "the xmlns namespace URI cannot be used in an EQName"}
+	}
+
+	local := l.scanNCName()
+	if local == "" && wildcard && l.pos < len(l.input) && l.input[l.pos] == '*' {
+		local = "*"
+		l.pos++
+	}
+
+	if local == "" {
+		return "", fmt.Errorf("%w: local name after braced URI", ErrUnexpectedToken)
+	}
+
+	return "Q{" + uri + "}" + local, nil
 }
 
 // lookupOperatorKeyword recognizes keywords only after a value-producing token.
@@ -660,7 +672,7 @@ func lookupAlwaysKeyword(key string) (TokenType, bool) {
 		return TokenTry, true
 	case "catch":
 		return TokenCatch, true
-	case "function":
+	case nameFunction:
 		return TokenFunction, true
 	case keywordMap:
 		return TokenMap, true

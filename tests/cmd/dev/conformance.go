@@ -17,9 +17,13 @@ import (
 )
 
 const (
-	conformanceFull   = "full"
-	normNotApplicable = "not-applicable"
-	normImplemented   = "implemented"
+	conformanceFull     = "full"
+	conformancePartial  = "partial"
+	conformancePending  = "pending"
+	conformanceCovered  = "covered"
+	conformanceComplete = "complete"
+	normNotApplicable   = "not-applicable"
+	normImplemented     = "implemented"
 )
 
 type conformanceRegister struct {
@@ -40,24 +44,45 @@ type standardDocument struct {
 	Edition string `json:"edition"`
 	Source  string `json:"source"`
 	Errata  struct {
-		Sources []string `json:"sources"`
-		Review  string   `json:"review"`
-		Notes   string   `json:"notes"`
+		Sources    []string             `json:"sources"`
+		Review     string               `json:"review"`
+		ReviewedOn string               `json:"reviewed_on"`
+		Items      []standardCorrection `json:"items"`
+		Notes      string               `json:"notes"`
 	} `json:"errata"`
 }
 
+type standardCorrection struct {
+	ID          string `json:"id"`
+	Disposition string `json:"disposition"`
+	Clause      string `json:"clause"`
+	Reason      string `json:"reason"`
+}
+
 type conformanceProfile struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Role        string   `json:"role"`
-	Modes       []string `json:"modes"`
-	Claim       string   `json:"claim"`
-	Inventory   string   `json:"inventory"`
-	Documents   []string `json:"documents"`
-	ScopeIDs    []string `json:"scope_ids"`
-	PackageDocs []string `json:"package_docs"`
-	Gap         string   `json:"gap"`
-	Closure     string   `json:"closure"`
+	ID          string          `json:"id"`
+	Title       string          `json:"title"`
+	Role        string          `json:"role"`
+	Modes       []string        `json:"modes"`
+	Claim       string          `json:"claim"`
+	Inventory   string          `json:"inventory"`
+	Documents   []string        `json:"documents"`
+	ScopeIDs    []string        `json:"scope_ids"`
+	PackageDocs []string        `json:"package_docs"`
+	Gap         string          `json:"gap"`
+	Closure     string          `json:"closure"`
+	Matrix      []profileMatrix `json:"matrix"`
+}
+
+// A matrix row accounts for a pinned document within one selected role. It
+// names both assessed obligations and the exact remaining inventory boundary.
+type profileMatrix struct {
+	Document     string   `json:"document"`
+	Modes        []string `json:"modes"`
+	Requirements []string `json:"requirements"`
+	Unmapped     []string `json:"unmapped_clauses"`
+	Reason       string   `json:"reason"`
+	Closure      string   `json:"closure"`
 }
 
 // Scope entries retain the original capability IDs. They are deliberately not
@@ -87,6 +112,7 @@ type normativeRequirement struct {
 		Document string   `json:"document"`
 		Clause   string   `json:"clause"`
 		Level    string   `json:"level"`
+		Source   string   `json:"source"`
 		Errata   []string `json:"errata"`
 	} `json:"norm"`
 	Applies struct {
@@ -102,6 +128,8 @@ type normativeRequirement struct {
 		Code   []string `json:"code"`
 	} `json:"implementation"`
 	Tests struct {
+		Status   string            `json:"status"`
+		Reason   string            `json:"reason"`
 		Positive []conformanceTest `json:"positive"`
 		Negative []conformanceTest `json:"negative"`
 	} `json:"tests"`
@@ -147,8 +175,8 @@ func checkConformanceRegister(root string, data []byte) (int, []error, error) {
 		return 0, nil, errors.New("conformance register has trailing JSON")
 	}
 
-	if register.SchemaVersion != 2 || len(register.Requirements) == 0 || len(register.Normative) == 0 || len(register.Profiles) == 0 || len(register.Documents) == 0 {
-		return 0, nil, errors.New("conformance register requires schema 2 and nonempty scope, normative, profile and document inventories")
+	if register.SchemaVersion != 4 || len(register.Requirements) == 0 || len(register.Normative) == 0 || len(register.Profiles) == 0 || len(register.Documents) == 0 {
+		return 0, nil, errors.New("conformance register requires schema 4 and nonempty scope, normative, profile and document inventories")
 	}
 
 	c := &conformanceCheck{root: root, documents: make(map[string]standardDocument), profiles: make(map[string]conformanceProfile), scopes: make(map[string]bool), symbols: make(map[string]map[string]bool)}
@@ -179,17 +207,19 @@ func checkConformanceRegister(root string, data []byte) (int, []error, error) {
 		c.profile(profile)
 	}
 
-	ids := make(map[string]bool)
+	ids := make(map[string]normativeRequirement)
 	for _, requirement := range register.Normative {
-		if requirement.ID == "" || ids[requirement.ID] || c.scopes[requirement.ID] {
+		if _, exists := ids[requirement.ID]; requirement.ID == "" || exists || c.scopes[requirement.ID] {
 			c.problem(requirement.ID, "empty/duplicate normative ID")
 		}
 
-		ids[requirement.ID] = true
+		ids[requirement.ID] = requirement
 		c.requirement(requirement)
 	}
 
 	for _, profile := range register.Profiles {
+		c.matrix(profile, ids)
+
 		if !slices.ContainsFunc(register.Normative, func(r normativeRequirement) bool { return r.Applies.Profile == profile.ID }) {
 			c.problem(profile.ID, "profile has no normative entries")
 		}
@@ -206,7 +236,22 @@ func (c *conformanceCheck) document(document standardDocument) {
 	c.documents[document.ID] = document
 	c.text(document.ID, document.Title, document.Edition, document.Errata.Notes)
 	c.webURL(document.ID, document.Source)
-	c.choice(document.ID, document.Errata.Review, "reviewed", "partial", "pending")
+	c.choice(document.ID, document.Errata.Review, "reviewed", conformancePartial, conformancePending)
+
+	if _, err := time.Parse(time.DateOnly, document.Errata.ReviewedOn); err != nil {
+		c.problem(document.ID, "errata reviewed_on must be an ISO date")
+	}
+
+	corrections := make(map[string]bool)
+	for _, item := range document.Errata.Items {
+		if item.ID == "" || corrections[item.ID] {
+			c.problem(document.ID, "empty/duplicate correction ID")
+		}
+
+		corrections[item.ID] = true
+		c.text(document.ID, item.Clause, item.Reason)
+		c.choice(document.ID, item.Disposition, "selected", "incorporated", "proposed", "informative", "rejected", "held", "other-role")
+	}
 
 	for _, source := range document.Errata.Sources {
 		c.webURL(document.ID, source)
@@ -221,17 +266,20 @@ func (c *conformanceCheck) profile(profile conformanceProfile) {
 	c.profiles[profile.ID] = profile
 	c.text(profile.ID, profile.Title, profile.Role)
 	c.choice(profile.ID, profile.Claim, "restricted", "target", conformanceFull)
-	c.choice(profile.ID, profile.Inventory, "partial", "complete")
+	c.choice(profile.ID, profile.Inventory, conformancePartial, "complete")
+	c.unique(profile.ID, profile.Modes)
+	c.unique(profile.ID, profile.Documents)
+	c.unique(profile.ID, profile.ScopeIDs)
 
 	if len(profile.Modes) == 0 || len(profile.Documents) == 0 || len(profile.PackageDocs) == 0 {
 		c.problem(profile.ID, "profile requires modes, documents and package docs")
 	}
 
-	if profile.Inventory != "complete" || profile.Claim == "target" {
+	if profile.Inventory != conformanceComplete || profile.Claim == "target" {
 		c.text(profile.ID, profile.Gap, profile.Closure)
 	}
 
-	if profile.Claim == conformanceFull && (profile.Inventory != "complete" || profile.Gap != "") {
+	if profile.Claim == conformanceFull && (profile.Inventory != conformanceComplete || profile.Gap != "") {
 		c.problem(profile.ID, "full claim requires a complete inventory without a gap")
 	}
 
@@ -255,12 +303,120 @@ func (c *conformanceCheck) profile(profile conformanceProfile) {
 	}
 }
 
+func (c *conformanceCheck) matrix(profile conformanceProfile, requirements map[string]normativeRequirement) {
+	documents := make(map[string]bool)
+	linked := make(map[string]bool)
+	modes := make(map[string]bool)
+	unmapped := false
+
+	for _, row := range profile.Matrix {
+		if documents[row.Document] || !slices.Contains(profile.Documents, row.Document) {
+			c.problem(profile.ID, "duplicate/unknown matrix document "+row.Document)
+		}
+
+		documents[row.Document] = true
+		c.matrixRow(profile, row)
+
+		for _, id := range row.Requirements {
+			r, exists := requirements[id]
+			if !exists || r.Applies.Profile != profile.ID || r.Norm.Document != row.Document || !slices.Contains(row.Modes, r.Applies.Mode) {
+				c.problem(profile.ID, "missing or mismatched matrix requirement "+id)
+				continue
+			}
+
+			linked[id], modes[r.Applies.Mode] = true, true
+		}
+
+		if len(row.Unmapped) > 0 {
+			unmapped = true
+
+			c.text(profile.ID, row.Closure)
+
+			if profile.Inventory == conformanceComplete {
+				c.problem(profile.ID, "complete inventory has unmapped clauses")
+			}
+		}
+	}
+
+	for _, document := range profile.Documents {
+		if !documents[document] {
+			c.problem(profile.ID, "document missing from role matrix: "+document)
+		}
+	}
+
+	for _, mode := range profile.Modes {
+		if !modes[mode] {
+			c.problem(profile.ID, "mode has no assessed normative obligation: "+mode)
+		}
+	}
+
+	for id, r := range requirements {
+		if r.Applies.Profile == profile.ID && !linked[id] {
+			c.problem(profile.ID, "normative obligation missing from matrix: "+id)
+		}
+	}
+
+	if profile.Inventory == conformancePartial && !unmapped {
+		c.problem(profile.ID, "partial inventory must identify unmapped clauses")
+	}
+}
+
+func (c *conformanceCheck) matrixRow(profile conformanceProfile, row profileMatrix) {
+	c.text(profile.ID, row.Reason)
+	c.unique(profile.ID, row.Modes)
+	c.unique(profile.ID, row.Requirements)
+	c.unique(profile.ID, row.Unmapped)
+
+	if len(row.Modes) == 0 || len(row.Requirements)+len(row.Unmapped) == 0 {
+		c.problem(profile.ID, "matrix row requires modes and assessed or unmapped clauses")
+	}
+
+	for _, mode := range row.Modes {
+		if !slices.Contains(profile.Modes, mode) {
+			c.problem(profile.ID, "matrix mode is not part of the selected profile")
+		}
+	}
+}
+
+func (c *conformanceCheck) normativeSource(r normativeRequirement) {
+	c.webURL(r.ID, r.Norm.Source)
+
+	u, err := url.Parse(r.Norm.Source)
+	if err == nil {
+		u.Fragment, u.RawFragment = "", ""
+		if strings.TrimRight(u.String(), "/") != strings.TrimRight(c.documents[r.Norm.Document].Source, "/") {
+			c.problem(r.ID, "normative source must belong to the pinned document")
+		}
+	}
+
+	c.unique(r.ID, r.Norm.Errata)
+
+	for _, id := range r.Norm.Errata {
+		if !slices.ContainsFunc(c.documents[r.Norm.Document].Errata.Items, func(item standardCorrection) bool {
+			return item.ID == id && (item.Disposition == "selected" || item.Disposition == "incorporated")
+		}) {
+			c.problem(r.ID, "unknown or unselected correction "+id)
+		}
+	}
+}
+
+func (c *conformanceCheck) unique(id string, values []string) {
+	seen := make(map[string]bool)
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" || seen[value] {
+			c.problem(id, "empty/duplicate matrix, mode, document or correction entry")
+		}
+
+		seen[value] = true
+	}
+}
+
 func (c *conformanceCheck) requirement(r normativeRequirement) {
 	c.text(r.ID, r.Statement, r.Norm.Document, r.Norm.Clause, r.Applies.Role, r.Applies.Mode, r.Applies.Reason)
 	c.choice(r.ID, r.Norm.Level, "MUST", "MUST NOT", "SHOULD", "SHOULD NOT", "MAY", "REQUIRED", "RECOMMENDED", "OPTIONAL", "normative")
 	c.choice(r.ID, r.Applies.Status, "applicable", normNotApplicable)
 	c.choice(r.ID, r.Implementation.Status, normImplemented, "limited", "unimplemented", normNotApplicable)
-	c.choice(r.ID, r.Interop.Status, "covered", "pending", normNotApplicable)
+	c.choice(r.ID, r.Interop.Status, conformanceCovered, conformancePending, normNotApplicable)
 	c.text(r.ID, r.Interop.Reason)
 
 	profile, exists := c.profiles[r.Applies.Profile]
@@ -272,6 +428,8 @@ func (c *conformanceCheck) requirement(r normativeRequirement) {
 		c.problem(r.ID, "mode is not part of the selected profile")
 	}
 
+	c.normativeSource(r)
+
 	if r.Applies.Status == normNotApplicable {
 		if r.Implementation.Status != normNotApplicable || r.Applies.Role == profile.Role {
 			c.problem(r.ID, "non-applicability requires a different standard role, not missing code or a policy prohibition")
@@ -281,24 +439,52 @@ func (c *conformanceCheck) requirement(r normativeRequirement) {
 	}
 
 	if r.Implementation.Status == normImplemented || r.Implementation.Status == "limited" {
-		if len(r.Implementation.APIs) == 0 || len(r.Implementation.Code) == 0 || len(r.Tests.Positive) == 0 || len(r.Tests.Negative) == 0 {
-			c.problem(r.ID, "supported requirement needs APIs, code and positive/negative tests")
+		if len(r.Implementation.APIs) == 0 || len(r.Implementation.Code) == 0 {
+			c.problem(r.ID, "supported requirement needs APIs and code")
 		}
 	}
 
-	if r.Implementation.Status != normImplemented && r.Implementation.Status != normNotApplicable || r.Interop.Status == "pending" {
+	c.localEvidence(r)
+
+	if r.Implementation.Status != normImplemented && r.Implementation.Status != normNotApplicable || r.Interop.Status == conformancePending || r.Tests.Status == conformancePending || r.Tests.Status == conformancePartial {
 		c.text(r.ID, r.Gap, r.Closure)
 	}
 
-	if profile.Claim == conformanceFull && r.Applies.Status == "applicable" && (r.Implementation.Status != normImplemented || r.Gap != "" || r.Interop.Status == "pending") {
+	optional := r.Norm.Level == "MAY" || r.Norm.Level == "OPTIONAL"
+	if profile.Claim == conformanceFull && !optional && r.Applies.Status == "applicable" && (r.Implementation.Status != normImplemented || r.Gap != "" || r.Interop.Status == conformancePending || r.Tests.Status != conformanceCovered) {
 		c.problem(r.ID, "an open obligation prevents a full claim")
 	}
 
-	if r.Interop.Status == "covered" && (len(r.Interop.Tests) == 0 || len(r.Interop.Fixtures) == 0) {
+	if r.Interop.Status == conformanceCovered && (len(r.Interop.Tests) == 0 || len(r.Interop.Fixtures) == 0) {
 		c.problem(r.ID, "covered interoperability requires checks and independent fixtures")
 	}
 
 	c.requirementEvidence(r)
+}
+
+func (c *conformanceCheck) localEvidence(r normativeRequirement) {
+	c.choice(r.ID, r.Tests.Status, conformanceCovered, conformancePartial, conformancePending, normNotApplicable)
+	c.text(r.ID, r.Tests.Reason)
+
+	checks := len(r.Tests.Positive) + len(r.Tests.Negative)
+	switch r.Tests.Status {
+	case conformanceCovered:
+		if len(r.Tests.Positive) == 0 || len(r.Tests.Negative) == 0 {
+			c.problem(r.ID, "covered local evidence requires positive/negative tests")
+		}
+	case conformancePartial:
+		if checks == 0 {
+			c.problem(r.ID, "partial local evidence requires named checks")
+		}
+	case conformancePending:
+		if checks != 0 {
+			c.problem(r.ID, "pending local evidence must not claim named checks; use partial")
+		}
+	case normNotApplicable:
+		if checks != 0 || r.Applies.Status != normNotApplicable {
+			c.problem(r.ID, "non-applicable evidence requires a different standard role without test claims")
+		}
+	}
 }
 
 func (c *conformanceCheck) requirementEvidence(r normativeRequirement) {

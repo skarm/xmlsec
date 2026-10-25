@@ -493,7 +493,7 @@ func (c *compiler) compileSortKey(ctx context.Context, elem *xdm.Element) (*sort
 		}
 	}
 
-	sk := &sortKey{forwards10: isBackwardsCompatible(c.stylesheet.version) && forwards10(elem)}
+	sk := &sortKey{forwards10: c.stylesheet.processorLanguage() == 10 && forwards10(elem)}
 
 	selectAttr := getAttr(elem, xslAttrSelect)
 	// XTSE1015: xsl:sort with select must not have content

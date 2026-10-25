@@ -15,11 +15,30 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/xmlchar"
+
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/ianaindex"
 )
 
 // ParseReader constructs a snapshot incrementally, without retaining source XML.
 // The snapshot itself occupies memory proportional to its nodes and text.
 func ParseReader(ctx context.Context, src io.Reader, limits Limits) (*Document, error) {
+	return parseXMLReader(ctx, src, limits, false, false)
+}
+
+// ParseReaderWithSingleByteEncodings additionally accepts declared, ASCII-
+// compatible IANA single-byte encodings. The DTD-free grammar and limits remain.
+func ParseReaderWithSingleByteEncodings(ctx context.Context, src io.Reader, limits Limits) (*Document, error) {
+	return parseXMLReader(ctx, src, limits, false, true)
+}
+
+// ParseText parses Unicode characters. A declaration's encoding has no effect
+// on characters already decoded by the caller, but its grammar is still checked.
+func ParseText(ctx context.Context, text string, limits Limits) (*Document, error) {
+	return parseXMLReader(ctx, strings.NewReader(text), limits, true, false)
+}
+
+func parseXMLReader(ctx context.Context, src io.Reader, limits Limits, characterInput, singleByteEncodings bool) (*Document, error) {
 	if ctx == nil || nilcheck.IsNil(src) {
 		return nil, ErrMalformed
 	}
@@ -28,12 +47,14 @@ func ParseReader(ctx context.Context, src io.Reader, limits Limits) (*Document, 
 		return nil, err
 	}
 
-	input, err := newXMLInput(ctx, src, int64(limits.MaxBytes), limits.MaxBytes)
+	input, err := newXMLInputMode(ctx, src, int64(limits.MaxBytes), limits.MaxBytes, characterInput)
 	if err != nil {
 		return nil, err
 	}
 
 	parser := readerParser(input, limits)
+	parser.characterInput = characterInput
+	parser.singleByteEncodings = singleByteEncodings
 
 	doc, err := parser.parse(ctx)
 	if err != nil {
@@ -56,21 +77,27 @@ func readerParser(input *xmlInput, limits Limits) documentParser {
 // xmlInput validates and normalizes one bounded lexical unit at a time.
 // The document parser copies borrowed token values before the unit buffer is reused.
 type xmlInput struct {
+	charmap          *charmap.Charmap
+	order            binary.ByteOrder
 	source           *streamio.Reader
 	reader           *bufio.Reader
 	encoding         sourceEncoding
-	order            binary.ByteOrder
+	unit             []byte
 	decoded, maximum int64
 	tokenLimit       int
-	pending          rune
-	hasPending       bool
-	unit             []byte
-	outside          bool
-	textTail         [2]byte
 	textTailLen      int
+	pending          rune
+	textTail         [2]byte
+	hasPending       bool
+	outside          bool
+	ascii            bool
 }
 
 func newXMLInput(ctx context.Context, src io.Reader, maximum int64, tokenLimit int) (*xmlInput, error) {
+	return newXMLInputMode(ctx, src, maximum, tokenLimit, false)
+}
+
+func newXMLInputMode(ctx context.Context, src io.Reader, maximum int64, tokenLimit int, characterInput bool) (*xmlInput, error) {
 	source := &streamio.Reader{Context: ctx, Source: src, Limit: maximum, LimitError: ErrLimit}
 	r := &xmlInput{source: source, reader: bufio.NewReaderSize(source, 4096), encoding: sourceEncoding{name: nameUTF8}, maximum: maximum, tokenLimit: tokenLimit}
 
@@ -82,11 +109,14 @@ func newXMLInput(ctx context.Context, src io.Reader, maximum int64, tokenLimit i
 	skip := 0
 
 	switch {
-	case bytes.HasPrefix(prefix, []byte{0, 0, 0xfe, 0xff}), bytes.HasPrefix(prefix, []byte{0xff, 0xfe, 0, 0}):
-		return nil, ErrUnsupported
 	case bytes.HasPrefix(prefix, []byte{0xef, 0xbb, 0xbf}):
 		r.encoding.bom = true
 		skip = 3
+	case characterInput:
+		// NUL-containing strings must fail XML character validation rather than
+		// being reinterpreted as UTF-16/32 octets.
+	case bytes.HasPrefix(prefix, []byte{0, 0, 0xfe, 0xff}), bytes.HasPrefix(prefix, []byte{0xff, 0xfe, 0, 0}):
+		return nil, ErrUnsupported
 	case bytes.HasPrefix(prefix, []byte{0xfe, 0xff}):
 		r.encoding = sourceEncoding{encodingUTF16BE, true}
 		r.order = binary.BigEndian
@@ -118,48 +148,9 @@ func (r *xmlInput) rune() (rune, error) {
 		return r.pending, nil
 	}
 
-	var value rune
-
-	if r.order == nil {
-		v, size, err := r.reader.ReadRune()
-		if err != nil {
-			return 0, err
-		}
-
-		if v == utf8.RuneError && size == 1 {
-			return 0, fmt.Errorf("%w: invalid UTF-8", ErrUnsupported)
-		}
-
-		value = v
-	} else {
-		var pair [2]byte
-		if _, err := io.ReadFull(r.reader, pair[:]); err != nil {
-			if err == io.EOF {
-				return 0, err
-			}
-
-			return 0, fmt.Errorf("%w: UTF-16 unit: %w", ErrMalformed, err)
-		}
-
-		u := r.order.Uint16(pair[:])
-
-		value = rune(u)
-		if utf16.IsSurrogate(value) {
-			if u < 0xd800 || u > 0xdbff {
-				return 0, fmt.Errorf("%w: UTF-16 surrogate", ErrMalformed)
-			}
-
-			if _, err := io.ReadFull(r.reader, pair[:]); err != nil {
-				return 0, fmt.Errorf("%w: UTF-16 surrogate: %w", ErrMalformed, err)
-			}
-
-			v := r.order.Uint16(pair[:])
-			if v < 0xdc00 || v > 0xdfff {
-				return 0, fmt.Errorf("%w: UTF-16 surrogate", ErrMalformed)
-			}
-
-			value = utf16.DecodeRune(rune(u), rune(v))
-		}
+	value, err := r.encodedRune()
+	if err != nil {
+		return 0, err
 	}
 
 	if !xmlchar.IsChar(value) {
@@ -174,6 +165,104 @@ func (r *xmlInput) rune() (rune, error) {
 	r.decoded += size
 
 	return value, nil
+}
+
+func (r *xmlInput) encodedRune() (rune, error) {
+	if r.charmap != nil || r.ascii {
+		return r.singleByteRune()
+	}
+
+	if r.order != nil {
+		return r.utf16Rune()
+	}
+
+	value, size, err := r.reader.ReadRune()
+	if err != nil {
+		return 0, err
+	}
+
+	if value == utf8.RuneError && size == 1 {
+		return 0, fmt.Errorf("%w: invalid UTF-8", ErrUnsupported)
+	}
+
+	return value, nil
+}
+
+func (r *xmlInput) singleByteRune() (rune, error) {
+	b, err := r.reader.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+
+	value := rune(b)
+	if r.charmap != nil {
+		value = r.charmap.DecodeByte(b)
+	}
+
+	if r.ascii && b > 127 || value == utf8.RuneError {
+		return 0, fmt.Errorf("%w: invalid byte in declared XML encoding", ErrMalformed)
+	}
+
+	return value, nil
+}
+
+func (r *xmlInput) utf16Rune() (rune, error) {
+	var pair [2]byte
+	if _, err := io.ReadFull(r.reader, pair[:]); err != nil {
+		if err == io.EOF {
+			return 0, err
+		}
+
+		return 0, fmt.Errorf("%w: UTF-16 unit: %w", ErrMalformed, err)
+	}
+
+	u := r.order.Uint16(pair[:])
+	if !utf16.IsSurrogate(rune(u)) {
+		return rune(u), nil
+	}
+
+	if u < 0xd800 || u > 0xdbff {
+		return 0, fmt.Errorf("%w: UTF-16 surrogate", ErrMalformed)
+	}
+
+	if _, err := io.ReadFull(r.reader, pair[:]); err != nil {
+		return 0, fmt.Errorf("%w: UTF-16 surrogate: %w", ErrMalformed, err)
+	}
+
+	v := r.order.Uint16(pair[:])
+	if v < 0xdc00 || v > 0xdfff {
+		return 0, fmt.Errorf("%w: UTF-16 surrogate", ErrMalformed)
+	}
+
+	return utf16.DecodeRune(rune(u), rune(v)), nil
+}
+
+func (r *xmlInput) singleByteEncoding(label string) error {
+	codec, err := ianaindex.IANA.Encoding(label)
+	if err != nil || codec == nil {
+		return fmt.Errorf("%w: unknown XML encoding", ErrUnsupported)
+	}
+
+	canonical, err := ianaindex.IANA.Name(codec)
+	if err == nil && canonical == "US-ASCII" {
+		r.ascii = true
+		return nil
+	}
+
+	mapping, ok := codec.(*charmap.Charmap)
+	if !ok {
+		return fmt.Errorf("%w: XML encoding is not a supported single-byte encoding", ErrUnsupported)
+	}
+
+	for b := range 128 {
+		if mapping.DecodeByte(byte(b)) != rune(b) {
+			return fmt.Errorf("%w: XML encoding is not ASCII-compatible", ErrUnsupported)
+		}
+	}
+
+	r.charmap = mapping
+
+	return nil
 }
 
 func (r *xmlInput) nextUnit() ([]byte, error) {

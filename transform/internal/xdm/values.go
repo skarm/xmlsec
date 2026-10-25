@@ -507,15 +507,33 @@ func (d Duration) clone() Duration {
 
 // FunctionItem represents a callable function value (inline, named ref, partial application).
 type FunctionItem struct {
-	Arity      int
-	Name       string // empty for anonymous
-	Namespace  string // namespace URI (empty for anonymous or default)
-	Invoke     func(ctx context.Context, args []Sequence) (Sequence, error)
-	ParamTypes []SequenceType // parameter type annotations (nil if untyped)
-	ReturnType *SequenceType  // return type annotation (nil if untyped)
+	Arity           int
+	Name            string // empty for anonymous
+	Namespace       string // namespace URI (empty for anonymous or default)
+	Invoke          func(ctx context.Context, args []Sequence) (Sequence, error)
+	ParamTypes      []SequenceType // parameter type annotations (nil if untyped)
+	RepeatParamType bool           // the sole parameter annotation applies to every argument
+	ReturnType      *SequenceType  // return type annotation (nil if untyped)
 }
 
 func (FunctionItem) itemTag() {}
+
+// FunctionParameterType reads fixed or compact repeated parameter metadata.
+func FunctionParameterType(params []SequenceType, repeated bool, index int) (SequenceType, bool) {
+	if index < 0 {
+		return SequenceType{}, false
+	}
+
+	if repeated && len(params) == 1 {
+		return params[0], true
+	}
+
+	if index < len(params) {
+		return params[index], true
+	}
+
+	return SequenceType{}, false
+}
 
 // MapItem is an immutable key-value map. Put returns a new map (copy-on-write).
 type MapItem struct {
@@ -1094,8 +1112,13 @@ func (a ArrayItem) SubArray(start, length int) (ArrayItem, error) {
 	// huge positions and bypass the guard, leading to a make([]Sequence, length)
 	// panic. With start>=1 established first, size-start+1 cannot overflow.
 	if start < 1 || start > size+1 || length < 0 || length > size-start+1 {
+		code := errCodeFOAY0001
+		if start >= 1 && start <= size+1 && length < 0 {
+			code = "FOAY0002"
+		}
+
 		return ArrayItem{}, &Error{
-			Code:    errCodeFOAY0001,
+			Code:    code,
 			Message: fmt.Sprintf("array subarray(%d, %d) out of bounds (size %d)", start, length, size),
 		}
 	}

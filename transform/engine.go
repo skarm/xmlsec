@@ -65,6 +65,10 @@ func DefaultLimits() Limits {
 // performed. Resolver may be used concurrently and must honor its context.
 type Config struct {
 	Limits Limits
+	// AllowSingleByteEncodings permits ASCII-compatible IANA single-byte XML
+	// encodings in addition to UTF-8/UTF-16. DTDs remain disabled. Raw and decoded
+	// bytes share the input limit. The zero value retains the security profile.
+	AllowSingleByteEncodings bool
 	// Functions registers application functions by expanded name. The registry
 	// is copied; callbacks must honor context and support concurrent calls.
 	Functions []Function
@@ -94,14 +98,15 @@ type ResolverFunc = resource.ResolverFunc
 // Engine owns immutable policy and creates compiled programs.
 // Its zero value is invalid; construct it with NewEngine.
 type Engine struct {
-	packages      PackageResolver
-	collections   CollectionResolver
-	functions     map[xpath.QualifiedName]xpath.Function
-	functionNames map[string]xpath.Function
-	limits        Limits
-	resolver      Resolver
-	environment   map[string]string
-	v1            *v1Processor
+	packages                 PackageResolver
+	collections              CollectionResolver
+	functions                map[xpath.QualifiedName]xpath.Function
+	functionNames            map[string]xpath.Function
+	limits                   Limits
+	resolver                 Resolver
+	environment              map[string]string
+	v1                       *v1Processor
+	allowSingleByteEncodings bool
 }
 
 // NewEngine validates policy and returns a reusable engine. Config{} is valid.
@@ -135,7 +140,7 @@ func NewEngine(config Config) (*Engine, error) {
 		config.Resolver = nil
 	}
 
-	e := &Engine{limits: limits, resolver: config.Resolver, environment: maps.Clone(config.Environment)}
+	e := &Engine{limits: limits, resolver: config.Resolver, environment: maps.Clone(config.Environment), allowSingleByteEncodings: config.AllowSingleByteEncodings}
 	if !nilcheck.IsNil(config.CollectionResolver) {
 		e.collections = config.CollectionResolver
 	}
@@ -167,7 +172,7 @@ func wrap(operation string, err error) error {
 
 	code := ""
 	if xp, ok := errors.AsType[*xdm.Error](err); ok {
-		code = xp.Code
+		code = xp.CodeQName().Local
 	}
 
 	if errors.Is(err, pattern.ErrLimit) || errors.Is(err, xpath.ErrBudget) || errors.Is(err, xpath.ErrOpLimit) || errors.Is(err, xpath.ErrRecursionLimit) || errors.Is(err, xpath.ErrNodeSetLimit) || errors.Is(err, document.ErrLimit) {
@@ -200,14 +205,15 @@ func (e *Engine) parseOptions() xdm.ParseOptions {
 	limits.MaxDepth = e.limits.MaxDepth
 	limits.MaxNodes = e.limits.MaxNodes
 
-	return xdm.ParseOptions{Limits: limits}
+	return xdm.ParseOptions{Limits: limits, AllowSingleByteEncodings: e.allowSingleByteEncodings}
 }
 
 // Error describes an operation and preserves the standard XPath/XSLT error
 // code, when available. errors.Is also preserves cancellation and limit errors.
 type Error struct {
 	Operation string
-	// Code is the standard XPath or XSLT error code, or empty when none is available.
+	// Code is the local part of the XPath, XSLT or application error code,
+	// or empty when none is available. CodeName also preserves its namespace.
 	Code  string
 	cause error
 }
@@ -223,3 +229,21 @@ func (e *Error) Error() string {
 
 // Unwrap exposes the original cause.
 func (e *Error) Unwrap() error { return e.cause }
+
+// CodeName returns the expanded error QName, or a zero Name when no code exists.
+// Standard codes use http://www.w3.org/2005/xqt-errors. Application errors may
+// use another namespace, including the empty namespace.
+func (e *Error) CodeName() Name {
+	if e == nil || e.Code == "" {
+		return Name{}
+	}
+
+	if detail, ok := errors.AsType[*xdm.Error](e.cause); ok {
+		name := detail.CodeQName()
+		if name.Local != "" {
+			return Name{Space: name.URI, Local: name.Local}
+		}
+	}
+
+	return Name{Space: xpath.NSErr, Local: e.Code}
+}

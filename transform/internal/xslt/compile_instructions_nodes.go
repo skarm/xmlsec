@@ -17,7 +17,7 @@ func (c *compiler) compileValueOf(ctx context.Context, elem *xdm.Element) (*valu
 	inst := &valueOfInst{}
 
 	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
-	if !hasSelect && isBackwardsCompatible(c.stylesheet.version) {
+	if !hasSelect && c.stylesheet.processorLanguage() == 10 {
 		return nil, staticError(errCodeXTSE0110, "xsl:value-of requires select in XSLT 1.0")
 	}
 
@@ -39,16 +39,17 @@ func (c *compiler) compileValueOf(ctx context.Context, elem *xdm.Element) (*valu
 		inst.Separator = avt
 	}
 
-	// XTSE0350: xsl:value-of with select must not have non-whitespace content
+	// XTSE0870: xsl:value-of with select must have empty content after
+	// stylesheet whitespace stripping.
 	if hasSelect {
 		for child := range xdm.Children(elem) {
 			switch child.Type() {
 			case xdm.TextNode, xdm.CDATASectionNode:
 				if !isXMLWhitespaceOnly(xdm.CharacterData(child)) {
-					return nil, staticError(errCodeXTSE0350, "xsl:value-of with select attribute must not have content")
+					return nil, staticError(errCodeXTSE0870, "xsl:value-of with select attribute must not have content")
 				}
 			case xdm.ElementNode:
-				return nil, staticError(errCodeXTSE0350, "xsl:value-of with select attribute must not have content")
+				return nil, staticError(errCodeXTSE0870, "xsl:value-of with select attribute must not have content")
 			}
 		}
 	} else {
@@ -58,7 +59,6 @@ func (c *compiler) compileValueOf(ctx context.Context, elem *xdm.Element) (*valu
 			return nil, err
 		}
 		// XSLT 3.0: empty xsl:value-of is allowed (produces zero-length string).
-		// We are an XSLT 3.0 processor, so XTSE0870 is never raised.
 		inst.Body = body
 	}
 

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -35,6 +36,7 @@ import (
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/xmlchar"
+	"github.com/skarm/xmlsec/resource"
 	iencoding "github.com/skarm/xmlsec/transform/internal/xdm/encoding"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
@@ -289,48 +291,25 @@ func ReadURI(ctx context.Context, cfg *Config, uri string) (text string, err err
 // DecodeText decodes raw bytes to a string, handling BOM detection,
 // XML declaration sniffing, and encoding conversion. encoding is the
 // user-specified encoding (from the function argument); transportHints
-// are optional transport-level encoding hints (e.g. from HTTP Content-Type).
-// BOM overrides transport hints but conflicts with explicit encoding.
+// are optional transport-level charset names or MIME Content-Type values.
+// External charset information takes precedence over the function argument;
+// a conflicting BOM raises FOUT1190.
 // If all are empty, defaults to UTF-8.
 func DecodeText(data []byte, encoding string, transportHints ...string) (string, error) {
-	if encoding != "" {
-		enc := iencoding.Load(encoding)
-		if enc == nil {
-			return "", &Error{Code: ErrCodeEncoding, Message: fmt.Sprintf("unsupported encoding: %s", encoding)}
-		}
-	}
+	metadata := ""
 
-	detectedEncoding, cleanData := detectBOM(data)
-
-	// When no BOM is found and no explicit encoding is given, try to
-	// detect encoding from an XML declaration (<?xml ... encoding="..."?>).
-	if detectedEncoding == "" && encoding == "" {
-		if xmlEnc := detectXMLDeclEncoding(data); xmlEnc != "" {
-			detectedEncoding = xmlEnc
-		}
-	}
-
-	// If we still have no detected encoding and no explicit encoding,
-	// use the transport hint as a fallback.
-	if detectedEncoding == "" && encoding == "" {
-		for _, hint := range transportHints {
-			if hint != "" {
-				detectedEncoding = hint
-				break
+	for _, hint := range transportHints {
+		if hint != "" {
+			metadata = hint
+			if !strings.Contains(hint, "/") {
+				metadata = mime.FormatMediaType("text/plain", map[string]string{"charset": hint})
 			}
+
+			break
 		}
 	}
 
-	effectiveEncoding := resolveEncoding(encoding, detectedEncoding)
-	if effectiveEncoding == "" {
-		return "", &Error{Code: ErrCodeEncoding, Message: fmt.Sprintf("specified encoding %s conflicts with BOM (%s)", encoding, detectedEncoding)}
-	}
-
-	return decodeBytes(cleanData, effectiveEncoding)
-}
-
-func decodeBytes(data []byte, encoding string) (string, error) {
-	reader, err := encodingReader(bytes.NewReader(data), encoding)
+	reader, err := decodedReader(bytes.NewReader(data), encoding, metadata)
 	if err != nil {
 		return "", err
 	}
@@ -547,6 +526,10 @@ func openURI(ctx context.Context, cfg *Config, uri string) (io.ReadCloser, strin
 		return nil, "", errors.New("resolver returned a nil reader")
 	}
 
+	if typed, ok := rc.(resource.TypedReader); ok {
+		hint = typed.MediaType()
+	}
+
 	if err := ctx.Err(); err != nil {
 		return nil, "", errors.Join(err, rc.Close())
 	}
@@ -599,25 +582,23 @@ func openHTTP(ctx context.Context, client *http.Client, uri string) (io.ReadClos
 		return nil, "", errors.Join(fmt.Errorf("HTTP %d for %s", resp.StatusCode, uri), resp.Body.Close())
 	}
 
-	return resp.Body, extractHTTPCharset(resp.Header.Get("Content-Type")), nil
+	return resp.Body, resp.Header.Get("Content-Type"), nil
 }
 
-func extractHTTPCharset(contentType string) string {
+func textMediaType(contentType string) (string, bool, error) {
 	if contentType == "" {
-		return ""
+		return "", false, nil
 	}
 
-	for part := range strings.SplitSeq(contentType, ";") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(strings.ToLower(part), "charset=") {
-			charset := part[len("charset="):]
-			charset = strings.Trim(charset, "\"' ")
-
-			return charset
-		}
+	mediaType, parameters, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return "", false, &Error{Code: ErrCodeEncoding, Message: "invalid resource media type", Cause: err}
 	}
 
-	return ""
+	xml := mediaType == "text/xml" || mediaType == "application/xml" ||
+		(strings.HasPrefix(mediaType, "text/") || strings.HasPrefix(mediaType, "application/")) && strings.HasSuffix(mediaType, "+xml")
+
+	return parameters["charset"], xml, nil
 }
 
 // detectBOM checks for a byte-order mark and returns the detected encoding
@@ -712,7 +693,23 @@ func resolveEncoding(specified, detected string) string {
 
 // decodedReader sniffs only the bounded declaration prefix, then keeps one
 // stateful decoder across chunks. XML declarations beyond 200 bytes are ignored.
-func decodedReader(src io.Reader, specified, hint string) (io.Reader, error) {
+func decodedReader(src io.Reader, specified, contentType string) (io.Reader, error) {
+	if specified != "" && iencoding.Load(specified) == nil {
+		return nil, &Error{Code: ErrCodeEncoding, Message: fmt.Sprintf("unsupported encoding: %s", specified)}
+	}
+
+	hint, xmlMediaType, err := textMediaType(contentType)
+	if err != nil {
+		return nil, err
+	}
+	// F&O 2.0/3.0/3.1: external encoding precedes XML media type rules,
+	// which precede the function argument and implementation-defined heuristics.
+	if hint != "" {
+		specified = hint
+	} else if xmlMediaType {
+		specified = ""
+	}
+
 	reader := bufio.NewReaderSize(src, 4096)
 
 	prefix, err := reader.Peek(4)
@@ -740,10 +737,6 @@ func decodedReader(src io.Reader, specified, hint string) (io.Reader, error) {
 			}
 
 			detected = detectXMLDeclEncoding(prefix)
-		}
-
-		if detected == "" {
-			detected = hint
 		}
 	}
 

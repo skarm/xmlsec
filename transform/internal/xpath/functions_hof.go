@@ -19,7 +19,7 @@ func NewFunctionReference(name QualifiedName, arity int, fn TypedFunction) xdm.F
 	return xdm.FunctionItem{
 		Arity: arity, Name: name.Name, Namespace: name.URI,
 		ParamTypes: fn.FuncParamTypes(), ReturnType: fn.FuncReturnType(),
-		Invoke: lookupFunctionInvoker(nil, fn.FuncParamTypes(), qv, arity, fn),
+		Invoke: lookupFunctionInvoker(nil, fn.FuncParamTypes(), false, qv, arity, fn),
 	}
 }
 
@@ -65,6 +65,7 @@ func fnFunctionLookup(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, e
 	arity := int(arityVal)
 
 	fi, ok := lookupFunctionItem(ctx, nameArg.QNameVal(), arity)
+
 	if !ok {
 		return nil, nil
 	}
@@ -126,6 +127,7 @@ func lookupFunctionItem(ctx context.Context, qv xdm.QNameValue, arity int) (xdm.
 
 	var (
 		paramTypes []xdm.SequenceType
+		repeated   bool
 		returnType *xdm.SequenceType
 		sig        *functionSignature
 	)
@@ -138,6 +140,7 @@ func lookupFunctionItem(ctx context.Context, qv xdm.QNameValue, arity int) (xdm.
 
 	if sig != nil {
 		paramTypes = sig.ParamTypes
+		repeated = sig.RepeatParamType
 		returnType = sig.ReturnType
 	} else if tf, ok := fn.(TypedFunction); ok {
 		// User-defined typed functions expose their signature directly;
@@ -151,13 +154,14 @@ func lookupFunctionItem(ctx context.Context, qv xdm.QNameValue, arity int) (xdm.
 	}
 
 	fi := xdm.FunctionItem{
-		Arity:      arity,
-		Name:       qv.Local,
-		Namespace:  qv.URI,
-		ParamTypes: paramTypes,
-		ReturnType: returnType,
+		Arity:           arity,
+		Name:            qv.Local,
+		Namespace:       qv.URI,
+		ParamTypes:      paramTypes,
+		RepeatParamType: repeated,
+		ReturnType:      returnType,
 	}
-	fi.Invoke = lookupFunctionInvoker(capturedEC, paramTypes, qv, arity, fn)
+	fi.Invoke = lookupFunctionInvoker(capturedEC, paramTypes, repeated, qv, arity, fn)
 
 	return fi, true
 }
@@ -571,7 +575,7 @@ func extractFunctionItem(seq xdm.Sequence) (xdm.FunctionItem, error) {
 	return fi, nil
 }
 
-func lookupFunctionInvoker(capturedEC *evalContext, paramTypes []xdm.SequenceType, qv xdm.QNameValue, arity int, fn Function) func(context.Context, []xdm.Sequence) (xdm.Sequence, error) {
+func lookupFunctionInvoker(capturedEC *evalContext, paramTypes []xdm.SequenceType, repeated bool, qv xdm.QNameValue, arity int, fn Function) func(context.Context, []xdm.Sequence) (xdm.Sequence, error) {
 	return func(ctx context.Context, callArgs []xdm.Sequence) (xdm.Sequence, error) {
 		callEC := getFnContext(ctx)
 		if capturedEC != nil {
@@ -592,12 +596,12 @@ func lookupFunctionInvoker(capturedEC *evalContext, paramTypes []xdm.SequenceTyp
 			copy(coerced, callArgs)
 
 			for i, arg := range callArgs {
-				if i < len(paramTypes) {
+				if parameter, declared := xdm.FunctionParameterType(paramTypes, repeated, i); declared {
 					// coerceFuncallArg surfaces a real typed error (FOTY0012 from
 					// atomizing an element-only node, FOTY0013, FORG0001, …) and maps
 					// only a plain mismatch to XPTY0004 — the boolean
 					// coerceToSequenceType would collapse FOTY0012 into XPTY0004.
-					c, err := coerceFuncallArg(ctx, arg, paramTypes[i], qv.Local, i, callEC)
+					c, err := coerceFuncallArg(ctx, arg, parameter, qv.Local, i, callEC)
 					if err != nil {
 						return nil, err
 					}

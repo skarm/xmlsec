@@ -5,6 +5,7 @@ package xslt
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/xmlchar"
@@ -256,11 +257,11 @@ func (ec *execContext) fnSystemProperty(ctx context.Context, args []xdm.Sequence
 
 	switch local {
 	case paramVersion:
-		if isBackwardsCompatible(ec.stylesheet.version) {
+		if ec.stylesheet.processorLanguage() == 10 {
 			return xdm.SingleDouble(1), nil
 		}
 
-		return xdm.SingleString(lexicon.XSLTVersion30), nil
+		return xdm.SingleString(fmt.Sprintf("%d.0", ec.stylesheet.processorLanguage()/10)), nil
 	case "vendor":
 		return xdm.SingleString("xmlsec"), nil
 	case "vendor-url":

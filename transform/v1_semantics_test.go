@@ -205,7 +205,7 @@ func TestXSLTAndLimits(t *testing.T) {
 	for _, tt := range []struct{ name, body string }{
 		{"file", `<xsl:template match="/"><xsl:copy-of select="document('file:///etc/passwd')"/></xsl:template>`},
 		{"network", `<xsl:template match="/"><xsl:copy-of select="document('https://example.invalid/resource')"/></xsl:template>`},
-		{"include", `<xsl:include href="file:///etc/passwd"/>`},
+		{nameInclude, `<xsl:include href="file:///etc/passwd"/>`},
 		{"recursion", `<xsl:template match="/"><xsl:call-template name="loop"/></xsl:template><xsl:template name="loop"><xsl:call-template name="loop"/></xsl:template>`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

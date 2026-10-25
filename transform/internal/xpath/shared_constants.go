@@ -1,6 +1,10 @@
 package xpath
 
 const (
+	nameUnparsedTextLines                     = "unparsed-text-lines"
+	nameLoadXQueryModule                      = "load-xquery-module"
+	nameEmptySequence                         = "empty-sequence"
+	nameFunction                              = "function"
 	version10                                 = "1.0"
 	version11                                 = "1.1"
 	nameISO                                   = "ISO"

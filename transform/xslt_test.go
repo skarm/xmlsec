@@ -13,6 +13,343 @@ import (
 
 const nameKept = "kept"
 
+const variableURI = "uri"
+
+const transformSerializedQuery = `transform(map{'stylesheet-text': $stylesheet, 'initial-template': QName('', 'start'), 'delivery-format': 'serialized'})?output`
+
+func TestXSLTExplicitGlobalContext(t *testing.T) {
+	e := engine(t, transform.Config{})
+
+	source, err := e.Parse(t.Context(), []byte(`<source/>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const program = `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="3.0"><xsl:global-context-item use="required" as="xs:integer"/><xsl:variable name="global" select="."/><xsl:template match="source"><xsl:value-of select="$global || ':' || name()"/></xsl:template><xsl:template name="start"><xsl:value-of select="$global || ':' || . || ':' || position() || ':' || last()"/></xsl:template></xsl:stylesheet>`
+
+	sheet := stylesheet(t, e, program)
+	item := transform.Integer(7)
+	options := transform.XSLTContext{ContextItem: &item}
+
+	matched, err := sheet.Execute(t.Context(), source, options)
+	if err != nil || text(t, matched.Primary()) != "7:source" {
+		t.Fatal("global context changed the initial match selection", matched, err)
+	}
+
+	named, err := sheet.CallTemplate(t.Context(), source, transform.Name{Local: nameStart}, options)
+	if err != nil || text(t, named.Primary()) != "7:7:1:1" {
+		t.Fatal("initial template did not inherit the supplied global focus", named, err)
+	}
+
+	query, err := e.CompileXPath(t.Context(), `transform(map{'stylesheet-text':$stylesheet, 'global-context-item':7, 'initial-template':QName('', 'start'), 'delivery-format':'raw'})?output`, transform.XPathOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	value, err := query.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: variableStylesheet}: transform.Values(transform.String(program))}})
+	if err != nil || text(t, value) != "7:7:1:1" {
+		t.Fatal("fn:transform and direct invocation disagree", value, err)
+	}
+
+	absent := transform.Value{}
+	_, err = sheet.CallTemplate(t.Context(), source, transform.Name{Local: nameStart}, transform.XSLTContext{ContextItem: &absent})
+
+	var detail *transform.Error
+	if !errors.As(err, &detail) || detail.Code != "XTDE3086" {
+		t.Fatal("explicitly absent required global context was accepted", err)
+	}
+
+	item = transform.String("wrong-type")
+
+	_, err = sheet.CallTemplate(t.Context(), source, transform.Name{Local: nameStart}, options)
+	if !errors.As(err, &detail) || detail.Code != "XTTE0590" {
+		t.Fatal("wrong global context type was accepted", err)
+	}
+}
+
+func TestDecimalFormatEmptyStringProperties(t *testing.T) {
+	e := engine(t, transform.Config{})
+
+	const expression = `format-number(xs:double('NaN'), '0') || '|' || format-number(xs:double('INF'), '0') || '|' || format-number(xs:double('-INF'), '0')`
+
+	program, err := e.CompileXPath(t.Context(), expression, transform.XPathOptions{DecimalFormats: map[transform.Name]map[string]string{{}: {valueNaN: "", nameInfinityProperty: ""}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	value, err := program.Evaluate(t.Context(), nil, transform.XPathContext{})
+	if err != nil || text(t, value) != "||-" {
+		t.Fatal(value, err)
+	}
+
+	const prefix = `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="3.0">`
+
+	sheet := stylesheet(t, e, prefix+`<xsl:decimal-format NaN="" infinity=""/><xsl:template name="start"><out><xsl:value-of select="`+expression+`"/></out></xsl:template></xsl:stylesheet>`)
+
+	result, err := sheet.CallTemplate(t.Context(), nil, transform.Name{Local: nameStart}, transform.XSLTContext{})
+	if err != nil || text(t, result.Primary()) != "||-" {
+		t.Fatal("empty string properties were replaced by defaults", result, err)
+	}
+
+	for _, declarations := range []string{
+		`<xsl:decimal-format NaN=""/><xsl:decimal-format NaN="other"/>`,
+		`<xsl:decimal-format infinity="other"/><xsl:decimal-format infinity=""/>`,
+	} {
+		_, err := e.CompileXSLT(t.Context(), []byte(prefix+declarations+`</xsl:stylesheet>`), transform.XSLTOptions{})
+
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != "XTSE1290" {
+			t.Fatal("conflicting explicit string property accepted", err)
+		}
+	}
+}
+
+func TestXSLTDependentStaticParameters(t *testing.T) {
+	calls := 0
+	e := engine(t, transform.Config{Functions: []transform.Function{{
+		Name: transform.Name{Space: "urn:static-functions", Local: "default"},
+		Call: func(ctx context.Context, _ []transform.Sequence) (transform.Sequence, error) {
+			calls++
+			return transform.Values(transform.String("default")), ctx.Err()
+		},
+	}}})
+
+	for _, test := range []struct{ name, ref, uri, fallback string }{
+		{"a", "$a", "", "'old'"},
+		{"p:a", "$q:a", "urn:static-parameters", "'old'"},
+		{"a", "$a", "", "f:default()"},
+	} {
+		source := sheet(version30, `<xsl:param name="`+test.name+`" static="yes" select="`+test.fallback+`"/><xsl:param name="b" static="yes" select="upper-case(`+test.ref+`)"/><xsl:template name="start"><xsl:value-of select="concat(`+test.ref+`, '|', $b)"/></xsl:template>`)
+		source = strings.Replace(source, `version="3.0"`, `version="3.0" xmlns:p="urn:static-parameters" xmlns:q="urn:static-parameters" xmlns:f="urn:static-functions"`, 1)
+		bindings := transform.Bindings{{Space: test.uri, Local: "a"}: transform.Values(transform.String("Hello"))}
+
+		compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{StaticParameters: bindings})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		output, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+		if err != nil || string(output.Primary) != "Hello|HELLO" {
+			t.Errorf("CompileXSLT %s: %q, %v", test.name, output.Primary, err)
+		}
+
+		result, err := query(t, e, `transform(map{'stylesheet-text':$stylesheet,'static-params':map{QName($uri,'a'):'Hello'},'initial-template':QName('', 'start'),'delivery-format':'serialized'})?output`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{
+			{Local: variableStylesheet}: transform.Values(transform.String(source)),
+			{Local: variableURI}:        transform.Values(transform.String(test.uri)),
+		}})
+		if err != nil || text(t, result) != "Hello|HELLO" {
+			t.Errorf("fn:transform %s: %v, %v", test.name, result, err)
+		}
+	}
+
+	if calls != 0 {
+		t.Fatal("provided static parameter evaluated its unused default", calls)
+	}
+
+	for _, test := range []struct{ source, want string }{
+		{sheet(version30, `<xsl:param name="a" static="yes" select="'old'"/><xsl:param name="b" static="yes" select="upper-case($a)"/><xsl:template name="start"><xsl:value-of select="concat($a,'|',$b)"/></xsl:template>`), "old|OLD"},
+	} {
+		compiled := stylesheet(t, e, test.source)
+
+		output, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+		if err != nil || string(output.Primary) != test.want {
+			t.Fatal(output, err)
+		}
+	}
+
+	for _, test := range []struct{ body, code string }{
+		{`<xsl:param name="a" static="yes" select="1 +"/>`, errCodeXPST0003},
+		{`<xsl:template name="start" use-when="$a"/>`, "XPST0008"},
+	} {
+		_, err := e.CompileXSLT(t.Context(), []byte(sheet(version30, test.body)), transform.XSLTOptions{
+			StaticParameters: transform.Bindings{{Local: "a"}: transform.Values(transform.String("Hello"))},
+		})
+
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != test.code {
+			t.Fatalf("%s: %v", test.body, err)
+		}
+	}
+
+	source := sheet(version30, `<xsl:param name="a" static="yes" select="'old'"/><xsl:param name="b" static="yes" select="count($a)"/><xsl:template name="start"><xsl:value-of select="$b"/></xsl:template>`)
+
+	compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{
+		StaticParameters: transform.Bindings{{Local: "a"}: transform.Sequence{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+	if err != nil || string(output.Primary) != "0" {
+		t.Fatal(output, err)
+	}
+}
+
+func TestXPathTransformFunction(t *testing.T) {
+	e := engine(t, transform.Config{})
+
+	for _, version := range []string{version10, version20, version30} {
+		source := sheet(version, `<xsl:template name="start"><xsl:text>hello</xsl:text></xsl:template>`)
+
+		for _, call := range []string{"transform", "fn:transform#1", "function-lookup(xs:QName('fn:transform'),1)"} {
+			program := query(t, e, strings.Replace(transformSerializedQuery, "transform(", call+"(", 1), transform.XPath31)
+
+			result, err := program.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{
+				{Local: variableStylesheet}: transform.Values(transform.String(source)),
+			}})
+			if err != nil || text(t, result) != "hello" {
+				t.Errorf("XSLT %s via %s: %v, %v", version, call, result, err)
+			}
+		}
+	}
+
+	for _, test := range []struct{ source, expression, want string }{
+		{
+			sheet(version30, `<xsl:param name="who"/><xsl:template name="start"><xsl:value-of select="concat('hello ', $who)"/></xsl:template>`),
+			`transform(map{'stylesheet-node':parse-xml($stylesheet), 'initial-template':QName('', 'start'), 'stylesheet-params':map{QName('', 'who'):'Bob'}, 'delivery-format':'serialized'})?output`, "hello Bob",
+		},
+		{
+			sheet(version30, `<xsl:template name="start"><xsl:sequence select="(2,3)"/></xsl:template>`),
+			`sum(transform(map{'stylesheet-text':$stylesheet, 'initial-template':QName('', 'start'), 'delivery-format':'raw'})?output)`, "5",
+		},
+		{
+			sheet(version30, `<xsl:template name="start"><xsl:sequence select="current-dateTime()"/></xsl:template>`),
+			`current-dateTime() eq transform(map{'stylesheet-text':$stylesheet, 'initial-template':QName('', 'start'), 'delivery-format':'raw'})?output`, nameTrue,
+		},
+		{
+			sheet(version30, `<xsl:template name="start"><xsl:sequence select="(2,3)"/></xsl:template>`),
+			`transform(map{'stylesheet-text':$stylesheet,'initial-template':QName('', 'start'),'delivery-format':'raw','post-process':function($uri,$value){string-join($value ! string(.), ':')}})?output`, "2:3",
+		},
+		{
+			sheet(version30, `<xsl:template name="start">one<xsl:result-document href="secondary.txt" method="text">two</xsl:result-document></xsl:template>`),
+			`let $r := transform(map{'stylesheet-text':$stylesheet,'initial-template':QName('', 'start'),'delivery-format':'serialized','base-output-uri':'https://output.invalid/main.txt'}) return concat($r('https://output.invalid/main.txt'), ':', $r('https://output.invalid/secondary.txt'))`, "one:two",
+		},
+		{
+			`<wrapper xmlns:p="urn:inherited" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:stylesheet version="3.0"><xsl:output method="text"/><xsl:template name="p:start">hello</xsl:template></xsl:stylesheet></wrapper>`,
+			`let $node := parse-xml($stylesheet), $before := serialize($node), $r := transform(map{'stylesheet-node':$node/*/*,'initial-template':QName('urn:inherited','start'),'delivery-format':'serialized'}) return concat($r?output, ':', serialize($node) eq $before)`, "hello:true",
+		},
+		{
+			sheet(version30, `<xsl:template match="/"><out/></xsl:template>`),
+			`count(transform(map{'stylesheet-text':$stylesheet,'initial-match-selection':()})?output/*)`, "0",
+		},
+	} {
+		result, err := query(t, e, test.expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{
+			{Local: variableStylesheet}: transform.Values(transform.String(test.source)),
+		}})
+		if err != nil || text(t, result) != test.want {
+			t.Error(test.expression, result, err)
+		}
+	}
+}
+
+func TestXPathTransformErrorCodes(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range []struct{ expression, code string }{
+		{`transform(1)`, errCodeXPTY0004},
+		{`transform(())`, errCodeXPTY0004},
+		{`transform(map{})`, "FOXT0002"},
+		{`transform(map{'stylesheet-text':$stylesheet,'xslt-version':()})`, errCodeXPTY0004},
+		{`transform(map{'stylesheet-text':$stylesheet,'xslt-version':(2,3)})`, errCodeXPTY0004},
+		{`transform(map{'stylesheet-text':$stylesheet,'xslt-version':4})`, errCodeFOXT0001},
+		{`transform(map{'stylesheet-text':$stylesheet,'xslt-version':3.0000000000000000000000000001})`, errCodeFOXT0001},
+		{`transform(map{'stylesheet-text':$stylesheet,'xslt-version':2})`, errCodeFOXT0001},
+		{`transform(map{'stylesheet-text':$stylesheet, 'initial-template':QName('', 'missing')})`, "XTDE0040"},
+		{`transform(map{'stylesheet-text':$invalid})`, errCodeXPST0003},
+		{`transform(map{'stylesheet-text':$stylesheet})`, "XTDE0040"},
+		{`transform(map{'stylesheet-text':$required,'initial-template':QName('', 'start')})`, "XTDE0700"},
+		{`transform(map{'stylesheet-text':$application,'initial-template':QName('', 'start')})`, applicationErrorLocal},
+		{`transform(map{'stylesheet-text':$stylesheet,'requested-properties':map{QName('http://www.w3.org/1999/XSL/Transform','supports-streaming'):true()}})`, errCodeFOXT0001},
+	} {
+		result, err := query(t, e, test.expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{
+			{Local: variableStylesheet}: transform.Values(transform.String(sheet(version30, `<xsl:template name="start"/>`))),
+			{Local: "invalid"}:          transform.Values(transform.String(sheet(version30, `<xsl:template name="start"><xsl:sequence select="1 +"/></xsl:template>`))),
+			{Local: "application"}:      transform.Values(transform.String(sheet(version30, `<xsl:template name="start"><xsl:sequence select="error(QName('urn:application','x:oops'))"/></xsl:template>`))),
+			{Local: "required"}:         transform.Values(transform.String(sheet(version30, `<xsl:template name="start"><xsl:param name="p" required="yes"/></xsl:template>`))),
+		}})
+
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != test.code || result.Len() != 0 {
+			t.Errorf("%s: %v, %v", test.expression, result, err)
+		}
+
+		if test.code == applicationErrorLocal && detail != nil && detail.CodeName() != (transform.Name{Space: namespaceApplication, Local: applicationErrorLocal}) {
+			t.Fatal("application error namespace was lost", detail.CodeName())
+		}
+	}
+}
+
+func TestXSLTValueTemplateErrorCodes(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, test := range []struct{ name, body, code string }{
+		{"attribute left brace", `<r a="{1"/>`, "XTSE0350"},
+		{"attribute right brace", `<r a="1}"/>`, "XTSE0370"},
+		{"text left brace", `<r xsl:expand-text="yes">{1</r>`, "XTSE0350"},
+		{"text right brace", `<r xsl:expand-text="yes">1}</r>`, "XTSE0370"},
+		{"invalid enclosed expression", `<r a="{1 +}"/>`, errCodeXPST0003},
+		{"value-of select and content", `<xsl:value-of select="1">text</xsl:value-of>`, "XTSE0870"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := e.CompileXSLT(t.Context(), []byte(sheet(version30, `<xsl:template name="start">`+test.body+`</xsl:template>`)), transform.XSLTOptions{})
+
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != test.code {
+				t.Fatalf("want %s, got %v", test.code, err)
+			}
+		})
+	}
+
+	s := stylesheet(t, e, sheet(version30, `<xsl:template name="start"><xsl:text expand-text="yes">{{{map{'key':'}'}?key}}}</xsl:text></xsl:template>`))
+
+	out, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+	if err != nil || string(out.Primary) != "{}}" {
+		t.Fatal("balanced expression or escaped braces changed", out, err)
+	}
+}
+
+func TestXSLTStandaloneAttributeValues(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, version := range []string{version20, version30} {
+		t.Run(version, func(t *testing.T) {
+			source := sheetStart + version + `"><xsl:output method="xml" omit-xml-declaration="yes"/>
+			<xsl:template name="start">
+			  <xsl:variable name="attrs" as="attribute()*">
+			    <xsl:attribute name="plain">p&amp;q&lt;r</xsl:attribute>
+			    <xsl:attribute name="n:qualified" namespace="urn:attribute" select="'literal &amp;amp; text'"/>
+			    <xsl:attribute name="empty"/>
+			  </xsl:variable>
+			  <out count="{count($attrs)}" parents="{count($attrs/..)}"><xsl:sequence select="$attrs"/></out>
+			</xsl:template></xsl:stylesheet>`
+			s := stylesheet(t, e, source)
+
+			out, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			doc, err := e.Parse(t.Context(), out.Primary)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			q := query(t, e, `count(/out/@*) = 5 and /out/@count = '3' and /out/@parents = '0' and /out/@plain = 'p&q<r' and /out/@Q{urn:attribute}qualified = 'literal &amp; text' and /out/@empty = ''`, transform.XPath31)
+
+			values, err := q.Evaluate(t.Context(), doc, transform.XPathContext{})
+			if err != nil || text(t, values) != "true" {
+				t.Fatal(string(out.Primary), values, err)
+			}
+
+			invalid := stylesheet(t, e, strings.Replace(source, `<xsl:sequence select="$attrs"/>`, `<child/><xsl:sequence select="$attrs"/>`, 1))
+			_, err = invalid.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != "XTDE0410" {
+				t.Fatal("attribute accepted after child content", err)
+			}
+		})
+	}
+}
+
 func TestXSLT20And30(t *testing.T) {
 	e := engine(t, transform.Config{})
 
@@ -99,6 +436,68 @@ func TestXSLTVersionBoundaries(t *testing.T) {
 		if _, err := e.CompileXSLT(context.Background(), []byte(sheet(version30, body)), transform.XSLTOptions{}); !errors.Is(err, transform.ErrUnsupported) {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestXSLTTransformProcessorVersion(t *testing.T) {
+	e := engine(t, transform.Config{})
+	program := sheet(version20, `<xsl:output method="text"/><xsl:template name="start"><xsl:value-of select="system-property('xsl:version')"/><xsl:iterate select="1 to 2"><xsl:value-of select="map{'value':.}?value"/></xsl:iterate></xsl:template>`)
+
+	for _, minimum := range []string{"3", "2.5", "2.0000000000000000000000000001"} {
+		expression := `transform(map{'stylesheet-text':$stylesheet, 'xslt-version':` + minimum + `, 'initial-template':QName('', 'start'), 'delivery-format':'serialized'})?output`
+
+		result, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: variableStylesheet}: transform.Values(transform.String(program))}})
+		if err != nil || text(t, result) != "3.012" {
+			t.Fatal(result, err)
+		}
+	}
+}
+
+func TestXSLTProcessorVersion(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, tc := range []struct {
+		name, declaration, body, want string
+		processor                     transform.XSLTVersion
+	}{
+		{"modern syntax in 2.0 declaration", version20, `<xsl:iterate select="1 to 2"><xsl:value-of select="map{'value':.}?value"/></xsl:iterate>`, "12", transform.XSLT30},
+		{"modern grammar with 1.0 compatibility", "1.0", `<xsl:value-of select="(10, 20)"/><xsl:value-of version="3.0" select="(30, 40)"/>`, compatSequenceText, transform.XSLT30},
+		{"2.0 grammar with 1.0 compatibility", "1.0", `<xsl:value-of select="(10, 20)"/><xsl:value-of version="2.0" select="(30, 40)"/>`, compatSequenceText, transform.XSLT20},
+		{"local compatibility in 2.0", version20, `<xsl:value-of version="1.0" select="(10, 20)"/><xsl:value-of select="(30, 40)"/>`, compatSequenceText, transform.XSLT20},
+		{"3.0 processor introspection", version20, `<xsl:value-of select="system-property('xsl:version')"/><xsl:text>:</xsl:text><xsl:value-of select="element-available('xsl:iterate')"/>`, "3.0:true", transform.XSLT30},
+		{"2.0 processor introspection", version20, `<xsl:value-of select="system-property('xsl:version')"/><xsl:text>:</xsl:text><xsl:value-of select="element-available('xsl:iterate')"/>`, "2.0:false", transform.XSLT20},
+		{"2.0 function library", version20, `<xsl:value-of xmlns:fn="http://www.w3.org/2005/xpath-functions" select="function-available('json-doc', 1), function-available('current-output-uri', 0), function-available('fn:current-output-uri', 0)"/>`, "false false false", transform.XSLT20},
+		{"3.0 function library", version20, `<xsl:value-of xmlns:fn="http://www.w3.org/2005/xpath-functions" select="function-available('json-doc', 1), function-available('current-output-uri', 0), function-available('fn:current-output-uri', 0)"/>`, "true true true", transform.XSLT30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			program := sheet(tc.declaration, `<xsl:output method="text"/><xsl:template name="start">`+tc.body+`</xsl:template>`)
+
+			s, err := e.CompileXSLT(t.Context(), []byte(program), transform.XSLTOptions{ProcessorVersion: tc.processor})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if s.Version() != tc.processor {
+				t.Fatalf("processor = %v, want %v", s.Version(), tc.processor)
+			}
+
+			out, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+			if err != nil || string(out.Primary) != tc.want {
+				t.Fatal(out, err, "want", tc.want)
+			}
+		})
+	}
+
+	program := []byte(sheet(version20, `<xsl:template name="start"><xsl:value-of select="map{'value':1}?value"/></xsl:template>`))
+	if _, err := e.CompileXSLT(t.Context(), program, transform.XSLTOptions{ProcessorVersion: transform.XSLT20}); err == nil {
+		t.Fatal("2.0 processor accepted 3.1 grammar")
+	}
+
+	if _, err := e.CompileXSLT(t.Context(), program, transform.XSLTOptions{Version: transform.XSLT30, ProcessorVersion: transform.XSLT30}); !errors.Is(err, transform.ErrUnsupported) {
+		t.Fatal("declared-profile guard was bypassed", err)
+	}
+
+	if _, err := e.CompileXSLT(t.Context(), program, transform.XSLTOptions{ProcessorVersion: 99}); !errors.Is(err, transform.ErrUnsupported) {
+		t.Fatal("invalid processor selection", err)
 	}
 }
 
@@ -355,7 +754,7 @@ func TestXSLT10ForwardsModulesPreserveSource(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, instruction := range []string{"include", "import"} {
+	for _, instruction := range []string{nameInclude, "import"} {
 		t.Run(instruction, func(t *testing.T) {
 			source := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.1" expand-text="yes"><xsl:` + instruction + ` href="urn:module"/><xsl:output method="text"/><xsl:template match="/"><xsl:value-of select="document('')/*/@expand-text"/>:<xsl:call-template name="module"/></xsl:template></xsl:stylesheet>`
 			s := stylesheet(t, e, source)

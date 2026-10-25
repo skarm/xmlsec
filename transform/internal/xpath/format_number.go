@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	icu "github.com/skarm/xmlsec/transform/internal/xpath/number"
@@ -19,6 +20,28 @@ type DecimalFormat = icu.DecimalFormat
 
 func DefaultDecimalFormat() DecimalFormat {
 	return icu.DefaultDecimalFormat()
+}
+
+// DecimalZeroDigit identifies the first digit of each Unicode Nd group of ten.
+// Adjacent mathematical digit alphabets can share one contiguous Nd range.
+func DecimalZeroDigit(character rune) bool {
+	if !unicode.IsDigit(character) {
+		return false
+	}
+
+	for _, block := range unicode.Nd.R16 {
+		if character >= rune(block.Lo) && character <= rune(block.Hi) {
+			return (character-rune(block.Lo))%10 == 0
+		}
+	}
+
+	for _, block := range unicode.Nd.R32 {
+		if character >= rune(block.Lo) && character <= rune(block.Hi) {
+			return (character-rune(block.Lo))%10 == 0
+		}
+	}
+
+	return false
 }
 
 func defaultDecimalFormat(ctx context.Context) icu.DecimalFormat {

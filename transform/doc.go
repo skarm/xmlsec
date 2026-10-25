@@ -6,10 +6,16 @@
 //
 // Construct an [Engine] with [NewEngine]. Use [Engine.Parse] for XML input or [Engine.Import]
 // to share an existing github.com/skarm/xmlsec/document snapshot without reparsing.
-// [Engine.CompileXPath] snapshots namespaces, language version and static base URI;
+// [Engine.CompileXPath] snapshots namespaces, language version, static base URI
+// and optional default/named decimal formats;
 // [XPath.Evaluate] supplies invocation-local variables and context. [Engine.CompileXSLT]
 // binds stylesheet version and static parameters; [Stylesheet.Transform] supplies
 // global parameters and an optional initial template or mode.
+// [XSLTContext.ContextItem] can supply a global item independently of the
+// source and initial match selection, or explicitly select an absent context.
+// An initial named template defaults its singleton focus to that global item.
+// Supplied static parameter values are available to subsequent static
+// declarations under their expanded names; undeclared supplied names are ignored.
 //
 // Documents and compiled programs support concurrent reuse. [Bindings] maps expanded
 // [Name] names to immutable [Sequence] values. Values include atomic types,
@@ -46,7 +52,10 @@
 // their own language semantics, regardless of standalone program versions.
 //
 // [Error] preserves operation, standard XPath/XSLT codes where available, and error
-// causes. Application functions, packages and collections use explicit adapters.
+// causes. XPath 3.0/3.1 implementation limits use XPDY0130 when no more
+// specific standard error applies; errors.Is(err, ErrLimit) still identifies them.
+// [Error.CodeName] retains the namespace of application-defined error codes.
+// Application functions, packages and collections use explicit adapters.
 // Schema awareness and W3C streamable XSLT execution are unsupported; independent
 // record streaming is available through [Stylesheet.WriteRecords].
 // The supported profiles do not establish full W3C conformance.

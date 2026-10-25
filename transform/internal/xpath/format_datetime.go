@@ -41,7 +41,7 @@ func fnFormatTime(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 
 func formatDateTimeCommon(ctx context.Context, args []xdm.Sequence, typeName string) (xdm.Sequence, error) {
 	if xdm.SequenceLen(args[0]) == 0 {
-		return xdm.SingleString(""), nil
+		return nil, nil
 	}
 
 	valAtom, err := AtomizeItem(args[0].Get(0))
@@ -49,8 +49,12 @@ func formatDateTimeCommon(ctx context.Context, args []xdm.Sequence, typeName str
 		return nil, err
 	}
 
-	// Cast to the appropriate type if needed
-	if valAtom.TypeName != typeName {
+	// Function conversion admits untypedAtomic, not arbitrary string/date casts.
+	if valAtom.TypeName != typeName && !(typeName == xdm.TypeDateTime && valAtom.TypeName == xdm.TypeDateTimeStamp) && valAtom.TypeName != xdm.TypeUntypedAtomic {
+		return nil, &xdm.Error{Code: "XPTY0004", Message: "calendar formatting argument has the wrong type"}
+	}
+
+	if valAtom.TypeName == xdm.TypeUntypedAtomic {
 		valAtom, err = CastAtomic(valAtom, typeName)
 		if err != nil {
 			return nil, err
@@ -1244,6 +1248,10 @@ func isKnownCalendarName(calendar string) bool {
 // validateComponentForType checks that a component specifier is valid for the given type.
 // Per XPath F&O §9.8.4: raises FOFD1350 if the component is not available.
 func validateComponentForType(comp byte, typeName string) error {
+	if !strings.ContainsRune("YMDdFWwHhPmsfZzCE", rune(comp)) {
+		return &xdm.Error{Code: errCodeFOFD1340, Message: fmt.Sprintf("unknown component specifier: %c", comp)}
+	}
+
 	// Date components: Y, M, D, d, F, W, w, E, C
 	// Time components: H, h, P, m, s, f
 	// Both: Z, z

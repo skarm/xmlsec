@@ -4,12 +4,13 @@
 package xpath
 
 import (
+	"errors"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/intconv"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
@@ -97,18 +98,26 @@ func (p *parseOptions) parseExpression() (Expr, error) {
 func (p *parseOptions) parseExprSingle() (Expr, error) {
 	tok := p.lexer.Peek()
 	switch tok.Type {
-	case TokenFor:
-		return p.parseFLWOR()
-	case TokenLet:
-		return p.parseFLWOR()
+	case TokenFor, TokenLet:
+		if p.lexer.PeekAt(1).Type == TokenVariableRef {
+			return p.parseFLWOR()
+		}
 	case TokenSome:
-		return p.parseQuantifiedExpr(true)
+		if p.lexer.PeekAt(1).Type == TokenVariableRef {
+			return p.parseQuantifiedExpr(true)
+		}
 	case TokenEvery:
-		return p.parseQuantifiedExpr(false)
+		if p.lexer.PeekAt(1).Type == TokenVariableRef {
+			return p.parseQuantifiedExpr(false)
+		}
 	case TokenIf:
-		return p.parseIfExpr()
+		if p.lexer.PeekAt(1).Type == TokenLParen {
+			return p.parseIfExpr()
+		}
 	case TokenTry:
-		return p.parseTryCatchExpr()
+		if p.lexer.PeekAt(1).Type == TokenLBrace {
+			return p.parseTryCatchExpr()
+		}
 	}
 
 	return p.parseOrExpr()
@@ -731,7 +740,7 @@ func (p *parseOptions) canStartPostfixExpr() bool {
 	case TokenVariableRef, TokenLParen, TokenString, TokenNumber,
 		TokenDot, TokenQMark, TokenLBracket:
 		return true
-	case TokenName, TokenFunction, TokenMap, TokenArray:
+	case TokenName, TokenFunction, TokenMap, TokenArray, TokenFor, TokenLet, TokenSome, TokenEvery, TokenIf, TokenTry, TokenCatch:
 		return true
 	}
 
@@ -824,7 +833,7 @@ func (p *parseOptions) parsePrimaryExpr() (Expr, error) {
 		return UnaryLookupExpr{Key: key, All: all}, nil
 
 	case TokenFunction:
-		// "function" followed by "(" is an inline function or function test.
+		// nameFunction followed by "(" is an inline function or function test.
 		// Otherwise it's a name test (e.g., child::function or xs:QName(function)).
 		if p.lexer.PeekAt(1).Type == TokenLParen {
 			return p.parseFunctionKeyword()
@@ -833,20 +842,18 @@ func (p *parseOptions) parsePrimaryExpr() (Expr, error) {
 		return p.parseNamePrimary()
 
 	case TokenMap:
-		// map:func(...) is a namespace-prefixed function call, not a constructor
-		if p.lexer.PeekAt(1).Type == TokenColon {
-			return p.parseNamePrimary()
+		if p.lexer.PeekAt(1).Type == TokenLBrace {
+			return p.parseMapConstructor()
 		}
 
-		return p.parseMapConstructor()
+		return p.parseNamePrimary()
 
 	case TokenArray:
-		// array:func(...) is a namespace-prefixed function call, not a constructor
-		if p.lexer.PeekAt(1).Type == TokenColon {
-			return p.parseNamePrimary()
+		if p.lexer.PeekAt(1).Type == TokenLBrace {
+			return p.parseArrayCurlyConstructor()
 		}
 
-		return p.parseArrayCurlyConstructor()
+		return p.parseNamePrimary()
 
 	case TokenLBracket:
 		return p.parseArraySquareConstructor()
@@ -855,7 +862,13 @@ func (p *parseOptions) parsePrimaryExpr() (Expr, error) {
 		return p.parseNamePrimary()
 
 	case TokenIf:
-		return p.parseIfExpr()
+		if p.lexer.PeekAt(1).Type == TokenLParen {
+			return p.parseIfExpr()
+		}
+
+		return p.parseNamePrimary()
+	case TokenFor, TokenLet, TokenSome, TokenEvery, TokenTry, TokenCatch:
+		return p.parseNamePrimary()
 
 	default:
 		return nil, fmt.Errorf("%w: %s in primary expression", ErrUnexpectedToken, tok)
@@ -874,7 +887,7 @@ func parseNumberLiteral(s string) (LiteralExpr, error) {
 		// Integer literal → *big.Int (arbitrary precision)
 		v, ok := new(big.Int).SetString(s, 10)
 		if !ok {
-			return LiteralExpr{}, fmt.Errorf("invalid integer %q", s)
+			return LiteralExpr{}, fmt.Errorf("%w: invalid integer %q", ErrUnexpectedToken, s)
 		}
 
 		return LiteralExpr{Value: v}, nil
@@ -884,7 +897,7 @@ func parseNumberLiteral(s string) (LiteralExpr, error) {
 		// Decimal literal → *big.Rat (exact rational)
 		v, ok := new(big.Rat).SetString(s)
 		if !ok {
-			return LiteralExpr{}, fmt.Errorf("invalid decimal %q", s)
+			return LiteralExpr{}, fmt.Errorf("%w: invalid decimal %q", ErrUnexpectedToken, s)
 		}
 
 		return LiteralExpr{Value: v}, nil
@@ -892,7 +905,7 @@ func parseNumberLiteral(s string) (LiteralExpr, error) {
 	// Double literal → float64
 	v, err := parseXPathDouble(s)
 	if err != nil {
-		return LiteralExpr{}, fmt.Errorf("invalid number %q: %w", s, err)
+		return LiteralExpr{}, fmt.Errorf("%w: invalid number %q: %w", ErrUnexpectedToken, s, err)
 	}
 
 	return LiteralExpr{Value: v}, nil
@@ -906,7 +919,7 @@ func (p *parseOptions) parseNamePrimary() (Expr, error) {
 	name := tok.Value
 
 	// Check for QName: prefix:name (no whitespace around colon per XPath 3.1 A.2.1)
-	if colonTok := p.lexer.Peek(); colonTok.Type == TokenColon && !colonTok.SpaceBefore {
+	if p.joinedQNameAt(0) {
 		p.lexer.Next() // consume ':'
 
 		localTok := p.lexer.Peek()
@@ -931,12 +944,21 @@ func (p *parseOptions) parseNamePrimary() (Expr, error) {
 		if arityTok.Type != TokenNumber {
 			return nil, fmt.Errorf("%w: arity number after '#' but got %s", ErrExpectedToken, arityTok)
 		}
-		// An arity that fits int64 but not int (where int is 32 bits)
-		// saturates instead of failing to parse; no call can pass that many
-		// arguments.
-		arity, err := intconv.Atoi(arityTok.Value)
+
+		for _, digit := range arityTok.Value {
+			if digit < '0' || digit > '9' {
+				return nil, fmt.Errorf("%w: arity must be an integer literal", ErrUnexpectedToken)
+			}
+		}
+		// Arity is observable through function-arity, so capacity overflow must
+		// not saturate to a different arity on a smaller platform.
+		arity, err := strconv.Atoi(arityTok.Value)
 		if err != nil {
-			return nil, fmt.Errorf("invalid arity %q: %w", arityTok.Value, err)
+			if errors.Is(err, strconv.ErrRange) {
+				return nil, &xdm.Error{Code: errCodeFOAR0002, Message: "function arity exceeds the supported integer range", Cause: err}
+			}
+
+			return nil, fmt.Errorf("%w: invalid arity %q: %w", ErrUnexpectedToken, arityTok.Value, err)
 		}
 
 		return NamedFunctionRef{Prefix: prefix, Name: name, Arity: arity}, nil
@@ -1084,7 +1106,7 @@ func (p *parseOptions) parseLookupKey() (Expr, bool, error) {
 
 		n := new(big.Int)
 		if _, ok := n.SetString(tok.Value, 10); !ok {
-			return nil, false, fmt.Errorf("invalid lookup index %q", tok.Value)
+			return nil, false, fmt.Errorf("%w: invalid lookup index %q", ErrUnexpectedToken, tok.Value)
 		}
 
 		return LiteralExpr{Value: n}, false, nil
@@ -1216,7 +1238,7 @@ func (p *parseOptions) parseStep() (Step, error) {
 		axisSpecified = true
 
 		p.lexer.Next()
-	case TokenName, TokenFunction, TokenMap, TokenArray:
+	case TokenName, TokenFunction, TokenMap, TokenArray, TokenFor, TokenLet, TokenSome, TokenEvery, TokenIf, TokenTry, TokenCatch:
 		if p.lexer.PeekAt(1).Type == TokenColonColon {
 			if a, ok := xdm.AxisFromName(tok.Value); ok {
 				axis = a
@@ -1278,11 +1300,11 @@ func (p *parseOptions) parseNodeTest(_ AxisType) (xdm.NodeTest, error) {
 	if tok.Type == TokenStar {
 		p.lexer.Next()
 
-		if p.lexer.Peek().Type == TokenColon {
+		if p.joinedQNameAt(0) {
 			p.lexer.Next() // consume ':'
 
 			local := p.lexer.Peek()
-			if local.Type == TokenName {
+			if isNameLikeToken(local.Type) && !local.SpaceBefore {
 				p.lexer.Next()
 				return xdm.NameTest{Prefix: "*", Local: local.Value}, nil
 			}
@@ -1324,7 +1346,7 @@ func (p *parseOptions) parseNodeTest(_ AxisType) (xdm.NodeTest, error) {
 	// Per XPath 3.1 A.2.1: a QName has no whitespace around the colon.
 	// If whitespace precedes ':', this name stands alone (the ':' is a
 	// map-entry separator or similar context-dependent delimiter).
-	if colonTok := p.lexer.Peek(); colonTok.Type == TokenColon && !colonTok.SpaceBefore {
+	if p.joinedQNameAt(0) {
 		return p.parseQNameTest(tok.Value)
 	}
 
@@ -1339,7 +1361,7 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 		p.lexer.Next() // consume '('
 
 		if err := p.expectToken(TokenRParen); err != nil {
-			return nil, true, fmt.Errorf("expected ')' after node(")
+			return nil, true, err
 		}
 
 		return xdm.TypeTest{Kind: xdm.NodeKindNode}, true, nil
@@ -1347,7 +1369,7 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 		p.lexer.Next()
 
 		if err := p.expectToken(TokenRParen); err != nil {
-			return nil, true, fmt.Errorf("expected ')' after text(")
+			return nil, true, err
 		}
 
 		return xdm.TypeTest{Kind: xdm.NodeKindText}, true, nil
@@ -1355,7 +1377,7 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 		p.lexer.Next()
 
 		if err := p.expectToken(TokenRParen); err != nil {
-			return nil, true, fmt.Errorf("expected ')' after comment(")
+			return nil, true, err
 		}
 
 		return xdm.TypeTest{Kind: xdm.NodeKindComment}, true, nil
@@ -1371,7 +1393,7 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 		}
 
 		if err := p.expectToken(TokenRParen); err != nil {
-			return nil, true, fmt.Errorf("expected ')' after processing-instruction(")
+			return nil, true, err
 		}
 
 		return xdm.PITest{Target: target, HasTarget: hasTarget}, true, nil
@@ -1389,7 +1411,7 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 		p.lexer.Next()
 
 		if err := p.expectToken(TokenRParen); err != nil {
-			return nil, true, fmt.Errorf("expected ')' after namespace-node(")
+			return nil, true, err
 		}
 
 		return xdm.NamespaceNodeTest{}, true, nil
@@ -1397,7 +1419,7 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 		p.lexer.Next()
 
 		if err := p.expectToken(TokenRParen); err != nil {
-			return nil, true, fmt.Errorf("expected ')' after item(")
+			return nil, true, err
 		}
 
 		return xdm.AnyItemTest{}, true, nil
@@ -1492,6 +1514,10 @@ func (p *parseOptions) parseSchemaTest(isElement bool) (xdm.NodeTest, bool, erro
 	p.lexer.Next() // consume '('
 
 	name := p.scanQName()
+	if name == "" {
+		return nil, true, fmt.Errorf("%w: declaration name in schema test", ErrExpectedToken)
+	}
+
 	if err := p.expectToken(TokenRParen); err != nil {
 		if isElement {
 			return nil, true, fmt.Errorf("%w: ')' after schema-element(", ErrExpectedToken)
@@ -1512,6 +1538,10 @@ func (p *parseOptions) parseQNameTest(prefix string) (xdm.NodeTest, error) {
 	p.lexer.Next() // consume ':'
 
 	next := p.lexer.Peek()
+	if next.SpaceBefore {
+		return nil, fmt.Errorf("%w: whitespace or comment inside QName", ErrUnexpectedToken)
+	}
+
 	if next.Type == TokenStar {
 		p.lexer.Next()
 		return xdm.NameTest{Prefix: prefix, Local: "*"}, nil
@@ -1914,7 +1944,7 @@ func (p *parseOptions) parseCatchCode() (string, error) {
 
 // --- Constructor Parsing ---
 
-// parseFunctionKeyword handles "function" which could be:
+// parseFunctionKeyword handles nameFunction which could be:
 // - inline function: function($x) { ... }
 // - function test: function(*) in sequence types
 func (p *parseOptions) parseFunctionKeyword() (Expr, error) {
@@ -1955,12 +1985,14 @@ func (p *parseOptions) parseFunctionKeyword() (Expr, error) {
 		returnType = &st
 	}
 
+	emptyBody := p.lexer.Peek().Type == TokenLBrace && p.lexer.PeekAt(1).Type == TokenRBrace
+
 	body, err := p.parseInlineFunctionBody()
 	if err != nil {
 		return nil, err
 	}
 
-	return InlineFunctionExpr{Params: params, ReturnType: returnType, Body: body}, nil
+	return InlineFunctionExpr{Params: params, ReturnType: returnType, Body: body, EmptyBody: emptyBody}, nil
 }
 
 func (p *parseOptions) parseInlineFunctionParams() ([]FunctionParam, error) {
@@ -2162,15 +2194,15 @@ func (p *parseOptions) parseSequenceType() (xdm.SequenceType, error) {
 	tok := p.lexer.Peek()
 
 	// empty-sequence()
-	if tok.Type == TokenName && tok.Value == "empty-sequence" {
+	if tok.Type == TokenName && tok.Value == nameEmptySequence {
 		p.lexer.Next()
 
 		if err := p.expectToken(TokenLParen); err != nil {
-			return xdm.SequenceType{}, fmt.Errorf("expected '(' after empty-sequence")
+			return xdm.SequenceType{}, err
 		}
 
 		if err := p.expectToken(TokenRParen); err != nil {
-			return xdm.SequenceType{}, fmt.Errorf("expected ')' after empty-sequence(")
+			return xdm.SequenceType{}, err
 		}
 
 		return xdm.SequenceType{Void: true}, nil
@@ -2443,7 +2475,7 @@ func (p *parseOptions) scanQName() string {
 
 	name := tok.Value
 
-	if colonTok := p.lexer.Peek(); colonTok.Type == TokenColon && !colonTok.SpaceBefore {
+	if p.joinedQNameAt(0) {
 		p.lexer.Next()
 		localTok := p.lexer.Peek()
 		// Accept both plain names and keywords (map, array, etc.)
@@ -2499,7 +2531,7 @@ func (p *parseOptions) looksLikeStepOffset(offset int) bool {
 	switch tok.Type {
 	case TokenDotDot, TokenAt, TokenStar:
 		return true
-	case TokenName, TokenFunction, TokenMap, TokenArray:
+	case TokenName, TokenFunction, TokenMap, TokenArray, TokenFor, TokenLet, TokenSome, TokenEvery, TokenIf, TokenTry, TokenCatch:
 		next := p.lexer.PeekAt(offset + 1)
 
 		if next.Type == TokenColonColon {
@@ -2524,7 +2556,7 @@ func (p *parseOptions) looksLikeStepOffset(offset int) bool {
 			// Per XPath 3.1 A.2.1: a QName is Name:Name with NO whitespace
 			// around the colon. If whitespace precedes ':', this is a plain
 			// name test (the ':' is a map-entry separator, not a QName colon).
-			if next.SpaceBefore {
+			if !p.joinedQNameAt(offset + 1) {
 				return true // plain name test; ':' is map entry separator
 			}
 			// prefix:local (name test) vs prefix:name( (QName function call)
@@ -2558,6 +2590,14 @@ func (p *parseOptions) looksLikeStepOffset(offset int) bool {
 	}
 
 	return false
+}
+
+// joinedQNameAt recognizes a colon joined to both adjacent QName components.
+// A separated colon can still be a map-entry delimiter; the caller decides
+// whether that delimiter is valid in its grammar context.
+func (p *parseOptions) joinedQNameAt(offset int) bool {
+	colon := p.lexer.PeekAt(offset)
+	return colon.Type == TokenColon && !colon.SpaceBefore && !p.lexer.PeekAt(offset+1).SpaceBefore
 }
 
 // isNameLikeToken returns true if the token type can be used as a local name

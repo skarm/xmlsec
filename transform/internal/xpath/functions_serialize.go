@@ -37,6 +37,13 @@ const (
 	errCodeSEPM0009 = "SEPM0009"
 	errCodeSEPM0010 = "SEPM0010"
 	errCodeSEPM0016 = "SEPM0016"
+	errCodeSEPM0017 = "SEPM0017"
+	errCodeSEPM0018 = "SEPM0018"
+	errCodeSEPM0019 = "SEPM0019"
+	errCodeSERE0020 = "SERE0020"
+	errCodeSERE0021 = "SERE0021"
+	errCodeSERE0022 = "SERE0022"
+	errCodeSERE0023 = "SERE0023"
 	errCodeSESU0011 = "SESU0011"
 	errCodeSESU0013 = "SESU0013"
 )
@@ -482,18 +489,17 @@ func parseSerializeOptions(ctx context.Context, args []xdm.Sequence) (serializeO
 		return opts, nil
 	}
 
-	m, ok := args[1].Get(0).(xdm.MapItem)
-	if ok {
-		return parseSerializeOptionsMap(ctx, opts, m)
-	}
-
 	if xdm.SequenceLen(args[1]) != 1 {
 		return opts, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize options must be a singleton"}
 	}
 
+	if m, ok := args[1].Get(0).(xdm.MapItem); ok {
+		return parseSerializeOptionsMap(ctx, opts, m)
+	}
+
 	node, ok := args[1].Get(0).(xdm.NodeItem)
 	if !ok {
-		return opts, nil
+		return opts, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize options must be a parameter element or map"}
 	}
 
 	return parseSerializeOptionsNode(opts, node.Node)
@@ -681,7 +687,7 @@ func parseSerializeMapContentOptions(ctx context.Context, opts serializeOptions,
 
 	if found {
 		if !serializeNormalizationFormValid(nf) {
-			return opts, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize option normalization-form has an invalid value %q", nf)}
+			return opts, &xdm.Error{Code: errCodeSEPM0016, Message: fmt.Sprintf("serialize option normalization-form has an invalid value %q", nf)}
 		}
 
 		opts.normalizationForm = nf
@@ -959,7 +965,7 @@ func parseSerializeOptionsNode(opts serializeOptions, n xdm.Node) (serializeOpti
 
 		key := param.URI() + "|" + param.LocalName()
 		if _, exists := seen[key]; exists {
-			return opts, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize options parameter must not appear more than once"}
+			return opts, &xdm.Error{Code: errCodeSEPM0019, Message: "serialize options parameter must not appear more than once"}
 		}
 
 		seen[key] = struct{}{}
@@ -992,7 +998,7 @@ func readSerializeOptionsRoot(n xdm.Node) (*xdm.Element, error) {
 	}
 
 	if len(elem.Attributes()) != 0 {
-		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize options root must not have attributes"}
+		return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "serialize options root must not have attributes"}
 	}
 
 	return elem, nil
@@ -1007,17 +1013,17 @@ func readSerializeOptionsChild(child xdm.Node) (*xdm.Element, error) {
 			return nil, nil
 		}
 
-		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize options root must not contain text"}
+		return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "serialize options root must not contain text"}
 	case xdm.CommentNode, xdm.ProcessingInstructionNode:
 		return nil, nil
 	case xdm.ElementNode:
 	default:
-		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize options root has invalid child node"}
+		return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "serialize options root has invalid child node"}
 	}
 
 	param, _ := xdm.AsNode[*xdm.Element](child)
 	if param.URI() == "" {
-		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize options parameters must be namespace-qualified"}
+		return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "serialize options parameters must be namespace-qualified"}
 	}
 
 	return param, nil
@@ -1073,7 +1079,7 @@ func applySerializeNodeParam(opts serializeOptions, param *xdm.Element) (seriali
 
 		opts.charMap = charMap
 	default:
-		return opts, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("unsupported serialize parameter %q", name)}
+		return opts, &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("unsupported serialize parameter %q", name)}
 	}
 
 	return opts, nil
@@ -1097,19 +1103,19 @@ func readSerializeNodeStringParam(param *xdm.Element) (string, error) {
 	switch name {
 	case "method":
 		if !serializeMethodValid(token) {
-			return "", &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize parameter method has an invalid value %q", value)}
+			return "", &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter method has an invalid value %q", value)}
 		}
 	case "json-node-output-method":
 		if !serializeJSONNodeOutputMethodValid(token) {
-			return "", &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize parameter json-node-output-method has an invalid value %q", value)}
+			return "", &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter json-node-output-method has an invalid value %q", value)}
 		}
 	case "normalization-form":
 		if !serializeNormalizationFormValid(token) {
-			return "", &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize parameter normalization-form has an invalid value %q", value)}
+			return "", &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter normalization-form has an invalid value %q", value)}
 		}
 	case "html-version":
 		if !isValidXSDecimal(token) {
-			return "", &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize parameter html-version must be an xs:decimal, got %q", value)}
+			return "", &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter html-version must be an xs:decimal, got %q", value)}
 		}
 	case serializeParamVersion:
 	default:
@@ -1217,17 +1223,17 @@ func serializeJSONNodeOutputMethodValid(v string) bool {
 
 func readSerializeParamValue(elem *xdm.Element) (string, error) {
 	if hasNonWhitespaceContent(elem) {
-		return "", &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize parameter must not have child content"}
+		return "", &xdm.Error{Code: errCodeSEPM0017, Message: "serialize parameter must not have child content"}
 	}
 
 	attrs := elem.Attributes()
 	if len(attrs) != 1 {
-		return "", &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize parameter must have exactly one value attribute"}
+		return "", &xdm.Error{Code: errCodeSEPM0017, Message: "serialize parameter must have exactly one value attribute"}
 	}
 
 	attr := attrs[0]
 	if attr.URI() != "" || attr.LocalName() != "value" {
-		return "", &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize parameter must use an unqualified value attribute"}
+		return "", &xdm.Error{Code: errCodeSEPM0017, Message: "serialize parameter must use an unqualified value attribute"}
 	}
 
 	return attr.Value(), nil
@@ -1257,7 +1263,7 @@ func readSerializeParamYesNo(elem *xdm.Element) (bool, error) {
 
 	norm, ok := serializeBooleanValue(value)
 	if !ok {
-		return false, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize parameter %q must be a boolean (yes/no/true/false/1/0)", elem.LocalName())}
+		return false, &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter %q must be a boolean (yes/no/true/false/1/0)", elem.LocalName())}
 	}
 
 	return norm == lexicon.ValueYes, nil
@@ -1282,7 +1288,7 @@ func readSerializeParamStandalone(elem *xdm.Element) (string, error) {
 		return norm, nil
 	}
 
-	return "", &xdm.Error{Code: lexicon.ErrXPTY0004, Message: `serialize parameter "standalone" must be yes/no/omit or a boolean (true/false/1/0)`}
+	return "", &xdm.Error{Code: errCodeSEPM0017, Message: `serialize parameter "standalone" must be yes/no/omit or a boolean (true/false/1/0)`}
 }
 
 // readSerializeParamQNameNames reads a cdata-section-elements or
@@ -1320,7 +1326,7 @@ func readSerializeParamQNameNames(elem *xdm.Element) (map[string]struct{}, error
 // exact expanded {uri}local key. NCName parts are validated before resolution.
 func resolveSerializeNameToken(elem *xdm.Element, token string) (string, error) {
 	badName := func() error {
-		return &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize parameter has an invalid name %q", token)}
+		return &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter has an invalid name %q", token)}
 	}
 
 	if uri, local, ok := parseEQNameToken(token); ok {
@@ -1350,7 +1356,7 @@ func resolveSerializeNameToken(elem *xdm.Element, token string) (string, error) 
 
 	uri, ok := lookupInScopeNamespace(elem, prefix)
 	if !ok {
-		return "", &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("serialize parameter uses unbound namespace prefix %q", prefix)}
+		return "", &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter uses unbound namespace prefix %q", prefix)}
 	}
 
 	return xdm.ClarkName(uri, local), nil
@@ -1557,7 +1563,7 @@ func flattenSerializeArrays(seq xdm.Sequence) xdm.Sequence {
 // output:character-map children.
 func resolveSerializeCharacterMapsElement(elem *xdm.Element) (map[rune]string, error) {
 	if len(elem.Attributes()) != 0 {
-		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize parameter use-character-maps must not have attributes"}
+		return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "serialize parameter use-character-maps must not have attributes"}
 	}
 
 	result := make(map[rune]string)
@@ -1569,21 +1575,21 @@ func resolveSerializeCharacterMapsElement(elem *xdm.Element) (map[rune]string, e
 				continue
 			}
 
-			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "use-character-maps must not contain text"}
+			return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "use-character-maps must not contain text"}
 		case xdm.CommentNode, xdm.ProcessingInstructionNode:
 			continue
 		case xdm.ElementNode:
 		default:
-			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "use-character-maps has invalid child node"}
+			return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "use-character-maps has invalid child node"}
 		}
 
 		charMap, _ := xdm.AsNode[*xdm.Element](child)
 		if charMap.URI() != lexicon.NamespaceSerialization || charMap.LocalName() != "character-map" {
-			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "use-character-maps children must be output:character-map"}
+			return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "use-character-maps children must be output:character-map"}
 		}
 
 		if hasNonWhitespaceContent(charMap) {
-			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "character-map must not have child content"}
+			return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "character-map must not have child content"}
 		}
 
 		// map-string is an xs:string: an absent OR empty value maps the character
@@ -1597,7 +1603,7 @@ func resolveSerializeCharacterMapsElement(elem *xdm.Element) (map[rune]string, e
 
 		for _, attr := range charMap.Attributes() {
 			if attr.URI() != "" {
-				return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "character-map attributes must be unqualified"}
+				return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "character-map attributes must be unqualified"}
 			}
 
 			switch attr.LocalName() {
@@ -1607,17 +1613,17 @@ func resolveSerializeCharacterMapsElement(elem *xdm.Element) (map[rune]string, e
 			case "map-string":
 				mapString = attr.Value()
 			default:
-				return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "character-map has unsupported attribute"}
+				return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "character-map has unsupported attribute"}
 			}
 		}
 
 		if !hasCharacter || utf8.RuneCountInString(character) != 1 {
-			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "character-map character must be a single character"}
+			return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "character-map character must be a single character"}
 		}
 
 		key := []rune(character)[0]
 		if _, exists := result[key]; exists {
-			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "character-map entries must be unique"}
+			return nil, &xdm.Error{Code: errCodeSEPM0018, Message: "character-map entries must be unique"}
 		}
 
 		result[key] = mapString
@@ -1673,7 +1679,7 @@ func resolveSerializeCharacterMaps(v xdm.Sequence) (map[rune]string, error) {
 
 		keyString, err := atomicToString(key)
 		if err != nil || utf8.RuneCountInString(keyString) != 1 {
-			return &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "serialize use-character-maps keys must be single characters"}
+			return &xdm.Error{Code: errCodeSEPM0016, Message: "serialize use-character-maps keys must be single characters"}
 		}
 
 		if xdm.SequenceLen(value) != 1 {
@@ -1743,6 +1749,17 @@ func serializeAdaptiveItem(item xdm.Item, opts serializeOptions) (string, error)
 
 	switch v := item.(type) {
 	case xdm.AtomicValue:
+		if opts.method != serializeMethodAdaptive {
+			value, err := atomicToString(v)
+			if err != nil {
+				return "", err
+			}
+
+			doc := xdm.NewDefaultDocument()
+
+			return serializeNodeItem(xdm.NodeItem{Node: doc.CreateText(value)}, opts)
+		}
+
 		if v.TypeName == xdm.TypeBoolean {
 			if v.BooleanVal() {
 				return "true()", nil
@@ -1848,7 +1865,7 @@ func serializeAdaptiveArray(a xdm.ArrayItem, opts serializeOptions) (string, err
 
 func serializeJSONSequence(seq xdm.Sequence, opts serializeOptions) (string, error) {
 	if xdm.SequenceLen(seq) > 1 {
-		return "", &xdm.Error{Code: errCodeFOER0000, Message: "json serialization requires at most one top-level item"}
+		return "", &xdm.Error{Code: errCodeSERE0023, Message: "json serialization requires at most one top-level item"}
 	}
 
 	if xdm.SequenceLen(seq) == 0 {
@@ -1869,28 +1886,21 @@ func serializeJSONItem(item xdm.Item, opts serializeOptions) (string, error) {
 	case xdm.NodeItem:
 		return serializeJSONNode(v, opts)
 	case xdm.FunctionItem:
-		return "", &xdm.Error{Code: errCodeFOER0000, Message: "cannot serialize function item as JSON"}
+		return "", &xdm.Error{Code: errCodeSERE0021, Message: "cannot serialize function item as JSON"}
 	default:
-		return "", &xdm.Error{Code: errCodeFOER0000, Message: fmt.Sprintf("cannot serialize %T as JSON", item)}
+		return "", &xdm.Error{Code: errCodeSERE0021, Message: fmt.Sprintf("cannot serialize %T as JSON", item)}
 	}
 }
 
 func serializeJSONArray(v xdm.ArrayItem, opts serializeOptions) (string, error) {
 	parts := make([]string, 0, v.Size())
 	for _, member := range v.MembersView() {
-		if xdm.SequenceLen(member) == 0 {
-			parts = append(parts, jsonKindNull)
-			continue
+		text, err := serializeJSONSequence(member, opts)
+		if err != nil {
+			return "", err
 		}
 
-		for memberItem := range xdm.SequenceItems(member) {
-			text, err := serializeJSONItem(memberItem, opts)
-			if err != nil {
-				return "", err
-			}
-
-			parts = append(parts, text)
-		}
+		parts = append(parts, text)
 	}
 
 	return formatJSONComposite("[", "]", parts, 0, opts.indent), nil
@@ -1903,17 +1913,17 @@ func serializeJSONMap(v xdm.MapItem, opts serializeOptions) (string, error) {
 	err := v.ForEachView(func(key xdm.AtomicValue, value xdm.Sequence) error {
 		keyText, err := atomicToString(key)
 		if err != nil {
-			return &xdm.Error{Code: errCodeFOER0000, Message: "json serialization map keys must be stringifiable"}
+			return &xdm.Error{Code: errCodeSERE0021, Message: "json serialization map keys must be stringifiable"}
 		}
 
 		if _, exists := seen[keyText]; exists && !opts.allowDuplicateNames {
-			return &xdm.Error{Code: errCodeFOER0000, Message: fmt.Sprintf("json serialization duplicate key %q", keyText)}
+			return &xdm.Error{Code: errCodeSERE0022, Message: fmt.Sprintf("json serialization duplicate key %q", keyText)}
 		}
 
 		seen[keyText] = struct{}{}
 
 		if xdm.SequenceLen(value) > 1 {
-			return &xdm.Error{Code: errCodeFOER0000, Message: "json serialization map values must be singleton or empty"}
+			return &xdm.Error{Code: errCodeSERE0023, Message: "json serialization map values must be singleton or empty"}
 		}
 
 		valText := jsonKindNull
@@ -1936,21 +1946,38 @@ func serializeJSONMap(v xdm.MapItem, opts serializeOptions) (string, error) {
 }
 
 func serializeJSONNode(v xdm.NodeItem, opts serializeOptions) (string, error) {
-	// helium serializes a node embedded in JSON only with the xml method (the
-	// json-node-output-method default). A non-default value (html/xhtml/text or
-	// an extension) would change the node's serialization, which helium does
-	// not implement, so it is an explicit unsupported-feature error
-	// (SEPM0016), and never a silent emission of xml. The empty/"xml" default is honored.
-	if m := opts.jsonNodeOutputMethod; m != "" && m != lexicon.PrefixXML {
-		return "", &xdm.Error{Code: errCodeSEPM0016, Message: fmt.Sprintf("json-node-output-method %q is not supported for a node embedded in JSON", m)}
-	}
-
-	text, err := serializeNodeItem(v, serializeOptions{method: lexicon.PrefixXML, omitXMLDeclaration: true})
+	text, err := SerializeNodeForJSON(v, opts.jsonNodeOutputMethod)
 	if err != nil {
 		return "", err
 	}
 
 	return `"` + encodeJSONStringForSerialization(text, opts) + `"`, nil
+}
+
+// SerializeNodeForJSON returns the inner node serialization before JSON string
+// escaping. XPath and XSLT share the node-kind checks and XML/HTML/text rules.
+func SerializeNodeForJSON(v xdm.NodeItem, method string) (string, error) {
+	if method == "" {
+		method = serializeMethodXML
+	}
+	// SER31 §9 supplies only the node output method and omit-xml-declaration.
+	// JSON character maps and normalization apply to the resulting JSON string.
+	nodeOpts := serializeOptions{
+		method: method, omitXMLDeclaration: true,
+		standalone: serializeStandaloneOmit, includeContentType: true, escapeURIAttributes: true,
+	}
+	if err := nodeOpts.validate(); err != nil {
+		return "", err
+	}
+
+	switch method {
+	case serializeMethodText:
+		return serializeTextSequence(xdm.ItemSlice{v}, nodeOpts)
+	case serializeMethodHTML:
+		return serializeHTMLSequence(xdm.ItemSlice{v}, nodeOpts)
+	default:
+		return serializeXMLSequence(xdm.ItemSlice{v}, nodeOpts)
+	}
 }
 
 func serializeJSONAtomic(v xdm.AtomicValue, opts serializeOptions) (string, error) {
@@ -1968,7 +1995,7 @@ func serializeJSONAtomic(v xdm.AtomicValue, opts serializeOptions) (string, erro
 		}
 
 		if s == valueNaN || s == "INF" || s == "-INF" {
-			return "", &xdm.Error{Code: errCodeFOER0000, Message: "cannot serialize NaN or infinity as JSON"}
+			return "", &xdm.Error{Code: errCodeSERE0020, Message: "cannot serialize NaN or infinity as JSON"}
 		}
 
 		return s, nil
@@ -2299,45 +2326,68 @@ func serializeHTMLSequence(seq xdm.Sequence, opts serializeOptions) (string, err
 	return joinSerializedItems(parts, atomic, opts), nil
 }
 
-// serializeHTMLNode serializes a single node under the html output method,
-// reporting whether it emitted the DOCTYPE. allowDoctype is false once a prior
-// item in the sequence already emitted one, so the DOCTYPE appears at most once
-// for the whole sequence (Serialization 3.1 §2/§7.4.6). This node emits a DOCTYPE
-// only when allowDoctype is true AND either the document element is <html> (the
-// default <!DOCTYPE html> / HTML 4.01 declaration, html-version-gated) or
-// doctype-public/doctype-system was explicitly specified (any root, or a bare
-// element — §7.4.6). The include-content-type <meta> injection applies only to an
-// html-rooted document (a fragment / non-html root has no <head>).
+// serializeHTMLNode normalizes one node into a private document when metadata
+// must be inserted. Every applicable head element participates, including a
+// selected head or html element; the caller's tree is never modified.
 func serializeHTMLNode(node xdm.Node, opts serializeOptions, allowDoctype bool) (string, bool, error) {
 	hw := htmlpkg.NewWriter().DefaultDTD(false).Format(false).PreserveCase(true).
 		EscapeURIAttributes(opts.escapeURIAttributes).CharacterMap(opts.charMap).
 		Normalization(opts.normalizationForm)
 
-	doc, isDoc := node.(*xdm.Document)
-	htmlRooted := isDoc && htmlDocumentElementIsHTML(doc)
-	explicitDoctype := opts.doctypePublic != "" || opts.doctypeSystem != ""
-	emitDoctype := allowDoctype && (htmlRooted || explicitDoctype)
+	htmlRooted := false
 
-	if !htmlRooted {
-		// A non-html-rooted document, a bare element, or a fragment node. The input
-		// tree is not mutated (no meta injection — there is no <head>).
-		// escape-uri-attributes still applies.
+	switch value := node.(type) {
+	case *xdm.Document:
+		htmlRooted = htmlDocumentElementIsHTML(value)
+	case *xdm.Element:
+		htmlRooted = strings.EqualFold(value.LocalName(), serializeMethodHTML)
+	}
+
+	emitDoctype := allowDoctype && (htmlRooted || opts.doctypePublic != "" || opts.doctypeSystem != "")
+	if !opts.includeContentType {
 		return writeHTMLNodeTree(hw, node, opts, emitDoctype)
 	}
 
-	// An html-rooted document: inject the Content-Type meta on a COPY (never
-	// mutating the caller's tree), then serialize, emitting the DOCTYPE unless the
-	// sequence already emitted one.
-	clone, err := xdm.CopyDoc(doc)
+	doc, err := copyHTMLNodeDocument(node)
 	if err != nil {
 		return "", false, err
 	}
 
-	if opts.includeContentType {
-		insertHTMLContentTypeMeta(clone, opts.encoding, opts.mediaType)
+	for root := range xdm.ChildElements(doc) {
+		pruneRedundantNamespaceDecls(root, map[string]string{"": ""})
 	}
 
-	return writeHTMLNodeTree(hw, clone, opts, emitDoctype)
+	insertHTMLContentTypeMeta(doc, opts.encoding, opts.mediaType, serializeHTMLIsVersion5(opts))
+
+	return writeHTMLNodeTree(hw, doc, opts, emitDoctype)
+}
+
+func copyHTMLNodeDocument(node xdm.Node) (*xdm.Document, error) {
+	if doc, ok := node.(*xdm.Document); ok {
+		return xdm.CopyDoc(doc)
+	}
+
+	if element, ok := node.(*xdm.Element); ok {
+		var err error
+
+		node, err = elementWithInScopeNamespaces(element)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	doc := xdm.NewDefaultDocument()
+
+	copied, err := xdm.CopyNode(node, doc)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := doc.AddChild(copied); err != nil {
+		return nil, err
+	}
+
+	return doc, nil
 }
 
 // writeHTMLNodeTree serializes node under the html writer, reporting whether it
@@ -2474,33 +2524,22 @@ func htmlDocumentElementIsHTML(doc *xdm.Document) bool {
 	return root != nil && strings.EqualFold(root.LocalName(), "html")
 }
 
-// insertHTMLContentTypeMeta discards EVERY existing Content-Type meta element in
-// the document's <head> and inserts a freshly-computed
-// <meta http-equiv="Content-Type" content="{media-type}; charset={encoding}"> as
-// the head's first child (Serialization 3.1 §4/§7 include-content-type: an
-// existing meta is discarded and the computed one added). The encoding defaults
-// to UTF-8 and the media type to text/html. It mutates the given document, so
-// callers pass a copy.
-func insertHTMLContentTypeMeta(doc *xdm.Document, encoding, mediaType string) {
-	root := doc.DocumentElement()
-	if root == nil {
-		return
-	}
-
-	var head *xdm.Element
-
-	for child := range xdm.Children(root) {
-		e, ok := child.(*xdm.Element)
-		if ok && strings.EqualFold(e.LocalName(), fnNameHead) {
-			head = e
-			break
+// insertHTMLContentTypeMeta applies SER31 §7.4.13 to each HTML head element,
+// discarding stale Content-Type declarations before inserting the computed meta.
+// The document is a private copy. HTML 5 also recognizes the XHTML namespace.
+func insertHTMLContentTypeMeta(doc *xdm.Document, encoding, mediaType string, html5 bool) {
+	_ = xdm.Walk(doc, xdm.NodeWalkerFunc(func(node xdm.Node) error {
+		head, ok := node.(*xdm.Element)
+		if ok && strings.EqualFold(head.LocalName(), fnNameHead) &&
+			(head.URI() == "" || html5 && head.URI() == lexicon.NamespaceXHTML) {
+			insertHTMLHeadMeta(doc, head, encoding, mediaType)
 		}
-	}
 
-	if head == nil {
-		return
-	}
+		return nil
+	}))
+}
 
+func insertHTMLHeadMeta(doc *xdm.Document, head *xdm.Element, encoding, mediaType string) {
 	enc := encoding
 	if enc == "" {
 		enc = lexicon.EncodingUTF8U

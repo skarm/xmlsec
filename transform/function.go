@@ -2,12 +2,14 @@ package transform
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
+	"github.com/skarm/xmlsec/transform/internal/xslt"
 )
 
 // Function registers an application-owned function with fixed arity. Use an
@@ -55,7 +57,44 @@ func (e *Engine) languageContext(ctx context.Context) context.Context {
 	// Compilation may evaluate static expressions. Give them the same explicit
 	// collection policy and deterministic diagnostic defaults as runtime calls.
 	ctx = xpath.WithEvaluationContext(ctx, xpath.EvaluationContext{CurrentTime: time.Now().UTC(), Timezone: time.UTC, Trace: io.Discard, Collections: e.collectionResolver()})
+	ctx = xslt.WithTransformProgramLimit(ctx, e.limits.MaxProgramBytes)
+
 	return xpath.WithFunctions(ctx, e.functions)
+}
+
+func (e *Engine) transformFunction(baseURI string) xpath.Function {
+	options := []xslt.TransformOption{
+		xslt.WithTransformBaseURI(baseURI), xslt.WithTransformParseOptions(e.parseOptions()),
+		xslt.WithTransformMaxResourceBytes(int64(e.limits.MaxInputBytes)),
+	}
+	if e.resolver != nil {
+		options = append(options, xslt.WithTransformURIResolver(resourceAdapter{engine: e}))
+	}
+
+	if e.packages != nil {
+		options = append(options, xslt.WithTransformPackageResolver(packageAdapter{engine: e}))
+	}
+
+	return xpathTransformFunction{native: xslt.TransformFunction(options...)}
+}
+
+type xpathTransformFunction struct{ native xpath.Function }
+
+func (f xpathTransformFunction) MinArity() int { return 1 }
+func (f xpathTransformFunction) MaxArity() int { return 1 }
+
+func (f xpathTransformFunction) Call(ctx context.Context, arguments []xdm.Sequence) (xdm.Sequence, error) {
+	result, err := f.native.Call(ctx, arguments)
+	if err == nil {
+		return result, nil
+	}
+
+	wrapped := xsltError("fn:transform", err)
+	if detail, ok := errors.AsType[*xslt.XSLTError](err); ok && detail.Code != "" {
+		return nil, &xdm.Error{Code: detail.Code, Message: detail.Message, Cause: wrapped}
+	}
+
+	return nil, wrapped
 }
 
 type applicationFunction struct {

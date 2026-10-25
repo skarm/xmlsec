@@ -460,13 +460,14 @@ func castCalendarLexical(s, targetType string) (xdm.AtomicValue, error) {
 }
 
 func castDurationLexical(s, targetType string) (xdm.AtomicValue, error) {
+	datePart, _, _ := strings.Cut(s, "T")
+	if targetType == xdm.TypeDayTimeDuration && strings.ContainsAny(datePart, "YM") ||
+		targetType == xdm.TypeYearMonthDuration && strings.ContainsAny(s, "DT") {
+		return xdm.AtomicValue{}, castError(s, targetType)
+	}
+
 	d, err := parseXSDDuration(s)
 	if err != nil {
-		// Even a month overflow is lexical FORG0001 for dayTimeDuration.
-		if targetType == xdm.TypeDayTimeDuration {
-			return xdm.AtomicValue{}, castError(s, targetType)
-		}
-
 		return xdm.AtomicValue{}, durationCastError(err, s, targetType)
 	}
 
@@ -503,6 +504,16 @@ func castBinaryLexical(s, targetType string) (xdm.AtomicValue, error) {
 }
 
 func castGregorianLexical(s, targetType string, matches func(string) bool) (xdm.AtomicValue, error) {
+	if targetType == xdm.TypeGYear || targetType == xdm.TypeGYearMonth {
+		if _, rest, err := splitXSDYear(s); errors.Is(err, errCalendarYearRange) {
+			// Validate complete syntax before classifying representability.
+			probe := "2000" + rest
+			if matches(probe) && validateGregorianValue(targetType, probe) {
+				return xdm.AtomicValue{}, &xdm.Error{Code: errCodeFODT0001, Message: errCalendarYearRange.Error()}
+			}
+		}
+	}
+
 	if !matches(s) || !validateGregorianValue(targetType, s) {
 		return xdm.AtomicValue{}, castError(s, targetType)
 	}
@@ -600,9 +611,7 @@ func normalizeZeroTimezoneLexical(s string) string {
 	}
 }
 
-// durationCastError maps a parseXSDDuration failure to its cast error: a month
-// total that fits int64 but not int (only where int is 32 bits) is a duration
-// overflow, FODT0002; anything else is FORG0001.
+// durationCastError distinguishes duration representability from lexical errors.
 func durationCastError(err error, value, targetType string) *xdm.Error {
 	if errors.Is(err, errDurationMonthsRange) {
 		return &xdm.Error{

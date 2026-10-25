@@ -3,12 +3,85 @@ package transform_test
 import (
 	"bytes"
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/transform"
 )
+
+func TestParseXMLCharacterInput(t *testing.T) {
+	e := engine(t, transform.Config{})
+
+	for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+		for _, encoding := range []string{xmlLatinEncoding, "UTF-16", xmlASCIIEncoding, "x-unregistered-encoding"} {
+			source := `<?xml version="1.0" encoding="` + encoding + `" standalone="yes"?><r>café 中</r>`
+
+			value, err := query(t, e, `string(parse-xml($source)/r)`, version).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: sourceName}: transform.Values(transform.String(source))}})
+			if err != nil || text(t, value) != xmlCharacters {
+				t.Fatal("XML string was treated as encoded bytes", encoding, value, err)
+			}
+		}
+
+		for _, source := range []string{
+			`<?xml version="1.0" encoding="1bad"?><r/>`,
+			`<?xml version="1.0" encoding="bad encoding"?><r/>`,
+			`<?xml version="1.0" encoding="ISO-8859-1" encoding="UTF-8"?><r/>`,
+			`<?xml version="1.1" encoding="UTF-16"?><r/>`,
+			`<?xml version="1.0" standalone="perhaps"?><r/>`,
+			`<?xml version="1.0" encoding="ISO-8859-1"?><!DOCTYPE r><r/>`,
+		} {
+			_, err := query(t, e, `parse-xml($source)`, version).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: sourceName}: transform.Values(transform.String(source))}})
+
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != errCodeFODC0006 {
+				t.Fatal("invalid XML declaration accepted", source, err)
+			}
+		}
+	}
+}
+
+func TestParseXMLFragmentTextDeclaration(t *testing.T) {
+	e := engine(t, transform.Config{})
+
+	for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+		for source, want := range map[string]string{
+			`<?xml encoding="UTF-16"?>café 中<a/>`:                          xmlCharacters,
+			`<?xml version='1.0' encoding='x-unregistered-encoding'?>text`: serializationText,
+			`<?xml-stylesheet href="style.xsl"?>text`:                      serializationText,
+			`<?xml encoding = 'ISO-8859-1' ?> café 中`:                      " " + xmlCharacters,
+		} {
+			value, err := query(t, e, `string(parse-xml-fragment($source))`, version).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: sourceName}: transform.Values(transform.String(source))}})
+			if err != nil || text(t, value) != want {
+				t.Errorf("XPath %d %s: %v, %v", version, source, value, err)
+			}
+		}
+
+		for _, source := range []string{
+			`<?xml encoding="1bad"?><a/>`, `<?xml encoding="UTF-8"encoding="UTF-8"?><a/>`,
+			`<?xml version="1.0"encoding="UTF-8"?><a/>`, `<?xml version="1.1" encoding="UTF-8"?><a/>`,
+			`<?xml version="1.0"?><a/>`, `<?xml encoding="UTF-8" standalone="yes"?><a/>`,
+			`<?xml encoding="UTF&#45;8"?><a/>`, `<?xml encoding="UTF-8?><a/>`,
+		} {
+			_, err := query(t, e, `parse-xml-fragment($source)`, version).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: sourceName}: transform.Values(transform.String(source))}})
+
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != errCodeFODC0006 {
+				t.Errorf("XPath %d accepted malformed text declaration %s: %v", version, source, err)
+			}
+		}
+	}
+
+	capped := engine(t, transform.Config{Limits: transform.Limits{MaxInputBytes: 80}})
+	source := `<?xml` + strings.Repeat(" ", 80) + `encoding="UTF-8"?><a/>`
+
+	_, err := query(t, capped, `parse-xml-fragment($source)`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: sourceName}: transform.Values(transform.String(source))}})
+	if !errors.Is(err, transform.ErrLimit) {
+		t.Fatal("text declaration bypassed the XML input budget", err)
+	}
+}
 
 func TestProjectDOMNavigationAndSerialization(t *testing.T) {
 	e := engine(t, transform.Config{})

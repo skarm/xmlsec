@@ -719,25 +719,11 @@ func (ec *execContext) captureSequenceAttribute(ctx context.Context, out *output
 	return nil
 }
 
-// newStandaloneAttribute builds an attribute item attached to no element, with
-// value stored literally as one text child, the way Element.SetAttribute stores
-// it. Document.CreateAttribute parses its value for entity references, so a
-// value such as "p&q" would be read again from its "&".
+// newStandaloneAttribute builds a parentless attribute with a literal value.
+// Attribute values are stored directly in XDM, without text child nodes or a
+// second entity-expansion pass.
 func newStandaloneAttribute(doc *xdm.Document, localName, value string, ns *xdm.Namespace) (*xdm.Attribute, error) {
-	attr, err := doc.CreateAttribute(localName, "", ns)
-	if err != nil {
-		return nil, err
-	}
-
-	if value == "" {
-		return attr, nil
-	}
-
-	if err := attr.AppendText(value); err != nil {
-		return nil, err
-	}
-
-	return attr, nil
+	return doc.CreateAttribute(localName, value, ns)
 }
 
 func (ec *execContext) outputNonElementAttribute(out *outputFrame, lexicalName string, name resolvedAttrName, value string) error {
@@ -820,7 +806,7 @@ func hasNSDecl(elem *xdm.Element, prefix, uri string) bool {
 // (XTDE1480) when the stylesheet declares an XSLT version below 3.0. XSLT 3.0
 // relaxes this restriction, so the depth is left untouched there.
 func (ec *execContext) withV2TempOutput(fn func() error) error {
-	isV2TempOutput := ec.stylesheet.version != "" && ec.stylesheet.version < "3.0"
+	isV2TempOutput := ec.stylesheet.processorLanguage() < 30
 	if isV2TempOutput {
 		ec.temporaryOutputDepth++
 		defer func() { ec.temporaryOutputDepth-- }()

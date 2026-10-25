@@ -1,9 +1,9 @@
 package xdm
 
 import (
+	"bytes"
 	"context"
 	"io"
-	"strings"
 
 	"github.com/skarm/xmlsec/internal/tree"
 )
@@ -12,8 +12,9 @@ import (
 // rejection and namespace validation, is always performed by internal/tree.
 // Resource retrieval belongs to the evaluator; parsing performs no I/O.
 type ParseOptions struct {
-	Limits  tree.Limits
-	BaseURI string
+	Limits                   tree.Limits
+	BaseURI                  string
+	AllowSingleByteEncodings bool
 }
 
 // WithByteLimit intersects a resource byte cap with the XML input limit.
@@ -30,7 +31,13 @@ func (o ParseOptions) WithByteLimit(maxBytes int64) ParseOptions {
 
 // Parse creates XDM nodes over the project parser's document storage.
 func (o ParseOptions) Parse(ctx context.Context, data []byte) (*Document, error) {
-	d, err := tree.Parse(ctx, data, o.limits())
+	return o.ParseReader(ctx, bytes.NewReader(data))
+}
+
+// ParseText parses already decoded XML characters; the declaration's encoding
+// does not reinterpret them. The parser still checks the declaration grammar.
+func (o ParseOptions) ParseText(ctx context.Context, text string) (*Document, error) {
+	d, err := tree.ParseText(ctx, text, o.limits())
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +54,12 @@ func (o ParseOptions) Parse(ctx context.Context, data []byte) (*Document, error)
 
 // ParseReader incrementally constructs XDM nodes without buffering source XML.
 func (o ParseOptions) ParseReader(ctx context.Context, r io.Reader) (*Document, error) {
-	d, err := tree.ParseReader(ctx, r, o.limits())
+	parse := tree.ParseReader
+	if o.AllowSingleByteEncodings {
+		parse = tree.ParseReaderWithSingleByteEncodings
+	}
+
+	d, err := parse(ctx, r, o.limits())
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +76,7 @@ func (o ParseOptions) ParseReader(ctx context.Context, r io.Reader) (*Document, 
 
 // ParseFragment builds a document from a sequence of XML content nodes.
 func (o ParseOptions) ParseFragment(ctx context.Context, fragment string) (*Document, error) {
-	d, err := tree.ParseFragmentReader(ctx, strings.NewReader(fragment), o.limits())
+	d, err := tree.ParseFragmentText(ctx, fragment, o.limits())
 	if err != nil {
 		return nil, err
 	}

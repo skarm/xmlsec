@@ -804,7 +804,7 @@ func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element)
 	// static variables reference other static variables' values, not
 	// runtime non-static variables with the same name.
 	if xsdBoolTrue(getAttr(elem, nameStatic)) {
-		if sv, ok := c.staticVars[name]; ok {
+		if sv, ok := c.staticVars[v.Name]; ok {
 			v.StaticValue = sv
 		}
 	}

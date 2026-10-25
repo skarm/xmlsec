@@ -853,143 +853,44 @@ func isValidOutputXMLVersion(v string) bool {
 // output. htmlVersion carries the effective html-version serialization
 // parameter (empty when unset) so nested html/xhtml serialization observes the
 // same version as the principal output, e.g. HTML 4.01 minimization rules.
-func serializeNodeWithMethod(node xdm.Node, method, htmlVersion string) (string, error) {
-	var buf bytes.Buffer
-
-	switch method {
-	case methodHTML:
-		doc := wrapNodeInHTMLDoc(node)
-		outDef := defaultOutputDef()
-		outDef.Method = methodHTML
-		outDef.OmitDeclaration = true
-
-		outDef.HTMLVersion = htmlVersion
-		if err := serializeHTML(&buf, doc, outDef); err != nil {
-			return "", err
-		}
-
-		s := buf.String()
-		// If we wrapped the node in <html>, strip the wrapper tags
-		if elem, ok := node.(*xdm.Element); ok && !strings.EqualFold(elem.LocalName(), methodHTML) {
-			s = strings.TrimPrefix(s, "<html>")
-			s = strings.TrimSuffix(s, "</html>")
-		}
-
-		return s, nil
-	case methodXHTML:
-		doc := wrapNodeInDoc(node)
-		outDef := defaultOutputDef()
-
-		outDef.Method = methodXHTML
-		if err := serializeXHTML(&buf, doc, outDef, nil); err != nil {
-			return "", xmlInvalidCharError(err)
-		}
-
-		return buf.String(), nil
-	case methodText:
-		return nodeStringValue(node), nil
-	default: // "xml" or empty
-		switch node.(type) {
-		case *xdm.Element, *xdm.Document:
-			if err := (xdm.XMLSerialization{OmitDeclaration: true}).WriteTo(&buf, node); err != nil {
-				return "", xmlInvalidCharError(err)
-			}
-		default:
-			buf.WriteString(xdm.CharacterData(node))
-		}
-
-		return buf.String(), nil
-	}
-}
-
-// wrapNodeInHTMLDoc wraps a node in an HTML document structure.
-// If the node is already an <html> element, it becomes the document element.
-// Otherwise it is wrapped inside an <html> element so that insertHTMLMeta
-// can locate the <head> element as a child of the root.
-func wrapNodeInHTMLDoc(node xdm.Node) *xdm.Document {
-	if doc, ok := node.(*xdm.Document); ok {
-		return doc
+// serializeXHTMLNodeForJSON uses the XHTML writer with fresh default parameters
+// and a private tree: meta/namespace rewriting must not mutate an input value.
+func serializeXHTMLNodeForJSON(node xdm.Node) (string, error) {
+	if node.Type() == xdm.AttributeNode || node.Type() == xdm.NamespaceNode {
+		return "", dynamicError("SENR0001", "cannot serialize a free attribute or namespace")
 	}
 
-	doc := xdm.NewDocument("", "", xdm.StandaloneNoXMLDecl)
-	if elem, ok := node.(*xdm.Element); ok {
-		copied, err := xdm.CopyNode(elem, doc)
-		if err != nil {
-			return doc
-		}
+	var (
+		doc *xdm.Document
+		err error
+	)
+	if source, ok := node.(*xdm.Document); ok {
+		doc, err = xdm.CopyDoc(source)
+	} else {
+		doc = xdm.NewDefaultDocument()
 
-		copiedElem, _ := xdm.AsNode[*xdm.Element](copied)
-		removeRedundantNamespaces(copiedElem)
+		var copied xdm.Node
 
-		if strings.EqualFold(copiedElem.LocalName(), methodHTML) {
-			_ = doc.AddChild(copiedElem)
-		} else {
-			// Wrap in an <html> element
-			htmlElem, _ := doc.CreateElement(methodHTML)
-			_ = doc.AddChild(htmlElem)
-			_ = htmlElem.AddChild(copiedElem)
-		}
-	}
-
-	return doc
-}
-
-// removeRedundantNamespaces removes namespace declarations from descendant
-// elements that are the same as their parent's. After CopyNode, each element
-// may carry its own copy of namespace declarations that were inherited in the
-// original tree.
-func removeRedundantNamespaces(root *xdm.Element) {
-	rootNS := map[string]string{} // prefix -> uri
-	for _, ns := range root.Namespaces() {
-		rootNS[ns.Prefix()] = ns.URI()
-	}
-	// The result tree is freshly built via guarded AddChild, so it is acyclic
-	// and Walk cannot return ErrWalkCycle here; the error is safely ignored.
-	_ = xdm.Walk(root, xdm.NodeWalkerFunc(func(n xdm.Node) error {
-		if n == root {
-			return nil
-		}
-
-		child, ok := n.(*xdm.Element)
-		if !ok {
-			return nil
-		}
-
-		for _, ns := range child.Namespaces() {
-			prefix := ns.Prefix()
-
-			uri := ns.URI()
-			if parentURI, exists := rootNS[prefix]; exists && parentURI == uri {
-				child.RemoveNamespaceByPrefix(prefix)
-			}
-		}
-
-		return nil
-	}))
-}
-
-func wrapNodeInDoc(node xdm.Node) *xdm.Document {
-	if doc, ok := node.(*xdm.Document); ok {
-		return doc
-	}
-
-	doc := xdm.NewDocument("", "", xdm.StandaloneNoXMLDecl)
-	if elem, ok := node.(*xdm.Element); ok {
-		copied, err := xdm.CopyNode(elem, doc)
+		copied, err = xdm.CopyNode(node, doc)
 		if err == nil {
-			_ = doc.AddChild(copied)
+			err = doc.AddChild(copied)
 		}
 	}
 
-	return doc
-}
-
-func nodeStringValue(n xdm.Node) string {
-	if n == nil {
-		return ""
+	if err != nil {
+		return "", err
 	}
 
-	return xdm.CharacterData(n)
+	output := defaultOutputDef()
+	output.Method = methodXHTML
+	output.OmitDeclaration = true
+
+	var buf bytes.Buffer
+	if err := serializeXHTML(&buf, doc, output, nil); err != nil {
+		return "", xmlInvalidCharError(err)
+	}
+
+	return buf.String(), nil
 }
 
 func defaultOutputDef() *OutputDef {

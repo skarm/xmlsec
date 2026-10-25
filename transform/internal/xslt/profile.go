@@ -21,6 +21,12 @@ var ErrLanguageUnsupported = errors.New("unsupported XSLT language profile")
 // compatibility behavior. The Basic profile excludes schema awareness and
 // streaming; neither is silently approximated by this API.
 func CheckLanguage(d *xdm.Document, want int) (int, error) {
+	return CheckProcessorLanguage(d, want, 0)
+}
+
+// CheckProcessorLanguage keeps the processor selection separate from the
+// principal declaration and each element's effective compatibility version.
+func CheckProcessorLanguage(d *xdm.Document, want, processor int) (int, error) {
 	if d == nil || d.DocumentElement() == nil {
 		return 0, ErrLanguageUnsupported
 	}
@@ -41,11 +47,19 @@ func CheckLanguage(d *xdm.Document, want int) (int, error) {
 		return 0, ErrLanguageUnsupported
 	}
 
-	if version == 10 {
-		return version, checkLanguage10(root)
+	if processor == 0 {
+		processor = version
 	}
 
-	return version, checkModernLanguage(root, version, version)
+	if processor != 10 && processor != 20 && processor != 30 || processor < version {
+		return 0, ErrLanguageUnsupported
+	}
+
+	if processor == 10 {
+		return processor, checkLanguage10(root)
+	}
+
+	return processor, checkModernLanguage(root, version, processor)
 }
 
 func languageVersionAttribute(elem *xdm.Element) string {
@@ -67,7 +81,7 @@ func languageVersionAttribute(elem *xdm.Element) string {
 func checkModernLanguage(elem *xdm.Element, effective, selected int) error {
 	if own := languageVersionAttribute(elem); own != "" {
 		number, err := strconv.ParseFloat(own, 64)
-		if err != nil || number != 2 && number != 3 {
+		if err != nil || !(number >= 1 && number < 2) && number != 2 && number != 3 {
 			return ErrLanguageUnsupported
 		}
 
@@ -77,7 +91,7 @@ func checkModernLanguage(elem *xdm.Element, effective, selected int) error {
 		}
 	}
 
-	if err := checkModernElementLanguage(elem, effective); err != nil {
+	if err := checkModernElementLanguage(elem, selected); err != nil {
 		return err
 	}
 

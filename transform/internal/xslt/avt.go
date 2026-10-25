@@ -66,7 +66,7 @@ func (a *avt) evaluate(ctx context.Context, node xdm.Node) (string, error) {
 			// XSLT 1.0 behavior (backwards-compatible processing): when converting
 			// the AVT expression value to a string, all items after the first are
 			// discarded (§5.6.1).
-			if ec != nil && isBackwardsCompatible(ec.stylesheet.version) {
+			if ec != nil && ec.stylesheet.processorLanguage() == 10 {
 				s, err := xpath.XPath10String(result.Sequence())
 				if err != nil {
 					return "", err
@@ -296,7 +296,7 @@ func (c *compiler) compileAVT(s string, nsBindings map[string]string) (*avt, err
 
 			end := findAVTExprEnd(s[i+1:])
 			if end < 0 {
-				return nil, staticError(errCodeXTSE0580, "unterminated AVT expression in %q", s)
+				return nil, staticError(errCodeXTSE0350, "unterminated value template expression in %q", s)
 			}
 
 			exprStr := s[i+1 : i+1+end]
@@ -317,7 +317,7 @@ func (c *compiler) compileAVT(s string, nsBindings map[string]string) (*avt, err
 				continue
 			}
 
-			return nil, staticError(errCodeXTSE0580, "unmatched } in AVT %q", s)
+			return nil, staticError(errCodeXTSE0370, "unmatched } in value template %q", s)
 		default:
 			// literal text until next { or }
 			j := i + 1
@@ -431,7 +431,7 @@ func appendLiteral(parts []avtPart, s string) []avtPart {
 
 func compileAVTIsXPathCommentOnly(trimmed string, c *compiler, parts *[]avtPart, exprStr string, nsBindings map[string]string) (returned1 error, matchedBranch bool) {
 	if trimmed == "" || isXPathCommentOnly(trimmed) {
-		if isBackwardsCompatible(c.stylesheet.version) {
+		if c.stylesheet.processorLanguage() == 10 {
 			return staticError("XTSE0370", "empty XPath 1.0 AVT expression"), true
 		}
 
@@ -439,7 +439,7 @@ func compileAVTIsXPathCommentOnly(trimmed string, c *compiler, parts *[]avtPart,
 	} else {
 		expr, err := c.compileXPath(exprStr, nsBindings)
 		if err != nil {
-			return staticError(errCodeXTSE0580, "invalid XPath in AVT: %v", err), true
+			return err, true
 		}
 
 		(*parts) = append((*parts), avtPart{expr: expr})

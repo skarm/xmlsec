@@ -554,11 +554,23 @@ func (ec *execContext) executeInitialTemplates(ctx context.Context, cfg *transfo
 }
 
 func (ec *execContext) executeNamedInitialTemplate(ctx context.Context, cfg *transformConfig, initialTemplateName, initialMode string) error {
-	effectiveSource := ec.sourceDoc
+	// XSLT 3.0 section 2.3.4 defaults the initial template's singleton focus
+	// to the global context item, independently of the initial match selection.
+	effectiveSource := ec.globalSourceNode()
+
+	savedItem := ec.contextItem
+
+	ec.contextItem = nil
+	if !ec.globalContextAbsent && effectiveSource == nil {
+		ec.contextItem = ec.globalContextItem
+	}
+	defer func() { ec.contextItem = savedItem }()
+
+	ec.position, ec.size = 1, 1
 
 	tmpl := ec.stylesheet.namedTemplates[initialTemplateName]
 	if tmpl == nil {
-		return dynamicError(errCodeXTDE0820, "initial template %q not found", initialTemplateName)
+		return dynamicError(errCodeXTDE0040, "initial template %q not found", initialTemplateName)
 	}
 	// XTDE0040: initial template must be public in a package context
 	if ec.stylesheet.isPackage && tmpl.Visibility != "" && tmpl.Visibility != visPublic && tmpl.Visibility != visFinal {
@@ -589,7 +601,7 @@ func (ec *execContext) executeNamedInitialTemplate(ctx context.Context, cfg *tra
 		}
 
 		if !supplied {
-			return dynamicError(errCodeXTDE0060, "initial template %q has required parameter $%s", initialTemplateName, p.Name)
+			return dynamicError(errCodeXTDE0700, "initial template %q has required parameter $%s", initialTemplateName, p.Name)
 		}
 	}
 	// Pass caller-supplied initial-template params.

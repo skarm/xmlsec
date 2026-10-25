@@ -29,6 +29,11 @@ namespace URI, not a prefix. `transform.Name` aliases it. Resource adapters
 or HTTP-client/origin configuration. Consumers enforce budgets; resolution does
 not establish trust.
 
+Resolver streams may implement `resource.TypedReader` to expose a stable MIME
+`MediaType()` value, including `charset`. `NewHTTPResolver` preserves the
+response Content-Type. Text functions use this transport metadata through the
+same bounded read/close path; it does not authorize another resource access.
+
 Context-aware cryptographic providers use `ContextSigner` or `ContextDecrypter`
 through `AdaptContextSigner` / `AdaptContextDecrypter`. Direct calls through the
 standard `crypto.Signer` / `crypto.Decrypter` interfaces have no context parameter.

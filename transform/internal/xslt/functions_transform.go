@@ -6,9 +6,9 @@ package xslt
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"path"
-	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
@@ -17,6 +17,18 @@ import (
 )
 
 const maxTransformDepth = 10
+
+type transformProgramLimitKey struct{}
+
+// WithTransformProgramLimit bounds dynamically supplied stylesheet programs.
+// Nested fn:transform calls inherit the same limit and invocation budgets.
+func WithTransformProgramLimit(ctx context.Context, maxBytes int) context.Context {
+	if previous, ok := ctx.Value(transformProgramLimitKey{}).(int); ok && previous > 0 && (maxBytes <= 0 || previous < maxBytes) {
+		maxBytes = previous
+	}
+
+	return context.WithValue(ctx, transformProgramLimitKey{}, maxBytes)
+}
 
 // TransformOption configures the fn:transform implementation returned by
 // [TransformFunction].
@@ -197,6 +209,14 @@ func (ec *execContext) xsltFunctionsNS() map[xpath.QualifiedName]xpath.Function 
 		}
 	}
 
+	if ec.stylesheet.processorLanguage() == 20 {
+		for name := range ec.cachedFnsNS {
+			if name.URI == xpath.NSFn && xslt30Function(name.Name) {
+				delete(ec.cachedFnsNS, name)
+			}
+		}
+	}
+
 	return ec.cachedFnsNS
 }
 
@@ -374,11 +394,10 @@ func (ec *execContext) fnTransform(ctx context.Context, args []xdm.Sequence) (xd
 // resultDocCollector implements ResultDocumentHandler for fn:transform,
 // collecting secondary result documents and their output definitions into maps.
 type resultDocCollector struct {
-	results    map[string]*xdm.Document
-	outputDefs map[string]*OutputDef
+	results map[string]*xdm.Document
 }
 
-func (c resultDocCollector) HandleResultDocument(href string, doc *xdm.Document, outDef *OutputDef) error {
+func (c resultDocCollector) HandleResultDocument(href string, doc *xdm.Document, _ *OutputDef) error {
 	// Key by the fully-resolved absolute output URI captured during execution
 	// (SetURL on the result document), NOT the raw href. A nested
 	// xsl:result-document resolves its href against the DYNAMIC current output
@@ -393,9 +412,6 @@ func (c resultDocCollector) HandleResultDocument(href string, doc *xdm.Document,
 	}
 
 	c.results[key] = doc
-	if outDef != nil && c.outputDefs != nil {
-		c.outputDefs[key] = outDef
-	}
 
 	return nil
 }
@@ -426,6 +442,8 @@ func (ss *Stylesheet) newNestedCompiler() Compiler {
 }
 
 type transformDepthKey struct{}
+
+const transformSerialized = "serialized"
 
 // transformFnConfig carries the resolvers, resource caps and XML limits for
 // fn:transform. It
@@ -462,18 +480,18 @@ type transformFnConfig struct {
 func (cfg *transformFnConfig) run(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	depth, _ := ctx.Value(transformDepthKey{}).(int)
 	if depth >= maxTransformDepth {
-		return nil, dynamicError(errCodeFOXT0004, "fn:transform: maximum recursion depth (%d) exceeded", maxTransformDepth)
+		return nil, dynamicErrorCause(errCodeFOXT0004, xpath.ErrBudget, "fn:transform: maximum recursion depth (%d) exceeded", maxTransformDepth)
 	}
 
 	ctx = context.WithValue(ctx, transformDepthKey{}, depth+1)
 
 	if len(args) != 1 || args[0] == nil || xdm.SequenceLen(args[0]) != 1 {
-		return nil, dynamicError(errCodeFOXT0001, "fn:transform requires a single map argument")
+		return nil, dynamicError(errCodeXPTY0004, "fn:transform requires a single map argument")
 	}
 
 	options, ok := args[0].Get(0).(xdm.MapItem)
 	if !ok {
-		return nil, dynamicError(errCodeFOXT0001, "fn:transform argument must be a map")
+		return nil, dynamicError(errCodeXPTY0004, "fn:transform argument must be a map")
 	}
 
 	request := newTransformRequest(options, cfg.baseURI)
@@ -482,6 +500,13 @@ func (cfg *transformFnConfig) run(ctx context.Context, args []xdm.Sequence) (xdm
 	}
 
 	compiler, staticParams := transformStaticParameters(cfg.nestedCompiler, transformMapSeq(options, "static-params"))
+
+	processor, err := transformProcessorVersion(options)
+	if err != nil {
+		return nil, err
+	}
+
+	compiler = compiler.ProcessorVersion(processor).MaxResourceBytes(cfg.programLimit(ctx))
 
 	stylesheet, err := cfg.compileTransformStylesheet(ctx, compiler, request)
 	if err != nil {
@@ -492,7 +517,7 @@ func (cfg *transformFnConfig) run(ctx context.Context, args []xdm.Sequence) (xdm
 		return nil, dynamicError(errCodeFOXT0002, "fn:transform: no stylesheet specified (stylesheet-location, stylesheet-node, stylesheet-text, or package-name required)")
 	}
 
-	secondary := resultDocCollector{results: make(map[string]*xdm.Document), outputDefs: make(map[string]*OutputDef)}
+	secondary := resultDocCollector{results: make(map[string]*xdm.Document)}
 	invocation := request.newInvocation(cfg, staticParams, secondary)
 	source := request.prepareSource(invocation)
 
@@ -501,7 +526,7 @@ func (cfg *transformFnConfig) run(ctx context.Context, args []xdm.Sequence) (xdm
 		return nil, err
 	}
 
-	result, err := request.deliver(resultDoc, invocation, stylesheet, secondary)
+	result, err := request.deliver(ctx, resultDoc, invocation, secondary)
 	if err != nil {
 		return nil, err
 	}
@@ -635,7 +660,7 @@ func validateTransformOptions(m xdm.MapItem, deliveryFormat string) error {
 	}
 
 	switch deliveryFormat {
-	case "", fnNameDocument, "serialized", lexicon.OutputRaw:
+	case "", fnNameDocument, transformSerialized, lexicon.OutputRaw:
 	default:
 		return dynamicError(errCodeFOXT0002, "fn:transform: delivery-format %q is not one of document, serialized, raw", deliveryFormat)
 	}
@@ -676,24 +701,46 @@ func validateTransformGlobalContextItem(m xdm.MapItem) error {
 	return nil
 }
 
-// validateTransformXSLTVersion checks that the xslt-version option, when
-// present, is a numeric value (an XPTY0004 type error otherwise).
+// validateTransformXSLTVersion validates the requested minimum processor version.
 func validateTransformXSLTVersion(m xdm.MapItem) error {
-	seq := transformMapSeq(m, "xslt-version")
-	if !transformOptionPresent(seq) {
-		return nil
+	_, err := transformProcessorVersion(m)
+	return err
+}
+
+func transformProcessorVersion(m xdm.MapItem) (int, error) {
+	seq, present := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: "xslt-version"})
+	if !present {
+		return 0, nil
+	}
+
+	if xdm.SequenceLen(seq) != 1 {
+		return 0, dynamicError(errCodeXPTY0004, "fn:transform: xslt-version requires one numeric value")
 	}
 
 	av, err := xpath.AtomizeItem(seq.Get(0))
+	if err != nil || !av.IsNumeric() {
+		return 0, dynamicError(errCodeXPTY0004, "fn:transform: xslt-version requires one numeric value")
+	}
+
+	for _, version := range []int{10, 20, 30} {
+		maximum := xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(version / 10)}
+
+		compatible, err := xpath.ValueCompare(xpath.TokenLe, av, maximum)
+		if err != nil {
+			return 0, err
+		}
+
+		if compatible {
+			return version, nil
+		}
+	}
+
+	text, err := xpath.AtomicToString(av)
 	if err != nil {
-		return dynamicError(errCodeXPTY0004, "fn:transform: xslt-version: %v", err)
+		return 0, err
 	}
 
-	if !av.IsNumeric() {
-		return dynamicError(errCodeXPTY0004, "fn:transform: xslt-version must be a numeric value")
-	}
-
-	return nil
+	return 0, dynamicError(errCodeFOXT0001, "fn:transform: no processor supports requested XSLT version %s", text)
 }
 
 // validateTransformParamMap checks that a parameter-map option
@@ -720,7 +767,7 @@ func validateTransformParamMap(name string, seq xdm.Sequence) error {
 }
 
 // checkTransformCapabilities inspects the requested-properties option and raises
-// FOXT0006 when a recognized XSLT-namespace property is requested with a value
+// FOXT0001 when a recognized XSLT-namespace property is requested with a value
 // helium cannot satisfy. Non-map values are XPTY0004; properties outside the
 // XSLT namespace, or ones helium does not model, are ignored.
 func checkTransformCapabilities(seq xdm.Sequence) error {
@@ -755,7 +802,7 @@ func checkTransformCapabilities(seq xdm.Sequence) error {
 		}
 
 		if got != want {
-			return dynamicError(errCodeFOXT0006, "fn:transform: requested property %q cannot be satisfied", qv.Local)
+			return dynamicError(errCodeFOXT0001, "fn:transform: requested property %q cannot be satisfied", qv.Local)
 		}
 	}
 
@@ -778,6 +825,51 @@ func (cfg *transformFnConfig) compileTransformStylesheet(ctx context.Context, co
 	return cfg.compileTransformNode(ctx, compiler, transformMapSeq(request.options, "stylesheet-node"), request.stylesheetBaseURI)
 }
 
+func (cfg *transformFnConfig) programLimit(ctx context.Context) int64 {
+	limit := resolveResourceLimit(cfg.maxResourceBytes)
+	if bound, ok := ctx.Value(transformProgramLimitKey{}).(int); ok && bound > 0 && (limit <= 0 || int64(bound) < limit) {
+		limit = int64(bound)
+	}
+
+	return limit
+}
+
+// The XSLT error code takes precedence over the generic FOXT0003 fallback.
+func transformFailure(cause error, format string, args ...any) error {
+	if errors.Is(cause, ErrLanguageUnsupported) {
+		return dynamicErrorCause(errCodeFOXT0001, cause, format, args...)
+	}
+
+	if specific, ok := errors.AsType[*XSLTError](cause); ok && specific.Code != "" {
+		return cause
+	}
+
+	if specific, ok := errors.AsType[*xdm.Error](cause); ok && specific.Code != "" {
+		return cause
+	}
+
+	return dynamicErrorCause(errCodeFOXT0003, cause, format, args...)
+}
+
+type transformProgramCounter struct {
+	ctx       context.Context
+	remaining int64
+}
+
+func (w *transformProgramCounter) Write(data []byte) (int, error) {
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	if int64(len(data)) > w.remaining {
+		return 0, xpath.ErrBudget
+	}
+
+	w.remaining -= int64(len(data))
+
+	return len(data), nil
+}
+
 func (cfg *transformFnConfig) compileTransformLocation(ctx context.Context, nestedCompiler Compiler, stylesheetLoc string) (*Stylesheet, error) {
 	// Resolve relative to the current stylesheet base URI.
 	loc := resolveStylesheetLocation(cfg.baseURI, stylesheetLoc)
@@ -790,24 +882,24 @@ func (cfg *transformFnConfig) compileTransformLocation(ctx context.Context, nest
 
 	rc, resolveErr := cfg.stylesheetResolver.Resolve(ctx, loc)
 	if resolveErr != nil {
-		return nil, dynamicError(errCodeFOXT0003, "fn:transform: cannot resolve stylesheet %q: %v", stylesheetLoc, resolveErr)
+		return nil, transformFailure(resolveErr, "fn:transform: cannot resolve stylesheet %q: %v", stylesheetLoc, resolveErr)
 	}
 
-	doc, parseErr := parseXMLResource(ctx, cfg.parseOptions, rc, baseURI, cfg.maxResourceBytes)
+	doc, parseErr := parseXMLResource(ctx, cfg.parseOptions, rc, baseURI, cfg.programLimit(ctx))
 	if parseErr != nil {
 		return nil, dynamicErrorCause(errCodeFOXT0003, parseErr, "fn:transform: cannot parse stylesheet %q: %v", stylesheetLoc, parseErr)
 	}
 
 	ss, compileErr := nestedCompiler.BaseURI(baseURI).Compile(ctx, doc)
 	if compileErr != nil {
-		return nil, dynamicErrorCause(errCodeFOXT0003, compileErr, "fn:transform: cannot compile stylesheet %q: %v", stylesheetLoc, compileErr)
+		return nil, transformFailure(compileErr, "fn:transform: cannot compile stylesheet %q: %v", stylesheetLoc, compileErr)
 	}
 
 	return ss, nil
 }
 
 func (cfg *transformFnConfig) compileTransformPackage(ctx context.Context, nestedCompiler Compiler, packageName, packageVersion string) (*Stylesheet, error) {
-	if !ParseVersionConstraint(packageVersion).valid {
+	if !ParseVersionConstraint(packageVersion).Valid() {
 		return nil, dynamicError(errCodeFOXT0002, "invalid package version range %q", packageVersion)
 	}
 	// Resolve via package-name / package-version using the PackageResolver
@@ -822,7 +914,7 @@ func (cfg *transformFnConfig) compileTransformPackage(ctx context.Context, neste
 		return nil, dynamicErrorCause(errCodeFOXT0003, resolveErr, "fn:transform: cannot resolve package %q (version %q): %v", packageName, packageVersion, resolveErr)
 	}
 
-	doc, parseErr := parseXMLResource(ctx, cfg.parseOptions, rc, location, cfg.maxResourceBytes)
+	doc, parseErr := parseXMLResource(ctx, cfg.parseOptions, rc, location, cfg.programLimit(ctx))
 	if parseErr != nil {
 		return nil, dynamicErrorCause(errCodeFOXT0003, parseErr, "fn:transform: cannot parse package %q: %v", packageName, parseErr)
 	}
@@ -838,7 +930,7 @@ func (cfg *transformFnConfig) compileTransformPackage(ctx context.Context, neste
 
 	ss, compileErr := compiler.Compile(ctx, doc)
 	if compileErr != nil {
-		return nil, dynamicErrorCause(errCodeFOXT0003, compileErr, "fn:transform: cannot compile package %q: %v", packageName, compileErr)
+		return nil, transformFailure(compileErr, "fn:transform: cannot compile package %q: %v", packageName, compileErr)
 	}
 
 	return ss, nil
@@ -848,25 +940,29 @@ func (cfg *transformFnConfig) compileTransformText(ctx context.Context, nestedCo
 	// stylesheet-text: the stylesheet source is supplied inline as a string.
 	// Parse it and compile. The base URI comes from the stylesheet-base-uri
 	// option when supplied (a relative value resolved against the call's
-	// static base URI); otherwise it falls back to the call's static base URI.
-	baseURI := cfg.baseURI
+	// static base URI). Without that option the text has no base URI.
+	baseURI := ""
 	if stylesheetBaseURI != "" {
 		baseURI = resolveStylesheetLocation(cfg.baseURI, stylesheetBaseURI)
 	}
 
-	doc, parseErr := parseXMLReader(ctx, cfg.parseOptions, strings.NewReader(stylesheetText), baseURI, cfg.maxResourceBytes)
+	parseOptions := xdm.ParseOptions{}
+	if cfg.parseOptions != nil {
+		parseOptions = *cfg.parseOptions
+	}
+
+	parseOptions.BaseURI = baseURI
+
+	doc, parseErr := parseOptions.WithByteLimit(cfg.programLimit(ctx)).ParseText(ctx, stylesheetText)
 	if parseErr != nil {
 		return nil, dynamicErrorCause(errCodeFOXT0003, parseErr, "fn:transform: cannot parse stylesheet-text: %v", parseErr)
 	}
 
-	compiler := nestedCompiler
-	if baseURI != "" {
-		compiler = compiler.BaseURI(baseURI)
-	}
+	compiler := nestedCompiler.BaseURI(baseURI)
 
 	ss, compileErr := compiler.Compile(ctx, doc)
 	if compileErr != nil {
-		return nil, dynamicErrorCause(errCodeFOXT0003, compileErr, "fn:transform: cannot compile stylesheet-text: %v", compileErr)
+		return nil, transformFailure(compileErr, "fn:transform: cannot compile stylesheet-text: %v", compileErr)
 	}
 
 	return ss, nil
@@ -897,13 +993,20 @@ func (cfg *transformFnConfig) compileTransformNode(ctx context.Context, compiler
 		return nil, dynamicErrorCause(errCodeFOXT0003, err, "fn:transform: cannot prepare stylesheet node: %v", err)
 	}
 
+	if limit := cfg.programLimit(ctx); limit > 0 {
+		counter := &transformProgramCounter{ctx: ctx, remaining: limit}
+		if err := (xdm.XMLSerialization{OmitDeclaration: true}).WriteTo(counter, compileDoc); err != nil {
+			return nil, transformFailure(err, "fn:transform: stylesheet-node exceeds its program budget: %v", err)
+		}
+	}
+
 	if baseURI != "" {
 		compiler = compiler.BaseURI(baseURI)
 	}
 
 	stylesheet, err := compiler.Compile(ctx, compileDoc)
 	if err != nil {
-		return nil, dynamicErrorCause(errCodeFOXT0003, err, "fn:transform: cannot compile stylesheet: %v", err)
+		return nil, transformFailure(err, "fn:transform: cannot compile stylesheet: %v", err)
 	}
 
 	return stylesheet, nil
@@ -1067,7 +1170,9 @@ func (request transformRequest) newInvocation(cfg *transformFnConfig, staticPara
 		httpClient:       cfg.httpClient,
 		maxResourceBytes: cfg.maxResourceBytes,
 		parseOptions:     cfg.parseOptions,
-		rawCapture:       request.deliveryFormat == lexicon.OutputRaw,
+		rawCapture:       request.deliveryFormat == lexicon.OutputRaw || request.deliveryFormat == transformSerialized,
+		rawSequence:      request.deliveryFormat == transformSerialized,
+		valueResults:     make(map[string]ValueResult),
 	}
 	if transformOptionPresent(request.globalContextItem) {
 		invocation.globalContextItem = request.globalContextItem.Get(0)
@@ -1150,7 +1255,7 @@ func (request transformRequest) prepareSource(invocation *transformConfig) *xdm.
 		}
 	}
 
-	if transformOptionPresent(request.initialMatchSelection) {
+	if _, provided := request.options.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: "initial-match-selection"}); provided {
 		if xdm.SequenceLen(request.initialMatchSelection) == 1 {
 			if item, ok := request.initialMatchSelection.Get(0).(xdm.NodeItem); ok {
 				if owner := owningDocument(item.Node); owner != nil {
@@ -1160,6 +1265,9 @@ func (request transformRequest) prepareSource(invocation *transformConfig) *xdm.
 		}
 
 		invocation.initialMatchSelection = request.initialMatchSelection
+		if invocation.initialMatchSelection == nil {
+			invocation.initialMatchSelection = xdm.ItemSlice{}
+		}
 	} else if sourceNode != nil {
 		if _, document := sourceNode.(*xdm.Document); !document {
 			invocation.initialMatchSelection = request.sourceNode
@@ -1170,19 +1278,13 @@ func (request transformRequest) prepareSource(invocation *transformConfig) *xdm.
 		invocation.globalContextAbsent = true
 	}
 
-	if sourceDoc == nil {
-		sourceDoc = xdm.NewDefaultDocument()
-	}
-
 	return sourceDoc
 }
 
-func (request transformRequest) deliver(resultDoc *xdm.Document, fnTransformCfg *transformConfig, ss *Stylesheet, secondary resultDocCollector) (xdm.MapItem, error) {
+func (request transformRequest) deliver(ctx context.Context, resultDoc *xdm.Document, fnTransformCfg *transformConfig, secondary resultDocCollector) (xdm.MapItem, error) {
 	baseOutputURI := request.baseOutputURI
 	deliveryFormat := request.deliveryFormat
-	serializationParamsSeq := transformMapSeq(request.options, "serialization-params")
 	secondaryResults := secondary.results
-	secondaryOutputDefs := secondary.outputDefs
 	capturedItems := fnTransformCfg.rawCapturedItems
 
 	principalKey := xdm.AtomicValue{TypeName: xdm.TypeString, Value: nameOutput}
@@ -1213,34 +1315,9 @@ func (request transformRequest) deliver(resultDoc *xdm.Document, fnTransformCfg 
 		for uri, doc := range secondaryResults {
 			result = result.Put(xdm.AtomicValue{TypeName: xdm.TypeString, Value: uri}, xdm.ItemSlice{xdm.NodeItem{Node: doc}})
 		}
-	case "serialized":
-		// Serialized delivery: serialize the result document to a string. The
-		// serialization-params option overrides the stylesheet's own xsl:output
-		// parameters for the principal result.
-		if documentHasChildren(resultDoc) {
-			outDef := applySerializationParams(fnTransformCfg.resolvedOutputDef, serializationParamsSeq)
+	case transformSerialized:
+		return request.deliverSerialized(ctx, resultDoc, fnTransformCfg, principalKey)
 
-			s, serErr := serializeDeliveredResult(resultDoc, outDef)
-			if serErr != nil {
-				return xdm.MapItem{}, dynamicError(errCodeFOXT0003, "fn:transform: serialization error: %v", serErr)
-			}
-
-			result = result.Put(principalKey, xdm.SingleString(s))
-		}
-		// Serialize secondary results too.
-		for uri, doc := range secondaryResults {
-			outDef := secondaryOutputDefs[uri]
-			if outDef == nil {
-				outDef = ss.outputs[""]
-			}
-
-			s, serErr := serializeDeliveredResult(doc, outDef)
-			if serErr != nil {
-				return xdm.MapItem{}, dynamicError(errCodeFOXT0003, "fn:transform: serialization error: %v", serErr)
-			}
-
-			result = result.Put(xdm.AtomicValue{TypeName: xdm.TypeString, Value: uri}, xdm.SingleString(s))
-		}
 	default:
 		// Default: return the result document
 		if documentHasChildren(resultDoc) {
@@ -1253,6 +1330,45 @@ func (request transformRequest) deliver(resultDoc *xdm.Document, fnTransformCfg 
 	}
 
 	return result, nil
+}
+
+// deliverSerialized uses the same complete value sequences and serializer as
+// the public XSLT API, including JSON/adaptive results with no document tree.
+func (request transformRequest) deliverSerialized(ctx context.Context, doc *xdm.Document, cfg *transformConfig, key xdm.AtomicValue) (xdm.MapItem, error) {
+	params := transformMapSeq(request.options, "serialization-params")
+	output := applySerializationParams(cfg.resolvedOutputDef, params)
+	result := xdm.MapItem{}
+
+	if documentHasChildren(doc) || xdm.SequenceLen(cfg.rawCapturedItems) > 0 || (output != nil && isItemSerializationMethod(output.Method)) {
+		value := ValueResult{Document: doc, Items: cfg.rawCapturedItems, Output: output}
+
+		s, err := serializeDeliveredValue(ctx, value)
+		if err != nil {
+			return xdm.MapItem{}, err
+		}
+
+		result = result.Put(key, xdm.SingleString(s))
+	}
+
+	for uri, value := range cfg.valueResults {
+		s, err := serializeDeliveredValue(ctx, value)
+		if err != nil {
+			return xdm.MapItem{}, err
+		}
+
+		result = result.Put(xdm.AtomicValue{TypeName: xdm.TypeString, Value: uri}, xdm.SingleString(s))
+	}
+
+	return result, nil
+}
+
+func serializeDeliveredValue(ctx context.Context, value ValueResult) (string, error) {
+	var buf bytes.Buffer
+	if err := SerializeValue(ctx, &buf, value); err != nil {
+		return "", transformFailure(err, "fn:transform: serialization error: %v", err)
+	}
+
+	return buf.String(), nil
 }
 
 // documentHasChildren reports whether doc has any child nodes, i.e. whether the
@@ -1268,21 +1384,6 @@ func documentHasChildren(doc *xdm.Document) bool {
 	}
 
 	return false
-}
-
-// serializeDeliveredResult serializes doc to a string for the fn:transform
-// "serialized" delivery format. SerializeResult disables xdm.XMLSerialization's
-// per-document-child terminators on the direct XML path, so top-level text
-// newlines returned here are result content and are preserved unless serializer
-// indentation intentionally discards whitespace-only text because indentation
-// is enabled and the result has an element child.
-func serializeDeliveredResult(doc *xdm.Document, outDef *OutputDef) (string, error) {
-	var buf bytes.Buffer
-	if err := SerializeResult(&buf, doc, outDef); err != nil {
-		return "", err
-	}
-
-	return buf.String(), nil
 }
 
 // applySerializationParams returns an OutputDef with the fn:transform

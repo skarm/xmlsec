@@ -5,10 +5,121 @@ import (
 	"io"
 	"slices"
 	"time"
+	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
+
+func (e *Engine) xpathDecimalFormats(ctx context.Context, evaluator xpath.Evaluator, formats map[Name]map[string]string, version XPathVersion) (xpath.Evaluator, error) {
+	if len(formats) == 0 {
+		return evaluator, nil
+	}
+
+	if version < XPath30 {
+		return evaluator, ErrUnsupported
+	}
+
+	if len(formats) > e.limits.MaxNodes {
+		return evaluator, ErrLimit
+	}
+
+	named := make(map[xpath.QualifiedName]xpath.DecimalFormat, len(formats))
+	used := 0
+
+	for name, properties := range formats {
+		if err := ctx.Err(); err != nil {
+			return evaluator, err
+		}
+
+		if name != (Name{}) && (!xpath.ValidNCName(name.Local) || !utf8.ValidString(name.Space)) {
+			return evaluator, ErrInput
+		}
+
+		for _, length := range []int{len(name.Space), len(name.Local)} {
+			if length > e.limits.MaxProgramBytes-used {
+				return evaluator, ErrLimit
+			}
+
+			used += length
+		}
+
+		for property, value := range properties {
+			for _, length := range []int{len(property), len(value)} {
+				if length > e.limits.MaxProgramBytes-used {
+					return evaluator, ErrLimit
+				}
+
+				used += length
+			}
+		}
+
+		format, err := xpathDecimalFormat(properties)
+		if err != nil {
+			return evaluator, err
+		}
+
+		if name == (Name{}) {
+			evaluator = evaluator.DefaultDecimalFormat(format)
+		} else {
+			named[xpath.QualifiedName{URI: name.Space, Name: name.Local}] = format
+		}
+	}
+
+	return evaluator.NamedDecimalFormats(named), nil
+}
+
+func xpathDecimalFormat(properties map[string]string) (xpath.DecimalFormat, error) {
+	format := xpath.DefaultDecimalFormat()
+	characters := map[string]*rune{
+		"decimal-separator": &format.DecimalSeparator, "grouping-separator": &format.GroupingSeparator,
+		"minus-sign": &format.MinusSign, "percent": &format.Percent, "per-mille": &format.PerMille,
+		"zero-digit": &format.ZeroDigit, "digit": &format.Digit, "pattern-separator": &format.PatternSeparator,
+		"exponent-separator": &format.ExponentSeparator,
+	}
+
+	for property, value := range properties {
+		if !utf8.ValidString(value) {
+			return format, ErrInput
+		}
+
+		if character := characters[property]; character != nil {
+			if utf8.RuneCountInString(value) != 1 {
+				return format, ErrInput
+			}
+
+			*character, _ = utf8.DecodeRuneInString(value)
+		} else {
+			switch property {
+			case "infinity":
+				format.Infinity = value
+			case "NaN":
+				format.NaN = value
+			default:
+				return format, ErrInput
+			}
+		}
+	}
+
+	if !xpath.DecimalZeroDigit(format.ZeroDigit) {
+		return format, ErrInput
+	}
+
+	seen := make(map[rune]bool)
+	for digit := format.ZeroDigit; digit < format.ZeroDigit+10; digit++ {
+		seen[digit] = true
+	}
+
+	for _, character := range []rune{format.DecimalSeparator, format.GroupingSeparator, format.Percent, format.PerMille, format.Digit, format.PatternSeparator, format.ExponentSeparator} {
+		if seen[character] {
+			return format, ErrInput
+		}
+
+		seen[character] = true
+	}
+
+	return format, nil
+}
 
 // DynamicContext supplies shared XPath and XSLT execution settings.
 // The current time and implicit timezone are fixed for each invocation.

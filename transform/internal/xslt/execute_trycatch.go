@@ -172,7 +172,7 @@ func execMessageBody(ctx context.Context, inst *messageInst, ec *execContext, va
 	if len(inst.Body) > 0 {
 		// XSLT 2.0: message body is temporary output state (XTDE1480).
 		// XSLT 3.0 relaxes this restriction.
-		isV2TempOutput := ec.stylesheet.version != "" && ec.stylesheet.version < "3.0"
+		isV2TempOutput := ec.stylesheet.processorLanguage() < 30
 		if isV2TempOutput {
 			ec.temporaryOutputDepth++
 		}

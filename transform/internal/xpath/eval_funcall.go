@@ -55,11 +55,12 @@ func callResolvedFunction(ctx context.Context, ec *evalContext, r resolvedFuncti
 	// Enforce declared parameter signatures, mirroring the function-item /
 	// named-function-reference path. Coerced values are stored back into args so
 	// typed functions observe the converted values (e.g. xs:integer→xs:double).
-	paramTypes := lookupParamTypes(r, len(args))
+
+	paramTypes, repeated := lookupParamTypes(r, len(args))
 	if paramTypes != nil {
 		for i, arg := range args {
-			if i < len(paramTypes) {
-				coerced, err := coerceFuncallArg(ctx, arg, paramTypes[i], r.name, i, ec)
+			if parameter, declared := xdm.FunctionParameterType(paramTypes, repeated, i); declared {
+				coerced, err := coerceFuncallArg(ctx, arg, parameter, r.name, i, ec)
 				if err != nil {
 					return nil, err
 				}
@@ -75,23 +76,24 @@ func callResolvedFunction(ctx context.Context, ec *evalContext, r resolvedFuncti
 // lookupParamTypes returns the declared parameter types for a resolved function.
 // The built-in signature registry is consulted only when the resolved function is
 // the built-in; user/registered functions use their own TypedFunction metadata.
-// It returns nil when no signature is available (no enforcement).
-func lookupParamTypes(r resolvedFunction, arity int) []xdm.SequenceType {
+// The second result marks a sole type repeated for every parameter.
+// A nil slice means no declared signature is available.
+func lookupParamTypes(r resolvedFunction, arity int) ([]xdm.SequenceType, bool) {
 	if r.isBuiltin {
 		if sig := lookupFunctionSignature(r.uri, r.name, arity); sig != nil {
-			return sig.ParamTypes
+			return sig.ParamTypes, sig.RepeatParamType
 		}
 	}
 
 	if tf, ok := r.fn.(TypedFunction); ok {
-		return tf.FuncParamTypes()
+		return tf.FuncParamTypes(), false
 	}
 
 	if tfa, ok := r.fn.(TypedFunctionByArity); ok {
-		return tfa.FuncParamTypesForArity(arity)
+		return tfa.FuncParamTypesForArity(arity), false
 	}
 
-	return nil
+	return nil, false
 }
 
 func evalDynamicFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e DynamicFunctionCall) (xdm.Sequence, error) {
@@ -125,7 +127,7 @@ func evalDynamicFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *eval
 		}
 
 		if fi.Arity >= 0 && len(e.Args) != fi.Arity {
-			return nil, fmt.Errorf("%w: expected %d arguments, got %d", ErrArityMismatch, fi.Arity, len(e.Args))
+			return nil, languageError(fmt.Errorf("%w: expected %d arguments, got %d", ErrArityMismatch, fi.Arity, len(e.Args)), errCodeXPTY0004, ec.version)
 		}
 
 		var placeholderIndices []int
@@ -142,7 +144,7 @@ func evalDynamicFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *eval
 	switch v := funcSeq.Get(0).(type) {
 	case xdm.FunctionItem:
 		if v.Arity >= 0 && len(args) != v.Arity {
-			return nil, fmt.Errorf("%w: expected %d arguments, got %d", ErrArityMismatch, v.Arity, len(args))
+			return nil, languageError(fmt.Errorf("%w: expected %d arguments, got %d", ErrArityMismatch, v.Arity, len(args)), errCodeXPTY0004, ec.version)
 		}
 
 		return v.Invoke(withDynamicCall(ec.fnContext(ctx)), args)
@@ -296,15 +298,18 @@ func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionR
 	// call path (lookupParamTypes).
 	var (
 		paramTypes []xdm.SequenceType
+		repeated   bool
 		returnType *xdm.SequenceType
 		sig        *functionSignature
 	)
+
 	if r.isBuiltin {
 		sig = lookupFunctionSignature(r.uri, r.name, e.Arity)
 	}
 
 	if sig != nil {
 		paramTypes = sig.ParamTypes
+		repeated = sig.RepeatParamType
 		returnType = sig.ReturnType
 	} else if tf, ok := fn.(TypedFunction); ok {
 		paramTypes = tf.FuncParamTypes()
@@ -315,11 +320,12 @@ func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionR
 	}
 
 	fi := xdm.FunctionItem{
-		Arity:      e.Arity,
-		Name:       e.Name,
-		Namespace:  ns,
-		ParamTypes: paramTypes,
-		ReturnType: returnType,
+		Arity:           e.Arity,
+		Name:            e.Name,
+		Namespace:       ns,
+		ParamTypes:      paramTypes,
+		RepeatParamType: repeated,
+		ReturnType:      returnType,
 		Invoke: func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 			callEC := calleeContext(ctx, capturedEC)
 
@@ -336,13 +342,13 @@ func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionR
 				copy(coerced, args)
 
 				for i, arg := range args {
-					if i < len(paramTypes) {
+					if parameter, declared := xdm.FunctionParameterType(paramTypes, repeated, i); declared {
 						// coerceFuncallArg propagates a real typed error (FOTY0012 from
 						// atomizing an element-only node, FOTY0013, FORG0001, …) and
 						// maps only a plain mismatch to XPTY0004 — the boolean
 						// coerceToSequenceType would flatten FOTY0012 into a generic
 						// XPTY0004.
-						c, err := coerceFuncallArg(ctx, arg, paramTypes[i], e.Name, i, callEC)
+						c, err := coerceFuncallArg(ctx, arg, parameter, e.Name, i, callEC)
 						if err != nil {
 							return nil, err
 						}
@@ -366,23 +372,27 @@ func evalInlineFunctionExpr(evalFn exprEvaluator, _ context.Context, ec *evalCon
 	closedVars := ec.vars
 	captured := *ec
 	captured.invocation = nil
-	// Collect parameter types for subtype checking
-	var paramTypes []xdm.SequenceType
+	// Omitted annotations mean item()*, including in a mixed typed/untyped
+	// parameter list. Preserve these defaults for function subtype checks.
+	defaultType := stItem(xdm.OccurrenceZeroOrMore)
+	paramTypes := make([]xdm.SequenceType, len(e.Params))
 
-	for _, p := range e.Params {
+	for i, p := range e.Params {
+		paramTypes[i] = defaultType
 		if p.TypeHint != nil {
-			paramTypes = append(paramTypes, *p.TypeHint)
+			paramTypes[i] = *p.TypeHint
 		}
 	}
 
-	if len(paramTypes) != len(e.Params) {
-		paramTypes = nil // All-or-nothing: only set if all params are typed
+	returnType := e.ReturnType
+	if returnType == nil {
+		returnType = &defaultType
 	}
 
 	fi := xdm.FunctionItem{
 		Arity:      len(e.Params),
 		ParamTypes: paramTypes,
-		ReturnType: e.ReturnType,
+		ReturnType: returnType,
 		Invoke: func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 			return invokeInlineFunction(ctx, args, &captured, closedVars, e, evalFn)
 		},
@@ -410,7 +420,7 @@ func partialApply(ctx context.Context, ec *evalContext, e FunctionCall, fixedArg
 		return nil, err
 	}
 
-	paramTypes := lookupParamTypes(r, len(e.Args))
+	paramTypes, repeated := lookupParamTypes(r, len(e.Args))
 
 	// Coerce the fixed (curried) arguments now, before the placeholders are
 	// supplied: they are known at partial-application time, so the function body
@@ -420,7 +430,7 @@ func partialApply(ctx context.Context, ec *evalContext, e FunctionCall, fixedArg
 	copy(coercedFixed, fixedArgs)
 
 	if paramTypes != nil {
-		if err := partialApplyArgs(ctx, &e, paramTypes, fixedArgs, &r, ec, coercedFixed); err != nil {
+		if err := partialApplyArgs(ctx, &e, paramTypes, repeated, fixedArgs, &r, ec, coercedFixed); err != nil {
 			return nil, err
 		}
 	}
@@ -459,11 +469,12 @@ func partialApply(ctx context.Context, ec *evalContext, e FunctionCall, fixedArg
 			// typed errors (FOTY0013/FORG0001) propagate unchanged.
 			if paramTypes != nil {
 				for _, idx := range placeholderIndices {
-					if idx >= len(paramTypes) {
+					parameter, declared := xdm.FunctionParameterType(paramTypes, repeated, idx)
+					if !declared {
 						continue
 					}
 
-					coerced, err := coerceFuncallArg(ctx, fullArgs[idx], paramTypes[idx], r.name, idx, callEC)
+					coerced, err := coerceFuncallArg(ctx, fullArgs[idx], parameter, r.name, idx, callEC)
 					if err != nil {
 						return nil, err
 					}
@@ -640,17 +651,18 @@ func evalDynamicFunctionCallArgs(ctx context.Context, e *DynamicFunctionCall, ev
 	return nil
 }
 
-func partialApplyArgs(ctx context.Context, e *FunctionCall, paramTypes []xdm.SequenceType, fixedArgs []xdm.Sequence, r *resolvedFunction, ec *evalContext, coercedFixed []xdm.Sequence) error {
+func partialApplyArgs(ctx context.Context, e *FunctionCall, paramTypes []xdm.SequenceType, repeated bool, fixedArgs []xdm.Sequence, r *resolvedFunction, ec *evalContext, coercedFixed []xdm.Sequence) error {
 	for i, argExpr := range e.Args {
 		if _, ok := argExpr.(PlaceholderExpr); ok {
 			continue // placeholder slot: coerced at invocation time
 		}
 
-		if i >= len(paramTypes) {
+		parameter, declared := xdm.FunctionParameterType(paramTypes, repeated, i)
+		if !declared {
 			continue
 		}
 
-		coerced, err := coerceFuncallArg(ctx, fixedArgs[i], paramTypes[i], r.name, i, ec)
+		coerced, err := coerceFuncallArg(ctx, fixedArgs[i], parameter, r.name, i, ec)
 		if err != nil {
 			return err
 		}
@@ -699,7 +711,7 @@ func invokeInlineFunction(ctx context.Context, args []xdm.Sequence, ec *evalCont
 			arg = coerced
 		}
 
-		innerCtx.vars = scopeWithBinding(innerCtx.vars, param.Name, arg)
+		innerCtx.vars = scopeWithBinding(innerCtx.vars, VariableKey(param.Name, innerCtx.namespaces), arg)
 	}
 
 	result, err := evalFn(ctx, &innerCtx, e.Body)

@@ -1,14 +1,17 @@
 # Normative traceability
 
-[conformance.json](conformance.json) separates capabilities from individual
-standard obligations. Its overall clause inventory is partial; the required-algorithm subset is
-inventoried separately for generation and verification. Checking the register
-establishes consistency, not standards conformance or an independent security
-assessment.
+[conformance.json](conformance.json) separates capabilities from normative
+contracts for all 20 selected profiles. Inventories identify clauses, grammar
+productions, datatypes, algorithms, properties, role/binding/message triples and
+formal function/operator contracts. Related rules and conditional branches may
+share one contract record; this is not a count of individual MUST sentences.
+Implementation, local evidence and independent evidence have separate states.
+Checking the register establishes consistency, not standards conformance or an
+independent security assessment.
 
 ## Register structure
 
-Schema version 3 contains four linked inventories:
+Schema version 4 contains four linked inventories:
 
 - `documents` pins a published edition and records errata sources, review state
   and interpretation. Correction items have explicit identifiers, clauses and
@@ -79,6 +82,13 @@ package path such as `saml/sp.ServiceProvider`. They identify directly declared
 exported functions, types, methods or fields. For a type alias, name the public
 type itself rather than a member inherited from its target.
 
+Local `tests.status` is `covered`, `partial`, `pending` or `not-applicable`.
+`covered` needs positive and negative checks; `partial` needs at least one real
+check and an explicit gap; `pending` claims no checks and keeps a closure
+criterion. Non-applicable evidence requires a different standard role. Missing
+tests are recorded as missing, rather than filled with unrelated round trips.
+Neither partial nor pending local evidence permits a full conformance claim.
+
 Evidence names a `_test.go` file and an actual `func TestName(*testing.T)`
 declaration. Comments, methods and functions with another testing signature do
 not count. The checker inspects source, including tagged interoperability tests;
@@ -97,12 +107,17 @@ The profile records are the maintained backlog. In particular:
 - The DTD-free parser is not a complete XML 1.0 processor. A future general
   mode must implement applicable DTD/entity/default/normalization rules through
   explicit bounded resource resolution; the default security mode stays separate.
+  Its inventory distinguishes 79 current XML productions, 19 namespace
+  productions, named well-formedness/validity constraints and processor prose.
+  Validity reporting belongs to the separately identified validating role.
 - C14N consumes an already parsed node model. Sparse output may be a fragment;
-  the C14N writer does not supply DTD preprocessing.
+  the C14N writer does not supply DTD preprocessing. Its input, ordering, node
+  rendering, inheritance, base joining and exclusive namespace rules are
+  inventoried separately. Non-UCS NFC preprocessing and complete octet-input
+  behavior remain implementation/evidence gaps.
 - The selected XMLDSig/KeyInfo stage-4 profile is complete against the acceptance
-  list below. The overall XMLDSig clause inventory remains partial, including full
-  XML/LEIRI and additional optional formats. Mandatory algorithms have a separate
-  complete inventory; implementation availability does not grant application use.
+  list below. Its complete clause inventory retains gaps for full XML/LEIRI and
+  additional optional formats. Mandatory algorithms have a separate inventory; implementation availability does not grant application use.
 - External Manifest/KeyInfo fragments use complete allowlisted resolver URIs.
   The adapter supplies identified octets; external XML selection, redirect/media
   metadata and complete LEIRI processing are not inferred. Explicit base options
@@ -113,11 +128,16 @@ The profile records are the maintained backlog. In particular:
   Legacy OAEP/SHA-1 now has an explicit compatibility option for AES-GCM keys;
   this does not implement transport of unsupported mandatory TripleDES keys.
   RSA-v1.5 is optional in that edition.
-- Each XPath version and Basic XSLT need a complete applicable clause/suite
-  inventory. Schema awareness and W3C streamability are separate features.
+- Each XPath version and Basic XSLT have clause/function and pinned suite
+  inventories. Applicable language failures and incomplete independent clause
+  evidence remain open. Schema awareness and W3C streamability are separate roles.
 - SAML role duties include encrypted counterparts of plaintext elements handled
   by a mode, including applicable IDs and attributes. Approved Errata 05 is
-  selected; a complete role/binding correction matrix remains open.
+  selected and linked per base document and role. Mandatory Artifact/SOAP, ECP,
+  logout and NameID management, the selected edition's algorithms and complete
+  producer identifier lifecycle rules remain implementation gaps. Metadata IOP
+  key acceptance is distinct from Conformance's optional well-known-location
+  publication/resolution feature; neither is inferred from a callback.
 - Closed XAdES and with-time B-T do not implement the historical AdES workflow.
   The future process baseline is published EN 319 102-1 V1.4.1 (2024-06),
   separately from EN 319 132-1 V1.3.1 properties.
@@ -139,8 +159,16 @@ Publisher editions and correction inventories were reviewed on 2026-10-22.
 W3C draft proposals, RFC verified/held/rejected items, Approved SAML Errata 05 and
 published ETSI editions have distinct dispositions. SAML corrections are assigned
 to their affected base documents. Selected corrections are linked to assessed
-requirements; remaining per-clause and per-role assessment regions stay explicit.
+requirements; each selected correction has a normative trace, including explicit other-role
+dispositions. Corrected ASN.1 definitions and bibliographic/editorial changes
+remain distinct from newly implemented wire behavior.
 This register work does not implement the open requirements of later stages.
+
+The 2026-10-23 XML/Namespaces and C14N review separates processor, validating,
+document-author and application duties. The historical XML appendix-B name
+classes and namespace orphan productions do not replace the current grammar.
+Complete inventories retain gaps for DTD processing, legal 1.x declarations,
+relative namespace acceptance, transport encoding and C14N preprocessing.
 
 `TestNormativeConformanceChecks`, `TestConformanceEvidenceNamesRealTests` and
 `TestConformanceOptionalImplementationAndCorrections` validate missing document,
@@ -149,10 +177,21 @@ source/edition mismatches, correction IDs and mandatory/optional distinctions.
 They extend the existing development-runner test file. `make docs` checks the
 actual register together with README, compatibility and package-document links.
 
-The complete **register contract** is separate from complete individual-clause
-inventories or full implementation conformance. The latter remain explicitly
-partial wherever `unmapped_clauses` is nonempty; no profile is promoted to full
-conformance by this stage or by a passing repository gate.
+All selected profile matrices now have named clause/contract inventories. Their
+implementation, format/input, policy and evidence gaps remain visible at those
+contracts. This granularity groups related requirements, including a function's
+signature, rules and errors, or a property's syntax and byte binding. A complete
+inventory does not mean that each grouped rule has implementation or test
+coverage; those states must be assessed before a full claim. No profile is
+promoted to full conformance by this stage or a passing repository gate.
+
+The key/CMS/PKI/timestamp records distinguish parsing, generation and verification,
+including required legacy algorithms, absent BER/container alternatives,
+revocation forms and complete TSA service duties. XAdES property availability is
+separate from EN 319 102-1 creation and validation processes. The historical
+workflow remains unimplemented. SAML records retain full SP/IdP mandatory duties
+even though the public API implements a solicited WebSSO subset. Selected XSD
+lexical/value contracts do not establish schema validation or PSVI support.
 
 ## Stage 2 acceptance record
 
@@ -193,6 +232,52 @@ mode are absent. The writer operates on that retained model; it does not perform
 missing XML preprocessing. C14N 1.1 base fix-up still rejects whitespace-bearing
 URI references. These input/model restrictions remain recorded separately from
 the tested canonical byte rules. No full XML processor profile is claimed.
+
+## Stage 3 diagnostic acceptance record
+
+Pinned, unmodified QT3 and xslt30-test catalogs are exercised through the public
+APIs for XPath 2.0/3.0/3.1 and XSLT 2.0/3.0 selections. The full-catalog
+[baseline](language-baseline.md) records pass/fail/skip/not-applicable counts,
+failure causes, limits and the remaining work in the roadmap's six language
+areas. An explicit larger-budget sample distinguishes resource boundaries from
+encoding and language behavior. Its filtered results are kept separate from
+the unfiltered default runs. No mandatory failure is removed from the backlog.
+
+Reports identify the suite revision, executable and Go-source digests, dynamic
+context, selected limits and each compiled case's actual language version.
+Source changes and modified suite checkouts invalidate a run. The
+[adapter contract](language-suites.md) covers scoped namespaces and decimal
+formats, reference-selected environments, declared resources/collections/packages,
+invocation parameters and entry points, logical outputs and secondary/message
+assertions. The compiler and suite adapter share the package-version range parser.
+
+`TestXSLTExplicitGlobalContext` compares direct invocation and `fn:transform`:
+the initial named template uses the global singleton focus independently of the
+match selection and rejects absent/incorrectly typed required contexts.
+`TestDecimalFormatUnicodeDigitsAcrossPaths` and
+`TestDecimalFormatEmptyStringProperties` cover Unicode zero digits and explicit
+empty NaN/infinity strings; conflicting declarations fail. Their narrow normative
+records do not promote the complete formatting or processor inventory to complete.
+`TestSuiteStaticContextsAndReferences`, `TestSuiteStylesheetVersionDeclarations`,
+`TestSuiteExplicitBudgets` and `TestSuiteXSLTInvocationsAndResults` extend the
+existing adapter test file, including negative controls.
+
+Repository checks, lint, relevant race checks and Docker libxml2/libxslt
+comparisons pass. The existing comparison file also runs 95 Saxon HE 12.10 query agreements and
+two original-octet XML transformations. Two known oracle/publisher disagreements
+remain separate diagnostics; complete independent clause fixtures remain pending.
+Basic XSLT, complete XPath conformance, processor-version forcing, additional
+XML input encodings/schema processing and unimplemented assertion forms retain explicit
+gaps. Schema awareness and normative streamability remain separate directions.
+
+The resource closure block preserves resource MIME/charset metadata end to end,
+including HTTP and nested transforms. Its bounded decoding contract is checked
+by `TestTextResourceMediaType`, `TestXSLTTextResourceMediaType` and
+`TestHTTPTextMetadataAndDecodedLimit`. Calendar/duration representability and
+lexical errors are distinguished, formatter overloads and function conversion
+are enforced, and quantified anchors retain bounded zero-width matching.
+`TestCompareSaxonLanguageSemantics` replays 92 fixed queries with ready Saxon HE
+12.10 binaries. XSD 1.0/1.1 regex-range differences remain outside that evidence.
 
 ## Stage 4 acceptance record
 

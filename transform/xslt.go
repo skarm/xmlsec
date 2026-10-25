@@ -28,6 +28,9 @@ type XSLTOptions struct {
 	// Version is checked against the stylesheet's declared profile.
 	// Zero derives the profile from that declaration.
 	Version XSLTVersion
+	// ProcessorVersion selects the processor independently of the stylesheet's
+	// effective version. Zero derives it from the principal declaration.
+	ProcessorVersion XSLTVersion
 	// BaseURI resolves relative stylesheet imports and includes.
 	BaseURI string
 	// StaticParameters binds static stylesheet parameters during compilation.
@@ -40,6 +43,10 @@ type XSLTOptions struct {
 // A named template that needs no source document accepts a nil source.
 type XSLTContext struct {
 	Context DynamicContext
+	// ContextItem selects the global context independently of the source and
+	// initial match selection. Nil uses the source document; a pointer to a zero
+	// Value explicitly leaves the global context absent.
+	ContextItem *Value
 	// Parameters supplies global stylesheet parameters for this invocation.
 	Parameters Bindings
 	// InitialParameters supplies non-tunnel parameters to the initial template or mode.
@@ -65,7 +72,7 @@ type Stylesheet struct {
 	version XSLTVersion
 }
 
-// Version reports the compiled stylesheet language.
+// Version reports the selected processor language.
 func (s *Stylesheet) Version() XSLTVersion {
 	if s == nil {
 		return 0
@@ -228,6 +235,19 @@ func (s *Stylesheet) initialInvocation(ctx context.Context, source *xdm.Document
 		invocation = s.native.CallFunction(expandedName(options.function), args...).SourceDocument(source)
 	}
 
+	if options.ContextItem != nil {
+		item := options.ContextItem.item
+		if item != nil {
+			if err := checkSequence(ctx, xdm.ItemSlice{item}, s.engine.limits, true); err != nil {
+				return xslt.Invocation{}, wrap("execute XSLT", err)
+			}
+
+			item = xdm.CloneItem(item)
+		}
+
+		invocation = invocation.GlobalContextItem(item)
+	}
+
 	initial, err := nativeBindings(ctx, options.InitialParameters, s.engine.limits)
 	if err != nil {
 		return xslt.Invocation{}, wrap("execute XSLT", err)
@@ -316,7 +336,7 @@ func (e *Engine) CompileXSLTReader(ctx context.Context, src io.Reader, options X
 }
 
 func (e *Engine) compileStylesheet(ctx context.Context, doc *xdm.Document, options XSLTOptions) (*Stylesheet, error) {
-	version, err := xslt.CheckLanguage(doc, int(options.Version))
+	version, err := xslt.CheckProcessorLanguage(doc, int(options.Version), int(options.ProcessorVersion))
 	if err != nil {
 		return nil, xsltError("compile XSLT", err)
 	}
@@ -335,7 +355,7 @@ func (e *Engine) compileStylesheet(ctx context.Context, doc *xdm.Document, optio
 		parameters.Set(name, value)
 	}
 
-	compiler := xslt.NewCompiler().ParseOptions(e.parseOptions()).BaseURI(options.BaseURI).StaticParameters(parameters).MaxResourceBytes(int64(e.limits.MaxInputBytes))
+	compiler := xslt.NewCompiler().ProcessorVersion(version).ParseOptions(e.parseOptions()).BaseURI(options.BaseURI).StaticParameters(parameters).MaxResourceBytes(int64(e.limits.MaxInputBytes))
 	if e.packages != nil {
 		compiler = compiler.PackageResolver(packageAdapter{engine: e})
 	}

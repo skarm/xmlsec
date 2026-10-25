@@ -12,6 +12,21 @@ make examples
 make fuzz FUZZ_ARGS='-time=5s'
 ```
 
+`TestCompareSaxonLanguageSemantics` extends the existing optional transform
+comparison tests. Set `SAXON_CLASSPATH` to a ready Saxon HE classpath, including
+its resolver dependencies. It compares fixed XPath queries and error codes;
+no Java adapter is compiled. This run used the publisher's
+[Saxon HE 12.10 archive](https://github.com/Saxonica/Saxon-HE/releases/tag/SaxonHE12-10),
+SHA-256 `1c7db9f726df835349c64edd631de0310eca31291100230064eba153f607b0be`,
+inside Docker with networking disabled. The archive and jars stay outside the
+repository. Known XSD 1.0/1.1 regex range differences are excluded from successful
+comparison evidence; they remain a separate profile gap.
+
+```sh
+SAXON_CLASSPATH='/absolute/path/saxon-he-12.10.jar:/absolute/path/lib/*' \
+  go test -tags=interop -count=1 -v ./transform -run '^TestCompareSaxonLanguageSemantics$'
+```
+
 [CI](../.github/workflows/ci.yml) defines tool versions and platform checks.
 The Go development runner also works without make:
 

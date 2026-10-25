@@ -264,7 +264,7 @@ func (c *compiler) loadModuleDoc(ctx context.Context, uri string) (*xdm.Document
 		return nil, fmt.Errorf("cannot parse %q: %w", uri, err)
 	}
 
-	if isBackwardsCompatible(c.stylesheet.version) {
+	if c.stylesheet.processorLanguage() == 10 {
 		original := doc
 
 		doc, err = prepareModule10(ctx, doc)
@@ -322,7 +322,7 @@ func (c *compiler) loadAndCacheInclude(ctx context.Context, uri, importKey strin
 			return nil, staticError(errCodeXTSE0010, "no element with id=%q in %q", fragment, uri)
 		}
 	} else {
-		if _, err := CheckLanguage(doc, 0); err != nil {
+		if _, err := CheckProcessorLanguage(doc, 0, c.stylesheet.processorLanguage()); err != nil {
 			return nil, err
 		}
 
@@ -561,31 +561,30 @@ func (c *compiler) compileIncludedStaticValues(ctx context.Context, root *xdm.El
 			continue
 		}
 
-		if getAttr(elem, nameStatic) != lexicon.ValueYes {
+		if !isStaticTopLevelDeclaration(elem) {
 			continue
 		}
 
-		name, selectExpr := getAttr(elem, xslAttrName), getAttr(elem, xslAttrSelect)
+		supplied, err := c.bindExternalStaticParam(ctx, elem)
+		if err != nil {
+			return err
+		}
+
+		if supplied {
+			continue
+		}
+
+		name, selectExpr := resolveQName(getAttr(elem, xslAttrName), inScopeNamespaces(elem)), getAttr(elem, xslAttrSelect)
 		if name == "" || selectExpr == "" {
 			continue
 		}
 
-		compiled, err := xpath.NewCompiler().Compile(selectExpr)
-		if err != nil {
-			continue // This prepass leaves compile errors for declaration compilation.
-		}
-
-		eval := c.staticEvaluator(ctx)
-		if len(c.staticVars) > 0 {
-			eval = eval.Variables(c.staticVars)
-		}
-
-		result, err := eval.Evaluate(ctx, compiled, nil)
-		if err != nil {
+		value, evaluated, err := c.tryEvaluateStaticSelect(ctx, elem)
+		if err != nil || !evaluated {
 			continue
 		}
 
-		if err := c.setStaticVarWithKind(ctx, name, kind, result.Sequence()); err != nil {
+		if err := c.setStaticVarWithKind(ctx, name, kind, value); err != nil {
 			return err
 		}
 	}
@@ -683,7 +682,7 @@ func (c *compiler) loadExternalStylesheet(ctx context.Context, baseURI, href str
 			return staticError(errCodeXTSE0010, "no element with id=%q in %q", fragment, uri)
 		}
 	} else {
-		if _, err := CheckLanguage(doc, 0); err != nil {
+		if _, err := CheckProcessorLanguage(doc, 0, c.stylesheet.processorLanguage()); err != nil {
 			return err
 		}
 
@@ -711,6 +710,7 @@ func (c *compiler) compileExternalSimplified(ctx context.Context, doc *xdm.Docum
 		// Simplified stylesheet — compile as a single template matching "/"
 		simplified, err := compileSimplified(ctx, doc, importedRoot, &compileConfig{
 			baseURI:          uri,
+			processorVersion: c.stylesheet.processorLanguage(),
 			resolver:         c.resolver,
 			packageResolver:  c.packageResolver,
 			maxResourceBytes: c.maxResourceBytes,
@@ -776,6 +776,7 @@ func compileSimplified(ctx context.Context, doc *xdm.Document, root *xdm.Element
 	}
 
 	if cfg != nil {
+		c.stylesheet.processorVersion = cfg.processorVersion
 		c.baseURI = cfg.baseURI
 		c.resolver = cfg.resolver
 		c.packageResolver = cfg.packageResolver

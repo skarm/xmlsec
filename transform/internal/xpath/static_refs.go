@@ -88,7 +88,7 @@ func (e *Expression) StaticReferences(namespaces map[string]string) StaticRefere
 }
 
 type staticRefCollector struct {
-	// bound is a REFCOUNT of in-scope variable bindings keyed by lexical name, not a
+	// bound is a REFCOUNT of in-scope variable bindings keyed by expanded name, not a
 	// flat present/absent set: an inner for/let/quantified/inline-function binding may
 	// SHADOW an outer one of the same name, so binding increments and leaving scope
 	// decrements (deleting at zero). Restoring the prior count on exit keeps the outer
@@ -105,11 +105,13 @@ type staticRefCollector struct {
 
 // bindVar enters a variable binding for the duration of an enclosed scope.
 func (c *staticRefCollector) bindVar(key string) {
+	key = VariableKey(key, c.namespaces)
 	c.bound[key]++
 }
 
 // unbindVar leaves a variable binding, restoring any shadowed outer binding.
 func (c *staticRefCollector) unbindVar(key string) {
+	key = VariableKey(key, c.namespaces)
 	if c.bound[key] <= 1 {
 		delete(c.bound, key)
 		return
@@ -119,6 +121,9 @@ func (c *staticRefCollector) unbindVar(key string) {
 }
 
 func (c *staticRefCollector) addFreeVar(key string) {
+	lexical := key
+
+	key = VariableKey(key, c.namespaces)
 	if c.bound[key] > 0 {
 		return
 	}
@@ -132,7 +137,7 @@ func (c *staticRefCollector) addFreeVar(key string) {
 	}
 
 	c.seenFree[key] = struct{}{}
-	c.freeVars = append(c.freeVars, key)
+	c.freeVars = append(c.freeVars, lexical)
 }
 
 // addAtomicType records a type name from a split (Prefix, Name) pair — e.g. an
@@ -270,7 +275,7 @@ func (c *staticRefCollector) walk(node Expr) { //nolint:gocyclo
 
 	switch n := node.(type) {
 	case VariableExpr:
-		c.addFreeVar(variableKey(n.Name))
+		c.addFreeVar(n.Name)
 	case CastExpr:
 		c.addAtomicType(n.Type.Prefix, n.Type.Name)
 		c.walk(n.Expr)
@@ -377,14 +382,33 @@ func (c *staticRefCollector) walk(node Expr) { //nolint:gocyclo
 	}
 }
 
-// variableKey returns the lexical key under which a variable is tracked for
-// bound/free analysis. VariableExpr.Name already carries the full lexical form
-// ("prefix:local" when prefixed, or "local" / "Q{uri}local" otherwise), exactly
-// as the for/let/quantified/inline-function binding sites store their bound
-// variable (the raw variable token value), so the key is simply that name — the
-// prefix must NOT be prepended again, which would mis-key "p:x" as "p:p:x" and
-// wrongly report a bound prefixed variable as free.
-func variableKey(name string) string {
+// VariableKey resolves a variable's expanded name for binding and scope checks.
+// An unprefixed variable has no namespace, independently of the default element
+// namespace. Unknown prefixes remain lexical for the separate prefix validator.
+func VariableKey(name string, namespaces map[string]string) string {
+	if strings.HasPrefix(name, "Q{") {
+		name = name[1:]
+	}
+
+	if strings.HasPrefix(name, "{}") {
+		return name[2:]
+	}
+
+	if strings.HasPrefix(name, "{") {
+		return name
+	}
+
+	if prefix, local, ok := strings.Cut(name, ":"); ok {
+		uri, known := namespaces[prefix]
+		if !known {
+			uri, known = PredeclaredNamespace(prefix)
+		}
+
+		if known && uri != "" {
+			return xdm.ClarkName(uri, local)
+		}
+	}
+
 	return name
 }
 

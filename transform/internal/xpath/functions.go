@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"math/big"
+	"slices"
 	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -113,7 +114,7 @@ func BuiltinFunctionAcceptsArity(uri, name string, arity int) bool {
 		return false
 	}
 
-	return arity >= fn.MinArity() && (fn.MaxArity() < 0 || arity <= fn.MaxArity())
+	return checkArity(fn, name, arity) == nil
 }
 
 // StandardFunctionAcceptsArity reports whether (uri, name) is a STANDARD F&O 3.1
@@ -128,7 +129,7 @@ func StandardFunctionAcceptsArity(uri, name string, arity int) bool {
 		return false
 	}
 
-	return arity >= fn.MinArity() && (fn.MaxArity() < 0 || arity <= fn.MaxArity())
+	return checkArity(fn, name, arity) == nil
 }
 
 // isExtensionBuiltin identifies built-ins outside F&O 3.1. They remain
@@ -262,6 +263,10 @@ func resolvePrefix(ec *evalContext, prefix string) (string, error) {
 }
 
 func checkArity(fn Function, name string, arity int) error {
+	if builtin, ok := fn.(*builtinFunc); ok && len(builtin.arities) > 0 && !slices.Contains(builtin.arities, arity) {
+		return fmt.Errorf("%w: %s does not accept %d arguments", ErrArityMismatch, name, arity)
+	}
+
 	minArity := fn.MinArity()
 	maxArity := fn.MaxArity()
 
@@ -278,10 +283,11 @@ func checkArity(fn Function, name string, arity int) error {
 
 // builtinFunc is a simple implementation of Function for built-in functions.
 type builtinFunc struct {
-	name string
-	min  int
-	max  int // -1 = variadic
-	fn   func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
+	arities []int
+	name    string
+	min     int
+	max     int // -1 = variadic
+	fn      func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 	// extension is true for functions helium provides BEYOND the F&O 3.1 standard
 	// function library (forward-looking XPath/XQuery 4.0 functions). They are available
 	// for evaluation, but are NOT part of a conformance-restricted static context such

@@ -67,21 +67,6 @@ func TransformToWriter(ctx context.Context, source *xdm.Document, ss *Stylesheet
 	return ss.Transform(source).WriteTo(ctx, w)
 }
 
-// parseXMLReader applies the invocation's XML policy to an in-memory or
-// externally retrieved source without collecting an extra byte slice.
-func parseXMLReader(ctx context.Context, configured *xdm.ParseOptions, source io.Reader, baseURI string, maxBytes int64) (*xdm.Document, error) {
-	options := xdm.ParseOptions{}
-	if configured != nil {
-		options = *configured
-	}
-
-	if baseURI != "" {
-		options.BaseURI = baseURI
-	}
-
-	return options.WithByteLimit(maxBytes).ParseReader(ctx, source)
-}
-
 // parseXMLResource consumes and closes an explicitly opened XML resource.
 func parseXMLResource(ctx context.Context, configured *xdm.ParseOptions, reader io.ReadCloser, baseURI string, maxBytes int64) (*xdm.Document, error) {
 	options := xdm.ParseOptions{}

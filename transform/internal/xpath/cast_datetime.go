@@ -16,10 +16,11 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
-// errDurationMonthsRange reports a duration whose month total fits int64 but
-// not int, which happens only where int is 32 bits. A cast raises it as
-// FODT0002 (duration overflow).
+// errDurationMonthsRange reports a duration outside the supported month range.
+// Lexical validation finishes before a cast raises FODT0002.
 var errDurationMonthsRange = errors.New("duration month count out of int range")
+
+var errCalendarYearRange = errors.New("calendar year out of representable range")
 
 func castToGType(v xdm.AtomicValue, targetType string) (xdm.AtomicValue, error) {
 	switch v.TypeName {
@@ -108,8 +109,19 @@ func splitXSDYear(s string) (int, string, error) {
 	yearStr := s[start:i]
 
 	year, err := strconv.Atoi(yearStr)
-	if err != nil {
-		return 0, "", fmt.Errorf("invalid year: %q", yearStr)
+	if err != nil || year > 999_999_999 {
+		// Retain the Gregorian leap-year cycle so callers can distinguish a
+		// malformed date from a valid value outside the supported year range.
+		year = 0
+		for _, digit := range yearStr {
+			year = (year*10 + int(digit-'0')) % 400
+		}
+
+		if neg {
+			year = -year
+		}
+
+		return year, s[i:], errCalendarYearRange
 	}
 
 	if neg {
@@ -118,10 +130,6 @@ func splitXSDYear(s string) (int, string, error) {
 	// XSD 1.1: year 0000 is valid (and is a leap year), so it is accepted here.
 	// Reject years outside Go's time.Time representable range.
 	// time.Date wraps silently for extreme years; cap at ±999,999,999.
-	if year > 999_999_999 || year < -999_999_999 {
-		return 0, "", fmt.Errorf("year %d out of representable range", year)
-	}
-
 	return year, s[i:], nil
 }
 
@@ -195,7 +203,9 @@ func extractDateMonthDay(rest string) (int, int, error) {
 
 func parseXSDDate(s string) (time.Time, error) {
 	year, rest, err := splitXSDYear(s)
-	if err != nil {
+
+	overflow := errors.Is(err, errCalendarYearRange)
+	if err != nil && !overflow {
 		if xe, ok := errors.AsType[*xdm.Error](err); ok {
 			return time.Time{}, xe
 		}
@@ -214,6 +224,10 @@ func parseXSDDate(s string) (time.Time, error) {
 	if t, ok := buildTimeFromParts(year, rest, layouts, s); ok {
 		if err := validateDateComponents(int(t.Month()), t.Day(), year); err != nil {
 			return time.Time{}, fmt.Errorf("invalid xs:date: %q: %w", s, err)
+		}
+
+		if overflow {
+			return time.Time{}, &xdm.Error{Code: errCodeFODT0001, Message: errCalendarYearRange.Error()}
 		}
 
 		return t, nil
@@ -236,7 +250,9 @@ func parseXSDDateTime(s string) (time.Time, error) {
 	}
 
 	year, rest, err := splitXSDYear(target)
-	if err != nil {
+
+	overflow := errors.Is(err, errCalendarYearRange)
+	if err != nil && !overflow {
 		if xe, ok := errors.AsType[*xdm.Error](err); ok {
 			return time.Time{}, xe
 		}
@@ -263,6 +279,10 @@ func parseXSDDateTime(s string) (time.Time, error) {
 
 		if isMidnight24 {
 			t = t.AddDate(0, 0, 1) // advance to next day
+		}
+
+		if overflow || t.Year() > 999_999_999 || t.Year() < -999_999_999 {
+			return time.Time{}, &xdm.Error{Code: errCodeFODT0001, Message: errCalendarYearRange.Error()}
 		}
 
 		return t, nil
@@ -519,16 +539,17 @@ type durationComponent struct {
 // durationParser keeps lexical ordering separate from exact accumulation.
 // Seconds are authoritative rationals; value.Seconds is a float64 mirror.
 type durationParser struct {
-	lexical           string
-	offset            int
-	value             xdm.Duration
-	months            int64
 	seconds           *big.Rat
 	used              map[byte]struct{}
+	value             xdm.Duration
+	lexical           string
+	offset            int
+	months            int64
+	lastOrder         int
+	monthsOverflow    bool
 	inTime            bool
 	seenComponent     bool
 	seenTimeComponent bool
-	lastOrder         int
 }
 
 func (parser *durationParser) invalid() error {
@@ -645,17 +666,24 @@ func (parser *durationParser) addMonthComponent(component durationComponent, ord
 	}
 
 	n, err := strconv.ParseInt(component.number, 10, 64)
+	if errors.Is(err, strconv.ErrRange) {
+		parser.monthsOverflow = true
+		return nil
+	}
+
 	if err != nil {
-		return fmt.Errorf("invalid duration number: %q", component.number)
+		return parser.invalid()
 	}
 
 	if n > math.MaxInt64/multiplier {
-		return fmt.Errorf("duration overflow: %s%c", component.number, component.designator)
+		parser.monthsOverflow = true
+		return nil
 	}
 
 	months, ok := addCheckedMonths(parser.months, n*multiplier)
 	if !ok {
-		return fmt.Errorf("duration overflow: %s%c", component.number, component.designator)
+		parser.monthsOverflow = true
+		return nil
 	}
 
 	parser.months = months
@@ -745,11 +773,11 @@ func (parser *durationParser) result() (xdm.Duration, error) {
 	}
 
 	parser.value.Months = int(parser.months)
-	if int64(parser.value.Months) != parser.months {
-		return xdm.Duration{}, fmt.Errorf("%w: %q", errDurationMonthsRange, parser.lexical)
-	}
 
 	parser.value.SecRat = parser.seconds
+	if parser.monthsOverflow || int64(parser.value.Months) != parser.months {
+		return parser.value, fmt.Errorf("%w: %q", errDurationMonthsRange, parser.lexical)
+	}
 
 	return parser.value, nil
 }

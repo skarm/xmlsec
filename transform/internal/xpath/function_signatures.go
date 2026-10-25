@@ -7,12 +7,14 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // functionSignature stores the declared parameter and return types for a built-in function.
 type functionSignature struct {
-	ParamTypes []xdm.SequenceType
-	ReturnType *xdm.SequenceType
+	ParamTypes      []xdm.SequenceType
+	RepeatParamType bool
+	ReturnType      *xdm.SequenceType
 }
 
 func newFunctionSignature(params []xdm.SequenceType, ret xdm.SequenceType) *functionSignature {
@@ -27,16 +29,14 @@ type sigKey struct {
 
 // seqType helpers for concise signature definitions
 func stAtomic(typeName string, occ xdm.Occurrence) xdm.SequenceType {
-	// typeName is like "xs:numeric" — split into prefix and name
-	prefix := "xs"
-
 	name := typeName
-	if p, n, ok := strings.Cut(typeName, ":"); ok {
-		prefix = p
+	if _, n, ok := strings.Cut(typeName, ":"); ok {
 		name = n
 	}
 
-	return xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Prefix: prefix, Name: name}, Occurrence: occ}
+	// Standard function signatures name XSD types in their own static context.
+	// A caller's rebinding of the lexical xs prefix cannot change those types.
+	return xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: xdm.QAnnotation(lexicon.NamespaceXSD, name)}, Occurrence: occ}
 }
 
 func stNode(occ xdm.Occurrence) xdm.SequenceType { //nolint:unparam // always OccurrenceZeroOrOne but kept for signature symmetry with stAtomic/stItem
@@ -105,12 +105,23 @@ func lookupNodeSignature(key sigKey) *functionSignature {
 }
 
 func lookupStringSignature(key sigKey) *functionSignature {
+	if key.URI == NSFn && key.Name == nameConcat && key.Arity >= 2 {
+		signature := newFunctionSignature([]xdm.SequenceType{stAtomic(xdm.TypeAnyAtomicType, xdm.OccurrenceZeroOrOne)}, stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne))
+		signature.RepeatParamType = true
+
+		return signature
+	}
+
 	strQToStr := stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne)
 	strQParam := []xdm.SequenceType{stAtomic(xdm.TypeString, xdm.OccurrenceZeroOrOne)}
 	strQQBool := stAtomic(xdm.TypeBoolean, xdm.OccurrenceExactlyOne)
 	strQQParams := []xdm.SequenceType{stAtomic(xdm.TypeString, xdm.OccurrenceZeroOrOne), stAtomic(xdm.TypeString, xdm.OccurrenceZeroOrOne)}
 
 	switch key {
+	case sigKey{URI: NSFn, Name: "codepoints-to-string", Arity: 1}:
+		return newFunctionSignature([]xdm.SequenceType{stAtomic(xdm.TypeInteger, xdm.OccurrenceZeroOrMore)}, strQToStr)
+	case sigKey{URI: NSFn, Name: "string-to-codepoints", Arity: 1}:
+		return newFunctionSignature(strQParam, stAtomic(xdm.TypeInteger, xdm.OccurrenceZeroOrMore))
 	case sigKey{URI: NSFn, Name: nameString, Arity: 0}:
 		return newFunctionSignature(nil, stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne))
 	case sigKey{URI: NSFn, Name: nameString, Arity: 1}:
@@ -131,8 +142,7 @@ func lookupStringSignature(key sigKey) *functionSignature {
 		return newFunctionSignature(strQParam, strQToStr)
 	case sigKey{URI: NSFn, Name: "normalize-unicode", Arity: 2}:
 		return newFunctionSignature([]xdm.SequenceType{stAtomic(xdm.TypeString, xdm.OccurrenceZeroOrOne), stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne)}, strQToStr)
-	case sigKey{URI: NSFn, Name: nameConcat, Arity: 2}:
-		return newFunctionSignature([]xdm.SequenceType{stItem(xdm.OccurrenceZeroOrMore), stItem(xdm.OccurrenceZeroOrMore)}, stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne))
+
 	case sigKey{URI: NSFn, Name: fnNameContains, Arity: 2}:
 		return newFunctionSignature(strQQParams, strQQBool)
 	case sigKey{URI: NSFn, Name: fnNameStartsWith, Arity: 2}:
@@ -242,11 +252,106 @@ func lookupHigherOrderSignature(key sigKey) *functionSignature {
 // lookupFunctionSignature constructs independent metadata for a built-in function.
 func lookupFunctionSignature(uri, name string, arity int) *functionSignature {
 	key := sigKey{URI: uri, Name: name, Arity: arity}
-	for _, lookup := range [...]func(sigKey) *functionSignature{lookupNumericSignature, lookupNodeSignature, lookupStringSignature, lookupBooleanSignature, lookupAggregateSignature, lookupSequenceSignature, lookupHigherOrderSignature} {
+	for _, lookup := range [...]func(sigKey) *functionSignature{lookupNumericSignature, lookupNodeSignature, lookupStringSignature, lookupTextResourceSignature, lookupQNameSignature, lookupModuleSignature, lookupBooleanSignature, lookupAggregateSignature, lookupSequenceSignature, lookupCalendarFormatSignature, lookupHigherOrderSignature} {
 		if sig := lookup(key); sig != nil {
 			return sig
 		}
 	}
 
 	return nil
+}
+
+func lookupCalendarFormatSignature(key sigKey) *functionSignature {
+	if key.URI != NSFn || key.Arity != 2 && key.Arity != 5 {
+		return nil
+	}
+
+	typeName := ""
+
+	switch key.Name {
+	case "format-date":
+		typeName = xdm.TypeDate
+	case "format-dateTime":
+		typeName = xdm.TypeDateTime
+	case "format-time":
+		typeName = xdm.TypeTime
+	default:
+		return nil
+	}
+
+	params := []xdm.SequenceType{stAtomic(typeName, xdm.OccurrenceZeroOrOne), stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne)}
+	for len(params) < key.Arity {
+		params = append(params, stAtomic(xdm.TypeString, xdm.OccurrenceZeroOrOne))
+	}
+
+	return newFunctionSignature(params, stAtomic(xdm.TypeString, xdm.OccurrenceZeroOrOne))
+}
+
+func lookupTextResourceSignature(key sigKey) *functionSignature {
+	if key.URI != NSFn || key.Arity < 1 || key.Arity > 2 {
+		return nil
+	}
+
+	result := stAtomic(xdm.TypeString, xdm.OccurrenceZeroOrOne)
+
+	switch key.Name {
+	case "unparsed-text":
+	case nameUnparsedTextLines:
+		result.Occurrence = xdm.OccurrenceZeroOrMore
+	case "unparsed-text-available":
+		result = stAtomic(xdm.TypeBoolean, xdm.OccurrenceExactlyOne)
+	default:
+		return nil
+	}
+
+	params := []xdm.SequenceType{stAtomic(xdm.TypeString, xdm.OccurrenceZeroOrOne)}
+	if key.Arity == 2 {
+		params = append(params, stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne))
+	}
+
+	return newFunctionSignature(params, result)
+}
+
+func lookupQNameSignature(key sigKey) *functionSignature {
+	if key.URI != NSFn {
+		return nil
+	}
+
+	str := stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne)
+	strQ := stAtomic(xdm.TypeString, xdm.OccurrenceZeroOrOne)
+	qname := stAtomic(xdm.TypeQName, xdm.OccurrenceExactlyOne)
+	qnameQ := stAtomic(xdm.TypeQName, xdm.OccurrenceZeroOrOne)
+	element := xdm.SequenceType{ItemTest: xdm.ElementTest{}, Occurrence: xdm.OccurrenceExactlyOne}
+
+	switch key {
+	case sigKey{URI: NSFn, Name: nameQName, Arity: 2}:
+		return newFunctionSignature([]xdm.SequenceType{strQ, str}, qname)
+	case sigKey{URI: NSFn, Name: "prefix-from-QName", Arity: 1}, sigKey{URI: NSFn, Name: "local-name-from-QName", Arity: 1}:
+		return newFunctionSignature([]xdm.SequenceType{qnameQ}, stAtomic(xdm.TypeNCName, xdm.OccurrenceZeroOrOne))
+	case sigKey{URI: NSFn, Name: "namespace-uri-from-QName", Arity: 1}:
+		return newFunctionSignature([]xdm.SequenceType{qnameQ}, stAtomic(xdm.TypeAnyURI, xdm.OccurrenceZeroOrOne))
+	case sigKey{URI: NSFn, Name: "namespace-uri-for-prefix", Arity: 2}:
+		return newFunctionSignature([]xdm.SequenceType{strQ, element}, stAtomic(xdm.TypeAnyURI, xdm.OccurrenceZeroOrOne))
+	case sigKey{URI: NSFn, Name: "in-scope-prefixes", Arity: 1}:
+		return newFunctionSignature([]xdm.SequenceType{element}, stAtomic(xdm.TypeString, xdm.OccurrenceZeroOrMore))
+	case sigKey{URI: NSFn, Name: "resolve-QName", Arity: 2}:
+		return newFunctionSignature([]xdm.SequenceType{strQ, element}, qnameQ)
+	}
+
+	return nil
+}
+
+func lookupModuleSignature(key sigKey) *functionSignature {
+	if key.URI != NSFn || key.Name != nameLoadXQueryModule || key.Arity < 1 || key.Arity > 2 {
+		return nil
+	}
+
+	anyMap := xdm.SequenceType{ItemTest: xdm.MapTest{AnyType: true}, Occurrence: xdm.OccurrenceExactlyOne}
+
+	params := []xdm.SequenceType{stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne)}
+	if key.Arity == 2 {
+		params = append(params, anyMap)
+	}
+
+	return newFunctionSignature(params, anyMap)
 }

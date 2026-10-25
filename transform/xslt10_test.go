@@ -42,7 +42,7 @@ func TestXSLT10XMLConstructionAndSimplifiedStylesheet(t *testing.T) {
 	kind, _ := root.Attribute(document.Name{Local: "kind"})
 
 	children := root.Children()
-	if kind != "ok" || len(children) != 1 || children[0].Name() != (document.Name{Space: "urn:result", Local: "item"}) || children[0].Text() != nameYes {
+	if kind != "ok" || len(children) != 1 || children[0].Name() != (document.Name{Space: "urn:result", Local: nameItem}) || children[0].Text() != nameYes {
 		t.Fatalf("attribute sets, namespace alias or fragment copy lost: %s", out.Primary)
 	}
 

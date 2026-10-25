@@ -6,8 +6,9 @@ INTEROP_DOCKER_IMAGE ?= xmlsec-interop:local
 FUZZ_ARGS ?=
 BENCH_ARGS ?=
 INTEROP_ARGS ?=
+SUITE_ARGS ?=
 
-.PHONY: test check lint fmt modules docs race fuzz bench examples build interop interop-full interop-docker
+.PHONY: test check lint fmt modules docs race fuzz bench examples build suites interop interop-full interop-docker
 
 test:
 	$(GO) test ./...
@@ -45,6 +46,10 @@ examples:
 
 build:
 	$(GO) build -o bin/xmlsec ./cmd/xmlsec
+
+# Optional, pinned external W3C test checkouts; never downloaded by the runner.
+suites:
+	$(GO) run ./tests/cmd/dev suites $(SUITE_ARGS)
 
 # Optional independent engines; never part of ordinary Go checks.
 interop:

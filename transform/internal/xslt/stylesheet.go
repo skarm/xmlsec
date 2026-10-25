@@ -95,8 +95,9 @@ const (
 // schema-aware or not. See the package documentation's Concurrency section for
 // the full contract.
 type Stylesheet struct {
-	packageResolver PackageResolver // resolver used at compile time (for fn:transform package-name)
-	uriResolver     URIResolver     // resolver used at compile time (for fn:transform nested compiles)
+	processorVersion int
+	packageResolver  PackageResolver // resolver used at compile time (for fn:transform package-name)
+	uriResolver      URIResolver     // resolver used at compile time (for fn:transform nested compiles)
 	// compatExprs holds every compiled XPath expression that must evaluate in
 	// XPath 1.0 compatibility mode (XSLT backwards-compatible processing, effective
 	// version < 2.0), keyed by pointer identity. nil when the stylesheet has no
@@ -500,4 +501,24 @@ func (o *OutputDef) GetUseCharacterMaps() []string {
 	}
 
 	return o.UseCharacterMaps
+}
+
+// processorLanguage also covers internal zero-value stylesheet helpers.
+func (s *Stylesheet) processorLanguage() int {
+	if s.processorVersion == 0 {
+		return 30
+	}
+
+	return s.processorVersion
+}
+
+func (s *Stylesheet) xpathVersion() int {
+	switch s.processorLanguage() {
+	case 10:
+		return 10
+	case 20:
+		return 20
+	default:
+		return 31
+	}
 }

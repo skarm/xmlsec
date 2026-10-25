@@ -31,10 +31,11 @@ type Compiler struct {
 }
 
 type xsltCompilerCfg struct {
-	baseURI         string
-	uriResolver     URIResolver
-	packageResolver PackageResolver
-	staticParams    *Parameters
+	processorVersion int
+	baseURI          string
+	uriResolver      URIResolver
+	packageResolver  PackageResolver
+	staticParams     *Parameters
 
 	maxResourceBytes int64
 
@@ -44,6 +45,15 @@ type xsltCompilerCfg struct {
 // NewCompiler creates a new Compiler with default settings.
 func NewCompiler() Compiler {
 	return Compiler{cfg: &xsltCompilerCfg{}}
+}
+
+// ProcessorVersion selects a processor independently of the principal module.
+// Zero derives it from that module's declaration.
+func (c Compiler) ProcessorVersion(version int) Compiler {
+	c = c.clone()
+	c.cfg.processorVersion = version
+
+	return c
 }
 
 // BaseURI sets the base URI for resolving relative URIs in xsl:import
@@ -163,10 +173,24 @@ func compile(ctx context.Context, doc *xdm.Document, cfg *compileConfig) (*Style
 		return nil, stackErr
 	}
 
-	version, err := CheckLanguage(doc, 0)
+	processor := 0
+	if cfg != nil {
+		processor = cfg.processorVersion
+	}
+
+	version, err := CheckProcessorLanguage(doc, 0, processor)
 	if err != nil {
 		return nil, err
 	}
+
+	if cfg == nil {
+		cfg = &compileConfig{}
+	} else {
+		copyConfig := *cfg
+		cfg = &copyConfig
+	}
+
+	cfg.processorVersion = version
 
 	prepared := doc
 	if version == 10 {
@@ -292,9 +316,10 @@ func (c Compiler) toCompileConfig() *compileConfig {
 	}
 
 	cfg := &compileConfig{
-		baseURI:         c.cfg.baseURI,
-		resolver:        c.cfg.uriResolver,
-		packageResolver: c.cfg.packageResolver,
+		processorVersion: c.cfg.processorVersion,
+		baseURI:          c.cfg.baseURI,
+		resolver:         c.cfg.uriResolver,
+		packageResolver:  c.cfg.packageResolver,
 
 		maxResourceBytes: c.cfg.maxResourceBytes,
 
@@ -778,7 +803,7 @@ func (c *compiler) checkStaticVarKindConflicts(_ context.Context, root *xdm.Elem
 		}
 
 		if (ln == lexicon.XSLTElementParam || ln == lexicon.XSLTElementVariable) && xsdBoolTrue(getAttr(elem, nameStatic)) {
-			name := getAttr(elem, xslAttrName)
+			name := resolveQName(getAttr(elem, xslAttrName), inScopeNamespaces(elem))
 			if importedKind, ok := c.importedStaticVarKinds[name]; ok {
 				if importedKind != ln {
 					return staticError(errCodeXTSE3450,
@@ -934,9 +959,7 @@ func (c *compiler) staticEvaluator(_ context.Context) xpath.Evaluator {
 	ns := make(map[string]string, len(c.nsBindings)+1)
 	maps.Copy(ns, c.nsBindings)
 
-	if c.xpathDefaultNS != "" {
-		ns[""] = c.xpathDefaultNS
-	}
+	ns[""] = c.xpathDefaultNS
 
 	if len(ns) > 0 {
 		eval = eval.Namespaces(ns)
@@ -1057,20 +1080,11 @@ func (c *compiler) useWhenEvaluator(_ context.Context) xpath.Evaluator {
 }
 
 func (c *compiler) compileXPath(expr string, _ map[string]string) (*xpath.Expression, error) {
-	version := 31
-	if v, _ := strconv.ParseFloat(c.effectiveVersion, 64); v < 2 {
-		version = 10
-	} else if v == 2 {
-		version = 20
-	}
-
-	if isBackwardsCompatible(c.stylesheet.version) {
-		version = 10
-	}
+	version := c.stylesheet.xpathVersion()
 
 	compiled, err := xpath.NewCompiler().Context(c.invocation).Language(version, c.nsBindings).Compile(expr)
 	if err != nil {
-		if isBackwardsCompatible(c.stylesheet.version) && c.forwardsCompatible(c.effectiveVersion) {
+		if c.stylesheet.processorLanguage() == 10 && c.forwardsCompatible(c.effectiveVersion) {
 			return xpath.DeferredExpression(err, 10), nil
 		}
 
@@ -1134,6 +1148,7 @@ func isForwardsCompatible(ver string) bool {
 
 func (c *compiler) applyPreparedConfig(cfg *compileConfig) {
 	if cfg != nil {
+		c.stylesheet.processorVersion = cfg.processorVersion
 		c.baseURI = cfg.baseURI
 		c.moduleKey = cfg.baseURI
 		c.resolver = cfg.resolver

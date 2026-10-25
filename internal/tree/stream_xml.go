@@ -350,6 +350,11 @@ func (w *xmlStream) writeElement(n *Node) {
 			return
 		}
 
+		if w.options.Reconcile && prefix == "" && uri == "" && scope[""] == "" {
+			emitted[prefix] = true
+			return
+		}
+
 		emitted[prefix] = true
 		w.ns.push([]Namespace{{Prefix: prefix, URI: uri}})
 		w.text(" xmlns")

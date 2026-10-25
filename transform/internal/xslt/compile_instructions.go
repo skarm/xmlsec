@@ -280,7 +280,7 @@ func (c *compiler) compileInstruction(ctx context.Context, elem *xdm.Element) (i
 // directly from normal instructions whose static context and source are recorded.
 func (c *compiler) compileInstructionPayload(ctx context.Context, elem *xdm.Element) (instruction, bool, error) {
 	if elem.URI() == lexicon.NamespaceXSLT {
-		if isBackwardsCompatible(c.stylesheet.version) {
+		if c.stylesheet.processorLanguage() == 10 {
 			if _, known := lookupxslt10Attributes(elem.LocalName()); !known {
 				inst, err := c.compileForwardsCompat(ctx, elem)
 				return inst, false, err

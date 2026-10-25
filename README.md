@@ -140,8 +140,9 @@ Check [supported profiles and compatibility](docs/compatibility.md) for the full
 scope, exclusions and known interoperability differences. The
 [conformance register](docs/conformance.json) separates supported capabilities,
 normative obligations, policy and remaining gaps. Each declared profile has a
-pinned document/role/mode matrix, selected correction IDs and explicit remaining
-clause regions. The individual-clause inventory is partial;
+pinned document/role/mode matrix, selected correction IDs and a named clause/contract
+inventory. Missing implementation, local tests and independent evidence remain
+explicit; inventory completion does not grant a full standards claim;
 see [normative traceability](docs/conformance.md) and the pinned
 [standards](docs/standards.md).
 

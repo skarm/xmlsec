@@ -12,6 +12,52 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+func TestCopyNodePreservesNamespaceContext(t *testing.T) {
+	source, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<parent xmlns="urn:outer" xmlns:p="urn:value"><child xmlns="" type="p:T"><nested/></child></parent>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	destination, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<target xmlns="urn:destination" xmlns:p="urn:conflict"/>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var before, after, output bytes.Buffer
+
+	serializer := xdm.XMLSerialization{OmitDeclaration: true}
+	if err := serializer.WriteTo(&before, source); err != nil {
+		t.Fatal(err)
+	}
+
+	copied, err := xdm.CopyNode(source.DocumentElement().FirstChild(), destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := destination.DocumentElement().AddChild(copied); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := serializer.WriteTo(&output, destination); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := serializer.WriteTo(&after, source); err != nil {
+		t.Fatal(err)
+	}
+
+	if before.String() != after.String() {
+		t.Fatal("copying changed the source namespace context")
+	}
+
+	for _, want := range []string{`xmlns="urn:destination"`, `xmlns=""`, `xmlns:p="urn:value"`, `type="p:T"`} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("missing %s in %s", want, output.String())
+		}
+	}
+}
+
 func TestElementDocumentPreservesContextAndOwnership(t *testing.T) {
 	for _, input := range []string{
 		`<parent xmlns:p="urn:qname"><child type="p:T"><nested/></child></parent>`,

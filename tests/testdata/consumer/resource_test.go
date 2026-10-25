@@ -50,6 +50,34 @@ func TestSharedResourceAdapters(t *testing.T) {
 	}
 }
 
+func TestHTTPTextMetadataAndDecodedLimit(t *testing.T) {
+	for _, maximum := range []int{1, 2} {
+		closed := 0
+		resolver, err := resource.NewHTTPResolver(resource.HTTPConfig{AllowedOrigins: []string{"https://text.example"}, Client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain; charset=iso-8859-1"}}, Body: &trackedInput{Reader: strings.NewReader("\xe9"), close: func() error { closed++; return nil }}, Request: req}, nil
+		})}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e := newEngine(t, transform.Config{Resolver: resolver, Limits: transform.Limits{MaxOutputBytes: maximum}})
+		q, err := e.CompileXPath(t.Context(), `unparsed-text('https://text.example/data', 'utf-8')`, transform.XPathOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
+		if maximum == 1 {
+			if !errors.Is(err, transform.ErrLimit) || value.Len() != 0 {
+				t.Fatal("decoded text escaped its byte budget", value, err)
+			}
+		} else if text, textErr := value.Text(); err != nil || textErr != nil || text != "é" {
+			t.Fatal("HTTP metadata was lost", text, err, textErr)
+		}
+		if closed != 1 {
+			t.Fatal("HTTP stream close count", closed)
+		}
+	}
+}
+
 func TestTypedNilResourceAdapters(t *testing.T) {
 	var absentFS fstest.MapFS
 	if resolver, err := resource.NewFSResolver(resource.FSConfig{FS: absentFS, BaseURI: "embed:/resources/"}); resolver != nil || !errors.Is(err, resource.ErrInput) {

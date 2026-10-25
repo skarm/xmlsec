@@ -56,12 +56,14 @@ func TestLoadTextResourceBoundsAndOwnership(t *testing.T) {
 	}
 }
 
+const textUTF8 = "utf-8"
+
 func TestDecodeText(t *testing.T) {
 	for _, tc := range []struct {
 		input                []byte
 		encoding, hint, want string
 	}{
-		{[]byte{0xef, 0xbb, 0xbf, 'x'}, "", "windows-1252", "x"},
+		{[]byte{0xef, 0xbb, 0xbf, 'x'}, "", textUTF8, "x"},
 		{[]byte{0xff, 0xfe, 'x', 0}, "utf-16", "", "x"},
 		{[]byte{0xe9}, "", "iso-8859-1", "é"},
 	} {
@@ -75,8 +77,8 @@ func TestDecodeText(t *testing.T) {
 		input    []byte
 		encoding string
 	}{
-		{[]byte{0xff}, "utf-8"},
-		{[]byte{0xff, 0xfe, 'x', 0}, "utf-8"},
+		{[]byte{0xff}, textUTF8},
+		{[]byte{0xff, 0xfe, 'x', 0}, textUTF8},
 		{[]byte{0xd8, 0}, "utf-16be"},
 		{[]byte("x"), "not-an-encoding"},
 	} {

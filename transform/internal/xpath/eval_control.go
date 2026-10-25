@@ -217,9 +217,9 @@ func iterateFLWORClauses(evalFn exprEvaluator, ctx context.Context, ec *evalCont
 		pos := 0
 
 		for item := range xdm.SequenceItems(domain) {
-			inner := scopeWithBinding(scope, c.Var, xdm.ItemSlice{item})
+			inner := scopeWithBinding(scope, VariableKey(c.Var, ec.namespaces), xdm.ItemSlice{item})
 			if c.PosVar != "" {
-				inner = scopeWithBinding(inner, c.PosVar, xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(pos + 1)}})
+				inner = scopeWithBinding(inner, VariableKey(c.PosVar, ec.namespaces), xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(pos + 1)}})
 			}
 
 			if err := iterateFLWORClauses(evalFn, ctx, ec, clauses, i+1, inner, consumer); err != nil {
@@ -240,7 +240,7 @@ func iterateFLWORClauses(evalFn exprEvaluator, ctx context.Context, ec *evalCont
 			return err
 		}
 
-		inner := scopeWithBinding(scope, c.Var, val)
+		inner := scopeWithBinding(scope, VariableKey(c.Var, ec.namespaces), val)
 
 		return iterateFLWORClauses(evalFn, ctx, ec, clauses, i+1, inner, consumer)
 
@@ -277,7 +277,7 @@ func evalQuantifiedBindings(evalFn exprEvaluator, ctx context.Context, ec *evalC
 	}
 
 	for item := range xdm.SequenceItems(domain) {
-		oldScope := ec.pushScope(scopeWithBinding(ec.vars, binding.Var, xdm.ItemSlice{item}))
+		oldScope := ec.pushScope(scopeWithBinding(ec.vars, VariableKey(binding.Var, ec.namespaces), xdm.ItemSlice{item}))
 		result, err := evalQuantifiedBindings(evalFn, ctx, ec, e, idx+1)
 		ec.restoreScope(oldScope)
 

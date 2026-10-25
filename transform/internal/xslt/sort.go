@@ -234,7 +234,7 @@ func (ec *execContext) selectedSortValue(ctx context.Context, sk *sortKey, node 
 			"sort key value is a sequence of %d items; a single value is required", seqLen)
 	}
 
-	if isBackwardsCompatible(ec.stylesheet.version) {
+	if ec.stylesheet.processorLanguage() == 10 {
 		strVal, err = xpath.XPath10String(seq)
 		if err != nil {
 			return sortValue{}, err

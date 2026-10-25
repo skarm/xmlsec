@@ -98,12 +98,12 @@ func evalConcatExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 		return nil, err
 	}
 
-	ls, err := concatToString(ctx, left)
+	ls, err := concatToString(ctx, ec, left, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	rs, err := concatToString(ctx, right)
+	rs, err := concatToString(ctx, ec, right, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -115,24 +115,15 @@ func evalConcatExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 	return xdm.SingleString(ls + rs), nil
 }
 
-// concatToString converts a sequence to string for the || operator. Arrays are
-// flattened to their members during atomization; only function and map items,
-// which have no string value, raise FOTY0014.
-func concatToString(ctx context.Context, seq xdm.Sequence) (string, error) {
-	if xdm.SequenceLen(seq) == 0 {
-		return "", nil
-	}
-	// seqToStringErr atomizes first (flattening arrays, so an empty-array member
-	// contributes nothing) and applies cardinality afterwards. Function and map
-	// items have no atomized string value for ||, so reject them up front.
-	for item := range xdm.SequenceItems(seq) {
-		switch item.(type) {
-		case xdm.FunctionItem, xdm.MapItem:
-			return "", &xdm.Error{Code: errCodeFOTY0014, Message: "cannot get string value of function or map item"}
-		}
+// The || operator uses fn:concat's xs:anyAtomicType? conversion, including
+// bounded atomization, cardinality and FOTY0013 for non-atomizable items.
+func concatToString(ctx context.Context, ec *evalContext, seq xdm.Sequence, index int) (string, error) {
+	coerced, err := coerceFuncallArg(ctx, seq, stAtomic(xdm.TypeAnyAtomicType, xdm.OccurrenceZeroOrOne), nameConcat, index, ec)
+	if err != nil {
+		return "", err
 	}
 
-	return seqToStringErr(ctx, seq)
+	return seqToStringErr(withFnContext(ctx, ec), coerced)
 }
 
 // appendBounded appends src to dst, enforcing the configured sequence/node-set
@@ -371,14 +362,14 @@ func evalUnionExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e
 	// can return it as is when it is already in document order.
 	nodes, ok := xdm.AppendSequenceNodes(make([]xdm.Node, 0, xdm.SequenceLen(left)+xdm.SequenceLen(right)), left)
 	if !ok {
-		return nil, ErrUnionNotNodeSet
+		return nil, languageError(ErrUnionNotNodeSet, errCodeXPTY0004, ec.version)
 	}
 
 	split := len(nodes)
 
 	nodes, ok = xdm.AppendSequenceNodes(nodes, right)
 	if !ok {
-		return nil, ErrUnionNotNodeSet
+		return nil, languageError(ErrUnionNotNodeSet, errCodeXPTY0004, ec.version)
 	}
 
 	merged, err := xdm.UnionNodeSets(nodes, split, ec.docOrder, ec.maxNodes)
@@ -409,7 +400,7 @@ func evalIntersectExceptExpr(evalFn exprEvaluator, ctx context.Context, ec *eval
 
 	rightNodes, ok2 := xdm.NodesFrom(right)
 	if !ok1 || !ok2 {
-		return nil, ErrUnionNotNodeSet
+		return nil, languageError(ErrUnionNotNodeSet, errCodeXPTY0004, ec.version)
 	}
 
 	result, err := intersectExceptNodes(ec, e.Op, leftNodes, rightNodes)

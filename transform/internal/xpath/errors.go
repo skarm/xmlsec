@@ -5,12 +5,14 @@ package xpath
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
 const (
 	errCodeXPST0003 = "XPST0003"
+	errCodeXPST0008 = "XPST0008"
 	errCodeXPDY0002 = "XPDY0002"
 	errCodeXPDY0050 = "XPDY0050"
 	errCodeXPST0080 = "XPST0080"
@@ -56,11 +58,23 @@ const (
 	errCodeXPTY0020 = "XPTY0020"
 )
 
+// UndefinedVariableError preserves the lookup category and the language code.
+func UndefinedVariableError(name string, version int) error {
+	return languageError(fmt.Errorf("%w: $%s", ErrUndefinedVariable, name), errCodeXPST0008, version)
+}
+
+func languageError(cause error, code string, version int) error {
+	if version == 10 {
+		return cause
+	}
+
+	return &xdm.Error{Code: code, Message: cause.Error(), Cause: cause}
+}
+
 // Error message constants reused across the package.
 const (
-	errMsgContextItemAbsent                = "context item is absent"
-	errMsgParseXMLFragmentMalformedTextDec = "parse-xml-fragment: malformed text declaration"
-	errMsgPathMixedResult                  = "path expression result contains a mix of nodes and non-nodes"
+	errMsgContextItemAbsent = "context item is absent"
+	errMsgPathMixedResult   = "path expression result contains a mix of nodes and non-nodes"
 )
 
 // Sentinel errors for the xpath package.
@@ -90,3 +104,23 @@ var (
 	// Aliased from transform/internal/xpath so errors.Is works end-to-end.
 	ErrNodeSetLimit = xdm.ErrNodeSetLimit
 )
+
+// syntaxError preserves parser sentinels and adds the standard error code for
+// XPath 2.0 and later. XPath 1.0 has no standard error-code vocabulary.
+func syntaxError(err error, version int) error {
+	if version == 10 || err == nil {
+		return err
+	}
+
+	if detail, ok := errors.AsType[*xdm.Error](err); ok && detail.Code != "" {
+		return err
+	}
+
+	for _, cause := range []error{ErrUnexpectedToken, ErrUnexpectedChar, ErrUnterminatedString, ErrExpectedToken, ErrUnknownAxis} {
+		if errors.Is(err, cause) {
+			return &xdm.Error{Code: errCodeXPST0003, Message: err.Error(), Cause: err}
+		}
+	}
+
+	return err
+}

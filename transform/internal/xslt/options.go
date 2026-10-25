@@ -79,10 +79,11 @@ type AnnotationHandler interface {
 // --- Compile configuration (internal) ---
 
 type compileConfig struct {
-	baseURI         string
-	resolver        URIResolver
-	packageResolver PackageResolver
-	staticParams    map[string]xdm.Sequence // externally supplied static param values
+	processorVersion int
+	baseURI          string
+	resolver         URIResolver
+	packageResolver  PackageResolver
+	staticParams     map[string]xdm.Sequence // externally supplied static param values
 
 	isSubPackage     bool  // true when compiling a sub-package (via xsl:use-package)
 	maxResourceBytes int64 // per-resource read cap; 0 = MaxResourceBytes default, <0 = unbounded

@@ -11,11 +11,62 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"unicode/utf16"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/transform"
 )
+
+func TestSingleByteXMLInputs(t *testing.T) {
+	ordinary := engine(t, transform.Config{})
+	extended := engine(t, transform.Config{AllowSingleByteEncodings: true})
+
+	for _, tc := range []struct{ encoding, content, want string }{
+		{xmlASCIIEncoding, "ascii text", "ascii text"},
+		{xmlASCIIEncoding, "caf&#233;", xmlLatinText},
+		{xmlLatinEncoding, "caf\xe9", xmlLatinText},
+		{"ISO-8859-15", "\xa4", "€"},
+		{"windows-1252", "\x80", "€"},
+	} {
+		source := `<?xml version="1.0" encoding="` + tc.encoding + `"?><r>` + tc.content + `</r>`
+		if _, err := ordinary.Parse(t.Context(), []byte(source)); err == nil {
+			t.Fatal("single-byte encoding enabled by default", tc.encoding)
+		}
+
+		for _, reader := range []io.Reader{strings.NewReader(source), iotest.OneByteReader(strings.NewReader(source))} {
+			doc, err := extended.ParseReader(t.Context(), reader)
+			if err != nil {
+				t.Fatal(tc.encoding, err)
+			}
+
+			value, err := query(t, extended, `string(/r)`, transform.XPath31).Evaluate(t.Context(), doc, transform.XPathContext{})
+			if err != nil || text(t, value) != tc.want {
+				t.Fatal(tc.encoding, value, err)
+			}
+		}
+	}
+
+	for _, source := range []string{
+		`<?xml version="1.0" encoding="US-ASCII"?><r>` + "\xe9" + `</r>`,
+		`<?xml version="1.0" encoding="windows-1252"?><r>` + "\x81" + `</r>`,
+		`<?xml version="1.0" encoding="UTF-16"?><r/>`,
+		`<?xml version="1.0" encoding="not-an-encoding"?><r/>`,
+		`<?xml version="1.0" encoding="ISO-8859-1"?><!DOCTYPE r><r/>`,
+		"\ufeff" + `<?xml version="1.0" encoding="ISO-8859-1"?><r/>`,
+	} {
+		if _, err := extended.Parse(t.Context(), []byte(source)); err == nil {
+			t.Fatal("invalid or forbidden encoded XML accepted", source)
+		}
+	}
+
+	source := `<?xml version="1.0" encoding="ISO-8859-1"?><r>` + strings.Repeat("\xe9", 100) + `</r>`
+
+	bounded := engine(t, transform.Config{AllowSingleByteEncodings: true, Limits: transform.Limits{MaxInputBytes: len(source)}})
+	if _, err := bounded.Parse(t.Context(), []byte(source)); !errors.Is(err, transform.ErrLimit) {
+		t.Fatal("decoded XML escaped the input byte budget", err)
+	}
+}
 
 func TestLimitsCancellationAndResources(t *testing.T) {
 	ctx := context.Background()
@@ -105,6 +156,86 @@ func TestNumericIntermediateBudget(t *testing.T) {
 				t.Fatalf("expected ErrLimit, got %v", err)
 			}
 		})
+	}
+}
+
+func TestXPathImplementationLimitCodes(t *testing.T) {
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			e := engine(t, transform.Config{Limits: transform.Limits{MaxNodes: 8}})
+
+			q := query(t, e, `count(1 to 100)`, version)
+			if got := text(t, evaluate(t, e, `count(1 to 4)`, version)); got != "4" {
+				t.Fatal("bounded range failed", got)
+			}
+
+			_, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
+			if !errors.Is(err, transform.ErrLimit) {
+				t.Fatalf("implementation limit lost its category: %v", err)
+			}
+
+			var detail *transform.Error
+			if !errors.As(err, &detail) {
+				t.Fatal("missing structured error", err)
+			}
+
+			want := ""
+			if version >= transform.XPath30 {
+				want = "XPDY0130"
+			}
+
+			if detail.Code != want {
+				t.Fatalf("code = %q, want %q", detail.Code, want)
+			}
+
+			_, err = query(t, e, `1 div 0`, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if !errors.As(err, &detail) || detail.Code != "FOAR0001" || errors.Is(err, transform.ErrLimit) {
+				t.Fatal("standard arithmetic error changed", err)
+			}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+
+			_, err = q.Evaluate(ctx, nil, transform.XPathContext{})
+			if !errors.Is(err, context.Canceled) || !errors.As(err, &detail) || detail.Code != "" {
+				t.Fatal("cancellation was reclassified", err)
+			}
+		})
+	}
+
+	e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 1}})
+	_, err := e.CompileXPath(t.Context(), "256", transform.XPathOptions{})
+
+	var detail *transform.Error
+	if !errors.Is(err, transform.ErrLimit) || !errors.As(err, &detail) || detail.Code != "XPDY0130" {
+		t.Fatal("default-version compile limit lacks its standard code", err)
+	}
+}
+
+func TestErrorCodeNamespaces(t *testing.T) {
+	e := engine(t, transform.Config{})
+
+	q := query(t, e, `error(QName($space, 'XPTY0004'))`, transform.XPath31)
+	for _, space := range []string{"", namespaceApplication, "http://www.w3.org/2005/xqt-errors"} {
+		_, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "space"}: transform.Values(transform.String(space))}})
+
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != errCodeXPTY0004 || detail.CodeName() != (transform.Name{Space: space, Local: errCodeXPTY0004}) {
+			t.Errorf("namespace %q lost: %v", space, err)
+		}
+	}
+
+	s := stylesheet(t, e, sheet(version30, `<xsl:template name="start"><xsl:sequence select="error(QName('urn:application', 'a:failure'))"/></xsl:template>`))
+	_, err := s.Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+
+	var detail *transform.Error
+	if !errors.As(err, &detail) || detail.CodeName() != (transform.Name{Space: namespaceApplication, Local: "failure"}) {
+		t.Fatal("XSLT error QName lost", err)
+	}
+
+	var empty *transform.Error
+	if empty.CodeName() != (transform.Name{}) || (&transform.Error{}).CodeName() != (transform.Name{}) {
+		t.Fatal("nil/zero error has a code")
 	}
 }
 
@@ -267,7 +398,7 @@ func TestInvocationChecksForeignDocumentLimits(t *testing.T) {
 			}{
 				{"document", `count(/*)`, d, transform.XPathContext{}},
 				{"context-item", `count(/*)`, nil, transform.XPathContext{ContextItem: d.Root()}},
-				{"binding", `count($source/*)`, nil, transform.XPathContext{Variables: transform.Bindings{{Local: "source"}: transform.Values(d.Root())}}},
+				{"binding", `count($source/*)`, nil, transform.XPathContext{Variables: transform.Bindings{{Local: sourceName}: transform.Values(d.Root())}}},
 			} {
 				t.Run(input.name, func(t *testing.T) {
 					q := query(t, e, input.expr, transform.XPath31)
@@ -282,7 +413,7 @@ func TestInvocationChecksForeignDocumentLimits(t *testing.T) {
 				t.Fatalf("XSLT foreign document exceeded consumer policy: %v, %v", out, err)
 			}
 
-			params := transform.Bindings{{Local: "source"}: transform.Values(d.Root())}
+			params := transform.Bindings{{Local: sourceName}: transform.Values(d.Root())}
 			if out, err := s.Transform(ctx, nil, transform.XSLTContext{Parameters: params}); !errors.Is(err, transform.ErrLimit) || out != nil {
 				t.Fatalf("XSLT parameter exceeded consumer policy: %v, %v", out, err)
 			}

@@ -33,6 +33,15 @@ type Resolver interface {
 	Resolve(context.Context, string) (io.ReadCloser, error)
 }
 
+// TypedReader optionally supplies the resource's MIME Content-Type, including
+// parameters such as charset. Empty means no transport metadata is available.
+// The value must remain stable for the lifetime of the stream. Consumers still
+// own byte limits and Close; metadata does not authorize additional retrievals.
+type TypedReader interface {
+	io.ReadCloser
+	MediaType() string
+}
+
 // ResolverFunc adapts an application function to the shared resource contract.
 type ResolverFunc func(context.Context, string) (io.ReadCloser, error)
 
@@ -204,7 +213,7 @@ func (r *HTTPResolver) Resolve(ctx context.Context, uri string) (io.ReadCloser, 
 		return nil, errors.Join(fmt.Errorf("%w: HTTP status %d", ErrResource, response.StatusCode), response.Body.Close())
 	}
 
-	return &contextReader{ctx: ctx, ReadCloser: response.Body}, nil
+	return &contextReader{ctx: ctx, ReadCloser: response.Body, mediaType: response.Header.Get("Content-Type")}, nil
 }
 
 func (r *HTTPResolver) allowed(u *url.URL) bool {
@@ -223,7 +232,10 @@ func parseURI(value string) (*url.URL, error) {
 type contextReader struct {
 	ctx context.Context
 	io.ReadCloser
+	mediaType string
 }
+
+func (r *contextReader) MediaType() string { return r.mediaType }
 
 func (r *contextReader) Read(p []byte) (int, error) {
 	if err := r.ctx.Err(); err != nil {

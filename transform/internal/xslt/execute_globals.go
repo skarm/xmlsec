@@ -868,7 +868,7 @@ func (ec *execContext) evaluateBodyAsDocument(ctx context.Context, body []instru
 	// in the tree whose string-value is zero-length is deleted."
 	removeEmptyDocumentText(tmpDoc)
 
-	return xdm.ItemSlice{xdm.NodeItem{Node: tmpDoc, ResultTreeFragment: isBackwardsCompatible(ec.stylesheet.version)}}, nil
+	return xdm.ItemSlice{xdm.NodeItem{Node: tmpDoc, ResultTreeFragment: ec.stylesheet.processorLanguage() == 10}}, nil
 }
 
 func capturedInternalDocument(items xdm.ItemSlice) (xdm.Sequence, bool) {

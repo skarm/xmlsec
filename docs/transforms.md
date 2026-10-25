@@ -29,6 +29,20 @@ fmt.Println(total)
 See the runnable [XPath/XSLT example](../examples/transforms/main.go) and
 `go doc ./transform` for complete option contracts.
 
+XML byte input defaults to the DTD-free UTF-8/UTF-16 profile. Explicit
+`Config.AllowSingleByteEncodings` also permits declared ASCII-compatible IANA
+single-byte encodings, including ASCII, ISO-8859-1 and Windows-1252. It applies
+to source documents, stylesheet modules and resolved XML resources. Undefined
+bytes, BOM conflicts and unsupported encodings fail; raw input and decoded UTF-8
+both obey `MaxInputBytes`. The option does not enable DTDs or external entities.
+
+`parse-xml` and `fn:transform`'s `stylesheet-text` consume already decoded
+characters. Their XML encoding declarations are checked for syntax and do not
+reinterpret those characters as encoded bytes. `parse-xml-fragment` accepts the
+external-entity TextDecl grammar, including a required encoding declaration,
+without re-decoding characters. The complete original string counts against
+the input limit before any declaration is removed.
+
 ## Contexts and values
 
 `CompileXPath` snapshots namespace bindings and the static base URI; the default
@@ -45,8 +59,15 @@ Variable identity uses expanded names, and unprefixed variables have no namespac
 regardless of the default element namespace. Local bindings shadow outer bindings
 with the same expanded name.
 
-`CompileXSLT` checks the declared stylesheet version against any explicit version.
-XSLT 1.0/2.0/3.0 use XPath 1.0/2.0/3.1 respectively. Static parameters bind during
+`XSLTOptions.Version` checks the principal stylesheet's declared profile.
+`ProcessorVersion` independently selects the processor; zero derives it from the
+principal declaration. Selected processors 1.0/2.0/3.0 use XPath 1.0/2.0/3.1.
+A modern processor accepts lower stylesheet declarations while preserving local
+backwards-compatible behavior across principal, imported and included modules.
+`Stylesheet.Version()` reports the selected processor. A 2.0 processor with a
+principal 3.0 declaration and future 4.0 declarations remain unsupported; this
+option does not establish complete forwards-compatible processing.
+Static parameters bind during
 compilation; `XSLTContext.Parameters` supplies globals during execution.
 `InitialParameters` and `TunnelParameters` supply initial template/mode arguments.
 
@@ -60,6 +81,21 @@ implicit timezone, default language and trace output. The timezone is a fixed
 whole-minute offset within ±14 hours. Trace output is discarded unless configured.
 Namespace bindings, base URIs and default collations are static settings.
 
+Function conversion and cardinality apply to direct calls, named references and
+`function-lookup` calls. `codepoints-to-string` requires integer values; integral
+floating-point or decimal values need an explicit integer cast. The optional
+second argument to the text-resource functions, when supplied, must be a single
+string and is validated before resource access. Conversion scans and array
+atomization consume invocation work/node budgets and observe cancellation.
+Variadic `concat` references store a common parameter type, using space
+independent of their declared arity.
+The `||` operator applies the same atomic conversion and errors as `concat`.
+Inline function annotations default to `item()*` for each omitted parameter
+and result type; mixed annotations and empty result types retain their meaning
+in function subtype tests.
+Function conversion adapts every item in a function sequence and enforces
+the declared cardinality, argument/result types and materialization budget.
+
 XPath 3.1 `fn:transform` uses the same XSLT implementation as `CompileXSLT`.
 It accepts stylesheet text, nodes and explicitly resolved locations or packages.
 Global/static parameters, named entry points, raw/document/serialized results and
@@ -68,14 +104,31 @@ the result map. The call shares its invocation's deadline, operation, storage an
 resource-load budgets. It has no implicit network or filesystem access.
 Dynamic stylesheet sources are bounded by `MaxProgramBytes`; for node sources,
 the bound is measured by streaming XML serialization without retaining a buffer.
-The complete option, processor-version and language conformance inventory remains
-open; see [suite diagnostics](language-suites.md).
+`xslt-version` requests a minimum processor version using exact numeric comparison:
+for example 2.5 or a decimal just above 2 selects 3.0;
+an unavailable version reports `FOXT0001`. Without that option, the principal
+stylesheet declaration selects the processor. Complete option conversion,
+forwards-compatible processing and Basic language conformance remain open; see
+[suite diagnostics](language-suites.md).
 
 ## XSLT results and XML identity
 
 `Execute`, `ApplyTemplates`, `CallTemplate` and `CallFunction` return immutable
 `Result` values. They select ordinary execution, an explicit sequence, a named
 template or a public function. A named template can run without a source document.
+
+`XSLTContext.ContextItem` sets the global context independently of the source
+document and initial match selection. Nil retains the source-document default;
+a pointer to a zero `Value` explicitly selects absence. The initial named template
+defaults its singleton focus to that global item. Initial/tunnel parameters and
+public function arguments retain their typed values.
+
+`XPathOptions.DecimalFormats` supplies default and named static formats to
+XPath 3.0/3.1 `format-number`. A zero `Name` selects the unnamed format; nested
+property maps use standard names such as `decimal-separator`, `zero-digit` and
+`NaN`. Omitted properties use standard defaults. Compilation copies the maps,
+validates formatting characters and charges their data against `MaxProgramBytes`.
+These options do not modify unrelated compiled programs or engine defaults.
 
 `Primary`, `Secondary` and `Messages` expose typed output and diagnostics.
 Secondary URIs resolve against `BaseOutputURI` when supplied and never write files.
@@ -84,6 +137,17 @@ Secondary URIs resolve against `BaseOutputURI` when supplied and never write fil
 on error. `Result.WriterTo(ctx)`, `WriteSecondary` and `Stylesheet.Write` write
 with byte counts and permit partial output. `Stylesheet.Write` rejects secondary
 results. See [streaming](streaming.md) for memory requirements and record execution.
+
+The JSON method preserves arrays and maps without sequence normalization. Empty
+sequences become `null`; multiple items at the top level, in a map value or in
+an array member raise `SERE0023`. Non-finite numbers, function items and duplicate
+stringified keys raise `SERE0020`, `SERE0021` and `SERE0022`, respectively;
+`allow-duplicate-names` controls the last check. These rules apply to primary and
+secondary results, writer output, `fn:serialize` and serialized `fn:transform`
+delivery. Serialization errors retain their specific codes through `fn:transform`.
+XML parameter documents for `fn:serialize` use `SEPM0017` for invalid parameter
+structure, `SEPM0018` for repeated character mappings and `SEPM0019` for repeated
+parameter names. Incorrect argument types remain `XPTY0004`.
 
 `Engine.Import` / `Export` share complete XML snapshots without serialization.
 `ImportNode` / `Node.Reference` preserve individual node, attribute and namespace
@@ -108,6 +172,15 @@ unrelated ancestors or siblings.
   the shared [resource contract](usage.md#common-contracts). Files and HTTP are
   available only through explicitly configured adapters. XML resources obey parser
   limits; `Config.Environment` exposes only explicitly supplied bindings.
+
+For `unparsed-text`, `unparsed-text-lines` and `unparsed-text-available`, an
+optional `resource.TypedReader` supplies the MIME type and external charset.
+External encoding information takes precedence; XML media types use XML encoding
+recognition before the function's encoding argument. Without such metadata,
+the existing BOM/declaration heuristics and UTF-8 default apply. Conflicting BOMs,
+unsupported encodings and malformed character sequences fail. Both encoded reads
+and decoded output retain their respective budgets, including through nested
+`fn:transform` calls. Metadata does not broaden the XML parser's input profile.
 
 `XPath.Analyze(ctx)` computes function/context/navigation diagnostics on demand.
 Its report does not prove streamability or authorize execution.

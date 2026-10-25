@@ -163,7 +163,7 @@ func (ec *execContext) analyzeStringInput(ctx context.Context, inst *analyzeStri
 
 	// The select expression must produce a single xs:string value.
 	// A sequence of more than one item, or a non-string item, is XPTY0004.
-	isV2 := ec.stylesheet.version != "" && ec.stylesheet.version < "3.0"
+	isV2 := ec.stylesheet.processorLanguage() < 30
 	if seq == nil || xdm.SequenceLen(seq) == 0 {
 		if isV2 {
 			// XSLT 2.0: empty sequence is XPTY0004

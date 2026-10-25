@@ -115,7 +115,7 @@ func parseJSONOptions(ctx context.Context, args []xdm.Sequence) (jsonOptions, er
 
 	var err error
 
-	opts.liberal, err = parseJSONBooleanOption(options, "liberal")
+	opts.liberal, err = parseJSONBooleanOption(ctx, options, "liberal")
 	if err != nil {
 		return opts, err
 	}
@@ -125,37 +125,33 @@ func parseJSONOptions(ctx context.Context, args []xdm.Sequence) (jsonOptions, er
 		return opts, err
 	}
 
-	opts.escape, err = parseJSONBooleanOption(options, "escape")
+	opts.escape, err = parseJSONBooleanOption(ctx, options, "escape")
 	if err != nil {
 		return opts, err
 	}
 
-	opts.fallback, err = parseJSONFallbackOption(options, errCodeFOJS0005)
+	err = finalizeJSONFallbackOption(ctx, options, &opts)
 
 	return opts, err
 }
 
-func parseJSONBooleanOption(options xdm.MapItem, name string) (bool, error) {
+func parseJSONBooleanOption(ctx context.Context, options xdm.MapItem, name string) (bool, error) {
 	value, found := options.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: name})
 	if !found {
 		return false, nil
 	}
 
-	if xdm.SequenceLen(value) != 1 {
-		return false, &xdm.Error{Code: errCodeFOJS0005, Message: fmt.Sprintf("option '%s' must be a single xs:boolean", name)}
+	converted, err := coerceFuncallArg(ctx, value, stAtomic(xdm.TypeBoolean, xdm.OccurrenceExactlyOne), "JSON option "+name, 0, getFnContext(ctx))
+	if err != nil {
+		return false, err
 	}
 
-	atom, ok := value.Get(0).(xdm.AtomicValue)
+	atom, ok := converted.Get(0).(xdm.AtomicValue)
 	if !ok {
-		return false, &xdm.Error{Code: errCodeFOJS0005, Message: fmt.Sprintf("option '%s' must be xs:boolean", name)}
+		return false, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "boolean option did not yield an atomic value"}
 	}
 
-	boolean, ok := atom.Value.(bool)
-	if !ok {
-		return false, &xdm.Error{Code: errCodeFOJS0005, Message: fmt.Sprintf("option '%s' must be xs:boolean, got %s", name, atom.TypeName)}
-	}
-
-	return boolean, nil
+	return atom.BooleanVal(), nil
 }
 
 func parseJSONDuplicatesOption(ctx context.Context, options xdm.MapItem) (string, error) {
@@ -172,7 +168,7 @@ func parseJSONDuplicatesOption(ctx context.Context, options xdm.MapItem) (string
 			return duplicatesUseFirst, err
 		}
 
-		return duplicatesUseFirst, &xdm.Error{Code: errCodeFOJS0005, Message: "option 'duplicates' must be a single string"}
+		return duplicatesUseFirst, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "option 'duplicates' must be a single string", Cause: err}
 	}
 
 	switch policy {
@@ -183,26 +179,31 @@ func parseJSONDuplicatesOption(ctx context.Context, options xdm.MapItem) (string
 	}
 }
 
-func parseJSONFallbackOption(options xdm.MapItem, errorCode string) (*xdm.FunctionItem, error) {
+func finalizeJSONFallbackOption(ctx context.Context, options xdm.MapItem, opts *jsonOptions) error {
 	value, found := options.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: nameFallback})
 	if !found {
-		return nil, nil
+		return nil
 	}
 
-	if xdm.SequenceLen(value) != 1 {
-		return nil, &xdm.Error{Code: errorCode, Message: "option 'fallback' must be a single function item"}
+	required := stFunc([]xdm.SequenceType{stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne)}, stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne))
+
+	converted, err := coerceFuncallArg(ctx, value, required, "JSON fallback option", 0, getFnContext(ctx))
+	if err != nil {
+		return err
 	}
 
-	fallback, ok := value.Get(0).(xdm.FunctionItem)
+	fallback, ok := converted.Get(0).(xdm.FunctionItem)
 	if !ok {
-		return nil, &xdm.Error{Code: errorCode, Message: "option 'fallback' must be a function item"}
+		return &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "fallback option did not yield a function"}
 	}
 
-	if fallback.Arity != 1 {
-		return nil, &xdm.Error{Code: errorCode, Message: fmt.Sprintf("option 'fallback' must have arity 1, got %d", fallback.Arity)}
+	if opts.escape {
+		return &xdm.Error{Code: errCodeFOJS0005, Message: "fallback cannot be combined with escape=true()"}
 	}
 
-	return &fallback, nil
+	opts.fallback = &fallback
+
+	return nil
 }
 
 // jsonBudget threads the evaluator's DoS bounds into the streaming JSON parseOptions
@@ -580,10 +581,6 @@ func applyJSONStringOptions(ctx context.Context, s string, opts jsonOptions) (st
 
 		for _, r := range s {
 			if raw, found := opts.invalidEsc[r]; found {
-				if opts.fallback != nil {
-					return "", &xdm.Error{Code: errCodeFOJS0001, Message: "fallback cannot be used with escape=true() for escaped invalid characters"}
-				}
-
 				b.WriteString(canonicalInvalidJSONEscape(raw))
 
 				continue
@@ -703,12 +700,12 @@ func fnJSONDoc(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	resolvedURI, err := unparsedtext.ResolveURI(ctx, cfg, uri)
 	if err != nil {
-		return nil, &xdm.Error{Code: errCodeFODC0002, Message: fmt.Sprintf("json-doc: cannot resolve URI: %v", err), Cause: err}
+		return nil, fmt.Errorf("json-doc: %w", wrapUnparsedTextError(err))
 	}
 
 	body, err := unparsedtext.ReadURI(ctx, cfg, resolvedURI)
 	if err != nil {
-		return nil, &xdm.Error{Code: errCodeFODC0002, Message: fmt.Sprintf("json-doc: cannot retrieve resource: %v", err), Cause: err}
+		return nil, fmt.Errorf("json-doc: %w", wrapUnparsedTextError(err))
 	}
 
 	// Delegate to parse-json logic, preserving any caller-supplied options.

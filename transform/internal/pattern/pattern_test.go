@@ -97,6 +97,11 @@ func TestMatchCapturesAndStreaming(t *testing.T) {
 }
 
 func TestLimitsAndCancellation(t *testing.T) {
+	anchor := compileTest(t, `^{1000000}`, patternpkg.Options{})
+	if _, err := anchor.Match(t.Context(), "x", patternpkg.Work{MaxSteps: 10}); !errors.Is(err, patternpkg.ErrLimit) {
+		t.Fatal("zero-width repeat escaped the work budget", err)
+	}
+
 	p := compileTest(t, `^(a|aa)*b$`, patternpkg.Options{})
 	for _, work := range []patternpkg.Work{{MaxSteps: 10}, {MaxCells: 10}} {
 		if _, err := p.Match(context.Background(), strings.Repeat("a", 500), work); !errors.Is(err, patternpkg.ErrLimit) {

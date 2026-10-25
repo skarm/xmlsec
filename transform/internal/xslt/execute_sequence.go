@@ -84,7 +84,7 @@ func (ec *execContext) evaluateValueOfSelect(ctx context.Context, inst *valueOfI
 	filtered := filterZeroLengthTextNodes(seq)
 
 	filtered = mergeAdjacentTextNodes(filtered)
-	if isBackwardsCompatible(ec.stylesheet.version) {
+	if ec.stylesheet.processorLanguage() == 10 {
 		value, err = xpath.XPath10String(filtered)
 		if err != nil {
 			return "", false, err
@@ -160,7 +160,7 @@ func (ec *execContext) evaluateValueOfBody(ctx context.Context, inst *valueOfIns
 	}
 	// XSLT 2.0: value-of body is temporary output state (XTDE1480).
 	// XSLT 3.0 relaxes this restriction.
-	isV2TempOutput := ec.stylesheet.version != "" && ec.stylesheet.version < "3.0"
+	isV2TempOutput := ec.stylesheet.processorLanguage() < 30
 	if isV2TempOutput {
 		ec.temporaryOutputDepth++
 	}

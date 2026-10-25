@@ -105,7 +105,7 @@ func BenchmarkEngineParallel(b *testing.B) {
 func BenchmarkDynamicCollation(b *testing.B) {
 	e := engine(b, transform.Config{})
 	q := query(b, e, `compare('a', 'b', $uri)`, transform.XPath31)
-	options := transform.XPathContext{Variables: transform.Bindings{{Local: "uri"}: transform.Values(transform.String("http://www.w3.org/2013/collation/UCA?lang=en"))}}
+	options := transform.XPathContext{Variables: transform.Bindings{{Local: variableURI}: transform.Values(transform.String("http://www.w3.org/2013/collation/UCA?lang=en"))}}
 
 	for _, parallel := range []bool{false, true} {
 		b.Run(strconv.FormatBool(parallel), func(b *testing.B) {

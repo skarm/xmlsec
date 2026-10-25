@@ -57,6 +57,7 @@ type invocationConfig struct {
 	collectionResolver  xpath.CollectionResolver
 	uriResolver         xpath.URIResolver
 	traceWriter         io.Writer
+	globalContextItem   xdm.Item
 	ss                  *Stylesheet
 	source              *xdm.Document
 	parameters          *Parameters
@@ -80,6 +81,7 @@ type invocationConfig struct {
 	globalContextSelect string // XPath for global context item (evaluated post-strip-space)
 	initialArgs         []xdm.Sequence
 	maxResourceBytes    int64 // per-resource read cap; 0 = inherit compiler/default, <0 = unbounded
+	globalContextAbsent bool
 	kind                invocationKind
 	onMultipleMatch     OnMultipleMatchMode
 	maxResourceBytesSet bool // true once MaxResourceBytes is explicitly configured
@@ -343,6 +345,15 @@ func (inv Invocation) TraceWriter(w io.Writer) Invocation {
 func (inv Invocation) GlobalContextSelect(expr string) Invocation {
 	inv = inv.clone()
 	inv.cfg.globalContextSelect = expr
+
+	return inv
+}
+
+// GlobalContextItem supplies a typed global context independently of the match
+// selection. A nil item explicitly selects an absent global context.
+func (inv Invocation) GlobalContextItem(item xdm.Item) Invocation {
+	inv = inv.clone()
+	inv.cfg.globalContextItem, inv.cfg.globalContextAbsent = item, item == nil
 
 	return inv
 }
@@ -639,6 +650,7 @@ func (inv Invocation) toTransformConfig() *transformConfig {
 
 	// Global context select
 	tcfg.globalContextSelect = c.globalContextSelect
+	tcfg.globalContextItem, tcfg.globalContextAbsent = c.globalContextItem, c.globalContextAbsent
 
 	return tcfg
 }

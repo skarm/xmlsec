@@ -221,6 +221,66 @@ func TestNormalization(t *testing.T) {
 	}
 }
 
+func TestXMLLexicalObligations(t *testing.T) {
+	for _, tc := range []struct{ input, output string }{
+		{`<?xml version = '1.0' encoding = 'UTF-8' standalone = 'no'?><r/>`, `<r></r>`},
+		{`<?xml version="1.0" standalone="yes"?><r></r>`, `<r></r>`},
+		{`<?p?><r><!--%ignored;--><?p %ignored;?><![CDATA[<&%ignored;]]></r><?end data?>`, `<?p?><r><!--%ignored;--><?p %ignored;?>&lt;&amp;%ignored;</r><?end data?>`},
+		{`<r a="&quot;&apos;&lt;&gt;&amp;&#x9;&#10;&#13;">&lt;&amp;&#60;&#38;&#x1F600;</r>`, `<r a="&quot;'&lt;>&amp;&#x9;&#xA;&#xD;">&lt;&amp;&lt;&amp;😀</r>`},
+		{"<r>\r\n\r\n\t \u007f\u0085\ufdd0\U0010ffff</r>", "<r>\n\n\t \u007f\u0085\ufdd0\U0010ffff</r>"},
+		{`<r xml:space="invalid" xml:lang=""><a/></r>`, `<r xml:space="invalid" xml:lang=""><a></a></r>`},
+		{`<xmlFuture xmlns:xmlFuture="urn:future"><xmlFuture:n/></xmlFuture>`, `<xmlFuture xmlns:xmlFuture="urn:future"><xmlFuture:n></xmlFuture:n></xmlFuture>`},
+	} {
+		doc, err := document.ParseReader(t.Context(), iotest.OneByteReader(strings.NewReader(tc.input)), document.DefaultLimits())
+		if err != nil {
+			t.Fatal(tc.input, err)
+		}
+
+		out, err := doc.XML(t.Context())
+		if err != nil || string(out) != tc.output {
+			t.Errorf("XML %s: %s, %v; want %s", tc.input, out, err, tc.output)
+		}
+	}
+
+	for _, input := range []string{
+		`<?xml?><r/>`, `<?xml version="1.0"encoding="UTF-8"?><r/>`,
+		`<?xml encoding="UTF-8" version="1.0"?><r/>`, `<?xml version="1.0" standalone="maybe"?><r/>`,
+		`<?xml version="1.0" encoding="1bad"?><r/>`, `<?xml version="1.0" encoding="UTF&#45;8"?><r/>`,
+		`<r><?p:x?></r>`, `<r><!--ends---></r>`, `<r><![CDATA[unfinished</r>`,
+		`<r>&#X20;</r>`, `<r>&#x110000;</r>`, `<r>&#xFFFE;</r>`, `<r a="&#xFFFF;"/>`,
+		`<r>&#-1;</r>`, `<r>&#x;</r>`, `<r>&#;</r>`, `<r>&#32</r>`,
+	} {
+		if _, err := document.Parse(t.Context(), []byte(input), document.DefaultLimits()); err == nil {
+			t.Errorf("accepted %s", input)
+		}
+	}
+}
+
+func TestNamespaceStringIdentity(t *testing.T) {
+	for _, pair := range [][2]string{
+		{"urn:example", "urn:Example"}, {"urn:x", "urn:%78"}, {"urn:é", "urn:e\u0301"},
+	} {
+		input := `<r xmlns:p="` + pair[0] + `" xmlns:q="` + pair[1] + `" p:a="one" q:a="two"/>`
+
+		doc, err := document.Parse(t.Context(), []byte(input), document.DefaultLimits())
+		if err != nil {
+			t.Fatal(input, err)
+		}
+
+		for i, want := range []string{"one", "two"} {
+			got, ok := doc.Root().Attribute(document.Name{Space: pair[i], Local: "a"})
+			if !ok || got != want {
+				t.Fatal("namespace identity was normalized", pair, got, ok)
+			}
+		}
+
+		duplicate := strings.ReplaceAll(input, pair[1], pair[0])
+		if _, err := document.Parse(t.Context(), []byte(duplicate), document.DefaultLimits()); err == nil {
+			t.Fatal("duplicate expanded attributes were accepted", duplicate)
+		}
+	}
+}
+
 func TestLimitsAndContext(t *testing.T) {
 	tests := []struct {
 		name, xml string

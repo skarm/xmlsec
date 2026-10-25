@@ -384,12 +384,12 @@ func floatArith(op TokenType, la, ra xdm.AtomicValue) (xdm.Sequence, error) {
 			return nil, &xdm.Error{Code: errCodeFOAR0002, Message: "idiv with NaN"}
 		}
 
-		if math.IsInf(ln, 0) {
-			return nil, &xdm.Error{Code: errCodeFOAR0002, Message: "idiv with infinite dividend"}
-		}
-
 		if rn == 0 {
 			return nil, &xdm.Error{Code: errCodeFOAR0001, Message: textIntegerDivisionByZero}
+		}
+
+		if math.IsInf(ln, 0) {
+			return nil, &xdm.Error{Code: errCodeFOAR0002, Message: "idiv with infinite dividend"}
 		}
 		// Per F&O §6.2.4: finite idiv ±INF = 0 (math.Trunc(finite/Inf) = 0).
 		truncated := math.Trunc(ln / rn)

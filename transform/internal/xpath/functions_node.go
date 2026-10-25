@@ -887,7 +887,7 @@ func fnParseXML(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 		parseOptions.BaseURI = ec.baseURI
 	}
 
-	doc, err := parseOptions.ParseReader(ctx, strings.NewReader(s))
+	doc, err := parseOptions.ParseText(ctx, s)
 	if err != nil {
 		return nil, &xdm.Error{Code: errCodeFODC0006, Message: fmt.Sprintf("parse-xml: %v", err), Cause: err}
 	}
@@ -909,11 +909,6 @@ func fnParseXMLFragment(ctx context.Context, args []xdm.Sequence) (xdm.Sequence,
 		return nil, nil
 	}
 
-	s, err = stripXMLTextDeclaration(s)
-	if err != nil {
-		return nil, err
-	}
-
 	ec := getFnContext(ctx)
 
 	options := ec.xmlParseOptions()
@@ -929,149 +924,6 @@ func fnParseXMLFragment(ctx context.Context, args []xdm.Sequence) (xdm.Sequence,
 	doc.SetProperties(doc.Properties() | xdm.DocInternal)
 
 	return xdm.ItemSlice{xdm.NodeItem{Node: doc}}, nil
-}
-
-func stripXMLTextDeclaration(s string) (string, error) {
-	if !strings.HasPrefix(s, "<?xml") {
-		return s, nil
-	}
-
-	end := strings.Index(s, "?>")
-	if end < 0 {
-		return "", &xdm.Error{Code: errCodeFODC0006, Message: errMsgParseXMLFragmentMalformedTextDec}
-	}
-
-	decl := s[len("<?xml"):end]
-
-	names, err := parseXMLPseudoAttributes(decl)
-	if err != nil {
-		return "", &xdm.Error{Code: errCodeFODC0006, Message: errMsgParseXMLFragmentMalformedTextDec}
-	}
-
-	if len(names) == 0 {
-		return "", &xdm.Error{Code: errCodeFODC0006, Message: errMsgParseXMLFragmentMalformedTextDec}
-	}
-
-	switch len(names) {
-	case 1:
-		if names[0] != lexicon.DeclEncoding {
-			return "", &xdm.Error{Code: errCodeFODC0006, Message: errMsgParseXMLFragmentMalformedTextDec}
-		}
-	case 2:
-		if names[0] != lexicon.DeclVersion || names[1] != lexicon.DeclEncoding {
-			return "", &xdm.Error{Code: errCodeFODC0006, Message: errMsgParseXMLFragmentMalformedTextDec}
-		}
-	default:
-		return "", &xdm.Error{Code: errCodeFODC0006, Message: errMsgParseXMLFragmentMalformedTextDec}
-	}
-
-	return s[end+2:], nil
-}
-
-func parseXMLPseudoAttributes(source string) ([]string, error) {
-	names := make([]string, 0, 2)
-
-	parser := xmlPseudoAttributeParser{source: source}
-	for parser.offset < len(source) {
-		parser.skipSpace()
-
-		if parser.offset == len(source) {
-			return names, nil
-		}
-
-		name, err := parser.readName()
-		if err != nil {
-			return nil, err
-		}
-
-		names = append(names, name)
-
-		if err := parser.readValue(); err != nil {
-			return nil, err
-		}
-	}
-
-	return names, nil
-}
-
-type xmlPseudoAttributeParser struct {
-	source string
-	offset int
-}
-
-func (p *xmlPseudoAttributeParser) skipSpace() {
-	for p.offset < len(p.source) && isXMLSpace(p.source[p.offset]) {
-		p.offset++
-	}
-}
-
-func isXMLSpace(b byte) bool {
-	switch b {
-	case ' ', '\t', '\r', '\n':
-		return true
-	default:
-		return false
-	}
-}
-
-func (p *xmlPseudoAttributeParser) readName() (string, error) {
-	start := p.offset
-	for p.offset < len(p.source) && isXMLNameChar(p.source[p.offset]) {
-		p.offset++
-	}
-
-	if start == p.offset {
-		return "", fmt.Errorf("expected name")
-	}
-
-	name := p.source[start:p.offset]
-	switch name {
-	case lexicon.DeclVersion, "encoding":
-		return name, nil
-	case nameStandalone:
-		return "", fmt.Errorf("standalone not allowed")
-	default:
-		return "", fmt.Errorf("unknown pseudo-attribute")
-	}
-}
-
-func isXMLNameChar(b byte) bool {
-	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '-' || b == '_'
-}
-
-func (p *xmlPseudoAttributeParser) readValue() error {
-	p.skipSpace()
-
-	if p.offset == len(p.source) || p.source[p.offset] != '=' {
-		return fmt.Errorf("expected =")
-	}
-
-	p.offset++
-	p.skipSpace()
-
-	if p.offset == len(p.source) || (p.source[p.offset] != '\'' && p.source[p.offset] != '"') {
-		return fmt.Errorf("expected quoted value")
-	}
-
-	quote := p.source[p.offset]
-	p.offset++
-
-	start := p.offset
-	for p.offset < len(p.source) && p.source[p.offset] != quote {
-		p.offset++
-	}
-
-	if p.offset == len(p.source) {
-		return fmt.Errorf("unterminated value")
-	}
-
-	if start == p.offset {
-		return fmt.Errorf("empty value")
-	}
-
-	p.offset++
-
-	return nil
 }
 
 func fnID(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -1547,14 +1399,9 @@ func resolveDocURI(ctx context.Context, uri string) (string, error) {
 		return "", &xdm.Error{Code: errCodeFODC0002, Message: "fn:doc: empty URI"}
 	}
 
-	// Absolute file path — use directly
-	if strings.HasPrefix(uri, "/") {
-		return uri, nil
-	}
-
 	parsed, err := parseURIReference(uri)
 	if err != nil {
-		return "", &xdm.Error{Code: errCodeFODC0002, Message: fmt.Sprintf("fn:doc: invalid URI: %s", uri)}
+		return "", &xdm.Error{Code: errCodeFODC0005, Message: fmt.Sprintf("fn:doc: invalid URI: %s", uri), Cause: err}
 	}
 
 	if parsed.Scheme != "" {
@@ -1573,7 +1420,7 @@ func resolveDocURI(ctx context.Context, uri string) (string, error) {
 		}
 	}
 
-	return uri, nil
+	return "", &xdm.Error{Code: errCodeFODC0002, Message: "fn:doc: relative URI has no usable static base URI"}
 }
 
 func resolveIDLookupDocument(ctx context.Context, args []xdm.Sequence) (*xdm.Document, error) {
@@ -1680,7 +1527,7 @@ func sequenceFromDocOrderedNodes(ctx context.Context, nodes []xdm.Node) (xdm.Seq
 func nodeArgOrCtx(ctx context.Context, args []xdm.Sequence) (xdm.Node, error) {
 	if len(args) == 0 {
 		fc := getFnContext(ctx)
-		if fc == nil {
+		if fc == nil || fc.node == nil && fc.contextItem == nil {
 			return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
 		}
 

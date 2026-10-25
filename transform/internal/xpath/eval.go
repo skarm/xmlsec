@@ -190,7 +190,7 @@ func (ec *evalContext) getDefaultLanguage() string {
 
 func (ec *evalContext) withVar(name string, val xdm.Sequence) *evalContext {
 	cp := *ec
-	cp.vars = scopeWithBinding(ec.vars, name, val)
+	cp.vars = scopeWithBinding(ec.vars, VariableKey(name, ec.namespaces), val)
 
 	return &cp
 }

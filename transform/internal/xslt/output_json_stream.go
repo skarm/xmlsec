@@ -9,36 +9,17 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
-func writeJSONItems(w io.Writer, seq xdm.Sequence, out *OutputDef, member bool) error {
-	size := xdm.SequenceLen(seq)
-	if size == 0 && member {
+// JSON serialization does not normalize sequences into arrays (SER31 §9).
+// The same cardinality rules apply to the result and every map/array member.
+func writeJSONItems(w io.Writer, seq xdm.Sequence, out *OutputDef) error {
+	switch xdm.SequenceLen(seq) {
+	case 0:
 		return writeFullString(w, "null")
-	}
-
-	if size == 1 {
+	case 1:
 		return writeJSONItem(w, seq.Get(0), out)
+	default:
+		return dynamicError("SERE0023", "JSON serialization requires at most one item")
 	}
-
-	if err := writeFullString(w, "["); err != nil {
-		return err
-	}
-
-	first := true
-	for item := range xdm.SequenceItems(seq) {
-		if !first {
-			if err := writeFullString(w, ","); err != nil {
-				return err
-			}
-		}
-
-		first = false
-
-		if err := writeJSONItem(w, item, out); err != nil {
-			return err
-		}
-	}
-
-	return writeFullString(w, "]")
 }
 
 func writeJSONItem(w io.Writer, item xdm.Item, out *OutputDef) error {
@@ -120,6 +101,7 @@ func writeJSONMap(w io.Writer, v xdm.MapItem, out *OutputDef) error {
 	}
 
 	first := true
+	seen := make(map[string]struct{}, v.Size())
 
 	err := v.ForEachView(func(key xdm.AtomicValue, value xdm.Sequence) error {
 		if !first {
@@ -135,6 +117,12 @@ func writeJSONMap(w io.Writer, v xdm.MapItem, out *OutputDef) error {
 			return err
 		}
 
+		if _, exists := seen[text]; exists && (out == nil || !out.AllowDuplicateNames) {
+			return dynamicError(errCodeSERE0022, "duplicate key %q in JSON output", text)
+		}
+
+		seen[text] = struct{}{}
+
 		if err := writeJSONString(w, text, out); err != nil {
 			return err
 		}
@@ -143,7 +131,7 @@ func writeJSONMap(w io.Writer, v xdm.MapItem, out *OutputDef) error {
 			return err
 		}
 
-		return writeJSONItems(w, value, out, true)
+		return writeJSONItems(w, value, out)
 	})
 	if err != nil {
 		return err
@@ -164,7 +152,7 @@ func writeJSONArray(w io.Writer, v xdm.ArrayItem, out *OutputDef) error {
 			}
 		}
 
-		if err := writeJSONItems(w, value, out, true); err != nil {
+		if err := writeJSONItems(w, value, out); err != nil {
 			return err
 		}
 	}

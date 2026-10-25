@@ -58,13 +58,14 @@ func CheckFunctionParamCompat(fi xdm.FunctionItem, st xdm.SequenceType) bool {
 		return true // no type info → assume compatible
 	}
 
-	if len(fi.ParamTypes) != len(ft.ParamTypes) {
+	if fi.Arity >= 0 && fi.Arity != len(ft.ParamTypes) {
 		return false
 	}
 
 	for i, testParam := range ft.ParamTypes {
 		// Contravariant: the function's param must be a supertype of the target's param
-		if !isSequenceSubtype(testParam, fi.ParamTypes[i], nil) {
+		parameter, declared := xdm.FunctionParameterType(fi.ParamTypes, fi.RepeatParamType, i)
+		if declared && !isSequenceSubtype(testParam, parameter, nil) {
 			return false
 		}
 	}
@@ -544,51 +545,22 @@ func resolveToBuiltinBase(local, ns string, decls SchemaDeclarations) string {
 	return ""
 }
 
-// resolveAtomicTypeName maps an AtomicTypeName to the internal type name format.
-// Unprefixed names first try an imported no-namespace schema type, then fall
-// back to the existing xs: shorthand behavior when no schema declaration exists.
+// resolveAtomicTypeName uses the same expanded-name rules as static validation.
 func resolveAtomicTypeName(tn AtomicTypeName, ec *evalContext) string {
-	if tn.Prefix == "" {
-		if ec != nil && ec.namespaces != nil {
-			if defNS, ok := ec.namespaces[""]; ok && defNS != "" {
-				if defNS == lexicon.NamespaceXSD {
-					return "xs:" + tn.Name
-				}
-
-				return xdm.QAnnotation(defNS, tn.Name)
-			}
-		}
-
-		if ec != nil && ec.schemaDeclarations != nil {
-			if _, ok := ec.schemaDeclarations.LookupSchemaType(tn.Name, ""); ok {
-				return xdm.QAnnotation("", tn.Name)
-			}
-		}
-		// No default namespace: assume xs: namespace for known types.
-		// For unknown names, only use Q{} form when schema declarations
-		// are available (XSLT schema-aware mode); otherwise keep xs:
-		// prefix so static type checking can report XPST0051.
-		return "xs:" + tn.Name
+	var namespaces map[string]string
+	if ec != nil {
+		namespaces = ec.namespaces
 	}
 
-	if tn.Prefix == "xs" || tn.Prefix == "xsd" {
-		return "xs:" + tn.Name
-	}
-	// Resolve via namespace context. ec may be nil when a function item's
-	// coercion runs without a captured eval context; in that case the custom
-	// prefix cannot be resolved, so fall through to the unresolved-type form
-	// (Prefix:Name) which fails coercion with XPTY0004 and never panics.
-	if ec != nil && ec.namespaces != nil {
-		if uri, ok := ec.namespaces[tn.Prefix]; ok {
-			if uri == lexicon.NamespaceXSD {
-				return "xs:" + tn.Name
-			}
-			// Non-XSD namespace: use Q{ns}local annotation format
-			return xdm.QAnnotation(uri, tn.Name)
-		}
+	lexical := joinQName(tn.Prefix, tn.Name)
+	_, local := splitEQName(lexical)
+
+	uri := resolveStaticNameURI(lexical, namespaces, namespaces[""])
+	if uri == lexicon.NamespaceXSD {
+		return "xs:" + local
 	}
 
-	return tn.Prefix + ":" + tn.Name
+	return xdm.QAnnotation(uri, local)
 }
 
 // coerceToSequenceType is the boolean-returning wrapper retained for callers that
@@ -609,6 +581,10 @@ func coerceToSequenceType(ctx context.Context, seq xdm.Sequence, st xdm.Sequence
 // errors take precedence over cardinality rejection, matching the spec ordering
 // (atomization happens before the occurrence check).
 func coerceToSequenceTypeE(ctx context.Context, seq xdm.Sequence, st xdm.SequenceType, ec *evalContext) (xdm.Sequence, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// Backwards-compatible function conversion precedes ordinary conversion.
 	if ec.xpath10CompatMode() && !st.Void {
 		newSeq, done, err := coerceXPath10Compat(seq, st, ec)
@@ -630,16 +606,18 @@ func coerceToSequenceTypeE(ctx context.Context, seq xdm.Sequence, st xdm.Sequenc
 		}
 	}
 
+	// Matching a concrete item type scans the sequence; charge before walking
+	// a lazy input. The item()* shortcut above remains constant-time.
+	if err := fnCountOps(ctx, ec, xdm.SequenceLen(seq)); err != nil {
+		return nil, err
+	}
+
 	if matchesSequenceType(seq, st, ec) {
 		return seq, nil
 	}
 
-	if xdm.SequenceLen(seq) == 1 {
-		if fnTest, ok := st.ItemTest.(xdm.FunctionTest); ok {
-			if adapted, ok := coerceFunctionItem(seq.Get(0), fnTest, ec); ok {
-				return xdm.ItemSlice{adapted}, nil
-			}
-		}
+	if fnTest, ok := st.ItemTest.(xdm.FunctionTest); ok {
+		return coerceFunctionSequence(ctx, seq, st.Occurrence, fnTest, ec)
 	}
 
 	target, ok := st.ItemTest.(xdm.AtomicOrUnionType)
@@ -649,7 +627,7 @@ func coerceToSequenceTypeE(ctx context.Context, seq xdm.Sequence, st xdm.Sequenc
 
 	targetType := resolveAtomicTypeName(AtomicTypeName(target), ec)
 
-	atoms, err := atomizeForSequenceCoercion(seq, st.Occurrence, ec)
+	atoms, err := atomizeForSequenceCoercion(ctx, seq, st.Occurrence, ec)
 	if err != nil {
 		return seq, err
 	}
@@ -671,6 +649,39 @@ func coerceToSequenceTypeE(ctx context.Context, seq xdm.Sequence, st xdm.Sequenc
 	return result, nil
 }
 
+func coerceFunctionSequence(ctx context.Context, seq xdm.Sequence, occurrence xdm.Occurrence, target xdm.FunctionTest, ec *evalContext) (xdm.Sequence, error) {
+	length := xdm.SequenceLen(seq)
+	if !coercionOccurrenceMatches(length, occurrence) {
+		return seq, errCoerceMismatch
+	}
+
+	if length > fnMaxNodes(ec) {
+		return nil, ErrNodeSetLimit
+	}
+
+	result := make(xdm.ItemSlice, 0, length)
+
+	for item := range xdm.SequenceItems(seq) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		if matchesFunctionItemTest(item, target, ec) {
+			result = append(result, item)
+			continue
+		}
+
+		adapted, ok := coerceFunctionItem(item, target, ec)
+		if !ok {
+			return seq, errCoerceMismatch
+		}
+
+		result = append(result, adapted)
+	}
+
+	return result, nil
+}
+
 func coercionOccurrenceMatches(length int, occurrence xdm.Occurrence) bool {
 	switch occurrence {
 	case xdm.OccurrenceExactlyOne:
@@ -687,7 +698,7 @@ func coercionOccurrenceMatches(length int, occurrence xdm.Occurrence) bool {
 // atomizeForSequenceCoercion flattens arrays and list-typed nodes. Singleton
 // targets stop after the second atom; typed-value errors encountered before
 // that limit still propagate, before the cardinality mismatch is reported.
-func atomizeForSequenceCoercion(seq xdm.Sequence, occurrence xdm.Occurrence, ec *evalContext) ([]xdm.AtomicValue, error) {
+func atomizeForSequenceCoercion(ctx context.Context, seq xdm.Sequence, occurrence xdm.Occurrence, ec *evalContext) ([]xdm.AtomicValue, error) {
 	maxAtoms := 0
 	if occurrence == xdm.OccurrenceExactlyOne || occurrence == xdm.OccurrenceZeroOrOne {
 		maxAtoms = 1
@@ -698,6 +709,14 @@ func atomizeForSequenceCoercion(seq xdm.Sequence, occurrence xdm.Occurrence, ec 
 	tooMany := false
 
 	_, err := atomizeStreamCont(seq, typedValueItemCheckFor(ec), func(atom xdm.AtomicValue) (bool, error) {
+		if len(atoms) >= fnMaxNodes(ec) {
+			return false, ErrNodeSetLimit
+		}
+
+		if err := fnCountOps(ctx, ec, 1); err != nil {
+			return false, err
+		}
+
 		atoms = append(atoms, atom)
 		if maxAtoms > 0 && len(atoms) > maxAtoms {
 			tooMany = true
@@ -743,6 +762,10 @@ func coerceAtomicFunctionArgument(ctx context.Context, value xdm.AtomicValue, ta
 	}
 
 	if value.TypeName == xdm.TypeUntypedAtomic {
+		if ec != nil && ec.version >= 30 && (target == xdm.TypeQName || target == xdm.TypeNOTATION) {
+			return xdm.AtomicValue{}, &xdm.Error{Code: "XPTY0117", Message: "untypedAtomic cannot be converted to a namespace-sensitive type by function conversion"}
+		}
+
 		if target == xdm.TypeNumeric {
 			target = xdm.TypeDouble
 		}
@@ -806,28 +829,9 @@ func coerceFunctionItem(item xdm.Item, target xdm.FunctionTest, ec *evalContext)
 				invokeCtx = fnCtx
 			}
 
-			callArgs := make([]xdm.Sequence, len(args))
-			copy(callArgs, args)
-
-			if len(actual.ParamTypes) > 0 {
-				for i, arg := range args {
-					// Propagate a real typed error (FOTY0012 from atomizing an
-					// element-only node, FOTY0013, FORG0001, …); map only a plain
-					// mismatch to XPTY0004.
-					coerced, cerr := coerceToSequenceTypeE(ctx, arg, actual.ParamTypes[i], invokeCtx)
-					if cerr != nil && !errors.Is(cerr, errCoerceMismatch) {
-						return nil, cerr
-					}
-
-					if cerr != nil {
-						return nil, &xdm.Error{
-							Code:    lexicon.ErrXPTY0004,
-							Message: fmt.Sprintf("function argument %d does not match required type %v", i+1, actual.ParamTypes[i]),
-						}
-					}
-
-					callArgs[i] = coerced
-				}
+			callArgs, err := coerceFunctionItemArgs(ctx, actual, args, invokeCtx)
+			if err != nil {
+				return nil, err
 			}
 
 			result, err := actual.Invoke(ctx, callArgs)
@@ -850,6 +854,35 @@ func coerceFunctionItem(item xdm.Item, target xdm.FunctionTest, ec *evalContext)
 			return coercedResult, nil
 		},
 	}, true
+}
+
+func coerceFunctionItemArgs(ctx context.Context, actual xdm.FunctionItem, args []xdm.Sequence, ec *evalContext) ([]xdm.Sequence, error) {
+	callArgs := append([]xdm.Sequence(nil), args...)
+
+	for i, arg := range args {
+		parameter, declared := xdm.FunctionParameterType(actual.ParamTypes, actual.RepeatParamType, i)
+		if !declared {
+			continue
+		}
+
+		// Preserve typed atomization/conversion errors; only a plain mismatch
+		// becomes XPTY0004.
+		coerced, err := coerceToSequenceTypeE(ctx, arg, parameter, ec)
+		if err != nil && !errors.Is(err, errCoerceMismatch) {
+			return nil, err
+		}
+
+		if err != nil {
+			return nil, &xdm.Error{
+				Code:    lexicon.ErrXPTY0004,
+				Message: fmt.Sprintf("function argument %d does not match required type %v", i+1, parameter),
+			}
+		}
+
+		callArgs[i] = coerced
+	}
+
+	return callArgs, nil
 }
 
 // atomicMatchesTargetType reports whether an atomic value satisfies an
@@ -1147,13 +1180,14 @@ func matchesTypedFunctionItem(value xdm.FunctionItem, test xdm.FunctionTest, ec 
 	// Function parameters are contravariant and the return is covariant.
 	if len(value.ParamTypes) > 0 && len(test.ParamTypes) > 0 {
 		for i, parameter := range test.ParamTypes {
-			if !isSequenceSubtype(parameter, value.ParamTypes[i], ec) {
+			actual, declared := xdm.FunctionParameterType(value.ParamTypes, value.RepeatParamType, i)
+			if declared && !isSequenceSubtype(parameter, actual, ec) {
 				return false
 			}
 		}
 	}
 
-	if value.ReturnType != nil && test.ReturnType.ItemTest != nil {
+	if value.ReturnType != nil {
 		return isSequenceSubtype(*value.ReturnType, test.ReturnType, ec)
 	}
 

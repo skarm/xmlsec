@@ -401,7 +401,7 @@ func (ec *execContext) cachedKeyTable(cacheKey, name string) (*keyTable, error) 
 		return nil, nil
 	}
 
-	isV3 := ec.stylesheet.version >= "3.0" || ec.stylesheet.version == ""
+	isV3 := ec.stylesheet.processorLanguage() >= 30
 	if isV3 && ec.keyUseExprDepth > 0 {
 		// XSLT 3.0 use expressions may reference an index being built.
 		return &keyTable{built: true, entries: make(map[string][]keyEntry)}, nil
@@ -453,7 +453,7 @@ func (ec *execContext) lookupKey(ctx context.Context, name string, value xdm.Ato
 
 	// Backwards-compatible key: the lookup value is compared as a string.
 	if kt.compat {
-		value = keyCompatCast(value, isBackwardsCompatible(ec.stylesheet.version))
+		value = keyCompatCast(value, ec.stylesheet.processorLanguage() == 10)
 	}
 
 	// NaN lookup never matches.
@@ -495,7 +495,7 @@ func (ec *execContext) lookupCompositeKey(ctx context.Context, name string, valu
 	if kt.compat {
 		cast := make([]xdm.AtomicValue, len(values))
 		for i, v := range values {
-			cast[i] = keyCompatCast(v, isBackwardsCompatible(ec.stylesheet.version))
+			cast[i] = keyCompatCast(v, ec.stylesheet.processorLanguage() == 10)
 		}
 
 		values = cast
@@ -617,7 +617,7 @@ func (b *keyIndexBuilder) atomize(item xdm.Item) (xdm.AtomicValue, bool) {
 	}
 
 	if b.table.compat {
-		atom = keyCompatCast(atom, isBackwardsCompatible(b.ec.stylesheet.version))
+		atom = keyCompatCast(atom, b.ec.stylesheet.processorLanguage() == 10)
 	}
 
 	return atom, true

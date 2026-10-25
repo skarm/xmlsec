@@ -66,7 +66,7 @@ func (ec *execContext) fnElementAvailable(_ context.Context, args []xdm.Sequence
 		return xdm.SingleBoolean(false), nil
 	}
 
-	if minVer := elements.MinVersion(local); ec.stylesheet.version != "" && ec.stylesheet.version < minVer {
+	if minVer := elements.MinVersion(local); fmt.Sprintf("%d.0", ec.stylesheet.processorLanguage()/10) < minVer {
 		return xdm.SingleBoolean(false), nil
 	}
 
@@ -118,7 +118,7 @@ func functionAvailableArity(args []xdm.Sequence) int {
 }
 
 func (ec *execContext) functionAvailable(name string, arity int) (bool, error) {
-	if isBackwardsCompatible(ec.stylesheet.version) {
+	if ec.stylesheet.processorLanguage() == 10 {
 		if strings.Contains(name, ":") {
 			return false, nil
 		}
@@ -143,7 +143,7 @@ func (ec *execContext) functionAvailable(name string, arity int) (bool, error) {
 		return ec.prefixedFunctionAvailable(name, prefix, local, arity)
 	}
 
-	return builtinFunctionAvailable(xpath.NSFn, name, arity), nil
+	return ec.builtinFunctionAvailable(xpath.NSFn, name, arity), nil
 }
 
 func (ec *execContext) eqNameFunctionAvailable(uri, local string, arity int) bool {
@@ -152,7 +152,7 @@ func (ec *execContext) eqNameFunctionAvailable(uri, local string, arity int) boo
 	}
 
 	// EQNames consult declared functions and XPath builtins.
-	return builtinFunctionAvailable(uri, local, arity)
+	return ec.builtinFunctionAvailable(uri, local, arity)
 }
 
 func (ec *execContext) prefixedFunctionAvailable(name, prefix, local string, arity int) (bool, error) {
@@ -174,10 +174,10 @@ func (ec *execContext) prefixedFunctionAvailable(name, prefix, local string, ari
 	}
 
 	if xpath.IsBuiltinFunctionNS(uri, local) {
-		return arity < 0 || xpath.BuiltinFunctionAcceptsArity(uri, local, arity), nil
+		return ec.builtinFunctionAvailable(uri, local, arity), nil
 	}
 
-	return builtinFunctionAvailable(xpath.NSFn, name, arity), nil
+	return ec.builtinFunctionAvailable(xpath.NSFn, name, arity), nil
 }
 
 // type-available(name) returns true if the named type is available.
@@ -550,8 +550,8 @@ func functionAvailableAtArity(function xpath.Function, arity int) bool {
 	return arity < 0 || (arity >= function.MinArity() && arity <= function.MaxArity())
 }
 
-func builtinFunctionAvailable(uri, local string, arity int) bool {
-	return xpath.IsBuiltinFunctionNS(uri, local) && (arity < 0 || xpath.BuiltinFunctionAcceptsArity(uri, local, arity))
+func (ec *execContext) builtinFunctionAvailable(uri, local string, arity int) bool {
+	return xpath.BuiltinFunctionAvailable(ec.stylesheet.xpathVersion(), uri, local, arity)
 }
 
 // copy-of() returns a deep copy of the context node (zero-argument XSLT 3.0 streaming function).
