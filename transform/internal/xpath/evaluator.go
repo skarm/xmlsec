@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
@@ -554,7 +555,7 @@ func (e Evaluator) ValidateExpression(ctx context.Context, expr *Expression) err
 
 	if ec.schemaDeclarations == nil {
 		if len(collector.schemaComponentTests) > 0 {
-			return &xdm.Error{Code: "XPST0008", Message: "no schema declarations in the static context"}
+			return &xdm.Error{Code: lexicon.ErrXPST0008, Message: "no schema declarations in the static context"}
 		}
 
 		for _, typ := range collector.typeNames {
@@ -566,7 +567,7 @@ func (e Evaluator) ValidateExpression(ctx context.Context, expr *Expression) err
 
 	for _, name := range collector.freeVars {
 		if _, exists := ec.vars.Lookup(VariableKey(name, ec.namespaces)); !exists {
-			return &xdm.Error{Code: "XPST0008", Message: "undeclared variable: $" + name}
+			return &xdm.Error{Code: lexicon.ErrXPST0008, Message: "undeclared variable: $" + name}
 		}
 	}
 

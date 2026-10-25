@@ -6,8 +6,8 @@ package xpath
 import (
 	"fmt"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // --- NodeItem ---
@@ -37,7 +37,7 @@ func AtomizeItem(item xdm.Item) (xdm.AtomicValue, error) {
 		// XPath 3.1: atomizing an array atomizes each member and concatenates
 		if v.Size() == 0 {
 			return xdm.AtomicValue{}, &xdm.Error{
-				Code:    errCodeFOTY0013,
+				Code:    lexicon.ErrFOTY0013,
 				Message: "cannot atomize empty array to single atomic value",
 			}
 		}
@@ -50,12 +50,12 @@ func AtomizeItem(item xdm.Item) (xdm.AtomicValue, error) {
 		}
 
 		return xdm.AtomicValue{}, &xdm.Error{
-			Code:    errCodeFOTY0013,
+			Code:    lexicon.ErrFOTY0013,
 			Message: "cannot atomize array with multiple members to single atomic value",
 		}
 	default:
 		return xdm.AtomicValue{}, &xdm.Error{
-			Code:    errCodeFOTY0013,
+			Code:    lexicon.ErrFOTY0013,
 			Message: fmt.Sprintf("cannot atomize %T", item),
 		}
 	}

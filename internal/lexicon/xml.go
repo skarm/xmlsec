@@ -1,6 +1,3 @@
-// Derived from lestrrat-go/helium at 7362c0a70122a757780f4d0b545a9b370dead6ab.
-// Copyright (c) 2015 lestrrat. MIT License; see licenses/MIT-helium.txt at the repository root.
-
 package lexicon
 
 const (
@@ -76,15 +73,17 @@ const (
 
 // XSD type local name constants (unprefixed).
 const (
-	TypeBoolean            = "boolean"
-	TypeString             = "string"
-	TypeNormalizedString   = "normalizedString"
-	TypeInteger            = "integer"
-	TypeDecimal            = "decimal"
-	TypeFloat              = "float"
-	TypeDouble             = "double"
-	TypeDate               = "date"
-	TypeDateTime           = "dateTime"
+	TypeBoolean          = "boolean"
+	TypeString           = "string"
+	TypeNormalizedString = "normalizedString"
+	TypeInteger          = "integer"
+	TypeDecimal          = "decimal"
+	TypeFloat            = "float"
+	TypeDouble           = "double"
+	TypeDate             = "date"
+	TypeDateTime         = "dateTime"
+	// TypeTime is the xs:time builtin local name, hoisted to a constant so the
+	// several switch/comparison sites that reference it share one literal.
 	TypeTime               = "time"
 	TypeDuration           = "duration"
 	TypeGYear              = "gYear"
@@ -168,9 +167,9 @@ const (
 
 // XSLT mode value constants.
 const (
-	ModeAll     = "#all"
-	ModeDefault = "#default"
-	ModeUnnamed = "#unnamed"
+	ModeAll     = "#all"     // template applies to all modes
+	ModeDefault = "#default" // the default (unnamed) mode, used as internal key
+	ModeUnnamed = "#unnamed" // explicit unnamed mode reference
 )
 
 // XSD prefix constants.

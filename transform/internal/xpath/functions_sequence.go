@@ -11,8 +11,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func lookupFunctionsSequence(name string) (*builtinFunc, bool) {
@@ -45,9 +45,9 @@ func lookupFunctionsSequence(name string) (*builtinFunc, bool) {
 		return &builtinFunc{name: name, min: 2, max: 3, fn: fnDeepEqual}, true
 	case "index-of":
 		return &builtinFunc{name: name, min: 2, max: 3, fn: fnIndexOf}, true
-	case nameLast:
+	case lexicon.FnLast:
 		return &builtinFunc{name: name, min: 0, max: 0, fn: fnLast}, true
-	case namePosition:
+	case lexicon.FnPosition:
 		return &builtinFunc{name: name, min: 0, max: 0, fn: fnPosition}, true
 	case nameSort:
 		return &builtinFunc{name: name, min: 1, max: 3, fn: fnSort}, true
@@ -667,7 +667,7 @@ func fnIndexOf(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 func fnLast(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 	fc := getFnContext(ctx)
 	if fc == nil || (fc.node == nil && fc.contextItem == nil) {
-		return nil, &xdm.Error{Code: errCodeXPDY0002, Message: "last() requires a focus (context item)"}
+		return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: "last() requires a focus (context item)"}
 	}
 
 	return xdm.SingleInteger(int64(fc.size)), nil
@@ -676,7 +676,7 @@ func fnLast(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 func fnPosition(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 	fc := getFnContext(ctx)
 	if fc == nil || (fc.node == nil && fc.contextItem == nil) {
-		return nil, &xdm.Error{Code: errCodeXPDY0002, Message: "position() requires a focus (context item)"}
+		return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: "position() requires a focus (context item)"}
 	}
 
 	return xdm.SingleInteger(int64(fc.position)), nil

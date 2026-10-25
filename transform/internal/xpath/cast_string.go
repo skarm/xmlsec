@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	value "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // AtomicToString returns the canonical string representation of an atomic value.
@@ -414,7 +414,7 @@ func parseXPathFloating(s string, bits int) (float64, error) {
 		return math.Inf(1), nil
 	case lexicon.FloatNegINF:
 		return math.Inf(-1), nil
-	case valueNaN:
+	case lexicon.FloatNaN:
 		return math.NaN(), nil
 	}
 

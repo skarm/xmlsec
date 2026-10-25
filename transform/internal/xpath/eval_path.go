@@ -10,8 +10,8 @@ import (
 	"math/big"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func evalLiteral(e LiteralExpr) (xdm.Sequence, error) {
@@ -126,7 +126,7 @@ func evalLocationPath(evalFn exprEvaluator, ctx context.Context, ec *evalContext
 
 	if lp.Absolute {
 		if xdm.IsNilNode(ec.node) {
-			return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 		}
 
 		root := xdm.DocumentRoot(ec.node)
@@ -138,7 +138,7 @@ func evalLocationPath(evalFn exprEvaluator, ctx context.Context, ec *evalContext
 		nodes = []xdm.Node{root}
 	} else {
 		if xdm.IsNilNode(ec.node) {
-			return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 		}
 
 		nodes = []xdm.Node{ec.node}
@@ -207,7 +207,7 @@ func locationPathStart(ec *evalContext, lp vmLocationPathExpr) (xdm.Node, error)
 			return nil, &xdm.Error{Code: errCodeXPTY0020, Message: "a path requires a node context item"}
 		}
 
-		return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+		return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 	}
 
 	if !lp.Absolute {
@@ -1388,7 +1388,7 @@ func positionCall(expr Expr) bool {
 	switch e := expr.(type) {
 	case FunctionCall:
 		local, isFn := lexicon.StreamFnLocalName(e.Name, e.Prefix)
-		return len(e.Args) == 0 && isFn && local == namePosition
+		return len(e.Args) == 0 && isFn && local == lexicon.FnPosition
 	case *FunctionCall:
 		if e == nil {
 			return false
@@ -1396,7 +1396,7 @@ func positionCall(expr Expr) bool {
 
 		local, isFn := lexicon.StreamFnLocalName(e.Name, e.Prefix)
 
-		return len(e.Args) == 0 && isFn && local == namePosition
+		return len(e.Args) == 0 && isFn && local == lexicon.FnPosition
 	default:
 		return false
 	}

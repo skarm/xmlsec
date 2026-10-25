@@ -9,6 +9,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 )
 
@@ -190,7 +191,7 @@ func inheritedRecordNamespaces(node *Node) []Namespace {
 
 	prefixes := make([]string, 0, len(scope))
 	for prefix := range scope {
-		if prefix != nameXML {
+		if prefix != lexicon.PrefixXML {
 			prefixes = append(prefixes, prefix)
 		}
 	}
@@ -226,7 +227,7 @@ func inheritRecordAttributes(node *Node) error {
 	}
 
 	if base != "" {
-		name := Name{Space: XMLNamespace, Local: nameBase}
+		name := Name{Space: XMLNamespace, Local: lexicon.AttrBase}
 		for i := range node.Attrs {
 			if node.Attrs[i].Name == name {
 				node.Attrs[i].Value = base
@@ -234,7 +235,7 @@ func inheritRecordAttributes(node *Node) error {
 			}
 		}
 
-		node.Attrs = append(node.Attrs, Attribute{Name: name, Prefix: nameXML, Value: base})
+		node.Attrs = append(node.Attrs, Attribute{Name: name, Prefix: lexicon.PrefixXML, Value: base})
 	}
 
 	return nil
@@ -250,7 +251,7 @@ func recordBaseURI(node *Node) (string, error) {
 
 	for _, n := range slices.Backward(ancestors) {
 		for _, attr := range n.Attrs {
-			if attr.Name == (Name{Space: XMLNamespace, Local: nameBase}) {
+			if attr.Name == (Name{Space: XMLNamespace, Local: lexicon.AttrBase}) {
 				resolved, err := joinURIReferences(base, attr.Value)
 				if err != nil {
 					return "", err

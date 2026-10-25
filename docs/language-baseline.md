@@ -2,8 +2,8 @@
 
 Recorded on 2026-10-24 with Go 1.27.3, darwin/arm64 and `GOMAXPROCS=2`.
 Tested Go sources, module manifests and suite pins have SHA-256
-`fe804b218c748360634b242679a10f55d33b333d4daa1317c4fda8d9fd223b15`.
-Reports identify the working tree as based on `9ad85aa`,
+`84db9ff7b741bdd2547150305e85c309c82f4f8f4bdc17989a4ec6f77f9f02ae`.
+Reports identify the working tree as based on `a5421e7`,
 `library_modified=true`; documentation is outside the source checksum.
 
 Complete XPath and Basic XSLT conformance remain open. These diagnostics and
@@ -19,18 +19,32 @@ The five main runs use XSD 1.0 datatype/regex rules and `-assertions`:
 - QT3, XPath 3.0: 19,292 passed, 82 failed, 0 skipped, 12,447 not-applicable, out of 31,821 cases.
 - QT3, XPath 3.1: 22,039 passed, 109 failed, 0 skipped, 9,673 not-applicable, out of 31,821 cases.
 - xslt30-test, XSLT 2.0: 5,663 passed, 69 failed, 0 skipped, 8,869 not-applicable, out of 14,601 cases.
-- xslt30-test, XSLT 3.0: 8,000 passed, 103 failed, 0 skipped, 6,498 not-applicable, out of 14,601 cases.
+- xslt30-test, XSLT 3.0: 7,986 passed, 101 failed, 0 skipped, 6,514 not-applicable, out of 14,601 cases.
 
 Controls with the same sources and budgets:
+
 - XSD 1.1, XPath 3.1: 22,083 passed, 109 failed, 0 skipped, 9,629 not-applicable.
-- XSD 1.1, XSLT 3.0: 8,005 passed, 102 failed, 0 skipped, 6,494 not-applicable.
-- Assertions disabled, XSD 1.0, XSLT 3.0: 7,989 passed, 103 failed, 0 skipped, 6,509 not-applicable.
+- XSD 1.1, XSLT 3.0: 7,991 passed, 100 failed, 0 skipped, 6,510 not-applicable.
+- Assertions disabled, XSD 1.0, XSLT 3.0: 7,975 passed, 101 failed, 0 skipped, 6,525 not-applicable.
+
+Source metadata excludes fifteen normative-streaming cases and one XInclude
+case from the XSLT 3.0 selections. Fourteen previously counted passes and two
+failures had ignored that preprocessing. This is an applicability correction.
 
 The last control's eleven-case difference reflects assertion policy and catalog
 applicability. Public and adapter assertion checking default to disabled;
 nested `fn:transform` independently uses its standard option, also default false.
 The XSD selection controls builtin datatype/regex rules, without schema validation
 or schema-aware processing. No recovered panic occurred; every run exits unsuccessfully because failures remain.
+
+An additional full-catalog `-limits=language` control, with the same one-second
+case deadline, gives XPath 3.1: 22,042 passed, 106 failed; XSLT 3.0: 7,988 passed,
+99 failed. Both have zero skips and unchanged applicability. Three XPath and two
+XSLT resource failures pass; `fn-transform-27` instead reaches a failing assertion
+because its timing/cache expectation sees the fixed clock. The
+[F&O cache option](https://www.w3.org/TR/2017/REC-xpath-functions-31-20170321/#func-transform)
+is an efficiency hint. That diagnostic remains failed, without changing the clock
+or publisher expectation. Expanded-budget results do not replace default results.
 
 ## Reproduction
 
@@ -68,17 +82,22 @@ decoding policy. A source change or modified suite invalidates the run.
 - QT3, XPath 2.0: 0 assertion, 70 harness, 8 resource-limit.
 - QT3, XPath 3.0: 0 assertion, 76 harness, 6 resource-limit.
 - QT3, XPath 3.1: 0 assertion, 99 harness, 10 resource-limit.
-- xslt30-test, XSLT 2.0: 53 assertion, 7 harness, 9 resource-limit.
-- xslt30-test, XSLT 3.0: 76 assertion, 12 harness, 15 resource-limit.
+- xslt30-test, XSLT 2.0: 53 assertion, 5 harness, 11 resource-limit.
+- xslt30-test, XSLT 3.0: 74 assertion, 10 harness, 17 resource-limit.
 
 A category identifies the failing phase, not a confirmed engine defect.
 Schema-bearing environments, unsupported harness assertions and
 missing language behavior remain visible failures.
+XPath 3.1 retains 98 schema/validation preparation failures, one assertion-query
+error and ten resource failures. XSLT 3.0 retains five unsupported warning
+assertions, four unmapped remote sources and one missing-source declaration;
+its seventeen resource failures include two parameter-compilation budgets.
 Missing mandatory implementation must not be reclassified as not-applicable.
 XML/serialization mismatches include a bounded excerpt of the differing bytes;
 a failed transformation remains the cause of secondary-result assertion failure.
 
 Specific unresolved cases:
+
 - `fn-transform-43`: its quantified assertion can parse an empty principal value;
   the resulting assertion-evaluation error remains a harness failure.
 - XSLT `output-0102c` and `output-0103c`: fixtures require `&gt;` where native emits
@@ -89,75 +108,60 @@ Specific unresolved cases:
   `as="xs:string"` hint does not convert it. The expected type error remains a failure.
 - XSLT 2.0 `collection-005`: the stylesheet uses XSLT 3.0 `xsl:mode`; the visible
   `XTSE0010` assertion failure remains after source loading was corrected.
-
 - HTML `output-0602a`/`-0603a` require namespace removal/redeclaration beyond the
   published rules; the former's publisher comment acknowledges that interpretation.
   `output-0724` and `attribute-0301` require an unescaped
   `input/@value`, contrary to the published Appendix D; [W3C qtspecs issue 21](https://github.com/w3c/qtspecs/issues/21)
   remains open. No fixture or outcome has been suppressed.
 
-## Language work and remaining priorities
+## Six-area review
 
-The [normative register](conformance.md) links obligations to bounded evidence;
-it does not assert complete implementation or positive/negative coverage.
-Bounded local and Saxon controls cover function signatures, value/cardinality
-errors, version modes, static preprocessing, module aliases, document references,
-namespace input, built-in templates and prepared input/context identity.
-Shared XML/HTML/XHTML controls cover CDATA, references/repertoires, version
-selection, original URI values, namespace scope, all-head metadata, inline and
-`xml:space` indentation, writer/fallback output and input ownership. GC/concurrent
-controls protect temporary and namespace `generate-id()` identity. They do not
-establish complete Basic semantics, grammar or clause coverage.
-XPath and XSLT now share serialization sequence normalization: a single XML
-declaration, document flattening, coalesced text before normalization and escaped
-separators. Raw/document output enforces the same DOCTYPE shape errors. All six
-XPath/XSLT methods bound character-map expansion before buffer growth. JSON maps
-original string characters, preserves syntax/replacements and normalizes before
-escaping C1, quotes, backslashes and unencodable characters. Text excludes
-comments/PIs. Shared adaptive rules cover functions, QName/primitive atomics,
-container sequences, mapped quotes and delegated XML parameters/declarations.
-Adaptive recovers unencodable markup using UTF-8, before writing the item;
-invalid XML characters retain their serialization errors.
-Remaining work:
-1. Numeric values and casts: complete datatype/value-space distinctions, schema
-   types and independent clause evidence.
-2. Function contracts: remaining static/dynamic error precedence, options and
-   conversion/context combinations beyond the shared versioned signature catalog.
-3. Sequences, focus and names: remaining axes, typed input, identity and
-   package/context combinations; complete pattern grammar, nested operators,
-   priorities and runtime error recovery.
-4. Processor versions: complete Basic and forwards-compatible processing.
-5. Dates, collations, regex, Unicode and serialization: remaining calendar
-   arithmetic and complete regex/serialization obligations.
-6. Resources, callbacks and packages: resource-valued catalog collections,
-   remaining component/import graphs, parameter/signature combinations, escaping
-   functions/global contexts, local-rule placement and callback/error combinations.
+The stage's diagnostic review and reproducible reporting cover all six roadmap
+areas. [The acceptance record](conformance.md#stage-3-diagnostic-acceptance-record)
+links the evidence; [the normative register](conformance.md) retains incomplete
+implementation and clause-coverage states.
 
-Language DTD input now covers entity/default normalization, physical-entity bases,
-ID/IDREF flags and unparsed identifiers. Static/runtime stylesheet expressions and
-includes retain external-entity bases, including `use-when-0136`.
-General XML processor conformance, schema
-validation, schema-aware XSLT and normative W3C streamability remain separate work.
+1. Numeric types/casts: finite decimal and duration division, exact integer
+   boundaries and cumulative numeric budgets across AST, VM, bindings and XSLT.
+2. Function contracts: versioned signatures/cardinality, promotions and expanded
+   error codes across direct, named, lookup, partial and converted calls.
+3. Sequences/focus/names: raw/document/serialized delivery, normalized text,
+   namespace/QName scope, global/selection context and GC-safe node identity.
+4. Versions/compatibility: selected processor versus module declarations,
+   local backwards/forwards processing, static preprocessing and import scopes.
+5. Dates/collation/regex/Unicode/serialization: calendar overflow, edition rules,
+   bounded regex and six shared serialization methods. Character maps expand
+   original characters under budgets; JSON normalizes before escaping, and
+   adaptive serialization delegates XML parameters and uses UTF-8 recovery for
+   unencodable markup before writing. Invalid XML characters still fail.
+6. Resources/callbacks/packages/collections: scoped typed resource reads,
+   visibility/version selection, stable document/text/query members and bounded
+   source preparation, including declared optional preprocessing.
+
+The backlog above remains the acceptance boundary for further language work.
+Close schema-bearing/strict-validation cases with an explicit typed-input model
+and its own requirements; do not strip annotations to make cases pass. Resolve
+remaining assertion differences against the pinned REC/errata before changing
+code or expectations. Re-run resource failures under a separately reported
+budget to distinguish a bound from incorrect behavior. Complete clause-specific
+positive, negative and independent evidence is still required for a full claim.
+General XML processor conformance, schema-aware XSLT and normative W3C
+streamability are separate work.
 
 ## Validation and independent engines
 
 `make check`, zero-issue lint and relevant race checks pass. External consumer
 checks, including race and writer allocation/error bounds, pass. The complete
-Docker transform comparison passes without skips using ready Saxon HE 12.10,
+Docker transform comparison passed before the vocabulary relocation, without
+skips, using ready Saxon HE 12.10,
 Saxon HE 9.4.0.9J in XSLT 2.0 mode, libxml2 and libxslt, with networking disabled.
 See [testing instructions](testing.md) and the existing
 [comparison tests](../transform/comparison_v1_test.go).
 
-Predicates allow permitted empty-tag, entity, HTML DOCTYPE and outer-layout
-spelling. Separate native/oracle expectations retain static error selection,
-resource/context identity, conditional construction, HTML5 URI recognition,
-MathML metadata, CDATA CR/C1/NEL/LS, XML-island PI and map-default differences.
-XHTML controls also retain Saxon's leading-text DOCTYPE and unescaped
-`source/@src` diagnostics. Publisher expectations remain unchanged.
-DTD controls separately retain Saxon differences in CR normalization, unused
-predefined/NCName declarations, copied ID flags, constructed document entities
-and entity read/write tracking. DTD fuzzing completed 538,965 inputs without failure.
-
-Sequence controls retain Saxon's detached CDATA text loss and normalization
-before text coalescence as separate exact-output diagnostics. Complete clause
-evidence and applicable failures remain open.
+Comparisons distinguish permitted lexical alternatives from exact agreements.
+Separate native/oracle diagnostics retain edition/error-code choices, focus and
+resource identity, HTML/XHTML namespaces and URI handling, DTD normalization and
+copied flags, detached CDATA text, coalescing before Unicode normalization and
+adaptive character-map/repertoire recovery. Publisher fixtures remain unchanged.
+DTD fuzzing completed 538,965 inputs without failure. Complete clause evidence
+and applicable failures remain open.

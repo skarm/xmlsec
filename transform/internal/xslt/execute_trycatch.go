@@ -8,9 +8,9 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -24,7 +24,7 @@ func (ec *execContext) execMessageWithDefaults(ctx context.Context, inst *messag
 		return err
 	}
 
-	message.Output = &OutputDef{Method: methodXML, MethodExplicit: true, OmitDeclaration: true}
+	message.Output = &OutputDef{Method: lexicon.MethodXML, MethodExplicit: true, OmitDeclaration: true}
 
 	var output messageWriter
 

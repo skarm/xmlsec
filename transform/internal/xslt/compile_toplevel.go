@@ -9,8 +9,8 @@ import (
 	"slices"
 	"sort"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 	"github.com/skarm/xmlsec/transform/internal/xslt/internal/elements"
 )
@@ -164,7 +164,7 @@ func (c *compiler) collectModuleComponentNames(ctx context.Context, root *xdm.El
 func (c *compiler) collectLocalComponentName(elem *xdm.Element) {
 	name := getAttr(elem, xslAttrName)
 
-	mode := getAttr(elem, nameMode)
+	mode := getAttr(elem, lexicon.AttrMode)
 	if name == "" && (elem.LocalName() != nameTemplate || c.stylesheet.declaredModes || mode == "") {
 		return
 	}
@@ -177,7 +177,7 @@ func (c *compiler) collectLocalComponentName(elem *xdm.Element) {
 		}
 
 		if !c.stylesheet.declaredModes {
-			if m := getAttr(elem, nameMode); m != "" && m != lexicon.ModeDefault && m != lexicon.ModeAll && m != modeUnnamed {
+			if m := getAttr(elem, lexicon.AttrMode); m != "" && m != lexicon.ModeDefault && m != lexicon.ModeAll && m != modeUnnamed {
 				c.localModeNames[resolveQName(m, namespaces)] = struct{}{}
 			}
 		}
@@ -396,7 +396,7 @@ func (c *compiler) collectTopLevelModule(ctx context.Context, elem *xdm.Element)
 		return err
 	}
 
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(nameHref, xslAttrUseWhen)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(lexicon.AttrHref, xslAttrUseWhen)); err != nil {
 		return err
 	}
 
@@ -585,7 +585,7 @@ func (c *compiler) topLevelDeclarationIncluded(ctx context.Context, elem *xdm.El
 	}
 
 	if !elements.IsKnown(ln) || !elements.IsTopLevel(ln) {
-		elemVer := getAttr(elem, paramVersion)
+		elemVer := getAttr(elem, lexicon.SerializationVersion)
 		if c.forwardsCompatible(c.effectiveVersion) || c.forwardsCompatible(elemVer) {
 			return false, nil
 		}
@@ -653,7 +653,7 @@ func (c *compiler) compileTopLevelDeclaration(ctx context.Context, elem *xdm.Ele
 	case lexicon.XSLTElementGlobalContextItem:
 		return c.compileGlobalContextItem(ctx, elem)
 	default:
-		elemVer := getAttr(elem, paramVersion)
+		elemVer := getAttr(elem, lexicon.SerializationVersion)
 		if !c.forwardsCompatible(c.effectiveVersion) && !c.forwardsCompatible(elemVer) {
 			return staticError(errCodeXTSE0010,
 				"element xsl:%s is not allowed as a top-level declaration", elem.LocalName())

@@ -7,13 +7,11 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
 const (
-	errCodeXPST0003 = "XPST0003"
-	errCodeXPST0008 = "XPST0008"
-	errCodeXPDY0002 = "XPDY0002"
 	errCodeXPDY0050 = "XPDY0050"
 	errCodeXPST0080 = "XPST0080"
 	errCodeXPST0081 = "XPST0081"
@@ -24,7 +22,6 @@ const (
 	errCodeFOCH0002 = "FOCH0002"
 	errCodeFOCH0003 = "FOCH0003"
 	errCodeFODC0001 = "FODC0001"
-	errCodeFODC0002 = "FODC0002"
 	errCodeFODC0004 = "FODC0004"
 	errCodeFODC0005 = "FODC0005"
 	errCodeFODC0006 = "FODC0006"
@@ -34,15 +31,12 @@ const (
 	errCodeFODF1310 = "FODF1310"
 	errCodeFOFD1340 = "FOFD1340"
 	errCodeFOFD1350 = "FOFD1350"
-	errCodeFOAY0001 = "FOAY0001"
 	errCodeFOTY0012 = "FOTY0012"
-	errCodeFOTY0013 = "FOTY0013"
 	errCodeFONS0004 = "FONS0004"
 	errCodeFORG0001 = "FORG0001"
 	errCodeFORG0006 = "FORG0006"
 	errCodeFOER0000 = "FOER0000"
 	errCodeFORX0001 = "FORX0001"
-	errCodeFORX0002 = "FORX0002"
 	errCodeFORX0003 = "FORX0003"
 	errCodeFORX0004 = "FORX0004"
 	errCodeFOTY0014 = "FOTY0014"
@@ -61,7 +55,7 @@ const (
 
 // UndefinedVariableError preserves the lookup category and the language code.
 func UndefinedVariableError(name string, version int) error {
-	return languageError(fmt.Errorf("%w: $%s", ErrUndefinedVariable, name), errCodeXPST0008, version)
+	return languageError(fmt.Errorf("%w: $%s", ErrUndefinedVariable, name), lexicon.ErrXPST0008, version)
 }
 
 func languageError(cause error, code string, version int) error {
@@ -119,7 +113,7 @@ func syntaxError(err error, version int) error {
 
 	for _, cause := range []error{ErrUnexpectedToken, ErrUnexpectedChar, ErrUnterminatedString, ErrExpectedToken, ErrUnknownAxis} {
 		if errors.Is(err, cause) {
-			return &xdm.Error{Code: errCodeXPST0003, Message: err.Error(), Cause: err}
+			return &xdm.Error{Code: lexicon.ErrXPST0003, Message: err.Error(), Cause: err}
 		}
 	}
 

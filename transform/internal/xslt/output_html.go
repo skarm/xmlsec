@@ -8,9 +8,9 @@ import (
 	"io"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	htmlpkg "github.com/skarm/xmlsec/transform/internal/xdm/html"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func serializeHTML(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMap map[rune]string) error {
@@ -95,7 +95,7 @@ func serializeXHTML(w io.Writer, doc *xdm.Document, definition *OutputDef, charM
 	root := owned.DocumentElement()
 	if definition.DoctypeSystem != "" && root != nil {
 		owned.SetDoctype(root.Name(), definition.DoctypePublic, definition.DoctypeSystem)
-	} else if html5 && root != nil && htmlpkg.XHTMLIsElement(root.URI(), root.LocalName(), true) && strings.EqualFold(root.LocalName(), methodHTML) && allowsAutomaticResultDoctype(owned) {
+	} else if html5 && root != nil && htmlpkg.XHTMLIsElement(root.URI(), root.LocalName(), true) && strings.EqualFold(root.LocalName(), lexicon.MethodHTML) && allowsAutomaticResultDoctype(owned) {
 		owned.SetDoctype(root.LocalName(), "", "")
 	} else {
 		owned.Doctype = nil

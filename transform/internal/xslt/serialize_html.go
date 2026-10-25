@@ -6,10 +6,10 @@ import (
 	"io"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmloutput"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	htmlpkg "github.com/skarm/xmlsec/transform/internal/xdm/html"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -109,18 +109,18 @@ func serializeEncodedHTML(w io.Writer, doc *xdm.Document, definition *OutputDef,
 
 func effectiveStreamMethod(result ValueResult, definition *OutputDef) string {
 	root := firstSerializationElement(result.Items)
-	if !definition.MethodExplicit && root != nil && root.LocalName() == methodHTML {
+	if !definition.MethodExplicit && root != nil && root.LocalName() == lexicon.MethodHTML {
 		if root.URI() == "" && allowsHTMLAutoDetection(definition, result.Document) {
-			return methodHTML
+			return lexicon.MethodHTML
 		}
 
 		if definition.languageVersion != 10 && !definition.implicitXMLMethod && root.URI() == lexicon.NamespaceXHTML {
-			return methodXHTML
+			return lexicon.MethodXHTML
 		}
 	}
 
 	if definition.Method == "" {
-		return methodXML
+		return lexicon.MethodXML
 	}
 
 	return definition.Method
@@ -136,7 +136,7 @@ func serializationHasNonWhitespaceText(item xdm.XMLItem) bool {
 
 func writeHTMLResultDoctype(w io.Writer, node xdm.Node, definition *OutputDef, explicit, automatic bool) error {
 	if explicit {
-		if err := xmloutput.WriteHTMLDoctype(w, methodHTML, definition.DoctypePublic, definition.DoctypeSystem); err != nil {
+		if err := xmloutput.WriteHTMLDoctype(w, lexicon.MethodHTML, definition.DoctypePublic, definition.DoctypeSystem); err != nil {
 			return err
 		}
 
@@ -144,7 +144,7 @@ func writeHTMLResultDoctype(w io.Writer, node xdm.Node, definition *OutputDef, e
 	}
 
 	element, ok := node.(*xdm.Element)
-	if automatic && ok && strings.EqualFold(element.LocalName(), methodHTML) && (element.URI() == "" || element.URI() == lexicon.NamespaceXHTML) {
+	if automatic && ok && strings.EqualFold(element.LocalName(), lexicon.MethodHTML) && (element.URI() == "" || element.URI() == lexicon.NamespaceXHTML) {
 		return writeFullString(w, "<!DOCTYPE html>")
 	}
 

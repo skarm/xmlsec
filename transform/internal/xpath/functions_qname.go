@@ -9,14 +9,14 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func lookupFunctionsQname(name string) (*builtinFunc, bool) {
 	switch name {
-	case nameQName:
+	case lexicon.TypeQName:
 		return &builtinFunc{name: name, min: 2, max: 2, fn: fnQName}, true
 	case "prefix-from-QName":
 		return &builtinFunc{name: name, min: 1, max: 1, fn: fnPrefixFromQName}, true

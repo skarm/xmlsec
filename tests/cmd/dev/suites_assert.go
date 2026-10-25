@@ -11,10 +11,11 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
-	"github.com/skarm/xmlsec/document"
-	"github.com/skarm/xmlsec/transform"
-
 	"golang.org/x/text/encoding/htmlindex"
+
+	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/transform"
 )
 
 const (
@@ -180,7 +181,7 @@ func suiteErrorAssertion(actual error, expected string, namespaceOptions ...map[
 				return nil
 			}
 
-			name := transform.Name{Space: "http://www.w3.org/2005/xqt-errors", Local: code}
+			name := transform.Name{Space: lexicon.NamespaceErr, Local: code}
 			if strings.HasPrefix(code, "Q{") {
 				space, local, ok := strings.Cut(code[2:], "}")
 				if !ok || local == "" {

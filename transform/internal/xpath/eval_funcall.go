@@ -8,8 +8,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func evalFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e FunctionCall) (xdm.Sequence, error) {
@@ -53,7 +53,7 @@ func callResolvedFunction(ctx context.Context, ec *evalContext, r resolvedFuncti
 		return callXPath10Builtin(ctx, ec, r, args)
 	}
 
-	if ec.version == 20 && r.isBuiltin && r.uri == NSXS && r.name == nameQName && len(args) == 1 {
+	if ec.version == 20 && r.isBuiltin && r.uri == NSXS && r.name == lexicon.TypeQName && len(args) == 1 {
 		value, empty, err := atomizeConstructorArg(args[0], xdm.TypeQName)
 		if err != nil {
 			return nil, err
@@ -160,7 +160,7 @@ func evalDynamicFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *eval
 		}
 
 		if fi.Arity >= 0 && len(e.Args) != fi.Arity {
-			return nil, languageError(fmt.Errorf("%w: expected %d arguments, got %d", ErrArityMismatch, fi.Arity, len(e.Args)), errCodeXPTY0004, ec.version)
+			return nil, languageError(fmt.Errorf("%w: expected %d arguments, got %d", ErrArityMismatch, fi.Arity, len(e.Args)), lexicon.ErrXPTY0004, ec.version)
 		}
 
 		var placeholderIndices []int
@@ -177,7 +177,7 @@ func evalDynamicFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *eval
 	switch v := funcSeq.Get(0).(type) {
 	case xdm.FunctionItem:
 		if v.Arity >= 0 && len(args) != v.Arity {
-			return nil, languageError(fmt.Errorf("%w: expected %d arguments, got %d", ErrArityMismatch, v.Arity, len(args)), errCodeXPTY0004, ec.version)
+			return nil, languageError(fmt.Errorf("%w: expected %d arguments, got %d", ErrArityMismatch, v.Arity, len(args)), lexicon.ErrXPTY0004, ec.version)
 		}
 
 		return v.Invoke(withDynamicCall(ec.fnContext(ctx)), args)

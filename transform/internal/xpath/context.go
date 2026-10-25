@@ -6,6 +6,7 @@ package xpath
 import (
 	"context"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
@@ -179,7 +180,7 @@ func FnContextItem(ctx context.Context) (xdm.Item, error) {
 		}
 	}
 
-	return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+	return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 }
 
 // FnContextNode returns the current XPath context node from a function call

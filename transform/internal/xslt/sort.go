@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -1101,7 +1101,7 @@ func validateSortKeyTypesN[T any](entries keyedSlice[T], dtModes []dataTypeMode)
 // data-type is implementation-defined; helium treats it as "text".
 func isValidSortDataType(s string) bool {
 	switch s {
-	case methodText, lexicon.TypeNumber:
+	case lexicon.MethodText, lexicon.TypeNumber:
 		return true
 	}
 

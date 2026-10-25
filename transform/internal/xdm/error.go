@@ -4,7 +4,7 @@
 package xdm
 
 import (
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 // Error is a structured error with an XPath error code.

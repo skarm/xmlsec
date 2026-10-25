@@ -13,21 +13,22 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/xmltime"
 )
 
 // Assertion identifies the Assertion algorithm or protocol URI.
-const Assertion = "urn:oasis:names:tc:SAML:2.0:assertion"
+const Assertion = lexicon.NamespaceSAMLAssertion
 
 // Protocol is the SAML 2.0 protocol namespace URI.
-const Protocol = "urn:oasis:names:tc:SAML:2.0:protocol"
+const Protocol = lexicon.NamespaceSAMLProtocol
 
 // Metadata identifies the Metadata algorithm or protocol URI.
-const Metadata = "urn:oasis:names:tc:SAML:2.0:metadata"
+const Metadata = lexicon.NamespaceSAMLMetadata
 
 // DS identifies the DS algorithm or protocol URI.
-const DS = "http://www.w3.org/2000/09/xmldsig#"
+const DS = lexicon.NamespaceDSig
 
 // ErrSchema reports unsupported or invalid SAML structure.
 var ErrSchema = errors.New("unsupported or invalid SAML structure")

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
@@ -21,7 +22,7 @@ func XPath10String(seq xdm.Sequence) (string, error) { return xpath10String(seq)
 func xpath10NumberString(v float64) string {
 	switch {
 	case math.IsNaN(v):
-		return valueNaN
+		return lexicon.FloatNaN
 	case math.IsInf(v, 1):
 		return "Infinity"
 	case math.IsInf(v, -1):
@@ -63,7 +64,7 @@ func XPath10Value(ctx context.Context, seq xdm.Sequence) (xdm.Sequence, error) {
 
 	if a, ok := seq.Get(0).(xdm.AtomicValue); ok {
 		if seq.Len() != 1 {
-			return nil, &xdm.Error{Code: errCodeXPTY0004, Message: "XPath 1.0 has no atomic sequences"}
+			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "XPath 1.0 has no atomic sequences"}
 		}
 
 		if a.IsNumeric() {
@@ -74,7 +75,7 @@ func XPath10Value(ctx context.Context, seq xdm.Sequence) (xdm.Sequence, error) {
 			return seq, nil
 		}
 
-		return nil, &xdm.Error{Code: errCodeXPTY0004, Message: "value type is unavailable in XPath 1.0"}
+		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "value type is unavailable in XPath 1.0"}
 	}
 
 	var nodes []xdm.Node
@@ -86,7 +87,7 @@ func XPath10Value(ctx context.Context, seq xdm.Sequence) (xdm.Sequence, error) {
 
 		n, ok := item.(xdm.NodeItem)
 		if !ok || n.ResultTreeFragment {
-			return nil, &xdm.Error{Code: errCodeXPTY0004, Message: "XPath 1.0 requires a node-set"}
+			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "XPath 1.0 requires a node-set"}
 		}
 
 		nodes = append(nodes, n.Node)
@@ -111,11 +112,11 @@ func XPath10FunctionArity(name string) ([2]int, bool) {
 // are checked by their host, rather than being mistaken for newer builtins.
 func lookupxpath10Functions(key string) ([2]int, bool) {
 	switch key {
-	case nameLast, namePosition, nameTrue, nameFalse:
+	case lexicon.FnLast, lexicon.FnPosition, lexicon.ValueTrue, lexicon.ValueFalse:
 		return [2]int{0, 0}, true
-	case fnNameCount, "id", fnNameBoolean, fnNameNot, nameLang, nameSum, nameFloor, nameCeiling, nameRound:
+	case fnNameCount, "id", fnNameBoolean, fnNameNot, lexicon.AttrLang, nameSum, nameFloor, nameCeiling, nameRound:
 		return [2]int{1, 1}, true
-	case nameLocalName, nameNamespaceUri, nameName2, nameString, nameStringLength, fnNameNormalizeSpace, nameNumber:
+	case nameLocalName, nameNamespaceUri, lexicon.FnName, lexicon.TypeString, nameStringLength, fnNameNormalizeSpace, lexicon.TypeNumber:
 		return [2]int{0, 1}, true
 	case nameConcat:
 		return [2]int{2, -1}, true
@@ -204,24 +205,24 @@ func validateXPath10Expr(ast Expr) error {
 				switch n.Op {
 				case TokenPlus, TokenMinus, TokenStar, TokenDiv, TokenMod, TokenAnd, TokenOr, TokenEquals, TokenNotEquals, TokenLess, TokenLessEq, TokenGreater, TokenGreaterEq:
 				default:
-					return profileError(errCodeXPST0003, "operator", 10)
+					return profileError(lexicon.ErrXPST0003, "operator", 10)
 				}
 			case UnaryExpr:
 				if !n.Negate {
-					return profileError(errCodeXPST0003, "unary plus", 10)
+					return profileError(lexicon.ErrXPST0003, "unary plus", 10)
 				}
 			default:
-				return profileError(errCodeXPST0003, "expression", 10)
+				return profileError(lexicon.ErrXPST0003, "expression", 10)
 			}
 		case xdm.NameTest:
 			if n.URI != "" || n.Prefix == "*" {
-				return profileError(errCodeXPST0003, "name test", 10)
+				return profileError(lexicon.ErrXPST0003, "name test", 10)
 			}
 		case xdm.NodeTest:
 			switch n.(type) {
 			case xdm.NameTest, xdm.TypeTest, xdm.PITest:
 			default:
-				return profileError(errCodeXPST0003, "kind test", 10)
+				return profileError(lexicon.ErrXPST0003, "kind test", 10)
 			}
 		}
 
@@ -299,7 +300,7 @@ func xpath10Literals(e Expr) Expr {
 func xpath10NodeSet(seq xdm.Sequence) error {
 	for item := range xdm.SequenceItems(seq) {
 		if n, ok := item.(xdm.NodeItem); !ok || n.ResultTreeFragment {
-			return &xdm.Error{Code: errCodeXPTY0004, Message: "XPath 1.0 requires a node-set"}
+			return &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "XPath 1.0 requires a node-set"}
 		}
 	}
 
@@ -310,7 +311,7 @@ func xpath10NodeSet(seq xdm.Sequence) error {
 // builtin. Only the functions whose definitions changed need their own case.
 func callXPath10Builtin(ctx context.Context, ec *evalContext, function resolvedFunction, args []xdm.Sequence) (xdm.Sequence, error) {
 	switch function.name {
-	case nameString, nameNumber:
+	case lexicon.TypeString, lexicon.TypeNumber:
 		return callXPath10ContextConversion(ctx, ec, function.name, args)
 	case nameSum:
 		return sumXPath10Nodes(ctx, args[0])
@@ -339,7 +340,7 @@ func callXPath10ContextConversion(ctx context.Context, ec *evalContext, name str
 		return nil, err
 	}
 
-	if name == nameString {
+	if name == lexicon.TypeString {
 		return coerceXPath10StringArgument(ctx, argument)
 	}
 
@@ -361,7 +362,7 @@ func xpath10ContextArgument(ec *evalContext, args []xdm.Sequence) (xdm.Sequence,
 	}
 
 	if ec.node == nil && ec.contextItem == nil {
-		return nil, &xdm.Error{Code: "XPDY0002", Message: "context item absent"}
+		return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: "context item absent"}
 	}
 
 	return argument, nil
@@ -369,7 +370,7 @@ func xpath10ContextArgument(ec *evalContext, args []xdm.Sequence) (xdm.Sequence,
 
 func coerceXPath10Argument(ctx context.Context, name string, index int, argument xdm.Sequence) (xdm.Sequence, error) {
 	switch name {
-	case fnNameCount, nameLocalName, nameNamespaceUri, nameName2:
+	case fnNameCount, nameLocalName, nameNamespaceUri, lexicon.FnName:
 		if err := xpath10NodeSet(argument); err != nil {
 			return nil, err
 		}
@@ -379,7 +380,7 @@ func coerceXPath10Argument(ctx context.Context, name string, index int, argument
 		}
 
 		return argument, nil
-	case nameConcat, fnNameStartsWith, fnNameContains, fnNameSubstringBefore, fnNameSubstringAfter, fnNameTranslate, nameStringLength, fnNameNormalizeSpace, nameLang:
+	case nameConcat, fnNameStartsWith, fnNameContains, fnNameSubstringBefore, fnNameSubstringAfter, fnNameTranslate, nameStringLength, fnNameNormalizeSpace, lexicon.AttrLang:
 		return coerceXPath10StringArgument(ctx, argument)
 	case fnNameSubstring:
 		if index == 0 {

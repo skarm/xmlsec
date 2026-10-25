@@ -11,9 +11,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
@@ -39,17 +39,17 @@ func lookupFunctionsNode(name string) (*builtinFunc, bool) {
 		return &builtinFunc{name: name, min: 1, max: 1, fn: fnInnermost}, true
 	case "outermost":
 		return &builtinFunc{name: name, min: 1, max: 1, fn: fnOutermost}, true
-	case nameLang:
+	case lexicon.AttrLang:
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnLang}, true
 	case nameLocalName:
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnLocalName}, true
-	case nameName2:
+	case lexicon.FnName:
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnName}, true
 	case nameNamespaceUri:
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnNamespaceURI}, true
-	case nameNumber:
+	case lexicon.TypeNumber:
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnNumber}, true
-	case nameGenerateId:
+	case lexicon.FnGenerateID:
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnGenerateID}, true
 	case "parse-xml":
 		return &builtinFunc{name: name, min: 1, max: 1, fn: fnParseXML}, true
@@ -148,7 +148,7 @@ func fnData(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	if len(args) == 0 {
 		fc := getFnContext(ctx)
 		if fc == nil {
-			return nil, &xdm.Error{Code: errCodeXPDY0002, Message: "data() requires a context item"}
+			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: "data() requires a context item"}
 		}
 
 		if fc.contextItem != nil {
@@ -156,7 +156,7 @@ func fnData(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		} else if fc.node != nil {
 			args = []xdm.Sequence{xdm.ItemSlice{nodeItemFor(ctx, fc, fc.node)}}
 		} else {
-			return nil, &xdm.Error{Code: errCodeXPDY0002, Message: "data() requires a context item"}
+			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: "data() requires a context item"}
 		}
 	}
 
@@ -746,7 +746,7 @@ func fnLang(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	} else {
 		fc := getFnContext(ctx)
 		if fc == nil || (fc.contextItem == nil && fc.node == nil) {
-			return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 		}
 
 		if fc.node == nil {
@@ -762,7 +762,7 @@ func fnLang(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		}
 
 		if e, ok := owner.(*xdm.Element); ok {
-			if lang, found := e.GetAttributeNS(nameLang, lexicon.NamespaceXML); found {
+			if lang, found := e.GetAttributeNS(lexicon.AttrLang, lexicon.NamespaceXML); found {
 				if err := ChargeString(ctx, len(lang)); err != nil {
 					return nil, err
 				}
@@ -826,7 +826,7 @@ func fnNumber(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	if len(args) == 0 {
 		fc := getFnContext(ctx)
 		if fc == nil || (fc.contextItem == nil && fc.node == nil) {
-			return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 		}
 
 		s, ok := fc.contextStringValue()
@@ -850,7 +850,7 @@ func fnNumber(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	if err != nil {
 		// FOTY0013 (atomizing function items) must propagate per XPath 3.1 §2.7.2
 		var xpErr *xdm.Error
-		if errors.As(err, &xpErr) && xpErr.Code == errCodeFOTY0013 {
+		if errors.As(err, &xpErr) && xpErr.Code == lexicon.ErrFOTY0013 {
 			return nil, err
 		}
 
@@ -1224,7 +1224,7 @@ func fnCollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 
 	ec := getFnContext(ctx)
 	if ec == nil || ec.collectionResolver == nil {
-		return nil, &xdm.Error{Code: errCodeFODC0002, Message: "fn:collection: no collection resolver configured"}
+		return nil, &xdm.Error{Code: lexicon.ErrFODC0002, Message: "fn:collection: no collection resolver configured"}
 	}
 
 	cache := InvocationState(ctx, collectionCacheKey{}, func() any { return make(map[string]xdm.Sequence) }).(map[string]xdm.Sequence) //nolint:forcetypeassert
@@ -1245,7 +1245,7 @@ func fnCollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 			return nil, err
 		}
 
-		return nil, &xdm.Error{Code: errCodeFODC0002, Message: fmt.Sprintf("fn:collection: cannot resolve collection: %v", err), Cause: err}
+		return nil, &xdm.Error{Code: lexicon.ErrFODC0002, Message: fmt.Sprintf("fn:collection: cannot resolve collection: %v", err), Cause: err}
 	}
 
 	if ec.version == 20 || ec.version == 30 {
@@ -1320,7 +1320,7 @@ func fnURICollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 
 	ec := getFnContext(ctx)
 	if ec == nil || ec.collectionResolver == nil {
-		return nil, &xdm.Error{Code: errCodeFODC0002, Message: "fn:uri-collection: no collection resolver configured"}
+		return nil, &xdm.Error{Code: lexicon.ErrFODC0002, Message: "fn:uri-collection: no collection resolver configured"}
 	}
 
 	cache := InvocationState(ctx, collectionCacheKey{uris: true}, func() any { return make(map[string]xdm.Sequence) }).(map[string]xdm.Sequence) //nolint:forcetypeassert
@@ -1330,7 +1330,7 @@ func fnURICollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 
 	uris, err := ec.collectionResolver.ResolveURICollection(ctx, uri)
 	if err != nil {
-		return nil, &xdm.Error{Code: errCodeFODC0002, Message: fmt.Sprintf("fn:uri-collection: cannot resolve collection: %v", err), Cause: err}
+		return nil, &xdm.Error{Code: lexicon.ErrFODC0002, Message: fmt.Sprintf("fn:uri-collection: cannot resolve collection: %v", err), Cause: err}
 	}
 
 	result := make(xdm.ItemSlice, 0, len(uris))
@@ -1449,7 +1449,7 @@ func loadResolvedDoc(ctx context.Context, resolved string) (xdm.Node, error) {
 			return nil, err
 		}
 
-		return nil, &xdm.Error{Code: errCodeFODC0002, Message: fmt.Sprintf("fn:doc: cannot retrieve resource: %v", err), Cause: err}
+		return nil, &xdm.Error{Code: lexicon.ErrFODC0002, Message: fmt.Sprintf("fn:doc: cannot retrieve resource: %v", err), Cause: err}
 	}
 
 	options.BaseURI = resolved
@@ -1460,7 +1460,7 @@ func loadResolvedDoc(ctx context.Context, resolved string) (xdm.Node, error) {
 			return nil, err
 		}
 
-		return nil, &xdm.Error{Code: errCodeFODC0002, Message: fmt.Sprintf("fn:doc: cannot parse document: %v", err), Cause: err}
+		return nil, &xdm.Error{Code: lexicon.ErrFODC0002, Message: fmt.Sprintf("fn:doc: cannot parse document: %v", err), Cause: err}
 	}
 
 	doc.SetURL(resolved)
@@ -1530,7 +1530,7 @@ func resolveDocURI(ctx context.Context, uri string) (string, error) {
 			return ec.baseURI, nil
 		}
 
-		return "", &xdm.Error{Code: errCodeFODC0002, Message: "fn:doc: empty URI"}
+		return "", &xdm.Error{Code: lexicon.ErrFODC0002, Message: "fn:doc: empty URI"}
 	}
 
 	parsed, err := parseURIReference(uri)
@@ -1550,7 +1550,7 @@ func resolveDocURI(ctx context.Context, uri string) (string, error) {
 		}
 	}
 
-	return "", &xdm.Error{Code: errCodeFODC0002, Message: "fn:doc: relative URI has no usable static base URI"}
+	return "", &xdm.Error{Code: lexicon.ErrFODC0002, Message: "fn:doc: relative URI has no usable static base URI"}
 }
 
 func resolveIDLookupDocument(ctx context.Context, args []xdm.Sequence) (*xdm.Document, error) {
@@ -1571,7 +1571,7 @@ func resolveIDLookupDocument(ctx context.Context, args []xdm.Sequence) (*xdm.Doc
 		fc := getFnContext(ctx)
 		switch {
 		case fc == nil || (fc.node == nil && fc.contextItem == nil):
-			return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 		case fc.node != nil:
 			node = fc.node
 		default:
@@ -1658,7 +1658,7 @@ func nodeArgOrCtx(ctx context.Context, args []xdm.Sequence) (xdm.Node, error) {
 	if len(args) == 0 {
 		fc := getFnContext(ctx)
 		if fc == nil || fc.node == nil && fc.contextItem == nil {
-			return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 		}
 
 		if fc.node == nil {

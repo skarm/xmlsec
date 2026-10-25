@@ -26,6 +26,7 @@ import (
 
 	"golang.org/x/text/encoding/charmap"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform"
 )
 
@@ -59,7 +60,6 @@ const (
 	suiteParam              = "param"
 	suiteYes                = "yes"
 	suiteVersion            = "version"
-	suiteStylesheetNS       = "http://www.w3.org/1999/XSL/Transform"
 	suiteDefaultCurrentTime = "2026-01-01T00:00:00Z"
 )
 
@@ -477,7 +477,7 @@ func readSuiteNode(root, base, name string) (*suiteNode, string, error) {
 func bindSuiteStaticContext(node *suiteNode, inherited map[string]string, baseURI string) error {
 	node.baseURI = baseURI
 	for _, attribute := range node.Attributes {
-		if attribute.Name.Space == "http://www.w3.org/XML/1998/namespace" && attribute.Name.Local == "base" {
+		if attribute.Name.Space == lexicon.NamespaceXML && attribute.Name.Local == "base" {
 			base, err := url.Parse(baseURI)
 			if err != nil {
 				return err

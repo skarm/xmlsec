@@ -6,11 +6,12 @@ import (
 	"maps"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 const (
 	// EnvelopedSignature is the XMLDSig enveloped-signature transform URI.
-	EnvelopedSignature = "http://www.w3.org/2000/09/xmldsig#enveloped-signature"
+	EnvelopedSignature = lexicon.TransformEnvelopedSignature
 	// Base64 is the XMLDSig Base64 transform URI.
 	Base64 = "http://www.w3.org/2000/09/xmldsig#base64"
 	// ParseXML labels a diagnostic conversion, NOT a transform algorithm URI.

@@ -3,7 +3,7 @@
 
 package elements
 
-import "github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+import "github.com/skarm/xmlsec/internal/lexicon"
 
 // Lookup constructs metadata for one recognized XSLT element. Definitions are
 // operation-owned; queries never construct the complete registry or share maps.

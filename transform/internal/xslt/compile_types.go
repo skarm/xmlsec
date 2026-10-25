@@ -8,8 +8,8 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -36,7 +36,7 @@ func (c *compiler) schemaDeclsForValidation() xpath.SchemaDeclarations { return 
 func (c *compiler) validateAsSequenceType(ctx context.Context, elem *xdm.Element, as string, context string) error {
 	if as == "" {
 		if _, present := elem.GetAttribute("as"); present {
-			return staticError(errCodeXPST0003, "%s: empty 'as' type", context)
+			return staticError(lexicon.ErrXPST0003, "%s: empty 'as' type", context)
 		}
 	}
 
@@ -66,7 +66,7 @@ func (c *compiler) validateAsSequenceTypeWithNS(_ context.Context, as string, co
 			return staticError(xpErr.Code, "%s: invalid 'as' type: %s", context, err)
 		}
 
-		return staticError(errCodeXPST0003, "%s: invalid 'as' type: %s", context, err)
+		return staticError(lexicon.ErrXPST0003, "%s: invalid 'as' type: %s", context, err)
 	}
 
 	if requiresSchemaNodeTest(st.ItemTest, ns, defaultNS, hasDefaultNS) {

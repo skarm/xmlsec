@@ -10,8 +10,8 @@ import (
 	"math/big"
 	"strconv"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	icu "github.com/skarm/xmlsec/transform/internal/xpath/number"
 )
 
@@ -145,7 +145,7 @@ func lookupFunctionsNumeric(name string) (*builtinFunc, bool) {
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnRoundHalfToEven}, true
 	case "format-integer":
 		return &builtinFunc{name: name, min: 2, max: 3, fn: fnFormatInteger}, true
-	case fnNameFormatNumber:
+	case lexicon.FnFormatNumber:
 		return &builtinFunc{name: name, min: 2, max: 3, fn: fnFormatNumber}, true
 	}
 

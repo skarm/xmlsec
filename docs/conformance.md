@@ -235,85 +235,54 @@ the tested canonical byte rules. No full XML processor profile is claimed.
 
 ## Stage 3 diagnostic acceptance record
 
-Pinned, unmodified QT3 and xslt30-test catalogs are exercised through the public
-APIs for XPath 2.0/3.0/3.1 and XSLT 2.0/3.0 selections. The full-catalog
-[baseline](language-baseline.md) records pass/fail/skip/not-applicable counts,
-failure causes, limits and the remaining work in the roadmap's six language
-areas. An explicit larger-budget sample distinguishes resource boundaries from
-encoding and language behavior. Its filtered results are kept separate from
-the unfiltered default runs. No mandatory failure is removed from the backlog.
+The roadmap's systematic review covers all six language areas below. Pinned,
+unmodified QT3 and xslt30-test catalogs exercise the public APIs for XPath
+2.0/3.0/3.1 and XSLT 2.0/3.0. The full-catalog [baseline](language-baseline.md)
+records reproducible outcomes and a measurable backlog. This completes the
+diagnostic review and reporting deliverables; complete XPath and Basic XSLT
+conformance remain open in the normative register.
 
-Reports identify the suite revision, executable and Go-source digests, dynamic
-context, selected limits and each compiled case's actual language version.
-Source changes and modified suite checkouts invalidate a run. The
-[adapter contract](language-suites.md) covers scoped namespaces and decimal
-formats, reference-selected environments, declared resources/collections/packages,
-invocation parameters and entry points, logical outputs and secondary/message
-assertions. The compiler and suite adapter share the package-version range parser.
+1. Numeric types, precision, casts and budgets: finite decimal/duration division,
+   exact integer boundaries and shared intermediate accounting have local
+   regressions. `TestNumericBudgetASTAndVM` compares actual AST/VM paths;
+   `TestNumericBudgetBindingsAndXSLT` covers public bindings and XSLT.
+2. Function contracts: versioned signatures, cardinality, promotion and expanded
+   error codes have direct/named/lookup/partial-call controls.
+   `TestVersionedContractsASTAndVM` and `TestEvaluationErrorCodesASTAndVM`
+   compare runtimes; Saxon function-argument/return controls remain independent.
+3. Sequences, focus and names: raw/document/serialized results, text coalescence,
+   QName resolution, node identity and global versus selection context have
+   positive/negative controls. `TestXSLTExplicitGlobalContext` compares direct
+   invocation with `fn:transform`; immutable-input and GC/concurrency tests guard
+   preparation and identity.
+4. Language versions: processor selection is separate from module declarations;
+   local compatibility and static preprocessing retain declaration context.
+   `TestXSLTProcessorVersionModules`, `TestXSLTVersionBoundaries` and independent
+   Saxon 9.4/12.10 controls cover 2.0/3.0 and compatibility differences.
+5. Dates, collation, regex, Unicode and serialization: calendar/duration overflow,
+   collation resources, edition-specific regex and zero-width anchors have local
+   controls. Shared six-method serialization tests cover normalization, encodings,
+   character expansion, writer failures and allocation bounds; Saxon comparisons
+   retain permitted and disputed differences separately.
+6. Resources, callbacks, packages and collections: typed bounded resource reads,
+   invocation scopes, escaped functions, package visibility/version selection and
+   stable document/text/query collections have public regressions. Adapter tests
+   cover source options, scoped queries and failures during preparation/assertions.
 
-`TestXSLTExplicitGlobalContext` compares direct invocation and `fn:transform`:
-the initial named template uses the global singleton focus independently of the
-match selection and rejects absent/incorrectly typed required contexts.
-`TestDecimalFormatUnicodeDigitsAcrossPaths` and
-`TestDecimalFormatEmptyStringProperties` cover Unicode zero digits and explicit
-empty NaN/infinity strings; conflicting declarations fail. Their narrow normative
-records do not promote the complete formatting or processor inventory to complete.
-`TestSuiteStaticContextsAndReferences`, `TestSuiteStylesheetVersionDeclarations`,
-`TestSuiteExplicitBudgets` and `TestSuiteXSLTInvocationsAndResults` extend the
-existing adapter test file, including negative controls.
+The [adapter contract](language-suites.md) fixes licenses, dependency semantics,
+implementation settings, deterministic context, resolver policy and limits.
+Reports identify the suite revision, executable/source digests and actual
+execution version. Source or suite changes invalidate a run. Required failures,
+unknown conditions, unsupported assertions and schema validation remain visible;
+optional source streaming and XInclude requests are distinguished before loading.
+Resource errors keep their causes through harness wrappers and cannot satisfy
+wildcard/negated assertions during preparation or assertion-expression evaluation.
 
-Repository checks, lint, relevant race checks and Docker libxml2/libxslt
-comparisons pass. The existing comparison file also runs 137 Saxon HE 12.10 query agreements and
-two original-octet XML transformations. Known diagnostic differences
-remain separate from exact agreements; complete independent clause fixtures remain pending.
-Basic XSLT, complete XPath conformance, additional XML input encodings/schema
-processing and unimplemented assertion forms retain explicit gaps. Schema awareness and normative streamability remain separate directions.
-
-The resource closure block preserves resource MIME/charset metadata end to end,
-including HTTP and nested transforms. Its bounded decoding contract is checked
-by `TestTextResourceMediaType`, `TestXSLTTextResourceMediaType` and
-`TestHTTPTextMetadataAndDecodedLimit`. Calendar/duration representability and
-lexical errors are distinguished, formatter overloads and function conversion
-are enforced, and quantified anchors retain bounded zero-width matching.
-`TestCompareSaxonLanguageSemantics` replays 101 fixed queries with ready Saxon HE
-12.10 binaries. `TestCompareSaxonAssertionPolicies` adds eight enabled/disabled
-assertion and QName comparisons; `TestCompareSaxonBasicProfile` adds eleven
-Basic and simple-content comparisons. They do not supply complete clause fixtures. Edition-specific regex differences have local controls; complete independent edition-specific fixtures remain pending.
-
-The explicit assertion switch defaults off; the comparable enabled baseline opts
-in. Named, inline, lookup and partial function values retain datatype and
-compatibility context. Package versions keep distinct retrieval URIs. Basic
-schema-only constructs use prescribed static errors, while lax/preserve act as
-strip. Streaming annotations execute with materialized trees and enforce
-accumulator applicability, without a streamability claim. AVTs and simple
-content preserve expanded errors and follow text normalization before array
-atomization. Shared budgets bound their work and strings; singleton text retains
-immutable storage. Assertion namespace scopes are inherited and isolated.
-The next component checks declaration-site QName names, static named-template
-binding after imports, duplicate-name conflicts after precedence resolution and
-prescribed circularity/context/mode errors. `TestXSLTDeclarationContracts` and
-`TestXSLTModuleCyclesAndPrecedence` supply local positive/negative cases. Saxon
-adds twelve exact declaration comparisons and five exact module comparisons;
-one mixed-cycle code choice and two multi-diagnostic placements are recorded
-separately. These tests close their stated regressions, not all outstanding Basic duties.
-
-Raw result delivery now preserves mixed item order/types and node identity for
-primary and secondary values. Explicit document construction and effective
-`build-tree` defaults use shared sequence normalization, including separators,
-arrays, empty results, copied nodes and prescribed rejection errors. The suite
-runner selects this final-tree mode directly. Per-call `fn:transform` assertions
-use their own typed option, default false. Local tests cover each mode and
-shared budget/cancellation boundaries; independent comparisons and build-tree
-diagnostics remain separate. Complete Basic duties remain open.
-
-Package exposure now chooses the most specific applicable rule, preserving
-declared visibility against wildcards and excluding components accepted from
-other packages and parameters. Component syntax/arity and namespace scope have local tests.
-Root shadow processing precedes package identity checks, preserves prescribed
-expression errors and keeps `document('')` source trees unchanged. Basic schema
-resource declarations reach actual compiler errors without pretending to validate
-sources. Function NameTests under REC 2017 versus E36 and the conflicting initial
-mode wording are explicit edition/interpretation records, not adopted errata claims.
+Repository checks, lint, race and the complete Docker libxml2/libxslt/Saxon
+comparisons pass. Native/oracle differences are recorded without changing
+publisher fixtures. These checks establish their stated regressions, not full
+clause coverage. Schema awareness and normative W3C streamability remain separate
+directions; materialized streaming annotations do not establish streamability.
 
 ## Stage 4 acceptance record
 

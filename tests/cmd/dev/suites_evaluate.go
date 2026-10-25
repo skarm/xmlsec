@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform"
 )
 
@@ -162,7 +163,7 @@ func evaluateXSLTSuite(ctx context.Context, options suiteOptions, item suiteCase
 	}
 
 	if environment.document == nil && invocation.Template.Local == "" && test.child("initial-mode") == nil {
-		invocation.Template = transform.Name{Space: suiteStylesheetNS, Local: "initial-template"}
+		invocation.Template = transform.Name{Space: lexicon.NamespaceXSLT, Local: "initial-template"}
 	}
 
 	return compiled.Execute(ctx, environment.document, invocation)

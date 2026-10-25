@@ -14,8 +14,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func lookupFunctionsJsonXml(name string) (*builtinFunc, bool) {
@@ -492,7 +492,7 @@ func serializeJSONXMLContent(elem *xdm.Element, meta xmlJSONMeta, opts xmlToJSON
 		return serializeJSONXMLArray(elem, meta.inherited, opts, depth)
 	case lexicon.TypeString:
 		return serializeJSONXMLString(elem, meta.inherited.escaped)
-	case nameNumber:
+	case lexicon.TypeNumber:
 		content, err := scalarElementText(elem, true)
 		if err != nil {
 			return "", err
@@ -595,7 +595,7 @@ func parseXMLJSONMeta(elem *xdm.Element, inherited xmlJSONInherited) (xmlJSONMet
 	}
 
 	switch meta.kind {
-	case jsonKindMap, jsonKindArray, lexicon.TypeString, nameNumber, fnNameBoolean, jsonKindNull:
+	case jsonKindMap, jsonKindArray, lexicon.TypeString, lexicon.TypeNumber, fnNameBoolean, jsonKindNull:
 	default:
 		return xmlJSONMeta{}, &xdm.Error{Code: errCodeFOJS0006, Message: fmt.Sprintf("xml-to-json: invalid element %q", meta.kind)}
 	}

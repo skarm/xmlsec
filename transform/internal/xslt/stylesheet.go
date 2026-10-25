@@ -15,14 +15,6 @@ const (
 	modeCurrent = "#current" // inherit current mode from caller
 	modeAll     = "#all"     // template applies to all modes
 
-	// Output method names per the XSLT 3.0 serialization specification.
-	methodXML      = "xml"
-	methodHTML     = "html"
-	methodXHTML    = "xhtml"
-	methodText     = "text"
-	methodJSON     = "json"
-	methodAdaptive = "adaptive"
-
 	// on-no-match behavior values for xsl:mode.
 	onNoMatchDeepCopy     = "deep-copy"
 	onNoMatchDeepSkip     = "deep-skip"
@@ -30,31 +22,6 @@ const (
 	onNoMatchShallowSkip  = "shallow-skip"
 	onNoMatchTextOnlyCopy = "text-only-copy"
 	onNoMatchFail         = "fail"
-
-	// Serialization parameter names (xsl:output / xsl:result-document attributes).
-	paramMethod               = "method"
-	paramVersion              = "version"
-	paramEncoding             = "encoding"
-	paramOmitXMLDeclaration   = "omit-xml-declaration"
-	paramStandalone           = "standalone"
-	paramDoctypePublic        = "doctype-public"
-	paramDoctypeSystem        = "doctype-system"
-	paramCDATASectionElements = "cdata-section-elements"
-	paramIndent               = "indent"
-	paramMediaType            = "media-type"
-	paramByteOrderMark        = "byte-order-mark"
-	paramEscapeURIAttributes  = "escape-uri-attributes"
-	paramIncludeContentType   = "include-content-type"
-	paramNormalizationForm    = "normalization-form"
-	paramUndeclarePrefixes    = "undeclare-prefixes"
-	paramUseCharacterMaps     = "use-character-maps"
-	paramSuppressIndentation  = "suppress-indentation"
-	paramHTMLVersion          = "html-version"
-	paramItemSeparator        = "item-separator"
-	paramJSONNodeOutputMethod = "json-node-output-method"
-	paramParameterDocument    = "parameter-document"
-	paramBuildTree            = "build-tree"
-	paramAllowDuplicateNames  = "allow-duplicate-names"
 
 	// Validation mode values for validation attribute on xsl:copy, xsl:element, etc.
 	validationStrict      = "strict"

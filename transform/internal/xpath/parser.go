@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 const maxParseDepth = 200
@@ -2368,7 +2368,7 @@ func (p *parseOptions) parseFunctionItemType() (xdm.NodeTest, error) {
 		// Per XPath 3.1 §3.1.5.4: when parameter types are present,
 		// "as SequenceType" is required.
 		return nil, &xdm.Error{
-			Code:    errCodeXPST0003,
+			Code:    lexicon.ErrXPST0003,
 			Message: "function type with parameter types requires 'as ReturnType'",
 		}
 	}

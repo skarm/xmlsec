@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // GeneralCompare performs a general comparison between two sequences.
@@ -755,33 +755,33 @@ func comparisonFamily(typeName string) string {
 	case xdm.TypeBoolean:
 		return lexicon.TypeBoolean
 	case xdm.TypeDate:
-		return nameDate
+		return lexicon.TypeDate
 	case xdm.TypeDateTime:
-		return nameDateTime
+		return lexicon.TypeDateTime
 	case xdm.TypeTime:
-		return nameTime
+		return lexicon.TypeTime
 	case xdm.TypeDuration:
-		return nameDuration
+		return lexicon.TypeDuration
 	case xdm.TypeYearMonthDuration:
 		return "duration:YM"
 	case xdm.TypeDayTimeDuration:
 		return "duration:DT"
 	case xdm.TypeBase64Binary:
-		return nameBase64Binary
+		return lexicon.TypeBase64Binary
 	case xdm.TypeHexBinary:
-		return nameHexBinary
+		return lexicon.TypeHexBinary
 	case xdm.TypeQName:
-		return nameQName
+		return lexicon.TypeQName
 	case xdm.TypeGDay:
-		return nameGDay
+		return lexicon.TypeGDay
 	case xdm.TypeGMonth:
-		return nameGMonth
+		return lexicon.TypeGMonth
 	case xdm.TypeGMonthDay:
-		return nameGMonthDay
+		return lexicon.TypeGMonthDay
 	case xdm.TypeGYear:
-		return nameGYear
+		return lexicon.TypeGYear
 	case xdm.TypeGYearMonth:
-		return nameGYearMonth
+		return lexicon.TypeGYearMonth
 	}
 
 	return ""
@@ -868,7 +868,7 @@ func compareAtomicWithImplicitTimezone(op TokenType, a, b xdm.AtomicValue, impli
 	}
 
 	familyA, familyB := comparisonFamily(a.TypeName), comparisonFamily(b.TypeName)
-	if strings.HasPrefix(familyA, nameDuration) && strings.HasPrefix(familyB, nameDuration) {
+	if strings.HasPrefix(familyA, lexicon.TypeDuration) && strings.HasPrefix(familyB, lexicon.TypeDuration) {
 		return compareDurationValues(op, a, b)
 	}
 

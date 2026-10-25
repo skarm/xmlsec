@@ -12,9 +12,9 @@ import (
 	textunicode "golang.org/x/text/encoding/unicode"
 	texttransform "golang.org/x/text/transform"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/streamio"
 	xdmencoding "github.com/skarm/xmlsec/transform/internal/xdm/encoding"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 

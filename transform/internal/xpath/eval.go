@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
@@ -334,7 +334,7 @@ func evalContextItemExpr(ctx context.Context, ec *evalContext) (xdm.Sequence, er
 	}
 
 	if xdm.IsNilNode(ec.node) {
-		return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+		return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 	}
 
 	return xdm.ItemSlice{nodeItemFor(ctx, ec, ec.node)}, nil
@@ -346,7 +346,7 @@ func evalRootExpr(ctx context.Context, ec *evalContext) (xdm.Sequence, error) {
 			return nil, &xdm.Error{Code: errCodeXPTY0020, Message: "a path requires a node context item"}
 		}
 
-		return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+		return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 	}
 
 	root := xdm.DocumentRoot(ec.node)

@@ -7,14 +7,14 @@ import (
 	"context"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
 func (c *compiler) compileGlobalContextItem(ctx context.Context, elem *xdm.Element) error {
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames("as", nameUse, xslAttrUseWhen)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames("as", lexicon.AttrUse, xslAttrUseWhen)); err != nil {
 		return err
 	}
 
@@ -46,7 +46,7 @@ func (c *compiler) compileGlobalContextItem(ctx context.Context, elem *xdm.Eleme
 	}
 
 	def := &globalContextItemDef{
-		Use: getAttr(elem, nameUse),
+		Use: getAttr(elem, lexicon.AttrUse),
 		As:  asAttr,
 	}
 	if def.Use == "" {
@@ -945,9 +945,9 @@ func (writer canonicalTypeWriter) functionTest(t xdm.FunctionTest) {
 // normalizeTypeName mapping, and no user type in no namespace.
 func isBuiltinXSDLocalName(local string) bool {
 	switch local {
-	case lexicon.TypeString, nameInteger, nameDecimal, nameDouble, nameFloat,
-		lexicon.TypeBoolean, "date", nameDateTime, nameTime, nameDuration,
-		nameDayTimeDuration, nameYearMonthDuration, "anyURI", nameUntypedAtomic:
+	case lexicon.TypeString, lexicon.TypeInteger, lexicon.TypeDecimal, lexicon.TypeDouble, lexicon.TypeFloat,
+		lexicon.TypeBoolean, "date", lexicon.TypeDateTime, lexicon.TypeTime, lexicon.TypeDuration,
+		lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration, "anyURI", lexicon.TypeUntypedAtomic:
 		return true
 	}
 

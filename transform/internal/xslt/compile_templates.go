@@ -10,15 +10,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
 func templateAllowedAttrs(key string) bool {
 	switch key {
-	case nameMatch2, xslAttrName, "priority", nameMode, "as", xslAttrVisibility, xslAttrUseWhen:
+	case lexicon.AttrMatch, xslAttrName, "priority", lexicon.AttrMode, "as", xslAttrVisibility, xslAttrUseWhen:
 		return true
 	}
 
@@ -100,7 +100,7 @@ func (c *compiler) compileTemplate(ctx context.Context, elem *xdm.Element) error
 	tmpl.DefaultCollation = c.defaultCollation
 	defer func() { c.defaultCollation = savedDefaultCollation }()
 
-	matchAttr, hasMatch := elem.GetAttribute(nameMatch2)
+	matchAttr, hasMatch := elem.GetAttribute(lexicon.AttrMatch)
 	if hasMatch {
 		p, err := c.compilePattern(matchAttr, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
 		if err != nil {
@@ -154,7 +154,7 @@ func (c *compiler) compileTemplate(ctx context.Context, elem *xdm.Element) error
 	// Only set Version when the template has its own version attribute.
 	// Stylesheet-level version is NOT propagated to templates because
 	// shadow attributes (_version) may override the stylesheet version.
-	tmpl.Version = getAttr(elem, paramVersion)
+	tmpl.Version = getAttr(elem, lexicon.SerializationVersion)
 	if c.stylesheet.isPackage {
 		tmpl.OwnerPackage = c.stylesheet
 	}
@@ -365,7 +365,7 @@ func (c *compiler) checkTemplateName(ctx context.Context, elem *xdm.Element, mat
 	}
 	// XTSE0500: template without match must not have mode or priority.
 	if matchAttr == "" {
-		if _, hasMode := elem.GetAttribute(nameMode); hasMode {
+		if _, hasMode := elem.GetAttribute(lexicon.AttrMode); hasMode {
 			return "", staticError(errCodeXTSE0500, "xsl:template without @match must not have @mode")
 		}
 
@@ -455,7 +455,7 @@ func modeTokens(raw string) []string {
 }
 
 func compileTemplateModes(ctx context.Context, elem *xdm.Element) (string, error) {
-	raw, present := elem.GetAttribute(nameMode)
+	raw, present := elem.GetAttribute(lexicon.AttrMode)
 	if !present {
 		return defaultModeForElement(ctx, elem)
 	}
@@ -616,7 +616,7 @@ func (c *compiler) validateContextItem(ctx context.Context, elem *xdm.Element) e
 		}
 	}
 
-	useAttr := strings.TrimSpace(getAttr(elem, nameUse))
+	useAttr := strings.TrimSpace(getAttr(elem, lexicon.AttrUse))
 	if useAttr != "" && useAttr != ctxItemRequired && useAttr != ctxItemOptional && useAttr != ctxItemAbsent {
 		return staticError(errCodeXTSE0020,
 			"xsl:context-item/@use must be 'required', 'optional', or 'absent': %q", useAttr)
@@ -895,7 +895,7 @@ func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element)
 		// XPST0008: a global variable is out of scope within its own
 		// declaration. Detect self-references in the select expression.
 		if xpathExprReferencesVar(expr.AST(), name, c.nsBindings) {
-			return staticError(errCodeXPST0008,
+			return staticError(lexicon.ErrXPST0008,
 				"global variable %q references itself in its select expression", name)
 		}
 
@@ -1284,7 +1284,7 @@ func (b *templateBodyCompiler) compileContextItem(ctx context.Context, elem *xdm
 
 	// An omitted use stays empty; runtime selects the named/match default.
 	b.context = &contextItemDecl{
-		as: getAttr(elem, "as"), use: strings.TrimSpace(getAttr(elem, nameUse)),
+		as: getAttr(elem, "as"), use: strings.TrimSpace(getAttr(elem, lexicon.AttrUse)),
 		typeKey: b.compiler.declarationTypeKey(elem, as), itemType: &bound,
 	}
 
@@ -1333,7 +1333,7 @@ func (b *templateBodyCompiler) appendText(text string) error {
 // contextItemAllowedAttrs lists the valid attributes for xsl:context-item.
 func contextItemAllowedAttrs(key string) bool {
 	switch key {
-	case "as", nameUse:
+	case "as", lexicon.AttrUse:
 		return true
 	}
 

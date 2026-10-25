@@ -7,8 +7,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func lookupFunctionsMap(name string) (*builtinFunc, bool) {

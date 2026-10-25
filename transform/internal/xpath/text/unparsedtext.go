@@ -32,12 +32,12 @@ import (
 
 	"golang.org/x/text/transform"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/resource"
 	iencoding "github.com/skarm/xmlsec/transform/internal/xdm/encoding"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 )
 

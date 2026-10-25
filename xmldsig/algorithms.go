@@ -21,26 +21,27 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/signature"
 )
 
 const (
 	// Namespace is the XMLDSig 1.0 namespace URI.
-	Namespace = "http://www.w3.org/2000/09/xmldsig#"
+	Namespace = lexicon.NamespaceDSig
 	// EnvelopedSignature identifies the transform that removes its containing Signature.
-	EnvelopedSignature = Namespace + "enveloped-signature"
+	EnvelopedSignature = lexicon.TransformEnvelopedSignature
 	// SHA1 is the legacy SHA-1 digest URI. It requires an explicit compatibility policy.
-	SHA1 = Namespace + "sha1"
+	SHA1 = lexicon.DigestSHA1
 	// DSASHA1 is the legacy DSA-SHA1 URI, supported for verification only.
 	DSASHA1 = Namespace + "dsa-sha1"
 	// RSASHA1 is the legacy RSA-SHA1 URI, supported for verification only.
 	RSASHA1 = Namespace + "rsa-sha1"
 	// SHA256 is the SHA-256 digest algorithm URI.
-	SHA256 = "http://www.w3.org/2001/04/xmlenc#sha256"
+	SHA256 = lexicon.DigestSHA256
 	// SHA384 is the SHA-384 digest algorithm URI.
-	SHA384 = "http://www.w3.org/2001/04/xmldsig-more#sha384"
+	SHA384 = lexicon.DigestSHA384
 	// SHA512 is the SHA-512 digest algorithm URI.
-	SHA512 = "http://www.w3.org/2001/04/xmlenc#sha512"
+	SHA512 = lexicon.DigestSHA512
 	// RSASHA256 is the RSA PKCS#1 v1.5 with SHA-256 signature URI.
 	RSASHA256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
 	// RSASHA384 is the RSA PKCS#1 v1.5 with SHA-384 signature URI.

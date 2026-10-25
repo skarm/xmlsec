@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 )
@@ -76,7 +77,7 @@ func stripTextDeclaration(text string) (string, error) {
 		return "", err
 	}
 
-	if attrs[0].Name == (xml.Name{Local: nameXMLVersion}) {
+	if attrs[0].Name == (xml.Name{Local: lexicon.DeclVersion}) {
 		if attrs[0].Value != "1.0" {
 			return "", fmt.Errorf("%w: XML 1.0 is required", ErrUnsupported)
 		}

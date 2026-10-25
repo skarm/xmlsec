@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
@@ -125,7 +126,7 @@ func (e *Expression) EvaluateReuse(ctx context.Context, state *EvalState, node x
 		}
 
 		if ec.node == nil {
-			return Result{}, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+			return Result{}, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 		}
 
 		state.oneItem[0] = nodeItemFor(ctx, ec, ec.node)

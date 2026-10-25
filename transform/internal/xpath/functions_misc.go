@@ -10,8 +10,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func lookupFunctionsMisc(name string) (*builtinFunc, bool) {
@@ -183,7 +183,7 @@ func makeRNGMap(seed int64) xdm.MapItem {
 	}
 
 	return xdm.NewMap([]xdm.MapEntry{
-		{Key: xdm.AtomicValue{TypeName: xdm.TypeString, Value: nameNumber}, Value: xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: xdm.NewDouble(number)}}},
+		{Key: xdm.AtomicValue{TypeName: xdm.TypeString, Value: lexicon.TypeNumber}, Value: xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: xdm.NewDouble(number)}}},
 		{Key: xdm.AtomicValue{TypeName: xdm.TypeString, Value: "next"}, Value: xdm.ItemSlice{nextFn}},
 		{Key: xdm.AtomicValue{TypeName: xdm.TypeString, Value: "permute"}, Value: xdm.ItemSlice{permuteFn}},
 	})

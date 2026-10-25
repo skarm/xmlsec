@@ -6,7 +6,7 @@ package value
 import (
 	"strings"
 
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 // Orderable reports whether range facets apply to builtinLocal's value space.
@@ -40,7 +40,7 @@ func LengthApplicable(builtinLocal string) bool {
 // String lengths count characters; binary lengths count octets.
 func lengthApplicableTypes(key string) bool {
 	switch key {
-	case lexicon.TypeString, lexicon.TypeNormalizedString, lexicon.TypeToken, "language", "Name", "NCName", "ID", lexicon.TypeIDREF, nameIDREFS, "ENTITY", nameENTITIES, "NMTOKEN", nameNMTOKENS, lexicon.TypeAnyURI, lexicon.TypeQName, lexicon.TypeNotation, nameHexBinary, nameBase64Binary:
+	case lexicon.TypeString, lexicon.TypeNormalizedString, lexicon.TypeToken, "language", "Name", "NCName", "ID", lexicon.TypeIDREF, lexicon.TypeIDREFS, "ENTITY", lexicon.TypeENTITIES, "NMTOKEN", lexicon.TypeNMTokens, lexicon.TypeAnyURI, lexicon.TypeQName, lexicon.TypeNotation, lexicon.TypeHexBinary, lexicon.TypeBase64Binary:
 		return true
 	}
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
@@ -597,7 +598,7 @@ func processDTDDeclaration(p *documentParser, prefix string, external bool) erro
 			return err
 		}
 
-		if attrs[0].Name.Local != nameXMLVersion {
+		if attrs[0].Name.Local != lexicon.DeclVersion {
 			declaration = append([]byte(` version="1.0" `), declaration...)
 		}
 

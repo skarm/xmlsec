@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"unicode/utf8"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 // enterValue bounds recursive JSON/adaptive containers independently of the
@@ -119,7 +121,7 @@ func normalizeSerializedValue(value string, opts serializeOptions) (string, erro
 
 // SerializeTextValue shares bounded character expansion with item serializers.
 func SerializeTextValue(ctx context.Context, value string, charMap map[rune]string, form string) (string, error) {
-	opts := serializeOptions{ctx: ctx, method: serializeMethodText, charMap: charMap, normalizationForm: form}
+	opts := serializeOptions{ctx: ctx, method: lexicon.MethodText, charMap: charMap, normalizationForm: form}
 	if len(charMap) == 0 {
 		return applySerializeNormalization(value, opts)
 	}
@@ -130,7 +132,7 @@ func SerializeTextValue(ctx context.Context, value string, charMap map[rune]stri
 // WriteJSONString applies JSON character expansion directly to the destination.
 // Character-map replacements cannot force an unbounded intermediate string.
 func WriteJSONString(ctx context.Context, dst io.Writer, value string, charMap map[rune]string, normalizationForm string, canEncode func(rune) bool) error {
-	opts := serializeOptions{ctx: ctx, method: serializeMethodJSON, charMap: charMap, normalizationForm: normalizationForm}
+	opts := serializeOptions{ctx: ctx, method: lexicon.MethodJSON, charMap: charMap, normalizationForm: normalizationForm}
 
 	if err := writeSerializationString(dst, `"`); err != nil {
 		return err

@@ -5,15 +5,16 @@ import (
 	"errors"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 const (
 	// Namespace is the XML Encryption 1.0 namespace URI.
-	Namespace = "http://www.w3.org/2001/04/xmlenc#"
+	Namespace = lexicon.NamespaceXMLEnc
 	// Namespace11 is the XML Encryption 1.1 namespace URI.
-	Namespace11 = "http://www.w3.org/2009/xmlenc11#"
+	Namespace11 = lexicon.NamespaceXMLEnc11
 	// SignatureNamespace is the XMLDSig namespace URI used by key information.
-	SignatureNamespace = "http://www.w3.org/2000/09/xmldsig#"
+	SignatureNamespace = lexicon.NamespaceDSig
 	// AES128GCM is the AES-128 GCM data encryption URI.
 	AES128GCM = Namespace11 + "aes128-gcm"
 	// AES192GCM is the AES-192 GCM data encryption URI.
@@ -35,11 +36,11 @@ const (
 	// MGF1SHA512 is the MGF1-SHA512 mask-generation URI.
 	MGF1SHA512 = Namespace11 + "mgf1sha512"
 	// SHA256 is the SHA-256 digest algorithm URI.
-	SHA256 = Namespace + "sha256"
+	SHA256 = lexicon.DigestSHA256
 	// SHA384 is the SHA-384 digest algorithm URI.
-	SHA384 = "http://www.w3.org/2001/04/xmldsig-more#sha384"
+	SHA384 = lexicon.DigestSHA384
 	// SHA512 is the SHA-512 digest algorithm URI.
-	SHA512 = Namespace + "sha512"
+	SHA512 = lexicon.DigestSHA512
 	// ElementType identifies plaintext representing one XML element.
 	ElementType = Namespace + "Element"
 	// ContentType identifies plaintext representing an XML element's content.

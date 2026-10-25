@@ -17,7 +17,7 @@ import (
 	"golang.org/x/text/collate"
 	"golang.org/x/text/language"
 
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 const (
@@ -404,7 +404,7 @@ func (p *ucaParamParser) apply(key, value string) {
 	switch key {
 	case nameFallback:
 		p.applyFallback(value)
-	case nameLang:
+	case lexicon.AttrLang:
 		p.applyLanguage(value)
 	case "strength":
 		p.applyStrength(value)

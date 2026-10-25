@@ -15,14 +15,15 @@ import (
 	"io"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/reference"
 )
 
 const (
 	// Namespace is the XMLDSig 1.0 namespace URI.
-	Namespace = "http://www.w3.org/2000/09/xmldsig#"
+	Namespace = lexicon.NamespaceDSig
 	// Namespace11 is the XMLDSig 1.1 namespace URI.
-	Namespace11 = "http://www.w3.org/2009/xmldsig11#"
+	Namespace11 = lexicon.NamespaceDSig11
 	// RawX509Certificate identifies DER certificate octets retrieved by RetrievalMethod.
 	RawX509Certificate = Namespace + "rawX509Certificate"
 )

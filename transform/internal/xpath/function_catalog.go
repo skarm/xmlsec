@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
@@ -314,7 +315,7 @@ var standardFunctionCatalogs = sync.OnceValue(func() [3]map[sigKey]*functionSign
 	}
 
 	namespaces := PredeclaredNamespaces()
-	namespaces["output"] = "http://www.w3.org/2010/xslt-xquery-serialization"
+	namespaces["output"] = lexicon.NamespaceSerialization
 	types := make(map[string]xdm.SequenceType)
 	sequenceType := func(source string) xdm.SequenceType {
 		if result, found := types[source]; found {

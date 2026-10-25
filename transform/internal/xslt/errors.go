@@ -15,9 +15,7 @@ import (
 // Sorted by prefix (FODC, SEPM, SERE, SESU, XPST, XSLT, XTDE, XTMM, XTRE, XTSE, XTTE)
 // then numerically within each prefix.
 const (
-	// FODC — Functions and Operators: Document Collection
-	errCodeFODC0002 = "FODC0002" // document() / xsl:source-document load or parse error
-	errCodeFOTY0013 = "FOTY0013" // atomization of map/function items
+	// FOXT — Functions and Operators: XSLT transformation
 	errCodeFOXT0001 = "FOXT0001" // no suitable XSLT processor satisfies the request
 	errCodeFOXT0002 = "FOXT0002" // fn:transform missing required option or resolver
 	errCodeFOXT0003 = "FOXT0003" // fn:transform stylesheet/package/serialization failure
@@ -26,22 +24,8 @@ const (
 
 	// SEPM/SERE/SESU — Serialization errors
 	errCodeSEPM0004 = "SEPM0004" // version/standalone constraint violation
-	errCodeSEPM0009 = "SEPM0009" // omit-xml-declaration conflicts with standalone/doctype
-	errCodeSEPM0010 = "SEPM0010" // undeclare-prefixes="yes" requires XML 1.1
-	errCodeSEPM0016 = "SEPM0016" // invalid serialization parameter value
-	errCodeSERE0006 = "SERE0006" // character invalid for the output XML version
 	errCodeSERE0012 = "SERE0012" // invalid character in text
-	errCodeSERE0022 = "SERE0022" // duplicate keys in JSON map
 	errCodeSESU0007 = "SESU0007" // unsupported output version
-	errCodeSESU0011 = "SESU0011" // unsupported normalization form
-	errCodeSESU0013 = "SESU0013" // unsupported encoding
-
-	// XPST/XPDY/XPTY — XPath errors
-	errCodeXPDY0002 = "XPDY0002" // context item is absent
-	errCodeXPST0003 = "XPST0003" // invalid XPath/XSLT type expression
-	errCodeXPST0008 = "XPST0008" // undeclared variable / circular static param reference
-	errCodeXPST0017 = "XPST0017" // invalid function call in pattern/static context
-	errCodeXPTY0004 = "XPTY0004" // type mismatch
 
 	// XSLT — Generic
 	errCodeXSLT0000 = "XSLT0000" // generic catch code for non-XSLT errors

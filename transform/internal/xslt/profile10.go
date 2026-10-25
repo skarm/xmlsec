@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -36,7 +36,7 @@ func lookupxslt10Attributes(key string) (string, bool) {
 	case nameStylesheet, fnNameTransform:
 		return "version id extension-element-prefixes exclude-result-prefixes", true
 	case nameImport, nameInclude:
-		return nameHref, true
+		return lexicon.AttrHref, true
 	case nameFallback, "apply-imports", "choose", "otherwise", "comment":
 		return "", true
 	case nameTemplate:
@@ -64,10 +64,10 @@ func lookupxslt10Attributes(key string) (string, bool) {
 	case nameSort:
 		return "select lang data-type order case-order", true
 	case "if", "when":
-		return nameTest2, true
+		return lexicon.AttrTest, true
 	case "value-of":
 		return "select disable-output-escaping", true
-	case methodText:
+	case lexicon.MethodText:
 		return nameDisableOutputEscaping, true
 	case "copy":
 		return nameUseAttributeSets, true
@@ -75,7 +75,7 @@ func lookupxslt10Attributes(key string) (string, bool) {
 		return "name namespace use-attribute-sets", true
 	case "attribute":
 		return "name namespace", true
-	case nameNumber:
+	case lexicon.TypeNumber:
 		return "level count from value format lang letter-value grouping-separator grouping-size", true
 	case "message":
 		return "terminate", true
@@ -93,9 +93,9 @@ func forwards10(e *xdm.Element) bool {
 		if elem, ok := n.(*xdm.Element); ok {
 			version := ""
 			if elem.URI() != lexicon.NamespaceXSLT {
-				version, _ = elem.GetAttributeNS(paramVersion, lexicon.NamespaceXSLT)
+				version, _ = elem.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
 			} else if elem.LocalName() == nameStylesheet || elem.LocalName() == fnNameTransform {
-				version = getAttr(elem, paramVersion)
+				version = getAttr(elem, lexicon.SerializationVersion)
 			}
 
 			if version != "" {
@@ -119,13 +119,13 @@ func ignoredOptional10(e *xdm.Element, a *xdm.Attribute) bool {
 	def := elementXSLTDef(e.LocalName()).attrs[a.LocalName()]
 	// Only these closed enumerations are AVTs in 1.0. In particular,
 	// xsl:message/@terminate became an AVT in a later language version.
-	avt10 := e.LocalName() == nameSort && contains10Word("order case-order", a.LocalName()) || e.LocalName() == nameNumber && a.LocalName() == "letter-value"
-	if e.LocalName() == nameOutput && a.LocalName() == paramStandalone {
-		def.values = []string{nameYes, "no"}
+	avt10 := e.LocalName() == nameSort && contains10Word("order case-order", a.LocalName()) || e.LocalName() == lexicon.TypeNumber && a.LocalName() == "letter-value"
+	if e.LocalName() == nameOutput && a.LocalName() == lexicon.SerializationStandalone {
+		def.values = []string{lexicon.ValueYes, "no"}
 	}
 
-	if e.LocalName() == nameOutput && a.LocalName() == paramMethod && !strings.Contains(a.Value(), ":") {
-		def.values = []string{methodXML, methodHTML, methodText}
+	if e.LocalName() == nameOutput && a.LocalName() == lexicon.SerializationMethod && !strings.Contains(a.Value(), ":") {
+		def.values = []string{lexicon.MethodXML, lexicon.MethodHTML, lexicon.MethodText}
 	}
 
 	if def.required || len(def.values) == 0 || avt10 && strings.ContainsAny(a.Value(), "{}") {
@@ -171,7 +171,7 @@ func prepareModule(ctx context.Context, doc *xdm.Document, processor int) (*xdm.
 	}
 
 	if root.URI() != lexicon.NamespaceXSLT {
-		if _, simplified := root.GetAttributeNS(paramVersion, lexicon.NamespaceXSLT); simplified {
+		if _, simplified := root.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT); simplified {
 			prepared, err := expandSimplifiedModule(ctx, doc, root)
 			if err != nil {
 				return nil, err
@@ -306,7 +306,7 @@ func checkElementLanguage10(root, elem *xdm.Element, inherited float64) error {
 func elementLanguageVersion10(root, elem *xdm.Element, inherited float64) (float64, error) {
 	effective := inherited
 
-	if version, ok := elem.GetAttributeNS(paramVersion, lexicon.NamespaceXSLT); ok {
+	if version, ok := elem.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT); ok {
 		n, err := strconv.ParseFloat(version, 64)
 		if err != nil || !(n > 0) || math.IsInf(n, 0) {
 			return 0, staticError("XTSE0110", "invalid XSLT version")
@@ -316,7 +316,7 @@ func elementLanguageVersion10(root, elem *xdm.Element, inherited float64) (float
 	}
 
 	if elem == root && elem.URI() == lexicon.NamespaceXSLT {
-		effective, _ = strconv.ParseFloat(getAttr(root, paramVersion), 64)
+		effective, _ = strconv.ParseFloat(getAttr(root, lexicon.SerializationVersion), 64)
 	}
 
 	return effective, nil
@@ -378,9 +378,9 @@ func lookupxslt10Functions(key string) ([2]int, bool) {
 		return [2]int{1, 2}, true
 	case nameKey2:
 		return [2]int{2, 2}, true
-	case fnNameFormatNumber:
+	case lexicon.FnFormatNumber:
 		return [2]int{2, 3}, true
-	case nameGenerateId, nameUnparsedEntityUri, funcSystemProperty, "element-available", "function-available":
+	case lexicon.FnGenerateID, nameUnparsedEntityUri, funcSystemProperty, "element-available", "function-available":
 		return [2]int{1, 1}, true
 	}
 
@@ -410,11 +410,11 @@ func (f function10) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence
 		if err := prepareKeyArguments10(ctx, args); err != nil {
 			return nil, err
 		}
-	case nameGenerateId:
+	case lexicon.FnGenerateID:
 		if err := prepareGenerateIDArgument10(args); err != nil {
 			return nil, err
 		}
-	case fnNameFormatNumber:
+	case lexicon.FnFormatNumber:
 		if err := prepareFormatNumberArguments10(ctx, args); err != nil {
 			return nil, err
 		}
@@ -455,7 +455,7 @@ func prepareDocumentArguments10(ctx context.Context, args []xdm.Sequence) error 
 	}
 
 	if len(args) > 1 && !isNodeSet10(args[1]) {
-		return staticError("XPTY0004", "document() second argument must be a node-set")
+		return staticError(lexicon.ErrXPTY0004, "document() second argument must be a node-set")
 	}
 
 	return nil
@@ -492,7 +492,7 @@ func prepareKeyArguments10(ctx context.Context, args []xdm.Sequence) error {
 
 func prepareGenerateIDArgument10(args []xdm.Sequence) error {
 	if !isNodeSet10(args[0]) {
-		return staticError("XPTY0004", "generate-id() requires a node-set")
+		return staticError(lexicon.ErrXPTY0004, "generate-id() requires a node-set")
 	}
 
 	if args[0] != nil && args[0].Len() > 1 {
@@ -605,7 +605,7 @@ func finalizeOutput10(s *Stylesheet) {
 // validateModuleRoot10 leaves embedded modules for validation after their
 // fragment root is selected, while checking ordinary and simplified modules now.
 func validateModuleRoot10(root *xdm.Element) error {
-	_, simplified := root.GetAttributeNS(paramVersion, lexicon.NamespaceXSLT)
+	_, simplified := root.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
 	if root.URI() == lexicon.NamespaceXSLT || simplified {
 		return checkLanguage10(root)
 	}

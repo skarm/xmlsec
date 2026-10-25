@@ -8,8 +8,8 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -607,7 +607,7 @@ func propagateAncestorNamespaces(src, dst *xdm.Element) {
 
 		for _, ns := range pElem.Namespaces() {
 			prefix := ns.Prefix()
-			if prefix == methodXML {
+			if prefix == lexicon.MethodXML {
 				continue
 			}
 
@@ -1044,7 +1044,7 @@ func undeclareParentCopyNS(parent *xdm.Element) {
 
 		for _, ns := range parentNS {
 			prefix := ns.Prefix()
-			if prefix == methodXML {
+			if prefix == lexicon.MethodXML {
 				continue
 			}
 

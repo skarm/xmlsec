@@ -12,7 +12,9 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+
 	valuepkg "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -67,7 +69,7 @@ func (ec *execContext) execNumber(ctx context.Context, inst *numberInst) error {
 		}
 
 		if compatNaN {
-			return ec.addNode(ec.resultDoc.CreateText(valueNaN))
+			return ec.addNode(ec.resultDoc.CreateText(lexicon.FloatNaN))
 		}
 	} else {
 		for _, n := range ec.numberNodeValues(ctx, inst, node) {

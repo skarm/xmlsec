@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
@@ -27,16 +28,16 @@ const Namespace = xmlutil.Metadata
 const Protocol = xmlutil.Protocol
 
 // HTTPPost is the SAML HTTP-POST binding URI.
-const HTTPPost = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+const HTTPPost = lexicon.SAMLBindingHTTPPost
 
 // HTTPRedirect is the SAML HTTP-Redirect binding URI.
-const HTTPRedirect = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+const HTTPRedirect = lexicon.SAMLBindingHTTPRedirect
 
 // HTTPArtifact is the SAML HTTP-Artifact binding URI; artifact processing is unsupported.
-const HTTPArtifact = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Artifact"
+const HTTPArtifact = lexicon.SAMLBindingHTTPArtifact
 
 // SOAP is the SAML SOAP binding URI; SOAP processing is unsupported.
-const SOAP = "urn:oasis:names:tc:SAML:2.0:bindings:SOAP"
+const SOAP = lexicon.SAMLBindingSOAP
 
 // ErrMetadata reports SAML metadata rejected.
 var ErrMetadata = errors.New("SAML metadata rejected")

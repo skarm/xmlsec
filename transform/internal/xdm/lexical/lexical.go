@@ -2,7 +2,11 @@
 
 package value
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
 
 // ValidLanguage checks the ASCII subtag grammar of xs:language directly.
 func ValidLanguage(s string) bool {
@@ -62,7 +66,7 @@ func decimalLexical(s string) bool {
 }
 
 func floatLexical(s string, version Version) bool {
-	if s == valueNaN || s == valueInfinity || s == valueNegativeInfinity || s == "+INF" && version == Version11 {
+	if s == lexicon.FloatNaN || s == lexicon.FloatINF || s == lexicon.FloatNegINF || s == "+INF" && version == Version11 {
 		return true
 	}
 
@@ -136,22 +140,22 @@ func calendarLexical(s, kind string, requiredZone bool) bool {
 	}
 
 	switch kind {
-	case nameDate:
+	case lexicon.TypeDate:
 		return dateBody(body)
-	case builtinTime:
+	case lexicon.TypeTime:
 		return timeBody(body)
-	case nameDateTime:
+	case lexicon.TypeDateTime:
 		d, t, found := strings.Cut(body, "T")
 		return found && dateBody(d) && timeBody(t)
-	case nameGYear:
+	case lexicon.TypeGYear:
 		return yearLexical(body)
-	case nameGYearMonth:
+	case lexicon.TypeGYearMonth:
 		return len(body) >= 7 && body[len(body)-3] == '-' && yearLexical(body[:len(body)-3]) && digits(body[len(body)-2:])
-	case nameGMonth:
+	case lexicon.TypeGMonth:
 		return len(body) == 4 && strings.HasPrefix(body, "--") && digits(body[2:])
-	case nameGDay:
+	case lexicon.TypeGDay:
 		return len(body) == 5 && strings.HasPrefix(body, "---") && digits(body[3:])
-	case nameGMonthDay:
+	case lexicon.TypeGMonthDay:
 		return len(body) == 7 && strings.HasPrefix(body, "--") && body[4] == '-' && digits(body[2:4]) && digits(body[5:])
 	}
 

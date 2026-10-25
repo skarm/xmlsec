@@ -9,8 +9,8 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -464,7 +464,7 @@ func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Elemen
 		DefaultCollation: c.defaultCollation,
 	}
 
-	matchAttr, hasMatch := elem.GetAttribute(nameMatch2)
+	matchAttr, hasMatch := elem.GetAttribute(lexicon.AttrMatch)
 	if hasMatch {
 		p, err := c.compilePattern(matchAttr, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
 		if err != nil {

@@ -9,8 +9,8 @@ import (
 	"slices"
 	"sort"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func lookupFunctionsArray(name string) (*builtinFunc, bool) {
@@ -112,7 +112,7 @@ func extractArrayIndex(seq xdm.Sequence) (int, error) {
 
 	iv, ok := av.Int64Val()
 	if !ok {
-		return 0, &xdm.Error{Code: errCodeFOAY0001, Message: textArrayIndexOutOfRange}
+		return 0, &xdm.Error{Code: lexicon.ErrFOAY0001, Message: textArrayIndexOutOfRange}
 	}
 	// On 64-bit platforms int(iv) is exact; on 32-bit, clamp out-of-int values
 	// to the int extremes so the caller's 1..size bounds check still rejects
@@ -205,12 +205,12 @@ func fnArrayRemove(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 
 		iv, ok := av.Int64Val()
 		if !ok {
-			return nil, &xdm.Error{Code: errCodeFOAY0001, Message: "array:remove position out of range"}
+			return nil, &xdm.Error{Code: lexicon.ErrFOAY0001, Message: "array:remove position out of range"}
 		}
 		// Range-check on int64 before converting so an out-of-int value cannot
 		// wrap into a valid-looking position (e.g. on 32-bit platforms).
 		if iv < 1 || iv > int64(size) {
-			return nil, &xdm.Error{Code: errCodeFOAY0001, Message: fmt.Sprintf("array:remove: position %d out of range 1..%d", iv, size)}
+			return nil, &xdm.Error{Code: lexicon.ErrFOAY0001, Message: fmt.Sprintf("array:remove: position %d out of range 1..%d", iv, size)}
 		}
 
 		positions[int(iv)] = struct{}{}
@@ -242,7 +242,7 @@ func fnArrayInsertBefore(_ context.Context, args []xdm.Sequence) (xdm.Sequence, 
 
 	members := a.MembersView()
 	if pos < 1 || pos > len(members)+1 {
-		return nil, &xdm.Error{Code: errCodeFOAY0001, Message: "array index out of bounds"}
+		return nil, &xdm.Error{Code: lexicon.ErrFOAY0001, Message: "array index out of bounds"}
 	}
 
 	result := make([]xdm.Sequence, 0, len(members)+1)
@@ -260,7 +260,7 @@ func fnArrayHead(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	}
 
 	if a.Size() == 0 {
-		return nil, &xdm.Error{Code: errCodeFOAY0001, Message: "array:head on empty array"}
+		return nil, &xdm.Error{Code: lexicon.ErrFOAY0001, Message: "array:head on empty array"}
 	}
 
 	return a.Get(1)
@@ -273,7 +273,7 @@ func fnArrayTail(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	}
 
 	if a.Size() == 0 {
-		return nil, &xdm.Error{Code: errCodeFOAY0001, Message: "array:tail on empty array"}
+		return nil, &xdm.Error{Code: lexicon.ErrFOAY0001, Message: "array:tail on empty array"}
 	}
 
 	sub, err := a.SubArray(2, a.Size()-1)

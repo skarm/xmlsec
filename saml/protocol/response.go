@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/xmldsig"
 )
@@ -529,7 +530,7 @@ func parseAttributeValue(x document.Element, l Limits) (string, error) {
 	}
 
 	for _, attr := range x.Attributes() {
-		if attr.Name != (document.Name{Space: "http://www.w3.org/2001/XMLSchema-instance", Local: "type"}) || len(attr.Value) > 256 {
+		if attr.Name != (document.Name{Space: lexicon.NamespaceXSI, Local: "type"}) || len(attr.Value) > 256 {
 			return "", ErrProfile
 		}
 	}

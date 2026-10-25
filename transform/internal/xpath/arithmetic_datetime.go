@@ -9,8 +9,8 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // Conservative magnitude bounds for time.AddDate operands. time.Time can

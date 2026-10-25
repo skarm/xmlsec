@@ -8,9 +8,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 const (
@@ -337,7 +337,7 @@ func singleRuneToken(r rune) (TokenType, bool) {
 func (l *lexer) scanParenthesisOrComment() error {
 	if l.pos+1 < len(l.input) && l.input[l.pos+1] == ':' {
 		if l.version == 10 {
-			return profileError(errCodeXPST0003, "comments", 10)
+			return profileError(lexicon.ErrXPST0003, "comments", 10)
 		}
 
 		return l.skipComment()
@@ -526,7 +526,7 @@ func (l *lexer) scanString() (string, error) {
 			// XPath 3.1: doubled quote is an escape ('' → ', "" → ")
 			if l.pos+1 < len(l.input) && l.input[l.pos+1] == quote {
 				if l.version == 10 {
-					return "", profileError(errCodeXPST0003, "doubled quote escape", 10)
+					return "", profileError(lexicon.ErrXPST0003, "doubled quote escape", 10)
 				}
 
 				l.pos += 2

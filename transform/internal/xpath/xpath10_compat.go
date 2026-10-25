@@ -9,6 +9,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
@@ -97,7 +98,7 @@ func xpath10CompatNumberItem(seq xdm.Sequence, ec ...*evalContext) (xdm.AtomicVa
 	if err != nil {
 		// FOTY0013 (atomizing function items) propagates per XPath 3.1 §2.7.2.
 		var xpErr *xdm.Error
-		if errors.As(err, &xpErr) && xpErr.Code == errCodeFOTY0013 {
+		if errors.As(err, &xpErr) && xpErr.Code == lexicon.ErrFOTY0013 {
 			return xdm.AtomicValue{}, err
 		}
 

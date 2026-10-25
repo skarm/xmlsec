@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
@@ -51,7 +52,7 @@ func formatDateTimeCommon(ctx context.Context, args []xdm.Sequence, typeName str
 
 	// Function conversion admits untypedAtomic, not arbitrary string/date casts.
 	if valAtom.TypeName != typeName && !(typeName == xdm.TypeDateTime && valAtom.TypeName == xdm.TypeDateTimeStamp) && valAtom.TypeName != xdm.TypeUntypedAtomic {
-		return nil, &xdm.Error{Code: "XPTY0004", Message: "calendar formatting argument has the wrong type"}
+		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "calendar formatting argument has the wrong type"}
 	}
 
 	if valAtom.TypeName == xdm.TypeUntypedAtomic {

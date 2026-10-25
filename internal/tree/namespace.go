@@ -1,6 +1,10 @@
 package tree
 
-import "slices"
+import (
+	"slices"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
 
 // ImportSubtree copies an element header for insertion into a private draft.
 // It preserves the source's complete in-scope namespace context, including an
@@ -39,7 +43,7 @@ func copySubtreeContext(node *Node, insertion bool) *Node {
 
 	prefixes := make([]string, 0, len(scope))
 	for prefix := range scope {
-		if prefix != nameXML {
+		if prefix != lexicon.PrefixXML {
 			prefixes = append(prefixes, prefix)
 		}
 	}

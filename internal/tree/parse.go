@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
 
@@ -185,7 +186,7 @@ func (p *documentParser) startElement(element xml.StartElement) error {
 	}
 
 	namespace, ok := p.scope.resolve(n.Prefix)
-	if !ok || n.Prefix == nameXmlns {
+	if !ok || n.Prefix == lexicon.PrefixXMLNS {
 		return fmt.Errorf("%w: unbound element prefix", ErrMalformed)
 	}
 
@@ -240,7 +241,7 @@ func parseNamespaceAttributes(attrs []xml.Attr, relativeNamespaces bool) ([]Name
 }
 
 func isNamespaceAttribute(name xml.Name) bool {
-	return name.Space == nameXmlns || name.Space == "" && name.Local == nameXmlns
+	return name.Space == lexicon.PrefixXMLNS || name.Space == "" && name.Local == lexicon.PrefixXMLNS
 }
 
 func parseExpandedAttributes(attrs []xml.Attr, scope *namespaceContext) ([]Attribute, error) {
@@ -289,7 +290,7 @@ func parseExpandedAttributes(attrs []xml.Attr, scope *namespaceContext) ([]Attri
 func validQName(n xml.Name) bool { return NCName(n.Local) && (n.Space == "" || NCName(n.Space)) }
 
 func validateNamespace(p, v string, relativeNamespaces bool) error {
-	if p == nameXmlns || v == XMLNSNamespace || p == nameXML && v != XMLNamespace || p != nameXML && v == XMLNamespace {
+	if p == lexicon.PrefixXMLNS || v == XMLNSNamespace || p == lexicon.PrefixXML && v != XMLNamespace || p != lexicon.PrefixXML && v == XMLNamespace {
 		return fmt.Errorf("%w: reserved namespace binding", ErrMalformed)
 	}
 
@@ -340,8 +341,8 @@ func (p *documentParser) characterData(data xml.CharData) error {
 }
 
 func (p *documentParser) processingInstruction(instruction xml.ProcInst, offset int64) error {
-	if strings.EqualFold(instruction.Target, nameXML) {
-		if instruction.Target != nameXML || offset != 0 || p.seenDecl {
+	if strings.EqualFold(instruction.Target, lexicon.PrefixXML) {
+		if instruction.Target != lexicon.PrefixXML || offset != 0 || p.seenDecl {
 			return fmt.Errorf("%w: XML declaration position", ErrMalformed)
 		}
 
@@ -626,7 +627,7 @@ func validateDeclaration(s []byte) (string, error) {
 		return "", err
 	}
 
-	if attrs[0].Name != (xml.Name{Local: nameXMLVersion}) || attrs[0].Value != "1.0" {
+	if attrs[0].Name != (xml.Name{Local: lexicon.DeclVersion}) || attrs[0].Value != "1.0" {
 		return "", fmt.Errorf("%w: XML 1.0 is required", ErrUnsupported)
 	}
 

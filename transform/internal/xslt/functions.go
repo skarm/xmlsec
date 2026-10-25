@@ -13,10 +13,10 @@ import (
 	"path"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -25,7 +25,6 @@ import (
 // alongside xsltFunctionArities (the single source of truth for arities) so the
 // repeated literals stay consistent across the package.
 const (
-	fnNameFormatNumber       = "format-number"
 	fnNameCurrent            = "current"
 	fnNameDocument           = "document"
 	fnNameElementAvailable   = "element-available"
@@ -52,7 +51,7 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 		fnNameCurrent:              &xsltFunc{min: 0, max: 0, fn: ec.fnCurrent, noDynRef: true, dynRefError: errCodeXTDE1360},
 		fnNameDocument:             &xsltFunc{min: 1, max: 2, fn: ec.fnDocument},
 		nameKey2:                   &keyFunction{ec: ec, scope: ec.effectiveStylesheet()},
-		nameGenerateId:             xpath.HostBuiltin(ec.stylesheet.xpathVersion(), nameGenerateId),
+		lexicon.FnGenerateID:       xpath.HostBuiltin(ec.stylesheet.xpathVersion(), lexicon.FnGenerateID),
 		funcSystemProperty:         newIntrospectionFunc(funcSystemProperty, ec.fnSystemProperty),
 		nameUnparsedEntityUri:      &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityURI},
 		nameUnparsedEntityPublicId: &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityPublicID},
@@ -80,7 +79,7 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 		fnNameCurrentOutputURI:        &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentOutputURI},
 	}
 	if ec.stylesheet.processorLanguage() <= 20 {
-		for _, name := range []string{fnNameFormatNumber, "format-date", "format-dateTime", "format-time"} {
+		for _, name := range []string{lexicon.FnFormatNumber, "format-date", "format-dateTime", "format-time"} {
 			ec.cachedFns[name] = newLegacyFormatFunction(ec.stylesheet.xpathVersion(), name)
 		}
 	}
@@ -139,7 +138,7 @@ func (f *legacyFormatFunction) AcceptsArity(arity int) bool {
 }
 
 func (f *legacyFormatFunction) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if f.name == fnNameFormatNumber && len(args) == 3 {
+	if f.name == lexicon.FnFormatNumber && len(args) == 3 {
 		name, err := xpath.XPath10String(args[2])
 		if err != nil {
 			return nil, err
@@ -253,7 +252,7 @@ func (ec *execContext) documentItemNodes(ctx context.Context, item xdm.Item, arg
 	switch item.(type) {
 	case xdm.AtomicValue, xdm.NodeItem:
 	default:
-		return nil, dynamicError(errCodeXPTY0004, "document() requires string-like values or nodes")
+		return nil, dynamicError(lexicon.ErrXPTY0004, "document() requires string-like values or nodes")
 	}
 
 	atoms, err := xpath.FnAtomize(ctx, xdm.ItemSlice{item})
@@ -263,7 +262,7 @@ func (ec *execContext) documentItemNodes(ctx context.Context, item xdm.Item, arg
 
 	for _, atom := range atoms {
 		if !isStringLikeType(atom.TypeName) {
-			return nil, dynamicError(errCodeXPTY0004, "document() requires string-like URI values")
+			return nil, dynamicError(lexicon.ErrXPTY0004, "document() requires string-like URI values")
 		}
 
 		atom, err = xpath.CastAtomic(atom, xdm.TypeAnyURI)
@@ -536,7 +535,7 @@ func documentParsingError(uri string, err error) error {
 		return err
 	}
 
-	return dynamicErrorCause(errCodeFODC0002, err, "cannot parse document %q: %v", uri, err)
+	return dynamicErrorCause(lexicon.ErrFODC0002, err, "cannot parse document %q: %v", uri, err)
 }
 
 func documentRetrievalError(uri string, err error) error {
@@ -548,7 +547,7 @@ func documentRetrievalError(uri string, err error) error {
 		return dynamicErrorCause(errCodeXTDE1160, err, "cannot load document %q with fragment identifier: %v", uri, err)
 	}
 
-	return dynamicErrorCause(errCodeFODC0002, err, "cannot load document %q: %v", uri, err)
+	return dynamicErrorCause(lexicon.ErrFODC0002, err, "cannot load document %q: %v", uri, err)
 }
 
 func (ec *execContext) existingDocumentRead(ctx context.Context, doc *xdm.Document) (*xdm.Document, error) {
@@ -779,7 +778,7 @@ func documentBaseDir(base string) string {
 // against drift.
 func lookupxsltFunctionArities(key string) ([2]int, bool) {
 	switch key {
-	case nameGenerateId, nameCurrentMergeGroup, fnNameCopyOf, funcSnapshot:
+	case lexicon.FnGenerateID, nameCurrentMergeGroup, fnNameCopyOf, funcSnapshot:
 		return [2]int{0, 1}, true
 	case fnNameCurrent, fnNameCurrentGroup, fnNameCurrentGroupingKey, nameCurrentMergeKey, funcAvailableSystemProperties, fnNameCurrentOutputURI:
 		return [2]int{0, 0}, true

@@ -11,8 +11,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 	xpathstream "github.com/skarm/xmlsec/transform/internal/xslt/internal/stream"
 )
@@ -769,16 +769,16 @@ func currentModeDef(ec *execContext) *modeDef {
 // (e.g., lexicon.TypeString, "integer", "decimal", "untyped", "untypedAtomic").
 func isBuiltinXSDType(name string) bool {
 	switch name {
-	case lexicon.TypeString, lexicon.TypeBoolean, lexicon.TypeDecimal, nameFloat, nameDouble,
-		nameDuration, lexicon.TypeDateTime, nameTime, lexicon.TypeDate,
+	case lexicon.TypeString, lexicon.TypeBoolean, lexicon.TypeDecimal, lexicon.TypeFloat, lexicon.TypeDouble,
+		lexicon.TypeDuration, lexicon.TypeDateTime, lexicon.TypeTime, lexicon.TypeDate,
 		"gYearMonth", "gYear", "gMonthDay", "gDay", "gMonth",
 		"hexBinary", "base64Binary", lexicon.TypeAnyURI, "QName", "NOTATION",
 		"normalizedString", "token", "language", "NMTOKEN", "NMTOKENS",
 		"Name", "NCName", "ID", "IDREF", "IDREFS", "ENTITY", "ENTITIES",
-		nameInteger, "nonPositiveInteger", "negativeInteger", "long", "int",
+		lexicon.TypeInteger, "nonPositiveInteger", "negativeInteger", "long", "int",
 		"short", "byte", "nonNegativeInteger", "unsignedLong", "unsignedInt",
 		"unsignedShort", "unsignedByte", "positiveInteger",
-		nameYearMonthDuration, nameDayTimeDuration, "dateTimeStamp",
+		lexicon.TypeYearMonthDuration, lexicon.TypeDayTimeDuration, "dateTimeStamp",
 		"untyped", lexicon.TypeUntypedAtomic, "anyType", "anySimpleType", "anyAtomicType":
 		return true
 	}
@@ -884,7 +884,7 @@ func matchTypeAnnotation(_ context.Context, ec *execContext, node xdm.Node, type
 		case xdm.ElementNode:
 			ann = "untyped"
 		case xdm.AttributeNode:
-			ann = nameUntypedAtomic
+			ann = lexicon.TypeUntypedAtomic
 		default:
 			return false
 		}
@@ -2451,7 +2451,7 @@ func (c *compiler) validatePatternFunctions(ctx context.Context, p *pattern, sou
 				return true
 			}
 
-			walkErr = staticError(errCodeXPST0017,
+			walkErr = staticError(lexicon.ErrXPST0017,
 				"unknown function %s() in match pattern %q", displayName, source)
 
 			return false

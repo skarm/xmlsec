@@ -7,6 +7,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -106,9 +107,9 @@ func checkAtomizable(seq xdm.Sequence) error {
 		item := seq.Get(i)
 		switch item.(type) {
 		case xdm.MapItem:
-			return dynamicError(errCodeFOTY0013, "cannot atomize a map item")
+			return dynamicError(lexicon.ErrFOTY0013, "cannot atomize a map item")
 		case xdm.FunctionItem:
-			return dynamicError(errCodeFOTY0013, "cannot atomize a function item")
+			return dynamicError(lexicon.ErrFOTY0013, "cannot atomize a function item")
 		}
 	}
 

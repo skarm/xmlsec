@@ -15,15 +15,15 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
 func (c *compiler) compileCharacterMap(ctx context.Context, elem *xdm.Element) error {
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, paramUseCharacterMaps, xslAttrUseWhen)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, lexicon.SerializationUseCharacterMaps, xslAttrUseWhen)); err != nil {
 		return err
 	}
 
@@ -42,7 +42,7 @@ func (c *compiler) compileCharacterMap(ctx context.Context, elem *xdm.Element) e
 		Mappings: make(map[rune]string),
 	}
 
-	if ucm := getAttr(elem, paramUseCharacterMaps); ucm != "" {
+	if ucm := getAttr(elem, lexicon.SerializationUseCharacterMaps); ucm != "" {
 		for n := range strings.FieldsSeq(ucm) {
 			cm.UseCharacterMaps = append(cm.UseCharacterMaps, resolveQName(n, c.nsBindings))
 		}
@@ -102,7 +102,7 @@ func (c *compiler) compileCharacterMap(ctx context.Context, elem *xdm.Element) e
 func (c *compiler) compileKey(ctx context.Context, elem *xdm.Element) error {
 	defer c.pushElementVersion(elem)()
 
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, nameMatch2, nameUse, nameCollation, nameComposite, xslAttrUseWhen, nameDefaultCollation)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, lexicon.AttrMatch, lexicon.AttrUse, nameCollation, nameComposite, xslAttrUseWhen, nameDefaultCollation)); err != nil {
 		return err
 	}
 
@@ -128,7 +128,7 @@ func (c *compiler) compileKey(ctx context.Context, elem *xdm.Element) error {
 		return staticError(errCodeXTSE0020, "invalid name %q on xsl:key", name)
 	}
 
-	matchAttr, hasMatch := elem.GetAttribute(nameMatch2)
+	matchAttr, hasMatch := elem.GetAttribute(lexicon.AttrMatch)
 	if !hasMatch {
 		return staticError(errCodeXTSE0010, "xsl:key requires match attribute")
 	}
@@ -207,7 +207,7 @@ func (c *compiler) compileKey(ctx context.Context, elem *xdm.Element) error {
 }
 
 func (c *compiler) compileKeyValue(ctx context.Context, elem *xdm.Element, kd *keyDef) error {
-	useAttr := getAttr(elem, nameUse)
+	useAttr := getAttr(elem, lexicon.AttrUse)
 	hasContent := c.hasEffectiveContent(ctx, elem)
 	// XTSE1205: must have either use attr or content, not both, and not neither
 	if useAttr != "" && hasContent {
@@ -260,7 +260,7 @@ func validateLegacyKeyUse(expression *xpath.Expression, bindings map[string]stri
 }
 
 func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, paramMethod, paramVersion, paramEncoding, paramOmitXMLDeclaration, paramStandalone, paramDoctypePublic, paramDoctypeSystem, paramCDATASectionElements, paramIndent, paramMediaType, paramByteOrderMark, paramEscapeURIAttributes, paramIncludeContentType, paramNormalizationForm, paramUndeclarePrefixes, paramUseCharacterMaps, paramSuppressIndentation, paramHTMLVersion, paramItemSeparator, paramJSONNodeOutputMethod, paramParameterDocument, paramBuildTree, paramAllowDuplicateNames, xslAttrUseWhen)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, lexicon.SerializationMethod, lexicon.SerializationVersion, lexicon.SerializationEncoding, lexicon.SerializationOmitXMLDeclaration, lexicon.SerializationStandalone, lexicon.SerializationDoctypePublic, lexicon.SerializationDoctypeSystem, lexicon.SerializationCDATASectionElements, lexicon.SerializationIndent, lexicon.SerializationMediaType, lexicon.SerializationByteOrderMark, lexicon.SerializationEscapeURIAttributes, lexicon.SerializationIncludeContentType, lexicon.SerializationNormalizationForm, lexicon.SerializationUndeclarePrefixes, lexicon.SerializationUseCharacterMaps, lexicon.SerializationSuppressIndentation, lexicon.SerializationHTMLVersion, lexicon.SerializationItemSeparator, lexicon.SerializationJSONNodeOutputMethod, lexicon.SerializationParameterDocument, lexicon.SerializationBuildTree, lexicon.SerializationAllowDuplicateNames, xslAttrUseWhen)); err != nil {
 		return err
 	}
 
@@ -272,7 +272,7 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 		name = resolveQName(name, c.nsBindings)
 	}
 
-	methodStr := strings.TrimSpace(strings.ToLower(getAttr(elem, paramMethod)))
+	methodStr := strings.TrimSpace(strings.ToLower(getAttr(elem, lexicon.SerializationMethod)))
 	if err := validateOutputMethod(methodStr); err != nil {
 		return err
 	}
@@ -281,16 +281,16 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 		Name:           name,
 		Method:         methodStr,
 		MethodExplicit: methodStr != "",
-		Encoding:       getAttr(elem, paramEncoding),
-		Version:        getAttr(elem, paramVersion),
+		Encoding:       getAttr(elem, lexicon.SerializationEncoding),
+		Version:        getAttr(elem, lexicon.SerializationVersion),
 		ImportPrec:     c.importPrec,
-		MethodRaw:      getAttr(elem, paramMethod),
-		EncodingRaw:    getAttr(elem, paramEncoding),
-		VersionRaw:     getAttr(elem, paramVersion),
+		MethodRaw:      getAttr(elem, lexicon.SerializationMethod),
+		EncodingRaw:    getAttr(elem, lexicon.SerializationEncoding),
+		VersionRaw:     getAttr(elem, lexicon.SerializationVersion),
 	}
 
 	if outDef.Method == "" {
-		outDef.Method = methodXML
+		outDef.Method = lexicon.MethodXML
 	}
 
 	if outDef.Encoding == "" {
@@ -317,7 +317,7 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 		return err
 	}
 
-	if v := getAttr(elem, paramParameterDocument); v != "" {
+	if v := getAttr(elem, lexicon.SerializationParameterDocument); v != "" {
 		outDef.ParameterDocument = v
 		baseURI := stylesheetBaseURI(elem, c.baseURI, c.moduleRoot)
 
@@ -369,7 +369,7 @@ func validateOutputMethod(method string) error {
 	}
 
 	switch method {
-	case methodXML, methodHTML, methodXHTML, methodText, methodJSON, methodAdaptive:
+	case lexicon.MethodXML, lexicon.MethodHTML, lexicon.MethodXHTML, lexicon.MethodText, lexicon.MethodJSON, lexicon.MethodAdaptive:
 		return nil
 	default:
 		return staticError(errCodeXTSE1570, "invalid output method %q", method)
@@ -384,10 +384,10 @@ func compileOutputBooleans(elem *xdm.Element, out *OutputDef, yesNoOnly bool) er
 		explicit *bool
 		raw      *string
 	}{
-		{paramIndent, &out.Indent, nil, &out.IndentRaw},
-		{paramOmitXMLDeclaration, &out.OmitDeclaration, &out.OmitDeclarationExplicit, nil},
-		{paramUndeclarePrefixes, &out.UndeclarePrefixes, nil, nil},
-		{paramByteOrderMark, &out.ByteOrderMark, nil, nil},
+		{lexicon.SerializationIndent, &out.Indent, nil, &out.IndentRaw},
+		{lexicon.SerializationOmitXMLDeclaration, &out.OmitDeclaration, &out.OmitDeclarationExplicit, nil},
+		{lexicon.SerializationUndeclarePrefixes, &out.UndeclarePrefixes, nil, nil},
+		{lexicon.SerializationByteOrderMark, &out.ByteOrderMark, nil, nil},
 	}
 	for _, attribute := range plain {
 		value, present, err := outputBoolAttr(elem, attribute.name, yesNoOnly)
@@ -413,8 +413,8 @@ func compileOutputBooleans(elem *xdm.Element, out *OutputDef, yesNoOnly bool) er
 		name  string
 		value **bool
 	}{
-		{paramEscapeURIAttributes, &out.EscapeURIAttributes},
-		{paramIncludeContentType, &out.IncludeContentType},
+		{lexicon.SerializationEscapeURIAttributes, &out.EscapeURIAttributes},
+		{lexicon.SerializationIncludeContentType, &out.IncludeContentType},
 	}
 	for _, attribute := range optional {
 		value, present, err := outputBoolAttr(elem, attribute.name, yesNoOnly)
@@ -435,11 +435,11 @@ func checkOutputConflicts(existing *OutputDef, elem *xdm.Element) error {
 		name     string
 		previous string
 	}{
-		{paramMethod, existing.MethodRaw},
-		{paramIndent, existing.IndentRaw},
-		{paramEncoding, existing.EncodingRaw},
-		{paramVersion, existing.VersionRaw},
-		{paramStandalone, existing.StandaloneRaw},
+		{lexicon.SerializationMethod, existing.MethodRaw},
+		{lexicon.SerializationIndent, existing.IndentRaw},
+		{lexicon.SerializationEncoding, existing.EncodingRaw},
+		{lexicon.SerializationVersion, existing.VersionRaw},
+		{lexicon.SerializationStandalone, existing.StandaloneRaw},
 	}
 	for _, check := range checks {
 		value := getAttr(elem, check.name)
@@ -458,60 +458,60 @@ func mergeOutputDefinition(out, existing *OutputDef, elem *xdm.Element) {
 		out.UseCharacterMaps = append(existing.UseCharacterMaps, out.UseCharacterMaps...)
 	}
 
-	if getAttr(elem, paramMethod) == "" {
+	if getAttr(elem, lexicon.SerializationMethod) == "" {
 		out.Method = existing.Method
 		out.MethodExplicit = existing.MethodExplicit
 	}
 
-	if getAttr(elem, paramEncoding) == "" {
+	if getAttr(elem, lexicon.SerializationEncoding) == "" {
 		out.Encoding = existing.Encoding
 	}
 
-	if getAttr(elem, paramVersion) == "" {
+	if getAttr(elem, lexicon.SerializationVersion) == "" {
 		out.Version = existing.Version
 	}
 
-	if getAttr(elem, paramIndent) == "" {
+	if getAttr(elem, lexicon.SerializationIndent) == "" {
 		out.Indent = existing.Indent
 	}
 
-	if getAttr(elem, paramOmitXMLDeclaration) == "" {
+	if getAttr(elem, lexicon.SerializationOmitXMLDeclaration) == "" {
 		out.OmitDeclaration = existing.OmitDeclaration
 		out.OmitDeclarationExplicit = existing.OmitDeclarationExplicit
 	}
 
-	if getAttr(elem, paramStandalone) == "" {
+	if getAttr(elem, lexicon.SerializationStandalone) == "" {
 		out.Standalone = existing.Standalone
 	}
 
-	if getAttr(elem, paramUndeclarePrefixes) == "" {
+	if getAttr(elem, lexicon.SerializationUndeclarePrefixes) == "" {
 		out.UndeclarePrefixes = existing.UndeclarePrefixes
 	}
 
-	if !elem.HasAttribute(paramDoctypePublic) {
+	if !elem.HasAttribute(lexicon.SerializationDoctypePublic) {
 		out.DoctypePublic = existing.DoctypePublic
 	}
 
-	if !elem.HasAttribute(paramDoctypeSystem) {
+	if !elem.HasAttribute(lexicon.SerializationDoctypeSystem) {
 		out.DoctypeSystem = existing.DoctypeSystem
 	}
 
-	if getAttr(elem, paramMediaType) == "" {
+	if getAttr(elem, lexicon.SerializationMediaType) == "" {
 		out.MediaType = existing.MediaType
 	}
 
 	out.CDATASections = slices.Concat(existing.CDATASections, out.CDATASections)
 	out.SuppressIndentation = slices.Concat(existing.SuppressIndentation, out.SuppressIndentation)
 
-	if getAttr(elem, paramItemSeparator) == "" {
+	if getAttr(elem, lexicon.SerializationItemSeparator) == "" {
 		out.ItemSeparator = existing.ItemSeparator
 	}
 
-	if getAttr(elem, paramNormalizationForm) == "" {
+	if getAttr(elem, lexicon.SerializationNormalizationForm) == "" {
 		out.NormalizationForm = existing.NormalizationForm
 	}
 
-	if getAttr(elem, paramHTMLVersion) == "" {
+	if getAttr(elem, lexicon.SerializationHTMLVersion) == "" {
 		out.HTMLVersion = existing.HTMLVersion
 	}
 
@@ -519,13 +519,13 @@ func mergeOutputDefinition(out, existing *OutputDef, elem *xdm.Element) {
 		out.IncludeContentType = existing.IncludeContentType
 	}
 
-	if getAttr(elem, paramJSONNodeOutputMethod) == "" {
+	if getAttr(elem, lexicon.SerializationJSONNodeOutputMethod) == "" {
 		out.JSONNodeOutputMethod = existing.JSONNodeOutputMethod
 	}
 }
 
 func (c *compiler) compileOutputSerialization(elem *xdm.Element, out *OutputDef, yesNoOnly bool) error {
-	standalone := getAttr(elem, paramStandalone)
+	standalone := getAttr(elem, lexicon.SerializationStandalone)
 
 	var err error
 
@@ -535,11 +535,11 @@ func (c *compiler) compileOutputSerialization(elem *xdm.Element, out *OutputDef,
 	}
 
 	out.StandaloneRaw = standalone
-	out.DoctypePublic = getAttr(elem, paramDoctypePublic)
-	out.DoctypeSystem = getAttr(elem, paramDoctypeSystem)
-	out.MediaType = getAttr(elem, paramMediaType)
+	out.DoctypePublic = getAttr(elem, lexicon.SerializationDoctypePublic)
+	out.DoctypeSystem = getAttr(elem, lexicon.SerializationDoctypeSystem)
+	out.MediaType = getAttr(elem, lexicon.SerializationMediaType)
 
-	if version := getAttr(elem, paramHTMLVersion); version != "" {
+	if version := getAttr(elem, lexicon.SerializationHTMLVersion); version != "" {
 		version = strings.TrimSpace(version)
 		if _, err := strconv.ParseFloat(version, 64); err != nil {
 			return staticError(errCodeXTSE0020, "%q is not a valid value for xsl:output/@html-version", version)
@@ -548,22 +548,22 @@ func (c *compiler) compileOutputSerialization(elem *xdm.Element, out *OutputDef,
 		out.HTMLVersion = version
 	}
 
-	out.CDATASections = resolveOutputNames(getAttr(elem, paramCDATASectionElements), c.nsBindings)
-	if separator := getAttr(elem, paramItemSeparator); separator != "" {
+	out.CDATASections = resolveOutputNames(getAttr(elem, lexicon.SerializationCDATASectionElements), c.nsBindings)
+	if separator := getAttr(elem, lexicon.SerializationItemSeparator); separator != "" {
 		out.ItemSeparator = &separator
 	}
 
-	if form := getAttr(elem, paramNormalizationForm); form != "" {
+	if form := getAttr(elem, lexicon.SerializationNormalizationForm); form != "" {
 		out.NormalizationForm = strings.ToUpper(strings.TrimSpace(form))
 	}
 
-	if attr := getAttr(elem, paramUseCharacterMaps); attr != "" {
+	if attr := getAttr(elem, lexicon.SerializationUseCharacterMaps); attr != "" {
 		for name := range strings.FieldsSeq(attr) {
 			out.UseCharacterMaps = append(out.UseCharacterMaps, resolveQName(name, c.nsBindings))
 		}
 	}
 
-	if method := getAttr(elem, paramJSONNodeOutputMethod); method != "" {
+	if method := getAttr(elem, lexicon.SerializationJSONNodeOutputMethod); method != "" {
 		out.JSONNodeOutputMethod = strings.TrimSpace(method)
 	}
 
@@ -577,7 +577,7 @@ func outputStandalone(value string, yesNoOnly bool) (string, error) {
 
 	value = strings.TrimSpace(value)
 	switch value {
-	case lexicon.ValueYes, lexicon.ValueNo, nameOmit:
+	case lexicon.ValueYes, lexicon.ValueNo, lexicon.ValueOmit:
 		return value, nil
 	case lexicon.ValueTrue, "1":
 		if !yesNoOnly {
@@ -589,11 +589,11 @@ func outputStandalone(value string, yesNoOnly bool) (string, error) {
 		}
 	}
 
-	return "", staticError(errCodeSEPM0016, "%q is not a valid value for xsl:output/@standalone", value)
+	return "", staticError(lexicon.ErrSEPM0016, "%q is not a valid value for xsl:output/@standalone", value)
 }
 
 func (c *compiler) compileOutputSequenceParameters(elem *xdm.Element, out *OutputDef, yesNoOnly bool) (bool, error) {
-	value, explicit, err := outputBoolAttr(elem, paramAllowDuplicateNames, yesNoOnly)
+	value, explicit, err := outputBoolAttr(elem, lexicon.SerializationAllowDuplicateNames, yesNoOnly)
 	if err != nil {
 		return false, err
 	}
@@ -602,9 +602,9 @@ func (c *compiler) compileOutputSequenceParameters(elem *xdm.Element, out *Outpu
 		out.AllowDuplicateNames = value
 	}
 
-	out.SuppressIndentation = resolveOutputNames(getAttr(elem, paramSuppressIndentation), c.nsBindings)
+	out.SuppressIndentation = resolveOutputNames(getAttr(elem, lexicon.SerializationSuppressIndentation), c.nsBindings)
 
-	buildTree, present, err := outputBoolAttr(elem, paramBuildTree, yesNoOnly)
+	buildTree, present, err := outputBoolAttr(elem, lexicon.SerializationBuildTree, yesNoOnly)
 	if err != nil {
 		return false, err
 	}
@@ -713,7 +713,7 @@ func loadParameterDocumentRoot(ctx context.Context, injected *xdm.ParseOptions, 
 	doc, err := parseXMLResource(ctx, injected, reader, "", resourceLimit)
 	if err != nil {
 		if runtime {
-			return nil, dynamicErrorCause(errCodeFODC0002, err, "cannot parse parameter-document %q: %v", href, err)
+			return nil, dynamicErrorCause(lexicon.ErrFODC0002, err, "cannot parse parameter-document %q: %v", href, err)
 		}
 
 		return nil, staticErrorCause(errCodeXTSE0090, err, "cannot parse parameter-document %q: %v", href, err)
@@ -722,7 +722,7 @@ func loadParameterDocumentRoot(ctx context.Context, injected *xdm.ParseOptions, 
 	root := doc.DocumentElement()
 	if root == nil || root.LocalName() != "serialization-parameters" || root.URI() != lexicon.NamespaceSerialization {
 		if runtime {
-			return nil, dynamicError(errCodeFODC0002, "parameter-document %q: root element must be {%s}serialization-parameters", href, lexicon.NamespaceSerialization)
+			return nil, dynamicError(lexicon.ErrFODC0002, "parameter-document %q: root element must be {%s}serialization-parameters", href, lexicon.NamespaceSerialization)
 		}
 
 		return nil, staticError(errCodeXTSE0090, "parameter-document %q: root element must be {%s}serialization-parameters", href, lexicon.NamespaceSerialization)
@@ -737,7 +737,7 @@ func parameterDocumentLoadError(err error, href string, runtime bool) error {
 	}
 	// Runtime failures are dynamic, while their raw cause survives the wrapper.
 	if runtime {
-		return dynamicErrorCause(errCodeFODC0002, err, "cannot read parameter-document %q: %v", href, err)
+		return dynamicErrorCause(lexicon.ErrFODC0002, err, "cannot read parameter-document %q: %v", href, err)
 	}
 	// Compile-time loaders already supply XTSE0090; do not wrap it twice.
 	if _, ok := errors.AsType[*XSLTError](err); ok {
@@ -847,7 +847,7 @@ func (c *compiler) compileAttributeSet(ctx context.Context, elem *xdm.Element) e
 }
 
 func (c *compiler) compileDecimalFormat(ctx context.Context, elem *xdm.Element) error {
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, nameDecimalSeparator, nameGroupingSeparator, nameInfinity, nameMinusSign, valueNaN, namePercent, namePerMille, nameZeroDigit, nameDigit, namePatternSeparator, nameExponentSeparator, xslAttrUseWhen)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, nameDecimalSeparator, nameGroupingSeparator, nameInfinity, nameMinusSign, lexicon.FloatNaN, namePercent, namePerMille, nameZeroDigit, nameDigit, namePatternSeparator, nameExponentSeparator, xslAttrUseWhen)); err != nil {
 		return err
 	}
 	// Push element-local namespace declarations so prefixed names resolve correctly
@@ -922,7 +922,7 @@ func (c *compiler) compileDecimalFormat(ctx context.Context, elem *xdm.Element) 
 		for _, attr := range []string{
 			nameDecimalSeparator, nameGroupingSeparator, namePercent,
 			namePerMille, nameZeroDigit, nameDigit, namePatternSeparator, nameExponentSeparator,
-			nameInfinity, valueNaN, nameMinusSign,
+			nameInfinity, lexicon.FloatNaN, nameMinusSign,
 		} {
 			if elem.HasAttribute(attr) {
 				setProps[attr] = struct{}{}
@@ -997,7 +997,7 @@ func applyDecimalFormatAttributes(df *xpath.DecimalFormat, elem *xdm.Element) {
 		df.Infinity = v
 	}
 
-	if v, present := elem.GetAttribute(valueNaN); present {
+	if v, present := elem.GetAttribute(lexicon.FloatNaN); present {
 		df.NaN = v
 	}
 
@@ -1056,8 +1056,8 @@ func checkDecimalFormatConflictExplicit(existing xpath.DecimalFormat, elem *xdm.
 		}
 	}
 
-	if v, present := elem.GetAttribute(valueNaN); present {
-		if _, wasSet := prevSet[valueNaN]; wasSet && v != existing.NaN {
+	if v, present := elem.GetAttribute(lexicon.FloatNaN); present {
+		if _, wasSet := prevSet[lexicon.FloatNaN]; wasSet && v != existing.NaN {
 			return staticError(errCodeXTSE1290,
 				"conflicting xsl:decimal-format declarations: NaN was %q, now %q",
 				existing.NaN, v)
@@ -1429,13 +1429,13 @@ func outputBoolAttr(elem *xdm.Element, attr string, yesNoOnly bool) (bool, bool,
 		case lexicon.ValueNo:
 			return false, true, nil
 		default:
-			return false, false, staticError(errCodeSEPM0016, "%q is not a valid value for xsl:output/@"+attr, v)
+			return false, false, staticError(lexicon.ErrSEPM0016, "%q is not a valid value for xsl:output/@"+attr, v)
 		}
 	}
 
 	b, ok := parseXSDBool(v)
 	if !ok {
-		return false, false, staticError(errCodeSEPM0016, "%q is not a valid value for xsl:output/@"+attr, v)
+		return false, false, staticError(lexicon.ErrSEPM0016, "%q is not a valid value for xsl:output/@"+attr, v)
 	}
 
 	return b, true, nil
@@ -1508,13 +1508,13 @@ func (p *parameterDocumentValues) apply(elem *xdm.Element) {
 	value := getAttr(elem, "value")
 
 	switch name {
-	case paramIndent, paramOmitXMLDeclaration, paramUndeclarePrefixes,
-		paramAllowDuplicateNames, paramByteOrderMark, paramEscapeURIAttributes,
-		paramIncludeContentType, paramBuildTree:
+	case lexicon.SerializationIndent, lexicon.SerializationOmitXMLDeclaration, lexicon.SerializationUndeclarePrefixes,
+		lexicon.SerializationAllowDuplicateNames, lexicon.SerializationByteOrderMark, lexicon.SerializationEscapeURIAttributes,
+		lexicon.SerializationIncludeContentType, lexicon.SerializationBuildTree:
 		p.applyBoolean(name, value)
-	case paramMethod, paramEncoding, paramStandalone, paramVersion:
+	case lexicon.SerializationMethod, lexicon.SerializationEncoding, lexicon.SerializationStandalone, lexicon.SerializationVersion:
 		p.applyIdentity(name, value)
-	case paramUseCharacterMaps:
+	case lexicon.SerializationUseCharacterMaps:
 		p.applyCharacterMaps(elem)
 	default:
 		p.applyPresentation(name, value)
@@ -1532,37 +1532,37 @@ func (p *parameterDocumentValues) applyBoolean(name, value string) {
 	}
 
 	switch name {
-	case paramIndent:
+	case lexicon.SerializationIndent:
 		if p.output.IndentRaw == "" {
 			p.output.Indent = boolean
 			p.presence.indent = true
 		}
-	case paramOmitXMLDeclaration:
+	case lexicon.SerializationOmitXMLDeclaration:
 		if !p.output.OmitDeclarationExplicit {
 			p.output.OmitDeclaration = boolean
 			p.output.OmitDeclarationExplicit = true
 		}
-	case paramUndeclarePrefixes:
+	case lexicon.SerializationUndeclarePrefixes:
 		p.output.UndeclarePrefixes = boolean
 		p.presence.undeclarePrefixes = true
-	case paramAllowDuplicateNames:
+	case lexicon.SerializationAllowDuplicateNames:
 		if !p.explicit {
 			p.output.AllowDuplicateNames = boolean
 			p.presence.allowDuplicateNames = true
 			p.explicit = true
 		}
-	case paramByteOrderMark:
+	case lexicon.SerializationByteOrderMark:
 		p.output.ByteOrderMark = boolean
 		p.presence.byteOrderMark = true
-	case paramEscapeURIAttributes:
+	case lexicon.SerializationEscapeURIAttributes:
 		if p.output.EscapeURIAttributes == nil {
 			p.output.EscapeURIAttributes = &boolean
 		}
-	case paramIncludeContentType:
+	case lexicon.SerializationIncludeContentType:
 		if p.output.IncludeContentType == nil {
 			p.output.IncludeContentType = &boolean
 		}
-	case paramBuildTree:
+	case lexicon.SerializationBuildTree:
 		if p.output.BuildTree == nil {
 			p.output.BuildTree = &boolean
 		}
@@ -1575,24 +1575,24 @@ func (p *parameterDocumentValues) applyIdentity(name, value string) {
 	}
 
 	switch name {
-	case paramMethod:
+	case lexicon.SerializationMethod:
 		if p.output.MethodRaw == "" {
 			p.output.Method = strings.ToLower(strings.TrimSpace(value))
 			p.output.MethodExplicit = true
 		}
-	case paramEncoding:
+	case lexicon.SerializationEncoding:
 		if p.output.EncodingRaw == "" {
 			p.output.Encoding = strings.TrimSpace(value)
 		}
-	case paramVersion:
+	case lexicon.SerializationVersion:
 		if p.output.VersionRaw == "" {
 			p.output.Version = strings.TrimSpace(value)
 		}
-	case paramStandalone:
+	case lexicon.SerializationStandalone:
 		if p.output.StandaloneRaw == "" {
 			value = strings.TrimSpace(value)
 			switch value {
-			case lexicon.ValueYes, lexicon.ValueNo, nameOmit:
+			case lexicon.ValueYes, lexicon.ValueNo, lexicon.ValueOmit:
 				p.output.Standalone = value
 			}
 		}
@@ -1605,39 +1605,39 @@ func (p *parameterDocumentValues) applyPresentation(name, value string) {
 	}
 
 	switch name {
-	case paramCDATASectionElements:
+	case lexicon.SerializationCDATASectionElements:
 		if len(p.output.CDATASections) == 0 {
 			p.output.CDATASections = strings.Fields(value)
 		}
-	case paramDoctypePublic:
+	case lexicon.SerializationDoctypePublic:
 		if p.output.DoctypePublic == "" {
 			p.output.DoctypePublic = value
 		}
-	case paramDoctypeSystem:
+	case lexicon.SerializationDoctypeSystem:
 		if p.output.DoctypeSystem == "" {
 			p.output.DoctypeSystem = value
 		}
-	case paramMediaType:
+	case lexicon.SerializationMediaType:
 		if p.output.MediaType == "" {
 			p.output.MediaType = value
 		}
-	case paramItemSeparator:
+	case lexicon.SerializationItemSeparator:
 		if p.output.ItemSeparator == nil {
 			p.output.ItemSeparator = &value
 		}
-	case paramNormalizationForm:
+	case lexicon.SerializationNormalizationForm:
 		if p.output.NormalizationForm == "" {
 			p.output.NormalizationForm = strings.ToUpper(strings.TrimSpace(value))
 		}
-	case paramSuppressIndentation:
+	case lexicon.SerializationSuppressIndentation:
 		if len(p.output.SuppressIndentation) == 0 {
 			p.output.SuppressIndentation = strings.Fields(value)
 		}
-	case paramHTMLVersion:
+	case lexicon.SerializationHTMLVersion:
 		if p.output.HTMLVersion == "" {
 			p.output.HTMLVersion = strings.TrimSpace(value)
 		}
-	case paramJSONNodeOutputMethod:
+	case lexicon.SerializationJSONNodeOutputMethod:
 		if p.output.JSONNodeOutputMethod == "" {
 			p.output.JSONNodeOutputMethod = strings.TrimSpace(value)
 		}

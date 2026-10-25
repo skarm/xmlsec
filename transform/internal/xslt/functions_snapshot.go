@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -51,7 +52,7 @@ func (ec *execContext) fnCopyOf(ctx context.Context, args []xdm.Sequence) (xdm.S
 		} else if ec.contextNode != nil {
 			nodes = append(nodes, ec.contextNode)
 		} else {
-			return nil, dynamicError(errCodeXPDY0002, "copy-of() with no arguments requires a context item")
+			return nil, dynamicError(lexicon.ErrXPDY0002, "copy-of() with no arguments requires a context item")
 		}
 	}
 

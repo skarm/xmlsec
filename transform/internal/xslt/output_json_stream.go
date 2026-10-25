@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -36,7 +37,7 @@ func writeJSONItem(ctx context.Context, w io.Writer, item xdm.Item, out *OutputD
 	case xdm.ArrayItem:
 		return writeJSONArray(ctx, w, v, out, depth)
 	case xdm.NodeItem:
-		method := methodXML
+		method := lexicon.MethodXML
 		if out != nil && out.JSONNodeOutputMethod != "" {
 			method = out.JSONNodeOutputMethod
 		}
@@ -68,7 +69,7 @@ func writeJSONItem(ctx context.Context, w io.Writer, item xdm.Item, out *OutputD
 		return err
 	}
 
-	if value.IsNumeric() && (text == valueNaN || text == "INF" || text == "-INF" || text == "+INF") {
+	if value.IsNumeric() && (text == lexicon.FloatNaN || text == "INF" || text == "-INF" || text == "+INF") {
 		return dynamicError("SERE0020", "cannot serialize NaN or infinity as JSON")
 	}
 
@@ -113,7 +114,7 @@ func writeJSONMap(ctx context.Context, w io.Writer, v xdm.MapItem, out *OutputDe
 		}
 
 		if _, exists := seen[text]; exists && (out == nil || !out.AllowDuplicateNames) {
-			return dynamicError(errCodeSERE0022, "duplicate key %q in JSON output", text)
+			return dynamicError(lexicon.ErrSERE0022, "duplicate key %q in JSON output", text)
 		}
 
 		seen[text] = struct{}{}

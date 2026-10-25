@@ -11,6 +11,7 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/transform"
 )
@@ -59,11 +60,11 @@ func readBindings(ctx context.Context, path string) (transform.Bindings, error) 
 		case "decimal":
 			item, err = transform.Decimal(v.Value)
 		case "boolean":
-			if v.Value != valueTrue && v.Value != valueFalse {
+			if v.Value != lexicon.ValueTrue && v.Value != lexicon.ValueFalse {
 				return nil, usageError("boolean variable requires true or false")
 			}
 
-			item = transform.Boolean(v.Value == valueTrue)
+			item = transform.Boolean(v.Value == lexicon.ValueTrue)
 		case "dateTime":
 			var t time.Time
 

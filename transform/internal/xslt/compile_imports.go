@@ -10,9 +10,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -102,11 +102,11 @@ func (c *compiler) moduleResultPrefixExcludes(root *xdm.Element, inScope map[str
 }
 
 func (c *compiler) compileImport(ctx context.Context, elem *xdm.Element) error {
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(nameHref, xslAttrUseWhen)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(lexicon.AttrHref, xslAttrUseWhen)); err != nil {
 		return err
 	}
 
-	href := getAttr(elem, nameHref)
+	href := getAttr(elem, lexicon.AttrHref)
 	if href == "" {
 		return staticError(errCodeXTSE0010, "xsl:import requires href attribute")
 	}
@@ -115,7 +115,7 @@ func (c *compiler) compileImport(ctx context.Context, elem *xdm.Element) error {
 }
 
 func (c *compiler) resolveIncludeURI(_ context.Context, elem *xdm.Element) (string, string, error) {
-	href := getAttr(elem, nameHref)
+	href := getAttr(elem, lexicon.AttrHref)
 	if href == "" {
 		return "", "", staticError(errCodeXTSE0010, "xsl:include requires href attribute")
 	}
@@ -386,7 +386,7 @@ func (c *compiler) compileIncludeTemplates(ctx context.Context, elem *xdm.Elemen
 
 	root := c.includeRoots[importKey]
 	if root == nil {
-		return c.loadExternalStylesheet(ctx, stylesheetBaseURI(elem, c.baseURI, c.moduleRoot), getAttr(elem, nameHref), false)
+		return c.loadExternalStylesheet(ctx, stylesheetBaseURI(elem, c.baseURI, c.moduleRoot), getAttr(elem, lexicon.AttrHref), false)
 	}
 
 	savedBase := c.baseURI
@@ -432,12 +432,12 @@ func (c *compiler) compileIncludeTemplates(ctx context.Context, elem *xdm.Elemen
 	// backwards-compatible mode.
 	savedVersion := c.effectiveVersion
 	if _, hasShadow := root.GetAttribute("_version"); hasShadow {
-		if err := c.resolveSingleShadowAttribute(ctx, root, paramVersion); err != nil {
+		if err := c.resolveSingleShadowAttribute(ctx, root, lexicon.SerializationVersion); err != nil {
 			return err
 		}
 	}
 
-	if ver := getAttr(root, paramVersion); ver != "" {
+	if ver := getAttr(root, lexicon.SerializationVersion); ver != "" {
 		c.effectiveVersion = ver
 	}
 
@@ -576,7 +576,7 @@ func (c *compiler) loadExternalStylesheet(ctx context.Context, baseURI, href str
 // original source remains available to document(""); only a private module tree
 // receives the implicit stylesheet/template wrappers.
 func expandSimplifiedModule(ctx context.Context, doc *xdm.Document, root *xdm.Element) (*xdm.Document, error) {
-	version := root.GetAttributeNodeNS(paramVersion, lexicon.NamespaceXSLT)
+	version := root.GetAttributeNodeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
 	if version == nil {
 		return nil, staticError(errCodeXTSE0150, "simplified stylesheet requires xsl:version")
 	}
@@ -592,7 +592,7 @@ func expandSimplifiedModule(ctx context.Context, doc *xdm.Document, root *xdm.El
 
 	wrapper := &tree.Node{
 		Kind: tree.ElementNode, Name: tree.Name{Space: lexicon.NamespaceXSLT, Local: nameStylesheet}, Prefix: version.Prefix(), SourceLine: literal.SourceLine,
-		NS: []tree.Namespace{{Prefix: version.Prefix(), URI: lexicon.NamespaceXSLT}}, Attrs: []tree.Attribute{{Name: tree.Name{Local: paramVersion}, Value: version.Value()}},
+		NS: []tree.Namespace{{Prefix: version.Prefix(), URI: lexicon.NamespaceXSLT}}, Attrs: []tree.Attribute{{Name: tree.Name{Local: lexicon.SerializationVersion}, Value: version.Value()}},
 	}
 	if base := xpath.NodeBaseURI(root.Parent()); base != "" && base != doc.URL() {
 		wrapper.Attrs = append(wrapper.Attrs, tree.Attribute{Name: tree.Name{Space: lexicon.NamespaceXML, Local: "base"}, Prefix: "xml", Value: base})
@@ -666,12 +666,12 @@ func (c *compiler) compileExternalModule(ctx context.Context, doc *xdm.Document,
 	// enters backwards-compatible mode.
 	savedVersion := c.effectiveVersion
 	if _, hasShadow := importedRoot.GetAttribute("_version"); hasShadow {
-		if err := c.resolveSingleShadowAttribute(ctx, importedRoot, paramVersion); err != nil {
+		if err := c.resolveSingleShadowAttribute(ctx, importedRoot, lexicon.SerializationVersion); err != nil {
 			return err
 		}
 	}
 
-	if ver := getAttr(importedRoot, paramVersion); ver != "" {
+	if ver := getAttr(importedRoot, lexicon.SerializationVersion); ver != "" {
 		c.effectiveVersion = ver
 	}
 

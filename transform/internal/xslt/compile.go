@@ -11,9 +11,9 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -506,10 +506,10 @@ func elementXSLTVersion(elem *xdm.Element) string {
 			return "" // These version attributes select serialization, not XSLT.
 		}
 
-		return getAttr(elem, paramVersion)
+		return getAttr(elem, lexicon.SerializationVersion)
 	}
 
-	ver, _ := elem.GetAttributeNS(paramVersion, lexicon.NamespaceXSLT)
+	ver, _ := elem.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
 
 	return ver
 }
@@ -897,7 +897,7 @@ func (c *compiler) compileXPath(expr string, ns map[string]string) (*xpath.Expre
 			return xpath.DeferredExpression(err, version), nil
 		}
 
-		code := "XPST0003"
+		code := lexicon.ErrXPST0003
 
 		if detail, ok := errors.AsType[*xdm.Error](err); ok {
 			code = detail.Code
@@ -916,7 +916,7 @@ func (c *compiler) compileXPath(expr string, ns map[string]string) (*xpath.Expre
 			}
 
 			if c.originalVariableVisibility == "" {
-				return nil, staticError("XPST0008", "xsl:original is outside an overriding variable or parameter")
+				return nil, staticError(lexicon.ErrXPST0008, "xsl:original is outside an overriding variable or parameter")
 			}
 		}
 	}
@@ -956,7 +956,7 @@ func (c *compiler) readPackageMetadata(root *xdm.Element, localName string) erro
 	} else {
 		// package-version is only allowed on xsl:package, not xsl:stylesheet/xsl:transform.
 		// In forwards-compatible mode (version > 3.0), unknown attributes are silently ignored.
-		ver := getAttr(root, paramVersion)
+		ver := getAttr(root, lexicon.SerializationVersion)
 		if _, present := root.GetAttribute(namePackageVersion); present && !isForwardsCompatible(ver) {
 			return staticError(errCodeXTSE0090,
 				"attribute package-version is not allowed on xsl:%s", localName)
@@ -1069,13 +1069,13 @@ func (c *compiler) readRootVersion(ctx context.Context, root *xdm.Element, local
 	// computed value (e.g. _version="{system-property('xsl:version')}" yields 3.0,
 	// disabling BC even when version="1.0" is also present).
 	if _, hasShadow := root.GetAttribute("_version"); hasShadow {
-		if err := c.resolveSingleShadowAttribute(ctx, root, paramVersion); err != nil {
+		if err := c.resolveSingleShadowAttribute(ctx, root, lexicon.SerializationVersion); err != nil {
 			return err
 		}
 	}
 	// Read version — required on xsl:stylesheet and xsl:transform (XTSE0010).
 	// Allow _version shadow attribute (resolved above) to satisfy the check.
-	c.stylesheet.version = getAttr(root, paramVersion)
+	c.stylesheet.version = getAttr(root, lexicon.SerializationVersion)
 	if err := compilePreparedVersion(c, root, localName); err != nil {
 		return err
 	}
@@ -1083,7 +1083,7 @@ func (c *compiler) readRootVersion(ctx context.Context, root *xdm.Element, local
 	c.effectiveVersion = c.stylesheet.version
 
 	// Validate attributes on root element now that effectiveVersion is known.
-	if err := c.validateXSLTAttrs(ctx, root, attributeNames(paramVersion, "id", nameDefaultMode, nameDefaultValidation, nameInputTypeAnnotations, nameDefaultCollation, xslAttrUseWhen, xslAttrName, namePackageVersion, "declared-modes")); err != nil {
+	if err := c.validateXSLTAttrs(ctx, root, attributeNames(lexicon.SerializationVersion, "id", nameDefaultMode, nameDefaultValidation, nameInputTypeAnnotations, nameDefaultCollation, xslAttrUseWhen, xslAttrName, namePackageVersion, "declared-modes")); err != nil {
 		return err
 	}
 
@@ -1359,7 +1359,7 @@ func (c *compiler) validateDeferredReferences(ctx context.Context) error {
 
 	for _, call := range c.pendingFunctionCalls {
 		if !c.staticFunctionAvailable(ctx, call.URI, call.Name, call.Arity) {
-			return staticError(errCodeXPST0017, "unknown function Q{%s}%s#%d", call.URI, call.Name, call.Arity)
+			return staticError(lexicon.ErrXPST0017, "unknown function Q{%s}%s#%d", call.URI, call.Name, call.Arity)
 		}
 	}
 
@@ -1762,7 +1762,7 @@ func parseDOEAttr(v string) (bool, error) {
 	case lexicon.ValueNo, lexicon.ValueFalse, "0":
 		return false, nil
 	default:
-		return false, staticError(errCodeSEPM0016,
+		return false, staticError(lexicon.ErrSEPM0016,
 			"%q is not a valid value for disable-output-escaping", v)
 	}
 }

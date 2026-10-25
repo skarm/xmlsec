@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"path"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -169,9 +169,9 @@ func (ec *execContext) xsltFunctionsNS() map[xpath.QualifiedName]xpath.Function 
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameUnparsedEntityPublicId}] = &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityPublicID}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameKey2}] = &keyFunction{ec: ec, scope: ec.effectiveStylesheet()}
 
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameGenerateId}] = xpath.HostBuiltin(ec.stylesheet.xpathVersion(), nameGenerateId)
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: lexicon.FnGenerateID}] = xpath.HostBuiltin(ec.stylesheet.xpathVersion(), lexicon.FnGenerateID)
 	if ec.stylesheet.processorLanguage() <= 20 {
-		for _, name := range []string{fnNameFormatNumber, "format-date", "format-dateTime", "format-time"} {
+		for _, name := range []string{lexicon.FnFormatNumber, "format-date", "format-dateTime", "format-time"} {
 			ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: name}] = newLegacyFormatFunction(ec.stylesheet.xpathVersion(), name)
 		}
 	}
@@ -504,12 +504,12 @@ func (cfg *transformFnConfig) run(ctx context.Context, args []xdm.Sequence) (xdm
 	ctx = context.WithValue(ctx, transformDepthKey{}, depth+1)
 
 	if len(args) != 1 || args[0] == nil || xdm.SequenceLen(args[0]) != 1 {
-		return nil, dynamicError(errCodeXPTY0004, "fn:transform requires a single map argument")
+		return nil, dynamicError(lexicon.ErrXPTY0004, "fn:transform requires a single map argument")
 	}
 
 	options, ok := args[0].Get(0).(xdm.MapItem)
 	if !ok {
-		return nil, dynamicError(errCodeXPTY0004, "fn:transform argument must be a map")
+		return nil, dynamicError(lexicon.ErrXPTY0004, "fn:transform argument must be a map")
 	}
 
 	request := newTransformRequest(options, cfg.baseURI)
@@ -727,7 +727,7 @@ func transformBooleanOption(ctx context.Context, options xdm.MapItem, key string
 
 	atom, ok := value.Get(0).(xdm.AtomicValue)
 	if !ok {
-		return false, dynamicError(errCodeXPTY0004, "fn:transform: %s requires one boolean", key)
+		return false, dynamicError(lexicon.ErrXPTY0004, "fn:transform: %s requires one boolean", key)
 	}
 
 	return atom.BooleanVal(), nil
@@ -746,7 +746,7 @@ func validateTransformGlobalContextItem(m xdm.MapItem) error {
 	}
 
 	if seq == nil || xdm.SequenceLen(seq) != 1 {
-		return dynamicError(errCodeXPTY0004, "fn:transform: global-context-item must be exactly one item")
+		return dynamicError(lexicon.ErrXPTY0004, "fn:transform: global-context-item must be exactly one item")
 	}
 
 	return nil
@@ -765,12 +765,12 @@ func transformProcessorVersion(m xdm.MapItem) (int, error) {
 	}
 
 	if xdm.SequenceLen(seq) != 1 {
-		return 0, dynamicError(errCodeXPTY0004, "fn:transform: xslt-version requires one numeric value")
+		return 0, dynamicError(lexicon.ErrXPTY0004, "fn:transform: xslt-version requires one numeric value")
 	}
 
 	av, err := xpath.AtomizeItem(seq.Get(0))
 	if err != nil || !av.IsNumeric() {
-		return 0, dynamicError(errCodeXPTY0004, "fn:transform: xslt-version requires one numeric value")
+		return 0, dynamicError(lexicon.ErrXPTY0004, "fn:transform: xslt-version requires one numeric value")
 	}
 
 	// The option requests a minimum, not an exact processor. Use the modern
@@ -804,7 +804,7 @@ func validateTransformParamMap(name string, seq xdm.Sequence) error {
 
 	sm, ok := seq.Get(0).(xdm.MapItem)
 	if !ok {
-		return dynamicError(errCodeXPTY0004, "fn:transform: %s must be a map", name)
+		return dynamicError(lexicon.ErrXPTY0004, "fn:transform: %s must be a map", name)
 	}
 
 	for _, key := range sm.Keys() {
@@ -827,7 +827,7 @@ func checkTransformCapabilities(ctx context.Context, seq xdm.Sequence) error {
 
 	sm, ok := seq.Get(0).(xdm.MapItem)
 	if !ok {
-		return dynamicError(errCodeXPTY0004, "fn:transform: requested-properties must be a map")
+		return dynamicError(lexicon.ErrXPTY0004, "fn:transform: requested-properties must be a map")
 	}
 
 	for _, key := range sm.Keys() {
@@ -839,7 +839,7 @@ func checkTransformCapabilities(ctx context.Context, seq xdm.Sequence) error {
 		if qv.Local == nameProductName {
 			value, _ := sm.Get(key)
 			if xdm.SequenceLen(value) != 1 {
-				return dynamicError(errCodeXPTY0004, "fn:transform: product-name must be one string")
+				return dynamicError(lexicon.ErrXPTY0004, "fn:transform: product-name must be one string")
 			}
 
 			atom, err := xpath.AtomizeItem(value.Get(0))
@@ -1462,7 +1462,7 @@ func applySerializationParams(base *OutputDef, seq xdm.Sequence) *OutputDef {
 			continue
 		}
 
-		if name == paramVersion {
+		if name == lexicon.SerializationVersion {
 			versionExplicit = true
 		}
 
@@ -1490,7 +1490,7 @@ func applySerializationParams(base *OutputDef, seq xdm.Sequence) *OutputDef {
 	// "1.0" (which the html method rejects with SESU0007). An explicit base
 	// version (e.g. <xsl:output method="html" version="1.0"/>) is preserved so
 	// it still raises SESU0007.
-	if !versionExplicit && out.VersionRaw == "" && out.MethodExplicit && (out.Method == methodHTML || out.Method == methodXHTML) {
+	if !versionExplicit && out.VersionRaw == "" && out.MethodExplicit && (out.Method == lexicon.MethodHTML || out.Method == lexicon.MethodXHTML) {
 		out.Version = ""
 	}
 
@@ -1501,37 +1501,37 @@ func applySerializationParams(base *OutputDef, seq xdm.Sequence) *OutputDef {
 // name) to its serialization default on out. An unrecognized name is ignored.
 func resetSerializationParam(out *OutputDef, name string) {
 	switch name {
-	case paramMethod:
-		out.Method = methodXML
+	case lexicon.SerializationMethod:
+		out.Method = lexicon.MethodXML
 		out.MethodExplicit = false
-	case paramIndent:
+	case lexicon.SerializationIndent:
 		out.Indent = false
-	case paramOmitXMLDeclaration:
+	case lexicon.SerializationOmitXMLDeclaration:
 		out.OmitDeclaration = false
 		out.OmitDeclarationExplicit = false
-	case paramByteOrderMark:
+	case lexicon.SerializationByteOrderMark:
 		out.ByteOrderMark = false
-	case paramUndeclarePrefixes:
+	case lexicon.SerializationUndeclarePrefixes:
 		out.UndeclarePrefixes = false
-	case paramEncoding:
+	case lexicon.SerializationEncoding:
 		out.Encoding = lexicon.EncodingUTF8U
-	case paramVersion:
+	case lexicon.SerializationVersion:
 		out.Version = lexicon.XSLTVersion10
-	case paramStandalone:
+	case lexicon.SerializationStandalone:
 		out.Standalone = ""
-	case paramMediaType:
+	case lexicon.SerializationMediaType:
 		out.MediaType = ""
-	case paramDoctypePublic:
+	case lexicon.SerializationDoctypePublic:
 		out.DoctypePublic = ""
-	case paramDoctypeSystem:
+	case lexicon.SerializationDoctypeSystem:
 		out.DoctypeSystem = ""
-	case paramItemSeparator:
+	case lexicon.SerializationItemSeparator:
 		out.ItemSeparator = nil
-	case paramCDATASectionElements:
+	case lexicon.SerializationCDATASectionElements:
 		out.CDATASections = nil
-	case paramSuppressIndentation:
+	case lexicon.SerializationSuppressIndentation:
 		out.SuppressIndentation = nil
-	case paramUseCharacterMaps:
+	case lexicon.SerializationUseCharacterMaps:
 		out.ResolvedCharMap = nil
 	}
 }
@@ -1556,61 +1556,61 @@ func serializationParamName(key xdm.AtomicValue) string {
 // by its local name) to out.
 func applySerializationParam(out *OutputDef, name string, val xdm.Sequence) {
 	switch name {
-	case paramMethod:
+	case lexicon.SerializationMethod:
 		if s, ok := transformSeqString(val); ok {
 			out.Method = s
 			out.MethodExplicit = true
 		}
-	case paramIndent:
+	case lexicon.SerializationIndent:
 		if b, ok := transformSeqBool(val); ok {
 			out.Indent = b
 		}
-	case paramOmitXMLDeclaration:
+	case lexicon.SerializationOmitXMLDeclaration:
 		if b, ok := transformSeqBool(val); ok {
 			out.OmitDeclaration = b
 			out.OmitDeclarationExplicit = true
 		}
-	case paramByteOrderMark:
+	case lexicon.SerializationByteOrderMark:
 		if b, ok := transformSeqBool(val); ok {
 			out.ByteOrderMark = b
 		}
-	case paramUndeclarePrefixes:
+	case lexicon.SerializationUndeclarePrefixes:
 		if b, ok := transformSeqBool(val); ok {
 			out.UndeclarePrefixes = b
 		}
-	case paramEncoding:
+	case lexicon.SerializationEncoding:
 		if s, ok := transformSeqString(val); ok {
 			out.Encoding = s
 		}
-	case paramVersion:
+	case lexicon.SerializationVersion:
 		if s, ok := transformSeqString(val); ok {
 			out.Version = s
 		}
-	case paramStandalone:
+	case lexicon.SerializationStandalone:
 		if s, ok := transformSeqString(val); ok {
 			out.Standalone = s
 		}
-	case paramMediaType:
+	case lexicon.SerializationMediaType:
 		if s, ok := transformSeqString(val); ok {
 			out.MediaType = s
 		}
-	case paramDoctypePublic:
+	case lexicon.SerializationDoctypePublic:
 		if s, ok := transformSeqString(val); ok {
 			out.DoctypePublic = s
 		}
-	case paramDoctypeSystem:
+	case lexicon.SerializationDoctypeSystem:
 		if s, ok := transformSeqString(val); ok {
 			out.DoctypeSystem = s
 		}
-	case paramItemSeparator:
+	case lexicon.SerializationItemSeparator:
 		if s, ok := transformSeqString(val); ok {
 			out.ItemSeparator = &s
 		}
-	case paramCDATASectionElements:
+	case lexicon.SerializationCDATASectionElements:
 		out.CDATASections = mergeSerializationQNames(out.CDATASections, val)
-	case paramSuppressIndentation:
+	case lexicon.SerializationSuppressIndentation:
 		out.SuppressIndentation = mergeSerializationQNames(out.SuppressIndentation, val)
-	case paramUseCharacterMaps:
+	case lexicon.SerializationUseCharacterMaps:
 		applyUseCharacterMapsParam(out, val)
 	}
 }

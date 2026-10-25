@@ -14,18 +14,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
-
-// xsdWhitespace is the set of XSD whitespace characters (#x20 space, #x9 tab,
-// #xD carriage return, #xA newline). Unlike Go's unicode.IsSpace this excludes
-// NBSP (U+00A0) and other Unicode whitespace, so an invalid value padded with
-// such characters stays invalid under subsequent lexical validation.
-const xsdWhitespace = " \t\r\n"
-
-// builtinTime is the xs:time builtin local name, hoisted to a constant so the
-// several switch/comparison sites that reference it share one literal.
-const builtinTime = "time"
 
 // XSDFields splits s into items on runs of XSD whitespace only (space, tab, CR,
 // LF), the exported form of xsdFields. xs:list item separation is defined over
@@ -54,37 +44,37 @@ type durationTimelinePoint struct {
 // so Compare never accepts a value that the validation path would reject.
 func Compare(a, b, builtinLocal string) (int, bool) {
 	switch builtinLocal {
-	case nameBoolean:
+	case lexicon.TypeBoolean:
 		return compareBoolean(a, b)
 	case lexicon.TypeFloat:
 		return compareFloat(a, b, true)
 	case lexicon.TypeDouble:
 		return compareFloat(a, b, false)
-	case nameDateTime, lexicon.TypeDateTimeStamp:
+	case lexicon.TypeDateTime, lexicon.TypeDateTimeStamp:
 		// xs:dateTimeStamp is a subtype of xs:dateTime; compare in the dateTime
 		// value space.
-		return compareDateTime(a, b, nameDateTime)
-	case nameDate:
+		return compareDateTime(a, b, lexicon.TypeDateTime)
+	case lexicon.TypeDate:
 		return compareDate(a, b, builtinLocal)
-	case builtinTime:
+	case lexicon.TypeTime:
 		return compareTime(a, b, builtinLocal)
-	case nameGYear:
+	case lexicon.TypeGYear:
 		return compareGYear(a, b, builtinLocal)
-	case nameGYearMonth:
+	case lexicon.TypeGYearMonth:
 		return compareGYearMonth(a, b, builtinLocal)
-	case nameGMonth:
+	case lexicon.TypeGMonth:
 		return compareGMonth(a, b, builtinLocal)
-	case nameGDay:
+	case lexicon.TypeGDay:
 		return compareGDay(a, b, builtinLocal)
-	case nameGMonthDay:
+	case lexicon.TypeGMonthDay:
 		return compareGMonthDay(a, b, builtinLocal)
-	case nameDuration, lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration:
+	case lexicon.TypeDuration, lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration:
 		// xs:dayTimeDuration and xs:yearMonthDuration are subtypes of xs:duration;
 		// compare in the duration value space.
 		return compareDuration(a, b)
-	case nameHexBinary:
+	case lexicon.TypeHexBinary:
 		return compareHexBinary(a, b)
-	case nameBase64Binary:
+	case lexicon.TypeBase64Binary:
 		return compareBase64Binary(a, b)
 	default:
 		if isNumeric := numericComparableTypes(builtinLocal); !isNumeric {
@@ -115,7 +105,7 @@ func Compare(a, b, builtinLocal string) (int, bool) {
 // strict lexical validation (including range checks for the bounded subtypes).
 func numericComparableTypes(key string) bool {
 	switch key {
-	case nameDecimal, nameInteger, nameNonPositiveInteger, nameNegativeInteger, nameLong, nameInt, nameShort, nameByte, nameNonNegativeInteger, nameUnsignedLong, nameUnsignedInt, nameUnsignedShort, nameUnsignedByte, namePositiveInteger:
+	case lexicon.TypeDecimal, lexicon.TypeInteger, lexicon.TypeNonPositiveInteger, lexicon.TypeNegativeInteger, lexicon.TypeLong, lexicon.TypeInt, lexicon.TypeShort, lexicon.TypeByte, lexicon.TypeNonNegativeInteger, lexicon.TypeUnsignedLong, lexicon.TypeUnsignedInt, lexicon.TypeUnsignedShort, lexicon.TypeUnsignedByte, lexicon.TypePositiveInteger:
 		return true
 	}
 
@@ -140,7 +130,7 @@ func validDateTimeOperands(a, b, builtinLocal string) bool {
 // true and "false"/"0" map to false. Any other input is not a valid boolean.
 func parseXSDBoolean(s string) (bool, bool) {
 	switch s {
-	case nameTrue, "1":
+	case lexicon.ValueTrue, "1":
 		return true, true
 	case "false", "0":
 		return false, true
@@ -154,7 +144,7 @@ func parseXSDBoolean(s string) (bool, bool) {
 // For a total, deterministic result this orders false < true; equal values
 // return 0.
 func compareBoolean(a, b string) (int, bool) {
-	if !validBuiltinOperands(a, b, nameBoolean) {
+	if !validBuiltinOperands(a, b, lexicon.TypeBoolean) {
 		return 0, false
 	}
 
@@ -183,7 +173,7 @@ func compareBoolean(a, b string) (int, bool) {
 // the result is a well-behaved comparator; enumeration only relies on cmp == 0.
 // Returns ok=false if either operand is not valid hexBinary.
 func compareHexBinary(a, b string) (int, bool) {
-	if !validBuiltinOperands(a, b, nameHexBinary) {
+	if !validBuiltinOperands(a, b, lexicon.TypeHexBinary) {
 		return 0, false
 	}
 
@@ -203,7 +193,7 @@ func compareHexBinary(a, b string) (int, bool) {
 // in place of a bare equality flag. Returns ok=false if either operand is not
 // valid base64Binary.
 func compareBase64Binary(a, b string) (int, bool) {
-	if !validBuiltinOperands(a, b, nameBase64Binary) {
+	if !validBuiltinOperands(a, b, lexicon.TypeBase64Binary) {
 		return 0, false
 	}
 
@@ -481,7 +471,7 @@ func compareGMonthDay(a, b, builtinLocal string) (int, bool) {
 }
 
 func compareDuration(a, b string) (int, bool) {
-	if !validBuiltinOperands(a, b, nameDuration) {
+	if !validBuiltinOperands(a, b, lexicon.TypeDuration) {
 		return 0, false
 	}
 
@@ -629,13 +619,13 @@ func splitSecondsInDay(seconds *big.Rat) (*big.Int, *big.Rat) {
 // string-family types and anything unrecognized or unparsable.
 func CanonicalKey(s, builtinLocal string) (string, bool) {
 	switch builtinLocal {
-	case nameBoolean:
+	case lexicon.TypeBoolean:
 		trimmed := trimXSDSpace(s)
-		if ValidateBuiltin(trimmed, nameBoolean, Version11) != nil {
+		if ValidateBuiltin(trimmed, lexicon.TypeBoolean, Version11) != nil {
 			return trimmed, false
 		}
 
-		if trimmed == nameTrue || trimmed == "1" {
+		if trimmed == lexicon.ValueTrue || trimmed == "1" {
 			return "1", true
 		}
 
@@ -644,14 +634,14 @@ func CanonicalKey(s, builtinLocal string) (string, bool) {
 		return canonicalFloatKey(s, 32) // xs:float is 32-bit IEEE-754
 	case lexicon.TypeDouble:
 		return canonicalFloatKey(s, 64)
-	case nameDateTime, nameDate, builtinTime, nameGYear, nameGYearMonth, nameGMonth, nameGDay, nameGMonthDay:
+	case lexicon.TypeDateTime, lexicon.TypeDate, lexicon.TypeTime, lexicon.TypeGYear, lexicon.TypeGYearMonth, lexicon.TypeGMonth, lexicon.TypeGDay, lexicon.TypeGMonthDay:
 		return canonicalDateTimeKey(trimXSDSpace(s), builtinLocal)
 	case lexicon.TypeDateTimeStamp:
 		// xs:dateTimeStamp canonicalizes in the xs:dateTime value space.
-		return canonicalDateTimeKey(trimXSDSpace(s), nameDateTime)
-	case nameHexBinary:
+		return canonicalDateTimeKey(trimXSDSpace(s), lexicon.TypeDateTime)
+	case lexicon.TypeHexBinary:
 		trimmed := trimXSDSpace(s)
-		if ValidateBuiltin(trimmed, nameHexBinary, Version11) != nil {
+		if ValidateBuiltin(trimmed, lexicon.TypeHexBinary, Version11) != nil {
 			return trimmed, false
 		}
 
@@ -661,9 +651,9 @@ func CanonicalKey(s, builtinLocal string) (string, bool) {
 		}
 		// Stable byte key so case-distinct forms ("0A"/"0a") canonicalize equal.
 		return hex.EncodeToString(decoded), true
-	case nameBase64Binary:
+	case lexicon.TypeBase64Binary:
 		trimmed := trimXSDSpace(s)
-		if ValidateBuiltin(trimmed, nameBase64Binary, Version11) != nil {
+		if ValidateBuiltin(trimmed, lexicon.TypeBase64Binary, Version11) != nil {
 			return trimmed, false
 		}
 
@@ -674,14 +664,14 @@ func CanonicalKey(s, builtinLocal string) (string, bool) {
 		// Stable byte key so whitespace-distinct forms ("YWJj"/"YW Jj")
 		// canonicalize equal; hex of the decoded octets is a canonical encoding.
 		return hex.EncodeToString(decoded), true
-	case nameDuration, lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration:
+	case lexicon.TypeDuration, lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration:
 		// xs:dayTimeDuration / xs:yearMonthDuration canonicalize in the xs:duration
 		// value space (they are valid xs:duration lexicals).
 		trimmed := trimXSDSpace(s)
 		// Validate against the strict xs:duration lexical space before the lenient
 		// parseXSDDurationValue below, so CanonicalKey never canonicalizes a value
 		// the validator rejects.
-		if ValidateBuiltin(trimmed, nameDuration, Version11) != nil {
+		if ValidateBuiltin(trimmed, lexicon.TypeDuration, Version11) != nil {
 			return trimmed, false
 		}
 
@@ -700,10 +690,10 @@ func CanonicalKey(s, builtinLocal string) (string, bool) {
 		}
 
 		return fmt.Sprintf("%s|%s", months.String(), seconds.RatString()), true
-	case nameDecimal, nameInteger,
-		nameNonPositiveInteger, nameNegativeInteger, nameLong, nameInt, nameShort, nameByte,
-		nameNonNegativeInteger, nameUnsignedLong, nameUnsignedInt, nameUnsignedShort, nameUnsignedByte,
-		namePositiveInteger:
+	case lexicon.TypeDecimal, lexicon.TypeInteger,
+		lexicon.TypeNonPositiveInteger, lexicon.TypeNegativeInteger, lexicon.TypeLong, lexicon.TypeInt, lexicon.TypeShort, lexicon.TypeByte,
+		lexicon.TypeNonNegativeInteger, lexicon.TypeUnsignedLong, lexicon.TypeUnsignedInt, lexicon.TypeUnsignedShort, lexicon.TypeUnsignedByte,
+		lexicon.TypePositiveInteger:
 		trimmed := trimXSDSpace(s)
 		// Validate strictly (lexical space + range for bounded subtypes) before
 		// canonicalizing, so e.g. "1.0"/integer, "2147483648"/int and "1/2"/
@@ -722,10 +712,10 @@ func CanonicalKey(s, builtinLocal string) (string, bool) {
 		// whiteSpace=preserve: the value space is the exact lexical string, so
 		// leading/trailing/internal whitespace is significant. Do not alter it.
 		return s, false
-	case nameNormalizedString:
+	case lexicon.TypeNormalizedString:
 		// whiteSpace=replace: tab/newline/carriage-return become spaces.
 		return whitespaceReplace(s), false
-	case nameNMTOKENS, nameIDREFS, nameENTITIES:
+	case lexicon.TypeNMTokens, lexicon.TypeIDREFS, lexicon.TypeENTITIES:
 		// List types: collapse internal whitespace so token sequences that
 		// differ only in separator whitespace are value-equal. Split on XSD
 		// whitespace only so a token containing NBSP is preserved (and stays
@@ -757,15 +747,15 @@ func canonicalFloatKey(s string, bitSize int) (string, bool) {
 	}
 
 	if math.IsNaN(f) {
-		return valueNaN, true
+		return lexicon.FloatNaN, true
 	}
 
 	if math.IsInf(f, 1) {
-		return valueInfinity, true
+		return lexicon.FloatINF, true
 	}
 
 	if math.IsInf(f, -1) {
-		return valueNegativeInfinity, true
+		return lexicon.FloatNegINF, true
 	}
 
 	if bitSize == 32 {
@@ -777,11 +767,11 @@ func canonicalFloatKey(s string, bitSize int) (string, bool) {
 	// strconv.FormatFloat output ("+Inf"/"-Inf"), keeping equal values' keys
 	// consistent with the literal INF/-INF spellings above.
 	if math.IsInf(f, 1) {
-		return valueInfinity, true
+		return lexicon.FloatINF, true
 	}
 
 	if math.IsInf(f, -1) {
-		return valueNegativeInfinity, true
+		return lexicon.FloatNegINF, true
 	}
 
 	if f == 0 {
@@ -806,21 +796,21 @@ func canonicalDateTimeKey(s, builtinLocal string) (string, bool) {
 	)
 
 	switch builtinLocal {
-	case nameDateTime:
+	case lexicon.TypeDateTime:
 		dt, ok = parseXSDDateTime(s)
-	case nameDate:
+	case lexicon.TypeDate:
 		dt, ok = parseXSDDate(s)
-	case builtinTime:
+	case lexicon.TypeTime:
 		dt, ok = parseXSDTime(s)
-	case nameGYear:
+	case lexicon.TypeGYear:
 		dt, ok = parseXSDGYear(s)
-	case nameGYearMonth:
+	case lexicon.TypeGYearMonth:
 		dt, ok = parseXSDGYearMonth(s)
-	case nameGMonth:
+	case lexicon.TypeGMonth:
 		dt, ok = parseXSDGMonth(s)
-	case nameGDay:
+	case lexicon.TypeGDay:
 		dt, ok = parseXSDGDay(s)
-	case nameGMonthDay:
+	case lexicon.TypeGMonthDay:
 		dt, ok = parseXSDGMonthDay(s)
 	}
 
@@ -830,7 +820,7 @@ func canonicalDateTimeKey(s, builtinLocal string) (string, bool) {
 	// Normalize 24:00:00 to 00:00:00 of the next day so its key matches the
 	// equivalent start-of-day instant, then to UTC when timezoned.
 	dt = dt.normalizeHour24()
-	if builtinLocal == builtinTime {
+	if builtinLocal == lexicon.TypeTime {
 		// xs:time carries no calendar date, so assign the SAME synthetic reference
 		// date compareTime uses (2000-01-15) before UTC normalization. Otherwise a
 		// timezoned value whose UTC offset crosses midnight (e.g. "11:30:00+01:00"
@@ -856,7 +846,7 @@ func WhiteSpace(builtinLocal string) string {
 	switch builtinLocal {
 	case "string":
 		return "preserve"
-	case nameNormalizedString:
+	case lexicon.TypeNormalizedString:
 		return "replace"
 	default:
 		return "collapse"
@@ -1101,7 +1091,7 @@ func CompareFloatFacetBound(a, b, builtinLocal string) (int, bool) {
 // Unicode whitespace (e.g. NBSP) in place so it is rejected by lexical
 // validation, and never silently stripped.
 func trimXSDSpace(s string) string {
-	return strings.Trim(s, xsdWhitespace)
+	return strings.Trim(s, lexicon.XMLWhitespace)
 }
 
 // xsdFields splits s on runs of XSD whitespace only (space, tab, CR, LF),
@@ -1168,15 +1158,15 @@ func decodeBase64Binary(s string) ([]byte, bool) {
 
 func parseXSDFloat(s string) (float64, bool) {
 	switch s {
-	case valueInfinity, "+INF":
+	case lexicon.FloatINF, "+INF":
 		return math.Inf(1), true
-	case valueNegativeInfinity:
+	case lexicon.FloatNegINF:
 		return math.Inf(-1), true
 	// Per XSD the only valid lexical form for NaN is the bare "NaN"; +NaN and
 	// -NaN are not valid (floatRegex rejects them). Reject them here too so the
 	// value space stays consistent with the lexical space — otherwise an invalid
 	// facet such as enumeration value="+NaN" would value-match instance "NaN".
-	case valueNaN:
+	case lexicon.FloatNaN:
 		return math.NaN(), true
 	}
 

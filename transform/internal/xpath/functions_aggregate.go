@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func lookupFunctionsAggregate(name string) (*builtinFunc, bool) {
@@ -77,17 +77,17 @@ func aggregateTypeFamilyByName(typeName string) string {
 	case xdm.TypeDuration:
 		return lexicon.TypeDuration
 	case xdm.TypeDate:
-		return nameDate
+		return lexicon.TypeDate
 	case xdm.TypeDateTime:
-		return nameDateTime
+		return lexicon.TypeDateTime
 	case xdm.TypeTime:
-		return nameTime
+		return lexicon.TypeTime
 	case xdm.TypeBoolean:
 		return lexicon.TypeBoolean
 	case xdm.TypeBase64Binary:
-		return nameBase64Binary
+		return lexicon.TypeBase64Binary
 	case xdm.TypeHexBinary:
-		return nameHexBinary
+		return lexicon.TypeHexBinary
 	}
 
 	return ""

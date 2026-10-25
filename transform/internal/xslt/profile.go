@@ -7,8 +7,8 @@ import (
 	"math/big"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 	"github.com/skarm/xmlsec/transform/internal/xslt/internal/elements"
 )
@@ -282,7 +282,7 @@ func checkModernAttributeLanguage(attribute, value, element string, def elementD
 		return staticError("XTSE1660", "%s on xsl:%s requires a schema-aware processor", attribute, element)
 	}
 
-	if effective < 30 && attribute == paramMethod && (value == "json" || value == "adaptive") {
+	if effective < 30 && attribute == lexicon.SerializationMethod && (value == "json" || value == "adaptive") {
 		return staticError("XTSE0020", "serialization method requires XSLT 3.0")
 	}
 
@@ -309,7 +309,7 @@ func checkModernAttributeLanguage(attribute, value, element string, def elementD
 		}
 
 		if err != nil {
-			return staticErrorCause(errCodeXPST0003, err, "invalid xsl:%s/@as: %v", element, err)
+			return staticErrorCause(lexicon.ErrXPST0003, err, "invalid xsl:%s/@as: %v", element, err)
 		}
 
 		return xpath.CheckTypeLanguage(sequenceType, map[int]int{20: 20, 30: 31}[effective])
@@ -324,10 +324,10 @@ func requiresSchemaAttribute(attribute, value string, processor int) bool {
 	switch attribute {
 	case nameValidation, nameDefaultValidation:
 		return value == validationStrict || processor == 20 && (value == validationLax || value == validationPreserve)
-	case nameType:
+	case lexicon.AttrType:
 		return true
 	case nameTyped:
-		return value == validationStrict || value == nameYes || value == nameTrue || value == "1"
+		return value == validationStrict || value == lexicon.ValueYes || value == lexicon.ValueTrue || value == "1"
 	default:
 		return false
 	}

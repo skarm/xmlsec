@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
@@ -115,7 +116,7 @@ func checkedStylesheet(ctx context.Context, t Transform) (*document.Document, er
 	}
 
 	name := doc.Root().Name()
-	if name.Space != "http://www.w3.org/1999/XSL/Transform" || name.Local != "stylesheet" && name.Local != "transform" {
+	if name.Space != lexicon.NamespaceXSLT || name.Local != "stylesheet" && name.Local != "transform" {
 		return nil, fmt.Errorf("%w: XSLT stylesheet root", ErrInput)
 	}
 

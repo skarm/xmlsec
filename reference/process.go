@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
 )
@@ -147,7 +148,7 @@ func (p *processor) apply(ctx context.Context, in Data, tr Transform) (Data, err
 		p.out.canonicalization = ""
 	case EnvelopedSignature:
 		signature := p.opt.Signature
-		if !signature.Valid() || signature.Name() != (document.Name{Space: "http://www.w3.org/2000/09/xmldsig#", Local: "Signature"}) || signature.Node().Document() != in.nodes.Document() {
+		if !signature.Valid() || signature.Name() != (document.Name{Space: lexicon.NamespaceDSig, Local: "Signature"}) || signature.Node().Document() != in.nodes.Document() {
 			return Data{}, fmt.Errorf("%w: enveloped transform requires its containing Signature in the SAME snapshot", ErrInput)
 		}
 

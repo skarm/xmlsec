@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 )
@@ -192,7 +193,7 @@ func canonicalInclusivePrefixes(prefixes []string) (map[string]bool, error) {
 	for _, prefix := range prefixes {
 		if prefix == "#default" {
 			prefix = ""
-		} else if !NCName(prefix) || prefix == nameXmlns {
+		} else if !NCName(prefix) || prefix == lexicon.PrefixXMLNS {
 			return nil, fmt.Errorf("%w: inclusive namespace prefix", ErrMalformed)
 		}
 
@@ -514,7 +515,7 @@ func (w *canonicalWriter) namespaceDeclarations(selected map[string]string, util
 	toRender := w.declarations
 
 	for prefix, uri := range selected {
-		if prefix == nameXML {
+		if prefix == lexicon.PrefixXML {
 			continue
 		}
 
@@ -622,13 +623,13 @@ func canonicalAttributes(attrs []Attribute, n *Node, visible bool, sel canonical
 
 	filtered := attrs[:0]
 	for _, attribute := range attrs {
-		if attribute.Name.Space != XMLNamespace || attribute.Name.Local != nameBase {
+		if attribute.Name.Space != XMLNamespace || attribute.Name.Local != lexicon.AttrBase {
 			filtered = append(filtered, attribute)
 		}
 	}
 
 	if value != "" {
-		filtered = append(filtered, Attribute{Name: Name{Space: XMLNamespace, Local: nameBase}, Prefix: nameXML, Value: value})
+		filtered = append(filtered, Attribute{Name: Name{Space: XMLNamespace, Local: lexicon.AttrBase}, Prefix: lexicon.PrefixXML, Value: value})
 	}
 
 	return filtered, nil
@@ -664,11 +665,11 @@ func inheritedXMLAttributes(attrs []Attribute, n *Node, algorithm string) []Attr
 func canonicalBase(n *Node, sel canonicalSelection) (string, bool, error) {
 	// Only contiguous omitted ancestors contribute xml:base, not every ancestor.
 	// E11-01 corrects the example in C14N 1.1 section 3.8 accordingly.
-	value, hasValue := xmlAttribute(n, nameBase)
+	value, hasValue := xmlAttribute(n, lexicon.AttrBase)
 	omittedBase := false
 
 	for parent := n.Parent; parent != nil && !sel.has(parent); parent = parent.Parent {
-		base, ok := xmlAttribute(parent, nameBase)
+		base, ok := xmlAttribute(parent, lexicon.AttrBase)
 		if !ok {
 			continue
 		}

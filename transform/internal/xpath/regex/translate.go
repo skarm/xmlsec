@@ -10,12 +10,9 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-)
 
-// errCodeFORX0002 mirrors the XPath FORX0002 ("invalid regular expression")
-// error code. This package is layering-neutral (no xpath dependency); callers
-// map regexError back to their own error type — xpath wraps it as XPathError.
-const errCodeFORX0002 = "FORX0002"
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
 
 // XML NameStartChar as a character class (for use outside [])
 const (
@@ -158,7 +155,7 @@ func (c *xsd10Class) character(ch rune, next byte) error {
 }
 
 func invalidXSD10Hyphen() error {
-	return &regexError{Code: errCodeFORX0002, Message: "interior literal hyphen is unavailable in XML Schema 1.0"}
+	return &regexError{Code: lexicon.ErrFORX0002, Message: "interior literal hyphen is unavailable in XML Schema 1.0"}
 }
 
 // translateXPathRegex translates an XPath/XML Schema regex pattern into a
@@ -337,7 +334,7 @@ func validateXPathCharClassStructure(class string) error {
 
 	if first >= len(runes)-1 {
 		return &regexError{
-			Code:    errCodeFORX0002,
+			Code:    lexicon.ErrFORX0002,
 			Message: fmt.Sprintf("invalid character class: %s", class),
 		}
 	}
@@ -348,7 +345,7 @@ func validateXPathCharClassStructure(class string) error {
 		if runes[i] == '\\' {
 			if i+1 >= len(runes)-1 {
 				return &regexError{
-					Code:    errCodeFORX0002,
+					Code:    lexicon.ErrFORX0002,
 					Message: fmt.Sprintf("invalid character class: %s", class),
 				}
 			}
@@ -360,14 +357,14 @@ func validateXPathCharClassStructure(class string) error {
 
 		if i == first && (runes[i] == ']' || runes[i] == '[') {
 			return &regexError{
-				Code:    errCodeFORX0002,
+				Code:    lexicon.ErrFORX0002,
 				Message: fmt.Sprintf("invalid character class: %s", class),
 			}
 		}
 
 		if runes[i] == '[' && prevRaw != '-' {
 			return &regexError{
-				Code:    errCodeFORX0002,
+				Code:    lexicon.ErrFORX0002,
 				Message: fmt.Sprintf("invalid character class: %s", class),
 			}
 		}
@@ -390,7 +387,7 @@ func validateXPathCharClassStructure(class string) error {
 			followedByHyphen := runes[i+1] == '-' && (i+2 >= len(runes) || runes[i+2] != '[')
 			if precededByHyphen || followedByHyphen {
 				return &regexError{
-					Code:    errCodeFORX0002,
+					Code:    lexicon.ErrFORX0002,
 					Message: fmt.Sprintf("invalid character class: %s", class),
 				}
 			}
@@ -422,7 +419,7 @@ func validateXPathCharClassSubtraction(class string) error {
 		if runes[i] == '-' && runes[i+1] == '[' {
 			if i == 1 || (i == 2 && runes[1] == '^') {
 				return &regexError{
-					Code:    errCodeFORX0002,
+					Code:    lexicon.ErrFORX0002,
 					Message: fmt.Sprintf("invalid character class subtraction: %s", class),
 				}
 			}
@@ -517,7 +514,7 @@ func validateXPathRegex(pattern string, allowBackrefs bool) error {
 		case ']':
 			if state.inCharClass == 0 {
 				return &regexError{
-					Code:    errCodeFORX0002,
+					Code:    lexicon.ErrFORX0002,
 					Message: "unescaped ']' outside character class is not allowed in XPath regex",
 				}
 			}
@@ -535,7 +532,7 @@ func validateXPathRegex(pattern string, allowBackrefs bool) error {
 	}
 
 	if state.inCharClass > 0 {
-		return &regexError{Code: errCodeFORX0002, Message: "unterminated character class in XPath regex"}
+		return &regexError{Code: lexicon.ErrFORX0002, Message: "unterminated character class in XPath regex"}
 	}
 
 	return nil
@@ -578,7 +575,7 @@ func rejectPerlSpecific(pattern string) error {
 			switch runes[i+1] {
 			case 'b', 'B', 'A', 'Z', 'z', 'x', 'u', 'U':
 				return &regexError{
-					Code:    errCodeFORX0002,
+					Code:    lexicon.ErrFORX0002,
 					Message: fmt.Sprintf("Perl-specific escape \\%c is not allowed in XPath regex", runes[i+1]),
 				}
 			}
@@ -595,7 +592,7 @@ func rejectPerlSpecific(pattern string) error {
 			}
 
 			return &regexError{
-				Code:    errCodeFORX0002,
+				Code:    lexicon.ErrFORX0002,
 				Message: "inline flag groups (?...) are not allowed in XPath regex",
 			}
 		}
@@ -710,6 +707,8 @@ func parseClassRune(runes []rune, start int) (int64, int, error) {
 	return value, end + 1, nil
 }
 
+// regexError keeps this package layering-neutral (no xpath dependency).
+// Callers map it back to their own error type; xpath wraps it as XPathError.
 type regexError struct {
 	Code    string
 	Message string
@@ -742,14 +741,14 @@ func translateUnicodeProperty(name string, neg bool) (string, error) {
 			return prefix + "{" + name + "}", nil
 		}
 
-		return "", &regexError{Code: errCodeFORX0002, Message: fmt.Sprintf("unknown Unicode block: Is%s", blockName)}
+		return "", &regexError{Code: lexicon.ErrFORX0002, Message: fmt.Sprintf("unknown Unicode block: Is%s", blockName)}
 	}
 
 	if isGoSupportedProperty(name) {
 		return prefix + "{" + name + "}", nil
 	}
 
-	return "", &regexError{Code: errCodeFORX0002, Message: fmt.Sprintf("unknown Unicode property: %s", name)}
+	return "", &regexError{Code: lexicon.ErrFORX0002, Message: fmt.Sprintf("unknown Unicode property: %s", name)}
 }
 
 func lookupUnicodeBlockRange(name string) (string, bool) {
@@ -1152,7 +1151,7 @@ type regexValidation struct {
 func (v *regexValidation) validateEscape(start int) (int, error) {
 	next := v.runes[start+1]
 	if next == '0' {
-		return 0, &regexError{Code: errCodeFORX0002, Message: "back-reference \\0 is not allowed in XPath regex"}
+		return 0, &regexError{Code: lexicon.ErrFORX0002, Message: "back-reference \\0 is not allowed in XPath regex"}
 	}
 
 	if v.inCharClass == 0 && next >= '1' && next <= '9' {
@@ -1163,7 +1162,7 @@ func (v *regexValidation) validateEscape(start int) (int, error) {
 		end := findClosingBrace(v.runes, start+3)
 		if end < 0 {
 			return 0, &regexError{
-				Code:    errCodeFORX0002,
+				Code:    lexicon.ErrFORX0002,
 				Message: fmt.Sprintf("unterminated \\%c{ in regex", next),
 			}
 		}
@@ -1180,14 +1179,14 @@ func (v *regexValidation) validateBackreference(start int) (int, error) {
 	ref, validEnd, end, invalid := resolveXPathBackref(v.runes, start+1, v.captureCount, v.groupStack)
 	if !v.allowBackrefs {
 		return 0, &regexError{
-			Code:    errCodeFORX0002,
+			Code:    lexicon.ErrFORX0002,
 			Message: fmt.Sprintf("back-reference \\%d is not allowed in XPath regex", ref),
 		}
 	}
 
 	if invalid || validEnd < 0 {
 		return 0, &regexError{
-			Code:    errCodeFORX0002,
+			Code:    lexicon.ErrFORX0002,
 			Message: fmt.Sprintf("invalid back-reference \\%s in XPath regex", string(v.runes[start+1:end])),
 		}
 	}
@@ -1257,7 +1256,7 @@ func (v *regexValidation) validateOutsideClass(index int) error {
 	case '{':
 		if !isValidQuantifierBrace(v.runes, index) {
 			return &regexError{
-				Code:    errCodeFORX0002,
+				Code:    lexicon.ErrFORX0002,
 				Message: "unescaped '{' outside quantifier is not allowed in XPath regex",
 			}
 		}
@@ -1266,7 +1265,7 @@ func (v *regexValidation) validateOutsideClass(index int) error {
 	case '}':
 		if !v.inQuantifier {
 			return &regexError{
-				Code:    errCodeFORX0002,
+				Code:    lexicon.ErrFORX0002,
 				Message: "unescaped '}' outside quantifier is not allowed in XPath regex",
 			}
 		}

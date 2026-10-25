@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -814,7 +814,7 @@ func (fn *xslFunction) prepareCall(ctx context.Context, namespaces map[string]st
 
 		st, err := xpath.ParseSequenceType(as)
 		if err != nil {
-			return staticError(errCodeXPST0003, "invalid function parameter type %q: %s", as, err)
+			return staticError(lexicon.ErrXPST0003, "invalid function parameter type %q: %s", as, err)
 		}
 
 		bound, err := xpath.BindSequenceType(ctx, st, p.TypeNamespaces, p.XPathDefaultNS)
@@ -829,7 +829,7 @@ func (fn *xslFunction) prepareCall(ctx context.Context, namespaces map[string]st
 	if fn.As != "" {
 		st, err := xpath.ParseSequenceType(fn.As)
 		if err != nil {
-			return staticError(errCodeXPST0003, "invalid function return type %q: %s", fn.As, err)
+			return staticError(lexicon.ErrXPST0003, "invalid function return type %q: %s", fn.As, err)
 		}
 
 		bound, err := xpath.BindSequenceType(ctx, st, namespaces, defaultNS)

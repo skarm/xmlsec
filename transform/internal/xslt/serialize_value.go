@@ -4,8 +4,8 @@ import (
 	"context"
 	"io"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -23,7 +23,7 @@ func SerializeValue(ctx context.Context, w io.Writer, result ValueResult) error 
 		return err
 	}
 
-	if (definition.Method == methodXML || definition.Method == methodXHTML) && (definition.DoctypeSystem != "" || definition.Standalone == lexicon.ValueYes || definition.Standalone == lexicon.ValueNo) {
+	if (definition.Method == lexicon.MethodXML || definition.Method == lexicon.MethodXHTML) && (definition.DoctypeSystem != "" || definition.Standalone == lexicon.ValueYes || definition.Standalone == lexicon.ValueNo) {
 		if err := xpath.ValidateSerializationDocument(ctx, result.Items, definition.ItemSeparator); err != nil {
 			return err
 		}
@@ -33,7 +33,7 @@ func SerializeValue(ctx context.Context, w io.Writer, result ValueResult) error 
 		return err
 	}
 
-	if definition.Method == methodAdaptive {
+	if definition.Method == lexicon.MethodAdaptive {
 		doc, err := xdm.CopyDoc(result.Document)
 		if err != nil {
 			return err
@@ -54,12 +54,12 @@ func SerializeValue(ctx context.Context, w io.Writer, result ValueResult) error 
 // internal implementation choice, not a restriction on writer-based public APIs.
 func streamValue(ctx context.Context, w io.Writer, result ValueResult, definition *OutputDef) (bool, error) {
 	switch definition.Method {
-	case methodXML, methodText, methodHTML, methodJSON:
+	case lexicon.MethodXML, lexicon.MethodText, lexicon.MethodHTML, lexicon.MethodJSON:
 	default:
 		return false, nil
 	}
 
-	if definition.Method != methodJSON && (sequenceHasDOEMarkers(result.Items) || definition.NormalizationForm == lexicon.NormFullyNormalized) {
+	if definition.Method != lexicon.MethodJSON && (sequenceHasDOEMarkers(result.Items) || definition.NormalizationForm == lexicon.NormFullyNormalized) {
 		return false, nil
 	}
 
@@ -69,13 +69,13 @@ func streamValue(ctx context.Context, w io.Writer, result ValueResult, definitio
 	}
 
 	switch definition.Method {
-	case methodXML:
+	case lexicon.MethodXML:
 		err = streamXMLValue(ctx, writer, result, definition)
-	case methodText:
+	case lexicon.MethodText:
 		err = streamTextValue(ctx, writer, result, definition)
-	case methodHTML:
+	case lexicon.MethodHTML:
 		err = streamHTMLValue(ctx, writer, result, definition)
-	case methodJSON:
+	case lexicon.MethodJSON:
 		err = SerializeItems(ctx, writer, result.Items, result.Document, definition)
 	}
 

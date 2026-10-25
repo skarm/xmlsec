@@ -12,11 +12,12 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/reference"
 )
 
-const Namespace = "http://www.w3.org/2000/09/xmldsig#"
+const Namespace = lexicon.NamespaceDSig
 
 func ParseProgram(ctx context.Context, n *tree.Node, doc *document.Document) (reference.Transform, error) {
 	var t reference.Transform

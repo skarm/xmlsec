@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -48,7 +48,7 @@ func variableAllowedAttrs(name string) bool {
 func lreAllowedXSLTAttrs(name string) bool {
 	switch name {
 	case nameUseAttributeSets, nameExpandText, nameXpathDefaultNamespace, nameExcludeResultPrefixes,
-		nameExtensionElementPrefixes, paramVersion, nameType, nameValidation,
+		nameExtensionElementPrefixes, lexicon.SerializationVersion, lexicon.AttrType, nameValidation,
 		nameDefaultCollation, nameDefaultMode, nameDefaultValidation, nameInheritNamespaces,
 		xslAttrUseWhen:
 		return true
@@ -85,7 +85,7 @@ func (c *compiler) validateXSLTAttrs(ctx context.Context, elem *xdm.Element, all
 	fc := c.forwardsCompatible(c.effectiveVersion)
 	if !fc {
 		// Also check the element's own version attribute
-		if elemVer := getAttr(elem, paramVersion); elemVer != "" {
+		if elemVer := getAttr(elem, lexicon.SerializationVersion); elemVer != "" {
 			fc = c.forwardsCompatible(elemVer)
 		}
 	}
@@ -135,7 +135,7 @@ func xsltStandardAttrs(name string) bool {
 	switch name {
 	case nameDefaultCollation, nameDefaultMode, nameDefaultValidation, nameExcludeResultPrefixes,
 		nameExpandText, nameExtensionElementPrefixes, xslAttrUseWhen, nameXpathDefaultNamespace,
-		paramVersion:
+		lexicon.SerializationVersion:
 		return true
 	default:
 		return false
@@ -529,7 +529,7 @@ func (c *compiler) evaluateUseWhen(ctx context.Context, expr string) (bool, erro
 			return false, failure
 		}
 
-		code := errCodeXPST0003
+		code := lexicon.ErrXPST0003
 		if detail, ok := errors.AsType[*xdm.Error](err); ok {
 			code = detail.Code
 		}
@@ -835,7 +835,7 @@ func (c *compiler) compileUnknownXSLTInstruction(ctx context.Context, elem *xdm.
 func (c *compiler) compileResultDocument(ctx context.Context, elem *xdm.Element) (instruction, error) {
 	inst := &resultDocumentInst{}
 
-	if href, present := elem.GetAttribute(nameHref); present {
+	if href, present := elem.GetAttribute(lexicon.AttrHref); present {
 		avt, err := c.compileAVT(href, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -861,8 +861,8 @@ func (c *compiler) compileResultDocument(ctx context.Context, elem *xdm.Element)
 		}
 	}
 
-	inst.Method = getAttr(elem, paramMethod)
-	if is := getAttr(elem, paramItemSeparator); is != "" {
+	inst.Method = getAttr(elem, lexicon.SerializationMethod)
+	if is := getAttr(elem, lexicon.SerializationItemSeparator); is != "" {
 		inst.ItemSeparatorSet = true
 		// item-separator="#absent" means explicitly absent (use default, blocks format inheritance)
 		if is != "#absent" {
@@ -883,11 +883,11 @@ func (c *compiler) compileResultDocument(ctx context.Context, elem *xdm.Element)
 		inst.Validation = basicValidation(v)
 	}
 
-	if typeAttr := getAttr(elem, nameType); typeAttr != "" {
+	if typeAttr := getAttr(elem, lexicon.AttrType); typeAttr != "" {
 		inst.TypeName = resolveXSDTypeName(typeAttr, c.nsBindings)
 	}
 
-	if ucm := getAttr(elem, paramUseCharacterMaps); ucm != "" {
+	if ucm := getAttr(elem, lexicon.SerializationUseCharacterMaps); ucm != "" {
 		for n := range strings.FieldsSeq(ucm) {
 			inst.UseCharacterMaps = append(inst.UseCharacterMaps, resolveQName(n, c.nsBindings))
 		}
@@ -901,7 +901,7 @@ func (c *compiler) compileResultDocument(ctx context.Context, elem *xdm.Element)
 		return nil, err
 	}
 
-	if si := getAttr(elem, paramSuppressIndentation); si != "" {
+	if si := getAttr(elem, lexicon.SerializationSuppressIndentation); si != "" {
 		names := strings.Fields(si)
 
 		resolved := make([]string, len(names))
@@ -936,7 +936,7 @@ func validateValidationAttr(elemName, validation string) error {
 
 func validateResultDocumentOutputAttrs(elem *xdm.Element) error {
 	// Validate html-version: must be a decimal number if present and not an avt
-	if hv := getAttr(elem, paramHTMLVersion); hv != "" {
+	if hv := getAttr(elem, lexicon.SerializationHTMLVersion); hv != "" {
 		if !strings.ContainsAny(hv, "{}") {
 			if _, err := strconv.ParseFloat(hv, 64); err != nil {
 				return staticError(errCodeXTSE0020, "%q is not a valid value for xsl:result-document/@html-version", hv)
@@ -945,26 +945,26 @@ func validateResultDocumentOutputAttrs(elem *xdm.Element) error {
 	}
 	// Validate boolean output attributes on xsl:result-document.
 	for _, boolAttr := range []string{
-		paramAllowDuplicateNames, paramBuildTree, paramByteOrderMark, paramEscapeURIAttributes,
-		paramIncludeContentType, paramIndent, paramOmitXMLDeclaration, paramUndeclarePrefixes,
+		lexicon.SerializationAllowDuplicateNames, lexicon.SerializationBuildTree, lexicon.SerializationByteOrderMark, lexicon.SerializationEscapeURIAttributes,
+		lexicon.SerializationIncludeContentType, lexicon.SerializationIndent, lexicon.SerializationOmitXMLDeclaration, lexicon.SerializationUndeclarePrefixes,
 	} {
 		if v := getAttr(elem, boolAttr); v != "" {
 			if !strings.ContainsAny(v, "{}") {
 				if _, ok := parseXSDBool(v); !ok {
-					return staticError(errCodeSEPM0016, "%q is not a valid value for xsl:result-document/@%s", v, boolAttr)
+					return staticError(lexicon.ErrSEPM0016, "%q is not a valid value for xsl:result-document/@%s", v, boolAttr)
 				}
 			}
 		}
 	}
 	// Validate standalone on xsl:result-document.
-	if v := getAttr(elem, paramStandalone); v != "" {
+	if v := getAttr(elem, lexicon.SerializationStandalone); v != "" {
 		if !strings.ContainsAny(v, "{}") {
 			sv := strings.TrimSpace(v)
 			switch sv {
-			case lexicon.ValueYes, lexicon.ValueNo, lexicon.ValueOmit, nameTrue, lexicon.ValueFalse, "1", "0":
+			case lexicon.ValueYes, lexicon.ValueNo, lexicon.ValueOmit, lexicon.ValueTrue, lexicon.ValueFalse, "1", "0":
 				// valid
 			default:
-				return staticError(errCodeSEPM0016, "%q is not a valid value for xsl:result-document/@standalone", v)
+				return staticError(lexicon.ErrSEPM0016, "%q is not a valid value for xsl:result-document/@standalone", v)
 			}
 		}
 	}
@@ -979,23 +979,23 @@ func (c *compiler) compileResultDocumentOutputAVTs(elem *xdm.Element, inst *resu
 		dst  **avt
 	}{
 		{"output-version", &inst.OutputVersion},
-		{paramEncoding, &inst.Encoding},
-		{paramIndent, &inst.Indent},
-		{paramOmitXMLDeclaration, &inst.OmitXMLDeclaration},
-		{paramStandalone, &inst.Standalone},
-		{paramDoctypeSystem, &inst.DoctypeSystem},
-		{paramDoctypePublic, &inst.DoctypePublic},
-		{paramCDATASectionElements, &inst.CDATASectionElements},
-		{paramByteOrderMark, &inst.ByteOrderMark},
-		{paramMediaType, &inst.MediaType},
-		{paramHTMLVersion, &inst.HTMLVersion},
-		{paramIncludeContentType, &inst.IncludeContentType},
-		{paramAllowDuplicateNames, &inst.AllowDuplicateNames},
-		{paramUndeclarePrefixes, &inst.UndeclarePrefixes},
-		{paramEscapeURIAttributes, &inst.EscapeURIAttributes},
-		{paramJSONNodeOutputMethod, &inst.JSONNodeOutputMethodAVT},
-		{paramNormalizationForm, &inst.NormalizationForm},
-		{paramBuildTree, &inst.BuildTree},
+		{lexicon.SerializationEncoding, &inst.Encoding},
+		{lexicon.SerializationIndent, &inst.Indent},
+		{lexicon.SerializationOmitXMLDeclaration, &inst.OmitXMLDeclaration},
+		{lexicon.SerializationStandalone, &inst.Standalone},
+		{lexicon.SerializationDoctypeSystem, &inst.DoctypeSystem},
+		{lexicon.SerializationDoctypePublic, &inst.DoctypePublic},
+		{lexicon.SerializationCDATASectionElements, &inst.CDATASectionElements},
+		{lexicon.SerializationByteOrderMark, &inst.ByteOrderMark},
+		{lexicon.SerializationMediaType, &inst.MediaType},
+		{lexicon.SerializationHTMLVersion, &inst.HTMLVersion},
+		{lexicon.SerializationIncludeContentType, &inst.IncludeContentType},
+		{lexicon.SerializationAllowDuplicateNames, &inst.AllowDuplicateNames},
+		{lexicon.SerializationUndeclarePrefixes, &inst.UndeclarePrefixes},
+		{lexicon.SerializationEscapeURIAttributes, &inst.EscapeURIAttributes},
+		{lexicon.SerializationJSONNodeOutputMethod, &inst.JSONNodeOutputMethodAVT},
+		{lexicon.SerializationNormalizationForm, &inst.NormalizationForm},
+		{lexicon.SerializationBuildTree, &inst.BuildTree},
 	} {
 		if v := getAttr(elem, sp.attr); v != "" {
 			avt, err := c.compileAVT(v, c.nsBindings)
@@ -1007,7 +1007,7 @@ func (c *compiler) compileResultDocumentOutputAVTs(elem *xdm.Element, inst *resu
 		}
 	}
 	// method attribute as avt (complements the static Method field)
-	if v := getAttr(elem, paramMethod); v != "" {
+	if v := getAttr(elem, lexicon.SerializationMethod); v != "" {
 		avt, err := c.compileAVT(v, c.nsBindings)
 		if err != nil {
 			return err
@@ -1020,7 +1020,7 @@ func (c *compiler) compileResultDocumentOutputAVTs(elem *xdm.Element, inst *resu
 }
 
 func (c *compiler) compileResultDocumentParameters(ctx context.Context, elem *xdm.Element, inst *resultDocumentInst) error {
-	if pd := getAttr(elem, paramParameterDocument); pd != "" {
+	if pd := getAttr(elem, lexicon.SerializationParameterDocument); pd != "" {
 		if strings.ContainsAny(pd, "{}") {
 			avt, err := c.compileAVT(pd, c.nsBindings)
 			if err != nil {
@@ -1397,7 +1397,7 @@ func (c *compiler) compileMapEntry(ctx context.Context, elem *xdm.Element) (*map
 // Optional attributes: select, error-code.
 // The body provides the error message if no select attribute is present.
 func (c *compiler) compileAssert(ctx context.Context, elem *xdm.Element) (instruction, error) {
-	testAttr := getAttr(elem, nameTest2)
+	testAttr := getAttr(elem, lexicon.AttrTest)
 	if testAttr == "" {
 		return nil, staticError(errCodeXTSE0010, "xsl:assert requires a test attribute")
 	}

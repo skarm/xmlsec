@@ -19,7 +19,7 @@ import (
 
 	"golang.org/x/text/encoding/htmlindex"
 
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	stream "github.com/skarm/xmlsec/transform/internal/xdm/xmlwriter"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -38,9 +38,9 @@ func SerializeItems(ctx context.Context, w io.Writer, items xdm.Sequence, doc *x
 	}
 
 	switch outDef.Method {
-	case methodJSON:
+	case lexicon.MethodJSON:
 		return serializeJSONItems(ctx, w, items, doc, outDef)
-	case methodAdaptive:
+	case lexicon.MethodAdaptive:
 		// Adaptive serialization uses its version serialization parameter for every
 		// XML fallback and embedded element/document/comment/PI writer. An absent
 		// version uses the XML 1.0 default; html-style versions never reach here.
@@ -116,7 +116,7 @@ func serializeSeparatedNode(w io.Writer, node xdm.Node, outDef *OutputDef) error
 // HTML versions must not reach the XML writer's OutputVersion validation.
 func separatedItemXMLWriter(outDef *OutputDef) xdm.XMLSerialization {
 	writer := xdm.XMLSerialization{OmitDeclaration: true}
-	if outDef.Method == methodXML || outDef.Method == methodXHTML {
+	if outDef.Method == lexicon.MethodXML || outDef.Method == lexicon.MethodXHTML {
 		writer.Version = validOutputXMLVersion(outDef.Version)
 	}
 
@@ -204,15 +204,15 @@ func serializeResult(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMaps
 		charMap = charMaps[0]
 	}
 
-	if outDef.Method == methodHTML {
+	if outDef.Method == lexicon.MethodHTML {
 		return serializeEncodedHTML(w, doc, outDef, charMap)
 	}
 
-	if outDef.Method == methodXHTML {
+	if outDef.Method == lexicon.MethodXHTML {
 		return serializeEncodedXHTML(w, doc, outDef, charMap)
 	}
 
-	if outDef.Method == methodXML {
+	if outDef.Method == lexicon.MethodXML {
 		return serializeEncodedXML(w, doc, outDef, charMap)
 	}
 
@@ -278,15 +278,15 @@ func serializeResult(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMaps
 // validation and BOM emission, before normalization or encoding conversion.
 func serializeResultContent(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMap map[rune]string) error {
 	switch outDef.Method {
-	case methodText:
+	case lexicon.MethodText:
 		return serializeText(w, doc, charMap, outDef.NormalizationForm)
-	case methodHTML:
+	case lexicon.MethodHTML:
 		return serializeHTMLResult(w, doc, outDef, charMap)
-	case methodXHTML:
+	case lexicon.MethodXHTML:
 		return serializeXHTML(w, doc, outDef, charMap)
-	case methodJSON:
+	case lexicon.MethodJSON:
 		return serializeJSONResult(w, doc, outDef, charMap)
-	case methodAdaptive:
+	case lexicon.MethodAdaptive:
 		return serializeAdaptiveItems(context.Background(), w, nil, doc, outDef)
 	default:
 		return serializeXML(w, doc, outDef, charMap)
@@ -381,15 +381,15 @@ func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xd
 	}
 
 	// SEPM0010: undeclare-prefixes="yes" with version="1.0"
-	if outDef.UndeclarePrefixes && (method == methodXML || method == methodXHTML) && (outDef.Version == "" || outDef.Version == lexicon.XSLTVersion10) {
-		return dynamicError(errCodeSEPM0010,
+	if outDef.UndeclarePrefixes && (method == lexicon.MethodXML || method == lexicon.MethodXHTML) && (outDef.Version == "" || outDef.Version == lexicon.XSLTVersion10) {
+		return dynamicError(lexicon.ErrSEPM0010,
 			"undeclare-prefixes=\"yes\" is not allowed with version=\"1.0\"")
 	}
 
 	// SEPM0016: invalid doctype-public (contains non-pubid characters)
 	if outDef.DoctypePublic != "" {
 		if !isValidPublicID(outDef.DoctypePublic) {
-			return dynamicError(errCodeSEPM0016,
+			return dynamicError(lexicon.ErrSEPM0016,
 				"doctype-public %q contains invalid characters", outDef.DoctypePublic)
 		}
 	}
@@ -414,7 +414,7 @@ func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xd
 		case normalizationFormNFC, "NFD", "NFKC", "NFKD", lexicon.NormFullyNormalized:
 			// supported
 		default:
-			return dynamicError(errCodeSESU0011,
+			return dynamicError(lexicon.ErrSESU0011,
 				"unsupported normalization-form %q", outDef.NormalizationForm)
 		}
 	}
@@ -426,7 +426,7 @@ func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xd
 		}
 	}
 
-	if doc != nil && method == methodHTML {
+	if doc != nil && method == lexicon.MethodHTML {
 		if err := xpath.ValidateHTMLItem(ctx, xdm.XMLItem{Node: doc}, effectiveHTMLVersion5(outDef)); err != nil {
 			return err
 		}
@@ -508,29 +508,29 @@ func isHTMLVersion5(v string) bool {
 
 // detectOutputMethod applies the host-language default for an unspecified method.
 func detectOutputMethod(outDef *OutputDef, doc *xdm.Document, autoHTML bool) {
-	if !outDef.MethodExplicit && outDef.Method == methodXML {
+	if !outDef.MethodExplicit && outDef.Method == lexicon.MethodXML {
 		if root := doc.DocumentElement(); root != nil {
-			if autoHTML && root.LocalName() == methodHTML && root.URI() == "" {
+			if autoHTML && root.LocalName() == lexicon.MethodHTML && root.URI() == "" {
 				// Root is "html" in no namespace → HTML output method.
-				outDef.Method = methodHTML
+				outDef.Method = lexicon.MethodHTML
 				outDef.OmitDeclaration = true
-			} else if outDef.languageVersion != 10 && !outDef.implicitXMLMethod && root.LocalName() == methodHTML && root.URI() == lexicon.NamespaceXHTML {
+			} else if outDef.languageVersion != 10 && !outDef.implicitXMLMethod && root.LocalName() == lexicon.MethodHTML && root.URI() == lexicon.NamespaceXHTML {
 				// Root is "html" in XHTML namespace → XHTML output method.
-				outDef.Method = methodXHTML
+				outDef.Method = lexicon.MethodXHTML
 			}
 		}
 	}
 }
 
 func validateSerializationParamsLanguageVersion(outDef *OutputDef, method string) error {
-	if outDef.languageVersion != 10 && outDef.OmitDeclaration && (method == methodXML || method == methodXHTML) {
+	if outDef.languageVersion != 10 && outDef.OmitDeclaration && (method == lexicon.MethodXML || method == lexicon.MethodXHTML) {
 		if outDef.Standalone == lexicon.ValueYes || outDef.Standalone == lexicon.ValueNo {
-			return dynamicError(errCodeSEPM0009,
+			return dynamicError(lexicon.ErrSEPM0009,
 				"omit-xml-declaration=\"yes\" conflicts with standalone=%q", outDef.Standalone)
 		}
 
 		if outDef.DoctypeSystem != "" && outDef.Version != "" && outDef.Version != lexicon.XSLTVersion10 {
-			return dynamicError(errCodeSEPM0009,
+			return dynamicError(lexicon.ErrSEPM0009,
 				"omit-xml-declaration=\"yes\" conflicts with doctype-system and version=%q", outDef.Version)
 		}
 	}
@@ -558,7 +558,7 @@ func serializeResultByteOrderMark(outDef *OutputDef, isUTF16 bool, w io.Writer) 
 
 func validateSerializationParamsStandalone(outDef *OutputDef, method string, doc *xdm.Document) error {
 	if outDef.Standalone == lexicon.ValueYes || outDef.Standalone == lexicon.ValueNo {
-		if method == methodXML || method == methodXHTML {
+		if method == lexicon.MethodXML || method == lexicon.MethodXHTML {
 			elemCount := countRootElements(doc)
 			if elemCount > 1 {
 				return dynamicError(errCodeSEPM0004,
@@ -591,13 +591,13 @@ func allowsHTMLAutoDetection(outDef *OutputDef, doc *xdm.Document) bool {
 // validateHTMLVersion checks the effective version, including auto-detected
 // HTML output and html-version overrides of version.
 func validateHTMLVersion(method string, definition *OutputDef) error {
-	if method != methodHTML {
+	if method != lexicon.MethodHTML {
 		return nil
 	}
 
 	requested := requestedHTMLVersion(definition)
 	if !htmlpkg.SupportedVersion(requested) {
-		return dynamicError(errCodeSESU0013, "unsupported HTML version %q", requested)
+		return dynamicError(lexicon.ErrSESU0013, "unsupported HTML version %q", requested)
 	}
 
 	return nil
@@ -606,7 +606,7 @@ func validateHTMLVersion(method string, definition *OutputDef) error {
 // validateOutputDoctype requires a single document element for XML doctypes.
 func validateOutputDoctype(outDef *OutputDef, method string, doc *xdm.Document) error {
 	if outDef.DoctypeSystem != "" {
-		if method == methodXML || method == methodXHTML {
+		if method == lexicon.MethodXML || method == lexicon.MethodXHTML {
 			elemCount := countRootElements(doc)
 			if elemCount > 1 {
 				return dynamicError(errCodeSEPM0004,
@@ -786,5 +786,5 @@ func isValidOutputXMLVersion(v string) bool {
 }
 
 func defaultOutputDef() *OutputDef {
-	return &OutputDef{Method: methodXML, Encoding: lexicon.EncodingUTF8U}
+	return &OutputDef{Method: lexicon.MethodXML, Encoding: lexicon.EncodingUTF8U}
 }

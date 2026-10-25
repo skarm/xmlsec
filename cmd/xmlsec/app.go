@@ -8,6 +8,8 @@ import (
 	"io"
 	"runtime/debug"
 	"strings"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 type (
@@ -243,7 +245,7 @@ func versionInfo() any {
 			case "vcs.revision":
 				revision = s.Value
 			case "vcs.modified":
-				modified = s.Value == valueTrue
+				modified = s.Value == lexicon.ValueTrue
 			}
 		}
 	}

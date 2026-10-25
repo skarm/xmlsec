@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
@@ -319,13 +320,13 @@ func (p *parser) x509Digest(n *tree.Node) (CertificateDigest, error) {
 
 func x509DigestSize(algorithm string) int {
 	switch algorithm {
-	case "http://www.w3.org/2000/09/xmldsig#sha1":
+	case lexicon.DigestSHA1:
 		return 20
-	case "http://www.w3.org/2001/04/xmlenc#sha256":
+	case lexicon.DigestSHA256:
 		return 32
-	case "http://www.w3.org/2001/04/xmldsig-more#sha384":
+	case lexicon.DigestSHA384:
 		return 48
-	case "http://www.w3.org/2001/04/xmlenc#sha512":
+	case lexicon.DigestSHA512:
 		return 64
 	default:
 		return 0

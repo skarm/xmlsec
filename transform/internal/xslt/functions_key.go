@@ -11,9 +11,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -52,7 +52,7 @@ func (f *keyFunction) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequen
 
 func (ec *execContext) fnKey(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	if len(args) != 2 && len(args) != 3 {
-		return nil, dynamicError("XPST0017", "key() requires two or three arguments")
+		return nil, dynamicError(lexicon.ErrXPST0017, "key() requires two or three arguments")
 	}
 
 	name, err := keyArgumentName(ctx, args[0])
@@ -137,7 +137,7 @@ func keyArgumentName(ctx context.Context, arg xdm.Sequence) (string, error) {
 		}
 
 		if len(atoms) != 1 || !isStringLikeType(atoms[0].TypeName) {
-			return "", dynamicError(errCodeXPTY0004, "key name must be one xs:string")
+			return "", dynamicError(lexicon.ErrXPTY0004, "key name must be one xs:string")
 		}
 
 		name, err = xpath.AtomicToString(atoms[0])
@@ -171,12 +171,12 @@ func (ec *execContext) keyArgumentRoot(ctx context.Context, args []xdm.Sequence)
 
 	if len(args) == 3 {
 		if xdm.SequenceLen(args[2]) != 1 {
-			return nil, dynamicError(errCodeXPTY0004, "key() third argument must be one node")
+			return nil, dynamicError(lexicon.ErrXPTY0004, "key() third argument must be one node")
 		}
 
 		node, ok := args[2].Get(0).(xdm.NodeItem)
 		if !ok {
-			return nil, dynamicError(errCodeXPTY0004, "key() third argument must be a node")
+			return nil, dynamicError(lexicon.ErrXPTY0004, "key() third argument must be a node")
 		}
 
 		root = normalizeNode(node.Node)
@@ -235,7 +235,7 @@ func introspectionSystemProperty(ctx context.Context, args []xdm.Sequence, proce
 
 func systemPropertyValue(ctx context.Context, local string, processor int) xdm.Sequence {
 	switch local {
-	case paramVersion:
+	case lexicon.SerializationVersion:
 		if processor == 10 {
 			return xdm.SingleDouble(1)
 		}
@@ -347,7 +347,7 @@ func (ec *execContext) fnCurrentOutputURI(ctx context.Context, _ []xdm.Sequence)
 
 func fnAvailableSystemProperties(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 	props := []string{
-		paramVersion, "vendor", "vendor-url", nameProductName, "product-version",
+		lexicon.SerializationVersion, "vendor", "vendor-url", nameProductName, "product-version",
 		nameIsSchemaAware, nameSupportsSerialization,
 		textSupportsBackwardsCompatibility, nameSupportsNamespaceAxis,
 		nameSupportsStreaming, nameSupportsDynamicEvaluation,
@@ -403,7 +403,7 @@ func (ec *execContext) unparsedEntity(ctx context.Context, args []xdm.Sequence, 
 			return nil, dynamicError(errorCode, "%s requires a context node", functionName)
 		}
 
-		return nil, dynamicError(errCodeXPTY0004, "%s requires a node", functionName)
+		return nil, dynamicError(lexicon.ErrXPTY0004, "%s requires a node", functionName)
 	}
 
 	doc := documentNodeFromNode(node.Node)

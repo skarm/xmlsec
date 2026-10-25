@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform"
 )
 
@@ -270,10 +271,10 @@ func TestSuitePackageVersionsShareName(t *testing.T) {
 	writeFixture(t, root, "packages.xml", `<test-set xmlns="`+suiteXSLTNamespace+`"><environment name="versions"><package role="secondary" file="one.xsl" uri="urn:library" package-version="1"/><package role="secondary" file="two.xsl" uri="urn:library" package-version="2"/></environment><test-case name="highest"><environment ref="versions"/><dependencies><package_version_resolution value="highest_version"/></dependencies><test><package role="principal" file="main.xsl"/><initial-template name="main"/></test><result><assert-string-value>2</assert-string-value></result></test-case></test-set>`)
 
 	for name, value := range map[string]string{"one.xsl": "1", "two.xsl": "2"} {
-		writeFixture(t, root, name, `<xsl:package xmlns:xsl="`+suiteStylesheetNS+`" version="3.0" name="urn:library" package-version="`+value+`"><xsl:template name="value" visibility="public"><xsl:text>`+value+`</xsl:text></xsl:template></xsl:package>`)
+		writeFixture(t, root, name, `<xsl:package xmlns:xsl="`+lexicon.NamespaceXSLT+`" version="3.0" name="urn:library" package-version="`+value+`"><xsl:template name="value" visibility="public"><xsl:text>`+value+`</xsl:text></xsl:template></xsl:package>`)
 	}
 
-	writeFixture(t, root, "main.xsl", `<xsl:package xmlns:xsl="`+suiteStylesheetNS+`" version="3.0" name="urn:application" package-version="1"><xsl:use-package name="urn:library" package-version="1+"/><xsl:template name="main" visibility="public"><xsl:call-template name="value"/></xsl:template></xsl:package>`)
+	writeFixture(t, root, "main.xsl", `<xsl:package xmlns:xsl="`+lexicon.NamespaceXSLT+`" version="3.0" name="urn:application" package-version="1"><xsl:use-package name="urn:library" package-version="1+"/><xsl:template name="main" visibility="public"><xsl:call-template name="value"/></xsl:template></xsl:package>`)
 	options := suiteOptions{kind: suiteXSLT, directory: root, version: suiteVersion30, timeout: time.Second, setMatch: regexp.MustCompile(".*"), caseMatch: regexp.MustCompile(".*")}
 
 	report, err := executeSuite(t.Context(), options, suitePin{Catalog: suiteCatalog, Namespace: suiteXSLTNamespace})
@@ -413,7 +414,7 @@ func TestSuiteSerializationAssertions(t *testing.T) {
 		{"line\r\nnext", `<assert-serialization>line&#13;&#10;next</assert-serialization>`, true},
 		{strings.Repeat("a", 4000), `<assert-serialization>b</assert-serialization>`, false},
 	} {
-		compiled, err := engine.CompileXSLTReader(t.Context(), strings.NewReader(`<xsl:stylesheet xmlns:xsl="`+suiteStylesheetNS+`" version="3.0"><xsl:output method="text"/><xsl:template name="start"><xsl:param name="text"/><xsl:value-of select="$text"/></xsl:template></xsl:stylesheet>`), transform.XSLTOptions{})
+		compiled, err := engine.CompileXSLTReader(t.Context(), strings.NewReader(`<xsl:stylesheet xmlns:xsl="`+lexicon.NamespaceXSLT+`" version="3.0"><xsl:output method="text"/><xsl:template name="start"><xsl:param name="text"/><xsl:value-of select="$text"/></xsl:template></xsl:stylesheet>`), transform.XSLTOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -454,7 +455,7 @@ func TestSuiteSerializationEncodings(t *testing.T) {
 		{"UTF-8", `<?xml version="1.0" encoding="ISO-8859-1"?><r>café</r>`, "text"},
 		{"US-ASCII", "ª", "adaptive"},
 	} {
-		source := `<xsl:stylesheet xmlns:xsl="` + suiteStylesheetNS + `" version="3.0"><xsl:output method="` + test.method + `" encoding="` + test.encoding + `"/><xsl:param name="value"/><xsl:param name="encoding"/><xsl:template name="start"><xsl:value-of select="$value"/><xsl:result-document href="secondary" encoding="{$encoding}"><xsl:value-of select="$value"/></xsl:result-document></xsl:template></xsl:stylesheet>`
+		source := `<xsl:stylesheet xmlns:xsl="` + lexicon.NamespaceXSLT + `" version="3.0"><xsl:output method="` + test.method + `" encoding="` + test.encoding + `"/><xsl:param name="value"/><xsl:param name="encoding"/><xsl:template name="start"><xsl:value-of select="$value"/><xsl:result-document href="secondary" encoding="{$encoding}"><xsl:value-of select="$value"/></xsl:result-document></xsl:template></xsl:stylesheet>`
 		compiled, err := e.CompileXSLTReader(t.Context(), strings.NewReader(source), transform.XSLTOptions{})
 		if err != nil {
 			t.Fatal(err)

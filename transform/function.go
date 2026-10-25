@@ -7,6 +7,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 	"github.com/skarm/xmlsec/transform/internal/xslt"
@@ -46,8 +47,8 @@ func (e *Engine) registerFunctions(functions []Function) error {
 
 func reservedFunctionNamespace(uri string) bool {
 	switch uri {
-	case "", documentXMLNamespace, "http://www.w3.org/2000/xmlns/", "http://www.w3.org/1999/XSL/Transform",
-		xpath.NSFn, xpath.NSMath, xpath.NSMap, xpath.NSArray, xpath.NSErr, xpath.NSXS, "http://www.w3.org/2001/XMLSchema-instance":
+	case "", lexicon.NamespaceXML, lexicon.NamespaceXMLNS, lexicon.NamespaceXSLT,
+		xpath.NSFn, xpath.NSMath, xpath.NSMap, xpath.NSArray, xpath.NSErr, xpath.NSXS, lexicon.NamespaceXSI:
 		return true
 	default:
 		return false

@@ -9,8 +9,8 @@ import (
 	"math"
 	"slices"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -82,7 +82,7 @@ func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocum
 				return err
 			}
 
-			return dynamicErrorCause(errCodeFODC0002, err, "xsl:source-document cannot load %q: %v", uri, err)
+			return dynamicErrorCause(lexicon.ErrFODC0002, err, "xsl:source-document cannot load %q: %v", uri, err)
 		}
 
 		doc, err = parseXMLResource(ctx, ec.inputParseOptions(), reader, resolvedURI, ec.resourceLimit())
@@ -119,7 +119,7 @@ func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocum
 	if fragment != "" {
 		elem := doc.GetElementByID(fragment)
 		if elem == nil {
-			return dynamicError(errCodeFODC0002, "xsl:source-document fragment %q not found in %q", fragment, uri)
+			return dynamicError(lexicon.ErrFODC0002, "xsl:source-document fragment %q not found in %q", fragment, uri)
 		}
 
 		startNode = elem
@@ -1403,7 +1403,7 @@ func (ec *execContext) checkAccumulatorType(ctx context.Context, def *accumulato
 		return seq, nil
 	}
 
-	return checkSequenceType(ctx, seq, parseSequenceType(def.As), "XPTY0004", "accumulator "+def.Name, ec)
+	return checkSequenceType(ctx, seq, parseSequenceType(def.As), lexicon.ErrXPTY0004, "accumulator "+def.Name, ec)
 }
 
 // applyMergeSourceValidation applies xsl:merge-source/@validation and @type to
@@ -1438,12 +1438,12 @@ func (ec *execContext) loadMergeDocument(ctx context.Context, uri string, effect
 			return nil, err
 		}
 
-		return nil, dynamicErrorCause(errCodeFODC0002, err, "xsl:merge cannot load %q: %v", uri, err)
+		return nil, dynamicErrorCause(lexicon.ErrFODC0002, err, "xsl:merge cannot load %q: %v", uri, err)
 	}
 
 	doc, err := parseXMLResource(ctx, ec.inputParseOptions(), reader, resolvedURI, ec.resourceLimit())
 	if err != nil {
-		return nil, dynamicErrorCause(errCodeFODC0002, err, "xsl:merge cannot parse %q: %v", uri, err)
+		return nil, dynamicErrorCause(lexicon.ErrFODC0002, err, "xsl:merge cannot parse %q: %v", uri, err)
 	}
 
 	// Apply xsl:strip-space.
@@ -1806,7 +1806,7 @@ func (ec *execContext) resolveMergeKeyCollationURI(ctx context.Context, mk *merg
 		}
 	}
 
-	if collURI == "" || collURI == "http://www.w3.org/2005/xpath-functions/collation/codepoint" {
+	if collURI == "" || collURI == lexicon.CollationCodepoint {
 		return nil, collURI, nil
 	}
 

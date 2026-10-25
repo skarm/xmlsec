@@ -8,14 +8,13 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 	"github.com/skarm/xmlsec/transform/internal/xslt"
 )
-
-const stylesheetNamespace = "http://www.w3.org/1999/XSL/Transform"
 
 func compileV1Stylesheet(e *Engine, source []byte) (*xslt.Stylesheet, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), max(e.limits.Timeout, 3*time.Second))
@@ -69,11 +68,11 @@ func checkStylesheetElement(ctx context.Context, e document.Element) error {
 	name := e.Name()
 
 	attrs, known := xslt.XSLT10ElementAttributes(name.Local)
-	if name.Space == stylesheetNamespace && (name.Local == "include" || name.Local == "import") {
+	if name.Space == lexicon.NamespaceXSLT && (name.Local == "include" || name.Local == "import") {
 		return fmt.Errorf("%w: XMLDSig stylesheet resources are disabled", reference.ErrUnsupported)
 	}
 
-	if name.Space == stylesheetNamespace && !known {
+	if name.Space == lexicon.NamespaceXSLT && !known {
 		return fmt.Errorf("%w: XSLT instruction %s", reference.ErrUnsupported, name.Local)
 	}
 
@@ -104,11 +103,11 @@ func checkStylesheetAttribute(ctx context.Context, a tree.Attribute, name tree.N
 		return err
 	}
 
-	if name.Space == stylesheetNamespace && a.Name.Space == "" && containsWord("select test match use count from value", a.Name.Local) {
+	if name.Space == lexicon.NamespaceXSLT && a.Name.Space == "" && containsWord("select test match use count from value", a.Name.Local) {
 		return checkStylesheetXPath(ctx, a.Value, ns)
 	}
 
-	if name.Space != stylesheetNamespace && a.Name.Space != stylesheetNamespace || name.Space == stylesheetNamespace && isStylesheetAVT(name.Local, a.Name.Local) {
+	if name.Space != lexicon.NamespaceXSLT && a.Name.Space != lexicon.NamespaceXSLT || name.Space == lexicon.NamespaceXSLT && isStylesheetAVT(name.Local, a.Name.Local) {
 		return checkStylesheetAVT(ctx, a.Value, ns)
 	}
 
@@ -116,11 +115,11 @@ func checkStylesheetAttribute(ctx context.Context, a tree.Attribute, name tree.N
 }
 
 func checkStylesheetAttributeName(attribute, element tree.Name, attrs string) error {
-	if element.Space == stylesheetNamespace && attribute.Space == "" && !containsWord(attrs, attribute.Local) {
+	if element.Space == lexicon.NamespaceXSLT && attribute.Space == "" && !containsWord(attrs, attribute.Local) {
 		return fmt.Errorf("%w: XSLT attribute %s", reference.ErrUnsupported, attribute.Local)
 	}
 
-	if attribute.Space == stylesheetNamespace && (element.Space == stylesheetNamespace || !containsWord("version extension-element-prefixes exclude-result-prefixes use-attribute-sets", attribute.Local)) {
+	if attribute.Space == lexicon.NamespaceXSLT && (element.Space == lexicon.NamespaceXSLT || !containsWord("version extension-element-prefixes exclude-result-prefixes use-attribute-sets", attribute.Local)) {
 		return fmt.Errorf("%w: XSLT attribute %s", reference.ErrUnsupported, attribute.Local)
 	}
 
@@ -289,11 +288,11 @@ func staticStylesheetXPath(ctx context.Context, x reference.XPathExpression) err
 }
 
 func checkStylesheetProfileAttribute(a tree.Attribute, name tree.Name) error {
-	if !(a.Name.Space == "" && name.Space == stylesheetNamespace || a.Name.Space == stylesheetNamespace) {
+	if !(a.Name.Space == "" && name.Space == lexicon.NamespaceXSLT || a.Name.Space == lexicon.NamespaceXSLT) {
 		return nil
 	}
 
-	if a.Name.Local == "version" && (name.Local == "stylesheet" || name.Local == "transform" || a.Name.Space == stylesheetNamespace) && a.Value != "1.0" {
+	if a.Name.Local == "version" && (name.Local == "stylesheet" || name.Local == "transform" || a.Name.Space == lexicon.NamespaceXSLT) && a.Value != "1.0" {
 		return fmt.Errorf("%w: XSLT 1.0 required", reference.ErrUnsupported)
 	}
 

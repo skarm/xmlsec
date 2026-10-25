@@ -8,8 +8,8 @@ import (
 	"maps"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -756,7 +756,7 @@ func (ec *execContext) deliverPrimaryItems(cfg *transformConfig) error {
 // validatePrimaryJSONItems uses the effective primary output definition,
 // including overrides already folded in by xsl:result-document.
 func (ec *execContext) validatePrimaryJSONItems(items xdm.Sequence) error {
-	if ec.currentResultDocMethod != methodJSON {
+	if ec.currentResultDocMethod != lexicon.MethodJSON {
 		return nil
 	}
 
@@ -798,14 +798,14 @@ func (ec *execContext) resolvePrimaryOutputDef() *OutputDef {
 			}
 		}
 	} else if len(ec.primaryCharacterMaps) > 0 {
-		outDef = &OutputDef{Method: methodXML, Encoding: lexicon.EncodingUTF8U}
+		outDef = &OutputDef{Method: lexicon.MethodXML, Encoding: lexicon.EncodingUTF8U}
 		if len(ec.primaryResolvedCharMap) > 0 {
 			outDef.ResolvedCharMap = ec.primaryResolvedCharMap
 		} else {
 			outDef.ResolvedCharMap = resolveCharacterMaps(ss, ec.primaryCharacterMaps)
 		}
 	} else if len(ec.primaryResolvedCharMap) > 0 {
-		outDef = &OutputDef{Method: methodXML, Encoding: lexicon.EncodingUTF8U}
+		outDef = &OutputDef{Method: lexicon.MethodXML, Encoding: lexicon.EncodingUTF8U}
 		outDef.ResolvedCharMap = ec.primaryResolvedCharMap
 	}
 
@@ -829,7 +829,7 @@ func (ec *execContext) applyPrimaryOutputOverrides(outDef *OutputDef) *OutputDef
 	}
 
 	if outDef == nil {
-		outDef = &OutputDef{Method: methodXML, Encoding: lexicon.EncodingUTF8U}
+		outDef = &OutputDef{Method: lexicon.MethodXML, Encoding: lexicon.EncodingUTF8U}
 	}
 	// Clone the overrides so the pointer/slice/map fields merged below are
 	// independent allocations; the terminal outDef (exposed via

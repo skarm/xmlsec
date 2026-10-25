@@ -7,6 +7,7 @@ import (
 	"iter"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
@@ -25,7 +26,7 @@ func (w XMLSerialization) WriteAttributeValue(ctx context.Context, dst io.Writer
 	}
 
 	if errors.Is(err, tree.ErrMalformed) {
-		return &Error{Code: "SERE0006", Message: err.Error(), Cause: err}
+		return &Error{Code: lexicon.ErrSERE0006, Message: err.Error(), Cause: err}
 	}
 
 	return err
@@ -81,7 +82,7 @@ func (w XMLSerialization) WriteSequence(ctx context.Context, dst io.Writer, item
 	}
 
 	if errors.Is(err, tree.ErrMalformed) {
-		return &Error{Code: "SERE0006", Message: err.Error(), Cause: err}
+		return &Error{Code: lexicon.ErrSERE0006, Message: err.Error(), Cause: err}
 	}
 
 	return err

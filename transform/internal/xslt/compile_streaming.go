@@ -8,9 +8,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 type iterateCompileState struct {
@@ -27,7 +27,7 @@ type iterateBodyChild struct {
 
 // compileSourceDocument compiles an xsl:source-document element.
 func (c *compiler) compileSourceDocument(ctx context.Context, elem *xdm.Element) (instruction, error) {
-	hrefAttr := getAttr(elem, nameHref)
+	hrefAttr := getAttr(elem, lexicon.AttrHref)
 	if hrefAttr == "" {
 		return nil, staticError(errCodeXTSE0010, "xsl:source-document requires href attribute")
 	}
@@ -43,7 +43,7 @@ func (c *compiler) compileSourceDocument(ctx context.Context, elem *xdm.Element)
 		BaseURI:    stylesheetBaseURI(elem, c.baseURI, c.moduleRoot),
 		Validation: basicValidation(getAttr(elem, nameValidation)),
 	}
-	if typeName := getAttr(elem, nameType); typeName != "" {
+	if typeName := getAttr(elem, lexicon.AttrType); typeName != "" {
 		inst.TypeName = resolveQName(typeName, c.nsBindings)
 	}
 
@@ -625,7 +625,7 @@ func (c *compiler) compileAccumulator(ctx context.Context, elem *xdm.Element) er
 func (c *compiler) compileAccumulatorRule(ctx context.Context, parent *accumulatorDef, elem *xdm.Element) error {
 	defer c.pushElementVersion(elem)()
 
-	matchAttr, hasMatch := elem.GetAttribute(nameMatch2)
+	matchAttr, hasMatch := elem.GetAttribute(lexicon.AttrMatch)
 	if !hasMatch {
 		return staticError(errCodeXTSE0010, "xsl:accumulator-rule requires match attribute")
 	}
@@ -633,7 +633,7 @@ func (c *compiler) compileAccumulatorRule(ctx context.Context, parent *accumulat
 	// XPST0008: $value is only in scope in the select expression/body of
 	// an accumulator-rule, not in the match pattern. Reject it early.
 	if containsVarRef(matchAttr, "value") {
-		return staticError(errCodeXPST0008, "variable $value is not in scope in accumulator-rule match pattern")
+		return staticError(lexicon.ErrXPST0008, "variable $value is not in scope in accumulator-rule match pattern")
 	}
 
 	matchPat, err := c.compilePattern(matchAttr, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
@@ -866,7 +866,7 @@ func (c *compiler) compileMergeSource(ctx context.Context, elem *xdm.Element) (*
 	// The type attribute names a schema type against which each source
 	// document is validated; the resulting PSVI type annotations flow onto
 	// the selected merge items (mirroring xsl:source-document).
-	if typeName := getAttr(elem, nameType); typeName != "" {
+	if typeName := getAttr(elem, lexicon.AttrType); typeName != "" {
 		src.TypeName = resolveQName(typeName, c.nsBindings)
 	}
 
@@ -1023,7 +1023,7 @@ func validateMergeKeyAttrs(elem *xdm.Element) error {
 		}
 
 		switch attr.LocalName() {
-		case xslAttrSelect, nameOrder, nameCollation, nameDataType, nameLang, nameCaseOrder:
+		case xslAttrSelect, nameOrder, nameCollation, nameDataType, lexicon.AttrLang, nameCaseOrder:
 			// permitted
 		default:
 			return staticError(errCodeXTSE0090, "attribute %q is not permitted on xsl:merge-key", attr.LocalName())
@@ -1037,7 +1037,7 @@ func (c *compiler) compileMergeKeyCollation(elem *xdm.Element, mk *mergeKey) {
 	// Track collation-related attributes for sort verification.
 	collation := getAttr(elem, nameCollation)
 	mk.Collation = collation
-	mk.Lang = getAttr(elem, nameLang)
+	mk.Lang = getAttr(elem, lexicon.AttrLang)
 
 	mk.CaseOrder = getAttr(elem, nameCaseOrder)
 	if mk.Lang != "" || mk.CaseOrder != "" {
@@ -1226,7 +1226,7 @@ func extractAccumulatorRefs(src string) []string {
 // mergeSourceAllowedAttrs reports attributes permitted on xsl:merge-source.
 func mergeSourceAllowedAttrs(name string) bool {
 	switch name {
-	case xslAttrName, "for-each-item", "for-each-source", xslAttrSelect, nameStreamable, "sort-before-merge", nameUseAccumulators, nameValidation, nameType:
+	case xslAttrName, "for-each-item", "for-each-source", xslAttrSelect, nameStreamable, "sort-before-merge", nameUseAccumulators, nameValidation, lexicon.AttrType:
 		return true
 	default:
 		return false

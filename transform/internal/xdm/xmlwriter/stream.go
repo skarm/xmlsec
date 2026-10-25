@@ -11,17 +11,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/internal/xmloutput"
 	"github.com/skarm/xmlsec/transform/internal/xdm/encoding"
-)
-
-// Reserved namespace names (Namespaces in XML 1.0 §3). The "xml" prefix is
-// bound by definition to xmlNamespaceURI, and the "xmlns" prefix to
-// xmlnsNamespaceURI; neither may be rebound or otherwise misused.
-const (
-	xmlNamespaceURI   = "http://www.w3.org/XML/1998/namespace"
-	xmlnsNamespaceURI = "http://www.w3.org/2000/xmlns/"
 )
 
 var errNilOutputWriter = errors.New("stream: output writer is nil")
@@ -1728,16 +1721,16 @@ func validateReservedNS(kind, prefix, namespaceURI string) error {
 		return fmt.Errorf("stream: reserved %s prefix %q must not be used", kind, prefix)
 	}
 
-	if prefix == "xml" && namespaceURI != "" && namespaceURI != xmlNamespaceURI {
-		return fmt.Errorf("stream: reserved prefix \"xml\" must be bound to %q, not %q", xmlNamespaceURI, namespaceURI)
+	if prefix == "xml" && namespaceURI != "" && namespaceURI != lexicon.NamespaceXML {
+		return fmt.Errorf("stream: reserved prefix \"xml\" must be bound to %q, not %q", lexicon.NamespaceXML, namespaceURI)
 	}
 
-	if namespaceURI == xmlNamespaceURI && prefix != "xml" {
-		return fmt.Errorf("stream: XML namespace %q must be bound only to the \"xml\" prefix", xmlNamespaceURI)
+	if namespaceURI == lexicon.NamespaceXML && prefix != "xml" {
+		return fmt.Errorf("stream: XML namespace %q must be bound only to the \"xml\" prefix", lexicon.NamespaceXML)
 	}
 
-	if namespaceURI == xmlnsNamespaceURI {
-		return fmt.Errorf("stream: reserved namespace %q must not be declared", xmlnsNamespaceURI)
+	if namespaceURI == lexicon.NamespaceXMLNS {
+		return fmt.Errorf("stream: reserved namespace %q must not be declared", lexicon.NamespaceXMLNS)
 	}
 
 	return nil

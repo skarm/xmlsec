@@ -12,12 +12,13 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/ianaindex"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/xmlchar"
-
-	"golang.org/x/text/encoding/charmap"
-	"golang.org/x/text/encoding/ianaindex"
 )
 
 // ParseReader constructs a snapshot incrementally, without retaining source XML.
@@ -145,18 +146,18 @@ func newXMLInputMode(ctx context.Context, src io.Reader, maximum int64, tokenLim
 	case bytes.HasPrefix(prefix, []byte{0, 0, 0xfe, 0xff}), bytes.HasPrefix(prefix, []byte{0xff, 0xfe, 0, 0}):
 		return nil, ErrUnsupported
 	case bytes.HasPrefix(prefix, []byte{0xfe, 0xff}):
-		r.encoding = sourceEncoding{encodingUTF16BE, true}
+		r.encoding = sourceEncoding{lexicon.EncodingUTF16BE, true}
 		r.order = binary.BigEndian
 		skip = 2
 	case bytes.HasPrefix(prefix, []byte{0xff, 0xfe}):
-		r.encoding = sourceEncoding{encodingUTF16LE, true}
+		r.encoding = sourceEncoding{lexicon.EncodingUTF16LE, true}
 		r.order = binary.LittleEndian
 		skip = 2
 	case bytes.HasPrefix(prefix, []byte{0, '<', 0, '?'}):
-		r.encoding.name = encodingUTF16BE
+		r.encoding.name = lexicon.EncodingUTF16BE
 		r.order = binary.BigEndian
 	case bytes.HasPrefix(prefix, []byte{'<', 0, '?', 0}):
-		r.encoding.name = encodingUTF16LE
+		r.encoding.name = lexicon.EncodingUTF16LE
 		r.order = binary.LittleEndian
 	}
 

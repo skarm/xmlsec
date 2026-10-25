@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func evalBinaryExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e BinaryExpr) (xdm.Sequence, error) {
@@ -362,14 +362,14 @@ func evalUnionExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e
 	// can return it as is when it is already in document order.
 	nodes, ok := xdm.AppendSequenceNodes(make([]xdm.Node, 0, xdm.SequenceLen(left)+xdm.SequenceLen(right)), left)
 	if !ok {
-		return nil, languageError(ErrUnionNotNodeSet, errCodeXPTY0004, ec.version)
+		return nil, languageError(ErrUnionNotNodeSet, lexicon.ErrXPTY0004, ec.version)
 	}
 
 	split := len(nodes)
 
 	nodes, ok = xdm.AppendSequenceNodes(nodes, right)
 	if !ok {
-		return nil, languageError(ErrUnionNotNodeSet, errCodeXPTY0004, ec.version)
+		return nil, languageError(ErrUnionNotNodeSet, lexicon.ErrXPTY0004, ec.version)
 	}
 
 	merged, err := xdm.UnionNodeSets(nodes, split, ec.docOrder, ec.maxNodes)
@@ -400,7 +400,7 @@ func evalIntersectExceptExpr(evalFn exprEvaluator, ctx context.Context, ec *eval
 
 	rightNodes, ok2 := xdm.NodesFrom(right)
 	if !ok1 || !ok2 {
-		return nil, languageError(ErrUnionNotNodeSet, errCodeXPTY0004, ec.version)
+		return nil, languageError(ErrUnionNotNodeSet, lexicon.ErrXPTY0004, ec.version)
 	}
 
 	result, err := intersectExceptNodes(ec, e.Op, leftNodes, rightNodes)

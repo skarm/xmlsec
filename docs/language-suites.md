@@ -107,6 +107,16 @@ stylesheet element. Higher/future declarations invoke forwards-compatible
 processing, including 3.0 declarations with a selected 2.0 processor. Remaining
 mandatory forwards-compatible failures stay visible.
 
+Source metadata also affects applicability. A source requesting XInclude,
+XML 1.1, normative streaming or stylesheet association through a processing
+instruction is not loaded under this profile. The
+[pinned catalog schema](https://github.com/w3c/xslt30-test/blob/fddf1cf920087e791f13315d68dfbe874d97dc56/admin/catalog-schema.xsd#L530)
+requires the requested preprocessing; its XInclude rule explicitly excludes
+processors without that optional facility. Streaming and association flags
+apply only to the principal source (`role="."`). Named environments and collection
+sources use the same checks. Invalid flags/version values remain failures,
+and strict/lax source validation remains an unsupported harness operation.
+
 A `unicode-version` dependency identifies an exact edition, as in the publisher
 runner; it is not a minimum. The selected Unicode 17.0 case/category data cannot
 satisfy exact Unicode 6.0/9.0 category counts. Those cases are reported as
@@ -149,11 +159,15 @@ harness does not rewrite encoding declarations or transcode publisher fixtures.
 Implemented environment metadata includes named catalog/set environments and
 bounded reference resolution with cycle detection, namespace scopes, static base URI,
 default collation, default/named decimal formats, unvalidated file/text sources,
-parameters, static parameters, declared text resources, document/query collections
+parameters, static parameters, declared text resources, document/text/query collections
 and an explicit context item. Static metadata is applied before source loading,
 independently of its catalog order. Declared text resources retain their MIME
 type and charset through `resource.TypedReader`; the engine performs decoding
 under its normal budgets. Test bytes are not transcoded by the harness.
+Collection text members use that same `unparsed-text()` path and retain their
+retrieval URIs; query members retain their own namespace scope. Both pinned
+catalogs currently contain no text-resource collection members, so their support
+has local regression evidence rather than additional publisher passes.
 XPath cases use the selected language
 version. XSLT supports a declared or environment-provided principal stylesheet,
 secondary environment modules, global invocation parameters (including static
@@ -191,8 +205,8 @@ collection members and their common root. Role-free file sources are registered
 without eager XML parsing: doc()/document() performs the load, so malformed
 resources can produce the runtime errors asserted by the catalog. Missing IDs, general XPointer schemes,
 conflicting fragments/mappings and paths outside the suite root are harness
-failures. Source schema validation and resource-valued collections remain harness gaps. A case requiring one fails
-with a reason. QT3's file-free import of the built-in functions namespace is
+failures. Source schema validation remains a harness gap; a case requiring it
+fails with a reason. QT3's file-free import of the built-in functions namespace is
 recognized for untyped `json-to-xml`; `validate=true` reaches the evaluator's
 `FOJS0004` without enabling schema validation. Other QT3 schema declarations
 retain their separate harness boundary.
@@ -229,9 +243,11 @@ results and from `transform.Error.Messages()` after failed execution. Warning
 assertions and other unsupported assertions remain failures.
 An unsupported assertion or unexpected execution error cannot satisfy a
 negated result assertion. Resource failures satisfy an expected error only
-when the engine supplies the required standard error code. Case deadlines remain
-resource failures during preparation, execution and assertions, regardless of
-a matching surrounding language code.
+when the engine supplies the required standard error code. Harness error wrappers preserve the original cause. Budget failures during
+preparation or assertion-expression evaluation are reported as resource failures and cannot
+satisfy wildcard or negated assertions. Case deadlines remain resource failures
+during preparation, execution and assertions, regardless of a matching surrounding
+language code.
 Error matching compares expanded QNames, so an application error with the same
 local name cannot satisfy an expected standard error. EQNames are supported;
 prefixed expected codes use the catalog's inherited and local namespace context.

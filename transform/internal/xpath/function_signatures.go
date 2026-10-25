@@ -6,8 +6,8 @@ package xpath
 import (
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // functionSignature stores the declared parameter and return types for a built-in function.
@@ -72,7 +72,7 @@ func lookupFunctionSignature(version int, uri, name string, arity int) *function
 	}
 	// XSLT 2.0 supplies these host functions before their adoption into F&O.
 	switch name {
-	case fnNameFormatNumber:
+	case lexicon.FnFormatNumber:
 		if arity == 2 || arity == 3 {
 			params := []xdm.SequenceType{stAtomic(xdm.TypeNumeric, xdm.OccurrenceZeroOrOne), stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne)}
 			if arity == 3 {
@@ -81,7 +81,7 @@ func lookupFunctionSignature(version int, uri, name string, arity int) *function
 
 			return newFunctionSignature(params, stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne))
 		}
-	case nameGenerateId, fnNameFormatDate, fnNameFormatDateTime, fnNameFormatTime,
+	case lexicon.FnGenerateID, fnNameFormatDate, fnNameFormatDateTime, fnNameFormatTime,
 		fnNameUnparsedText, nameUnparsedTextLines, fnNameUnparsedTextAvailable:
 		return lookupStandardSignature(31, key)
 	}

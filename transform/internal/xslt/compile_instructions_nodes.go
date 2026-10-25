@@ -8,8 +8,8 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -127,7 +127,7 @@ func (c *compiler) compileElement(ctx context.Context, elem *xdm.Element) (*elem
 	defer func() { c.breakAllowed = savedBreak }()
 
 	// Validate attributes
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, nameNamespace, nameInheritNamespaces, nameUseAttributeSets, nameType, nameValidation)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, nameNamespace, nameInheritNamespaces, nameUseAttributeSets, lexicon.AttrType, nameValidation)); err != nil {
 		return nil, err
 	}
 
@@ -160,7 +160,7 @@ func (c *compiler) compileElement(ctx context.Context, elem *xdm.Element) (*elem
 		maps.Copy(inst.NSBindings, c.nsBindings)
 	}
 
-	typeAttr := getAttr(elem, nameType)
+	typeAttr := getAttr(elem, lexicon.AttrType)
 	validation := getAttr(elem, nameValidation)
 
 	if err := checkValidationTypeExclusive("xsl:element", validation, typeAttr); err != nil {
@@ -229,7 +229,7 @@ func (c *compiler) compileAttribute(ctx context.Context, elem *xdm.Element) (*at
 
 	inst := &attributeInst{Name: nameAVT}
 
-	if typeAttr := getAttr(elem, nameType); typeAttr != "" {
+	if typeAttr := getAttr(elem, lexicon.AttrType); typeAttr != "" {
 		if err := c.checkTypeAttrSchemaAware(ctx, "xsl:attribute", typeAttr); err != nil {
 			return nil, err
 		}
@@ -407,7 +407,7 @@ func (c *compiler) compileCopy(ctx context.Context, elem *xdm.Element) (*copyIns
 		inst.Validation = basicValidation(v)
 	}
 
-	if typeAttr := getAttr(elem, nameType); typeAttr != "" {
+	if typeAttr := getAttr(elem, lexicon.AttrType); typeAttr != "" {
 		inst.TypeName = resolveXSDTypeName(typeAttr, c.nsBindings)
 	}
 
@@ -485,7 +485,7 @@ func (c *compiler) compileCopyOf(_ context.Context, elem *xdm.Element) (*copyOfI
 		inst.Validation = basicValidation(v)
 	}
 
-	if typeAttr := getAttr(elem, nameType); typeAttr != "" {
+	if typeAttr := getAttr(elem, lexicon.AttrType); typeAttr != "" {
 		inst.TypeName = resolveXSDTypeName(typeAttr, c.nsBindings)
 	}
 
@@ -519,7 +519,7 @@ func validateCopyOfStructure(elem *xdm.Element) error {
 			continue
 		}
 
-		if attr.LocalName() == nameMatch2 || attr.LocalName() == lexicon.AttrCount || attr.LocalName() == "from" {
+		if attr.LocalName() == lexicon.AttrMatch || attr.LocalName() == lexicon.AttrCount || attr.LocalName() == "from" {
 			return staticError(errCodeXTSE0090,
 				"attribute %q is not allowed on xsl:copy-of", attr.LocalName())
 		}
@@ -553,7 +553,7 @@ func (c *compiler) compileNumber(_ context.Context, elem *xdm.Element) (*numberI
 		inst.Select = expr
 	}
 
-	if lang := getAttr(elem, nameLang); lang != "" {
+	if lang := getAttr(elem, lexicon.AttrLang); lang != "" {
 		avt, err := c.compileAVT(lang, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -740,7 +740,7 @@ func (c *compiler) compileDocument(ctx context.Context, elem *xdm.Element) (*doc
 		inst.Validation = basicValidation(v)
 	}
 
-	if typeAttr := getAttr(elem, nameType); typeAttr != "" {
+	if typeAttr := getAttr(elem, lexicon.AttrType); typeAttr != "" {
 		inst.TypeName = resolveXSDTypeName(typeAttr, c.nsBindings)
 	}
 
@@ -1157,7 +1157,7 @@ func (c *compiler) compileLiteralResultOptions(ctx context.Context, elem *xdm.El
 		lre.Validation = basicValidation(valAttr)
 	}
 
-	if typeAttr, ok := elem.GetAttributeNS(nameType, lexicon.NamespaceXSLT); ok {
+	if typeAttr, ok := elem.GetAttributeNS(lexicon.AttrType, lexicon.NamespaceXSLT); ok {
 		if err := c.checkTypeAttrSchemaAware(ctx, "LRE (xsl:type)", typeAttr); err != nil {
 			return err
 		}

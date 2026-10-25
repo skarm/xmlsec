@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -1068,7 +1068,7 @@ func (ec *execContext) prepareNodeSeparators(out *outputFrame, node xdm.Node, no
 // DOM while the current result document contains only top-level markup. A later
 // fallback restores every deferred separator at its original boundary.
 func (ec *execContext) deferAdaptiveMarkupSeparator(out *outputFrame, node xdm.Node, sep string) bool {
-	if ec.currentResultDocMethod != methodAdaptive || out.current != out.doc || !isAdaptiveStandaloneMarkupNode(node) {
+	if ec.currentResultDocMethod != lexicon.MethodAdaptive || out.current != out.doc || !isAdaptiveStandaloneMarkupNode(node) {
 		return false
 	}
 

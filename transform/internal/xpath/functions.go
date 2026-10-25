@@ -13,8 +13,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // Namespace URIs for standard XPath 3.1 function namespaces.
@@ -299,7 +299,7 @@ func resolveFunctionByURIInfo(ctx context.Context, ec *evalContext, uri, name st
 
 	cause := fmt.Errorf("%w: %s#%d", ErrUnknownFunction, name, arity)
 	if ec.version >= 20 {
-		return resolvedFunction{}, &xdm.Error{Code: errCodeXPST0017, Message: cause.Error(), Cause: cause}
+		return resolvedFunction{}, &xdm.Error{Code: lexicon.ErrXPST0017, Message: cause.Error(), Cause: cause}
 	}
 
 	return resolvedFunction{}, cause
@@ -433,7 +433,7 @@ func isNoTypedValueError(err error) bool {
 		return false
 	}
 
-	return xerr.Code == errCodeFOTY0012 || xerr.Code == errCodeFOTY0013
+	return xerr.Code == errCodeFOTY0012 || xerr.Code == lexicon.ErrFOTY0013
 }
 
 // coerceArgToStringRequired applies XPath 3.1 function coercion rules for xs:string params.
@@ -656,9 +656,9 @@ func lookupFunctions(name string) (*builtinFunc, bool) {
 		return &builtinFunc{name: name, min: 1, max: 1, fn: fnBoolean}, true
 	case fnNameNot:
 		return &builtinFunc{name: name, min: 1, max: 1, fn: fnNot}, true
-	case nameTrue:
+	case lexicon.ValueTrue:
 		return &builtinFunc{name: name, min: 0, max: 0, fn: fnTrue}, true
-	case nameFalse:
+	case lexicon.ValueFalse:
 		return &builtinFunc{name: name, min: 0, max: 0, fn: fnFalse}, true
 	}
 
@@ -693,7 +693,7 @@ func fnFalse(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 
 func lookupFunctions2(name string) (*builtinFunc, bool) {
 	switch name {
-	case nameError:
+	case lexicon.TypeError:
 		return &builtinFunc{name: name, min: 0, max: 3, fn: fnError}, true
 	case "trace":
 		return &builtinFunc{name: name, min: 1, max: 2, fn: fnTrace}, true

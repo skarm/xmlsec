@@ -12,9 +12,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/pattern"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	xpathregex "github.com/skarm/xmlsec/transform/internal/xpath/regex"
 
 	"golang.org/x/text/cases"
@@ -37,7 +37,7 @@ const (
 
 func lookupFunctionsString(name string) (*builtinFunc, bool) {
 	switch name {
-	case nameString:
+	case lexicon.TypeString:
 		return &builtinFunc{name: name, min: 0, max: 1, fn: fnString}, true
 	case "codepoints-to-string":
 		return &builtinFunc{name: name, min: 1, max: 1, fn: fnCodepointsToString}, true
@@ -96,7 +96,7 @@ func fnString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	if len(args) == 0 {
 		fc := getFnContext(ctx)
 		if fc == nil || (fc.contextItem == nil && fc.node == nil) {
-			return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 		}
 
 		s, ok := fc.contextStringValue()
@@ -490,14 +490,14 @@ func fnStringLength(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 	if len(args) == 0 {
 		fc := getFnContext(ctx)
 		if fc == nil {
-			return nil, &xdm.Error{Code: errCodeXPDY0002, Message: "string-length: context item is absent"}
+			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: "string-length: context item is absent"}
 		}
 
 		var ok bool
 
 		s, ok = fc.contextStringValue()
 		if !ok {
-			return nil, &xdm.Error{Code: errCodeXPDY0002, Message: "string-length: context item is absent"}
+			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: "string-length: context item is absent"}
 		}
 	} else {
 		var err error
@@ -517,7 +517,7 @@ func fnNormalizeSpace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, e
 	if len(args) == 0 {
 		fc := getFnContext(ctx)
 		if fc == nil || (fc.contextItem == nil && fc.node == nil) {
-			return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 		}
 
 		sv, ok := fc.contextStringValue()
@@ -840,7 +840,7 @@ func fnMatches(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	ok, err := re.MatchString(ctx, s)
 	if err != nil {
-		return nil, &xdm.Error{Code: errCodeFORX0002, Message: fmt.Sprintf("regex match failed: %v", err), Cause: err}
+		return nil, &xdm.Error{Code: lexicon.ErrFORX0002, Message: fmt.Sprintf("regex match failed: %v", err), Cause: err}
 	}
 
 	return xdm.SingleBoolean(ok), nil
@@ -919,7 +919,7 @@ func fnReplace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	// XPath spec: error if pattern matches empty string
 	matchesEmpty, err := re.MatchString(ctx, "")
 	if err != nil {
-		return nil, &xdm.Error{Code: errCodeFORX0002, Message: fmt.Sprintf("regex match failed: %v", err), Cause: err}
+		return nil, &xdm.Error{Code: lexicon.ErrFORX0002, Message: fmt.Sprintf("regex match failed: %v", err), Cause: err}
 	}
 
 	if matchesEmpty {
@@ -940,7 +940,7 @@ func fnReplace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	replaced, err := re.ReplaceAllString(ctx, s, goRepl)
 	if err != nil {
-		return nil, &xdm.Error{Code: errCodeFORX0002, Message: fmt.Sprintf("regex replace failed: %v", err), Cause: err}
+		return nil, &xdm.Error{Code: lexicon.ErrFORX0002, Message: fmt.Sprintf("regex replace failed: %v", err), Cause: err}
 	}
 
 	return xdm.SingleString(replaced), nil
@@ -1089,7 +1089,7 @@ func fnTokenize(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 	// XPath spec: error if pattern matches zero-length string
 	matchesEmpty, err := re.MatchString(ctx, "")
 	if err != nil {
-		return nil, &xdm.Error{Code: errCodeFORX0002, Message: fmt.Sprintf("regex match failed: %v", err), Cause: err}
+		return nil, &xdm.Error{Code: lexicon.ErrFORX0002, Message: fmt.Sprintf("regex match failed: %v", err), Cause: err}
 	}
 
 	if matchesEmpty {
@@ -1098,7 +1098,7 @@ func fnTokenize(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 
 	parts, err := re.Split(ctx, s, -1)
 	if err != nil {
-		return nil, &xdm.Error{Code: errCodeFORX0002, Message: fmt.Sprintf("regex split failed: %v", err), Cause: err}
+		return nil, &xdm.Error{Code: lexicon.ErrFORX0002, Message: fmt.Sprintf("regex split failed: %v", err), Cause: err}
 	}
 
 	result := make(xdm.ItemSlice, len(parts))
@@ -1168,7 +1168,7 @@ func fnAnalyzeString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 
 	matchesEmpty, err := re.MatchString(ctx, "")
 	if err != nil {
-		return nil, &xdm.Error{Code: errCodeFORX0002, Message: fmt.Sprintf("regex match failed: %v", err), Cause: err}
+		return nil, &xdm.Error{Code: lexicon.ErrFORX0002, Message: fmt.Sprintf("regex match failed: %v", err), Cause: err}
 	}
 
 	if matchesEmpty {
@@ -1267,7 +1267,7 @@ func buildAnalyzeStringResult(ctx context.Context, re *compiledXPathRegex, s, pa
 	}
 
 	if iterErr != nil {
-		return nil, &xdm.Error{Code: errCodeFORX0002, Message: fmt.Sprintf("regex match failed: %v", iterErr), Cause: iterErr}
+		return nil, &xdm.Error{Code: lexicon.ErrFORX0002, Message: fmt.Sprintf("regex match failed: %v", iterErr), Cause: iterErr}
 	}
 
 	if pos < len(s) {
@@ -1828,7 +1828,7 @@ func compileXPathRegexUncached(source, flags string) (*compiledXPathRegex, error
 
 	program, err := pattern.Compile(source, options)
 	if err != nil {
-		return nil, &xdm.Error{Code: errCodeFORX0002, Message: err.Error(), Cause: err}
+		return nil, &xdm.Error{Code: lexicon.ErrFORX0002, Message: err.Error(), Cause: err}
 	}
 
 	return &compiledXPathRegex{program: program}, nil

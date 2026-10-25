@@ -7,6 +7,7 @@ import (
 	"context"
 	"slices"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 )
 
@@ -726,7 +727,7 @@ func CollectNamespaceNodes(ctx context.Context, ancestors []Node, inScope map[st
 
 	var result []Node
 
-	xmlNS := NewNamespace("xml", "http://www.w3.org/XML/1998/namespace")
+	xmlNS := NewNamespace("xml", lexicon.NamespaceXML)
 	result = append(result, NewNamespaceNodeWrapper(xmlNS, elem))
 
 	// Second pass: output in document order (outermost to innermost), but

@@ -10,9 +10,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	norm "github.com/skarm/xmlsec/internal/normalization"
+	"github.com/skarm/xmlsec/internal/lexicon"
 
 	"github.com/skarm/xmlsec/internal/nilcheck"
+	norm "github.com/skarm/xmlsec/internal/normalization"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
@@ -166,7 +167,7 @@ func (w *xmlStream) node(n *Node) {
 		w.text(n.Data)
 		w.text("-->")
 	case PINode:
-		if strings.Contains(n.Data, "?>") || strings.EqualFold(n.Name.Local, nameXML) {
+		if strings.Contains(n.Data, "?>") || strings.EqualFold(n.Name.Local, lexicon.PrefixXML) {
 			w.err = ErrMalformed
 			return
 		}
@@ -198,7 +199,7 @@ func (w *xmlStream) markupCharacters(value string) bool {
 	}
 
 	for _, r := range value {
-		if !xmlchar.IsLiteralChar(r, w.options.Version == version11) {
+		if !xmlchar.IsLiteralChar(r, w.options.Version == lexicon.XMLVersion11) {
 			w.err = ErrMalformed
 			return false
 		}
@@ -354,7 +355,7 @@ func (w *xmlStream) escapedPart(s string, attribute bool) {
 		return
 	}
 
-	if len(w.options.CharacterMap) == 0 && !w.options.ASCII && !w.options.EscapeControlChars && w.options.Version != version11 && w.options.CanEncode == nil {
+	if len(w.options.CharacterMap) == 0 && !w.options.ASCII && !w.options.EscapeControlChars && w.options.Version != lexicon.XMLVersion11 && w.options.CanEncode == nil {
 		for _, r := range s {
 			if !xmlchar.IsChar(r) {
 				w.err = ErrMalformed
@@ -403,7 +404,7 @@ func (w *xmlStream) characterReplacement(r rune, attribute bool) (string, bool) 
 		return replacement, true
 	}
 
-	if w.options.Version == version11 && !xmlchar.IsXML11Char(r) || w.options.Version != version11 && !xmlchar.IsChar(r) {
+	if w.options.Version == lexicon.XMLVersion11 && !xmlchar.IsXML11Char(r) || w.options.Version != lexicon.XMLVersion11 && !xmlchar.IsChar(r) {
 		w.err = ErrMalformed
 		return "", false
 	}
@@ -420,7 +421,7 @@ func (w *xmlStream) characterReplacement(r rune, attribute bool) (string, bool) 
 func (w *xmlStream) needsCharacterReference(r rune) bool {
 	return w.options.ASCII && r > 127 ||
 		w.options.EscapeControlChars && (r >= 0x7f && r <= 0x9f || r == 0x2028) ||
-		w.options.Version == version11 && xmlchar.IsXML11SerializeAsCharRef(r) ||
+		w.options.Version == lexicon.XMLVersion11 && xmlchar.IsXML11SerializeAsCharRef(r) ||
 		r > 127 && w.options.CanEncode != nil && !w.options.CanEncode(r)
 }
 
@@ -448,7 +449,7 @@ func (w *xmlStream) writeElement(n *Node) {
 	emitted := make(map[string]bool, len(n.NS)+2)
 
 	declare := func(prefix, uri string) {
-		if prefix == nameXML || emitted[prefix] {
+		if prefix == lexicon.PrefixXML || emitted[prefix] {
 			return
 		}
 

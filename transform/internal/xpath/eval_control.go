@@ -10,8 +10,8 @@ import (
 	"math/big"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // checkedArrayIndex converts an xs:integer array index to int. An index outside
@@ -23,7 +23,7 @@ func checkedArrayIndex(a xdm.AtomicValue) (int, error) {
 		return arrayIndexFromInt64(v)
 	case *big.Int:
 		if !v.IsInt64() {
-			return 0, &xdm.Error{Code: errCodeFOAY0001, Message: textArrayIndexOutOfRange}
+			return 0, &xdm.Error{Code: lexicon.ErrFOAY0001, Message: textArrayIndexOutOfRange}
 		}
 
 		return arrayIndexFromInt64(v.Int64())
@@ -35,7 +35,7 @@ func checkedArrayIndex(a xdm.AtomicValue) (int, error) {
 func arrayIndexFromInt64(v int64) (int, error) {
 	n := int(v)
 	if int64(n) != v {
-		return 0, &xdm.Error{Code: errCodeFOAY0001, Message: textArrayIndexOutOfRange}
+		return 0, &xdm.Error{Code: lexicon.ErrFOAY0001, Message: textArrayIndexOutOfRange}
 	}
 
 	return n, nil
@@ -71,7 +71,7 @@ func evalUnaryLookupExpr(evalFn exprEvaluator, ctx context.Context, ec *evalCont
 	}
 
 	if ec.node == nil {
-		return nil, &xdm.Error{Code: errCodeXPDY0002, Message: errMsgContextItemAbsent}
+		return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
 	}
 
 	return lookupItem(evalFn, ctx, ec, xdm.NodeItem{Node: ec.node}, e.Key, e.All)

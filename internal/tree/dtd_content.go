@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
 
@@ -370,11 +371,11 @@ func (p *dtdContentParser) processingInstruction() error {
 		return ErrMalformed
 	}
 
-	if body[:nameEnd] == nameXML && (!p.document || !p.first) {
+	if body[:nameEnd] == lexicon.PrefixXML && (!p.document || !p.first) {
 		return fmt.Errorf("%w: XML declaration position", ErrMalformed)
 	}
 
-	if body[:nameEnd] != nameXML {
+	if body[:nameEnd] != lexicon.PrefixXML {
 		at := nameEnd
 		for at < len(body) && spaceByte(body[at]) {
 			at++

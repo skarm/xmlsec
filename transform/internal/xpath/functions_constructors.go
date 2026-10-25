@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	valuepkg "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func lookupConstructor(requestedName string) (*builtinFunc, bool) {
@@ -23,21 +23,21 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 		name       string
 		targetType string
 	}{
-		{nameString, xdm.TypeString},
+		{lexicon.TypeString, xdm.TypeString},
 		{fnNameBoolean, xdm.TypeBoolean},
 		{"decimal", xdm.TypeDecimal},
 		{"double", xdm.TypeDouble},
 		{"float", xdm.TypeFloat},
 		{"integer", xdm.TypeInteger},
-		{nameDate, xdm.TypeDate},
-		{nameDateTime, xdm.TypeDateTime},
-		{nameTime, xdm.TypeTime},
-		{nameDuration, xdm.TypeDuration},
+		{lexicon.TypeDate, xdm.TypeDate},
+		{lexicon.TypeDateTime, xdm.TypeDateTime},
+		{lexicon.TypeTime, xdm.TypeTime},
+		{lexicon.TypeDuration, xdm.TypeDuration},
 		{"dayTimeDuration", xdm.TypeDayTimeDuration},
 		{"yearMonthDuration", xdm.TypeYearMonthDuration},
 		{"anyURI", xdm.TypeAnyURI},
-		{nameBase64Binary, xdm.TypeBase64Binary},
-		{nameHexBinary, xdm.TypeHexBinary},
+		{lexicon.TypeBase64Binary, xdm.TypeBase64Binary},
+		{lexicon.TypeHexBinary, xdm.TypeHexBinary},
 		{"untypedAtomic", xdm.TypeUntypedAtomic},
 	} {
 		if requestedName == entry.name {
@@ -46,7 +46,7 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 	}
 
 	// xs:QName constructor needs namespace context to resolve prefixes
-	if requestedName == nameQName {
+	if requestedName == lexicon.TypeQName {
 		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSQNameConstructor()}, true
 	}
 
@@ -100,7 +100,7 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 		{"normalizedString", xdm.TypeNormalizedString, nil},
 		{"token", xdm.TypeToken, nil},
 		{"language", xdm.TypeLanguage, reLang},
-		{nameName, xdm.TypeName, reName},
+		{lexicon.TypeName, xdm.TypeName, reName},
 		{"NCName", xdm.TypeNCName, reNCName},
 		{"NMTOKEN", xdm.TypeNMTOKEN, reNMTOKEN},
 		{"ENTITY", xdm.TypeENTITY, reNCName},
@@ -113,15 +113,15 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 	}
 
 	// List types — split by whitespace, produce sequence of item type values
-	if requestedName == nameNMTOKENS {
+	if requestedName == lexicon.TypeNMTokens {
 		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSTokenList(xdm.TypeNMTOKENS, xdm.TypeNMTOKEN, reNMTOKEN)}, true
 	}
 
-	if requestedName == nameIDREFS {
+	if requestedName == lexicon.TypeIDREFS {
 		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSTokenList(xdm.TypeIDREFS, xdm.TypeIDREF, reNCName)}, true
 	}
 
-	if requestedName == nameENTITIES {
+	if requestedName == lexicon.TypeENTITIES {
 		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSTokenList(xdm.TypeENTITIES, xdm.TypeENTITY, reNCName)}, true
 	}
 
@@ -131,11 +131,11 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 		name     string
 		typeName string
 	}{
-		{nameGDay, xdm.TypeGDay},
-		{nameGMonth, xdm.TypeGMonth},
-		{nameGMonthDay, xdm.TypeGMonthDay},
-		{nameGYear, xdm.TypeGYear},
-		{nameGYearMonth, xdm.TypeGYearMonth},
+		{lexicon.TypeGDay, xdm.TypeGDay},
+		{lexicon.TypeGMonth, xdm.TypeGMonth},
+		{lexicon.TypeGMonthDay, xdm.TypeGMonthDay},
+		{lexicon.TypeGYear, xdm.TypeGYear},
+		{lexicon.TypeGYearMonth, xdm.TypeGYearMonth},
 	} {
 		if requestedName == entry.name {
 			return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSConstructor(entry.typeName)}, true
@@ -149,7 +149,7 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 	}
 
 	// xs:error — always raises an error (used for type checking tests)
-	if requestedName == nameError {
+	if requestedName == lexicon.TypeError {
 		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: fnXSError}, true
 	}
 
@@ -325,20 +325,24 @@ func makeXSTokenList(listType, itemType string, tokenRe lexicalCheck) func(conte
 	}
 }
 
-func reGDay(s string) bool { return valuepkg.ValidateBuiltin(s, nameGDay, valuepkg.Version11) == nil }
+func reGDay(s string) bool {
+	return valuepkg.ValidateBuiltin(s, lexicon.TypeGDay, valuepkg.Version11) == nil
+}
 
 func reGMonth(s string) bool {
-	return valuepkg.ValidateBuiltin(s, nameGMonth, valuepkg.Version11) == nil
+	return valuepkg.ValidateBuiltin(s, lexicon.TypeGMonth, valuepkg.Version11) == nil
 }
 
 func reGMonthDay(s string) bool {
-	return valuepkg.ValidateBuiltin(s, nameGMonthDay, valuepkg.Version11) == nil
+	return valuepkg.ValidateBuiltin(s, lexicon.TypeGMonthDay, valuepkg.Version11) == nil
 }
 
-func reGYear(s string) bool { return valuepkg.ValidateBuiltin(s, nameGYear, valuepkg.Version11) == nil }
+func reGYear(s string) bool {
+	return valuepkg.ValidateBuiltin(s, lexicon.TypeGYear, valuepkg.Version11) == nil
+}
 
 func reGYearMonth(s string) bool {
-	return valuepkg.ValidateBuiltin(s, nameGYearMonth, valuepkg.Version11) == nil
+	return valuepkg.ValidateBuiltin(s, lexicon.TypeGYearMonth, valuepkg.Version11) == nil
 }
 
 // validateGregorianValue performs additional validation beyond regex matching.

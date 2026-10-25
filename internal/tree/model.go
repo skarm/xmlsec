@@ -7,14 +7,15 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
 
 const (
 	// XMLNamespace is the predefined XML namespace URI.
-	XMLNamespace = "http://www.w3.org/XML/1998/namespace"
+	XMLNamespace = lexicon.NamespaceXML
 	// XMLNSNamespace is the reserved namespace-declaration URI.
-	XMLNSNamespace = "http://www.w3.org/2000/xmlns/"
+	XMLNSNamespace = lexicon.NamespaceXMLNS
 )
 
 const xmlSpaceName = "space"
@@ -449,7 +450,7 @@ func QName(prefix, local string) string {
 
 // ResolvePrefix resolves a namespace prefix by walking the original ancestors.
 func ResolvePrefix(n *Node, prefix string) (string, bool) {
-	if prefix == nameXML {
+	if prefix == lexicon.PrefixXML {
 		return XMLNamespace, true
 	}
 

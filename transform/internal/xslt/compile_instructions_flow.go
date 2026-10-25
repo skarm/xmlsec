@@ -8,14 +8,14 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
 func (c *compiler) compileApplyTemplates(ctx context.Context, elem *xdm.Element) (*applyTemplatesInst, error) {
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrSelect, nameMode)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrSelect, lexicon.AttrMode)); err != nil {
 		return nil, err
 	}
 
@@ -72,7 +72,7 @@ func (c *compiler) compileApplyTemplates(ctx context.Context, elem *xdm.Element)
 }
 
 func (c *compiler) compileApplyTemplatesMode(ctx context.Context, elem *xdm.Element) (string, error) {
-	raw, present := elem.GetAttribute(nameMode)
+	raw, present := elem.GetAttribute(lexicon.AttrMode)
 	mode := strings.Trim(raw, " \t\r\n")
 
 	var err error
@@ -193,7 +193,7 @@ func (c *compiler) compileCallTemplate(ctx context.Context, elem *xdm.Element) (
 }
 
 func (c *compiler) compileIf(ctx context.Context, elem *xdm.Element) (*ifInst, error) {
-	testAttr := getAttr(elem, nameTest2)
+	testAttr := getAttr(elem, lexicon.AttrTest)
 	if testAttr == "" {
 		return nil, staticError(errCodeXTSE0010, "xsl:if requires test attribute")
 	}
@@ -287,7 +287,7 @@ func (c *compiler) compileWhenClause(ctx context.Context, elem *xdm.Element) (*w
 		restoreVersion()
 	}()
 
-	testAttr := getAttr(elem, nameTest2)
+	testAttr := getAttr(elem, lexicon.AttrTest)
 	if testAttr == "" {
 		return nil, staticError(errCodeXTSE0010, "xsl:when requires test attribute")
 	}
@@ -548,7 +548,7 @@ func (c *compiler) compileSortKeyOptions(elem *xdm.Element, key *sortKey) error 
 		{nameOrder, &key.Order},
 		{nameDataType, &key.DataType},
 		{nameCaseOrder, &key.CaseOrder},
-		{nameLang, &key.Lang},
+		{lexicon.AttrLang, &key.Lang},
 		{nameCollation, &key.Collation},
 		{"stable", &key.Stable},
 	} {

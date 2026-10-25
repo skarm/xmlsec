@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
 
@@ -376,7 +377,7 @@ func (s *dtdScanner) processingInstruction(text string) error {
 	body := text[2 : end-2]
 
 	nameEnd := dtdNameEnd(body)
-	if nameEnd == 0 || !xmlchar.IsValidNCName(body[:nameEnd]) || strings.EqualFold(body[:nameEnd], nameXML) || nameEnd < len(body) && !spaceByte(body[nameEnd]) {
+	if nameEnd == 0 || !xmlchar.IsValidNCName(body[:nameEnd]) || strings.EqualFold(body[:nameEnd], lexicon.PrefixXML) || nameEnd < len(body) && !spaceByte(body[nameEnd]) {
 		s.fail("processing instruction")
 	}
 

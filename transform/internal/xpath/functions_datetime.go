@@ -8,13 +8,13 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 func lookupFunctionsDatetime(name string) (*builtinFunc, bool) {
 	switch name {
-	case nameDateTime:
+	case lexicon.TypeDateTime:
 		return &builtinFunc{name: name, min: 2, max: 2, fn: fnDateTime}, true
 	case "year-from-dateTime":
 		return &builtinFunc{name: name, min: 1, max: 1, fn: fnYearFromDateTime}, true

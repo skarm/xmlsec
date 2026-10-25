@@ -7,8 +7,8 @@ import (
 	"maps"
 	"math/big"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // StreamInfo exposes precomputed streamability properties for use by
@@ -420,14 +420,14 @@ func inspectPredicateMotion(e, pred Expr, step *Step) (bool, bool) {
 		}
 	case FunctionCall:
 		local, isFn := streamFnLocalName(v)
-		if isFn && (local == nameLast || local == lexicon.FnPosition) {
+		if isFn && (local == lexicon.FnLast || local == lexicon.FnPosition) {
 			return true, false
 		}
 
 		if isFn {
 			switch local {
-			case nameName2, nameLocalName, nameNamespaceUri, nameNodeName,
-				"self", nameGenerateId, "base-uri", fnNameDocumentURI,
+			case lexicon.FnName, nameLocalName, nameNamespaceUri, nameNodeName,
+				"self", lexicon.FnGenerateID, "base-uri", fnNameDocumentURI,
 				fnNameNilled, nameHasChildren, nameStringLength, "current":
 				return false, false
 			}

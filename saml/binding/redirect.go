@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -24,10 +25,10 @@ const (
 )
 
 // ProtocolNamespace is the SAML 2.0 protocol namespace URI.
-const ProtocolNamespace = "urn:oasis:names:tc:SAML:2.0:protocol"
+const ProtocolNamespace = lexicon.NamespaceSAMLProtocol
 
 // RedirectBinding is the SAML HTTP-Redirect binding URI.
-const RedirectBinding = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+const RedirectBinding = lexicon.SAMLBindingHTTPRedirect
 
 // DeflateEncoding is the SAML raw DEFLATE encoding URI.
 const DeflateEncoding = "urn:oasis:names:tc:SAML:2.0:bindings:URL-Encoding:DEFLATE"

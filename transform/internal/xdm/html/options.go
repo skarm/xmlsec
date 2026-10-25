@@ -6,8 +6,8 @@ package html
 import (
 	"strconv"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	norm "github.com/skarm/xmlsec/internal/normalization"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // IsHTMLNamespace selects names subject to the special HTML output rules.

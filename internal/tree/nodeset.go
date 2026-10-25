@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 // NodeRef is an immutable XPath 1.0 node handle. Attribute and namespace nodes
@@ -409,7 +411,7 @@ func (e Element) NamespaceNodes() []NodeRef {
 }
 
 func namespaceScope(n *Node) map[string]string {
-	scope := map[string]string{nameXML: XMLNamespace}
+	scope := map[string]string{lexicon.PrefixXML: XMLNamespace}
 
 	for ; n != nil; n = n.Parent {
 		for _, ns := range n.NS {

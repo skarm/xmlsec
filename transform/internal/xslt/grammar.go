@@ -3,7 +3,7 @@
 
 package xslt
 
-import "github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+import "github.com/skarm/xmlsec/internal/lexicon"
 
 // elementDef describes XSLT element syntax from the normative XSLT 3.0
 // summaries (§2.2): allowed attributes, required fields, AVTs and closed values.
@@ -50,7 +50,7 @@ type attrDef struct {
 
 // componentKinds is the closed REC H.1 vocabulary for xsl:expose and xsl:accept.
 func componentKinds() []string {
-	return []string{nameTemplate, "function", nameVariable, nameAttributeSet, nameMode, "*"}
+	return []string{nameTemplate, "function", nameVariable, nameAttributeSet, lexicon.AttrMode, "*"}
 }
 
 // lookupXSLTElement constructs the requested element's grammar definition.
@@ -85,7 +85,7 @@ func lookupRootXSLTElement(name string) (elementDef, bool) {
 			"id":                         {},
 			nameExtensionElementPrefixes: {},
 			nameExcludeResultPrefixes:    {},
-			paramVersion:                 {required: true},
+			lexicon.SerializationVersion: {required: true},
 			nameXpathDefaultNamespace:    {},
 			nameDefaultValidation:        {values: []string{validationPreserve, validationStrip}},
 			nameDefaultCollation:         {},
@@ -96,8 +96,8 @@ func lookupRootXSLTElement(name string) (elementDef, bool) {
 			"id":                         {},
 			xslAttrName:                  {},
 			namePackageVersion:           {},
-			paramVersion:                 {required: true},
-			"declared-modes":             {values: []string{nameYes, "no", nameTrue, nameFalse, "1", "0"}},
+			lexicon.SerializationVersion: {required: true},
+			"declared-modes":             {values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"}},
 			nameExtensionElementPrefixes: {},
 			nameExcludeResultPrefixes:    {},
 			nameXpathDefaultNamespace:    {},
@@ -113,7 +113,7 @@ func lookupRootXSLTElement(name string) (elementDef, bool) {
 			"id":                         {},
 			nameExtensionElementPrefixes: {},
 			nameExcludeResultPrefixes:    {},
-			paramVersion:                 {required: true},
+			lexicon.SerializationVersion: {required: true},
 			nameXpathDefaultNamespace:    {},
 			nameDefaultValidation:        {values: []string{validationPreserve, validationStrip}},
 			nameDefaultCollation:         {},
@@ -165,30 +165,30 @@ func lookupDeclarationXSLTElement(name string) (elementDef, bool) {
 	// The engine accepts xsl:mode in 2.0 modules as configuration whose
 	// defaults already match 2.0. Attributes are still validated; streamable does
 	// not enable W3C streaming execution.
-	case nameMode:
+	case lexicon.AttrMode:
 		return elementDef{attrs: map[string]attrDef{
 			xslAttrName:                 {},
-			nameStreamable:              {values: []string{nameYes, "no"}},
+			nameStreamable:              {values: []string{lexicon.ValueYes, "no"}},
 			nameUseAccumulators:         {},
 			"on-no-match":               {values: []string{"deep-copy", "shallow-copy", "deep-skip", "shallow-skip", "text-only-copy", onNoMatchFail}},
 			"on-multiple-match":         {values: []string{"use-last", onNoMatchFail}},
-			"warning-on-no-match":       {values: []string{nameYes, "no"}},
-			"warning-on-multiple-match": {values: []string{nameYes, "no"}},
+			"warning-on-no-match":       {values: []string{lexicon.ValueYes, "no"}},
+			"warning-on-multiple-match": {values: []string{lexicon.ValueYes, "no"}},
 			// XSLT 3.0 section 6.6: @typed says whether the mode expects typed
 			// input. "lax" and "strict" join the booleans, so the vocabulary is
 			// not the plain yes/no one.
-			nameTyped: {values: []string{nameYes, "no", nameTrue, nameFalse, "1", "0", validationLax, validationStrict, validationUnspecified}},
+			nameTyped: {values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0", validationLax, validationStrict, validationUnspecified}},
 			// Modes cannot declare abstract or hidden visibility (§6.6).
 			// Hidden visibility is acquired through xsl:accept or xsl:expose.
 			xslAttrVisibility: {values: []string{visPublic, visPrivate, visFinal}},
 		}}, true
 	case nameInclude:
 		return elementDef{attrs: map[string]attrDef{
-			nameHref: {required: true},
+			lexicon.AttrHref: {required: true},
 		}}, true
 	case nameImport:
 		return elementDef{attrs: map[string]attrDef{
-			nameHref: {required: true},
+			lexicon.AttrHref: {required: true},
 		}}, true
 	case "import-schema":
 		return elementDef{attrs: map[string]attrDef{
@@ -208,7 +208,7 @@ func lookupDeclarationXSLTElement(name string) (elementDef, bool) {
 			xslAttrName:     {required: true},
 			"initial-value": {required: true},
 			"as":            {},
-			nameStreamable:  {values: []string{nameYes, "no", nameTrue, nameFalse, "1", "0"}},
+			nameStreamable:  {values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"}},
 			// Reject the draft attribute absent from the §18.2.1 summary.
 			"applies-to": {removed30: true},
 		}}, true
@@ -216,17 +216,17 @@ func lookupDeclarationXSLTElement(name string) (elementDef, bool) {
 	// An accumulator rule allows only match, phase and select (§18.2.1).
 	case "accumulator-rule":
 		return elementDef{since30: true, attrs: map[string]attrDef{
-			nameMatch2:    {required: true},
-			"phase":       {values: []string{"start", "end"}},
-			xslAttrSelect: {},
+			lexicon.AttrMatch: {required: true},
+			"phase":           {values: []string{"start", "end"}},
+			xslAttrSelect:     {},
 		}}, true
 	case nameTemplate:
 		return elementDef{attrs: map[string]attrDef{
-			nameMatch2:  {},
-			xslAttrName: {},
-			"priority":  {},
-			nameMode:    {},
-			"as":        {},
+			lexicon.AttrMatch: {},
+			xslAttrName:       {},
+			"priority":        {},
+			lexicon.AttrMode:  {},
+			"as":              {},
 			// Declared visibility excludes hidden, which is acquired through
 			// xsl:accept or xsl:expose (§6.1).
 			xslAttrVisibility: {since30: true, values: []string{visPublic, visPrivate, visFinal, visAbstract}},
@@ -239,7 +239,7 @@ func lookupDeclarationXSLTElement(name string) (elementDef, bool) {
 			xslAttrName:   {required: true},
 			xslAttrSelect: {},
 			"as":          {},
-			nameStatic:    {since30: true, values: []string{nameYes, "no", nameTrue, nameFalse, "1", "0"}},
+			nameStatic:    {since30: true, values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"}},
 			// Unlike xsl:param, xsl:variable declares visibility (§9.1).
 			// Hidden visibility is acquired rather than declared.
 			xslAttrVisibility: {since30: true, values: []string{visPublic, visPrivate, visFinal, visAbstract}},
@@ -249,14 +249,14 @@ func lookupDeclarationXSLTElement(name string) (elementDef, bool) {
 			xslAttrName:     {required: true},
 			xslAttrSelect:   {},
 			"as":            {},
-			ctxItemRequired: {values: []string{nameYes, "no"}},
-			nameTunnel:      {values: []string{nameYes, "no"}},
+			ctxItemRequired: {values: []string{lexicon.ValueYes, "no"}},
+			nameTunnel:      {values: []string{lexicon.ValueYes, "no"}},
 			// Reject the draft export attribute absent from §9.2.
 			"export": {removed30: true},
 			// Static parameters follow the processor's version, not the module's.
 			nameStatic: {
 				processor30: true,
-				values:      []string{nameYes, "no", nameTrue, nameFalse, "1", "0"},
+				values:      []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"},
 			},
 		}}, true
 	case nameAttributeSet:
@@ -268,7 +268,7 @@ func lookupDeclarationXSLTElement(name string) (elementDef, bool) {
 				visPublic, visPrivate, visFinal, visAbstract,
 			}},
 			nameStreamable: {processor30: true, values: []string{
-				nameYes, "no", nameTrue, nameFalse, "1", "0",
+				lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0",
 			}},
 		}}, true
 	case "function":
@@ -277,7 +277,7 @@ func lookupDeclarationXSLTElement(name string) (elementDef, bool) {
 			"as":        {},
 			// A 2.0 attribute, so the 2.0 pair: allowsBoolAliases admits the
 			// other four spellings in a 3.0 module.
-			xslElemOverride: {values: []string{nameYes, "no"}},
+			xslElemOverride: {values: []string{lexicon.ValueYes, "no"}},
 			// A function cannot declare hidden visibility; xsl:expose may make it
 			// hidden (REC H.1, xsl:visibility-not-hidden-type).
 			xslAttrVisibility: {since30: true, values: []string{
@@ -299,17 +299,17 @@ func lookupDeclarationXSLTElement(name string) (elementDef, bool) {
 			// follows the processor's version.
 			"override-extension-function": {
 				processor30: true,
-				values:      []string{nameYes, "no", nameTrue, nameFalse, "1", "0"},
+				values:      []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"},
 			},
 			// The default "maybe" permits result reuse. This attribute is not an AVT.
 			"new-each-time": {
 				processor30: true,
-				values:      []string{nameYes, "no", nameTrue, nameFalse, "1", "0", nameMaybe},
+				values:      []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0", nameMaybe},
 			},
 			// @cache is a boolean memoization hint, not a result-reuse guarantee (§10.3).
 			"cache": {
 				processor30: true,
-				values:      []string{nameYes, "no", nameTrue, nameFalse, "1", "0"},
+				values:      []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"},
 			},
 		}}, true
 	case "namespace-alias":
@@ -321,26 +321,26 @@ func lookupDeclarationXSLTElement(name string) (elementDef, bool) {
 	// XSLT 3.0 section 3.10, a top-level declaration.
 	case lexicon.XSLTElementGlobalContextItem:
 		return elementDef{since30: true, attrs: map[string]attrDef{
-			"as":    {},
-			nameUse: {values: []string{ctxItemRequired, "optional", "absent"}},
+			"as":            {},
+			lexicon.AttrUse: {values: []string{ctxItemRequired, "optional", "absent"}},
 			// Global context declarations are validated through the context-item entry.
 		}}, true
 
 	// XSLT 3.0 section 10.1.1, a child of xsl:template only.
 	case nameContextItem:
 		return elementDef{since30: true, attrs: map[string]attrDef{
-			"as":    {},
-			nameUse: {values: []string{ctxItemRequired, "optional", "absent"}},
+			"as":            {},
+			lexicon.AttrUse: {values: []string{ctxItemRequired, "optional", "absent"}},
 		}}, true
 	case nameKey2:
 		return elementDef{attrs: map[string]attrDef{
-			xslAttrName:   {required: true},
-			nameMatch2:    {required: true},
-			nameUse:       {},
-			nameCollation: {},
+			xslAttrName:       {required: true},
+			lexicon.AttrMatch: {required: true},
+			lexicon.AttrUse:   {},
+			nameCollation:     {},
 			// composite selects one key for the entire use sequence instead of one
 			// key per item (§6.3).
-			nameComposite: {since30: true, values: []string{nameYes, "no", nameTrue, nameFalse, "1", "0"}},
+			nameComposite: {since30: true, values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"}},
 		}}, true
 	case "decimal-format":
 		return elementDef{attrs: map[string]attrDef{
@@ -349,7 +349,7 @@ func lookupDeclarationXSLTElement(name string) (elementDef, bool) {
 			nameGroupingSeparator: {},
 			nameInfinity:          {},
 			nameMinusSign:         {},
-			valueNaN:              {},
+			lexicon.FloatNaN:      {},
 			namePercent:           {},
 			namePerMille:          {},
 			nameZeroDigit:         {},
@@ -369,34 +369,34 @@ func lookupConstructorXSLTElement(name string) (elementDef, bool) {
 		return elementDef{attrs: map[string]attrDef{
 			xslAttrName:           {required: true, avt: true},
 			nameNamespace:         {avt: true},
-			nameInheritNamespaces: {values: []string{nameYes, "no"}},
+			nameInheritNamespaces: {values: []string{lexicon.ValueYes, "no"}},
 			nameUseAttributeSets:  {},
-			nameType:              {},
+			lexicon.AttrType:      {},
 			nameValidation:        {values: []string{validationStrict, validationLax, validationPreserve, validationStrip}},
 		}}, true
 	case "attribute":
 		return elementDef{attrs: map[string]attrDef{
-			xslAttrName:    {required: true, avt: true},
-			nameNamespace:  {avt: true},
-			xslAttrSelect:  {},
-			"separator":    {avt: true},
-			nameType:       {},
-			nameValidation: {values: []string{validationStrict, validationLax, validationPreserve, validationStrip}},
+			xslAttrName:      {required: true, avt: true},
+			nameNamespace:    {avt: true},
+			xslAttrSelect:    {},
+			"separator":      {avt: true},
+			lexicon.AttrType: {},
+			nameValidation:   {values: []string{validationStrict, validationLax, validationPreserve, validationStrip}},
 		}}, true
-	case methodText:
+	case lexicon.MethodText:
 		return elementDef{attrs: map[string]attrDef{
-			nameDisableOutputEscaping: {values: []string{nameYes, "no"}},
+			nameDisableOutputEscaping: {values: []string{lexicon.ValueYes, "no"}},
 		}}, true
 	case "value-of":
 		return elementDef{attrs: map[string]attrDef{
 			xslAttrSelect:             {},
 			"separator":               {avt: true},
-			nameDisableOutputEscaping: {values: []string{nameYes, "no"}},
+			nameDisableOutputEscaping: {values: []string{lexicon.ValueYes, "no"}},
 		}}, true
 	case fnNameDocument:
 		return elementDef{attrs: map[string]attrDef{
-			nameValidation: {values: []string{validationStrict, validationLax, validationPreserve, validationStrip}},
-			nameType:       {},
+			nameValidation:   {values: []string{validationStrict, validationLax, validationPreserve, validationStrip}},
+			lexicon.AttrType: {},
 		}}, true
 	case "processing-instruction":
 		return elementDef{attrs: map[string]attrDef{
@@ -415,21 +415,21 @@ func lookupConstructorXSLTElement(name string) (elementDef, bool) {
 	case "copy":
 		return elementDef{attrs: map[string]attrDef{
 			xslAttrSelect:         {since30: true},
-			"copy-namespaces":     {values: []string{nameYes, "no"}},
-			nameInheritNamespaces: {values: []string{nameYes, "no"}},
+			"copy-namespaces":     {values: []string{lexicon.ValueYes, "no"}},
+			nameInheritNamespaces: {values: []string{lexicon.ValueYes, "no"}},
 			nameUseAttributeSets:  {},
-			nameType:              {},
+			lexicon.AttrType:      {},
 			nameValidation:        {values: []string{validationStrict, validationLax, validationPreserve, validationStrip}},
 		}}, true
 	case "copy-of":
 		return elementDef{attrs: map[string]attrDef{
 			xslAttrSelect:     {required: true},
-			"copy-namespaces": {values: []string{nameYes, "no"}},
+			"copy-namespaces": {values: []string{lexicon.ValueYes, "no"}},
 			// XSLT 3.0 section 18.3: the copy carries the accumulator values of
 			// the node it was copied from, which nothing else can supply — the
 			// copy's own tree is all the document the rules would see.
-			"copy-accumulators": {since30: true, values: []string{nameYes, "no"}},
-			nameType:            {},
+			"copy-accumulators": {since30: true, values: []string{lexicon.ValueYes, "no"}},
+			lexicon.AttrType:    {},
 			nameValidation: {avt: true, values: []string{
 				validationStrict, validationLax, validationPreserve, validationStrip,
 			}},
@@ -452,7 +452,7 @@ func lookupConstructorXSLTElement(name string) (elementDef, bool) {
 		return elementDef{attrs: map[string]attrDef{
 			xslAttrSelect: {required: true, optional30: true},
 		}}, true
-	case nameNumber:
+	case lexicon.TypeNumber:
 		return elementDef{attrs: map[string]attrDef{
 			"value":               {},
 			xslAttrSelect:         {},
@@ -460,7 +460,7 @@ func lookupConstructorXSLTElement(name string) (elementDef, bool) {
 			"count":               {},
 			"from":                {},
 			"format":              {avt: true},
-			nameLang:              {avt: true},
+			lexicon.AttrLang:      {avt: true},
 			"letter-value":        {values: []string{"alphabetic", "traditional"}, avt: true},
 			"ordinal":             {avt: true},
 			nameGroupingSeparator: {avt: true},
@@ -476,8 +476,8 @@ func lookupTemplateControlXSLTElement(name string) (elementDef, bool) {
 	switch name {
 	case "apply-templates":
 		return elementDef{attrs: map[string]attrDef{
-			xslAttrSelect: {},
-			nameMode:      {},
+			xslAttrSelect:    {},
+			lexicon.AttrMode: {},
 		}}, true
 	case "apply-imports":
 		return elementDef{attrs: map[string]attrDef{}}, true
@@ -489,13 +489,13 @@ func lookupTemplateControlXSLTElement(name string) (elementDef, bool) {
 		}}, true
 	case "if":
 		return elementDef{attrs: map[string]attrDef{
-			nameTest2: {required: true},
+			lexicon.AttrTest: {required: true},
 		}}, true
 	case "choose":
 		return elementDef{attrs: map[string]attrDef{}}, true
 	case "when":
 		return elementDef{attrs: map[string]attrDef{
-			nameTest2: {required: true},
+			lexicon.AttrTest: {required: true},
 		}}, true
 	case "otherwise":
 		return elementDef{attrs: map[string]attrDef{}}, true
@@ -508,7 +508,7 @@ func lookupTemplateControlXSLTElement(name string) (elementDef, bool) {
 			xslAttrName:   {required: true},
 			xslAttrSelect: {},
 			"as":          {},
-			nameTunnel:    {values: []string{nameYes, "no"}},
+			nameTunnel:    {values: []string{lexicon.ValueYes, "no"}},
 		}}, true
 	}
 
@@ -561,40 +561,40 @@ func lookupSequenceControlXSLTElement(name string) (elementDef, bool) {
 			"for-each-source":   {},
 			"for-each-stream":   {removed30: true},
 			xslAttrSelect:       {required: true},
-			nameStreamable:      {values: []string{nameYes, "no", nameTrue, nameFalse, "1", "0"}},
+			nameStreamable:      {values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"}},
 			nameUseAccumulators: {},
 			"sort-before-merge": {
-				values: []string{nameYes, "no", nameTrue, nameFalse, "1", "0"},
+				values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"},
 			},
-			nameValidation: {values: []string{validationStrict, validationLax, validationPreserve, validationStrip}},
-			nameType:       {},
+			nameValidation:   {values: []string{validationStrict, validationLax, validationPreserve, validationStrip}},
+			lexicon.AttrType: {},
 		}}, true
 
 	// Unlike xsl:sort, xsl:merge-key does not allow @stable (§15.5).
 	case "merge-key":
 		return elementDef{since30: true, attrs: map[string]attrDef{
-			xslAttrSelect: {},
-			nameLang:      {avt: true},
-			nameOrder:     {values: []string{"ascending", "descending"}, avt: true},
-			nameCollation: {avt: true},
-			nameCaseOrder: {values: []string{nameUpperFirst, nameLowerFirst}, avt: true},
+			xslAttrSelect:    {},
+			lexicon.AttrLang: {avt: true},
+			nameOrder:        {values: []string{"ascending", "descending"}, avt: true},
+			nameCollation:    {avt: true},
+			nameCaseOrder:    {values: []string{nameUpperFirst, nameLowerFirst}, avt: true},
 			// { "text" | "number" | eqname }: a prefixed name selects an
 			// implementation-defined type, so it passes as eqnameOK.
-			nameDataType: {values: []string{methodText, nameNumber}, eqnameOK: true, avt: true},
+			nameDataType: {values: []string{lexicon.MethodText, lexicon.TypeNumber}, eqnameOK: true, avt: true},
 		}}, true
 	case "merge-action":
 		return elementDef{since30: true, attrs: map[string]attrDef{}}, true
 	case nameSort:
 		return elementDef{attrs: map[string]attrDef{
-			xslAttrSelect: {},
-			nameLang:      {avt: true},
-			nameOrder:     {values: []string{"ascending", "descending"}, avt: true},
-			nameCollation: {avt: true},
-			"stable":      {values: []string{nameYes, "no"}, avt: true},
-			nameCaseOrder: {values: []string{nameUpperFirst, nameLowerFirst}, avt: true},
+			xslAttrSelect:    {},
+			lexicon.AttrLang: {avt: true},
+			nameOrder:        {values: []string{"ascending", "descending"}, avt: true},
+			nameCollation:    {avt: true},
+			"stable":         {values: []string{lexicon.ValueYes, "no"}, avt: true},
+			nameCaseOrder:    {values: []string{nameUpperFirst, nameLowerFirst}, avt: true},
 			// { "text" | "number" | eqname }: a prefixed name selects an
 			// implementation-defined type, so it passes as eqnameOK.
-			nameDataType: {values: []string{methodText, nameNumber}, eqnameOK: true, avt: true},
+			nameDataType: {values: []string{lexicon.MethodText, lexicon.TypeNumber}, eqnameOK: true, avt: true},
 		}}, true
 	case "perform-sort":
 		return elementDef{attrs: map[string]attrDef{
@@ -612,7 +612,7 @@ func lookupSequenceControlXSLTElement(name string) (elementDef, bool) {
 			// XSLT 3.0 only: a 2.0 stylesheet naming it must still be told so.
 			nameComposite: {
 				since30: true,
-				values:  []string{nameYes, "no", nameTrue, nameFalse, "1", "0"},
+				values:  []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"},
 			},
 			// These withdrawn binding attributes are unknown in the published REC.
 			"bind-group":        {removed30: true},
@@ -652,7 +652,7 @@ func lookupDynamicXSLTElement(name string) (elementDef, bool) {
 			// the set to the four lexical forms of the type. That widening is
 			// applied by allowsBoolAliases rather than listed here, so the
 			// enumeration stays the 2.0 pair and a 2.0 module is held to it.
-			"terminate": {values: []string{nameYes, "no"}, avt: true},
+			"terminate": {values: []string{lexicon.ValueYes, "no"}, avt: true},
 			// @error-code follows the processor's version, not the module's.
 			"error-code": {processor30: true, avt: true},
 		}}, true
@@ -660,8 +660,8 @@ func lookupDynamicXSLTElement(name string) (elementDef, bool) {
 	// xsl:assert requires XSLT 3.0 (§22.2).
 	case "assert":
 		return elementDef{since30: true, attrs: map[string]attrDef{
-			nameTest2:     {required: true},
-			xslAttrSelect: {},
+			lexicon.AttrTest: {required: true},
+			xslAttrSelect:    {},
 			// Written as {eqname} in the summary, so an attribute value template
 			// exactly as it is on xsl:message.
 			"error-code": {avt: true},
@@ -671,7 +671,7 @@ func lookupDynamicXSLTElement(name string) (elementDef, bool) {
 	case "try":
 		return elementDef{since30: true, attrs: map[string]attrDef{
 			xslAttrSelect:     {},
-			"rollback-output": {values: []string{nameYes, "no"}},
+			"rollback-output": {values: []string{lexicon.ValueYes, "no"}},
 		}}, true
 	case "catch":
 		return elementDef{since30: true, attrs: map[string]attrDef{
@@ -685,18 +685,18 @@ func lookupDynamicXSLTElement(name string) (elementDef, bool) {
 	// it has no @streamable attribute.
 	case "stream":
 		return elementDef{since30: true, attrs: map[string]attrDef{
-			nameHref:            {required: true, avt: true},
+			lexicon.AttrHref:    {required: true, avt: true},
 			nameUseAccumulators: {},
 			nameValidation:      {values: []string{validationStrict, validationLax, validationPreserve, validationStrip}},
-			nameType:            {},
+			lexicon.AttrType:    {},
 		}}, true
 	case "source-document":
 		return elementDef{since30: true, attrs: map[string]attrDef{
-			nameHref:            {required: true, avt: true},
-			nameStreamable:      {values: []string{nameYes, "no", nameTrue, nameFalse, "1", "0"}},
+			lexicon.AttrHref:    {required: true, avt: true},
+			nameStreamable:      {values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"}},
 			nameUseAccumulators: {},
 			nameValidation:      {values: []string{validationStrict, validationLax, validationPreserve, validationStrip}},
-			nameType:            {},
+			lexicon.AttrType:    {},
 		}}, true
 	}
 
@@ -710,83 +710,83 @@ func lookupSerializationXSLTElement(name string) (elementDef, bool) {
 			// build-tree says whether the raw result is normalised into a final
 			// result tree or serialised as the sequence it is; see 2.3.6. XSLT
 			// 3.0 added it, along with the two JSON serialisation parameters.
-			paramBuildTree:           {processor30: true, avt: true, values: []string{nameYes, "no", nameTrue, nameFalse, "1", "0"}},
-			paramAllowDuplicateNames: {processor30: true, avt: true, values: []string{nameYes, "no", nameTrue, nameFalse, "1", "0"}},
+			lexicon.SerializationBuildTree:           {processor30: true, avt: true, values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"}},
+			lexicon.SerializationAllowDuplicateNames: {processor30: true, avt: true, values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"}},
 			// Both enumerate as on xsl:output, plus braces: a literal outside
 			// the set is XTSE0020 here, a computed one XTDE0030 in resultdoc.go.
-			paramJSONNodeOutputMethod: {
+			lexicon.SerializationJSONNodeOutputMethod: {
 				processor30: true, avt: true, eqnameOK: true,
-				values: []string{methodXML, methodHTML, methodXHTML, methodText},
+				values: []string{lexicon.MethodXML, lexicon.MethodHTML, lexicon.MethodXHTML, lexicon.MethodText},
 			},
-			paramParameterDocument:   {processor30: true, avt: true},
-			paramItemSeparator:       {avt: true},
-			paramHTMLVersion:         {avt: true},
-			paramSuppressIndentation: {avt: true},
-			"format":                 {avt: true},
-			nameHref:                 {avt: true},
-			nameValidation:           {values: []string{validationStrict, validationLax, validationPreserve, validationStrip}},
-			nameType:                 {},
-			paramMethod: {avt: true, eqnameOK: true, values: []string{
-				methodXML, methodHTML, methodXHTML, methodText, "json", "adaptive",
+			lexicon.SerializationParameterDocument:   {processor30: true, avt: true},
+			lexicon.SerializationItemSeparator:       {avt: true},
+			lexicon.SerializationHTMLVersion:         {avt: true},
+			lexicon.SerializationSuppressIndentation: {avt: true},
+			"format":                                 {avt: true},
+			lexicon.AttrHref:                         {avt: true},
+			nameValidation:                           {values: []string{validationStrict, validationLax, validationPreserve, validationStrip}},
+			lexicon.AttrType:                         {},
+			lexicon.SerializationMethod: {avt: true, eqnameOK: true, values: []string{
+				lexicon.MethodXML, lexicon.MethodHTML, lexicon.MethodXHTML, lexicon.MethodText, "json", "adaptive",
 			}},
-			paramByteOrderMark:        {values: []string{nameYes, "no"}, avt: true},
-			paramCDATASectionElements: {avt: true},
-			paramDoctypePublic:        {avt: true},
-			paramDoctypeSystem:        {avt: true},
-			paramEncoding:             {avt: true},
-			paramEscapeURIAttributes:  {values: []string{nameYes, "no"}, avt: true},
-			paramIncludeContentType:   {values: []string{nameYes, "no"}, avt: true},
-			paramIndent:               {values: []string{nameYes, "no"}, avt: true},
-			paramMediaType:            {avt: true},
-			paramNormalizationForm:    {avt: true, nmtoken: true},
-			paramOmitXMLDeclaration:   {values: []string{nameYes, "no"}, avt: true},
-			paramStandalone:           {values: []string{nameYes, "no", nameOmit}, avt: true},
-			paramUndeclarePrefixes:    {values: []string{nameYes, "no"}, avt: true},
-			paramUseCharacterMaps:     {},
-			"output-version":          {avt: true},
+			lexicon.SerializationByteOrderMark:        {values: []string{lexicon.ValueYes, "no"}, avt: true},
+			lexicon.SerializationCDATASectionElements: {avt: true},
+			lexicon.SerializationDoctypePublic:        {avt: true},
+			lexicon.SerializationDoctypeSystem:        {avt: true},
+			lexicon.SerializationEncoding:             {avt: true},
+			lexicon.SerializationEscapeURIAttributes:  {values: []string{lexicon.ValueYes, "no"}, avt: true},
+			lexicon.SerializationIncludeContentType:   {values: []string{lexicon.ValueYes, "no"}, avt: true},
+			lexicon.SerializationIndent:               {values: []string{lexicon.ValueYes, "no"}, avt: true},
+			lexicon.SerializationMediaType:            {avt: true},
+			lexicon.SerializationNormalizationForm:    {avt: true, nmtoken: true},
+			lexicon.SerializationOmitXMLDeclaration:   {values: []string{lexicon.ValueYes, "no"}, avt: true},
+			lexicon.SerializationStandalone:           {values: []string{lexicon.ValueYes, "no", lexicon.ValueOmit}, avt: true},
+			lexicon.SerializationUndeclarePrefixes:    {values: []string{lexicon.ValueYes, "no"}, avt: true},
+			lexicon.SerializationUseCharacterMaps:     {},
+			"output-version":                          {avt: true},
 		}}, true
 	case nameOutput:
 		return elementDef{attrs: map[string]attrDef{
-			xslAttrName: {},
-			paramMethod: {},
+			xslAttrName:                 {},
+			lexicon.SerializationMethod: {},
 			// Output declarations use literal attributes, unlike result-document AVTs
 			// (§26.1). json-node-output-method permits xml, html, xhtml, text or a namespaced
 			// EQName; json and adaptive cannot serialize a node within JSON output.
-			paramJSONNodeOutputMethod: {
+			lexicon.SerializationJSONNodeOutputMethod: {
 				processor30: true, eqnameOK: true,
-				values: []string{methodXML, methodHTML, methodXHTML, methodText},
+				values: []string{lexicon.MethodXML, lexicon.MethodHTML, lexicon.MethodXHTML, lexicon.MethodText},
 			},
 			// parameter-document is a literal URI reference, not an AVT.
-			paramParameterDocument:   {processor30: true, uri: true},
-			paramAllowDuplicateNames: {processor30: true, values: []string{nameYes, "no", nameTrue, nameFalse, "1", "0"}},
-			paramBuildTree:           {processor30: true, values: []string{nameYes, "no", nameTrue, nameFalse, "1", "0"}},
-			paramHTMLVersion:         {},
-			paramSuppressIndentation: {},
+			lexicon.SerializationParameterDocument:   {processor30: true, uri: true},
+			lexicon.SerializationAllowDuplicateNames: {processor30: true, values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"}},
+			lexicon.SerializationBuildTree:           {processor30: true, values: []string{lexicon.ValueYes, "no", lexicon.ValueTrue, lexicon.ValueFalse, "1", "0"}},
+			lexicon.SerializationHTMLVersion:         {},
+			lexicon.SerializationSuppressIndentation: {},
 			// item-separator is applied during sequence normalization (§5.7.1), not
 			// just serialization: inserted text nodes participate in result validation.
-			paramItemSeparator:        {},
-			paramByteOrderMark:        {values: []string{nameYes, "no"}},
-			paramCDATASectionElements: {},
-			paramDoctypePublic:        {},
-			paramDoctypeSystem:        {},
-			paramEncoding:             {},
-			paramEscapeURIAttributes:  {values: []string{nameYes, "no"}},
-			paramIncludeContentType:   {values: []string{nameYes, "no"}},
-			paramIndent:               {values: []string{nameYes, "no"}},
-			paramMediaType:            {},
-			paramNormalizationForm:    {nmtoken: true},
-			paramOmitXMLDeclaration:   {values: []string{nameYes, "no"}},
+			lexicon.SerializationItemSeparator:        {},
+			lexicon.SerializationByteOrderMark:        {values: []string{lexicon.ValueYes, "no"}},
+			lexicon.SerializationCDATASectionElements: {},
+			lexicon.SerializationDoctypePublic:        {},
+			lexicon.SerializationDoctypeSystem:        {},
+			lexicon.SerializationEncoding:             {},
+			lexicon.SerializationEscapeURIAttributes:  {values: []string{lexicon.ValueYes, "no"}},
+			lexicon.SerializationIncludeContentType:   {values: []string{lexicon.ValueYes, "no"}},
+			lexicon.SerializationIndent:               {values: []string{lexicon.ValueYes, "no"}},
+			lexicon.SerializationMediaType:            {},
+			lexicon.SerializationNormalizationForm:    {nmtoken: true},
+			lexicon.SerializationOmitXMLDeclaration:   {values: []string{lexicon.ValueYes, "no"}},
 			// The enumeration retains the 2.0 vocabulary. allowsBoolAliases admits
 			// the boolean synonyms only in 3.0 modules.
-			paramStandalone:        {values: []string{nameYes, "no", nameOmit}},
-			paramUndeclarePrefixes: {values: []string{nameYes, "no"}},
-			paramUseCharacterMaps:  {},
-			paramVersion:           {},
+			lexicon.SerializationStandalone:        {values: []string{lexicon.ValueYes, "no", lexicon.ValueOmit}},
+			lexicon.SerializationUndeclarePrefixes: {values: []string{lexicon.ValueYes, "no"}},
+			lexicon.SerializationUseCharacterMaps:  {},
+			lexicon.SerializationVersion:           {},
 		}}, true
 	case "character-map":
 		return elementDef{attrs: map[string]attrDef{
-			xslAttrName:           {required: true},
-			paramUseCharacterMaps: {},
+			xslAttrName:                           {required: true},
+			lexicon.SerializationUseCharacterMaps: {},
 		}}, true
 	case "output-character":
 		return elementDef{attrs: map[string]attrDef{

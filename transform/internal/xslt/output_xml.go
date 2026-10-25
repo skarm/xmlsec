@@ -6,9 +6,9 @@ import (
 	"io"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // XML result paths share escaping, maps, normalization, CDATA and DOE scopes.
@@ -85,7 +85,7 @@ func (w shortWriteCheckingWriter) Write(data []byte) (int, error) {
 // through unchanged.
 func xmlInvalidCharError(err error) error {
 	if err != nil && errors.Is(err, tree.ErrMalformed) {
-		return dynamicError(errCodeSERE0006, "%s", err.Error())
+		return dynamicError(lexicon.ErrSERE0006, "%s", err.Error())
 	}
 
 	return err

@@ -10,8 +10,8 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // errCoerceMismatch is a sentinel returned by coerceToSequenceTypeE for a plain
@@ -453,7 +453,7 @@ func evalCastableExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext
 		// isn't a bad lexical, it's not atomizable at all (F&O 3.1 §19.1; QT3
 		// CastableAs666/668). Other atomization failures mean "not castable".
 		var xpErr *xdm.Error
-		if errors.As(err, &xpErr) && xpErr.Code == errCodeFOTY0013 {
+		if errors.As(err, &xpErr) && xpErr.Code == lexicon.ErrFOTY0013 {
 			return nil, err
 		}
 

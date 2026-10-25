@@ -9,6 +9,7 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -182,19 +183,19 @@ func (ec *execContext) analyzeStringInput(ctx context.Context, inst *analyzeStri
 	if seq == nil || xdm.SequenceLen(seq) == 0 {
 		if isV2 {
 			// XSLT 2.0: empty sequence is XPTY0004
-			return analyzeStringSource{}, dynamicError(errCodeXPTY0004, "xsl:analyze-string select must be a single xs:string, got empty sequence")
+			return analyzeStringSource{}, dynamicError(lexicon.ErrXPTY0004, "xsl:analyze-string select must be a single xs:string, got empty sequence")
 		}
 		// XSLT 3.0: empty sequence treated as ""
 		return analyzeStringSource{}, nil
 	}
 
 	if xdm.SequenceLen(seq) > 1 {
-		return analyzeStringSource{}, dynamicError(errCodeXPTY0004, "xsl:analyze-string select must be a single xs:string, got sequence of %d items", xdm.SequenceLen(seq))
+		return analyzeStringSource{}, dynamicError(lexicon.ErrXPTY0004, "xsl:analyze-string select must be a single xs:string, got sequence of %d items", xdm.SequenceLen(seq))
 	}
 
 	av, err := xpath.AtomizeItem(seq.Get(0))
 	if err != nil {
-		return analyzeStringSource{}, dynamicError(errCodeXPTY0004, "xsl:analyze-string select must be xs:string: %v", err)
+		return analyzeStringSource{}, dynamicError(lexicon.ErrXPTY0004, "xsl:analyze-string select must be xs:string: %v", err)
 	}
 	// Accept xs:string, xs:anyURI, xs:untypedAtomic, and any schema type derived
 	// from xs:string (a user simple type such as StandardDate atomizes to a
@@ -202,12 +203,12 @@ func (ec *execContext) analyzeStringInput(ctx context.Context, inst *analyzeStri
 	// it a valid xs:string for the analyze-string select). Reject genuinely
 	// non-string atomic types (xs:integer, etc.).
 	if !analyzeStringSelectTypeOK(av) {
-		return analyzeStringSource{}, dynamicError(errCodeXPTY0004, "xsl:analyze-string select must be xs:string, got %s", av.TypeName)
+		return analyzeStringSource{}, dynamicError(lexicon.ErrXPTY0004, "xsl:analyze-string select must be xs:string, got %s", av.TypeName)
 	}
 
 	input, err := xpath.AtomicToString(av)
 	if err != nil {
-		return analyzeStringSource{}, dynamicError(errCodeXPTY0004, "xsl:analyze-string select must be xs:string: %v", err)
+		return analyzeStringSource{}, dynamicError(lexicon.ErrXPTY0004, "xsl:analyze-string select must be xs:string: %v", err)
 	}
 
 	return analyzeStringSource{text: input, version2: isV2, present: true}, nil

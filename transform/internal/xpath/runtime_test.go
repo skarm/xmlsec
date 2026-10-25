@@ -14,6 +14,7 @@ import (
 	"golang.org/x/text/collate"
 	"golang.org/x/text/language"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
@@ -30,7 +31,7 @@ func TestCompilerSyntaxErrorCodes(t *testing.T) {
 			_, err := NewCompiler().Language(version, nil).Compile(source)
 
 			var detail *xdm.Error
-			if !errors.As(err, &detail) || detail.Code != errCodeXPST0003 {
+			if !errors.As(err, &detail) || detail.Code != lexicon.ErrXPST0003 {
 				t.Errorf("compiler version %d %q: %v", version, source, err)
 			}
 		}
@@ -460,11 +461,11 @@ func evaluateRuntimeAST(ctx context.Context, ec *evalContext, expr Expr) (xdm.Se
 func TestVersionedContractsASTAndVM(t *testing.T) {
 	for _, version := range []int{20, 30, 31} {
 		for _, tc := range []struct{ source, oldCode, modernCode string }{
-			{`string-join((1,2),'')`, errCodeXPTY0004, ""},
-			{`error(())`, errCodeXPTY0004, "FOER0000"},
+			{`string-join((1,2),'')`, lexicon.ErrXPTY0004, ""},
+			{`error(())`, lexicon.ErrXPTY0004, "FOER0000"},
 			{`error((),'description')`, "FOER0000", "FOER0000"},
-			{`xs:QName(xs:untypedAtomic('local'))`, errCodeXPTY0004, ""},
-			{`xs:untypedAtomic('local') cast as xs:QName`, errCodeXPTY0004, ""},
+			{`xs:QName(xs:untypedAtomic('local'))`, lexicon.ErrXPTY0004, ""},
+			{`xs:untypedAtomic('local') cast as xs:QName`, lexicon.ErrXPTY0004, ""},
 			{`'local' cast as xs:QName`, "", ""},
 		} {
 			want := tc.modernCode
@@ -506,26 +507,26 @@ func TestEvaluationErrorCodesASTAndVM(t *testing.T) {
 		source, code string
 		cause        error
 	}{
-		{`$missing`, errCodeXPST0008, ErrUndefinedVariable},
-		{`1 union ()`, errCodeXPTY0004, ErrUnionNotNodeSet},
-		{`() intersect 1`, errCodeXPTY0004, ErrUnionNotNodeSet},
-		{`1 except ()`, errCodeXPTY0004, ErrUnionNotNodeSet},
-		{`(function($x){$x})(1,2)`, errCodeXPTY0004, ErrArityMismatch},
-		{`(function($x){$x})(?,?)`, errCodeXPTY0004, ErrArityMismatch},
-		{`codepoints-to-string('hello')`, errCodeXPTY0004, nil},
-		{`codepoints-to-string(xs:double(65))`, errCodeXPTY0004, nil},
+		{`$missing`, lexicon.ErrXPST0008, ErrUndefinedVariable},
+		{`1 union ()`, lexicon.ErrXPTY0004, ErrUnionNotNodeSet},
+		{`() intersect 1`, lexicon.ErrXPTY0004, ErrUnionNotNodeSet},
+		{`1 except ()`, lexicon.ErrXPTY0004, ErrUnionNotNodeSet},
+		{`(function($x){$x})(1,2)`, lexicon.ErrXPTY0004, ErrArityMismatch},
+		{`(function($x){$x})(?,?)`, lexicon.ErrXPTY0004, ErrArityMismatch},
+		{`codepoints-to-string('hello')`, lexicon.ErrXPTY0004, nil},
+		{`codepoints-to-string(xs:double(65))`, lexicon.ErrXPTY0004, nil},
 		{`codepoints-to-string(0)`, "FOCH0001", nil},
 		{`doc(':/')`, errCodeFODC0005, nil},
 		{`parse-xml-fragment('<?xml version="1.0"encoding="UTF-8"?><a/>')`, errCodeFODC0006, nil},
-		{`unparsed-text('urn:unread', ())`, errCodeXPTY0004, nil},
-		{`unparsed-text-available('urn:unread', ())`, errCodeXPTY0004, nil},
+		{`unparsed-text('urn:unread', ())`, lexicon.ErrXPTY0004, nil},
+		{`unparsed-text-available('urn:unread', ())`, lexicon.ErrXPTY0004, nil},
 		{`local-name-from-QName(xs:untypedAtomic('x'))`, "XPTY0117", nil},
-		{`concat('a', string#1)`, errCodeFOTY0013, nil},
-		{`'a' || string#1`, errCodeFOTY0013, nil},
-		{`'a' || [map{}]`, errCodeFOTY0013, nil},
-		{`'a' || (1,2)`, errCodeXPTY0004, nil},
-		{`(function($fs as (function(xs:string) as xs:string)*) {true()})((upper-case#1,concat#2))`, errCodeXPTY0004, nil},
-		{`(function($fs as (function(xs:string) as xs:string)*) {for $f in $fs return $f('x')})((upper-case#1,function($x){1}))`, errCodeXPTY0004, nil},
+		{`concat('a', string#1)`, lexicon.ErrFOTY0013, nil},
+		{`'a' || string#1`, lexicon.ErrFOTY0013, nil},
+		{`'a' || [map{}]`, lexicon.ErrFOTY0013, nil},
+		{`'a' || (1,2)`, lexicon.ErrXPTY0004, nil},
+		{`(function($fs as (function(xs:string) as xs:string)*) {true()})((upper-case#1,concat#2))`, lexicon.ErrXPTY0004, nil},
+		{`(function($fs as (function(xs:string) as xs:string)*) {for $f in $fs return $f('x')})((upper-case#1,function($x){1}))`, lexicon.ErrXPTY0004, nil},
 		{`format-date(xs:date('2026-01-01'), '[b]')`, "FOFD1340", nil},
 		{`load-xquery-module('urn:module')`, "FOQM0006", nil},
 		{`() union ()`, "", nil},

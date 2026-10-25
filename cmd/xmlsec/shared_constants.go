@@ -26,8 +26,6 @@ const (
 	statusUnverified = "unverified"
 	nameDefault      = "default"
 	nameHelp         = "help"
-	valueTrue        = "true"
-	valueFalse       = "false"
 
 	scopeBytes      = "bytes"
 	transportDirect = "direct"

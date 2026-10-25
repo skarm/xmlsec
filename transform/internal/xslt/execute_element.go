@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -930,7 +930,7 @@ func (ec *execContext) execPI(ctx context.Context, inst *piInst) error {
 			"xsl:processing-instruction name %q is not a valid NCName", name)
 	}
 
-	if strings.EqualFold(name, methodXML) {
+	if strings.EqualFold(name, lexicon.MethodXML) {
 		return dynamicError(errCodeXTDE0890,
 			"xsl:processing-instruction name must not be %q", name)
 	}

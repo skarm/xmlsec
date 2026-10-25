@@ -3,7 +3,7 @@ package lexicon_test
 import (
 	"testing"
 
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 func TestStreamFnLocalName(t *testing.T) {

@@ -6,7 +6,9 @@ package xpath
 import (
 	"context"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+
 	xpathregex "github.com/skarm/xmlsec/transform/internal/xpath/regex"
 )
 
@@ -69,7 +71,7 @@ func xsdRegexError(err error) error {
 		return nil
 	}
 
-	return &xdm.Error{Code: errCodeFORX0002, Message: err.Error(), Cause: err}
+	return &xdm.Error{Code: lexicon.ErrFORX0002, Message: err.Error(), Cause: err}
 }
 
 func translateXPathRegex(pattern string, dotAll, ignoreCase bool) (string, error) {

@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 // Type family constants used for aggregate, comparison, and collation grouping.
@@ -1066,7 +1068,7 @@ func NewArray(members []Sequence) ArrayItem {
 func (a ArrayItem) Get(index int) (Sequence, error) {
 	if index < 1 || index > len(a.members) {
 		return nil, &Error{
-			Code:    errCodeFOAY0001,
+			Code:    lexicon.ErrFOAY0001,
 			Message: fmt.Sprintf("array index %d out of bounds (size %d)", index, len(a.members)),
 		}
 	}
@@ -1083,7 +1085,7 @@ func (a ArrayItem) Size() int {
 func (a ArrayItem) Put(index int, value Sequence) (ArrayItem, error) {
 	if index < 1 || index > len(a.members) {
 		return ArrayItem{}, &Error{
-			Code:    errCodeFOAY0001,
+			Code:    lexicon.ErrFOAY0001,
 			Message: fmt.Sprintf("array index %d out of bounds (size %d)", index, len(a.members)),
 		}
 	}
@@ -1120,7 +1122,7 @@ func (a ArrayItem) MembersView() []Sequence {
 func (a ArrayItem) GetView(index int) (Sequence, error) {
 	if index < 1 || index > len(a.members) {
 		return nil, &Error{
-			Code:    errCodeFOAY0001,
+			Code:    lexicon.ErrFOAY0001,
 			Message: fmt.Sprintf("array index %d out of bounds (size %d)", index, len(a.members)),
 		}
 	}
@@ -1135,7 +1137,7 @@ func (a ArrayItem) SubArray(start, length int) (ArrayItem, error) {
 	// huge positions and bypass the guard, leading to a make([]Sequence, length)
 	// panic. With start>=1 established first, size-start+1 cannot overflow.
 	if start < 1 || start > size+1 || length < 0 || length > size-start+1 {
-		code := errCodeFOAY0001
+		code := lexicon.ErrFOAY0001
 		if start >= 1 && start <= size+1 && length < 0 {
 			code = "FOAY0002"
 		}

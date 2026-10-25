@@ -10,9 +10,9 @@ import (
 	"maps"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	norm "github.com/skarm/xmlsec/internal/normalization"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 
 	"golang.org/x/text/encoding/htmlindex"
 	"golang.org/x/text/encoding/unicode"

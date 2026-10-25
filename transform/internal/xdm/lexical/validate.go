@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // Version selects the XSD specification version for the version-sensitive
@@ -39,32 +39,32 @@ type integerRange struct {
 // (xs:float/xs:double "+INF", and year "0000" on the date types).
 func ValidateBuiltin(value, builtinLocal string, version Version) error {
 	switch builtinLocal {
-	case nameDecimal:
+	case lexicon.TypeDecimal:
 		return validateDecimal(value)
-	case nameInteger:
+	case lexicon.TypeInteger:
 		return validateInteger(value)
-	case nameNonPositiveInteger, nameNegativeInteger,
-		nameLong, nameInt, nameShort, nameByte,
-		nameNonNegativeInteger, nameUnsignedLong, nameUnsignedInt, nameUnsignedShort, nameUnsignedByte,
-		namePositiveInteger:
+	case lexicon.TypeNonPositiveInteger, lexicon.TypeNegativeInteger,
+		lexicon.TypeLong, lexicon.TypeInt, lexicon.TypeShort, lexicon.TypeByte,
+		lexicon.TypeNonNegativeInteger, lexicon.TypeUnsignedLong, lexicon.TypeUnsignedInt, lexicon.TypeUnsignedShort, lexicon.TypeUnsignedByte,
+		lexicon.TypePositiveInteger:
 		return validateIntegerWithRange(value, builtinLocal)
-	case nameHexBinary:
+	case lexicon.TypeHexBinary:
 		return validateHexBinary(value)
-	case nameDate:
+	case lexicon.TypeDate:
 		return validateDate(value, version)
-	case nameBoolean:
+	case lexicon.TypeBoolean:
 		return validateBoolean(value)
 	case "language":
 		return validateLanguage(value)
 	case lexicon.TypeFloat, lexicon.TypeDouble:
 		return validateFloat(value, version)
-	case nameDateTime:
+	case lexicon.TypeDateTime:
 		return validateDateTime(value, version)
 	case lexicon.TypeDateTimeStamp:
 		return validateDateTimeStamp(value, version)
-	case builtinTime:
+	case lexicon.TypeTime:
 		return validateTime(value)
-	case nameDuration:
+	case lexicon.TypeDuration:
 		return validateDuration(value)
 	case lexicon.TypeDayTimeDuration:
 		return validateDayTimeDuration(value)
@@ -77,15 +77,15 @@ func ValidateBuiltin(value, builtinLocal string, version Version) error {
 	case lexicon.TypeError:
 		// xs:error has an empty value space: no literal is ever valid.
 		return fmt.Errorf("xs:error has an empty value space")
-	case nameGYear:
+	case lexicon.TypeGYear:
 		return validateGYear(value, version)
-	case nameGYearMonth:
+	case lexicon.TypeGYearMonth:
 		return validateGYearMonth(value, version)
-	case nameGMonth:
+	case lexicon.TypeGMonth:
 		return validateGMonth(value)
-	case nameGDay:
+	case lexicon.TypeGDay:
 		return validateGDay(value)
-	case nameGMonthDay:
+	case lexicon.TypeGMonthDay:
 		return validateGMonthDay(value)
 	default:
 		return validateStringBuiltin(value, builtinLocal, version)
@@ -102,15 +102,15 @@ func validateStringBuiltin(value, builtinLocal string, version Version) error {
 		return validateNMTOKEN(value)
 	case "QName", "NOTATION":
 		return validateQName(value)
-	case nameBase64Binary:
+	case lexicon.TypeBase64Binary:
 		return validateBase64Binary(value)
-	case nameNormalizedString:
+	case lexicon.TypeNormalizedString:
 		return validateNormalizedString(value)
 	case "token":
 		return validateToken(value)
-	case nameIDREFS, nameENTITIES:
+	case lexicon.TypeIDREFS, lexicon.TypeENTITIES:
 		return validateSpaceSeparatedList(value, validateNCName)
-	case nameNMTOKENS:
+	case lexicon.TypeNMTokens:
 		return validateSpaceSeparatedList(value, validateNMTOKEN)
 	case "anyURI":
 		return validateAnyURI(value, version)
@@ -142,29 +142,29 @@ func validateInteger(value string) error {
 
 func lookupintegerRanges(key string) (integerRange, bool) {
 	switch key {
-	case nameByte:
+	case lexicon.TypeByte:
 		return integerRange{big.NewInt(-128), big.NewInt(127)}, true
-	case nameShort:
+	case lexicon.TypeShort:
 		return integerRange{big.NewInt(-32768), big.NewInt(32767)}, true
-	case nameInt:
+	case lexicon.TypeInt:
 		return integerRange{big.NewInt(-2147483648), big.NewInt(2147483647)}, true
-	case nameLong:
+	case lexicon.TypeLong:
 		return integerRange{newBigInt("-9223372036854775808"), newBigInt("9223372036854775807")}, true
-	case nameUnsignedByte:
+	case lexicon.TypeUnsignedByte:
 		return integerRange{big.NewInt(0), big.NewInt(255)}, true
-	case nameUnsignedShort:
+	case lexicon.TypeUnsignedShort:
 		return integerRange{big.NewInt(0), big.NewInt(65535)}, true
-	case nameUnsignedInt:
+	case lexicon.TypeUnsignedInt:
 		return integerRange{big.NewInt(0), newBigInt("4294967295")}, true
-	case nameUnsignedLong:
+	case lexicon.TypeUnsignedLong:
 		return integerRange{big.NewInt(0), newBigInt("18446744073709551615")}, true
-	case nameNonNegativeInteger:
+	case lexicon.TypeNonNegativeInteger:
 		return integerRange{big.NewInt(0), nil}, true
-	case nameNonPositiveInteger:
+	case lexicon.TypeNonPositiveInteger:
 		return integerRange{nil, big.NewInt(0)}, true
-	case namePositiveInteger:
+	case lexicon.TypePositiveInteger:
 		return integerRange{big.NewInt(1), nil}, true
-	case nameNegativeInteger:
+	case lexicon.TypeNegativeInteger:
 		return integerRange{nil, big.NewInt(-1)}, true
 	}
 
@@ -218,7 +218,7 @@ func validateHexBinary(value string) error {
 // validateDate checks for xs:date: YYYY-MM-DD with optional timezone.
 
 func validateDate(value string, version Version) error {
-	if !calendarLexical(value, nameDate, false) {
+	if !calendarLexical(value, lexicon.TypeDate, false) {
 		return fmt.Errorf("invalid date")
 	}
 
@@ -243,7 +243,7 @@ func validateLanguage(value string) error {
 
 func validateBoolean(value string) error {
 	switch value {
-	case nameTrue, "false", "1", "0":
+	case lexicon.ValueTrue, "false", "1", "0":
 		return nil
 	}
 
@@ -270,7 +270,7 @@ func validateFloat(value string, version Version) error {
 // validateDateTime checks xs:dateTime.
 
 func validateDateTime(value string, version Version) error {
-	if !calendarLexical(value, nameDateTime, false) {
+	if !calendarLexical(value, lexicon.TypeDateTime, false) {
 		return fmt.Errorf("invalid dateTime")
 	}
 
@@ -289,7 +289,7 @@ func validateDateTime(value string, version Version) error {
 // validateTime checks xs:time.
 
 func validateTime(value string) error {
-	if !calendarLexical(value, builtinTime, false) {
+	if !calendarLexical(value, lexicon.TypeTime, false) {
 		return fmt.Errorf("invalid time")
 	}
 
@@ -521,7 +521,7 @@ func isLeapYearStr(year string) bool {
 // rejected by requiring at least one time component within the T group.
 
 func validateDuration(value string) error {
-	if !durationLexical(value, nameDuration) {
+	if !durationLexical(value, lexicon.TypeDuration) {
 		return fmt.Errorf("invalid duration")
 	}
 	// At least one component must be present after P.
@@ -551,7 +551,7 @@ func validateDuration(value string) error {
 // validateDateTimeStamp validates xs:dateTimeStamp: an xs:dateTime value that
 // must carry a timezone. Year-0000 gating follows the dateTime rules.
 func validateDateTimeStamp(value string, version Version) error {
-	if !calendarLexical(value, nameDateTime, true) {
+	if !calendarLexical(value, lexicon.TypeDateTime, true) {
 		return fmt.Errorf("invalid dateTimeStamp")
 	}
 
@@ -590,7 +590,7 @@ func validateYearMonthDuration(value string) error {
 // validateGYear checks xs:gYear.
 
 func validateGYear(value string, version Version) error {
-	if !calendarLexical(value, nameGYear, false) {
+	if !calendarLexical(value, lexicon.TypeGYear, false) {
 		return fmt.Errorf("invalid gYear")
 	}
 
@@ -651,7 +651,7 @@ func gDayRange(s, typeName string) error {
 // validateGYearMonth checks xs:gYearMonth.
 
 func validateGYearMonth(value string, version Version) error {
-	if !calendarLexical(value, nameGYearMonth, false) {
+	if !calendarLexical(value, lexicon.TypeGYearMonth, false) {
 		return fmt.Errorf("invalid gYearMonth")
 	}
 
@@ -667,13 +667,13 @@ func validateGYearMonth(value string, version Version) error {
 		}
 	}
 	// the month is the last two characters.
-	return gMonthRange(body[len(body)-2:], nameGYearMonth)
+	return gMonthRange(body[len(body)-2:], lexicon.TypeGYearMonth)
 }
 
 // validateGMonth checks xs:gMonth.
 
 func validateGMonth(value string) error {
-	if !calendarLexical(value, nameGMonth, false) {
+	if !calendarLexical(value, lexicon.TypeGMonth, false) {
 		return fmt.Errorf("invalid gMonth")
 	}
 
@@ -682,13 +682,13 @@ func validateGMonth(value string) error {
 		return err
 	}
 	// body is "--MM".
-	return gMonthRange(body[2:4], nameGMonth)
+	return gMonthRange(body[2:4], lexicon.TypeGMonth)
 }
 
 // validateGDay checks xs:gDay.
 
 func validateGDay(value string) error {
-	if !calendarLexical(value, nameGDay, false) {
+	if !calendarLexical(value, lexicon.TypeGDay, false) {
 		return fmt.Errorf("invalid gDay")
 	}
 
@@ -697,13 +697,13 @@ func validateGDay(value string) error {
 		return err
 	}
 	// body is "---DD".
-	return gDayRange(body[3:5], nameGDay)
+	return gDayRange(body[3:5], lexicon.TypeGDay)
 }
 
 // validateGMonthDay checks xs:gMonthDay.
 
 func validateGMonthDay(value string) error {
-	if !calendarLexical(value, nameGMonthDay, false) {
+	if !calendarLexical(value, lexicon.TypeGMonthDay, false) {
 		return fmt.Errorf("invalid gMonthDay")
 	}
 
@@ -712,11 +712,11 @@ func validateGMonthDay(value string) error {
 		return err
 	}
 	// body is "--MM-DD".
-	if err := gMonthRange(body[2:4], nameGMonthDay); err != nil {
+	if err := gMonthRange(body[2:4], lexicon.TypeGMonthDay); err != nil {
 		return err
 	}
 
-	if err := gDayRange(body[5:7], nameGMonthDay); err != nil {
+	if err := gDayRange(body[5:7], lexicon.TypeGMonthDay); err != nil {
 		return err
 	}
 	// Reject month/day combinations that never occur (e.g. --02-30, --04-31).

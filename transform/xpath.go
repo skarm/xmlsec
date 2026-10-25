@@ -7,11 +7,10 @@ import (
 	"io"
 	"maps"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
-
-const documentXMLNamespace = "http://www.w3.org/XML/1998/namespace"
 
 // XMLSchemaVersion selects the datatype and regex edition used by an engine.
 type XMLSchemaVersion uint8
@@ -262,7 +261,7 @@ func (e *Engine) CompileXPath(ctx context.Context, source string, options XPathO
 		}
 	}
 
-	namespaces["xml"] = documentXMLNamespace
+	namespaces["xml"] = lexicon.NamespaceXML
 	if version == XPath10 && namespaces[""] != "" {
 		return nil, wrapXPath("compile XPath", fmt.Errorf("%w: XPath 1.0 has no default element namespace", ErrInput), options.Version)
 	}

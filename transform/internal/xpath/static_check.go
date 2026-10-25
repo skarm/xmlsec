@@ -8,8 +8,8 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 type atomicTypeRequirement struct {
@@ -56,7 +56,7 @@ func (p prefixValidationPlan) Validate(namespaces map[string]string, strict bool
 
 		uri := resolveStaticNameURI(lexical, namespaces, namespaces[""])
 		if uri == lexicon.NamespaceXSD {
-			if knownXSTypeNames(local) && local != nameNMTOKENS && local != nameIDREFS && local != nameENTITIES {
+			if knownXSTypeNames(local) && local != lexicon.TypeNMTokens && local != lexicon.TypeIDREFS && local != lexicon.TypeENTITIES {
 				continue
 			}
 		} else if decls != nil {
@@ -75,7 +75,7 @@ func (p prefixValidationPlan) Validate(namespaces map[string]string, strict bool
 // for use in SequenceType (instance of, cast as, etc.).
 func knownXSTypeNames(key string) bool {
 	switch key {
-	case nameString, "integer", "decimal", "double", "float", fnNameBoolean, nameDate, nameDateTime, nameTime, nameDuration, "dayTimeDuration", "yearMonthDuration", "anyURI", nameQName, nameBase64Binary, nameHexBinary, "untypedAtomic", "anyAtomicType", "long", "int", "short", "byte", "unsignedLong", "unsignedInt", "unsignedShort", "unsignedByte", "nonNegativeInteger", "nonPositiveInteger", "positiveInteger", "negativeInteger", "normalizedString", "token", "language", nameName, "NCName", "NMTOKEN", "ENTITY", "ID", "IDREF", nameGDay, nameGMonth, nameGMonthDay, nameGYear, nameGYearMonth, "dateTimeStamp", nameError, "numeric", "NOTATION", nameNMTOKENS, nameIDREFS, nameENTITIES:
+	case lexicon.TypeString, "integer", "decimal", "double", "float", fnNameBoolean, lexicon.TypeDate, lexicon.TypeDateTime, lexicon.TypeTime, lexicon.TypeDuration, "dayTimeDuration", "yearMonthDuration", "anyURI", lexicon.TypeQName, lexicon.TypeBase64Binary, lexicon.TypeHexBinary, "untypedAtomic", "anyAtomicType", "long", "int", "short", "byte", "unsignedLong", "unsignedInt", "unsignedShort", "unsignedByte", "nonNegativeInteger", "nonPositiveInteger", "positiveInteger", "negativeInteger", "normalizedString", "token", "language", lexicon.TypeName, "NCName", "NMTOKEN", "ENTITY", "ID", "IDREF", lexicon.TypeGDay, lexicon.TypeGMonth, lexicon.TypeGMonthDay, lexicon.TypeGYear, lexicon.TypeGYearMonth, "dateTimeStamp", lexicon.TypeError, "numeric", "NOTATION", lexicon.TypeNMTokens, lexicon.TypeIDREFS, lexicon.TypeENTITIES:
 		return true
 	}
 

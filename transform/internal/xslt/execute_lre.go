@@ -8,8 +8,8 @@ import (
 	"errors"
 	"maps"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -69,7 +69,7 @@ func (ec *execContext) execLiteralResultElement(ctx context.Context, inst *liter
 	// as a pending item so serializeAdaptiveItems can enumerate it.
 	// Don't do this for json output (elements stay in DOM for json-node-output-method).
 	// Don't double-capture when sequenceMode is true (addNode already captured).
-	captureAsItem := ec.currentResultDocMethod == methodAdaptive && ec.temporaryOutputDepth == 0 && !out.sequenceMode
+	captureAsItem := ec.currentResultDocMethod == lexicon.MethodAdaptive && ec.temporaryOutputDepth == 0 && !out.sequenceMode
 
 	// Execute body in element context with a new variable scope.
 	// Temporarily disable sequenceMode so that children are added to this

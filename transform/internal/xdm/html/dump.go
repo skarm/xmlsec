@@ -19,8 +19,8 @@ import (
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // HTML attribute value escaping sequences.
@@ -32,8 +32,7 @@ const (
 )
 
 const (
-	xmlIslandCharacterError = "SERE0006"
-	markupEncodingError     = "SERE0008"
+	markupEncodingError = "SERE0008"
 )
 
 // windows1252Runes and windows1252Bytes retain the reverse Windows-1252
@@ -442,12 +441,12 @@ func (d *htmlDumper) xmlIslandNode(node xdm.Node) bool {
 func (d *htmlDumper) checkXMLMarkup(node xdm.Node) error {
 	for _, value := range []string{node.Name(), xdm.CharacterData(node)} {
 		if !utf8.ValidString(value) {
-			return &xdm.Error{Code: xmlIslandCharacterError, Message: "invalid XML island markup characters"}
+			return &xdm.Error{Code: lexicon.ErrSERE0006, Message: "invalid XML island markup characters"}
 		}
 
 		for _, r := range value {
 			if !xmlchar.IsChar(r) {
-				return &xdm.Error{Code: xmlIslandCharacterError, Message: "character is not permitted in XML 1.0 island markup"}
+				return &xdm.Error{Code: lexicon.ErrSERE0006, Message: "character is not permitted in XML 1.0 island markup"}
 			}
 
 			if d.canEncode != nil && !d.canEncode(r) {
@@ -544,7 +543,7 @@ func (d *htmlDumper) dumpXMLCharacters(out io.Writer, content string, mode tree.
 
 	_, err := tree.WriteXMLCharacters(d.ctx, out, content, mode, int(^uint(0)>>1), options)
 	if errors.Is(err, tree.ErrMalformed) {
-		err = &xdm.Error{Code: xmlIslandCharacterError, Message: "character is not permitted in an XML 1.0 island", Cause: err}
+		err = &xdm.Error{Code: lexicon.ErrSERE0006, Message: "character is not permitted in an XML 1.0 island", Cause: err}
 	}
 
 	d.check(err)

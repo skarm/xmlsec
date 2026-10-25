@@ -3,7 +3,11 @@
 
 package xpath
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
 
 // TokenType identifies the kind of lexical token.
 type TokenType int
@@ -119,7 +123,7 @@ func (t TokenType) String() string {
 		TokenEOF:         "EOF",
 		TokenNumber:      "Number",
 		TokenString:      "String",
-		TokenName:        nameName,
+		TokenName:        lexicon.TypeName,
 		TokenStar:        "*",
 		TokenVariableRef: "VariableRef",
 		TokenSlash:       "/",

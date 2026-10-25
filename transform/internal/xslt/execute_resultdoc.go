@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -237,7 +237,7 @@ func (ec *execContext) resolveResultDocMethod(ctx context.Context, inst *resultD
 		return outDef.Method
 	}
 
-	return methodXML
+	return lexicon.MethodXML
 }
 
 // commitPrimaryOutputState publishes the serialization overrides and
@@ -747,7 +747,7 @@ func (ec *execContext) execPrimaryValidatedDocument(ctx context.Context, inst *r
 }
 
 func (ec *execContext) validatePrimaryResultItems(items xdm.Sequence, method string, overrides *OutputDef) error {
-	if method != methodJSON {
+	if method != lexicon.MethodJSON {
 		return nil
 	}
 
@@ -958,7 +958,7 @@ func (ec *execContext) execSecondaryResultDocument(ctx context.Context, inst *re
 	// method="json" build-tree="no" result document would silently accept
 	// map{1:'a','1':'b'}. Validate against the preflighted output definition
 	// before committing so a thrown SERE0022 leaves no per-href side effect.
-	if effectiveMethod == methodJSON && stagedItems != nil && !stagedOutDef.AllowDuplicateNames {
+	if effectiveMethod == lexicon.MethodJSON && stagedItems != nil && !stagedOutDef.AllowDuplicateNames {
 		if err := validateJSONItems(stagedItems); err != nil {
 			return err
 		}
@@ -1000,7 +1000,7 @@ func (ec *execContext) evalBoolSerializationAVT(ctx context.Context, a *avt, par
 
 	b, ok := parseXSDBool(strings.TrimSpace(v))
 	if !ok {
-		return false, dynamicError(errCodeSEPM0016,
+		return false, dynamicError(lexicon.ErrSEPM0016,
 			"%q is not a valid value for xsl:result-document/@%s", v, paramName)
 	}
 
@@ -1192,7 +1192,7 @@ func (ec *execContext) evalResultDocDeclarationParams(ctx context.Context, inst 
 		switch strings.TrimSpace(v) {
 		case lexicon.ValueTrue, "1":
 			v = lexicon.ValueYes
-		case nameFalse, "0":
+		case lexicon.ValueFalse, "0":
 			v = lexicon.ValueNo
 		default:
 			v = strings.TrimSpace(v)
@@ -1202,7 +1202,7 @@ func (ec *execContext) evalResultDocDeclarationParams(ctx context.Context, inst 
 	}
 
 	if inst.Indent != nil {
-		b, err := ec.evalBoolSerializationAVT(ctx, inst.Indent, paramIndent)
+		b, err := ec.evalBoolSerializationAVT(ctx, inst.Indent, lexicon.SerializationIndent)
 		if err != nil {
 			return err
 		}
@@ -1211,7 +1211,7 @@ func (ec *execContext) evalResultDocDeclarationParams(ctx context.Context, inst 
 	}
 
 	if inst.OmitXMLDeclaration != nil {
-		b, err := ec.evalBoolSerializationAVT(ctx, inst.OmitXMLDeclaration, paramOmitXMLDeclaration)
+		b, err := ec.evalBoolSerializationAVT(ctx, inst.OmitXMLDeclaration, lexicon.SerializationOmitXMLDeclaration)
 		if err != nil {
 			return err
 		}
@@ -1263,7 +1263,7 @@ func (ec *execContext) evalResultDocDeclarationParams(ctx context.Context, inst 
 
 func (ec *execContext) evalResultDocMarkupParams(ctx context.Context, inst *resultDocumentInst, base *OutputDef) error {
 	if inst.ByteOrderMark != nil {
-		b, err := ec.evalBoolSerializationAVT(ctx, inst.ByteOrderMark, paramByteOrderMark)
+		b, err := ec.evalBoolSerializationAVT(ctx, inst.ByteOrderMark, lexicon.SerializationByteOrderMark)
 		if err != nil {
 			return err
 		}
@@ -1312,7 +1312,7 @@ func (ec *execContext) evalResultDocMarkupParams(ctx context.Context, inst *resu
 	}
 
 	if inst.IncludeContentType != nil {
-		b, err := ec.evalBoolSerializationAVT(ctx, inst.IncludeContentType, paramIncludeContentType)
+		b, err := ec.evalBoolSerializationAVT(ctx, inst.IncludeContentType, lexicon.SerializationIncludeContentType)
 		if err != nil {
 			return err
 		}
@@ -1325,7 +1325,7 @@ func (ec *execContext) evalResultDocMarkupParams(ctx context.Context, inst *resu
 
 func (ec *execContext) evalResultDocItemParams(ctx context.Context, inst *resultDocumentInst, base *OutputDef) error {
 	if inst.AllowDuplicateNames != nil {
-		b, err := ec.evalBoolSerializationAVT(ctx, inst.AllowDuplicateNames, paramAllowDuplicateNames)
+		b, err := ec.evalBoolSerializationAVT(ctx, inst.AllowDuplicateNames, lexicon.SerializationAllowDuplicateNames)
 		if err != nil {
 			return err
 		}
@@ -1334,7 +1334,7 @@ func (ec *execContext) evalResultDocItemParams(ctx context.Context, inst *result
 	}
 
 	if inst.UndeclarePrefixes != nil {
-		b, err := ec.evalBoolSerializationAVT(ctx, inst.UndeclarePrefixes, paramUndeclarePrefixes)
+		b, err := ec.evalBoolSerializationAVT(ctx, inst.UndeclarePrefixes, lexicon.SerializationUndeclarePrefixes)
 		if err != nil {
 			return err
 		}
@@ -1343,7 +1343,7 @@ func (ec *execContext) evalResultDocItemParams(ctx context.Context, inst *result
 	}
 
 	if inst.EscapeURIAttributes != nil {
-		b, err := ec.evalBoolSerializationAVT(ctx, inst.EscapeURIAttributes, paramEscapeURIAttributes)
+		b, err := ec.evalBoolSerializationAVT(ctx, inst.EscapeURIAttributes, lexicon.SerializationEscapeURIAttributes)
 		if err != nil {
 			return err
 		}
@@ -1390,7 +1390,7 @@ func (ec *execContext) evalResultDocItemParams(ctx context.Context, inst *result
 	}
 
 	if inst.BuildTree != nil {
-		b, err := ec.evalBoolSerializationAVT(ctx, inst.BuildTree, paramBuildTree)
+		b, err := ec.evalBoolSerializationAVT(ctx, inst.BuildTree, lexicon.SerializationBuildTree)
 		if err != nil {
 			return err
 		}
@@ -1536,7 +1536,7 @@ func validateMapDuplicateKeys(m xdm.MapItem) error {
 
 		ks, _ := xpath.AtomicToString(k)
 		if _, dup := seenKeys[ks]; dup {
-			dupErr = dynamicError(errCodeSERE0022, "duplicate key %q in JSON output", ks)
+			dupErr = dynamicError(lexicon.ErrSERE0022, "duplicate key %q in JSON output", ks)
 			return dupErr
 		}
 
@@ -1556,7 +1556,7 @@ func validateMapDuplicateKeys(m xdm.MapItem) error {
 // isItemSerializationMethod returns true when the output method supports
 // non-node items (maps, arrays, function items) without XTDE0450.
 func isItemSerializationMethod(method string) bool {
-	return method == methodJSON || method == methodAdaptive
+	return method == lexicon.MethodJSON || method == lexicon.MethodAdaptive
 }
 
 func (inst *resultDocumentInst) hasSerializationParameters(parameterDocument bool) bool {

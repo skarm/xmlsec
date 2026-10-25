@@ -7,8 +7,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 // LocalName returns the element's local name, i.e. the part after the first

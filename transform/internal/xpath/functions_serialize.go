@@ -15,46 +15,21 @@ import (
 
 	norm "github.com/skarm/xmlsec/internal/normalization"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/internal/xmloutput"
 	"github.com/skarm/xmlsec/transform/internal/xdm/encoding"
 	htmlpkg "github.com/skarm/xmlsec/transform/internal/xdm/html"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 )
 
 const (
-	serializeMethodXML                 = "xml"
-	serializeMethodXHTML               = "xhtml"
-	serializeMethodHTML                = "html"
-	serializeMethodText                = "text"
-	serializeMethodJSON                = "json"
-	serializeMethodAdaptive            = "adaptive"
-	serializeStandaloneOmit            = "omit"
-	serializeParamCDATASectionElements = "cdata-section-elements"
-	serializeParamVersion              = "version"
-)
-
-const (
-	errCodeSEPM0009 = "SEPM0009"
-	errCodeSEPM0010 = "SEPM0010"
-	errCodeSEPM0016 = "SEPM0016"
 	errCodeSEPM0017 = "SEPM0017"
 	errCodeSEPM0018 = "SEPM0018"
 	errCodeSEPM0019 = "SEPM0019"
 	errCodeSERE0020 = "SERE0020"
 	errCodeSERE0021 = "SERE0021"
-	errCodeSERE0022 = "SERE0022"
 	errCodeSERE0023 = "SERE0023"
-	errCodeSESU0011 = "SESU0011"
-	errCodeSESU0013 = "SESU0013"
 )
-
-// xsdWhitespaceCutset is the XSD list / whiteSpace-collapse whitespace set
-// (#x20, #x9, #xA, #xD). Element-form enumeration/boolean/QNames values are
-// token-derived, so leading/trailing runs of these characters are stripped —
-// but NBSP and other Unicode whitespace are NOT whitespace and must remain in
-// the value (where they then fail lexical validation).
-const xsdWhitespaceCutset = " \t\r\n"
 
 func lookupFunctionsSerialize(name string) (*builtinFunc, bool) {
 	switch name {
@@ -80,16 +55,16 @@ func fnSerialize(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 	switch opts.method {
 	case "":
 		result, err = serializeXMLSequence(args[0], opts)
-	case serializeMethodAdaptive:
+	case lexicon.MethodAdaptive:
 		result, err = serializeAdaptiveSequence(args[0], opts)
-	case serializeMethodJSON:
+	case lexicon.MethodJSON:
 		result, err = serializeJSONSequence(args[0], opts)
-	case serializeMethodHTML:
+	case lexicon.MethodHTML:
 		validator := htmlSequenceValidator{ctx: ctx, html5: serializeHTMLIsVersion5(opts), separator: opts.itemSeparator}
 		if err = validator.sequence(args[0], 0); err == nil {
 			result, err = serializeHTMLSequence(args[0], opts)
 		}
-	case serializeMethodText:
+	case lexicon.MethodText:
 		result, err = serializeTextSequence(args[0], opts)
 	default:
 		// XML and XHTML share sequence normalization and XML character rules.
@@ -105,7 +80,7 @@ func fnSerialize(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 	// text and adaptive values normalize unmapped runs at their write sites.
 
 	switch opts.method {
-	case serializeMethodText:
+	case lexicon.MethodText:
 		if len(opts.charMap) == 0 {
 			result, err = applySerializeNormalization(result, opts)
 			if err != nil {
@@ -140,7 +115,7 @@ func serializeNormForm(form string) (norm.Form, bool) {
 // requires this even without a map: normalization can introduce quotes or
 // backslashes that must then receive JSON escaping.
 func serializeCharMapNorm(opts serializeOptions) (norm.Form, bool) {
-	if len(opts.charMap) == 0 && opts.method != serializeMethodJSON || !opts.methodAppliesNormalization() || !serializeNormalizationActive(opts.normalizationForm) {
+	if len(opts.charMap) == 0 && opts.method != lexicon.MethodJSON || !opts.methodAppliesNormalization() || !serializeNormalizationActive(opts.normalizationForm) {
 		return norm.NFC, false
 	}
 
@@ -166,7 +141,7 @@ func applySerializeNormalization(s string, opts serializeOptions) (string, error
 
 	_, ok := serializeNormForm(form)
 	if !ok {
-		return "", &xdm.Error{Code: errCodeSESU0011, Message: fmt.Sprintf("normalization-form %q is not supported", form)}
+		return "", &xdm.Error{Code: lexicon.ErrSESU0011, Message: fmt.Sprintf("normalization-form %q is not supported", form)}
 	}
 
 	return normalizeSerializedValue(s, opts)
@@ -235,7 +210,7 @@ type serializeOptions struct {
 // unspecified version to "1.0".
 func (opts serializeOptions) effectiveSerializeVersion() string {
 	if opts.xmlVersion == "" {
-		return version10
+		return lexicon.XMLVersion10
 	}
 
 	return opts.xmlVersion
@@ -247,7 +222,7 @@ func (opts serializeOptions) effectiveSerializeVersion() string {
 // html/json/text/adaptive an XML declaration is never produced.
 func (opts serializeOptions) methodEmitsXMLDeclaration() bool {
 	switch opts.method {
-	case "", serializeMethodXML, serializeMethodXHTML:
+	case "", lexicon.MethodXML, lexicon.MethodXHTML:
 		return true
 	}
 
@@ -261,7 +236,7 @@ func (opts serializeOptions) methodEmitsXMLDeclaration() bool {
 // html) and is ignored by the text/json/adaptive methods.
 func (opts serializeOptions) methodEmitsDoctype() bool {
 	switch opts.method {
-	case "", serializeMethodXML, serializeMethodXHTML, serializeMethodHTML:
+	case "", lexicon.MethodXML, lexicon.MethodXHTML, lexicon.MethodHTML:
 		return true
 	}
 
@@ -275,13 +250,13 @@ func (opts serializeOptions) validate() error {
 	// value (SEPM0016), with no silent fall-through to the xml method. The
 	// built-in methods and the unspecified default ("") are supported.
 	if opts.method != "" && !isBuiltinSerializeMethod(opts.method) {
-		return &xdm.Error{Code: errCodeSEPM0016, Message: fmt.Sprintf("output method %q is not supported", opts.method)}
+		return &xdm.Error{Code: lexicon.ErrSEPM0016, Message: fmt.Sprintf("output method %q is not supported", opts.method)}
 	}
 
-	if opts.method == serializeMethodHTML {
+	if opts.method == lexicon.MethodHTML {
 		version := htmlpkg.RequestedVersion(opts.htmlVersion, opts.xmlVersion)
 		if !htmlpkg.SupportedVersion(version) {
-			return &xdm.Error{Code: errCodeSESU0013, Message: fmt.Sprintf("HTML output version %q is not supported", version)}
+			return &xdm.Error{Code: lexicon.ErrSESU0013, Message: fmt.Sprintf("HTML output version %q is not supported", version)}
 		}
 	}
 
@@ -292,7 +267,7 @@ func (opts serializeOptions) validate() error {
 	// undeclaration rules, so it must be validated even when the declaration is
 	// omitted.
 	if opts.methodEmitsXMLDeclaration() && opts.xmlVersion != "" && !isSupportedXMLOutputVersion(opts.xmlVersion) {
-		return &xdm.Error{Code: errCodeSESU0013, Message: fmt.Sprintf("XML output version %q is not supported", opts.xmlVersion)}
+		return &xdm.Error{Code: lexicon.ErrSESU0013, Message: fmt.Sprintf("XML output version %q is not supported", opts.xmlVersion)}
 	}
 
 	// A doctype-system value MUST NOT contain BOTH an apostrophe (#x27) and a
@@ -303,7 +278,7 @@ func (opts serializeOptions) validate() error {
 	// adaptive ignore it — so the SystemLiteral check is gated to the methods that
 	// actually emit a DOCTYPE.
 	if opts.methodEmitsDoctype() && strings.ContainsRune(opts.doctypeSystem, '"') && strings.ContainsRune(opts.doctypeSystem, '\'') {
-		return &xdm.Error{Code: errCodeSEPM0016, Message: "doctype-system must not contain both a quotation mark and an apostrophe"}
+		return &xdm.Error{Code: lexicon.ErrSEPM0016, Message: "doctype-system must not contain both a quotation mark and an apostrophe"}
 	}
 
 	// SEPM0009 (Serialization 3.1): when the omit-xml-declaration parameter is
@@ -317,11 +292,11 @@ func (opts serializeOptions) validate() error {
 	// XML 1.0, so omit + doctype-system at version 1.0 is NOT an error.
 	if opts.methodEmitsXMLDeclaration() && opts.omitXMLDeclaration {
 		if opts.standalone == lexicon.ValueYes || opts.standalone == lexicon.ValueNo {
-			return &xdm.Error{Code: errCodeSEPM0009, Message: "omit-xml-declaration=yes conflicts with standalone=yes/no"}
+			return &xdm.Error{Code: lexicon.ErrSEPM0009, Message: "omit-xml-declaration=yes conflicts with standalone=yes/no"}
 		}
 
-		if opts.effectiveSerializeVersion() != version10 && opts.doctypeSystem != "" {
-			return &xdm.Error{Code: errCodeSEPM0009, Message: "omit-xml-declaration=yes conflicts with a doctype-system value at version other than 1.0"}
+		if opts.effectiveSerializeVersion() != lexicon.XMLVersion10 && opts.doctypeSystem != "" {
+			return &xdm.Error{Code: lexicon.ErrSEPM0009, Message: "omit-xml-declaration=yes conflicts with a doctype-system value at version other than 1.0"}
 		}
 	}
 
@@ -331,8 +306,8 @@ func (opts serializeOptions) validate() error {
 	// methods (and the unspecified xml default) — for html/text/json/adaptive it is
 	// silently ignored, no error — so SEPM0010 is gated to that method family
 	// (methodEmitsXMLDeclaration covers exactly {"", xml, xhtml}).
-	if opts.methodEmitsXMLDeclaration() && opts.undeclarePrefixes && opts.effectiveSerializeVersion() != version11 {
-		return &xdm.Error{Code: errCodeSEPM0010, Message: "undeclare-prefixes requires output version 1.1"}
+	if opts.methodEmitsXMLDeclaration() && opts.undeclarePrefixes && opts.effectiveSerializeVersion() != lexicon.XMLVersion11 {
+		return &xdm.Error{Code: lexicon.ErrSEPM0010, Message: "undeclare-prefixes requires output version 1.1"}
 	}
 
 	// Validate the normalization-form up front so an unsupported form
@@ -343,7 +318,7 @@ func (opts serializeOptions) validate() error {
 	// text/attribute nodes), to the whole output for text/json (pure character
 	// data), or while adaptive serializes its string-like atomics.
 	if opts.methodAppliesNormalization() && serializeNormalizationActive(opts.normalizationForm) && !isSupportedSerializeNormForm(opts.normalizationForm) {
-		return &xdm.Error{Code: errCodeSESU0011, Message: fmt.Sprintf("normalization-form %q is not supported", opts.normalizationForm)}
+		return &xdm.Error{Code: lexicon.ErrSESU0011, Message: fmt.Sprintf("normalization-form %q is not supported", opts.normalizationForm)}
 	}
 
 	return nil
@@ -371,14 +346,14 @@ func serializeNormalizationActive(form string) bool {
 // (including a malformed one or an unsupported version such as "1.2") is the
 // SESU0013 unsupported-version error.
 func isSupportedXMLOutputVersion(v string) bool {
-	return v == version10 || v == version11
+	return v == lexicon.XMLVersion10 || v == lexicon.XMLVersion11
 }
 
 // isBuiltinSerializeMethod reports whether v names a supported built-in
 // output method.
 func isBuiltinSerializeMethod(v string) bool {
 	switch v {
-	case serializeMethodXML, serializeMethodHTML, serializeMethodXHTML, serializeMethodText, serializeMethodJSON, serializeMethodAdaptive:
+	case lexicon.MethodXML, lexicon.MethodHTML, lexicon.MethodXHTML, lexicon.MethodText, lexicon.MethodJSON, lexicon.MethodAdaptive:
 		return true
 	}
 
@@ -391,7 +366,7 @@ func isBuiltinSerializeMethod(v string) bool {
 // unspecified default.
 func (opts serializeOptions) methodAppliesNormalization() bool {
 	switch opts.method {
-	case "", serializeMethodXML, serializeMethodXHTML, serializeMethodHTML, serializeMethodText, serializeMethodJSON, serializeMethodAdaptive:
+	case "", lexicon.MethodXML, lexicon.MethodXHTML, lexicon.MethodHTML, lexicon.MethodText, lexicon.MethodJSON, lexicon.MethodAdaptive:
 		return true
 	}
 
@@ -429,7 +404,7 @@ func (opts *serializeOptions) stringParam(name string) *string {
 		return &opts.itemSeparator
 	case "encoding":
 		return &opts.encoding
-	case serializeParamVersion:
+	case lexicon.SerializationVersion:
 		return &opts.xmlVersion
 	case "html-version":
 		return &opts.htmlVersion
@@ -443,7 +418,7 @@ func (opts *serializeOptions) stringParam(name string) *string {
 		return &opts.normalizationForm
 	case "media-type":
 		return &opts.mediaType
-	case nameStandalone:
+	case lexicon.SerializationStandalone:
 		return &opts.standalone
 	default:
 		return nil
@@ -459,7 +434,7 @@ func parseSerializeOptions(ctx context.Context, args []xdm.Sequence) (serializeO
 		method:             "",
 		itemSeparator:      " ",
 		// The Serialization 3.1 default for the standalone parameter is "omit".
-		standalone: serializeStandaloneOmit,
+		standalone: lexicon.ValueOmit,
 		// include-content-type and escape-uri-attributes default to yes.
 		includeContentType:  true,
 		escapeURIAttributes: true,
@@ -565,7 +540,7 @@ func parseSerializeMapOutputOptions(ctx context.Context, opts serializeOptions, 
 
 	if found {
 		if !xmlchar.IsValidEncName(encoding) {
-			return opts, &xdm.Error{Code: errCodeSEPM0016, Message: "invalid serialization encoding name"}
+			return opts, &xdm.Error{Code: lexicon.ErrSEPM0016, Message: "invalid serialization encoding name"}
 		}
 
 		opts.encoding = encoding
@@ -602,7 +577,7 @@ func parseSerializeMapMarkupOptions(ctx context.Context, opts serializeOptions, 
 		opts.escapeURIAttributes = escape
 	}
 
-	version, found, err := readSerializeStringOption(ctx, m, serializeParamVersion)
+	version, found, err := readSerializeStringOption(ctx, m, lexicon.SerializationVersion)
 	if err != nil {
 		return opts, err
 	}
@@ -673,13 +648,13 @@ func parseSerializeMapContentOptions(ctx context.Context, opts serializeOptions,
 
 	if found {
 		if !serializeNormalizationFormValid(nf) {
-			return opts, &xdm.Error{Code: errCodeSEPM0016, Message: fmt.Sprintf("serialize option normalization-form has an invalid value %q", nf)}
+			return opts, &xdm.Error{Code: lexicon.ErrSEPM0016, Message: fmt.Sprintf("serialize option normalization-form has an invalid value %q", nf)}
 		}
 
 		opts.normalizationForm = nf
 	}
 
-	if v, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: nameStandalone}); found {
+	if v, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: lexicon.SerializationStandalone}); found {
 		standalone, err := resolveSerializeStandaloneMap(ctx, v)
 		if err != nil {
 			return opts, err
@@ -697,8 +672,8 @@ func parseSerializeMapContentOptions(ctx context.Context, opts serializeOptions,
 		opts.charMap = charMap
 	}
 
-	if v, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: serializeParamCDATASectionElements}); found {
-		names, err := resolveSerializeQNameNames(ctx, v, serializeParamCDATASectionElements)
+	if v, found := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: lexicon.SerializationCDATASectionElements}); found {
+		names, err := resolveSerializeQNameNames(ctx, v, lexicon.SerializationCDATASectionElements)
 		if err != nil {
 			return opts, err
 		}
@@ -1046,13 +1021,13 @@ func applySerializeNodeParam(opts serializeOptions, param *xdm.Element) (seriali
 	}
 
 	switch name {
-	case serializeParamCDATASectionElements, "suppress-indentation":
+	case lexicon.SerializationCDATASectionElements, "suppress-indentation":
 		names, err := readSerializeParamQNameNames(param)
 		if err != nil {
 			return opts, err
 		}
 
-		if name == serializeParamCDATASectionElements {
+		if name == lexicon.SerializationCDATASectionElements {
 			opts.cdataElements = names
 		} else {
 			opts.suppressIndent = names
@@ -1075,7 +1050,7 @@ func applySerializeNodeParam(opts serializeOptions, param *xdm.Element) (seriali
 // XSD whitespace only for parameters with token or decimal lexical domains.
 func readSerializeNodeStringParam(param *xdm.Element) (string, error) {
 	name := param.LocalName()
-	if name == nameStandalone {
+	if name == lexicon.SerializationStandalone {
 		return readSerializeParamStandalone(param)
 	}
 
@@ -1084,7 +1059,7 @@ func readSerializeNodeStringParam(param *xdm.Element) (string, error) {
 		return "", err
 	}
 
-	token := strings.Trim(value, xsdWhitespaceCutset)
+	token := strings.Trim(value, lexicon.XMLWhitespace)
 
 	switch name {
 	case "encoding":
@@ -1107,7 +1082,7 @@ func readSerializeNodeStringParam(param *xdm.Element) (string, error) {
 		if !isValidXSDecimal(token) {
 			return "", &xdm.Error{Code: errCodeSEPM0017, Message: fmt.Sprintf("serialize parameter html-version must be an xs:decimal, got %q", value)}
 		}
-	case serializeParamVersion:
+	case lexicon.SerializationVersion:
 	default:
 		return value, nil
 	}
@@ -1119,7 +1094,7 @@ func readSerializeNodeStringParam(param *xdm.Element) (string, error) {
 // whitespace (#x20/#x9/#xA/#xD). NBSP and other Unicode whitespace are NOT
 // whitespace, so content containing them is significant.
 func isXSDWhitespaceOnly(s string) bool {
-	return strings.Trim(s, xsdWhitespaceCutset) == ""
+	return strings.Trim(s, lexicon.XMLWhitespace) == ""
 }
 
 // isValidXSDecimal reports whether s is a valid xs:decimal lexical form: an
@@ -1204,7 +1179,7 @@ func serializeMethodValid(v string) bool {
 // QName — a SEPARATE, narrower domain than the method parameter.
 func serializeJSONNodeOutputMethodValid(v string) bool {
 	switch v {
-	case serializeMethodXML, serializeMethodHTML, serializeMethodXHTML, serializeMethodText:
+	case lexicon.MethodXML, lexicon.MethodHTML, lexicon.MethodXHTML, lexicon.MethodText:
 		return true
 	}
 
@@ -1235,7 +1210,7 @@ func readSerializeParamValue(elem *xdm.Element) (string, error) {
 // {yes, no, true, false, 1, 0}. ok is false for any other value — including
 // uppercase forms (xs:boolean is lowercase-only) and NBSP-padded values.
 func serializeBooleanValue(value string) (string, bool) {
-	switch strings.Trim(value, xsdWhitespaceCutset) {
+	switch strings.Trim(value, lexicon.XMLWhitespace) {
 	case lexicon.ValueYes, lexicon.ValueTrue, "1":
 		return lexicon.ValueYes, true
 	case lexicon.ValueNo, lexicon.ValueFalse, "0":
@@ -1270,8 +1245,8 @@ func readSerializeParamStandalone(elem *xdm.Element) (string, error) {
 		return "", err
 	}
 
-	if strings.Trim(value, xsdWhitespaceCutset) == serializeStandaloneOmit {
-		return serializeStandaloneOmit, nil
+	if strings.Trim(value, lexicon.XMLWhitespace) == lexicon.ValueOmit {
+		return lexicon.ValueOmit, nil
 	}
 
 	if bv, ok := serializeBooleanValue(value); ok {
@@ -1451,8 +1426,8 @@ func resolveSerializeStandaloneMap(ctx context.Context, v xdm.Sequence) (string,
 			return "", xerr
 		}
 
-		if s == serializeStandaloneOmit {
-			return serializeStandaloneOmit, nil
+		if s == lexicon.ValueOmit {
+			return lexicon.ValueOmit, nil
 		}
 		// An untypedAtomic may carry an xs:boolean lexical; accept the same
 		// value space the other boolean map options do (readBool): true/false/1/0.
@@ -1634,7 +1609,7 @@ func resolveSerializeCharacterMaps(v xdm.Sequence) (map[rune]string, error) {
 
 		keyString, err := atomicToString(key)
 		if err != nil || utf8.RuneCountInString(keyString) != 1 {
-			return &xdm.Error{Code: errCodeSEPM0016, Message: "serialize use-character-maps keys must be single characters"}
+			return &xdm.Error{Code: lexicon.ErrSEPM0016, Message: "serialize use-character-maps keys must be single characters"}
 		}
 
 		if xdm.SequenceLen(value) != 1 {
@@ -1664,7 +1639,7 @@ func resolveSerializeCharacterMaps(v xdm.Sequence) (map[rune]string, error) {
 
 func serializeAdaptiveSequence(seq xdm.Sequence, opts serializeOptions) (string, error) {
 	xmlOptions := opts
-	xmlOptions.method = serializeMethodXML
+	xmlOptions.method = lexicon.MethodXML
 
 	writer := newSerializeXMLWriter(xmlOptions)
 	if opts.doctypeSystem != "" {
@@ -1743,7 +1718,7 @@ func serializeJSONMap(v xdm.MapItem, opts serializeOptions) (string, error) {
 		}
 
 		if _, exists := seen[keyText]; exists && !opts.allowDuplicateNames {
-			return &xdm.Error{Code: errCodeSERE0022, Message: fmt.Sprintf("json serialization duplicate key %q", keyText)}
+			return &xdm.Error{Code: lexicon.ErrSERE0022, Message: fmt.Sprintf("json serialization duplicate key %q", keyText)}
 		}
 
 		seen[keyText] = struct{}{}
@@ -1799,23 +1774,23 @@ func serializeJSONNode(v xdm.NodeItem, opts serializeOptions) (string, error) {
 // escaping. XPath and XSLT share the node-kind checks and XML/HTML/text rules.
 func SerializeNodeForJSON(ctx context.Context, v xdm.NodeItem, method string) (string, error) {
 	if method == "" {
-		method = serializeMethodXML
+		method = lexicon.MethodXML
 	}
 	// SER31 §9 supplies only the node output method and omit-xml-declaration.
 	// JSON character maps and normalization apply to the resulting JSON string.
 	nodeOpts := serializeOptions{
 		ctx:    ctx,
 		method: method, omitXMLDeclaration: true,
-		standalone: serializeStandaloneOmit, includeContentType: true, escapeURIAttributes: true,
+		standalone: lexicon.ValueOmit, includeContentType: true, escapeURIAttributes: true,
 	}
 	if err := nodeOpts.validate(); err != nil {
 		return "", err
 	}
 
 	switch method {
-	case serializeMethodText:
+	case lexicon.MethodText:
 		return serializeTextSequence(xdm.ItemSlice{v}, nodeOpts)
-	case serializeMethodHTML:
+	case lexicon.MethodHTML:
 		return serializeHTMLSequence(xdm.ItemSlice{v}, nodeOpts)
 	default:
 		return serializeXMLSequence(xdm.ItemSlice{v}, nodeOpts)
@@ -1826,17 +1801,17 @@ func serializeJSONAtomic(v xdm.AtomicValue, opts serializeOptions) (string, erro
 	switch {
 	case v.TypeName == xdm.TypeBoolean:
 		if v.BooleanVal() {
-			return nameTrue, nil
+			return lexicon.ValueTrue, nil
 		}
 
-		return nameFalse, nil
+		return lexicon.ValueFalse, nil
 	case v.IsNumeric():
 		s, err := atomicToString(v)
 		if err != nil {
 			return "", err
 		}
 
-		if s == valueNaN || s == "INF" || s == "-INF" {
+		if s == lexicon.FloatNaN || s == "INF" || s == "-INF" {
 			return "", &xdm.Error{Code: errCodeSERE0020, Message: "cannot serialize NaN or infinity as JSON"}
 		}
 
@@ -1917,13 +1892,13 @@ func serializeXMLSequence(seq xdm.Sequence, opts serializeOptions) (string, erro
 	ctx := opts.serializationContext()
 
 	separator := opts.serializationSeparator()
-	if opts.doctypeSystem != "" || opts.standalone != serializeStandaloneOmit && opts.standalone != "" {
+	if opts.doctypeSystem != "" || opts.standalone != lexicon.ValueOmit && opts.standalone != "" {
 		if err := ValidateSerializationDocument(ctx, seq, separator); err != nil {
 			return "", err
 		}
 	}
 
-	if opts.method == serializeMethodXHTML {
+	if opts.method == lexicon.MethodXHTML {
 		doc, err := NormalizeSerialization(ctx, seq, separator, "")
 		if err != nil {
 			return "", err
@@ -1995,7 +1970,7 @@ func newSerializeXMLWriter(opts serializeOptions) xdm.XMLSerialization {
 	}
 	// undeclare-prefixes is honored only at output version 1.1 (fnSerialize has
 	// already rejected the 1.0 case with SEPM0010).
-	if opts.undeclarePrefixes && opts.effectiveSerializeVersion() == version11 {
+	if opts.undeclarePrefixes && opts.effectiveSerializeVersion() == lexicon.XMLVersion11 {
 		writer.PrefixUndeclarations = true
 	}
 
@@ -2160,7 +2135,7 @@ func htmlDoctype(opts serializeOptions) string {
 		// Serialization 3.1 html output method / HTML5 doctype rule — the name is
 		// always html/HTML), NOT the document element's own (possibly mixed-case)
 		// name. So a source root <HtMl> still emits `<!DOCTYPE html ...>`.
-		rootName := serializeMethodHTML
+		rootName := lexicon.MethodHTML
 
 		var b strings.Builder
 		b.WriteString("<!DOCTYPE ")
@@ -2301,7 +2276,7 @@ func elementWithInScopeNamespaces(elem *xdm.Element) (xdm.Node, error) {
 		return elem, nil
 	}
 
-	dst := xdm.NewDocument(version10, "", xdm.StandaloneImplicitNo)
+	dst := xdm.NewDocument(lexicon.XMLVersion10, "", xdm.StandaloneImplicitNo)
 
 	copied, err := xdm.CopyNode(elem, dst)
 	if err != nil {

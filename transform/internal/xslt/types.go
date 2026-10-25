@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	"github.com/skarm/xmlsec/transform/internal/xdm/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
@@ -538,31 +538,31 @@ func normalizeTypeName(name string, ec ...*execContext) string {
 	switch name {
 	case lexicon.TypeString:
 		return xdm.TypeString
-	case nameInteger:
+	case lexicon.TypeInteger:
 		return xdm.TypeInteger
-	case nameDecimal:
+	case lexicon.TypeDecimal:
 		return xdm.TypeDecimal
-	case nameDouble:
+	case lexicon.TypeDouble:
 		return xdm.TypeDouble
-	case nameFloat:
+	case lexicon.TypeFloat:
 		return xdm.TypeFloat
 	case lexicon.TypeBoolean:
 		return xdm.TypeBoolean
 	case "date":
 		return xdm.TypeDate
-	case nameDateTime:
+	case lexicon.TypeDateTime:
 		return xdm.TypeDateTime
-	case nameTime:
+	case lexicon.TypeTime:
 		return xdm.TypeTime
-	case nameDuration:
+	case lexicon.TypeDuration:
 		return xdm.TypeDuration
-	case nameDayTimeDuration:
+	case lexicon.TypeDayTimeDuration:
 		return xdm.TypeDayTimeDuration
-	case nameYearMonthDuration:
+	case lexicon.TypeYearMonthDuration:
 		return xdm.TypeYearMonthDuration
 	case "anyURI":
 		return xdm.TypeAnyURI
-	case nameUntypedAtomic:
+	case lexicon.TypeUntypedAtomic:
 		return xdm.TypeUntypedAtomic
 	}
 	// Unprefixed non-builtin type names take the in-scope default element/type
