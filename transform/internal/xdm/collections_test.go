@@ -5,56 +5,11 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
-
-func assertStringItems(t *testing.T, seq xdm.Sequence, want ...string) {
-	t.Helper()
-	var got []string
-	for item := range xdm.SequenceItems(seq) {
-		value, ok := item.(xdm.AtomicValue)
-		if !ok {
-			t.Fatalf("item type %T; want atomic string", item)
-		}
-		if value.TypeName != xdm.TypeString {
-			t.Fatalf("atomic type %q; want xs:string", value.TypeName)
-		}
-		got = append(got, value.StringVal())
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("items %q; want %q", got, want)
-	}
-}
-
-func stringKey(s string) xdm.AtomicValue { return xdm.AtomicValue{TypeName: xdm.TypeString, Value: s} }
-
-func requireXDMCode(t *testing.T, err error, code string) {
-	t.Helper()
-	var xe *xdm.Error
-	if !errors.As(err, &xe) || xe.Code != code {
-		t.Fatalf("error %v; want XDM %s", err, code)
-	}
-}
-
-func requireArrayMember(t *testing.T, array xdm.ArrayItem, index int) xdm.Sequence {
-	t.Helper()
-	member, err := array.Get(index)
-	if err != nil {
-		t.Fatalf("array.Get(%d): %v", index, err)
-	}
-	return member
-}
-
-func requireMapValue(t *testing.T, valueMap xdm.MapItem, key xdm.AtomicValue) xdm.Sequence {
-	t.Helper()
-	value, found := valueMap.Get(key)
-	if !found {
-		t.Fatalf("map.Get(%v): key absent", key)
-	}
-	return value
-}
 
 func TestArrayFlattenEmptyMembers(t *testing.T) {
 	t.Parallel()
@@ -62,6 +17,29 @@ func TestArrayFlattenEmptyMembers(t *testing.T) {
 	a := xdm.NewArray([]xdm.Sequence{nil, xdm.SingleString("before"), xdm.ItemSlice{xdm.NewArrayFromImmutableMembers([]xdm.Sequence{nil, xdm.SingleString("inside")})}, nil})
 	assertStringItems(t, a.Flatten(), "before", "inside")
 	assertStringItems(t, xdm.NewArray([]xdm.Sequence{nil}).Flatten())
+}
+
+func TestArrayFlattenDeepOrderAndOwnership(t *testing.T) {
+	t.Parallel()
+	const depth = 4096
+	leaf := big.NewInt(7)
+	array := xdm.NewArray([]xdm.Sequence{xdm.SingleIntegerBig(leaf)})
+	for i := range depth {
+		array = xdm.NewArrayFromImmutableMembers([]xdm.Sequence{nil, xdm.SingleInteger(int64(i)), xdm.ItemSlice{array}, nil})
+	}
+	result := array.Flatten()
+	if result.Len() != depth+1 {
+		t.Fatal("flattened size", result.Len())
+	}
+	for i := range depth {
+		if got := result.Get(i).(xdm.AtomicValue).IntegerVal(); got != int64(depth-i-1) {
+			t.Fatal("nested array changed order", i, got)
+		}
+	}
+	result.Get(depth).(xdm.AtomicValue).BigInt().SetInt64(99)
+	if got := array.Flatten().Get(depth).(xdm.AtomicValue).IntegerVal(); got != 7 {
+		t.Fatal("flatten exposed mutable leaf", got)
+	}
 }
 
 func TestMergeMapsCombineEmptyValues(t *testing.T) {
@@ -407,4 +385,69 @@ func TestArrayErrorsKeepQualifiedCodes(t *testing.T) {
 	if !errors.As(err, &coded) || coded.Code != "FOAY0001" || coded.CodeQName().Local != "FOAY0001" {
 		t.Fatalf("lost structured array error: %v", err)
 	}
+}
+
+// Each level contributes a value, as in recursively generated array-valued
+// expressions. Immutable construction is excluded from the measured flatten.
+func BenchmarkArrayFlattenNested(b *testing.B) {
+	for _, depth := range []int{1, 32, 256} {
+		b.Run(strconv.Itoa(depth), func(b *testing.B) {
+			array := xdm.NewArrayFromImmutableMembers(nil)
+			for i := range depth {
+				array = xdm.NewArrayFromImmutableMembers([]xdm.Sequence{xdm.SingleInteger(int64(i)), xdm.ItemSlice{array}})
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if result := array.Flatten(); result.Len() != depth {
+					b.Fatal("wrong flattened size")
+				}
+			}
+		})
+	}
+}
+
+func assertStringItems(t *testing.T, seq xdm.Sequence, want ...string) {
+	t.Helper()
+	var got []string
+	for item := range xdm.SequenceItems(seq) {
+		value, ok := item.(xdm.AtomicValue)
+		if !ok {
+			t.Fatalf("item type %T; want atomic string", item)
+		}
+		if value.TypeName != xdm.TypeString {
+			t.Fatalf("atomic type %q; want xs:string", value.TypeName)
+		}
+		got = append(got, value.StringVal())
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("items %q; want %q", got, want)
+	}
+}
+
+func stringKey(s string) xdm.AtomicValue { return xdm.AtomicValue{TypeName: xdm.TypeString, Value: s} }
+
+func requireXDMCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var xe *xdm.Error
+	if !errors.As(err, &xe) || xe.Code != code {
+		t.Fatalf("error %v; want XDM %s", err, code)
+	}
+}
+
+func requireArrayMember(t *testing.T, array xdm.ArrayItem, index int) xdm.Sequence {
+	t.Helper()
+	member, err := array.Get(index)
+	if err != nil {
+		t.Fatalf("array.Get(%d): %v", index, err)
+	}
+	return member
+}
+
+func requireMapValue(t *testing.T, valueMap xdm.MapItem, key xdm.AtomicValue) xdm.Sequence {
+	t.Helper()
+	value, found := valueMap.Get(key)
+	if !found {
+		t.Fatalf("map.Get(%v): key absent", key)
+	}
+	return value
 }

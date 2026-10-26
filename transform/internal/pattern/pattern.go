@@ -59,6 +59,70 @@ type Program struct {
 	xpathAnchors bool
 }
 
+type operation uint8
+
+const (
+	opMatch operation = iota
+	opChar
+	opLiteral
+	opSplit
+	opSave
+	opAnchor
+	opReference
+	opInitialize
+	opRepeat
+	opIncrement
+)
+
+type instruction struct {
+	set       *characterSet
+	text      []rune
+	x         int
+	y         int
+	index     int
+	least     int
+	most      int
+	cost      int
+	op        operation
+	lazy      bool
+	fold      bool
+	absolute  bool
+	end       bool
+	multiline bool
+}
+
+type (
+	counter struct {
+		count int
+		prior int
+		start int
+	}
+	state struct {
+		pc       int
+		pos      int
+		caps     []int
+		counters []counter
+	}
+)
+
+type machine struct {
+	ctx     context.Context
+	work    Work
+	steps   int
+	cells   int
+	source  string
+	program *Program
+	seen    map[string]struct{}
+	// Without counters or backreferences, identity is exactly (pc, pos).
+	simpleSeen map[[2]int]struct{}
+}
+
+type stateStack struct {
+	states []state
+	cells  int
+	weight int
+}
+
 // Compile parses a pattern without expanding counted repetitions.
 func Compile(source string, options Options) (*Program, error) {
 	if len(source) > 64<<10 {
@@ -392,69 +456,6 @@ func replacementPart(replacement, source string, match []int, at int) (string, i
 	return "$", at + 1, true
 }
 
-type operation uint8
-
-const (
-	opMatch operation = iota
-	opChar
-	opLiteral
-	opSplit
-	opSave
-	opAnchor
-	opReference
-	opInitialize
-	opRepeat
-	opIncrement
-)
-
-type instruction struct {
-	set       *characterSet
-	text      []rune
-	x         int
-	y         int
-	index     int
-	least     int
-	most      int
-	cost      int
-	op        operation
-	lazy      bool
-	fold      bool
-	absolute  bool
-	end       bool
-	multiline bool
-}
-
-type (
-	counter struct {
-		count int
-		prior int
-		start int
-	}
-	state struct {
-		pc       int
-		pos      int
-		caps     []int
-		counters []counter
-	}
-)
-
-func (s state) clone() state {
-	s.caps = append([]int(nil), s.caps...)
-	s.counters = append([]counter(nil), s.counters...)
-
-	return s
-}
-
-type machine struct {
-	ctx     context.Context
-	work    Work
-	steps   int
-	cells   int
-	source  string
-	program *Program
-	seen    map[string]struct{}
-}
-
 func newMachine(ctx context.Context, p *Program, s string, work Work) (*machine, error) {
 	if ctx == nil {
 		return nil, errors.New("nil context")
@@ -476,70 +477,31 @@ func newMachine(ctx context.Context, p *Program, s string, work Work) (*machine,
 		return nil, err
 	}
 
-	return &machine{ctx: ctx, program: p, source: s, work: work, seen: make(map[string]struct{})}, nil
+	m := &machine{ctx: ctx, program: p, source: s, work: work}
+	m.resetSeen()
+
+	return m, nil
 }
 
-func (m *machine) charge(n int) error {
-	if err := m.ctx.Err(); err != nil {
-		return err
-	}
+func (m *machine) find(from int) ([]int, error) {
+	m.resetSeen()
 
-	if n < 0 || n > m.work.MaxSteps-m.steps {
-		return ErrLimit
-	}
-
-	m.steps += n
-	if m.work.Charge != nil {
-		return m.work.Charge(n)
-	}
-
-	return nil
-}
-
-func (m *machine) stateKey(s state) string {
-	size := 20 + 30*len(s.counters)
-	if m.program.backrefs {
-		size += 10 * len(s.caps)
-	}
-
-	buffer := make([]byte, 0, size)
-	buffer = binary.AppendVarint(buffer, int64(s.pc))
-
-	buffer = binary.AppendVarint(buffer, int64(s.pos))
-	for _, c := range s.counters {
-		buffer = binary.AppendVarint(buffer, int64(c.count))
-		buffer = binary.AppendVarint(buffer, int64(c.prior))
-		buffer = binary.AppendVarint(buffer, int64(c.start))
-	}
-
-	if m.program.backrefs {
-		for _, v := range s.caps {
-			buffer = binary.AppendVarint(buffer, int64(v))
-		}
-	}
-
-	return string(buffer)
-}
-
-func (m *machine) literal(pos int, text []rune, fold bool) (int, bool, error) {
-	for _, want := range text {
-		if err := m.charge(1); err != nil {
-			return pos, false, err
+	m.cells = 0
+	for at := from; at <= len(m.source); {
+		match, err := m.attempt(at)
+		if err != nil || match != nil {
+			return match, err
 		}
 
-		if pos >= len(m.source) {
-			return pos, false, nil
+		if at == len(m.source) {
+			break
 		}
 
-		got, size := utf8.DecodeRuneInString(m.source[pos:])
-		if !equalRune(got, want, fold) {
-			return pos, false, nil
-		}
-
-		pos += size
+		_, size := utf8.DecodeRuneInString(m.source[at:])
+		at += size
 	}
 
-	return pos, true, nil
+	return nil, nil
 }
 
 func (m *machine) attempt(start int) ([]int, error) {
@@ -589,6 +551,29 @@ func (m *machine) attempt(start int) ([]int, error) {
 }
 
 func (m *machine) visit(s state, stackCells int) (bool, error) {
+	if m.simpleSeen != nil {
+		key := [2]int{s.pc, s.pos}
+		if _, seen := m.simpleSeen[key]; seen {
+			return false, nil
+		}
+		// Preserve the general path's exact logical cell charge, including
+		// varint-width boundaries, without allocating a serialized key.
+		var encoded [20]byte
+
+		used := binary.PutVarint(encoded[:], int64(s.pc))
+		used += binary.PutVarint(encoded[used:], int64(s.pos))
+		cells := used/8 + 4
+
+		if cells > m.work.MaxCells-m.cells-stackCells {
+			return false, ErrLimit
+		}
+
+		m.cells += cells
+		m.simpleSeen[key] = struct{}{}
+
+		return true, nil
+	}
+
 	key := m.stateKey(s)
 	if _, seen := m.seen[key]; seen {
 		return false, nil
@@ -768,49 +753,82 @@ func (m *machine) repeat(s *state, i instruction, stack *stateStack) (bool, erro
 	return true, nil
 }
 
-func (m *machine) find(from int) ([]int, error) {
-	m.seen = make(map[string]struct{})
-
-	m.cells = 0
-	for at := from; at <= len(m.source); {
-		match, err := m.attempt(at)
-		if err != nil || match != nil {
-			return match, err
-		}
-
-		if at == len(m.source) {
-			break
-		}
-
-		_, size := utf8.DecodeRuneInString(m.source[at:])
-		at += size
+func (m *machine) resetSeen() {
+	if !m.program.backrefs && m.program.counters == 0 {
+		m.simpleSeen = make(map[[2]int]struct{})
+	} else {
+		m.seen = make(map[string]struct{})
 	}
-
-	return nil, nil
 }
 
-func equalRune(a, b rune, fold bool) bool {
-	if a == b {
-		return true
+func (m *machine) charge(n int) error {
+	if err := m.ctx.Err(); err != nil {
+		return err
 	}
 
-	if !fold {
-		return false
+	if n < 0 || n > m.work.MaxSteps-m.steps {
+		return ErrLimit
 	}
 
-	for r := unicode.SimpleFold(a); r != a; r = unicode.SimpleFold(r) {
-		if r == b {
-			return true
+	m.steps += n
+	if m.work.Charge != nil {
+		return m.work.Charge(n)
+	}
+
+	return nil
+}
+
+func (m *machine) stateKey(s state) string {
+	size := 20 + 30*len(s.counters)
+	if m.program.backrefs {
+		size += 10 * len(s.caps)
+	}
+
+	buffer := make([]byte, 0, size)
+	buffer = binary.AppendVarint(buffer, int64(s.pc))
+
+	buffer = binary.AppendVarint(buffer, int64(s.pos))
+	for _, c := range s.counters {
+		buffer = binary.AppendVarint(buffer, int64(c.count))
+		buffer = binary.AppendVarint(buffer, int64(c.prior))
+		buffer = binary.AppendVarint(buffer, int64(c.start))
+	}
+
+	if m.program.backrefs {
+		for _, v := range s.caps {
+			buffer = binary.AppendVarint(buffer, int64(v))
 		}
 	}
 
-	return false
+	return string(buffer)
 }
 
-type stateStack struct {
-	states []state
-	cells  int
-	weight int
+func (m *machine) literal(pos int, text []rune, fold bool) (int, bool, error) {
+	for _, want := range text {
+		if err := m.charge(1); err != nil {
+			return pos, false, err
+		}
+
+		if pos >= len(m.source) {
+			return pos, false, nil
+		}
+
+		got, size := utf8.DecodeRuneInString(m.source[pos:])
+		if !equalRune(got, want, fold) {
+			return pos, false, nil
+		}
+
+		pos += size
+	}
+
+	return pos, true, nil
+}
+
+func (s state) clone() state {
+	s.caps = append([]int(nil), s.caps...)
+	s.counters = append([]counter(nil), s.counters...)
+
+	return s
 }
 
 func (stack *stateStack) push(m *machine, branch state) error {
@@ -838,4 +856,22 @@ func (stack *stateStack) pop(s *state) bool {
 	stack.cells -= stack.weight
 
 	return true
+}
+
+func equalRune(a, b rune, fold bool) bool {
+	if a == b {
+		return true
+	}
+
+	if !fold {
+		return false
+	}
+
+	for r := unicode.SimpleFold(a); r != a; r = unicode.SimpleFold(r) {
+		if r == b {
+			return true
+		}
+	}
+
+	return false
 }

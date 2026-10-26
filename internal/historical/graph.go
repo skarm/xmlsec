@@ -18,6 +18,27 @@ type graph struct {
 	now         time.Time
 	maximum     int
 	constraints []pki.CryptoConstraint
+	// Facts keep their original order and sources; this lazily built index
+	// only rejects redundant facts after larger histories have been admitted.
+	earliest map[proofIdentity]time.Time
+}
+
+type proofIdentity struct {
+	digest [32]byte
+	kind   historicalproof.Kind
+}
+
+type proofOrigin struct {
+	at     time.Time
+	source [32]byte
+}
+
+type containmentWalk struct {
+	ctx     context.Context
+	objects map[[32]byte]Object
+	// 1 means active; completed entries store their subtree height plus 2.
+	states  map[[32]byte]uint8
+	maximum int
 }
 
 func newGraph(ctx context.Context, c Config, in Input, now time.Time) (*graph, error) {
@@ -189,14 +210,30 @@ func (g *graph) extractReferences(ctx context.Context, seen map[[32]byte]struct{
 			return err
 		}
 
+		var sources map[[32]byte]proofOrigin
+		if len(seen) > 64 {
+			sources = g.proofOrigins()
+		}
+
 		for key := range seen {
+			refs := g.objects[key].Refs
+			if len(refs) == 0 {
+				continue
+			}
+
 			containerTime, ok := set.Earliest(key)
 			if !ok {
 				continue
 			}
 
-			proofSource := g.containerSource(key, containerTime, source)
-			for _, ref := range g.objects[key].Refs {
+			var proofSource [32]byte
+			if origin, ok := sources[key]; ok {
+				proofSource = origin.source
+			} else {
+				proofSource = g.containerSource(key, containerTime, source)
+			}
+
+			for _, ref := range refs {
 				updated, err := g.extractReference(ctx, set, ref, proofSource, containerTime)
 				if err != nil {
 					return err
@@ -208,6 +245,30 @@ func (g *graph) extractReferences(ctx context.Context, seen map[[32]byte]struct{
 	}
 
 	return nil
+}
+
+// proofOrigins indexes the first source of each hash-reference container's
+// earliest proof. Later appends cannot precede an existing first matching fact.
+// Histories without hash references do not need an index allocation.
+func (g *graph) proofOrigins() map[[32]byte]proofOrigin {
+	var origins map[[32]byte]proofOrigin
+
+	for _, fact := range g.facts {
+		if len(g.objects[fact.Digest].Refs) == 0 {
+			continue
+		}
+
+		if origins == nil {
+			origins = make(map[[32]byte]proofOrigin, min(len(g.facts), len(g.objects)))
+		}
+
+		previous, exists := origins[fact.Digest]
+		if !exists || fact.At.Before(previous.at) {
+			origins[fact.Digest] = proofOrigin{fact.At, fact.Source}
+		}
+	}
+
+	return origins
 }
 
 func (g *graph) containerSource(key [32]byte, at time.Time, fallback [32]byte) [32]byte {
@@ -251,9 +312,29 @@ func (g *graph) extractReference(ctx context.Context, set *historicalproof.Set, 
 }
 
 func (g *graph) add(fact historicalproof.Fact) error {
-	for _, existing := range g.facts {
-		if existing.Digest == fact.Digest && existing.Kind == fact.Kind && !existing.At.After(fact.At) {
+	key := proofIdentity{fact.Digest, fact.Kind}
+
+	if g.earliest == nil && len(g.facts) > 64 {
+		g.earliest = make(map[proofIdentity]time.Time, len(g.facts))
+
+		for _, existing := range g.facts {
+			identity := proofIdentity{existing.Digest, existing.Kind}
+
+			if at, ok := g.earliest[identity]; !ok || existing.At.Before(at) {
+				g.earliest[identity] = existing.At
+			}
+		}
+	}
+
+	if g.earliest != nil {
+		if at, ok := g.earliest[key]; ok && !at.After(fact.At) {
 			return nil
+		}
+	} else {
+		for _, existing := range g.facts {
+			if existing.Digest == fact.Digest && existing.Kind == fact.Kind && !existing.At.After(fact.At) {
+				return nil
+			}
 		}
 	}
 
@@ -262,31 +343,11 @@ func (g *graph) add(fact historicalproof.Fact) error {
 	}
 
 	g.facts = append(g.facts, fact)
-
-	return nil
-}
-
-func checkObjectIdentity(previous, item Object) error {
-	if !bytes.Equal(previous.Bytes, item.Bytes) || previous.Kind != item.Kind || !slices.Equal(previous.Contains, item.Contains) || len(previous.Refs) != len(item.Refs) {
-		return fmt.Errorf("%w: conflicting exact-object binding", ErrInput)
-	}
-
-	for i, ref := range previous.Refs {
-		other := item.Refs[i]
-		if ref.Hash != other.Hash || ref.Target != other.Target || !bytes.Equal(ref.Digest, other.Digest) {
-			return ErrInput
-		}
+	if g.earliest != nil {
+		g.earliest[key] = fact.At
 	}
 
 	return nil
-}
-
-type containmentWalk struct {
-	ctx     context.Context
-	objects map[[32]byte]Object
-	// 1 means active; completed entries store their subtree height plus 2.
-	states  map[[32]byte]uint8
-	maximum int
 }
 
 func (w *containmentWalk) visit(key [32]byte, depth int) (int, error) {
@@ -327,4 +388,19 @@ func (w *containmentWalk) visit(key [32]byte, depth int) (int, error) {
 	w.states[key] = uint8(height) + 2
 
 	return height, nil
+}
+
+func checkObjectIdentity(previous, item Object) error {
+	if !bytes.Equal(previous.Bytes, item.Bytes) || previous.Kind != item.Kind || !slices.Equal(previous.Contains, item.Contains) || len(previous.Refs) != len(item.Refs) {
+		return fmt.Errorf("%w: conflicting exact-object binding", ErrInput)
+	}
+
+	for i, ref := range previous.Refs {
+		other := item.Refs[i]
+		if ref.Hash != other.Hash || ref.Target != other.Target || !bytes.Equal(ref.Digest, other.Digest) {
+			return ErrInput
+		}
+	}
+
+	return nil
 }

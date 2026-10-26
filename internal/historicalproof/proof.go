@@ -4,9 +4,11 @@
 package historicalproof
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"slices"
+	"sort"
 	"time"
 )
 
@@ -33,12 +35,6 @@ const (
 	// Data identifies exact application or transformed reference bytes.
 	Data Kind = "data"
 )
-
-// Valid reports whether the role belongs to the closed proof vocabulary.
-// A Kind converted from arbitrary text must still pass this check.
-func (k Kind) Valid() bool {
-	return k == Certificate || k == CRL || k == OCSP || k == Signature || k == Timestamp || k == Digest || k == Data
-}
 
 // Fact binds one exact object's SHA-256 to its proven existence upper bound.
 // Source is the exact validating timestamp; zero denotes observation at Now.
@@ -98,6 +94,12 @@ func New(ctx context.Context, now time.Time, facts []Fact) (*Set, error) {
 	return &Set{now: now.UTC(), facts: owned}, nil
 }
 
+// Valid reports whether the role belongs to the closed proof vocabulary.
+// A Kind converted from arbitrary text must still pass this check.
+func (k Kind) Valid() bool {
+	return k == Certificate || k == CRL || k == OCSP || k == Signature || k == Timestamp || k == Digest || k == Data
+}
+
 // Valid reports whether this set was constructed by a library workflow.
 func (s *Set) Valid() bool { return s != nil && !s.now.IsZero() }
 
@@ -142,17 +144,34 @@ func (s *Set) EarliestKind(digest [32]byte, kind Kind) (time.Time, bool) {
 		return earliest, !earliest.IsZero()
 	}
 
-	start, _ := slices.BinarySearchFunc(s.facts, digest, func(fact Fact, key [32]byte) int {
-		return slices.Compare(fact.Digest[:], key[:])
+	// Facts are ordered by digest, role, time and source. The first fact of
+	// each matching role is therefore its earliest proof; skip its history.
+	start, _ := slices.BinarySearchFunc(s.facts, Fact{Digest: digest, Kind: kind}, func(fact, key Fact) int {
+		if order := slices.Compare(fact.Digest[:], key.Digest[:]); order != 0 {
+			return order
+		}
+
+		return cmp.Compare(fact.Kind, key.Kind)
 	})
-	for _, fact := range s.facts[start:] {
-		if fact.Digest != digest {
+
+	for start < len(s.facts) {
+		fact := s.facts[start]
+		if fact.Digest != digest || kind != "" && fact.Kind != kind {
 			break
 		}
 
-		if (kind == "" || fact.Kind == kind) && (earliest.IsZero() || fact.At.Before(earliest)) {
+		if kind != "" {
+			return fact.At, true
+		}
+
+		if earliest.IsZero() || fact.At.Before(earliest) {
 			earliest = fact.At
 		}
+
+		start += sort.Search(len(s.facts)-start, func(i int) bool {
+			next := s.facts[start+i]
+			return next.Digest != digest || next.Kind != fact.Kind
+		})
 	}
 
 	return earliest, !earliest.IsZero()

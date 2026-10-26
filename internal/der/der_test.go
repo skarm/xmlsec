@@ -5,6 +5,7 @@ import (
 	"encoding/asn1"
 	"errors"
 	"io"
+	"reflect"
 	"runtime"
 	"testing"
 
@@ -190,47 +191,6 @@ func TestSequenceReaderBoundsAndEOF(t *testing.T) {
 	}
 }
 
-func FuzzSequenceReader(f *testing.F) {
-	f.Add(der.Seq(der.Int(1)))
-	f.Add([]byte{0x30, 0x82, 0x10, 0})
-	f.Fuzz(func(t *testing.T, raw []byte) {
-		if len(raw) > 4096 {
-			t.Skip()
-		}
-
-		want, wantErr := der.Read(raw, 4096)
-		got, err := der.ReadSequence(t.Context(), bytes.NewReader(raw), 4096)
-
-		valid := wantErr == nil && want.Class == 0 && want.Tag == 16 && want.IsCompound
-		if valid != (err == nil) || valid && !bytes.Equal(got.FullBytes, want.FullBytes) {
-			t.Fatalf("framing mismatch: %x %v / %v", raw, wantErr, err)
-		}
-	})
-}
-
-func BenchmarkRead(b *testing.B) {
-	raw := der.Seq(der.Int(1), der.Octets(make([]byte, 4096)))
-
-	b.ReportAllocs()
-
-	for b.Loop() {
-		if _, err := der.Read(raw, len(raw)); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func FuzzRead(f *testing.F) {
-	f.Add([]byte{0x30, 0})
-	f.Fuzz(func(t *testing.T, b []byte) {
-		if len(b) > 1<<20 {
-			t.Skip()
-		}
-
-		_, _ = der.Read(b, 1<<20)
-	})
-}
-
 func TestCompositionMatchesStandardEncoder(t *testing.T) {
 	for _, size := range []int{0, 1, 126, 127, 128, 255, 256, 65535, 65536} {
 		payload := bytes.Repeat([]byte{7}, size)
@@ -313,27 +273,6 @@ func TestCompositionWorkingStorage(t *testing.T) {
 	}
 }
 
-func FuzzComposition(f *testing.F) {
-	f.Add([]byte{0, 1, 2}, []byte{3}, uint16(4))
-	f.Add([]byte("large tag"), []byte{}, uint16(128))
-	f.Fuzz(func(t *testing.T, first, second []byte, tag uint16) {
-		if len(first)+len(second) > 64<<10 {
-			t.Skip()
-		}
-
-		content := bytes.Join([][]byte{first, second}, nil)
-
-		want, err := asn1.Marshal(asn1.RawValue{Class: 2, Tag: int(tag), IsCompound: true, Bytes: content})
-		if err != nil || !bytes.Equal(der.Ctx(int(tag), first, second), want) {
-			t.Fatal("DER composition differs from standard encoder", err)
-		}
-	})
-}
-
-type sequenceReader struct{ read func([]byte) (int, error) }
-
-func (r *sequenceReader) Read(p []byte) (int, error) { return r.read(p) }
-
 // The optimized validator retains encoding/asn1's exact existing OID profile,
 // including its MaxInt32 subidentifier cap. It does not broaden ASN.1 support.
 func TestObjectIdentifierStrictEquivalence(t *testing.T) {
@@ -359,6 +298,96 @@ func TestObjectIdentifierStrictEquivalence(t *testing.T) {
 	}
 }
 
+func TestValidatedViewsMatchDecoder(t *testing.T) {
+	for _, tag := range []int{0, 30, 31, 128, 16384, 1<<31 - 1} {
+		for _, size := range []int{0, 1, 127, 128, 256, 65536} {
+			part := der.Wrap(2, tag, false, bytes.Repeat([]byte{0x5a}, size))
+			checkValidatedViews(t, part)
+			checkValidatedViews(t, der.Seq(part, part, der.Seq(part)))
+		}
+	}
+	root, err := der.Read(der.Seq(der.Int(1), der.Int(2)), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields [3]asn1.RawValue
+	if _, err := der.ValidatedSequence(root, 0, fields[:1]); !errors.Is(err, der.ErrLimit) {
+		t.Fatal("field storage bound", err)
+	}
+	if _, err := der.ValidatedSequence(root, 3, fields[:]); !errors.Is(err, der.ErrInvalidDER) {
+		t.Fatal("minimum field count", err)
+	}
+	if got, err := der.ValidatedSequence(root, 2, fields[:]); err != nil || len(got) != 2 {
+		t.Fatal("exact field count", err)
+	}
+	count := 0
+	for range der.ValidatedChildren(root) {
+		count++
+		break
+	}
+	if count != 1 {
+		t.Fatal("iterator ignored early stop")
+	}
+}
+
+func BenchmarkRead(b *testing.B) {
+	raw := der.Seq(der.Int(1), der.Octets(make([]byte, 4096)))
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		if _, err := der.Read(raw, len(raw)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func FuzzRead(f *testing.F) {
+	f.Add([]byte{0x30, 0})
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if len(b) > 1<<20 {
+			t.Skip()
+		}
+
+		_, _ = der.Read(b, 1<<20)
+	})
+}
+
+func FuzzSequenceReader(f *testing.F) {
+	f.Add(der.Seq(der.Int(1)))
+	f.Add([]byte{0x30, 0x82, 0x10, 0})
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		if len(raw) > 4096 {
+			t.Skip()
+		}
+
+		want, wantErr := der.Read(raw, 4096)
+		got, err := der.ReadSequence(t.Context(), bytes.NewReader(raw), 4096)
+
+		valid := wantErr == nil && want.Class == 0 && want.Tag == 16 && want.IsCompound
+		if valid != (err == nil) || valid && !bytes.Equal(got.FullBytes, want.FullBytes) {
+			t.Fatalf("framing mismatch: %x %v / %v", raw, wantErr, err)
+		}
+	})
+}
+
+func FuzzComposition(f *testing.F) {
+	f.Add([]byte{0, 1, 2}, []byte{3}, uint16(4))
+	f.Add([]byte("large tag"), []byte{}, uint16(128))
+	f.Fuzz(func(t *testing.T, first, second []byte, tag uint16) {
+		if len(first)+len(second) > 64<<10 {
+			t.Skip()
+		}
+
+		content := bytes.Join([][]byte{first, second}, nil)
+
+		want, err := asn1.Marshal(asn1.RawValue{Class: 2, Tag: int(tag), IsCompound: true, Bytes: content})
+		if err != nil || !bytes.Equal(der.Ctx(int(tag), first, second), want) {
+			t.Fatal("DER composition differs from standard encoder", err)
+		}
+	})
+}
+
 func FuzzObjectIdentifierStrictEquivalence(f *testing.F) {
 	for _, body := range [][]byte{nil, {0}, {42, 0x86, 0x48}, {0x80, 0}, {0x81}, {0x87, 0xff, 0xff, 0xff, 0x7f}, {0x88, 0x80, 0x80, 0x80, 0}} {
 		f.Add(body)
@@ -370,6 +399,22 @@ func FuzzObjectIdentifierStrictEquivalence(f *testing.F) {
 		checkObjectIdentifier(t, body)
 	})
 }
+
+func FuzzValidatedViews(f *testing.F) {
+	for _, raw := range [][]byte{{0x30, 0}, der.Seq(der.Int(1), der.Octets(make([]byte, 128))), der.Ctx(31, der.Int(2)), der.Wrap(2, 1<<31-1, false, nil)} {
+		f.Add(raw)
+	}
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		if len(raw) > 1<<20 {
+			t.Skip()
+		}
+		checkValidatedViews(t, raw)
+	})
+}
+
+type sequenceReader struct{ read func([]byte) (int, error) }
+
+func (r *sequenceReader) Read(p []byte) (int, error) { return r.read(p) }
 
 func checkObjectIdentifier(t testing.TB, body []byte) {
 	t.Helper()
@@ -385,5 +430,36 @@ func checkObjectIdentifier(t testing.TB, body []byte) {
 		if _, err := der.Read(input, len(input)); (err == nil) != valid {
 			t.Fatalf("OID %x: standard profile valid=%t, optimized=%v", body, valid, err)
 		}
+	}
+}
+
+func checkValidatedViews(t testing.TB, raw []byte) {
+	t.Helper()
+	root, err := der.Read(raw, 1<<20)
+	if err != nil {
+		return // The borrowed-view API requires complete initial validation.
+	}
+	got, rest := der.ValidatedValue(raw)
+	if len(rest) != 0 || !reflect.DeepEqual(got, root) {
+		t.Fatal("borrowed value differs from complete decoder")
+	}
+	if !root.IsCompound {
+		return
+	}
+	want, err := der.Children(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actual []asn1.RawValue
+	for child := range der.ValidatedChildren(root) {
+		actual = append(actual, child)
+		var expected asn1.RawValue
+		left, err := asn1.Unmarshal(child.FullBytes, &expected)
+		if err != nil || len(left) != 0 || !reflect.DeepEqual(child, expected) {
+			t.Fatal("borrowed child differs from standard decoder", err)
+		}
+	}
+	if !reflect.DeepEqual(actual, want) {
+		t.Fatal("borrowed child order differs")
 	}
 }

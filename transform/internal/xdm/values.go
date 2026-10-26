@@ -1173,14 +1173,34 @@ func (a ArrayItem) SubArray(start, length int) (ArrayItem, error) {
 // avoid O(N^2) deep recursion and stay within the resource bounds.
 func (a ArrayItem) Flatten() Sequence {
 	var result ItemSlice
+	// Keep one cursor per nesting level and append every leaf once. Building
+	// a separate flattened slice at each level copies a skewed array O(n²).
+	type cursor struct {
+		members []Sequence
+		item    int
+	}
 
-	for _, m := range a.members {
-		for item := range SequenceItems(m) {
-			if nested, ok := item.(ArrayItem); ok {
-				result = append(result, nested.Flatten().Materialize()...)
-			} else {
-				result = append(result, CloneItem(item))
-			}
+	stack := []cursor{{members: a.members}}
+	for len(stack) > 0 {
+		top := &stack[len(stack)-1]
+		if len(top.members) == 0 {
+			stack = stack[:len(stack)-1]
+			continue
+		}
+
+		member := top.members[0]
+		if top.item >= SequenceLen(member) {
+			top.members, top.item = top.members[1:], 0
+			continue
+		}
+
+		item := member.Get(top.item)
+		top.item++
+
+		if nested, ok := item.(ArrayItem); ok {
+			stack = append(stack, cursor{members: nested.members})
+		} else {
+			result = append(result, CloneItem(item))
 		}
 	}
 

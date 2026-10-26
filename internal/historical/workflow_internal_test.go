@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/asn1"
 	"errors"
+	"math/rand/v2"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -16,20 +18,6 @@ import (
 	"github.com/skarm/xmlsec/pki"
 	"github.com/skarm/xmlsec/timestamp"
 )
-
-func testWorkflowConfig(t testing.TB) Config {
-	t.Helper()
-	chain := testcert.New(t)
-	signer, err := pki.NewVerifier(pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL})
-	if err != nil {
-		t.Fatal(err)
-	}
-	tsa, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}, AllowedPolicies: []asn1.ObjectIdentifier{{1, 2, 3, 4}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return Config{Signer: signer, TSA: tsa}
-}
 
 func TestNormalizeSnapshotsPolicyAndBounds(t *testing.T) {
 	t.Parallel()
@@ -187,47 +175,6 @@ func TestGraphRejectsConflictsMissingBindingsAndCycles(t *testing.T) { //nolint:
 	}
 }
 
-func BenchmarkGraphAdmission(b *testing.B) {
-	for _, count := range []int{16, 1024} {
-		b.Run(strconv.Itoa(count), func(b *testing.B) {
-			objects := make([]Object, count)
-			keys := make([][32]byte, count)
-			for i := range objects {
-				objects[i] = Object{Bytes: []byte("graph node " + strconv.Itoa(i)), Kind: historicalproof.Data}
-				keys[i] = sha256.Sum256(objects[i].Bytes)
-			}
-			objects[0].Kind = historicalproof.Signature
-			objects[0].Contains = keys[1:]
-			input := Input{Signature: keys[0], Objects: objects}
-			config := Config{MaxObjects: 2048, MaxEdges: 8192, MaxBytes: 1 << 20, MaxTimestamps: 4}
-			now := testcert.Now()
-			b.ReportAllocs()
-			for b.Loop() {
-				graph, err := newGraph(b.Context(), config, input, now)
-				if err != nil || len(graph.objects) != count {
-					b.Fatal(err)
-				}
-			}
-		})
-	}
-}
-
-func containmentChain(depth int) (map[[32]byte]Object, [][32]byte) {
-	objects := make(map[[32]byte]Object, depth+1)
-	keys := make([][32]byte, depth+1)
-	for i := range keys {
-		keys[i] = sha256.Sum256([]byte("depth node " + strconv.Itoa(i)))
-	}
-	for i, key := range keys {
-		object := Object{Bytes: []byte("depth node " + strconv.Itoa(i)), Kind: historicalproof.Data}
-		if i < depth {
-			object.Contains = [][32]byte{keys[i+1]}
-		}
-		objects[key] = object
-	}
-	return objects, keys
-}
-
 func TestContainmentDepthIncludesCachedSharedTails(t *testing.T) {
 	t.Parallel()
 
@@ -275,4 +222,216 @@ func TestContainmentDepthIncludesCachedSharedTails(t *testing.T) {
 	if _, err := walk.visit(root, 0); !errors.Is(err, context.Canceled) {
 		t.Fatal("cached result bypassed cancellation", err)
 	}
+}
+
+func TestGraphProofAdmissionMatchesLinearHistory(t *testing.T) {
+	t.Parallel()
+	for _, maximum := range []int{16, 64, 512} {
+		g := graph{maximum: maximum}
+		var want []historicalproof.Fact
+		random := rand.New(rand.NewPCG(13, 71))
+		kinds := []historicalproof.Kind{historicalproof.Data, historicalproof.Certificate, historicalproof.Digest}
+		for i := range 4096 {
+			fact := historicalproof.Fact{Kind: kinds[random.IntN(len(kinds))], At: time.Unix(int64(random.IntN(1024)), 0)}
+			fact.Digest[0] = byte(random.IntN(128))
+			fact.Source[0] = byte(i)
+			duplicate := slices.ContainsFunc(want, func(old historicalproof.Fact) bool {
+				return old.Digest == fact.Digest && old.Kind == fact.Kind && !old.At.After(fact.At)
+			})
+			var wantErr error
+			if !duplicate {
+				if len(want) == maximum {
+					wantErr = ErrLimit
+				} else {
+					want = append(want, fact)
+				}
+			}
+			if err := g.add(fact); !errors.Is(err, wantErr) || !slices.Equal(g.facts, want) {
+				t.Fatalf("maximum=%d step=%d: admission differs: %v, want %v", maximum, i, err, wantErr)
+			}
+		}
+	}
+}
+
+func TestGraphProofAdmissionIncludesInitialObservations(t *testing.T) {
+	t.Parallel()
+	initial := make([]historicalproof.Fact, 128)
+	for i := range initial {
+		initial[i] = historicalproof.Fact{Kind: historicalproof.Data, At: time.Unix(1000, 0)}
+		initial[i].Digest[0] = byte(i)
+	}
+	g := graph{maximum: len(initial) + 1, facts: slices.Clone(initial)}
+	if err := g.add(initial[0]); err != nil || len(g.facts) != len(initial) {
+		t.Fatal("initial observation was duplicated", err)
+	}
+	older := initial[0]
+	older.At = older.At.Add(-time.Hour)
+	if err := g.add(older); err != nil || len(g.facts) != g.maximum {
+		t.Fatal("earlier proof was lost", err)
+	}
+	if err := g.add(initial[0]); err != nil || len(g.facts) != g.maximum {
+		t.Fatal("later proof consumed budget", err)
+	}
+	older.At = older.At.Add(-time.Hour)
+	if err := g.add(older); !errors.Is(err, ErrLimit) || len(g.facts) != g.maximum {
+		t.Fatal("history limit was bypassed", err)
+	}
+}
+
+func TestProofOriginsKeepEarliestTimeAndFirstSource(t *testing.T) {
+	t.Parallel()
+	g := graph{objects: make(map[[32]byte]Object)}
+	random := rand.New(rand.NewPCG(17, 23))
+	for i := range 1024 {
+		fact := historicalproof.Fact{At: time.Unix(int64(random.IntN(4)), 0), Kind: historicalproof.Data}
+		fact.Digest[0] = byte(random.IntN(128))
+		fact.Source[0], fact.Source[1] = byte(i), byte(i>>8)
+		g.facts = append(g.facts, fact)
+	}
+	if origins := g.proofOrigins(); origins != nil {
+		t.Fatal("history without hash references allocated origins")
+	}
+	for _, fact := range g.facts {
+		g.objects[fact.Digest] = Object{Refs: []HashReference{{}}}
+	}
+	origins := g.proofOrigins()
+	if len(origins) != len(g.objects) {
+		t.Fatal("missing hash-reference container origins")
+	}
+	for digest, origin := range origins {
+		want := time.Unix(4, 0)
+		for _, fact := range g.facts {
+			if fact.Digest == digest && fact.At.Before(want) {
+				want = fact.At
+			}
+		}
+		if !origin.at.Equal(want) || origin.source != g.containerSource(digest, want, [32]byte{}) {
+			t.Fatal("origin index changed time or first-source precedence")
+		}
+	}
+}
+
+func BenchmarkGraphAdmission(b *testing.B) {
+	for _, count := range []int{16, 1024} {
+		b.Run(strconv.Itoa(count), func(b *testing.B) {
+			objects := make([]Object, count)
+			keys := make([][32]byte, count)
+			for i := range objects {
+				objects[i] = Object{Bytes: []byte("graph node " + strconv.Itoa(i)), Kind: historicalproof.Data}
+				keys[i] = sha256.Sum256(objects[i].Bytes)
+			}
+			objects[0].Kind = historicalproof.Signature
+			objects[0].Contains = keys[1:]
+			input := Input{Signature: keys[0], Objects: objects}
+			config := Config{MaxObjects: 2048, MaxEdges: 8192, MaxBytes: 1 << 20, MaxTimestamps: 4}
+			now := testcert.Now()
+			b.ReportAllocs()
+			for b.Loop() {
+				graph, err := newGraph(b.Context(), config, input, now)
+				if err != nil || len(graph.objects) != count {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkGraphExtraction(b *testing.B) {
+	for _, count := range []int{16, 1024, 2048} {
+		b.Run(strconv.Itoa(count), func(b *testing.B) {
+			objects := make([]Object, count)
+			keys := make([][32]byte, count)
+			for i := range objects {
+				objects[i] = Object{Bytes: []byte("covered node " + strconv.Itoa(i)), Kind: historicalproof.Data}
+				keys[i] = sha256.Sum256(objects[i].Bytes)
+			}
+			objects[0].Kind = historicalproof.Signature
+			objects[0].Contains = keys[1:]
+			input := Input{Signature: keys[0], Objects: objects}
+			config := Config{MaxObjects: 2048, MaxEdges: 8192, MaxBytes: 1 << 20, MaxTimestamps: 4}
+			now := testcert.Now()
+			candidate := Candidate{Covered: keys[:1]}
+			source := sha256.Sum256([]byte("authenticated timestamp"))
+			b.ReportAllocs()
+			for b.Loop() {
+				graph, err := newGraph(b.Context(), config, input, now)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if err := graph.extract(b.Context(), candidate, source, now.Add(-time.Hour)); err != nil {
+					b.Fatal(err)
+				}
+				if len(graph.facts) != 2*count {
+					b.Fatal("missing covered facts")
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkGraphHashReferences(b *testing.B) {
+	for _, count := range []int{16, 1024, 2048} {
+		b.Run(strconv.Itoa(count), func(b *testing.B) {
+			objects := make([]Object, count)
+			keys := make([][32]byte, count)
+			for i := range objects {
+				objects[i] = Object{Bytes: []byte("hash container " + strconv.Itoa(i)), Kind: historicalproof.Data}
+				keys[i] = sha256.Sum256(objects[i].Bytes)
+			}
+			objects[0].Kind = historicalproof.Signature
+			objects[0].Contains = keys[1:]
+			imprint := sha256.Sum256(objects[0].Bytes)
+			for i := 1; i < count; i++ {
+				objects[i].Refs = []HashReference{{Hash: crypto.SHA256, Digest: imprint[:], Target: keys[0]}}
+			}
+			input := Input{Signature: keys[0], Objects: objects}
+			config := Config{MaxObjects: 2048, MaxEdges: 8192, MaxBytes: 1 << 20, MaxTimestamps: 4}
+			now := testcert.Now()
+			candidate := Candidate{Covered: keys[:1]}
+			source := sha256.Sum256([]byte("authenticated timestamp"))
+			b.ReportAllocs()
+			for b.Loop() {
+				graph, err := newGraph(b.Context(), config, input, now)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if err := graph.extract(b.Context(), candidate, source, now.Add(-time.Hour)); err != nil {
+					b.Fatal(err)
+				}
+				if len(graph.facts) != 2*count+1 {
+					b.Fatal("missing hash-reference proof")
+				}
+			}
+		})
+	}
+}
+
+func testWorkflowConfig(t testing.TB) Config {
+	t.Helper()
+	chain := testcert.New(t)
+	signer, err := pki.NewVerifier(pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tsa, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}, AllowedPolicies: []asn1.ObjectIdentifier{{1, 2, 3, 4}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Config{Signer: signer, TSA: tsa}
+}
+
+func containmentChain(depth int) (map[[32]byte]Object, [][32]byte) {
+	objects := make(map[[32]byte]Object, depth+1)
+	keys := make([][32]byte, depth+1)
+	for i := range keys {
+		keys[i] = sha256.Sum256([]byte("depth node " + strconv.Itoa(i)))
+	}
+	for i, key := range keys {
+		object := Object{Bytes: []byte("depth node " + strconv.Itoa(i)), Kind: historicalproof.Data}
+		if i < depth {
+			object.Contains = [][32]byte{keys[i+1]}
+		}
+		objects[key] = object
+	}
+	return objects, keys
 }

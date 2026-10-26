@@ -2,7 +2,6 @@ package x509cert
 
 import (
 	"encoding/asn1"
-	"errors"
 
 	"github.com/skarm/xmlsec/internal/der"
 )
@@ -12,60 +11,11 @@ import (
 // string, SET-order or resource validation. Avoiding reflective re-decoding here
 // keeps the additional certificate-schema preflight independent of blob size.
 func checkedValue(input []byte) (asn1.RawValue, []byte) {
-	value := asn1.RawValue{Class: int(input[0] >> 6), Tag: int(input[0] & 31), IsCompound: input[0]&32 != 0}
-	at := 1
-
-	if value.Tag == 31 {
-		value.Tag = 0
-
-		for {
-			octet := input[at]
-			at++
-
-			value.Tag = value.Tag<<7 | int(octet&127)
-			if octet&128 == 0 {
-				break
-			}
-		}
-	}
-
-	length := int(input[at])
-	at++
-
-	if length >= 128 {
-		count := length & 127
-
-		length = 0
-		for range count {
-			length = length<<8 | int(input[at])
-			at++
-		}
-	}
-
-	value.Bytes, value.FullBytes = input[at:at+length], input[:at+length]
-
-	return value, input[at+length:]
+	return der.ValidatedValue(input)
 }
 
 func checkedSequence(value asn1.RawValue, minimum int, fields []asn1.RawValue) ([]asn1.RawValue, error) {
-	if !der.Is(value, 0, asn1.TagSequence, true) {
-		return nil, der.ErrInvalidDER
-	}
-
-	count := 0
-	for content := value.Bytes; len(content) > 0; count++ {
-		if count == len(fields) {
-			return nil, errors.Join(der.ErrInvalidDER, der.ErrLimit)
-		}
-
-		fields[count], content = checkedValue(content)
-	}
-
-	if count < minimum {
-		return nil, der.ErrInvalidDER
-	}
-
-	return fields[:count], nil
+	return der.ValidatedSequence(value, minimum, fields)
 }
 
 func checkedExplicit(value asn1.RawValue, tag int) (asn1.RawValue, error) {

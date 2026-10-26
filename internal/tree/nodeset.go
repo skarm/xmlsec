@@ -25,6 +25,10 @@ type NodeRef struct {
 // WrapNode creates a reference to an existing project content node.
 func WrapNode(d *Document, n *Node) NodeRef { return ref(d, n) }
 
+// UnwrapNode returns module-owned storage; attributes and namespaces use their
+// owner element. It is used by the XPath view adapter, never by public callers.
+func UnwrapNode(n NodeRef) (*Document, *Node) { return n.doc, n.node }
+
 // Valid returns whether this value is initialized.
 func (n NodeRef) Valid() bool { return n.doc != nil && (n.node != nil || n.kind == DocumentNode) }
 
@@ -205,6 +209,11 @@ func (s NodeSet) Nodes() []NodeRef {
 	}
 
 	out := make([]NodeRef, 0, len(s.members))
+
+	if len(s.members) == 0 {
+		return out
+	}
+
 	axes := make(map[*Node][]NodeRef)
 
 	for n := range s.members {
@@ -226,17 +235,20 @@ func (s NodeSet) Nodes() []NodeRef {
 		}
 
 		list := axes[n]
-		sort.Slice(list, func(i, j int) bool {
-			a, b := list[i], list[j]
+		slices.SortFunc(list, func(a, b NodeRef) int {
 			if a.kind != b.kind {
-				return a.kind == NamespaceNode
+				if a.kind == NamespaceNode {
+					return -1
+				}
+
+				return 1
 			}
 
 			if a.kind == NamespaceNode {
-				return a.prefix < b.prefix
+				return cmp.Compare(a.prefix, b.prefix)
 			}
 
-			return compareNames(a.Name(), b.Name()) < 0
+			return compareNames(a.Name(), b.Name())
 		})
 		out = append(out, list...)
 
@@ -340,10 +352,6 @@ func (s NodeSet) combine(other NodeSet, op byte) (NodeSet, error) {
 	return out, nil
 }
 
-// UnwrapNode returns module-owned storage; attributes and namespaces use their
-// owner element. It is used by the XPath view adapter, never by public callers.
-func UnwrapNode(n NodeRef) (*Document, *Node) { return n.doc, n.node }
-
 // Node returns the immutable XPath node handle.
 func (d *Document) Node() NodeRef {
 	if d == nil || d.root == nil {
@@ -420,20 +428,6 @@ func (e Element) Subtree(ctx context.Context) (NodeSet, error) {
 	return collectNodes(ctx, e.doc, e.node)
 }
 
-func namespaceScope(n *Node) map[string]string {
-	scope := map[string]string{lexicon.PrefixXML: XMLNamespace}
-
-	for ; n != nil; n = n.Parent {
-		for _, ns := range n.NS {
-			if _, exists := scope[ns.Prefix]; !exists {
-				scope[ns.Prefix] = ns.URI
-			}
-		}
-	}
-
-	return scope
-}
-
 // String names the node kind, not XML markup or its potentially sensitive data.
 func (k Kind) String() string {
 	switch k {
@@ -454,6 +448,20 @@ func (k Kind) String() string {
 	default:
 		return "invalid"
 	}
+}
+
+func namespaceScope(n *Node) map[string]string {
+	scope := map[string]string{lexicon.PrefixXML: XMLNamespace}
+
+	for ; n != nil; n = n.Parent {
+		for _, ns := range n.NS {
+			if _, exists := scope[ns.Prefix]; !exists {
+				scope[ns.Prefix] = ns.URI
+			}
+		}
+	}
+
+	return scope
 }
 
 func ref(d *Document, n *Node) NodeRef {

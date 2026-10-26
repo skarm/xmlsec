@@ -36,6 +36,14 @@ type View struct {
 	Algorithm pkix.AlgorithmIdentifier
 }
 
+type listDecoder struct {
+	body      []asn1.RawValue
+	index     int
+	version   int
+	list      *x509.RevocationList
+	algorithm pkix.AlgorithmIdentifier
+}
+
 // ParseEvidence applies the shared PKIX evidence structural bounds with an
 // explicit caller byte cap. It preserves original bytes and performs no trust
 // checks. Keys callers with configured ASN.1/entry budgets use Parse directly.
@@ -80,83 +88,6 @@ func Parse(raw []byte, limits Limits) (*View, error) {
 	}
 
 	return &View{CRL: decoder.list, Version: decoder.version, Algorithm: decoder.algorithm}, nil
-}
-
-type listDecoder struct {
-	body      []asn1.RawValue
-	index     int
-	version   int
-	list      *x509.RevocationList
-	algorithm pkix.AlgorithmIdentifier
-}
-
-func (d *listDecoder) entries(maximum int) ([]asn1.RawValue, error) {
-	var entries []asn1.RawValue
-
-	if d.index < len(d.body) && der.Is(d.body[d.index], 0, asn1.TagSequence, true) {
-		var err error
-
-		entries, err = der.Sequence(d.body[d.index], 1, maximum)
-		if err != nil {
-			if errors.Is(err, der.ErrLimit) {
-				return nil, fmt.Errorf("%w: %w", ErrLimit, err)
-			}
-
-			return nil, err
-		}
-
-		d.index++
-	}
-
-	for _, entry := range entries {
-		if err := validateEntry(entry, d.version); err != nil {
-			return nil, err
-		}
-	}
-
-	if d.version == 1 && d.index < len(d.body) {
-		extension, err := der.Explicit(d.body[d.index], 0)
-		if err != nil {
-			return nil, err
-		}
-
-		if err := validateExtensions(extension); err != nil {
-			return nil, err
-		}
-
-		d.index++
-	}
-
-	if d.index != len(d.body) {
-		return nil, der.ErrInvalidDER
-	}
-
-	return entries, nil
-}
-
-func (d *listDecoder) decodeV1Entries(entries []asn1.RawValue) error {
-	for _, entry := range entries {
-		fields, err := der.Sequence(entry, 2, 2)
-		if err != nil {
-			return err
-		}
-
-		var serial *big.Int
-		if der.Decode(fields[0], &serial) != nil || serial == nil {
-			return der.ErrInvalidDER
-		}
-
-		revoked, err := parseTime(fields[1])
-		if err != nil {
-			return err
-		}
-
-		d.list.RevokedCertificateEntries = append(d.list.RevokedCertificateEntries, x509.RevocationListEntry{Raw: entry.FullBytes, SerialNumber: serial, RevocationTime: revoked})
-	}
-
-	d.list.SignatureAlgorithm = signatureAlgorithm(d.algorithm)
-
-	return nil
 }
 
 func parseHeader(raw []byte, outer []asn1.RawValue) (*listDecoder, error) {
@@ -220,8 +151,94 @@ func parseHeader(raw []byte, outer []asn1.RawValue) (*listDecoder, error) {
 	return decoder, nil
 }
 
+func (d *listDecoder) entries(maximum int) ([]asn1.RawValue, error) {
+	var entries []asn1.RawValue
+
+	if d.index < len(d.body) && der.Is(d.body[d.index], 0, asn1.TagSequence, true) {
+		sequence := d.body[d.index]
+		count := 0
+		// Count before schema checks, preserving entry-budget precedence.
+		// Full DER validation has already checked every header and value.
+		for range der.ValidatedChildren(sequence) {
+			if count >= maximum {
+				return nil, errors.Join(ErrLimit, der.ErrInvalidDER, der.ErrLimit)
+			}
+
+			count++
+		}
+
+		if count == 0 {
+			return nil, der.ErrInvalidDER
+		}
+
+		if d.version == 0 {
+			entries = make([]asn1.RawValue, 0, count)
+		}
+
+		for entry := range der.ValidatedChildren(sequence) {
+			if err := validateEntry(entry, d.version); err != nil {
+				return nil, err
+			}
+			// v2 is decoded by crypto/x509 below. Only v1 needs these views.
+			if d.version == 0 {
+				entries = append(entries, entry)
+			}
+		}
+
+		d.index++
+	}
+
+	if d.version == 1 && d.index < len(d.body) {
+		extension, err := der.Explicit(d.body[d.index], 0)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := validateExtensions(extension); err != nil {
+			return nil, err
+		}
+
+		d.index++
+	}
+
+	if d.index != len(d.body) {
+		return nil, der.ErrInvalidDER
+	}
+
+	return entries, nil
+}
+
+func (d *listDecoder) decodeV1Entries(entries []asn1.RawValue) error {
+	for _, entry := range entries {
+		var scratch [2]asn1.RawValue
+
+		fields, err := der.ValidatedSequence(entry, 2, scratch[:])
+		if err != nil {
+			return err
+		}
+
+		var serial *big.Int
+		if der.Decode(fields[0], &serial) != nil || serial == nil {
+			return der.ErrInvalidDER
+		}
+
+		revoked, err := parseTime(fields[1])
+		if err != nil {
+			return err
+		}
+
+		d.list.RevokedCertificateEntries = append(d.list.RevokedCertificateEntries, x509.RevocationListEntry{Raw: entry.FullBytes, SerialNumber: serial, RevocationTime: revoked})
+	}
+
+	d.list.SignatureAlgorithm = signatureAlgorithm(d.algorithm)
+
+	return nil
+}
+
 func validateEntry(entry asn1.RawValue, version int) error {
-	fields, err := der.Sequence(entry, 2, 3)
+	var scratch [3]asn1.RawValue
+
+	fields, err := der.ValidatedSequence(entry, 2, scratch[:])
 	if err != nil {
 		return err
 	}
@@ -283,22 +300,38 @@ func validateExtensions(value asn1.RawValue) error {
 }
 
 func parseTime(value asn1.RawValue) (time.Time, error) {
-	var at time.Time
-	if value.Class != 0 || value.IsCompound || der.Decode(value, &at) != nil {
-		return at, der.ErrInvalidDER
+	if value.Class != 0 || value.IsCompound {
+		return time.Time{}, der.ErrInvalidDER
 	}
+	// PKIX requires seconds and a literal Z. Decoding that exact form avoids
+	// encoding/asn1's failed minute-only parse and a redundant format pass.
+	var layout string
 
 	switch value.Tag {
 	case asn1.TagUTCTime:
-		if len(value.Bytes) != 13 || string(value.Bytes) != at.UTC().Format("060102150405Z") {
-			return at, der.ErrInvalidDER
+		if len(value.Bytes) != 13 {
+			return time.Time{}, der.ErrInvalidDER
 		}
+
+		layout = "060102150405Z"
 	case asn1.TagGeneralizedTime:
-		if len(value.Bytes) != 15 || at.Year() < 1 || string(value.Bytes) != at.UTC().Format("20060102150405Z") {
-			return at, der.ErrInvalidDER
+		if len(value.Bytes) != 15 {
+			return time.Time{}, der.ErrInvalidDER
 		}
+
+		layout = "20060102150405Z"
 	default:
-		return at, der.ErrInvalidDER
+		return time.Time{}, der.ErrInvalidDER
+	}
+
+	at, err := time.Parse(layout, string(value.Bytes))
+	if err != nil || at.Year() < 1 {
+		return time.Time{}, der.ErrInvalidDER
+	}
+
+	// ASN.1 uses a 1950 century pivot; time.Parse uses 1969.
+	if value.Tag == asn1.TagUTCTime && at.Year() >= 2050 {
+		at = at.AddDate(-100, 0, 0)
 	}
 
 	return at, nil
