@@ -35,6 +35,16 @@ import (
 
 const signedPropertiesLocal = "SignedProperties"
 
+type baselineRecordingSigner struct {
+	crypto.Signer
+	calls *int
+}
+
+func (s baselineRecordingSigner) Sign(random io.Reader, digest []byte, options crypto.SignerOpts) ([]byte, error) {
+	*s.calls++
+	return s.Signer.Sign(random, digest, options)
+}
+
 func TestBasicRoundTrip(t *testing.T) {
 	d, r, _, der := sign(t)
 	if len(r.Signature().References()) != 2 || !r.Signature().CoversElement(d.Root()) || !r.Signature().CoversElement(r.SignedProperties()) {
@@ -196,66 +206,6 @@ func TestBasicInvalidCreation(t *testing.T) {
 
 	if _, _, e := xades.SignBasicEnveloped(ctx, input(t), k, der, o); !errors.Is(e, context.Canceled) {
 		t.Fatal(e)
-	}
-}
-
-func FuzzVerifyBasic(f *testing.F) {
-	certificate, err := os.ReadFile("../testdata/next/ec256.cert.der")
-	if err != nil {
-		f.Fatal(err)
-	}
-
-	seed, err := os.ReadFile("../testdata/next/ec256.xades.python.xml")
-	if err != nil {
-		f.Fatal(err)
-	}
-
-	ctx := f.Context()
-
-	seedDoc, err := document.Parse(ctx, seed, document.DefaultLimits())
-	if err != nil {
-		f.Fatal(err)
-	}
-
-	selected := xmldsig.Signatures(seedDoc)
-	if len(selected) != 1 {
-		f.Fatal("expected one signature")
-	}
-
-	if _, err = xades.VerifyBasicEnveloped(ctx, seedDoc, selected[0], certificate, xades.VerifyOptions{}); err != nil {
-		f.Fatal(err)
-	}
-
-	f.Add(seed)
-	f.Fuzz(func(t *testing.T, raw []byte) {
-		if len(raw) > 64<<10 {
-			return
-		}
-
-		d, err := document.Parse(ctx, raw, document.DefaultLimits())
-		if err != nil {
-			return
-		}
-
-		signatures := xmldsig.Signatures(d)
-		if len(signatures) != 1 {
-			return
-		}
-
-		_, _ = xades.VerifyBasicEnveloped(ctx, d, signatures[0], certificate, xades.VerifyOptions{})
-	})
-}
-
-func BenchmarkVerifyBasic(b *testing.B) {
-	d, _, _, cert := sign(b)
-	selected := xmldsig.Signatures(d)[0]
-
-	b.ReportAllocs()
-
-	for b.Loop() {
-		if _, err := xades.VerifyBasicEnveloped(b.Context(), d, selected, cert, xades.VerifyOptions{}); err != nil {
-			b.Fatal(err)
-		}
 	}
 }
 
@@ -839,6 +789,75 @@ func TestBaselinePolicySpecificationBinding(t *testing.T) {
 	}
 }
 
+func TestBaselineAuthenticatedPolicySchema(t *testing.T) {
+	chain := testcert.New(t)
+	source := input(t)
+	options := xades.BaselineSignOptions{Template: xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: "#invoice-1", Transforms: []reference.Transform{{Algorithm: reference.EnvelopedSignature}}}}}, Properties: xades.BaselineProperties{SigningTime: testcert.Now(), Policy: &xades.SignaturePolicy{Implied: true}}}
+	if doc, result, err := xades.SignBaseline(t.Context(), source, source.Root(), chain.LeafKey, chain.Leaf.Raw, options); err != nil || doc == nil || result == nil || !result.SignaturePolicy().Implied {
+		t.Fatal("implied policy rejected", err)
+	}
+	options.Validation.PolicyDocument = []byte("policy-v1")
+	options.Properties.Policy = &xades.SignaturePolicy{Identifier: xades.ObjectIdentifier{Identifier: "urn:policy"}, Qualifiers: []xades.PolicyQualifier{{Notice: &xades.PolicyNotice{Organization: "Example", NoticeNumbers: []string{"1"}, ExplicitText: "terms"}}}}
+	signed, _, err := xades.SignBaseline(t.Context(), source, source.Root(), chain.LeafKey, chain.Leaf.Raw, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*tree.Node)
+	}{
+		{"policy attributes", func(root *tree.Node) {
+			n := baselineTestNode(root, xades.Namespace, "SignaturePolicyIdentifier")
+			n.Attrs = []tree.Attribute{{Name: document.Name{Local: "unexpected"}, Value: "1"}}
+		}},
+		{"wrong policy choice", func(root *tree.Node) {
+			baselineTestNode(root, xades.Namespace, "SignaturePolicyId").Name.Local = "UnknownPolicy"
+		}},
+		{"policy identifier order", func(root *tree.Node) { baselineTestNode(root, xades.Namespace, "SigPolicyId").Name.Local = "UnknownId" }},
+		{"missing digest", func(root *tree.Node) {
+			baselineTestNode(root, xades.Namespace, "SigPolicyHash").Name.Local = "MissingHash"
+		}},
+		{"notice attributes", func(root *tree.Node) {
+			n := baselineTestNode(root, xades.Namespace, "SPUserNotice")
+			n.Attrs = []tree.Attribute{{Name: document.Name{Local: "unexpected"}, Value: "1"}}
+		}},
+		{"notice reference attributes", func(root *tree.Node) {
+			n := baselineTestNode(root, xades.Namespace, "NoticeRef")
+			n.Attrs = []tree.Attribute{{Name: document.Name{Local: "unexpected"}, Value: "1"}}
+		}},
+		{"organization has child", func(root *tree.Node) {
+			baselineTestAppend(baselineTestNode(root, xades.Namespace, "Organization"), xades.Namespace141, "Child", "xades141")
+		}},
+		{"notice number container attributes", func(root *tree.Node) {
+			n := baselineTestNode(root, xades.Namespace, "NoticeNumbers")
+			n.Attrs = []tree.Attribute{{Name: document.Name{Local: "unexpected"}, Value: "1"}}
+		}},
+		{"wrong notice number element", func(root *tree.Node) { baselineTestNode(root, xades.Namespace, "int").Name.Local = "integer" }},
+		{"fractional notice number", func(root *tree.Node) {
+			n := baselineTestNode(root, xades.Namespace, "int")
+			n.Children = []*tree.Node{{Kind: tree.TextNode, Data: "1.5", Parent: n}}
+		}},
+		{"notice text has child", func(root *tree.Node) {
+			baselineTestAppend(baselineTestNode(root, xades.Namespace, "ExplicitText"), xades.Namespace, "Child", "xades")
+		}},
+		{"unexpected notice child", func(root *tree.Node) {
+			baselineTestNode(root, xades.Namespace, "ExplicitText").Name.Local = "UnknownText"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed, selected, validation := baselineResign(t, signed, chain.LeafKey, tc.mutate, xmldsig.SignatureOptions{})
+			if _, err := xmldsig.VerifySignature(t.Context(), changed, selected, chain.LeafKey.Public(), validation); err != nil {
+				t.Fatal("control signature must remain valid", err)
+			}
+			verify := options.Validation
+			verify.Signature = validation
+			if result, err := xades.VerifyBaseline(t.Context(), changed, selected, chain.Leaf.Raw, verify); result != nil || !errors.Is(err, xades.ErrProfile) {
+				t.Fatal("authenticated malformed policy accepted", result != nil, err)
+			}
+		})
+	}
+}
+
 func TestBaselineCounterSignatureBinding(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	der := certificate(t, key, 1)
@@ -983,6 +1002,81 @@ func baselineAttributeCertificate(t *testing.T, chain testcert.Chain) []byte {
 	return der.Seq(info, algorithm, value)
 }
 
+func TestBaselineAttributeCertificateSchema(t *testing.T) {
+	chain := testcert.New(t)
+	value, err := der.Read(baselineAttributeCertificate(t, chain), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := der.Sequence(value, 3, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := der.Sequence(outer[0], 7, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		index int
+		value []byte
+		valid bool
+	}{
+		{"issuer unique ID", 7, []byte{3, 2, 0, 1}, true},
+		{"extensions", 7, der.Seq(der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 3, 4}), der.Octets([]byte{5, 0}))), true},
+		{"wrong version", 0, der.Int(0), false},
+		{"empty holder", 1, der.Seq(), false},
+		{"primitive holder identifier", 1, der.Seq(der.Wrap(2, 1, false, []byte{1})), false},
+		{"duplicate holder identifier", 1, der.Seq(der.Ctx(1, der.Int(1)), der.Ctx(1, der.Int(1))), false},
+		{"empty issuer", 2, der.Seq(), false},
+		{"invalid issuer type", 2, der.Int(1), false},
+		{"algorithm missing OID", 3, der.Seq(der.Int(1)), false},
+		{"mismatching algorithms", 3, der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 3})), false},
+		{"zero serial", 4, der.Int(0), false},
+		{"negative serial", 4, der.Int(-1), false},
+		{"invalid validity fields", 5, der.Seq(der.Int(1), der.Int(2)), false},
+		{"empty attribute list", 6, der.Seq(), false},
+		{"attribute missing OID", 6, der.Seq(der.Seq(der.Int(1), der.Set(der.Int(1)))), false},
+		{"empty attribute values", 6, der.Seq(der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 3, 4}), der.Set())), false},
+		{"invalid optional extension type", 7, der.Int(1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parts := make([][]byte, len(fields))
+			for i, field := range fields {
+				parts[i] = field.FullBytes
+			}
+			if tc.index == len(parts) {
+				parts = append(parts, tc.value)
+			} else {
+				parts[tc.index] = tc.value
+			}
+			info := der.Seq(parts...)
+			digest := sha256.Sum256(info)
+			signed, err := ecdsa.SignASN1(rand.Reader, chain.RootKey, digest[:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			bits, err := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
+			if err != nil {
+				t.Fatal(err)
+			}
+			attribute := der.Seq(info, outer[1].FullBytes, bits)
+			role := baselineDocument(t, `<x:CertifiedRole xmlns:x="`+xades.Namespace+`"><x:X509AttributeCertificate>`+base64.StdEncoding.EncodeToString(attribute)+`</x:X509AttributeCertificate></x:CertifiedRole>`)
+			source := input(t)
+			options := xades.BaselineSignOptions{Template: xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: "#invoice-1", Transforms: []reference.Transform{{Algorithm: reference.EnvelopedSignature}}}}}, Properties: xades.BaselineProperties{SigningTime: testcert.Now(), CertifiedRoles: []xades.PropertyValue{{XML: role.Root()}}}}
+			calls := 0
+			doc, result, err := xades.SignBaseline(t.Context(), source, source.Root(), baselineRecordingSigner{Signer: chain.LeafKey, calls: &calls}, chain.Leaf.Raw, options)
+			if tc.valid {
+				if doc == nil || result == nil || err != nil || len(result.CertifiedRoles()) != 1 || calls == 0 {
+					t.Fatal("valid attribute certificate rejected", err)
+				}
+			} else if doc != nil || result != nil || !errors.Is(err, xades.ErrProfile) || calls != 0 {
+				t.Fatal("invalid attribute certificate reached signer", calls, err)
+			}
+		})
+	}
+}
+
 func TestBaselinePropertyOptionsRejectsBeforeSigner(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	der := certificate(t, key, 1)
@@ -1051,16 +1145,6 @@ func TestBaselinePropertyOptionsRejectsBeforeSigner(t *testing.T) {
 	}
 }
 
-type baselineRecordingSigner struct {
-	crypto.Signer
-	calls *int
-}
-
-func (s baselineRecordingSigner) Sign(random io.Reader, digest []byte, options crypto.SignerOpts) ([]byte, error) {
-	*s.calls++
-	return s.Signer.Sign(random, digest, options)
-}
-
 func TestBaselineCertificatePrependAndAnyTypePolicy(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	der := certificate(t, key, 1)
@@ -1077,5 +1161,65 @@ func TestBaselineCertificatePrependAndAnyTypePolicy(t *testing.T) {
 	}
 	if _, err := xades.VerifyBaseline(t.Context(), signed, result.Basic().Signature().Signature(), der, options.Validation); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func FuzzVerifyBasic(f *testing.F) {
+	certificate, err := os.ReadFile("../testdata/next/ec256.cert.der")
+	if err != nil {
+		f.Fatal(err)
+	}
+
+	seed, err := os.ReadFile("../testdata/next/ec256.xades.python.xml")
+	if err != nil {
+		f.Fatal(err)
+	}
+
+	ctx := f.Context()
+
+	seedDoc, err := document.Parse(ctx, seed, document.DefaultLimits())
+	if err != nil {
+		f.Fatal(err)
+	}
+
+	selected := xmldsig.Signatures(seedDoc)
+	if len(selected) != 1 {
+		f.Fatal("expected one signature")
+	}
+
+	if _, err = xades.VerifyBasicEnveloped(ctx, seedDoc, selected[0], certificate, xades.VerifyOptions{}); err != nil {
+		f.Fatal(err)
+	}
+
+	f.Add(seed)
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		if len(raw) > 64<<10 {
+			return
+		}
+
+		d, err := document.Parse(ctx, raw, document.DefaultLimits())
+		if err != nil {
+			return
+		}
+
+		signatures := xmldsig.Signatures(d)
+		if len(signatures) != 1 {
+			return
+		}
+
+		_, _ = xades.VerifyBasicEnveloped(ctx, d, signatures[0], certificate, xades.VerifyOptions{})
+	})
+}
+
+func BenchmarkVerifyBasic(b *testing.B) {
+	d, _, _, cert := sign(b)
+	selected := xmldsig.Signatures(d)[0]
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		if _, err := xades.VerifyBasicEnveloped(b.Context(), d, selected, cert, xades.VerifyOptions{}); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

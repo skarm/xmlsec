@@ -9,6 +9,19 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+type recordingMessageHandler struct {
+	message   string
+	terminate bool
+	err       error
+	calls     int
+}
+
+func (h *recordingMessageHandler) HandleMessage(message string, terminate bool) error {
+	h.message, h.terminate = message, terminate
+	h.calls++
+	return h.err
+}
+
 func parseTestDocument(t *testing.T, source string) *xdm.Document {
 	t.Helper()
 	doc, err := (xdm.ParseOptions{}).ParseText(t.Context(), source)
@@ -87,6 +100,38 @@ func TestInvocationParameterIsolation(t *testing.T) {
 	}
 }
 
+func TestFunctionCachePreservesArgumentSemantics(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, parameterType, resultType, selectExpr, calls, want string }{
+		{"QName namespace identity", "xs:QName", "xs:string", `string(namespace-uri-from-QName($x))`, `f:probe(QName('urn:a','n')),f:probe(QName('urn:b','n')),f:probe(QName('urn:a','n'))`, "urn:a|urn:b|urn:a"},
+		{"node identity", "node()", "node()", `$x`, `f:probe(r/n[1]) is r/n[1],f:probe(r/n[2]) is r/n[2],f:probe(r/n[1]) is f:probe(r/n[2])`, "true|true|false"},
+		{"sequence boundaries inside arrays", "array(*)", "xs:string", `array:size($x) || ':' || count($x?1) || ':' || string-join($x?* ! string(.), ',')`, `f:probe([(),(1,2)]),f:probe([(1,2),()]),f:probe([(),(1,2)])`, "2:0:1,2|2:2:1,2|2:0:1,2"},
+		{"map values", "map(*)", "xs:string", `string($x('key'))`, `f:probe(map{'key':'a'}),f:probe(map{'key':'b'}),f:probe(map{'key':'a'})`, "a|b|a"},
+		{"function arguments bypass cache", "function(*)", "xs:string", `$x()`, `let $a := function(){'a'}, $b := function(){'b'} return (f:probe($a),f:probe($b),f:probe($a))`, "a|b|a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			declarations := `<xsl:function xmlns:array="http://www.w3.org/2005/xpath-functions/array" name="f:probe" cache="yes" new-each-time="no" as="` + tc.resultType + `"><xsl:param name="x" as="` + tc.parameterType + `"/><xsl:sequence select="` + tc.selectExpr + `"/></xsl:function>`
+			ss := compileTestStylesheet(t, declarations, `<xsl:value-of select="(`+tc.calls+`)" separator="|"/>`)
+			for range 2 {
+				got, err := ss.Transform(parseTestDocument(t, `<r><n>same</n><n>same</n></r>`)).Serialize(t.Context())
+				if err != nil || got != tc.want {
+					t.Fatalf("cached function = %q, %v; want %q", got, err, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestProactiveFunctionCacheHintPreservesFreshNodes(t *testing.T) {
+	t.Parallel()
+	ss := compileTestStylesheet(t, `<xsl:function name="f:fresh" cache="yes" new-each-time="yes" as="element()"><xsl:param name="v"/><n><xsl:value-of select="$v"/></n></xsl:function>`, `<xsl:variable name="a" select="f:fresh('same')"/><xsl:variable name="b" select="f:fresh('same')"/><xsl:value-of select="($a is $a,$a is $b,string($a),string($b))" separator="|"/>`)
+	got, err := ss.Transform(parseTestDocument(t, `<r/>`)).Serialize(t.Context())
+	if err != nil || got != "true|false|same|same" {
+		t.Fatalf("proactive function = %q, %v; want distinct equal-content nodes", got, err)
+	}
+}
+
 func TestCompilerStaticParameterIsolation(t *testing.T) {
 	t.Parallel()
 	doc := stylesheetDocument(t, `<xsl:param name="p" static="yes" select="'default'"/>`, `<xsl:value-of select="$p"/>`)
@@ -108,19 +153,6 @@ func TestCompilerStaticParameterIsolation(t *testing.T) {
 			t.Fatalf("static parameter snapshot = %q, %v; want %q", got, err, test.want)
 		}
 	}
-}
-
-type recordingMessageHandler struct {
-	message   string
-	terminate bool
-	err       error
-	calls     int
-}
-
-func (h *recordingMessageHandler) HandleMessage(message string, terminate bool) error {
-	h.message, h.terminate = message, terminate
-	h.calls++
-	return h.err
 }
 
 func TestInvocationMessageFailure(t *testing.T) {

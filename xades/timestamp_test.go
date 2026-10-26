@@ -3,7 +3,9 @@ package xades_test
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
@@ -17,12 +19,59 @@ import (
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
+	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/pki"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/timestamp"
 	"github.com/skarm/xmlsec/xades"
 	"github.com/skarm/xmlsec/xmldsig"
 )
+
+type localTSA struct {
+	chain testcert.Chain
+	calls int
+	bad   bool
+}
+
+func (t *localTSA) RoundTrip(ctx context.Context, query []byte) (io.ReadCloser, error) {
+	t.calls++
+	if t.bad {
+		q, e := timestamp.CreateRequest(ctx, []byte("wrong imprint"), timestamp.RequestOptions{Policy: tsaPolicy()})
+		if e != nil {
+			return nil, e
+		}
+
+		query = q.DER()
+	}
+
+	r, e := timestamp.IssueResponse(ctx, query, t.chain.TSAKey, t.chain.TSA.Raw, timestamp.IssueOptions{Policy: tsaPolicy(), SerialNumber: big.NewInt(int64(t.calls)), GenTime: testcert.Now(), ExtraCertificates: [][]byte{t.chain.Root.Raw}})
+
+	return io.NopCloser(bytes.NewReader(r)), e
+}
+
+func tsaPolicy() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 3, 4, 1} }
+
+func timeOptions(t testing.TB, c testcert.Chain) xades.TimedOptions {
+	t.Helper()
+
+	v, e := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{c.Root.Raw}, Revocation: pki.RequireCRL}, AllowedPolicies: []asn1.ObjectIdentifier{tsaPolicy()}})
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return xades.TimedOptions{TSA: v, At: testcert.Now(), Evidence: pki.Evidence{CRLs: [][]byte{testcert.CRL(t, c)}}}
+}
+
+func basicDocument(t *testing.T, c testcert.Chain) *document.Document {
+	t.Helper()
+
+	d, _, e := xades.SignBasicEnveloped(t.Context(), input(t), c.LeafKey, c.Leaf.Raw, xades.SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: testcert.Now().Add(-time.Second)})
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return d
+}
 
 func TestTimestampAugmentation(t *testing.T) {
 	c := testcert.New(t)
@@ -122,6 +171,83 @@ func TestTimestampFailureNoPartialDocument(t *testing.T) {
 	}
 }
 
+func TestTSARevocationUsesVerificationTimeAndExactTarget(t *testing.T) {
+	chain := testcert.New(t)
+	generated := testcert.Now()
+	verifiedAt := generated.Add(5 * time.Minute)
+	for _, mode := range []pki.RevocationMode{pki.RequireCRL, pki.RequireOCSP} {
+		t.Run(string(mode), func(t *testing.T) {
+			proof := func(t testing.TB, status pki.OCSPStatus, target *x509.Certificate, revokedAt, at time.Time) pki.Evidence {
+				t.Helper()
+				if mode == pki.RequireCRL {
+					if status == pki.OCSPUnknown {
+						return pki.Evidence{}
+					}
+					var entries []x509.RevocationListEntry
+					if status == pki.OCSPRevoked {
+						entries = []x509.RevocationListEntry{{SerialNumber: target.SerialNumber, RevocationTime: revokedAt, ReasonCode: 1}}
+					}
+					return pki.Evidence{CRLs: [][]byte{datedCRL(t, chain, at, 2, entries...)}}
+				}
+				request, err := pki.CreateOCSPRequest(target.Raw, chain.Root.Raw, crypto.SHA256, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw, err := pki.CreateOCSPResponse(t.Context(), request, target.Raw, chain.Root.Raw, chain.Root.Raw, chain.RootKey, pki.OCSPResponseTemplate{Status: status, ProducedAt: at, ThisUpdate: at.Add(-time.Minute), NextUpdate: at.Add(time.Hour), RevokedAt: revokedAt, RevocationReason: 1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return pki.Evidence{OCSPResponses: [][]byte{raw}}
+			}
+			tsa, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: mode}, AllowedPolicies: []asn1.ObjectIdentifier{tsaPolicy()}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := xades.TimedOptions{TSA: tsa, At: generated, Evidence: proof(t, pki.OCSPGood, chain.TSA, time.Time{}, generated)}
+			basic := basicDocument(t, chain)
+			stamped, _, err := xades.AddSignatureTimestamp(t.Context(), basic, xmldsig.Signatures(basic)[0], chain.Leaf.Raw, &localTSA{chain: chain}, xades.AddTimestampOptions{Validation: options})
+			if err != nil {
+				t.Fatal("good TSA control failed", err)
+			}
+			withTime, err := xades.NewWithTimeValidator(xades.WithTimeConfig{SignerPKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}, TSA: tsa})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tc := range []struct {
+				name   string
+				status pki.OCSPStatus
+				target *x509.Certificate
+				at     time.Time
+				want   error
+			}{
+				{"good status", pki.OCSPGood, chain.TSA, time.Time{}, nil},
+				{"revoked before generation", pki.OCSPRevoked, chain.TSA, generated.Add(-time.Minute), pki.ErrRevoked},
+				{"revoked after generation", pki.OCSPRevoked, chain.TSA, generated.Add(time.Minute), pki.ErrRevoked},
+				{"status unavailable", pki.OCSPUnknown, chain.TSA, time.Time{}, pki.ErrUnavailable},
+				{"revocation of a different certificate", pki.OCSPRevoked, chain.Responder, generated.Add(time.Minute), nil},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					want := tc.want
+					if mode == pki.RequireOCSP && tc.target != chain.TSA {
+						want = pki.ErrUnavailable
+					}
+					verify := options
+					verify.At, verify.Evidence = verifiedAt, proof(t, tc.status, tc.target, tc.at, verifiedAt)
+					result, err := xades.VerifyTimedEnveloped(t.Context(), stamped, xmldsig.Signatures(stamped)[0], chain.Leaf.Raw, verify)
+					trusted, report, trustErr := withTime.ValidateEnveloped(t.Context(), stamped, xmldsig.Signatures(stamped)[0], chain.Leaf.Raw, verifiedAt, xades.ValidationEvidence{Signer: pki.Evidence{CRLs: [][]byte{datedCRL(t, chain, generated, 1)}}, TSA: verify.Evidence})
+					if want != nil {
+						if result != nil || trusted != nil || !errors.Is(err, want) || !errors.Is(trustErr, want) || report.Cause() == nil {
+							t.Fatalf("TSA rejection: timed=%v trusted=%v errors=%v, %v; want %v", result != nil, trusted != nil, err, trustErr, want)
+						}
+					} else if result == nil || trusted == nil || err != nil || trustErr != nil || report.Indication() != xades.Passed {
+						t.Fatal("valid TSA rejected by unrelated status", err, trustErr)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestBaselineValidatorNoDowngrade(t *testing.T) {
 	c := testcert.New(t)
 	base := basicDocument(t, c)
@@ -164,52 +290,6 @@ func TestBaselineValidatorNoDowngrade(t *testing.T) {
 	if r, e := v.ValidateEnveloped(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence); r != nil || !errors.Is(e, pki.ErrRevoked) {
 		t.Fatal("revoked signer", e)
 	}
-}
-
-func tsaPolicy() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 3, 4, 1} }
-
-type localTSA struct {
-	chain testcert.Chain
-	calls int
-	bad   bool
-}
-
-func (t *localTSA) RoundTrip(ctx context.Context, query []byte) (io.ReadCloser, error) {
-	t.calls++
-	if t.bad {
-		q, e := timestamp.CreateRequest(ctx, []byte("wrong imprint"), timestamp.RequestOptions{Policy: tsaPolicy()})
-		if e != nil {
-			return nil, e
-		}
-
-		query = q.DER()
-	}
-
-	r, e := timestamp.IssueResponse(ctx, query, t.chain.TSAKey, t.chain.TSA.Raw, timestamp.IssueOptions{Policy: tsaPolicy(), SerialNumber: big.NewInt(int64(t.calls)), GenTime: testcert.Now(), ExtraCertificates: [][]byte{t.chain.Root.Raw}})
-
-	return io.NopCloser(bytes.NewReader(r)), e
-}
-
-func timeOptions(t testing.TB, c testcert.Chain) xades.TimedOptions {
-	t.Helper()
-
-	v, e := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{c.Root.Raw}, Revocation: pki.RequireCRL}, AllowedPolicies: []asn1.ObjectIdentifier{tsaPolicy()}})
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return xades.TimedOptions{TSA: v, At: testcert.Now(), Evidence: pki.Evidence{CRLs: [][]byte{testcert.CRL(t, c)}}}
-}
-
-func basicDocument(t *testing.T, c testcert.Chain) *document.Document {
-	t.Helper()
-
-	d, _, e := xades.SignBasicEnveloped(t.Context(), input(t), c.LeafKey, c.Leaf.Raw, xades.SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: testcert.Now().Add(-time.Second)})
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return d
 }
 
 func TestBaselineDataTimestampInputs(t *testing.T) {
@@ -277,6 +357,71 @@ func TestBaselineDataTimestampInputs(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBaselineAuthenticatedDataTimestampSchema(t *testing.T) {
+	chain := testcert.New(t)
+	source := input(t)
+	options := xades.BaselineSignOptions{Template: xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{ID: "data", URI: "#invoice-1", Transforms: []reference.Transform{{Algorithm: reference.EnvelopedSignature}}}}}, Properties: xades.BaselineProperties{SigningTime: testcert.Now().Add(time.Second)}}
+	_, base, err := xades.SignBaseline(t.Context(), source, source.Root(), chain.LeafKey, chain.Leaf.Raw, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input bytes.Buffer
+	method := reference.Transform{Algorithm: c14n.Canonical10}
+	if _, err := base.Basic().Signature().References()[0].WriteCanonicalizedInput(t.Context(), &input, method); err != nil {
+		t.Fatal(err)
+	}
+	request, err := timestamp.CreateRequest(t.Context(), input.Bytes(), timestamp.RequestOptions{Policy: tsaPolicy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tsa := timeOptions(t, chain)
+	token, err := tsa.TSA.Fetch(t.Context(), &localTSA{chain: chain}, request, tsa.At, tsa.Evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.Properties.DataTimestamps = []xades.DataTimestampProperty{{Individual: true, ObjectReferences: []string{"#data"}, Canonicalization: method, TokenDER: token.TokenDER()}}
+	signed, _, err := xades.SignBaseline(t.Context(), source, source.Root(), chain.LeafKey, chain.Leaf.Raw, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*tree.Node)
+	}{
+		{"container attributes", func(n *tree.Node) { n.Attrs = []tree.Attribute{{Name: document.Name{Local: "unknown"}, Value: "1"}} }},
+		{"empty timestamp", func(n *tree.Node) { n.Children = nil }},
+		{"include missing attributes", func(n *tree.Node) { n.Children[0].Attrs = nil }},
+		{"include has child", func(n *tree.Node) { baselineTestAppend(n.Children[0], xades.Namespace, "Child", "xades") }},
+		{"include referencedData false", func(n *tree.Node) {
+			for i := range n.Children[0].Attrs {
+				if n.Children[0].Attrs[i].Name.Local == "referencedData" {
+					n.Children[0].Attrs[i].Value = "false"
+				}
+			}
+		}},
+		{"individual without includes", func(n *tree.Node) { n.Children = n.Children[1:] }},
+		{"all objects with includes", func(n *tree.Node) { n.Name.Local = "AllDataObjectsTimeStamp" }},
+		{"unsupported canonicalization", func(n *tree.Node) { n.Children[1].Attrs[0].Value = "urn:unsupported" }},
+		{"unexpected token element", func(n *tree.Node) { n.Children[len(n.Children)-1].Name.Local = "XMLTimeStamp" }},
+		{"unsupported token encoding", func(n *tree.Node) {
+			token := n.Children[len(n.Children)-1]
+			token.Attrs = []tree.Attribute{{Name: document.Name{Local: "Encoding"}, Value: "urn:unsupported"}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed, selected, validation := baselineResign(t, signed, chain.LeafKey, func(root *tree.Node) {
+				tc.mutate(baselineTestNode(root, xades.Namespace, "IndividualDataObjectsTimeStamp"))
+			}, xmldsig.SignatureOptions{})
+			if _, err := xmldsig.VerifySignature(t.Context(), changed, selected, chain.LeafKey.Public(), validation); err != nil {
+				t.Fatal("control signature must remain valid", err)
+			}
+			if result, err := xades.VerifyBaseline(t.Context(), changed, selected, chain.Leaf.Raw, xades.BaselineVerifyOptions{Signature: validation}); result != nil || !errors.Is(err, xades.ErrProfile) {
+				t.Fatal("authenticated malformed data timestamp accepted", result != nil, err)
+			}
+		})
 	}
 }
 

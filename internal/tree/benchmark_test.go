@@ -23,6 +23,35 @@ func BenchmarkClone(b *testing.B) {
 	}
 }
 
+func BenchmarkAllNodes(b *testing.B) {
+	for _, size := range []int{0, 1, 16, 1024, 8192} {
+		for _, namespaces := range []int{1, 8} {
+			b.Run(strconv.Itoa(size)+"/"+strconv.Itoa(namespaces), func(b *testing.B) {
+				var input strings.Builder
+				input.WriteString(`<r`)
+				for i := range namespaces {
+					input.WriteString(` xmlns:p` + strconv.Itoa(i) + `="urn:p` + strconv.Itoa(i) + `"`)
+				}
+				input.WriteString(`>`)
+				input.WriteString(strings.Repeat(`<item a="1">text</item>`, size))
+				input.WriteString(`</r>`)
+				doc, err := treepkg.Parse(b.Context(), []byte(input.String()), treepkg.DefaultLimits())
+				if err != nil {
+					b.Fatal(err)
+				}
+				want := 1 + 1 + namespaces + 1 + size*(1+namespaces+1+1+1)
+				b.ReportAllocs()
+				for b.Loop() {
+					set, err := doc.AllNodes(b.Context())
+					if err != nil || set.Len() != want {
+						b.Fatal("expanded node count", set.Len(), want, err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func BenchmarkFilterNodeSet(b *testing.B) {
 	d, err := treepkg.Parse(b.Context(), []byte(`<r><drop>`+strings.Repeat(`<item a="1">text</item>`, 100)+`</drop><keep>`+strings.Repeat(`<item a="1">text</item>`, 100)+`</keep></r>`), treepkg.DefaultLimits())
 	if err != nil {

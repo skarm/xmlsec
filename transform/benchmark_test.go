@@ -155,6 +155,84 @@ func BenchmarkEngineParallel(b *testing.B) {
 	})
 }
 
+// BenchmarkXSLTNamespaceConstruction covers leaf constructors and nested result
+// elements. Namespace inheritance can only affect element children, while text,
+// comments and processing instructions must keep their original order/content.
+func BenchmarkXSLTNamespaceConstruction(b *testing.B) {
+	for _, body := range []struct{ name, source string }{
+		{"Text", `<v><xsl:value-of select="."/></v>`},
+		{"NoNamespaces", `<v><xsl:value-of select="."/></v>`},
+		{"MixedLeaves", `<v><xsl:text>a</xsl:text><xsl:comment>c</xsl:comment><xsl:processing-instruction name="p">i</xsl:processing-instruction><xsl:value-of select="."/></v>`},
+		{"Elements", `<v><n><xsl:value-of select="."/></n></v>`},
+	} {
+		b.Run(body.name, func(b *testing.B) {
+			e := engine(b, transform.Config{})
+			d, err := e.Parse(b.Context(), []byte(`<r>`+strings.Repeat(`<item>text</item>`, 1024)+`</r>`))
+			if err != nil {
+				b.Fatal(err)
+			}
+			source := sheet(version30, `<xsl:template match="/"><out><xsl:for-each select="r/item">`+body.source+`</xsl:for-each></out></xsl:template>`)
+			if body.name == "NoNamespaces" {
+				source = strings.Replace(source, ` xmlns:xs="http://www.w3.org/2001/XMLSchema"`, "", 1)
+			}
+			s := stylesheet(b, e, source)
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := s.Transform(b.Context(), d, transform.XSLTContext{}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkXPathNodeReferences includes evaluating a selection and converting
+// its attribute/namespace results for use by document and c14n APIs.
+func BenchmarkXPathNodeReferences(b *testing.B) {
+	for _, axis := range []string{"@*", "namespace::*"} {
+		b.Run(axis, func(b *testing.B) {
+			for _, count := range []int{1, 16, 128} {
+				b.Run(strconv.Itoa(count), func(b *testing.B) {
+					var source strings.Builder
+					source.WriteString(`<r`)
+					for i := range count {
+						if axis == "@*" {
+							fmt.Fprintf(&source, ` a%d="v"`, i)
+						} else {
+							fmt.Fprintf(&source, ` xmlns:p%d="urn:%d"`, i, i)
+						}
+					}
+					source.WriteString(`/>`)
+					e := engine(b, transform.Config{})
+					d, err := e.Parse(b.Context(), []byte(source.String()))
+					if err != nil {
+						b.Fatal(err)
+					}
+					q := query(b, e, `/*/`+axis, transform.XPath31)
+					want := count
+					if axis == "namespace::*" {
+						want++ // The predefined xml binding is always in scope.
+					}
+					b.ReportAllocs()
+					for b.Loop() {
+						result, err := q.Evaluate(b.Context(), d, transform.XPathContext{})
+						if err != nil || result.Len() != want {
+							b.Fatal("node selection changed cardinality", result.Len(), err)
+						}
+						for i := range result.Len() {
+							value, _ := result.At(i)
+							node, ok := value.Node()
+							if !ok || !node.Reference().Valid() {
+								b.Fatal("invalid node reference")
+							}
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 // BenchmarkDynamicCollation measures reuse of one compiled query by callers
 // choosing a collation dynamically. Binding construction is outside the loop.
 func BenchmarkDynamicCollation(b *testing.B) {

@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"os"
@@ -28,6 +29,7 @@ import (
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/evidence"
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/historical"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -37,6 +39,17 @@ import (
 	"github.com/skarm/xmlsec/xades"
 	"github.com/skarm/xmlsec/xmldsig"
 )
+
+type datedTSA struct {
+	chain    testcert.Chain
+	gen      time.Time
+	accuracy *time.Duration
+}
+
+func (s datedTSA) RoundTrip(ctx context.Context, raw []byte) (io.ReadCloser, error) {
+	b, e := timestamp.IssueResponse(ctx, raw, s.chain.TSAKey, s.chain.TSA.Raw, timestamp.IssueOptions{Policy: tsaPolicy(), SerialNumber: big.NewInt(101), GenTime: s.gen, Accuracy: s.accuracy, ExtraCertificates: [][]byte{s.chain.Root.Raw}})
+	return io.NopCloser(bytes.NewReader(b)), e
+}
 
 func TestHistoricalExpiredTSAArchiveEvidence(t *testing.T) {
 	chain, sufficient, insufficient, tsa := historicalArchivePair(t)
@@ -156,6 +169,439 @@ func TestHistoricalExpiredTSAArchiveEvidence(t *testing.T) {
 	workers.Wait()
 }
 
+func TestHistoricalTSARevocationNeedsIndependentArchive(t *testing.T) {
+	chain, archived, unarchived, tsa := historicalArchivePairWithArchiveKey(t, testcert.Key(t))
+	zero := time.Duration(0)
+	validator, err := xades.NewHistoricalValidator(xades.HistoricalConfig{
+		SignerPKI: pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}},
+		TSA:       tsa, MissingTSAAccuracy: &zero, RequireAllTimestamps: true,
+		Baseline: xades.BaselineVerifyOptions{Signature: xmldsig.SignatureOptions{IDAttribute: document.Name{Local: "ID"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveAt := testcert.Now().Add(30 * time.Minute)
+	at := testcert.Now().Add(90 * time.Minute)
+	for _, reason := range []int{1, 6} {
+		for _, tc := range []struct {
+			name    string
+			doc     *document.Document
+			revoked time.Time
+			pass    bool
+		}{
+			{"independent archive before revocation", archived, archiveAt.Add(time.Second), true},
+			{"proof exactly at revocation boundary", archived, archiveAt, true},
+			{"archive after revocation", archived, archiveAt.Add(-time.Second), false},
+			{"GenTime cannot prove its own token", unarchived, archiveAt.Add(time.Second), false},
+		} {
+			t.Run(fmt.Sprintf("reason %d/%s", reason, tc.name), func(t *testing.T) {
+				before, err := tc.doc.XML(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				verifyOnlyXML(t, tc.doc, chain)
+				crl := datedCRL(t, chain, testcert.Now().Add(time.Hour), 2, x509.RevocationListEntry{SerialNumber: chain.TSA.SerialNumber, RevocationTime: tc.revoked, ReasonCode: reason})
+				result, report, err := validator.Validate(t.Context(), tc.doc, xmldsig.Signatures(tc.doc)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{TSA: pki.Evidence{CRLs: [][]byte{crl}}})
+				if tc.pass {
+					if result == nil || err != nil || report.Indication() != xades.Passed || !report.BestSignatureTime().Equal(testcert.Now().Add(-time.Second)) || !report.VerificationTime().Equal(at) {
+						t.Fatal("pre-revocation archive did not recover TSA", report.Indication(), report.SubIndication(), err)
+					}
+					found := false
+					for _, stamp := range report.Timestamps() {
+						if !stamp.Archive {
+							found = true
+							if stamp.Indication != xades.Passed || !stamp.ValidationTime.Equal(tc.revoked) || !stamp.BestSignatureTime.Equal(archiveAt) {
+								t.Fatal("TSA recovery lost the independent proof or revocation bound", stamp)
+							}
+						}
+					}
+					if !found {
+						t.Fatal("missing recovered signature timestamp")
+					}
+				} else {
+					want := "REVOKED_NO_POE"
+					if reason == 6 {
+						want = "TRY_LATER"
+					}
+					if result != nil || !errors.Is(err, xades.ErrHistorical) || report.Indication() != xades.Indeterminate || report.SubIndication() != want {
+						t.Fatal("late or absent archive repaired revoked TSA", report.Indication(), report.SubIndication(), err)
+					}
+				}
+				after, err := tc.doc.XML(t.Context())
+				if err != nil || !bytes.Equal(before, after) {
+					t.Fatal("historical validation modified its input", err)
+				}
+			})
+		}
+	}
+}
+
+func TestHistoricalTSADelegatedOCSPResponder(t *testing.T) {
+	chain, archived, unarchived, _ := historicalArchivePairWithArchiveKey(t, testcert.Key(t))
+	archiveAt := testcert.Now().Add(30 * time.Minute)
+	at := testcert.Now().Add(90 * time.Minute)
+	// This responder has no nocheck exemption: its own status must be checked.
+	template := *chain.Responder
+	template.ExtraExtensions = nil
+	responder := testcert.Issue(t, &template, chain.Root, chain.ResponderKey.Public(), chain.RootKey)
+	node := baselineTestNode(tree.Root(archived), xades.Namespace141, "ArchiveTimeStamp")
+	enc := baselineTestNode(node, xades.Namespace, "EncapsulatedTimeStamp")
+	var encoded strings.Builder
+	for _, child := range enc.Children {
+		if child.Kind == tree.TextNode {
+			encoded.WriteString(child.Data)
+		}
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := timestamp.ParseToken(t.Context(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archiveTSA *x509.Certificate
+	for _, raw := range token.Certificates() {
+		cert, err := x509.ParseCertificate(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cert.SerialNumber.Cmp(big.NewInt(103)) == 0 {
+			archiveTSA = cert
+		}
+	}
+	if archiveTSA == nil {
+		t.Fatal("archive TSA absent from control token")
+	}
+	response := func(cert, signer *x509.Certificate, key crypto.Signer) []byte {
+		t.Helper()
+		query, err := pki.CreateOCSPRequest(cert.Raw, chain.Root.Raw, crypto.SHA256, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := pki.CreateOCSPResponse(t.Context(), query, cert.Raw, chain.Root.Raw, signer.Raw, key, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: testcert.Now(), ThisUpdate: testcert.Now().Add(-time.Minute), NextUpdate: at.Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	// The protecting archive uses an independently authorized issuer response.
+	responses := [][]byte{response(chain.TSA, responder, chain.ResponderKey), response(archiveTSA, chain.Root, chain.RootKey)}
+	tsa, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireOCSP}, AllowedPolicies: []asn1.ObjectIdentifier{tsaPolicy()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := time.Duration(0)
+	validator, err := xades.NewHistoricalValidator(xades.HistoricalConfig{SignerPKI: pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}}, TSA: tsa, MissingTSAAccuracy: &zero, RequireAllTimestamps: true, Baseline: xades.BaselineVerifyOptions{Signature: xmldsig.SignatureOptions{IDAttribute: document.Name{Local: "ID"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		doc     *document.Document
+		revoked time.Time
+		pass    bool
+	}{
+		{"good responder", unarchived, time.Time{}, true},
+		{"archive before responder revocation", archived, archiveAt.Add(time.Minute), true},
+		{"archive after responder revocation", archived, archiveAt.Add(-time.Minute), false},
+		{"no independent proof before responder revocation", unarchived, archiveAt.Add(time.Minute), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var entries []x509.RevocationListEntry
+			if !tc.revoked.IsZero() {
+				entries = []x509.RevocationListEntry{{SerialNumber: responder.SerialNumber, RevocationTime: tc.revoked, ReasonCode: 1}}
+			}
+			proof := pki.Evidence{OCSPResponses: responses, CRLs: [][]byte{datedCRL(t, chain, at, 2, entries...)}}
+			verifyOnlyXML(t, tc.doc, chain)
+			result, report, err := validator.Validate(t.Context(), tc.doc, xmldsig.Signatures(tc.doc)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{TSA: proof})
+			if !tc.pass {
+				if result != nil || !errors.Is(err, xades.ErrHistorical) || report.Indication() != xades.Indeterminate || report.SubIndication() != "REVOKED_NO_POE" {
+					t.Fatal("unproven response from revoked responder repaired TSA", report.SubIndication(), err)
+				}
+				return
+			}
+			if result == nil || err != nil || report.Indication() != xades.Passed {
+				t.Fatal("independent archive failed to recover delegated status", report.SubIndication(), err)
+			}
+			for _, stamp := range report.Timestamps() {
+				if !stamp.Archive {
+					want := at
+					if !tc.revoked.IsZero() {
+						want = tc.revoked
+					}
+					if !stamp.ValidationTime.Equal(want) || stamp.Indication != xades.Passed {
+						t.Fatal("ignored delegated responder's historical bound", stamp)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestHistoricalLocalOCSPGrantKeepsIssuerAndProofBoundaries(t *testing.T) {
+	chain, archived, unarchived, _ := historicalArchivePairWithArchiveKey(t, testcert.Key(t))
+	other := testcert.New(t)
+	at := testcert.Now().Add(48 * time.Hour)
+	responderTemplate := *other.Leaf
+	responderTemplate.NotAfter = testcert.Now().Add(8 * 24 * time.Hour)
+	responder := testcert.Issue(t, &responderTemplate, other.Root, other.LeafKey.Public(), other.RootKey)
+	issuerTemplate := *chain.Root
+	issuerTemplate.SerialNumber = big.NewInt(240)
+	issuerAlias := testcert.Issue(t, &issuerTemplate, &issuerTemplate, chain.RootKey.Public(), chain.RootKey)
+	if !bytes.Equal(chain.Root.RawSubject, issuerAlias.RawSubject) || !bytes.Equal(chain.Root.RawSubjectPublicKeyInfo, issuerAlias.RawSubjectPublicKeyInfo) || bytes.Equal(chain.Root.Raw, issuerAlias.Raw) {
+		t.Fatal("issuer alias must share name/key but retain a distinct certificate")
+	}
+	var archiveTSA *x509.Certificate
+	for _, raw := range historicalArchiveToken(t, archived).Certificates() {
+		certificate, err := x509.ParseCertificate(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if certificate.SerialNumber.Cmp(big.NewInt(103)) == 0 {
+			archiveTSA = certificate
+		}
+	}
+	if archiveTSA == nil {
+		t.Fatal("missing protecting archive TSA")
+	}
+	response := func(certificate, signer *x509.Certificate, key crypto.Signer) []byte {
+		t.Helper()
+		request, err := pki.CreateOCSPRequest(certificate.Raw, chain.Root.Raw, crypto.SHA256, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := pki.CreateOCSPResponse(t.Context(), request, certificate.Raw, chain.Root.Raw, signer.Raw, key, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: testcert.Now(), ThisUpdate: testcert.Now().Add(-time.Minute), NextUpdate: at.Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	// The current archive has issuer-signed status; the expired signature TSA
+	// relies on the separately configured, issuer-scoped external authority.
+	proof := pki.Evidence{OCSPResponses: [][]byte{response(chain.TSA, responder, other.LeafKey), response(archiveTSA, chain.Root, chain.RootKey)}}
+	exact := pki.OCSPAuthority{ResponderCertificateDER: responder.Raw, IssuerCertificateDER: chain.Root.Raw}
+	alias := pki.OCSPAuthority{ResponderCertificateDER: responder.Raw, IssuerCertificateDER: issuerAlias.Raw}
+	for _, tc := range []struct {
+		name   string
+		doc    *document.Document
+		grants []pki.OCSPAuthority
+		pass   bool
+	}{
+		{"explicit scoped authority with independent archive", archived, []pki.OCSPAuthority{exact}, true},
+		{"received external responder has no grant", archived, nil, false},
+		{"grant belongs to reissued CA with same key", archived, []pki.OCSPAuthority{alias}, false},
+		{"unrelated grant does not mask exact authority", archived, []pki.OCSPAuthority{alias, exact}, true},
+		{"authority alone does not prove timestamp existence", unarchived, []pki.OCSPAuthority{exact}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tsa, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireOCSP, OCSPAuthorities: tc.grants}, AllowedPolicies: []asn1.ObjectIdentifier{tsaPolicy()}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			zero := time.Duration(0)
+			validator, err := xades.NewHistoricalValidator(xades.HistoricalConfig{SignerPKI: pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}}, TSA: tsa, MissingTSAAccuracy: &zero, RequireAllTimestamps: true, Baseline: xades.BaselineVerifyOptions{Signature: xmldsig.SignatureOptions{IDAttribute: document.Name{Local: "ID"}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			verifyOnlyXML(t, tc.doc, chain)
+			result, report, err := validator.Validate(t.Context(), tc.doc, xmldsig.Signatures(tc.doc)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{TSA: proof})
+			if !tc.pass {
+				if result != nil || !errors.Is(err, xades.ErrHistorical) || report.Indication() != xades.Indeterminate || report.SubIndication() != "OUT_OF_BOUNDS_NO_POE" {
+					t.Fatal("issuer scope or independent proof was bypassed", report.Indication(), report.SubIndication(), err)
+				}
+			} else if result == nil || err != nil || report.Indication() != xades.Passed || result.CurrentSignerTrust() != nil || result.PastSignerTrust() == nil || !report.BestSignatureTime().Equal(testcert.Now().Add(-time.Second)) {
+				t.Fatal("scoped authority failed historical recovery", report.SubIndication(), err)
+			}
+			if tc.doc == archived {
+				stamps := report.Timestamps()
+				if len(stamps) != 2 || !stamps[0].Archive || stamps[0].Indication != xades.Passed {
+					t.Fatal("negative case must retain a valid independent protecting archive", stamps)
+				}
+			}
+		})
+	}
+}
+
+func TestHistoricalTrustAnchorSunsetNeedsMaterialProof(t *testing.T) {
+	chain, archived, unarchived, tsa := historicalArchivePairWithArchiveKey(t, testcert.Key(t))
+	archiveAt := testcert.Now().Add(30 * time.Minute)
+	at := testcert.Now().Add(90 * time.Minute)
+	anchor := sha256.Sum256(chain.Root.Raw)
+	for _, tc := range []struct {
+		name   string
+		doc    *document.Document
+		sunset time.Time
+		pass   bool
+	}{
+		{"current trust without sunset", unarchived, time.Time{}, true},
+		{"material protected before anchor sunset", archived, archiveAt.Add(time.Second), true},
+		{"material protected exactly at sunset", archived, archiveAt, true},
+		{"archive after anchor sunset", archived, archiveAt.Add(-time.Second), false},
+		{"signature proof does not protect revocation material", unarchived, archiveAt.Add(time.Second), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sunsets map[string]time.Time
+			if !tc.sunset.IsZero() {
+				sunsets = map[string]time.Time{hex.EncodeToString(anchor[:]): tc.sunset}
+			}
+			zero := time.Duration(0)
+			validator, err := xades.NewHistoricalValidator(xades.HistoricalConfig{SignerPKI: pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}, HistoricalOptions: pki.HistoricalOptions{TrustAnchorSunsets: sunsets}}, TSA: tsa, MissingTSAAccuracy: &zero, RequireAllTimestamps: true, Baseline: xades.BaselineVerifyOptions{Signature: xmldsig.SignatureOptions{IDAttribute: document.Name{Local: "ID"}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			verifyOnlyXML(t, tc.doc, chain)
+			result, report, err := validator.Validate(t.Context(), tc.doc, xmldsig.Signatures(tc.doc)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{})
+			for _, stamp := range report.Timestamps() {
+				if stamp.Indication != xades.Passed {
+					t.Fatal("signer-only sunset leaked into TSA policy", stamp)
+				}
+			}
+			if !tc.pass {
+				if result != nil || !errors.Is(err, xades.ErrHistorical) || report.Indication() != xades.Indeterminate || report.SubIndication() != "NO_CERTIFICATE_CHAIN_FOUND_NO_POE" {
+					t.Fatal("late material proof bypassed anchor sunset", report.SubIndication(), err)
+				}
+				return
+			}
+			if result == nil || err != nil || report.Indication() != xades.Passed {
+				t.Fatal("valid anchor policy rejected", report.SubIndication(), err)
+			}
+			if tc.sunset.IsZero() {
+				if result.CurrentSignerTrust() == nil || result.PastSignerTrust() != nil || !report.ValidationTime().Equal(at) {
+					t.Fatal("control must use current signer trust")
+				}
+			} else {
+				past := result.PastSignerTrust()
+				if result.CurrentSignerTrust() != nil || past == nil || !past.ValidationTime().Equal(tc.sunset) || !report.ValidationTime().Equal(tc.sunset) || !bytes.Equal(past.Path().ChainDER()[1], chain.Root.Raw) {
+					t.Fatal("historical result lost exact anchor or sunset bound")
+				}
+				found := false
+				for _, step := range report.Steps() {
+					if step.Action == "trust-anchor-sunset" && step.ObjectSHA256 == hex.EncodeToString(anchor[:]) && step.After.Equal(tc.sunset) {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("anchor sunset missing from historical explanation")
+				}
+			}
+		})
+	}
+}
+
+func TestHistoricalTSAResponderCyclesAndAuthorizationDepth(t *testing.T) {
+	chain := testcert.New(t)
+	now := testcert.Now()
+	basic := basicDocument(t, chain)
+	timed, _, err := xades.AddSignatureTimestamp(t.Context(), basic, xmldsig.Signatures(basic)[0], chain.Leaf.Raw, &localTSA{chain: chain}, xades.AddTimestampOptions{Validation: timeOptions(t, chain)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := mustXML(t, timed)
+	// Named indirect CRLs prevent a complete issuer CRL from shortcutting the
+	// source dependencies: TSA -> OCSP signer -> CRL signer -> issuer (or cycle).
+	graph := func(t testing.TB, cyclic bool) pki.Evidence {
+		t.Helper()
+		pointName := func(uri string) []byte {
+			return der.Ctx(0, der.Wrap(2, 0, true, der.Wrap(2, 6, false, []byte(uri))))
+		}
+		point := func(uri string, issuer []byte) pkix.Extension {
+			fields := [][]byte{pointName(uri)}
+			if len(issuer) != 0 {
+				fields = append(fields, der.Wrap(2, 2, true, der.Ctx(4, issuer)))
+			}
+			return pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 31}, Value: der.Seq(der.Seq(fields...))}
+		}
+		firstName, secondName := pkix.Name{CommonName: "TSA OCSP dependency"}, pkix.Name{CommonName: "TSA CRL dependency"}
+		firstDER, err := asn1.Marshal(firstName.ToRDNSequence())
+		if err != nil {
+			t.Fatal(err)
+		}
+		secondDER, err := asn1.Marshal(secondName.ToRDNSequence())
+		if err != nil {
+			t.Fatal(err)
+		}
+		firstKey, secondKey := testcert.Key(t), testcert.Key(t)
+		first := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(260), Subject: firstName, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCRLSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}, SubjectKeyId: []byte{2, 6, 0}, ExtraExtensions: []pkix.Extension{point("urn:tsa:second", secondDER)}}, chain.Root, firstKey.Public(), chain.RootKey)
+		lastPoint := point("urn:tsa:root", nil)
+		if cyclic {
+			lastPoint = point("urn:tsa:first", firstDER)
+		}
+		second := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(261), Subject: secondName, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCRLSign, SubjectKeyId: []byte{2, 6, 1}, ExtraExtensions: []pkix.Extension{lastPoint}}, chain.Root, secondKey.Public(), chain.RootKey)
+		crl := func(signer *x509.Certificate, key crypto.Signer, uri string, indirect bool) []byte {
+			t.Helper()
+			fields := [][]byte{pointName(uri)}
+			if indirect {
+				fields = append(fields, der.Wrap(2, 4, false, []byte{255}))
+			}
+			raw, err := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour), ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 28}, Critical: true, Value: der.Seq(fields...)}}}, signer, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return raw
+		}
+		lists := [][]byte{crl(second, secondKey, "urn:tsa:second", true)}
+		if cyclic {
+			lists = append(lists, crl(first, firstKey, "urn:tsa:first", true))
+		} else {
+			lists = append(lists, crl(chain.Root, chain.RootKey, "urn:tsa:root", false))
+		}
+		request, err := pki.CreateOCSPRequest(chain.TSA.Raw, chain.Root.Raw, crypto.SHA256, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := pki.CreateOCSPResponse(t.Context(), request, chain.TSA.Raw, chain.Root.Raw, first.Raw, firstKey, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: now, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pki.Evidence{Intermediates: [][]byte{first.Raw, second.Raw}, CRLs: lists, OCSPResponses: [][]byte{raw}}
+	}
+	for _, tc := range []struct {
+		name    string
+		cyclic  bool
+		maximum int
+		want    error
+	}{
+		{"source dependencies fit exact depth", false, 3, nil},
+		{"source dependencies exceed depth", false, 2, pki.ErrLimit},
+		{"cyclic status dependencies", true, 3, pki.ErrUnavailable},
+		{"larger depth does not authorize a cycle", true, 4, pki.ErrUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tsa, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireOCSP, MaxChainDepth: tc.maximum}, AllowedPolicies: []asn1.ObjectIdentifier{tsaPolicy()}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			zero := time.Duration(0)
+			validator, err := xades.NewHistoricalValidator(xades.HistoricalConfig{SignerPKI: pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}}, TSA: tsa, MissingTSAAccuracy: &zero, RequireAllTimestamps: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			verifyOnlyXML(t, timed, chain)
+			result, report, err := validator.Validate(t.Context(), timed, xmldsig.Signatures(timed)[0], chain.Leaf.Raw, now, xades.ValidationEvidence{Signer: timeOptions(t, chain).Evidence, TSA: graph(t, tc.cyclic)})
+			if tc.want == nil {
+				if result == nil || err != nil || report.Indication() != xades.Passed || len(report.Timestamps()) != 1 || report.Timestamps()[0].Indication != xades.Passed {
+					t.Fatal("valid TSA dependency rejected at exact depth", report.SubIndication(), err)
+				}
+			} else {
+				if result != nil || !errors.Is(err, xades.ErrHistorical) || !errors.Is(err, tc.want) || !errors.Is(report.Cause(), tc.want) || report.Indication() != xades.Indeterminate {
+					t.Fatal("TSA dependency failure lost its cause or returned partial trust", result != nil, report.SubIndication(), err)
+				}
+				if errors.Is(tc.want, pki.ErrLimit) {
+					if !errors.Is(err, pki.ErrPolicy) || !strings.Contains(err.Error(), "authorization depth") {
+						t.Fatal("wrong TSA depth failure", err)
+					}
+				} else if errors.Is(err, pki.ErrLimit) || !strings.Contains(err.Error(), "authorization cycle") {
+					t.Fatal("cyclic responder accepted or misclassified as an ordinary limit", err)
+				}
+			}
+			if !bytes.Equal(before, mustXML(t, timed)) {
+				t.Fatal("historical dependency validation modified the signature")
+			}
+		})
+	}
+}
+
 func historicalEmbeddedCRL(t testing.TB, doc *document.Document) []byte {
 	t.Helper()
 	stack := []document.Element{doc.Root()}
@@ -177,7 +623,15 @@ func historicalEmbeddedCRL(t testing.TB, doc *document.Document) []byte {
 
 func historicalArchivePair(t testing.TB, digest ...string) (testcert.Chain, *document.Document, *document.Document, *timestamp.Verifier) {
 	t.Helper()
+	return historicalArchivePairWithArchiveKey(t, nil, digest...)
+}
+
+func historicalArchivePairWithArchiveKey(t testing.TB, archiveKey crypto.Signer, digest ...string) (testcert.Chain, *document.Document, *document.Document, *timestamp.Verifier) {
+	t.Helper()
 	chain := testcert.New(t)
+	if archiveKey == nil {
+		archiveKey = chain.TSAKey
+	}
 	newTSA := *chain.TSA
 	newTSA.SerialNumber = big.NewInt(103)
 	newTSA.NotAfter = testcert.Now().Add(8 * 24 * time.Hour)
@@ -186,7 +640,7 @@ func historicalArchivePair(t testing.TB, digest ...string) (testcert.Chain, *doc
 		t.Fatal(err)
 	}
 	newTSA.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Critical: true, Value: eku}}
-	newTSA = *testcert.Issue(t, &newTSA, chain.Root, &chain.TSAKey.PublicKey, chain.RootKey)
+	newTSA = *testcert.Issue(t, &newTSA, chain.Root, archiveKey.Public(), chain.RootKey)
 	tsa, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}, Certificates: [][]byte{newTSA.Raw}, AllowedPolicies: []asn1.ObjectIdentifier{tsaPolicy()}})
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +669,7 @@ func historicalArchivePair(t testing.TB, digest ...string) (testcert.Chain, *doc
 	if err != nil {
 		t.Fatal(err)
 	}
-	archived, _, err := closed.AddArchiveTimestamp(t.Context(), material, xmldsig.Signatures(material)[0], chain.Leaf.Raw, testcert.Now().Add(30*time.Minute), &archiveTransport{key: chain.TSAKey, cert: newTSA.Raw, root: chain.Root.Raw, now: testcert.Now().Add(30 * time.Minute)}, xades.AddArchiveOptions{Canonicalization: c14n.Canonical11})
+	archived, _, err := closed.AddArchiveTimestamp(t.Context(), material, xmldsig.Signatures(material)[0], chain.Leaf.Raw, testcert.Now().Add(30*time.Minute), &archiveTransport{key: archiveKey, cert: newTSA.Raw, root: chain.Root.Raw, now: testcert.Now().Add(30 * time.Minute)}, xades.AddArchiveOptions{Canonicalization: c14n.Canonical11})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,6 +691,51 @@ func TestHistoricalDigestMaterialRequiresItsOwnProof(t *testing.T) {
 	result, report, err = v.Validate(t.Context(), archived, xmldsig.Signatures(archived)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{})
 	if result == nil || err != nil || report.Indication() != xades.Passed {
 		t.Fatalf("exact archive reference proof: %v %s %v", report.Indication(), report.SubIndication(), err)
+	}
+}
+
+func TestHistoricalExplicitPolicyDigestConstraints(t *testing.T) {
+	chain := testcert.New(t)
+	for _, tc := range []struct {
+		name        string
+		constraints []pki.CryptoConstraint
+		maximum     int
+		largePolicy bool
+		want        error
+		sub         string
+	}{
+		{"reliable policy digest", nil, 0, false, nil, ""},
+		{"other digest unaffected", []pki.CryptoConstraint{{Hash: crypto.SHA384, ReliableUntil: testcert.Now()}}, 0, false, nil, ""},
+		{"policy digest cutoff now", []pki.CryptoConstraint{{Hash: crypto.SHA512, ReliableUntil: testcert.Now()}}, 0, false, xades.ErrHistorical, "CRYPTO_CONSTRAINTS_FAILURE_NO_POE"},
+		{"policy digest future cutoff", []pki.CryptoConstraint{{Hash: crypto.SHA512, ReliableUntil: testcert.Now().Add(time.Second)}}, 0, false, nil, ""},
+		{"large policy under default budget", nil, 0, true, nil, ""},
+		{"policy counts toward graph byte budget", nil, 64 << 10, true, historical.ErrLimit, "FORMAT_FAILURE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := []byte("explicit signature policy")
+			if tc.largePolicy {
+				policy = bytes.Repeat([]byte("p"), 1<<20)
+			}
+			source := input(t)
+			options := xades.BaselineSignOptions{Template: xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: "#invoice-1", DigestMethod: xmldsig.SHA256, Transforms: []reference.Transform{{Algorithm: reference.EnvelopedSignature}}}}}, Properties: xades.BaselineProperties{SigningTime: testcert.Now(), Policy: &xades.SignaturePolicy{Identifier: xades.ObjectIdentifier{Identifier: "urn:policy"}, DigestMethod: xmldsig.SHA512}}, Validation: xades.BaselineVerifyOptions{PolicyDocument: policy}}
+			signed, baseline, err := xades.SignBaseline(t.Context(), source, source.Root(), chain.LeafKey, chain.Leaf.Raw, options)
+			if err != nil || baseline == nil {
+				t.Fatal("baseline control failed", err)
+			}
+			zero := time.Duration(0)
+			verifier, err := xades.NewHistoricalValidator(xades.HistoricalConfig{SignerPKI: pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}, CryptoConstraints: tc.constraints}, TSA: timeOptions(t, chain).TSA, MissingTSAAccuracy: &zero, Baseline: options.Validation, MaxBytes: tc.maximum})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, report, err := verifier.Validate(t.Context(), signed, baseline.Basic().Signature().Signature(), chain.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{Signer: pki.Evidence{CRLs: [][]byte{testcert.CRL(t, chain)}}})
+			if tc.want != nil {
+				if result != nil || !errors.Is(err, tc.want) || report.SubIndication() != tc.sub || report.Cause() == nil {
+					t.Fatalf("historical policy: %v, %s, %v; want %s, %v", result != nil, report.SubIndication(), err, tc.sub, tc.want)
+				}
+			} else if result == nil || err != nil || report.Indication() != xades.Passed || result.CurrentSignerTrust() == nil {
+				t.Fatal("reliable explicit policy rejected", report.SubIndication(), err)
+			}
+		})
 	}
 }
 
@@ -514,17 +1013,6 @@ func TestWithTimeAccuracyAndEarliestProof(t *testing.T) {
 	if _, e := xades.NewWithTimeValidator(xades.WithTimeConfig{}); e == nil {
 		t.Fatal("unchecked configuration")
 	}
-}
-
-type datedTSA struct {
-	chain    testcert.Chain
-	gen      time.Time
-	accuracy *time.Duration
-}
-
-func (s datedTSA) RoundTrip(ctx context.Context, raw []byte) (io.ReadCloser, error) {
-	b, e := timestamp.IssueResponse(ctx, raw, s.chain.TSAKey, s.chain.TSA.Raw, timestamp.IssueOptions{Policy: tsaPolicy(), SerialNumber: big.NewInt(101), GenTime: s.gen, Accuracy: s.accuracy, ExtraCertificates: [][]byte{s.chain.Root.Raw}})
-	return io.NopCloser(bytes.NewReader(b)), e
 }
 
 func datedCRL(t testing.TB, c testcert.Chain, at time.Time, number int64, entries ...x509.RevocationListEntry) []byte {

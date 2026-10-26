@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -28,6 +29,14 @@ import (
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/pki"
 )
+
+type cmsReaderFunc func([]byte) (int, error)
+
+func (f cmsReaderFunc) Read(p []byte) (int, error) { return f(p) }
+
+type cmsWriterFunc func([]byte) (int, error)
+
+func (f cmsWriterFunc) Write(p []byte) (int, error) { return f(p) }
 
 func TestCMSIndependentFixtures(t *testing.T) {
 	paths, err := filepath.Glob("../testdata/evidence/cms-*/signature.der")
@@ -490,6 +499,118 @@ func testCMSRoundTripCase(t *testing.T, tc *struct {
 	}
 }
 
+func TestCMSParserCollectionAndByteLimits(t *testing.T) {
+	chain := testcert.New(t)
+	content := []byte("CMS exact collection and byte budgets")
+	attributes := []cms.Attribute{{OID: asn1.ObjectIdentifier{1, 2, 3, 10}, ValuesDER: [][]byte{der.Int(1)}}, {OID: asn1.ObjectIdentifier{1, 2, 3, 11}, ValuesDER: [][]byte{der.Int(2)}}}
+	raw, err := cms.Sign(t.Context(), content, []cms.Signer{{Key: chain.LeafKey, CertificateDER: chain.Leaf.Raw, Attributes: attributes}, {Key: chain.TSAKey, CertificateDER: chain.TSA.Raw, Attributes: attributes}}, cms.SignOptions{ExtraCertificates: [][]byte{chain.Root.Raw}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		limits cms.Limits
+		want   error
+	}{
+		{"exact container bytes", cms.Limits{MaxBytes: len(raw)}, nil},
+		{"container one byte too large", cms.Limits{MaxBytes: len(raw) - 1}, cms.ErrPolicy},
+		{"exact content bytes", cms.Limits{MaxContentBytes: len(content)}, nil},
+		{"content one byte too large", cms.Limits{MaxContentBytes: len(content) - 1}, cms.ErrSyntax},
+		{"exact signer count", cms.Limits{MaxSigners: 2}, nil},
+		{"signer count exceeded", cms.Limits{MaxSigners: 1}, cms.ErrSyntax},
+		{"exact certificate count", cms.Limits{MaxCertificates: 3}, nil},
+		{"certificate count exceeded", cms.Limits{MaxCertificates: 2}, cms.ErrSyntax},
+		{"exact attributes per signer", cms.Limits{MaxAttributes: 6}, nil},
+		{"attributes per signer exceeded", cms.Limits{MaxAttributes: 5}, cms.ErrSyntax},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for index, parse := range []func(context.Context, []byte, cms.Limits) (*cms.SignedData, error){cms.Parse, cms.ParseBER} {
+				parsed, err := parse(t.Context(), raw, tc.limits)
+				if tc.want != nil {
+					want := tc.want
+					if index == 1 && tc.limits.MaxContentBytes > 0 {
+						want = cms.ErrPolicy
+					}
+					if parsed != nil || !errors.Is(err, want) {
+						t.Fatal("parser exceeded a collection or byte budget", parsed != nil, err)
+					}
+					continue
+				}
+				if parsed == nil || err != nil || parsed.SignerCount() != 2 || len(parsed.Certificates()) != 3 {
+					t.Fatal("exact parser budget rejected", err)
+				}
+				result, err := parsed.Verify(t.Context(), [][]byte{chain.Leaf.Raw, chain.TSA.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true})
+				if result == nil || err != nil || !bytes.Equal(result.Content(), content) || len(result.Signers()) != 2 {
+					t.Fatal("bounded parse lost content or a required signer", err)
+				}
+			}
+		})
+	}
+}
+
+func TestCMSDeclaredAlgorithmsAndCertificateBagFormat(t *testing.T) {
+	chain := testcert.New(t)
+	content := []byte("signed content survives unsigned envelope changes")
+	raw, err := cms.Sign(t.Context(), content, []cms.Signer{{Key: chain.LeafKey, CertificateDER: chain.Leaf.Raw}}, cms.SignOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := der.Read(raw, len(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := der.Sequence(value, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := der.Explicit(outer[1], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := der.Sequence(wrapped, 5, 5)
+	if err != nil || !der.Is(fields[3], 2, 0, true) {
+		t.Fatal("unexpected CMS control envelope", err)
+	}
+	sha256Identifier := der.Seq(der.OID(signature.SHA256()))
+	for _, tc := range []struct {
+		name  string
+		index int
+		value []byte
+		want  error
+	}{
+		{"equivalent SHA256 declaration", 1, der.Set(sha256Identifier), nil},
+		{"empty digest set", 1, der.Set(), cms.ErrSyntax},
+		{"wrong digest set type", 1, der.Seq(sha256Identifier), cms.ErrSyntax},
+		{"malformed digest algorithm", 1, der.Set(der.Int(1)), cms.ErrSyntax},
+		{"unsupported digest algorithm", 1, der.Set(der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 3, 99}))), cms.ErrPolicy},
+		{"signer digest absent from declaration", 1, der.Set(der.Seq(der.OID(signature.SHA384()))), cms.ErrPolicy},
+		{"semantically duplicate digest algorithms", 1, der.Set(sha256Identifier, der.Seq(der.OID(signature.SHA256()), []byte{5, 0})), cms.ErrPolicy},
+		{"SignedData version inconsistent with signer IDs", 0, der.Int(3), cms.ErrSyntax},
+		{"non-certificate bag member", 3, der.Ctx(0, der.Octets(chain.Leaf.Raw)), cms.ErrSyntax},
+		{"duplicate certificate in bag", 3, der.Ctx(0, chain.Leaf.Raw, chain.Leaf.Raw), cms.ErrSyntax},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parts := signerBytes(fields)
+			parts[tc.index] = tc.value
+			changed := der.Seq(outer[0].FullBytes, der.Ctx(0, der.Seq(parts...)))
+			parsed, err := cms.Parse(t.Context(), changed, cms.Limits{})
+			if tc.want != nil {
+				if parsed != nil || !errors.Is(err, tc.want) {
+					t.Fatal("invalid algorithm declaration or certificate bag accepted", parsed != nil, err)
+				}
+				return
+			}
+			if parsed == nil || err != nil {
+				t.Fatal(err)
+			}
+			result, err := parsed.Verify(t.Context(), [][]byte{chain.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true})
+			if result == nil || err != nil || !bytes.Equal(result.Content(), content) {
+				t.Fatal("control signature damaged by envelope-only changes", err)
+			}
+		})
+	}
+}
+
 func TestCMSMultiplePolicyAndMutation(t *testing.T) {
 	c := testcert.New(t)
 	signers := []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}, {Key: c.TSAKey, CertificateDER: c.TSA.Raw}}
@@ -565,75 +686,111 @@ func TestCMSMultiplePolicyAndMutation(t *testing.T) {
 	}
 }
 
-func FuzzParse(f *testing.F) {
-	fixture := testcert.LoadFixture(f, "../testdata/evidence", "cms-ecdsa-256-attached")
-	raw := fixture.Read(f, "cms-ecdsa-256-attached/signature.der")
-	certificate := fixture.Read(f, "cms-ecdsa-256-attached/signer.der")
-	options := cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true}
-
-	seed, e := cms.Parse(f.Context(), raw, cms.DefaultLimits())
-	if e != nil {
-		f.Fatal(e)
-	}
-
-	result, e := seed.Verify(f.Context(), [][]byte{certificate}, options)
-	if e != nil || result == nil || !bytes.Equal(result.Content(), fixture.Read(f, "cms-ecdsa-256-attached/content.bin")) {
-		f.Fatalf("invalid positive CMS fixture: %v", e)
-	}
-
-	f.Add(raw)
-	f.Add(cmsBEREnvelope(f, raw, indefiniteBER(0x24, der.Octets(fixture.Read(f, "cms-ecdsa-256-attached/content.bin")))))
-	f.Add([]byte{0x30, 0})
-	f.Fuzz(func(t *testing.T, b []byte) {
-		if len(b) > 1<<20 {
-			t.Skip()
-		}
-
-		for _, parse := range []func(context.Context, []byte, cms.Limits) (*cms.SignedData, error){cms.Parse, cms.ParseBER} {
-			s, e := parse(t.Context(), b, cms.DefaultLimits())
-			if e != nil {
-				continue
+func TestCMSSignReaderBoundariesAndFailures(t *testing.T) {
+	c := testcert.New(t)
+	signers := []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}}
+	content := []byte("one complete signed stream")
+	failure := errors.New("stream failed")
+	for _, detached := range []bool{false, true} {
+		t.Run("detached="+strconv.FormatBool(detached), func(t *testing.T) {
+			options := cms.SignOptions{Detached: detached, Limits: cms.Limits{MaxContentBytes: len(content)}}
+			var output bytes.Buffer
+			n, err := cms.SignReader(t.Context(), &output, bytes.NewReader(content), signers, options)
+			if err != nil || n != int64(output.Len()) || n == 0 {
+				t.Fatal("complete stream was not emitted", n, err)
 			}
-
-			result, e := s.Verify(t.Context(), [][]byte{certificate}, options)
-			if e != nil && result != nil || e == nil && (result == nil || len(result.Signers()) != 1 || !result.Signers()[0].CertificateBound()) {
-				t.Fatal("inconsistent CMS verification result")
+			parsed, err := cms.Parse(t.Context(), output.Bytes(), cms.Limits{})
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-	})
+			verify := cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true}
+			if detached {
+				verify.DetachedContent = &content
+			}
+			result, err := parsed.Verify(t.Context(), [][]byte{c.Leaf.Raw}, verify)
+			if err != nil || result == nil || !bytes.Equal(result.Content(), content) {
+				t.Fatal("streamed content did not authenticate", err)
+			}
+			for _, tc := range []struct {
+				name string
+				read io.Reader
+				want error
+			}{
+				{"read error with data", cmsReaderFunc(func(p []byte) (int, error) { return copy(p, content), failure }), failure},
+				{"no progress", cmsReaderFunc(func([]byte) (int, error) { return 0, nil }), io.ErrNoProgress},
+				{"invalid read count", cmsReaderFunc(func(p []byte) (int, error) { return len(p) + 1, nil }), io.ErrShortBuffer},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					output.Reset()
+					if n, err := cms.SignReader(t.Context(), &output, tc.read, signers, options); n != 0 || output.Len() != 0 || !errors.Is(err, tc.want) {
+						t.Fatal("source failure emitted signed output or lost cause", n, output.Len(), err)
+					}
+				})
+			}
+			output.Reset()
+			options.Limits.MaxContentBytes--
+			if n, err := cms.SignReader(t.Context(), &output, bytes.NewReader(content), signers, options); n != 0 || output.Len() != 0 || !errors.Is(err, cms.ErrPolicy) {
+				t.Fatal("content limit emitted output", n, err)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		fail error
+		want error
+	}{
+		{"destination error", failure, failure},
+		{"short write without error", nil, io.ErrShortWrite},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			written := 0
+			dst := cmsWriterFunc(func(p []byte) (int, error) {
+				n := min(len(p), 7-written)
+				written += n
+				if n < len(p) {
+					return n, tc.fail
+				}
+				return n, nil
+			})
+			n, err := cms.SignReader(t.Context(), dst, bytes.NewReader(content), signers, cms.SignOptions{})
+			if n != 7 || written != 7 || !errors.Is(err, tc.want) {
+				t.Fatal("destination count or failure lost", n, written, err)
+			}
+		})
+	}
 }
 
-func BenchmarkCMS(b *testing.B) {
-	c := testcert.New(b)
-
-	raw, err := cms.Sign(b.Context(), make([]byte, 4096), []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}}, cms.SignOptions{})
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	s, err := cms.Parse(b.Context(), raw, cms.DefaultLimits())
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	b.Run("Parse", func(b *testing.B) {
-		b.ReportAllocs()
-
-		for b.Loop() {
-			if _, err := cms.Parse(b.Context(), raw, cms.DefaultLimits()); err != nil {
-				b.Fatal(err)
+func TestCMSSignPolicyRejectsBeforeReading(t *testing.T) {
+	c := testcert.New(t)
+	signer := cms.Signer{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}
+	for _, tc := range []struct {
+		name    string
+		signers []cms.Signer
+		options cms.SignOptions
+		want    error
+	}{
+		{"no signers", nil, cms.SignOptions{}, cms.ErrPolicy},
+		{"signer count", []cms.Signer{signer, signer}, cms.SignOptions{Limits: cms.Limits{MaxSigners: 1}}, cms.ErrPolicy},
+		{"certificate count", []cms.Signer{signer}, cms.SignOptions{ExtraCertificates: [][]byte{c.Root.Raw, c.TSA.Raw}, Limits: cms.Limits{MaxCertificates: 1}}, cms.ErrPolicy},
+		{"omitted and extra certificates", []cms.Signer{signer}, cms.SignOptions{OmitCertificates: true, ExtraCertificates: [][]byte{c.Root.Raw}}, cms.ErrPolicy},
+		{"invalid limit", []cms.Signer{signer}, cms.SignOptions{Limits: cms.Limits{MaxBytes: -1}}, cms.ErrPolicy},
+		{"invalid content OID", []cms.Signer{signer}, cms.SignOptions{ContentType: asn1.ObjectIdentifier{3, 1}}, cms.ErrPolicy},
+		{"invalid extra certificate", []cms.Signer{signer}, cms.SignOptions{ExtraCertificates: [][]byte{{0x30, 0}}}, cms.ErrCertificate},
+		{"unsupported signing hash", []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw, Hash: crypto.SHA1}}, cms.SignOptions{}, signature.Err},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reads := 0
+			source := cmsReaderFunc(func([]byte) (int, error) { reads++; return 0, io.EOF })
+			var output bytes.Buffer
+			if n, err := cms.SignReader(t.Context(), &output, source, tc.signers, tc.options); n != 0 || output.Len() != 0 || reads != 0 || !errors.Is(err, tc.want) {
+				t.Fatalf("invalid policy touched streams: bytes=%d, reads=%d, error=%v; want %v", n, reads, err, tc.want)
 			}
-		}
-	})
-	b.Run("Verify", func(b *testing.B) {
-		b.ReportAllocs()
-
-		for b.Loop() {
-			if _, err := s.Verify(b.Context(), [][]byte{c.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true}); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
+		})
+	}
+	var output bytes.Buffer
+	if n, err := cms.SignReader(t.Context(), &output, bytes.NewReader(nil), []cms.Signer{signer}, cms.SignOptions{Detached: true, Limits: cms.Limits{MaxBytes: 1}}); n != 0 || output.Len() != 0 || !errors.Is(err, cms.ErrPolicy) {
+		t.Fatal("encoded metadata exceeded budget after emitting output", n, err)
+	}
 }
 
 func TestCMSRejectsEmptySignedData(t *testing.T) {
@@ -684,6 +841,126 @@ func TestCMSAlgorithmProtectionPreservesIdentifier(t *testing.T) {
 			result, err := s.Verify(t.Context(), [][]byte{cert.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID()})
 			if tc.want == nil && (err != nil || result == nil) || tc.want != nil && (result != nil || !errors.Is(err, tc.want)) {
 				t.Fatalf("result=%v error=%v want=%v", result != nil, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestCMSSignerInfoSchemaBoundaries(t *testing.T) {
+	c := testcert.New(t)
+	raw, err := cms.Sign(t.Context(), []byte("signer schema"), []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}}, cms.SignOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialTooLarge, err := asn1.Marshal(new(big.Int).Lsh(big.NewInt(1), 160))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		index int
+		value []byte
+	}{
+		{"wrong version type", 0, der.Octets([]byte{1})},
+		{"issuer SID with SKI version", 0, der.Int(3)},
+		{"empty SKI", 1, der.Wrap(2, 0, false, nil)},
+		{"SKI with issuer version", 1, der.Wrap(2, 0, false, []byte{1})},
+		{"oversized SKI", 1, der.Wrap(2, 0, false, bytes.Repeat([]byte{1}, 129))},
+		{"zero serial", 1, der.Seq(c.Leaf.RawIssuer, der.Int(0))},
+		{"negative serial", 1, der.Seq(c.Leaf.RawIssuer, der.Int(-1))},
+		{"oversized serial", 1, der.Seq(c.Leaf.RawIssuer, serialTooLarge)},
+		{"wrong digest algorithm type", 2, der.Int(1)},
+		{"wrong signature algorithm type", 4, der.Int(1)},
+		{"empty signature", 5, der.Octets(nil)},
+		{"oversized signature", 5, der.Octets(make([]byte, 2049))},
+		{"wrong signature type", 5, der.Int(1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := rewriteSigner(t, raw, func(fields []asn1.RawValue) [][]byte {
+				parts := signerBytes(fields)
+				parts[tc.index] = tc.value
+				if tc.name == "oversized SKI" || tc.name == "empty SKI" {
+					parts[0] = der.Int(3)
+				}
+				return parts
+			})
+			if parsed, err := cms.Parse(t.Context(), changed, cms.Limits{}); parsed != nil || !errors.Is(err, cms.ErrSyntax) {
+				t.Fatal("invalid SignerInfo accepted", parsed != nil, err)
+			}
+		})
+	}
+}
+
+func TestCMSAuthenticatedAlgorithmProtectionSchema(t *testing.T) {
+	c := testcert.New(t)
+	raw, err := cms.Sign(t.Context(), []byte("protected metadata"), []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}}, cms.SignOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := der.Seq(der.OID(signature.SHA256()), []byte{5, 0})
+	protectedSignature := der.Ctx(1, der.OID(asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}))
+	for _, tc := range []struct {
+		name  string
+		value []byte
+		want  error
+	}{
+		{"matching protection", der.Seq(digest, protectedSignature), nil},
+		{"wrong outer type", der.Octets([]byte{1}), cms.ErrSyntax},
+		{"missing protected signature", der.Seq(digest), cms.ErrSyntax},
+		{"wrong digest type", der.Seq(der.Int(1), protectedSignature), cms.ErrSyntax},
+		{"different digest", der.Seq(der.Seq(der.OID(signature.SHA384()), []byte{5, 0}), protectedSignature), cms.ErrSignature},
+		{"wrong signature wrapper", der.Seq(digest, der.Ctx(2, der.OID(asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}))), cms.ErrSyntax},
+		{"malformed signature identifier", der.Seq(digest, der.Ctx(1, der.Int(1))), cms.ErrSyntax},
+		{"different signature OID", der.Seq(digest, der.Ctx(1, der.OID(asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 3}))), cms.ErrSignature},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := rewriteSigner(t, raw, func(fields []asn1.RawValue) [][]byte {
+				parts := signerBytes(fields)
+				attributes, err := der.Children(fields[3])
+				if err != nil {
+					t.Fatal(err)
+				}
+				values := make([][]byte, 0, len(attributes))
+				for _, attribute := range attributes {
+					fields, err := der.Sequence(attribute, 2, 2)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if der.OIDEqual(fields[0], asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 52}) {
+						values = append(values, der.Seq(fields[0].FullBytes, der.Set(tc.value)))
+					} else {
+						values = append(values, attribute.FullBytes)
+					}
+				}
+				set := der.Set(values...)
+				parsed, err := der.Read(set, len(set))
+				if err != nil {
+					t.Fatal(err)
+				}
+				parts[3] = der.Wrap(2, 0, true, parsed.Bytes)
+				algorithm, err := signature.Algorithm(fields[4])
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Keep the signature valid so rejection depends on metadata checks.
+				signed, err := signature.Sign(t.Context(), c.LeafKey, algorithm, set)
+				if err != nil {
+					t.Fatal(err)
+				}
+				parts[5] = der.Octets(signed)
+				return parts
+			})
+			parsed, err := cms.Parse(t.Context(), changed, cms.Limits{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := parsed.Verify(t.Context(), [][]byte{c.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID()})
+			if tc.want != nil {
+				if result != nil || !errors.Is(err, tc.want) {
+					t.Fatalf("authenticated protection: %v, %v; want %v", result != nil, err, tc.want)
+				}
+			} else if result == nil || err != nil {
+				t.Fatal("matching authenticated protection rejected", err)
 			}
 		})
 	}
@@ -1081,6 +1358,94 @@ func TestCMSSemanticIssuerBindings(t *testing.T) {
 	}
 }
 
+func TestCMSAuthenticatedESSStructure(t *testing.T) {
+	chain := testcert.New(t)
+	raw, err := cms.Sign(t.Context(), []byte("ESS schema with valid signature"), []cms.Signer{{Key: chain.LeafKey, CertificateDER: chain.Leaf.Raw}}, cms.SignOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(chain.Leaf.Raw)
+	stronger := sha512.Sum384(chain.Leaf.Raw)
+	serial, err := asn1.Marshal(chain.Leaf.SerialNumber)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := der.Seq(der.Ctx(4, chain.Leaf.RawIssuer))
+	issuer := der.Seq(names, serial)
+	id := der.Seq(der.Octets(sum[:]), issuer)
+	for _, tc := range []struct {
+		name  string
+		value []byte
+		want  error
+	}{
+		{"hash-only certificate binding", der.Seq(der.Seq(der.Seq(der.Octets(sum[:])))), nil},
+		{"explicit non-default SHA384", der.Seq(der.Seq(der.Seq(der.Seq(der.OID(signature.SHA384())), der.Octets(stronger[:]), issuer))), nil},
+		{"wrong outer value type", der.Octets(sum[:]), cms.ErrSyntax},
+		{"empty certificate identifier list", der.Seq(der.Seq()), cms.ErrSyntax},
+		{"empty certificate identifier", der.Seq(der.Seq(der.Seq())), cms.ErrSyntax},
+		{"algorithm without certificate hash", der.Seq(der.Seq(der.Seq(der.Seq(der.OID(signature.SHA384()))))), cms.ErrSyntax},
+		{"unsupported certificate hash", der.Seq(der.Seq(der.Seq(der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 3, 99})), der.Octets(sum[:])))), cms.ErrPolicy},
+		{"incorrect hash size", der.Seq(der.Seq(der.Seq(der.Octets(sum[:31])))), cms.ErrSyntax},
+		{"malformed issuer serial sequence", der.Seq(der.Seq(der.Seq(der.Octets(sum[:]), der.Int(1)))), cms.ErrSyntax},
+		{"empty issuer names", der.Seq(der.Seq(der.Seq(der.Octets(sum[:]), der.Seq(der.Seq(), serial)))), cms.ErrSyntax},
+		{"zero issuer serial", der.Seq(der.Seq(der.Seq(der.Octets(sum[:]), der.Seq(names, der.Int(0))))), cms.ErrSyntax},
+		{"empty policies", der.Seq(der.Seq(id), der.Seq()), cms.ErrSyntax},
+		{"wrong policies type", der.Seq(der.Seq(id), der.Int(1)), cms.ErrSyntax},
+		{"malformed additional identifier", der.Seq(der.Seq(id, der.Seq(der.Octets(sum[:]), der.Seq(names)))), cms.ErrSyntax},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := rewriteSigner(t, raw, func(fields []asn1.RawValue) [][]byte {
+				attributes, err := der.Children(fields[3])
+				if err != nil {
+					t.Fatal(err)
+				}
+				values := make([][]byte, 0, len(attributes))
+				for _, attribute := range attributes {
+					parts, err := der.Sequence(attribute, 2, 2)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if der.OIDEqual(parts[0], asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 16, 2, 47}) {
+						values = append(values, der.Seq(parts[0].FullBytes, der.Set(tc.value)))
+					} else {
+						values = append(values, attribute.FullBytes)
+					}
+				}
+				set := der.Set(values...)
+				encoded, err := der.Read(set, len(set))
+				if err != nil {
+					t.Fatal(err)
+				}
+				parts := signerBytes(fields)
+				parts[3] = der.Wrap(2, 0, true, encoded.Bytes)
+				algorithm, err := signature.Algorithm(fields[4])
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Re-sign every variant so rejection exercises ESS, not damaged CMS.
+				signed, err := signature.Sign(t.Context(), chain.LeafKey, algorithm, set)
+				if err != nil {
+					t.Fatal(err)
+				}
+				parts[5] = der.Octets(signed)
+				return parts
+			})
+			parsed, err := cms.Parse(t.Context(), changed, cms.Limits{})
+			if err != nil {
+				t.Fatal("control CMS envelope must parse", err)
+			}
+			result, err := parsed.Verify(t.Context(), [][]byte{chain.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true})
+			if tc.want != nil {
+				if result != nil || !errors.Is(err, tc.want) {
+					t.Fatal("invalid authenticated ESS accepted", result != nil, err)
+				}
+			} else if result == nil || err != nil || !result.Signers()[0].CertificateBound() || string(result.Content()) != "ESS schema with valid signature" {
+				t.Fatal("valid ESS certificate binding rejected", err)
+			}
+		})
+	}
+}
+
 func TestCMSTrustRejectsUnevaluatedESSPathRestrictions(t *testing.T) {
 	chain := testcert.New(t)
 	raw, err := cms.Sign(t.Context(), []byte("restricted path"), []cms.Signer{{Key: chain.LeafKey, CertificateDER: chain.Leaf.Raw}}, cms.SignOptions{})
@@ -1224,6 +1589,77 @@ func cmsCertificateDefaultVariant(t *testing.T, raw []byte, key crypto.Signer, v
 	}
 	bits, _ := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
 	return der.Seq(tbs, outer[1].FullBytes, bits)
+}
+
+func FuzzParse(f *testing.F) {
+	fixture := testcert.LoadFixture(f, "../testdata/evidence", "cms-ecdsa-256-attached")
+	raw := fixture.Read(f, "cms-ecdsa-256-attached/signature.der")
+	certificate := fixture.Read(f, "cms-ecdsa-256-attached/signer.der")
+	options := cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true}
+
+	seed, e := cms.Parse(f.Context(), raw, cms.DefaultLimits())
+	if e != nil {
+		f.Fatal(e)
+	}
+
+	result, e := seed.Verify(f.Context(), [][]byte{certificate}, options)
+	if e != nil || result == nil || !bytes.Equal(result.Content(), fixture.Read(f, "cms-ecdsa-256-attached/content.bin")) {
+		f.Fatalf("invalid positive CMS fixture: %v", e)
+	}
+
+	f.Add(raw)
+	f.Add(cmsBEREnvelope(f, raw, indefiniteBER(0x24, der.Octets(fixture.Read(f, "cms-ecdsa-256-attached/content.bin")))))
+	f.Add([]byte{0x30, 0})
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if len(b) > 1<<20 {
+			t.Skip()
+		}
+
+		for _, parse := range []func(context.Context, []byte, cms.Limits) (*cms.SignedData, error){cms.Parse, cms.ParseBER} {
+			s, e := parse(t.Context(), b, cms.DefaultLimits())
+			if e != nil {
+				continue
+			}
+
+			result, e := s.Verify(t.Context(), [][]byte{certificate}, options)
+			if e != nil && result != nil || e == nil && (result == nil || len(result.Signers()) != 1 || !result.Signers()[0].CertificateBound()) {
+				t.Fatal("inconsistent CMS verification result")
+			}
+		}
+	})
+}
+
+func BenchmarkCMS(b *testing.B) {
+	c := testcert.New(b)
+
+	raw, err := cms.Sign(b.Context(), make([]byte, 4096), []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}}, cms.SignOptions{})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	s, err := cms.Parse(b.Context(), raw, cms.DefaultLimits())
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.Run("Parse", func(b *testing.B) {
+		b.ReportAllocs()
+
+		for b.Loop() {
+			if _, err := cms.Parse(b.Context(), raw, cms.DefaultLimits()); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("Verify", func(b *testing.B) {
+		b.ReportAllocs()
+
+		for b.Loop() {
+			if _, err := s.Verify(b.Context(), [][]byte{c.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
 
 // BenchmarkCMSBER measures normalization separately from signature verification.

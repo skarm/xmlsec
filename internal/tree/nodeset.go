@@ -25,6 +25,30 @@ type NodeRef struct {
 // WrapNode creates a reference to an existing project content node.
 func WrapNode(d *Document, n *Node) NodeRef { return ref(d, n) }
 
+// WrapAttribute returns the attribute at its stored index without materializing
+// or sorting the attribute axis. The caller supplies module-owned storage.
+func WrapAttribute(d *Document, n *Node, index int) NodeRef {
+	if d == nil || n == nil || index < 0 || index >= len(n.Attrs) {
+		return NodeRef{}
+	}
+
+	return attributeRef(d, n, index)
+}
+
+// WrapNamespace returns one in-scope namespace without materializing the axis.
+// Empty bindings are absent from the XPath namespace axis, including the default.
+func WrapNamespace(d *Document, n *Node, prefix string) NodeRef {
+	if d == nil || n == nil {
+		return NodeRef{}
+	}
+
+	if uri, ok := ResolvePrefix(n, prefix); !ok || uri == "" {
+		return NodeRef{}
+	}
+
+	return namespaceRef(d, n, prefix)
+}
+
 // UnwrapNode returns module-owned storage; attributes and namespaces use their
 // owner element. It is used by the XPath view adapter, never by public callers.
 func UnwrapNode(n NodeRef) (*Document, *Node) { return n.doc, n.node }
@@ -497,9 +521,8 @@ func collectNodes(ctx context.Context, d *Document, start *Node) (NodeSet, error
 		return NodeSet{}, err
 	}
 
-	out, err := NewNodeSet(d)
-	if err != nil {
-		return NodeSet{}, err
+	if d == nil || d.root == nil {
+		return NodeSet{}, fmt.Errorf("%w: node-set document", ErrMalformed)
 	}
 
 	var parent *Node
@@ -508,6 +531,37 @@ func collectNodes(ctx context.Context, d *Document, start *Node) (NodeSet, error
 	}
 
 	scope := newNamespaceContext(parent)
+
+	count := 0
+
+	single := start
+	if start == nil {
+		count = 1 // The document node precedes its children.
+
+		if len(d.children) == 1 {
+			single = d.children[0]
+		}
+	}
+
+	if single != nil && len(single.Children) == 0 {
+		// A single leaf needs no counting walk. This conservative hint also
+		// avoids adding traversal overhead to tiny documents and subtrees.
+		count = max(0, min(d.limits.nodeSetLimit(), count+1+len(single.Attrs)+len(single.NS)+len(scope.bindings)))
+	} else if start == nil {
+		for _, n := range d.children {
+			if count >= d.limits.nodeSetLimit() {
+				break
+			}
+
+			if err := countNodeSubtree(ctx, n, &scope, &count, d.limits.nodeSetLimit()); err != nil {
+				return NodeSet{}, err
+			}
+		}
+	} else if err := countNodeSubtree(ctx, start, &scope, &count, d.limits.nodeSetLimit()); err != nil {
+		return NodeSet{}, err
+	}
+
+	out := NodeSet{doc: d, members: make(map[NodeRef]struct{}, count)}
 
 	if start == nil {
 		if err := out.add(d.Node()); err != nil {
@@ -524,6 +578,49 @@ func collectNodes(ctx context.Context, d *Document, start *Node) (NodeSet, error
 	}
 
 	return out, nil
+}
+
+// Count the expanded axes before allocating membership storage. The capacity
+// hint is capped by policy; add still enforces the limit during construction.
+// push/pop restores scope so the same scratch storage serves the second walk.
+func countNodeSubtree(ctx context.Context, n *Node, scope *namespaceContext, count *int, maximum int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if n == nil {
+		return ErrMalformed
+	}
+
+	if *count >= maximum {
+		return nil
+	}
+
+	*count++
+
+	if n.Kind == ElementNode {
+		mark := scope.push(n.NS)
+		defer scope.pop(mark)
+
+		*count += min(len(n.Attrs), maximum-*count)
+		for _, uri := range scope.bindings {
+			if uri != "" && *count < maximum {
+				*count++
+			}
+		}
+	}
+
+	for _, child := range n.Children {
+		if *count >= maximum {
+			break
+		}
+
+		if err := countNodeSubtree(ctx, child, scope, count, maximum); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func collectNodeSubtree(ctx context.Context, d *Document, n *Node, scope *namespaceContext, out *NodeSet) error {

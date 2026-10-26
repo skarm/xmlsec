@@ -13,6 +13,7 @@ import (
 	"errors"
 	"math/big"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -931,6 +932,87 @@ func TestCRLAuthenticatedMetadataBinding(t *testing.T) {
 	}
 }
 
+func TestCRLAuthorityIdentifierSchemaAndBinding(t *testing.T) {
+	c := makeChain(t)
+	at := verificationTime()
+	base := makeCRL(t, c, false, nil)
+	serial := der.Wrap(2, 2, false, []byte{1})
+	issuer := der.Ctx(1, der.Ctx(4, c.root.RawIssuer))
+	id := der.Wrap(2, 0, false, c.root.SubjectKeyId)
+	verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		value []byte
+		want  error
+	}{
+		{"issuer and serial", der.Seq(issuer, serial), nil},
+		{"all identifiers", der.Seq(id, issuer, serial), nil},
+		{"wrong key ID", der.Seq(der.Wrap(2, 0, false, []byte{99})), pki.ErrUnavailable},
+		{"wrong issuer serial", der.Seq(issuer, der.Wrap(2, 2, false, []byte{99})), pki.ErrUnavailable},
+		{"invalid DER", []byte{0x30, 1}, pki.ErrEvidence},
+		{"wrong outer type", der.Int(1), pki.ErrEvidence},
+		{"empty identifier sequence", der.Seq(), pki.ErrEvidence},
+		{"universal field", der.Seq(der.Int(1)), pki.ErrEvidence},
+		{"duplicate key ID", der.Seq(id, id), pki.ErrEvidence},
+		{"out of order", der.Seq(serial, issuer), pki.ErrEvidence},
+		{"constructed key ID", der.Seq(der.Ctx(0, der.Octets([]byte{1}))), pki.ErrEvidence},
+		{"empty key ID", der.Seq(der.Wrap(2, 0, false, nil)), pki.ErrEvidence},
+		{"empty issuer names", der.Seq(der.Ctx(1), serial), pki.ErrEvidence},
+		{"constructed serial", der.Seq(issuer, der.Ctx(2, der.Int(1))), pki.ErrEvidence},
+		{"negative serial", der.Seq(issuer, der.Wrap(2, 2, false, []byte{255})), pki.ErrEvidence},
+		{"unsupported field", der.Seq(der.Wrap(2, 3, false, []byte{1})), pki.ErrEvidence},
+		{"issuer without serial", der.Seq(issuer), pki.ErrEvidence},
+		{"serial without issuer", der.Seq(serial), pki.ErrEvidence},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Re-sign each variant so an invalid signature cannot hide metadata errors.
+			raw := p6ReplaceCRLExtension(t, base, c, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 35}, Value: tc.value})
+			result, report, err := verifier.Verify(t.Context(), c.leaf.Raw, at, pki.Evidence{CRLs: [][]byte{raw}})
+			if tc.want != nil {
+				if result != nil || !errors.Is(err, tc.want) {
+					t.Fatalf("authority binding: %v, %v; want %v", result != nil, err, tc.want)
+				}
+			} else if result == nil || err != nil || report.Chain != pki.Valid || report.Revocation != pki.Valid {
+				t.Fatal("matching authority rejected", result != nil, report, err)
+			}
+		})
+	}
+}
+
+func TestOCSPSingleResponseExtensionSchema(t *testing.T) {
+	c := makeChain(t)
+	at := verificationTime()
+	base := p7Response(t, c, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: at, ThisUpdate: at.Add(-time.Minute), NextUpdate: at.Add(time.Hour)})
+	cutoff := asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 6}
+	for _, tc := range []struct {
+		name string
+		ext  pkix.Extension
+		want error
+	}{
+		{"unknown noncritical extension", pkix.Extension{Id: asn1.ObjectIdentifier{1, 2, 3, 4}, Value: der.Int(1)}, nil},
+		{"unknown critical extension", pkix.Extension{Id: asn1.ObjectIdentifier{1, 2, 3, 4}, Critical: true, Value: der.Int(1)}, pki.ErrUnsupported},
+		{"cutoff invalid DER", pkix.Extension{Id: cutoff, Value: []byte{0x18, 1}}, pki.ErrEvidence},
+		{"cutoff wrong time type", pkix.Extension{Id: cutoff, Value: der.Int(1)}, pki.ErrEvidence},
+		{"cutoff invalid date", pkix.Extension{Id: cutoff, Value: der.Wrap(0, asn1.TagGeneralizedTime, false, []byte("20260230000000Z"))}, pki.ErrEvidence},
+		{"single-response nonce forbidden", pkix.Extension{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 2}, Value: der.Octets([]byte{1})}, pki.ErrUnsupported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := p7SingleExtension(t, base, c, tc.ext)
+			result, report, err := pki.VerifyOCSP(t.Context(), raw, c.leaf.Raw, c.root.Raw, at, pki.OCSPOptions{})
+			if tc.want != nil {
+				if result != nil || !errors.Is(err, tc.want) || report.Signature != pki.NotChecked {
+					t.Fatalf("single-response extension: %v, %+v, %v; want %v", result != nil, report, err, tc.want)
+				}
+			} else if result == nil || err != nil || report.Signature != pki.Valid || report.Status != pki.OCSPGood {
+				t.Fatal("noncritical extension changed valid status", result != nil, report, err)
+			}
+		})
+	}
+}
+
 func p6ReplaceCRLExtension(t *testing.T, raw []byte, c chainData, replacement pkix.Extension) []byte {
 	t.Helper()
 	value, err := der.Read(raw, 1<<20)
@@ -1281,6 +1363,8 @@ func TestCRLDistributionPointNamePreparation(t *testing.T) {
 		{"HTTP double slash significant", "http://example.test//a", "http://example.test/a", 6, false},
 		{"mail host case", "local@EXAMPLE.test", "local@example.test", 1, true},
 		{"mail local case", "Local@example.test", "local@example.test", 1, false},
+		{"DNS case", "CRL.EXAMPLE.test", "crl.example.test", 2, true},
+		{"different DNS name", "one.example.test", "two.example.test", 2, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			point := func(v string) []byte {
@@ -1299,6 +1383,74 @@ func TestCRLDistributionPointNamePreparation(t *testing.T) {
 				}
 			} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
 				t.Fatal(result != nil, err)
+			}
+		})
+	}
+}
+
+func TestCRLGeneralNameBindingsAndShapes(t *testing.T) {
+	c := makeChain(t)
+	at := verificationTime()
+	verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oid, err := der.Read(der.OID(asn1.ObjectIdentifier{1, 2, 3, 4}), 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	point := func(name []byte) []byte { return der.Ctx(0, der.Ctx(0, name)) }
+	for _, tc := range []struct {
+		name string
+		tag  int
+		body []byte
+	}{
+		{"IPv4", 7, []byte{192, 0, 2, 1}},
+		{"IPv6", 7, []byte{0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}},
+		{"registered ID", 8, oid.Bytes},
+		{"other name", 0, bytes.Join([][]byte{der.OID(asn1.ObjectIdentifier{1, 2, 3, 4}), der.Ctx(0, der.Wrap(0, asn1.TagUTF8String, false, []byte("name")))}, nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := der.Wrap(2, tc.tag, tc.tag == 0, tc.body)
+			leaf := p6LeafExtensions(t, c, []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 31}, Value: der.Seq(der.Seq(point(name)))}})
+			for _, matching := range []bool{true, false} {
+				body := bytes.Clone(tc.body)
+				if !matching {
+					body[len(body)-1] ^= 1
+				}
+				scope := der.Seq(point(der.Wrap(2, tc.tag, tc.tag == 0, body)))
+				raw := p6CRL(t, c, 1, at.Add(-time.Minute), at.Add(time.Hour), -1, scope, nil)
+				result, _, err := verifier.Verify(t.Context(), leaf.Raw, at, pki.Evidence{CRLs: [][]byte{raw}})
+				if matching {
+					if result == nil || err != nil {
+						t.Fatal("matching general name rejected", err)
+					}
+				} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
+					t.Fatal("unrelated general name authorized a CRL", result != nil, err)
+				}
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+	}{
+		{"short IP", der.Wrap(2, 7, false, []byte{192, 0, 2})},
+		{"constructed IP", der.Ctx(7, der.Octets([]byte{192, 0, 2, 1}))},
+		{"constructed registered ID", der.Ctx(8, der.OID(asn1.ObjectIdentifier{1, 2, 3}))},
+		{"invalid registered ID", der.Wrap(2, 8, false, []byte{0x80})},
+		{"primitive other name", der.Wrap(2, 0, false, []byte{1})},
+		{"other name missing value", der.Ctx(0, der.OID(asn1.ObjectIdentifier{1, 2, 3}))},
+		{"other name wrong OID", der.Ctx(0, der.Int(1), der.Ctx(0, der.Int(1)))},
+		{"other name wrong value wrapper", der.Ctx(0, der.OID(asn1.ObjectIdentifier{1, 2, 3}), der.Int(1))},
+		{"primitive directory name", der.Wrap(2, 4, false, []byte{1})},
+		{"constructed DNS name", der.Ctx(2, der.Octets([]byte("crl.example.test")))},
+		{"empty DNS name", der.Wrap(2, 2, false, nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := p6CRL(t, c, 1, at.Add(-time.Minute), at.Add(time.Hour), -1, der.Seq(point(tc.raw)), nil)
+			if result, _, err := verifier.Verify(t.Context(), c.leaf.Raw, at, pki.Evidence{CRLs: [][]byte{raw}}); result != nil || !errors.Is(err, pki.ErrEvidence) {
+				t.Fatal("malformed scope accepted or hidden", result != nil, err)
 			}
 		})
 	}
@@ -1812,6 +1964,247 @@ func TestHistoricalCurrentPolicy(t *testing.T) {
 	}
 }
 
+func TestHistoricalCurrentPolicyRechecksEvidence(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	chainOnly, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.NoRevocation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _, err := chainOnly.Verify(t.Context(), c.leaf.Raw, now, pki.Evidence{})
+	if err != nil || current == nil {
+		t.Fatal(err)
+	}
+	revoked := func(reason int) []byte {
+		return makeCRL(t, c, false, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour), RevokedCertificateEntries: []x509.RevocationListEntry{{SerialNumber: c.leaf.SerialNumber, RevocationTime: now.Add(-time.Minute), ReasonCode: reason}}})
+	}
+	strongHash := makeCRL(t, c, false, &x509.RevocationList{Number: big.NewInt(1), SignatureAlgorithm: x509.ECDSAWithSHA384, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour)})
+	for _, tc := range []struct {
+		name        string
+		lists       [][]byte
+		constraints []pki.CryptoConstraint
+		sub         string
+		want        error
+	}{
+		{"fresh good evidence", [][]byte{makeCRL(t, c, false, nil)}, nil, "", nil},
+		{"missing revocation evidence", nil, nil, "TRY_LATER", pki.ErrUnavailable},
+		{"revoked leaf", [][]byte{revoked(1)}, nil, "REVOKED_NO_POE", pki.ErrRevoked},
+		{"held leaf", [][]byte{revoked(6)}, nil, "TRY_LATER", pki.ErrRevoked},
+		{"CRL algorithm cutoff", [][]byte{strongHash}, []pki.CryptoConstraint{{SignatureAlgorithm: x509.ECDSAWithSHA384, ReliableUntil: now}}, "CRYPTO_CONSTRAINTS_FAILURE_NO_POE", pki.ErrPolicy},
+		{"CRL algorithm still reliable", [][]byte{strongHash}, []pki.CryptoConstraint{{SignatureAlgorithm: x509.ECDSAWithSHA384, ReliableUntil: now.Add(time.Second)}}, "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL}, CryptoConstraints: tc.constraints}, now, pki.Evidence{CRLs: tc.lists})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sub, err := session.CheckCurrentPolicy(t.Context(), current)
+			if sub != tc.sub || tc.want == nil && err != nil || tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("policy reassessment: %s, %v; want %s, %v", sub, err, tc.sub, tc.want)
+			}
+			if current.RevocationStatus() != pki.NotChecked {
+				t.Fatal("policy assessment mutated the original Result")
+			}
+		})
+	}
+}
+
+func TestHistoricalCurrentPolicyRevokedIntermediate(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	key := testcert.Key(t)
+	ca := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(44), Subject: pkix.Name{CommonName: "revocable intermediate"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{4, 5, 6}}, c.root, key.Public(), c.rootKey)
+	leaf := testcert.Issue(t, c.leaf, ca, c.leafKey.Public(), key)
+	config := pki.Config{Roots: [][]byte{c.root.Raw}, Intermediates: [][]byte{ca.Raw}, Revocation: pki.NoRevocation}
+	base, err := pki.NewVerifier(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _, err := base.Verify(t.Context(), leaf.Raw, now, pki.Evidence{})
+	if err != nil || current == nil || len(current.ChainDER()) != 3 {
+		t.Fatal("three-certificate control chain failed", err)
+	}
+	config.Revocation = pki.RequireCRL
+	leafList := makeCRL(t, chainData{root: ca, rootKey: key, leaf: leaf}, false, nil)
+	for _, revoked := range []bool{false, true} {
+		caList := makeCRL(t, chainData{root: c.root, rootKey: c.rootKey, leaf: ca}, revoked, nil)
+		session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: config}, now, pki.Evidence{CRLs: [][]byte{caList, leafList}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sub, err := session.CheckCurrentPolicy(t.Context(), current)
+		if revoked {
+			if sub != "REVOKED_CA_NO_POE" || !errors.Is(err, pki.ErrRevoked) {
+				t.Fatal("good leaf status concealed revoked issuer", sub, err)
+			}
+		} else if sub != "" || err != nil {
+			t.Fatal("unrevoked intermediate rejected", sub, err)
+		}
+	}
+}
+
+func TestHistoricalOCSPRejectsForgedEvidenceWithoutPoisoningGood(t *testing.T) {
+	c := makeChain(t)
+	issued := verificationTime()
+	now := issued.Add(3 * time.Hour)
+	good := p7Response(t, c, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: issued, ThisUpdate: issued.Add(-time.Minute), NextUpdate: issued.Add(time.Minute)})
+	forged := rewriteOCSPData(t, good, testcert.Key(t), ocspFieldBytes)
+	want := sha256.Sum256(good)
+	for _, tc := range []struct {
+		name      string
+		responses [][]byte
+		valid     bool
+	}{
+		{"forged response only", [][]byte{forged}, false},
+		{"forged before valid", [][]byte{forged, good}, true},
+		{"forged after valid", [][]byte{good, forged}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireOCSP}}, now, pki.Evidence{OCSPResponses: tc.responses})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), c.leaf.Raw)
+			if err != nil || len(paths) != 1 {
+				t.Fatal("control certificate path failed", len(paths), err)
+			}
+			facts, err := session.AuthenticateEvidence(t.Context(), paths[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.valid {
+				if len(facts) != 1 || facts[0].Kind() != pki.EvidenceOCSP || facts[0].FingerprintSHA256() != hex.EncodeToString(want[:]) || facts[0].AuthenticationStatus() != pki.Valid {
+					t.Fatal("forged response contaminated authenticated assertions", facts)
+				}
+			} else if len(facts) != 0 {
+				t.Fatal("forged response became authenticated evidence", facts)
+			}
+			objects := make([][]byte, 1, 1+len(tc.responses))
+			roles := make([]string, 1, 1+len(tc.responses))
+			objects[0], roles[0] = c.leaf.Raw, "certificate"
+			for _, raw := range tc.responses {
+				objects = append(objects, raw)
+				roles = append(roles, "ocsp")
+			}
+			result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, objects, roles, issued))
+			if tc.valid {
+				if result == nil || err != nil {
+					t.Fatal("forged extra response poisoned valid evidence", err)
+				}
+			} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
+				t.Fatal("proof of forged bytes substituted for authentication", result != nil, err)
+			}
+		})
+	}
+}
+
+func TestHistoricalCurrentPolicyDelegatedResponder(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	issued := now.Add(-time.Minute)
+	base, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.NoRevocation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _, err := base.Verify(t.Context(), c.leaf.Raw, now, pki.Evidence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := pki.CreateOCSPRequest(c.leaf.Raw, c.root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name        string
+		expires     time.Time
+		noCheck     bool
+		constraints []pki.CryptoConstraint
+		sub         string
+		want        error
+	}{
+		{"valid nocheck responder", now.Add(time.Hour), true, nil, "", nil},
+		{"responder expired after issuance", now.Add(-time.Second), true, nil, "REVOCATION_OUT_OF_BOUNDS_NO_POE", pki.ErrUnavailable},
+		{"responder status required", now.Add(time.Hour), false, nil, "TRY_LATER", pki.ErrUnavailable},
+		{"nocheck does not waive crypto cutoff", now.Add(time.Hour), true, []pki.CryptoConstraint{{SignatureAlgorithm: x509.ECDSAWithSHA384, ReliableUntil: now}}, "CRYPTO_CONSTRAINTS_FAILURE_NO_POE", pki.ErrPolicy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key := testcert.Key(t)
+			template := &x509.Certificate{SerialNumber: big.NewInt(44), SignatureAlgorithm: x509.ECDSAWithSHA384, Subject: pkix.Name{CommonName: "current policy responder"}, NotBefore: now.Add(-time.Hour), NotAfter: tc.expires, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}}
+			if tc.noCheck {
+				template.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 5}, Value: []byte{5, 0}}}
+			}
+			responder := testcert.Issue(t, template, c.root, key.Public(), c.rootKey)
+			raw, err := pki.CreateOCSPResponse(t.Context(), request, c.leaf.Raw, c.root.Raw, responder.Raw, key, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: issued, ThisUpdate: issued, NextUpdate: now.Add(time.Hour)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireOCSP}, CryptoConstraints: tc.constraints}, now, pki.Evidence{OCSPResponses: [][]byte{raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sub, err := session.CheckCurrentPolicy(t.Context(), current)
+			if sub != tc.sub || tc.want == nil && err != nil || tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("responder policy: %s, %v; want %s, %v", sub, err, tc.sub, tc.want)
+			}
+		})
+	}
+}
+
+func TestHistoricalNoCheckCertificateStillNeedsPreCutoffProof(t *testing.T) {
+	c := makeChain(t)
+	issued := verificationTime()
+	now := issued.Add(3 * time.Hour)
+	cutoff := issued.Add(-30 * time.Second)
+	key := testcert.Key(t)
+	responder := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(44), SignatureAlgorithm: x509.ECDSAWithSHA384, Subject: pkix.Name{CommonName: "historical nocheck responder"}, NotBefore: issued.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 5}, Value: []byte{5, 0}}}}, c.root, key.Public(), c.rootKey)
+	request, err := pki.CreateOCSPRequest(c.leaf.Raw, c.root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pki.CreateOCSPResponse(t.Context(), request, c.leaf.Raw, c.root.Raw, responder.Raw, key, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: issued, ThisUpdate: issued.Add(-time.Minute), NextUpdate: issued.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+		pass bool
+	}{
+		{"proof before cutoff", cutoff.Add(-time.Second), true},
+		{"proof exactly at cutoff", cutoff, false},
+		{"proof after cutoff", cutoff.Add(time.Second), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireOCSP}, CryptoConstraints: []pki.CryptoConstraint{{SignatureAlgorithm: x509.ECDSAWithSHA384, ReliableUntil: cutoff}}}, now, pki.Evidence{OCSPResponses: [][]byte{raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := sha256.Sum256([]byte("independent responder certificate proof"))
+			proofs, err := historicalproof.New(t.Context(), now, []historicalproof.Fact{{Digest: sha256.Sum256(c.leaf.Raw), Source: source, At: issued.Add(-2 * time.Minute), Kind: "certificate"}, {Digest: sha256.Sum256(raw), Source: source, At: issued, Kind: "ocsp"}, {Digest: sha256.Sum256(responder.Raw), Source: source, At: tc.at, Kind: "certificate"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, proofs)
+			if tc.pass {
+				if result == nil || err != nil || !result.ValidationTime().Equal(cutoff) {
+					t.Fatal("pre-cutoff proof did not protect responder certificate", result != nil, report.Transitions(), err)
+				}
+				found := false
+				for _, transition := range report.Transitions() {
+					if transition.Reason == "cryptographic-constraints" && transition.After.Equal(cutoff) {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("responder certificate cutoff was not applied", report.Transitions())
+				}
+			} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
+				t.Fatal("late proof bypassed responder certificate cutoff", result != nil, err)
+			}
+		})
+	}
+}
+
 func TestHistoricalCryptoAndSunsetProofs(t *testing.T) {
 	c := makeChain(t)
 	now := verificationTime()
@@ -1914,6 +2307,31 @@ func TestHistoricalOCSPAndConflictingSources(t *testing.T) {
 			}
 		})
 	}
+	t.Run("conflicting authenticated statuses with identical thisUpdate", func(t *testing.T) {
+		conflict := p7Response(t, c, pki.OCSPResponseTemplate{Status: pki.OCSPRevoked, ProducedAt: now, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Minute), RevokedAt: now.Add(-5 * time.Minute), RevocationReason: 1})
+		for _, reversed := range []bool{false, true} {
+			responses := [][]byte{latest, conflict}
+			if reversed {
+				responses[0], responses[1] = responses[1], responses[0]
+			}
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireOCSP}}, now, pki.Evidence{OCSPResponses: responses})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), c.leaf.Raw)
+			if err != nil || len(paths) != 1 {
+				t.Fatal(len(paths), err)
+			}
+			facts, err := session.AuthenticateEvidence(t.Context(), paths[0])
+			if err != nil || len(facts) != 2 {
+				t.Fatal("both conflicting signatures must authenticate", len(facts), err)
+			}
+			proofs := p7Proofs(t, now, [][]byte{c.leaf.Raw, latest, conflict}, []string{"certificate", "ocsp", "ocsp"}, now)
+			if result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, proofs); result != nil || !errors.Is(err, pki.ErrEvidence) || report.SubIndication() != "NO_POE" {
+				t.Fatal("input order resolved contradictory authenticated status", reversed, result != nil, report.SubIndication(), err)
+			}
+		}
+	})
 }
 
 func p7SingleExtension(t *testing.T, raw []byte, c chainData, extension pkix.Extension) []byte {
@@ -2087,6 +2505,362 @@ func TestHistoricalModelAndPathAlternatives(t *testing.T) {
 	}
 }
 
+func TestHistoricalPathCandidatesAndDepth(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	key := testcert.Key(t)
+	template := &x509.Certificate{SerialNumber: big.NewInt(40), Subject: pkix.Name{CommonName: "ambiguous intermediate"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{4, 5, 6}}
+	valid := testcert.Issue(t, template, c.root, key.Public(), c.rootKey)
+	wrongKeyTemplate := *template
+	wrongKeyTemplate.SerialNumber = big.NewInt(41)
+	wrongKey := testcert.Issue(t, &wrongKeyTemplate, c.root, testcert.Key(t).Public(), c.rootKey)
+	wrongIDTemplate := *template
+	wrongIDTemplate.SerialNumber = big.NewInt(42)
+	wrongIDTemplate.SubjectKeyId = []byte{9, 9, 9}
+	wrongID := testcert.Issue(t, &wrongIDTemplate, c.root, key.Public(), c.rootKey)
+	leaf := testcert.Issue(t, c.leaf, valid, c.leafKey.Public(), key)
+	for _, intermediates := range [][][]byte{{wrongKey.Raw, wrongID.Raw, valid.Raw}, {valid.Raw, wrongID.Raw, wrongKey.Raw}} {
+		session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}}}, now, pki.Evidence{Intermediates: intermediates})
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths, err := session.Paths(t.Context(), leaf.Raw)
+		if err != nil || len(paths) != 2 {
+			t.Fatal("AKI mismatch was included or matching candidate lost", len(paths), err)
+		}
+		accepted := 0
+		for _, path := range paths {
+			chain := path.ChainDER()
+			if len(chain) != 3 || bytes.Equal(chain[1], wrongID.Raw) {
+				t.Fatal("unexpected candidate path", len(chain))
+			}
+			assessment, err := session.CheckPath(t.Context(), path)
+			if bytes.Equal(chain[1], valid.Raw) {
+				if assessment == nil || err != nil {
+					t.Fatal("valid selected path rejected", err)
+				}
+				accepted++
+			} else if assessment != nil || !errors.Is(err, pki.ErrCertificate) {
+				t.Fatal("wrong-key issuer borrowed another path's validity", assessment != nil, err)
+			}
+		}
+		current, _, err := session.VerifyCurrent(t.Context(), leaf.Raw)
+		if err != nil || current == nil || accepted != 1 || !bytes.Equal(current.ChainDER()[1], valid.Raw) {
+			t.Fatal("invalid prospective path masked the valid chain", accepted, err)
+		}
+	}
+	for _, maximum := range []int{2, 3} {
+		session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, MaxChainDepth: maximum}}, now, pki.Evidence{Intermediates: [][]byte{valid.Raw}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths, err := session.Paths(t.Context(), leaf.Raw)
+		if maximum == 2 {
+			if paths != nil || !errors.Is(err, pki.ErrLimit) || !errors.Is(err, pki.ErrPolicy) {
+				t.Fatal("path search returned partial success beyond depth limit", len(paths), err)
+			}
+		} else if err != nil || len(paths) != 1 {
+			t.Fatal("exact chain-depth boundary rejected", len(paths), err)
+		}
+	}
+}
+
+func TestHistoricalCurrentPolicyMatchesExactAlternativePath(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	key := testcert.Key(t)
+	template := &x509.Certificate{SerialNumber: big.NewInt(40), Subject: pkix.Name{CommonName: "equivalent intermediate key"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{4, 5, 6}}
+	first := testcert.Issue(t, template, c.root, key.Public(), c.rootKey)
+	secondTemplate := *template
+	secondTemplate.SerialNumber = big.NewInt(41)
+	second := testcert.Issue(t, &secondTemplate, c.root, key.Public(), c.rootKey)
+	leaf := testcert.Issue(t, c.leaf, first, c.leafKey.Public(), key)
+	rootList := makeCRL(t, c, false, nil)
+	leafList := makeCRL(t, chainData{root: first, rootKey: key, leaf: leaf}, false, nil)
+	session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL}}, now, pki.Evidence{Intermediates: [][]byte{first.Raw, second.Raw}, CRLs: [][]byte{rootList, leafList}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := session.Paths(t.Context(), leaf.Raw)
+	if err != nil || len(paths) != 2 {
+		t.Fatal("expected two valid prospective chains", len(paths), err)
+	}
+	for _, path := range paths {
+		if assessment, err := session.CheckPath(t.Context(), path); assessment == nil || err != nil {
+			t.Fatal("control candidate is not valid", err)
+		}
+	}
+	// Select the last discovered exact chain, regardless of randomized DER order.
+	// Policy evaluation must skip the earlier alternative and find this Result's
+	// original intermediate certificate, even though both intermediates share a key.
+	selected := paths[len(paths)-1].ChainDER()
+	verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.root.Raw}, Intermediates: [][]byte{selected[1]}, Revocation: pki.NoRevocation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _, err := verifier.Verify(t.Context(), leaf.Raw, now, pki.Evidence{})
+	if err != nil || current == nil || !bytes.Equal(current.ChainDER()[1], selected[1]) {
+		t.Fatal("control Result did not retain the selected chain", err)
+	}
+	if sub, err := session.CheckCurrentPolicy(t.Context(), current); err != nil || sub != "" {
+		t.Fatal("an earlier equivalent-key path masked the exact Result chain", sub, err)
+	}
+}
+
+func TestHistoricalPathPreservesNameAndUsageConstraints(t *testing.T) {
+	c := makeChain(t)
+	at := verificationTime()
+	for _, tc := range []struct {
+		name, dns string
+		caUsage   []x509.ExtKeyUsage
+		pass      bool
+	}{
+		{"permitted DNS subtree", "service.allowed.example", nil, true},
+		{"outside permitted subtree", "outside.example", nil, false},
+		{"excluded DNS subtree", "blocked.allowed.example", nil, false},
+		{"intermediate EKU restricts signer purpose", "service.allowed.example", []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key := testcert.Key(t)
+			ca := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(40), Subject: pkix.Name{CommonName: "constrained historical intermediate"}, NotBefore: at.Add(-2 * time.Hour), NotAfter: at.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign, ExtKeyUsage: tc.caUsage, SubjectKeyId: []byte{4, 5, 6}, PermittedDNSDomainsCritical: true, PermittedDNSDomains: []string{"allowed.example"}, ExcludedDNSDomains: []string{"blocked.allowed.example"}}, c.root, key.Public(), c.rootKey)
+			leaf := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(41), Subject: c.leaf.Subject, DNSNames: []string{tc.dns}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(30 * time.Minute), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning}}, ca, c.leafKey.Public(), key)
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning}}}, at.Add(3*time.Hour), pki.Evidence{Intermediates: [][]byte{ca.Raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current, _, err := session.VerifyCurrent(t.Context(), leaf.Raw); current != nil || !errors.Is(err, pki.ErrCertificate) {
+				t.Fatal("expired control chain unexpectedly passed current validation", err)
+			}
+			paths, err := session.Paths(t.Context(), leaf.Raw)
+			if err != nil || len(paths) != 1 {
+				t.Fatal("candidate enumeration conflated structure with trust", len(paths), err)
+			}
+			assessment, err := session.CheckPath(t.Context(), paths[0])
+			if tc.pass {
+				if assessment == nil || err != nil || !assessment.ReferenceTime().Equal(leaf.NotBefore) {
+					t.Fatal("valid historical chain rejected", err)
+				}
+			} else if assessment != nil || !errors.Is(err, pki.ErrCertificate) {
+				t.Fatal("historical calendar adaptation removed chain constraints", assessment != nil, err)
+			}
+		})
+	}
+}
+
+func TestHistoricalEvidenceCertificatesNeverBecomeAnchors(t *testing.T) {
+	c := makeChain(t)
+	key := testcert.Key(t)
+	template := *c.root
+	template.Subject = pkix.Name{CommonName: "root supplied only as evidence"}
+	template.PublicKey = key.Public()
+	template.RawSubject, template.RawIssuer = nil, nil
+	root := testcert.Issue(t, &template, &template, key.Public(), key)
+	leaf := testcert.Issue(t, c.leaf, root, c.leafKey.Public(), key)
+	for _, tc := range []struct {
+		name  string
+		roots [][]byte
+		pass  bool
+	}{
+		{"untrusted root in intermediates", [][]byte{c.root.Raw}, false},
+		{"issuer explicitly pinned", [][]byte{root.Raw}, true},
+		{"multiple explicit anchors", [][]byte{c.root.Raw, root.Raw}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: tc.roots}}, verificationTime(), pki.Evidence{Intermediates: [][]byte{root.Raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), leaf.Raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, _, err := session.VerifyCurrent(t.Context(), leaf.Raw)
+			if tc.pass {
+				if len(paths) != 1 || current == nil || err != nil || !bytes.Equal(current.ChainDER()[1], root.Raw) {
+					t.Fatal("explicit trust anchor rejected", len(paths), err)
+				}
+				if assessment, err := session.CheckPath(t.Context(), paths[0]); assessment == nil || err != nil {
+					t.Fatal("pinned historical path rejected", err)
+				}
+			} else if len(paths) != 0 || current != nil || !errors.Is(err, pki.ErrCertificate) {
+				t.Fatal("untrusted evidence promoted to a trust anchor", len(paths), current != nil, err)
+			}
+		})
+	}
+}
+
+func TestTSAAlternativeChainsApplyRevocationToExactCertificates(t *testing.T) {
+	c := makeChain(t)
+	other := testcert.New(t)
+	now := verificationTime()
+	key := testcert.Key(t)
+	template := &x509.Certificate{SerialNumber: big.NewInt(40), Subject: pkix.Name{CommonName: "cross-signed TSA issuer"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{4, 5, 6}}
+	first := testcert.Issue(t, template, c.root, key.Public(), c.rootKey)
+	secondTemplate := *template
+	secondTemplate.SerialNumber = big.NewInt(41)
+	second := testcert.Issue(t, &secondTemplate, other.Root, key.Public(), other.RootKey)
+	eku, err := asn1.Marshal([]asn1.ObjectIdentifier{{1, 3, 6, 1, 5, 5, 7, 3, 8}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(77), Subject: pkix.Name{CommonName: "cross-signed path TSA"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Critical: true, Value: eku}}}, first, c.leafKey.Public(), key)
+	policy := asn1.ObjectIdentifier{1, 2, 3, 4, 1}
+	request, err := timestamp.CreateRequest(t.Context(), []byte("alternative TSA paths"), timestamp.RequestOptions{Policy: policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := timestamp.IssueResponse(t.Context(), request.DER(), c.leafKey, leaf.Raw, timestamp.IssueOptions{Policy: policy, SerialNumber: big.NewInt(1), GenTime: now, ExtraCertificates: [][]byte{first.Raw, second.Raw, c.root.Raw, other.Root.Raw}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name                      string
+		first, second, tsaRevoked bool
+	}{
+		{"both issuer certificates valid", false, false, false},
+		{"first issuer certificate revoked", true, false, false},
+		{"second issuer certificate revoked", false, true, false},
+		{"both issuer certificates revoked", true, true, false},
+		{"TSA revoked under every chain", false, false, true},
+		{"alternate issuer cannot hide TSA revocation", true, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lists := [][]byte{
+				makeCRL(t, chainData{root: c.root, rootKey: c.rootKey, leaf: first}, tc.first, nil),
+				makeCRL(t, chainData{root: other.Root, rootKey: other.RootKey, leaf: second}, tc.second, nil),
+				makeCRL(t, chainData{root: first, rootKey: key, leaf: leaf}, tc.tsaRevoked, nil),
+			}
+			for _, mode := range []pki.RevocationMode{pki.RequireCRL, pki.RequireOCSP} {
+				t.Run(string(mode), func(t *testing.T) {
+					proof := pki.Evidence{CRLs: lists}
+					if mode == pki.RequireOCSP {
+						proof = pki.Evidence{}
+						for _, pair := range []struct {
+							certificate, issuer *x509.Certificate
+							signer              crypto.Signer
+							revoked             bool
+						}{
+							{first, c.root, c.rootKey, tc.first},
+							{second, other.Root, other.RootKey, tc.second},
+							{leaf, first, key, tc.tsaRevoked},
+						} {
+							query, err := pki.CreateOCSPRequest(pair.certificate.Raw, pair.issuer.Raw, crypto.SHA256, nil)
+							if err != nil {
+								t.Fatal(err)
+							}
+							status := pki.OCSPGood
+							if pair.revoked {
+								status = pki.OCSPRevoked
+							}
+							raw, err := pki.CreateOCSPResponse(t.Context(), query, pair.certificate.Raw, pair.issuer.Raw, pair.issuer.Raw, pair.signer, pki.OCSPResponseTemplate{Status: status, ProducedAt: now, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour), RevokedAt: now.Add(-time.Minute), RevocationReason: 1})
+							if err != nil {
+								t.Fatal(err)
+							}
+							proof.OCSPResponses = append(proof.OCSPResponses, raw)
+						}
+					}
+					for _, reversed := range []bool{false, true} {
+						roots, intermediates := [][]byte{c.root.Raw, other.Root.Raw}, [][]byte{first.Raw, second.Raw}
+						if reversed {
+							roots[0], roots[1] = roots[1], roots[0]
+							intermediates[0], intermediates[1] = intermediates[1], intermediates[0]
+						}
+						config := pki.Config{Roots: roots, Intermediates: intermediates, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageTimeStamping}, Revocation: mode}
+						verifier, err := pki.NewVerifier(config)
+						if err != nil {
+							t.Fatal(err)
+						}
+						result, report, err := verifier.Verify(t.Context(), leaf.Raw, now, proof)
+						tsa, setupErr := timestamp.NewVerifier(timestamp.Config{PKI: config, AllowedPolicies: []asn1.ObjectIdentifier{policy}})
+						if setupErr != nil {
+							t.Fatal(setupErr)
+						}
+						stamp, stampErr := tsa.VerifyResponse(t.Context(), response, request, now, proof)
+						if tc.tsaRevoked || tc.first && tc.second {
+							if result != nil || stamp != nil || !errors.Is(err, pki.ErrRevoked) || !errors.Is(stampErr, pki.ErrRevoked) || report.Revocation != pki.Invalid {
+								t.Fatal("alternative path bypassed revocation", reversed, result != nil, stamp != nil, report, err, stampErr)
+							}
+							continue
+						}
+						if result == nil || stamp == nil || err != nil || stampErr != nil || report.Revocation != pki.Valid {
+							t.Fatal("revoked alternate issuer poisoned valid path", reversed, report, err, stampErr)
+						}
+						for _, chain := range [][][]byte{result.ChainDER(), stamp.Trust().ChainDER()} {
+							if len(chain) != 3 || tc.first && !bytes.Equal(chain[1], second.Raw) || tc.second && !bytes.Equal(chain[1], first.Raw) {
+								t.Fatal("result retained a revoked intermediate", reversed)
+							}
+						}
+						for _, accepted := range []*pki.Result{result, stamp.Trust()} {
+							chain := accepted.ChainDER()
+							status := "good"
+							if mode == pki.RequireCRL {
+								status = "not-listed"
+							}
+							expected := map[string]bool{}
+							for _, raw := range chain[:len(chain)-1] {
+								digest := sha256.Sum256(raw)
+								expected[hex.EncodeToString(digest[:])] = true
+							}
+							for _, fact := range accepted.Evidence() {
+								if fact.AssertedStatus() != status || !expected[fact.TargetCertificateSHA256()] || fact.AuthenticationStatus() != pki.Valid {
+									t.Fatal("accepted result contains status from a rejected path")
+								}
+								delete(expected, fact.TargetCertificateSHA256())
+							}
+							if len(expected) != 0 {
+								t.Fatal("accepted result lost evidence for its selected path")
+							}
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAlternativeChainsRespectDepthPolicy(t *testing.T) {
+	c := makeChain(t)
+	other := testcert.New(t)
+	now := verificationTime()
+	bridgeKey, issuerKey := testcert.Key(t), testcert.Key(t)
+	bridge := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(50), Subject: pkix.Name{CommonName: "long path bridge"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{5, 0}}, c.root, bridgeKey.Public(), c.rootKey)
+	template := &x509.Certificate{SerialNumber: big.NewInt(51), Subject: pkix.Name{CommonName: "alternative depth issuer"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{5, 1}}
+	long := testcert.Issue(t, template, bridge, issuerKey.Public(), bridgeKey)
+	shortTemplate := *template
+	shortTemplate.SerialNumber = big.NewInt(52)
+	short := testcert.Issue(t, &shortTemplate, other.Root, issuerKey.Public(), other.RootKey)
+	leaf := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(53), Subject: c.leaf.Subject, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}, long, c.leafKey.Public(), issuerKey)
+	for _, tc := range []struct {
+		maximum, length int
+		anchor          *x509.Certificate
+	}{
+		{4, 4, c.root},
+		{3, 3, other.Root},
+		{2, 0, nil},
+	} {
+		t.Run(strconv.Itoa(tc.maximum), func(t *testing.T) {
+			verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.root.Raw, other.Root.Raw}, Intermediates: [][]byte{long.Raw, bridge.Raw, short.Raw}, MaxChainDepth: tc.maximum})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, report, err := verifier.Verify(t.Context(), leaf.Raw, now, pki.Evidence{})
+			if tc.length == 0 {
+				if result != nil || !errors.Is(err, pki.ErrPolicy) || report.Chain != pki.Invalid || report.Revocation != pki.NotChecked {
+					t.Fatal("all candidate paths exceed the configured depth", result != nil, report, err)
+				}
+				return
+			}
+			if result == nil || err != nil || report.Chain != pki.Valid || report.ChainLength != tc.length {
+				t.Fatal("depth-rejected candidate masked a valid alternative", report, err)
+			}
+			chain := result.ChainDER()
+			if len(chain) != tc.length || !bytes.Equal(chain[len(chain)-1], tc.anchor.Raw) {
+				t.Fatal("wrong accepted path or anchor")
+			}
+		})
+	}
+}
+
 func TestHistoricalDelegatedSourcePaths(t *testing.T) {
 	c := makeChain(t)
 	now := verificationTime().Add(3 * time.Hour)
@@ -2157,6 +2931,581 @@ func TestHistoricalDelegatedSourcePaths(t *testing.T) {
 				}
 			} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
 				t.Fatal(result != nil, err)
+			}
+		})
+	}
+}
+
+func TestHistoricalLocalOCSPAuthorityBindsExactCertificates(t *testing.T) {
+	c := makeChain(t)
+	other := testcert.New(t)
+	now := verificationTime()
+	// Reissuing the same CA key does not transfer an issuer-scoped grant.
+	issuerTemplate := *c.root
+	issuerTemplate.SerialNumber = big.NewInt(240)
+	issuerAlias := testcert.Issue(t, &issuerTemplate, &issuerTemplate, c.rootKey.Public(), c.rootKey)
+	responderTemplate := *other.Leaf
+	responderTemplate.SerialNumber = big.NewInt(241)
+	responderAlias := testcert.Issue(t, &responderTemplate, other.Root, other.LeafKey.Public(), other.RootKey)
+	if !bytes.Equal(issuerAlias.RawSubject, c.root.RawSubject) || !bytes.Equal(issuerAlias.RawSubjectPublicKeyInfo, c.root.RawSubjectPublicKeyInfo) || bytes.Equal(issuerAlias.Raw, c.root.Raw) || !bytes.Equal(responderAlias.RawSubjectPublicKeyInfo, other.Leaf.RawSubjectPublicKeyInfo) {
+		t.Fatal("control aliases must retain names/keys but have distinct encodings")
+	}
+	query, err := pki.CreateOCSPRequest(c.leaf.Raw, c.root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pki.CreateOCSPResponse(t.Context(), query, c.leaf.Raw, c.root.Raw, other.Leaf.Raw, other.LeafKey, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: now, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact := pki.OCSPAuthority{ResponderCertificateDER: other.Leaf.Raw, IssuerCertificateDER: c.root.Raw}
+	wrongIssuer := pki.OCSPAuthority{ResponderCertificateDER: other.Leaf.Raw, IssuerCertificateDER: issuerAlias.Raw}
+	reissuedResponder := pki.OCSPAuthority{ResponderCertificateDER: responderAlias.Raw, IssuerCertificateDER: c.root.Raw}
+	for _, tc := range []struct {
+		name   string
+		grants []pki.OCSPAuthority
+		pass   bool
+		alias  bool
+	}{
+		{"received responder certificate grants no authority", nil, false, false},
+		{"exact issuer and responder", []pki.OCSPAuthority{exact}, true, false},
+		{"same issuer name and key but different certificate", []pki.OCSPAuthority{wrongIssuer}, false, false},
+		{"explicit reissued responder with same signing key", []pki.OCSPAuthority{reissuedResponder}, true, true},
+		{"unrelated scope before exact grant", []pki.OCSPAuthority{wrongIssuer, exact}, true, false},
+		{"unrelated scope after exact grant", []pki.OCSPAuthority{exact, wrongIssuer}, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireOCSP, OCSPAuthorities: tc.grants}
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: config}, now, pki.Evidence{OCSPResponses: [][]byte{raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), c.leaf.Raw)
+			if err != nil || len(paths) != 1 {
+				t.Fatal(len(paths), err)
+			}
+			facts, err := session.AuthenticateEvidence(t.Context(), paths[0])
+			if err != nil || tc.pass && len(facts) != 1 || !tc.pass && len(facts) != 0 {
+				t.Fatal("issuer-scoped historical authentication", len(facts), err)
+			}
+			current, _, currentErr := session.VerifyCurrent(t.Context(), c.leaf.Raw)
+			past, _, pastErr := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "ocsp"}, now))
+			if !tc.pass {
+				if current != nil || past != nil || !errors.Is(currentErr, pki.ErrUnavailable) || !errors.Is(pastErr, pki.ErrUnavailable) {
+					t.Fatal("grant crossed an exact certificate boundary", current != nil, past != nil, currentErr, pastErr)
+				}
+				return
+			}
+			if current == nil || past == nil || currentErr != nil || pastErr != nil || !past.ValidationTime().Equal(now) {
+				t.Fatal("explicit scoped authority rejected", currentErr, pastErr)
+			}
+			if sub, err := session.CheckCurrentPolicy(t.Context(), current); sub != "" || err != nil {
+				t.Fatal("scoped authority lost during current policy evaluation", sub, err)
+			}
+			fact := facts[0]
+			signerPath := fact.SignerChainDER()
+			responder := other.Leaf
+			if tc.alias {
+				responder = responderAlias
+			}
+			if fact.SignerAuthority() != "local" || fact.AuthenticationStatus() != pki.Valid || len(signerPath) != 1 || !bytes.Equal(signerPath[0], responder.Raw) {
+				t.Fatal("local grant was confused with a delegated PKIX chain")
+			}
+			if chain := current.ChainDER(); len(chain) != 2 || !bytes.Equal(chain[1], c.root.Raw) {
+				t.Fatal("local OCSP grant changed the target trust anchor")
+			}
+		})
+	}
+	t.Run("two explicitly authorized signer certificates remain ambiguous", func(t *testing.T) {
+		for _, reversed := range []bool{false, true} {
+			grants := []pki.OCSPAuthority{exact, reissuedResponder}
+			if reversed {
+				grants[0], grants[1] = grants[1], grants[0]
+			}
+			if result, _, err := pki.VerifyOCSP(t.Context(), raw, c.leaf.Raw, c.root.Raw, now, pki.OCSPOptions{Authorities: grants}); result != nil || !errors.Is(err, pki.ErrEvidence) {
+				t.Fatal("ambiguous local authority selected by input order", reversed, err)
+			}
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireOCSP, OCSPAuthorities: grants}}, now, pki.Evidence{OCSPResponses: [][]byte{raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), c.leaf.Raw)
+			if err != nil || len(paths) != 1 {
+				t.Fatal(len(paths), err)
+			}
+			if facts, err := session.AuthenticateEvidence(t.Context(), paths[0]); facts != nil || !errors.Is(err, pki.ErrEvidence) {
+				t.Fatal("historical authentication published ambiguous signer facts", reversed, len(facts), err)
+			}
+			if result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "ocsp"}, now)); result != nil || !errors.Is(err, pki.ErrEvidence) {
+				t.Fatal("past validation accepted an ambiguous local authority", reversed, err)
+			}
+		}
+	})
+}
+
+func TestHistoricalOCSPSourcePathsKeepSelectedAnchor(t *testing.T) {
+	c := makeChain(t)
+	other := testcert.New(t)
+	issued, now := verificationTime(), verificationTime().Add(3*time.Hour)
+	issuerKey, responderKey := testcert.Key(t), testcert.Key(t)
+	template := &x509.Certificate{SerialNumber: big.NewInt(250), Subject: pkix.Name{CommonName: "historical cross-signed OCSP issuer"}, NotBefore: issued.Add(-time.Hour), NotAfter: issued.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{2, 5, 0}}
+	first := testcert.Issue(t, template, c.root, issuerKey.Public(), c.rootKey)
+	secondTemplate := *template
+	secondTemplate.SerialNumber = big.NewInt(251)
+	second := testcert.Issue(t, &secondTemplate, other.Root, issuerKey.Public(), other.RootKey)
+	leaf := testcert.Issue(t, c.leaf, first, c.leafKey.Public(), issuerKey)
+	responder := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(252), Subject: pkix.Name{CommonName: "cross-signed issuer responder"}, NotBefore: issued.Add(-time.Hour), NotAfter: issued.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 5}, Value: []byte{5, 0}}}}, first, responderKey.Public(), issuerKey)
+	response := func(target, issuer, signer *x509.Certificate, key crypto.Signer) []byte {
+		t.Helper()
+		query, err := pki.CreateOCSPRequest(target.Raw, issuer.Raw, crypto.SHA256, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := pki.CreateOCSPResponse(t.Context(), query, target.Raw, issuer.Raw, signer.Raw, key, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: issued, ThisUpdate: issued.Add(-time.Minute), NextUpdate: now.Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	responses := [][]byte{response(leaf, first, responder, responderKey), response(first, c.root, c.root, c.rootKey), response(second, other.Root, other.Root, other.RootKey)}
+	sunset := now.Add(-30 * time.Minute)
+	anchor := sha256.Sum256(c.root.Raw)
+	session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw, other.Root.Raw}, Revocation: pki.RequireOCSP}, TrustAnchorSunsets: map[string]time.Time{hex.EncodeToString(anchor[:]): sunset}}, now, pki.Evidence{Intermediates: [][]byte{first.Raw, second.Raw}, OCSPResponses: responses})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := session.Paths(t.Context(), leaf.Raw)
+	if err != nil || len(paths) != 2 {
+		t.Fatal("expected two exact historical chains", len(paths), err)
+	}
+	leafDigest := sha256.Sum256(leaf.Raw)
+	for _, path := range paths {
+		chain := path.ChainDER()
+		if len(chain) != 3 {
+			t.Fatal("unexpected target chain length", len(chain))
+		}
+		facts, err := session.AuthenticateEvidence(t.Context(), path)
+		if err != nil || len(facts) != 2 {
+			t.Fatal("wrong path-bound historical assertions", len(facts), err)
+		}
+		found := false
+		for _, fact := range facts {
+			if fact.TargetCertificateSHA256() != hex.EncodeToString(leafDigest[:]) {
+				continue
+			}
+			found = true
+			source := fact.SignerChainDER()
+			if fact.SignerAuthority() != "delegated" || len(source) != 3 || !bytes.Equal(source[0], responder.Raw) || !bytes.Equal(source[1], chain[1]) || !bytes.Equal(source[2], chain[2]) {
+				t.Fatal("responder path borrowed another target chain's anchor")
+			}
+		}
+		if !found {
+			t.Fatal("missing delegated target status")
+		}
+		for _, omitExactIssuer := range []bool{false, true} {
+			objects, roles := [][]byte{leaf.Raw, responder.Raw}, []string{"certificate", "certificate"}
+			for _, certificate := range []*x509.Certificate{first, second} {
+				if !omitExactIssuer || !bytes.Equal(certificate.Raw, chain[1]) {
+					objects, roles = append(objects, certificate.Raw), append(roles, "certificate")
+				}
+			}
+			for _, raw := range responses {
+				objects, roles = append(objects, raw), append(roles, "ocsp")
+			}
+			result, _, err := session.ValidatePastPath(t.Context(), path, p7Proofs(t, now, objects, roles, issued))
+			if omitExactIssuer {
+				if result != nil || !errors.Is(err, pki.ErrUnavailable) {
+					t.Fatal("equivalent CA key substituted for exact certificate PoE", result != nil, err)
+				}
+				continue
+			}
+			want := now
+			if bytes.Equal(chain[2], c.root.Raw) {
+				want = sunset
+			}
+			if result == nil || err != nil || !result.ValidationTime().Equal(want) || result.Path().FingerprintSHA256() != path.FingerprintSHA256() {
+				t.Fatal("historical chain inherited another anchor's policy", result != nil, err)
+			}
+		}
+	}
+}
+
+func TestHistoricalOCSPAuthorizationCyclesAndDepth(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cyclic  bool
+		maximum int
+		want    error
+	}{
+		{"dependency exceeds depth two", false, 2, pki.ErrLimit},
+		{"dependency exactly at depth three", false, 3, nil},
+		{"dependency below depth four", false, 4, nil},
+		{"depth limit precedes cycle", true, 2, pki.ErrLimit},
+		{"authorization cycle at depth three", true, 3, pki.ErrUnavailable},
+		{"cycle remains rejected with larger budget", true, 4, pki.ErrUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, input := historicalResponderGraph(t, tc.cyclic)
+			now := verificationTime().Add(30 * time.Minute)
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, MaxChainDepth: tc.maximum, Revocation: pki.RequireOCSP}}, now, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, err := session.Paths(t.Context(), c.leaf.Raw)
+			if err != nil || len(paths) != 1 || len(paths[0].ChainDER()) != 2 {
+				t.Fatal("target chain itself must fit the depth budget", len(paths), err)
+			}
+			facts, err := session.AuthenticateEvidence(t.Context(), paths[0])
+			if err != nil || len(facts) != 1 || facts[0].Kind() != pki.EvidenceOCSP || facts[0].SignerAuthority() != "delegated" {
+				t.Fatal("control OCSP signature must authenticate before dependency evaluation", len(facts), err)
+			}
+			base, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.root.Raw}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, _, err := base.Verify(t.Context(), c.leaf.Raw, now, pki.Evidence{})
+			if err != nil || current == nil {
+				t.Fatal(err)
+			}
+			sub, policyErr := session.CheckCurrentPolicy(t.Context(), current)
+			objects, roles := [][]byte{c.leaf.Raw}, []string{"certificate"}
+			for index, group := range [][][]byte{input.Intermediates, input.CRLs, input.OCSPResponses} {
+				for _, raw := range group {
+					objects, roles = append(objects, raw), append(roles, []string{"certificate", "crl", "ocsp"}[index])
+				}
+			}
+			proofs := p7Proofs(t, now, objects, roles, verificationTime())
+			// Repeat evaluation after failure to verify that active-path state is local
+			// to the operation and does not poison this session's authenticated cache.
+			for range 2 {
+				result, report, pastErr := session.ValidatePast(t.Context(), c.leaf.Raw, proofs)
+				if tc.want == nil {
+					if result == nil || policyErr != nil || sub != "" || pastErr != nil || !result.ValidationTime().Equal(now) {
+						t.Fatal("valid dependency rejected at exact depth boundary", sub, policyErr, report.Transitions(), pastErr)
+					}
+					continue
+				}
+				if result != nil || !errors.Is(policyErr, tc.want) || !errors.Is(pastErr, tc.want) || sub != "REVOCATION_OUT_OF_BOUNDS_NO_POE" || report.SubIndication() != "NO_POE" {
+					t.Fatal("cycle/depth failure returned acceptance or wrong cause", result != nil, sub, policyErr, pastErr)
+				}
+				if errors.Is(tc.want, pki.ErrLimit) {
+					if !errors.Is(policyErr, pki.ErrPolicy) || !errors.Is(pastErr, pki.ErrPolicy) || !strings.Contains(pastErr.Error(), "authorization depth") {
+						t.Fatal("lost authorization-depth diagnostic", policyErr, pastErr)
+					}
+				} else if errors.Is(pastErr, pki.ErrLimit) || !strings.Contains(pastErr.Error(), "authorization cycle") {
+					t.Fatal("cycle was treated as ordinary depth exhaustion", pastErr)
+				}
+			}
+		})
+	}
+}
+
+func TestHistoricalCertificateCyclesAndEscapingPath(t *testing.T) {
+	c := makeChain(t)
+	now := verificationTime()
+	firstKey, secondKey := testcert.Key(t), testcert.Key(t)
+	firstTemplate := &x509.Certificate{SerialNumber: big.NewInt(270), Subject: pkix.Name{CommonName: "cycle CA A"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{2, 7, 0}}
+	secondTemplate := &x509.Certificate{SerialNumber: big.NewInt(271), Subject: pkix.Name{CommonName: "cycle CA B"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{2, 7, 1}}
+	first := testcert.Issue(t, firstTemplate, secondTemplate, firstKey.Public(), secondKey)
+	second := testcert.Issue(t, secondTemplate, firstTemplate, secondKey.Public(), firstKey)
+	if first.CheckSignatureFrom(second) != nil || second.CheckSignatureFrom(first) != nil {
+		t.Fatal("cyclic issuer graph must contain valid certificate signatures")
+	}
+	escapeTemplate := *firstTemplate
+	escapeTemplate.SerialNumber = big.NewInt(272)
+	escape := testcert.Issue(t, &escapeTemplate, c.root, firstKey.Public(), c.rootKey)
+	leaf := testcert.Issue(t, c.leaf, first, c.leafKey.Public(), firstKey)
+	rootCRL := makeCRL(t, c, false, nil)
+	leafCRL := makeCRL(t, chainData{root: escape, rootKey: firstKey}, false, nil)
+	proofs := p7Proofs(t, now, [][]byte{leaf.Raw, first.Raw, second.Raw, escape.Raw, rootCRL, leafCRL}, []string{"certificate", "certificate", "certificate", "certificate", "crl", "crl"}, now)
+	for _, tc := range []struct {
+		name                string
+		intermediates       [][]byte
+		maximum, candidates int
+		want                error
+	}{
+		{"unanchored cycle terminates", [][]byte{first.Raw, second.Raw}, 3, 0, pki.ErrUnavailable},
+		{"anchored control at exact path depth", [][]byte{escape.Raw}, 3, 1, nil},
+		{"cycle does not mask anchored escape", [][]byte{first.Raw, second.Raw, escape.Raw}, 5, 2, nil},
+		{"overdeep candidate prevents partial historical success", [][]byte{first.Raw, second.Raw, escape.Raw}, 4, 0, pki.ErrLimit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL, MaxChainDepth: tc.maximum}}, now, pki.Evidence{Intermediates: tc.intermediates, CRLs: [][]byte{rootCRL, leafCRL}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths, pathErr := session.Paths(t.Context(), leaf.Raw)
+			if errors.Is(tc.want, pki.ErrLimit) {
+				if paths != nil || !errors.Is(pathErr, pki.ErrLimit) || !errors.Is(pathErr, pki.ErrPolicy) {
+					t.Fatal("overdeep search published partial candidates", len(paths), pathErr)
+				}
+			} else if pathErr != nil || len(paths) != tc.candidates {
+				t.Fatal("cyclic issuer graph did not terminate with exact candidates", len(paths), pathErr)
+			}
+			valid := 0
+			for _, path := range paths {
+				seen := make(map[[32]byte]bool)
+				for _, raw := range path.ChainDER() {
+					digest := sha256.Sum256(raw)
+					if seen[digest] {
+						t.Fatal("candidate repeated an exact certificate")
+					}
+					seen[digest] = true
+				}
+				assessment, err := session.CheckPath(t.Context(), path)
+				if err == nil && assessment != nil {
+					valid++
+				} else if assessment != nil || !errors.Is(err, pki.ErrCertificate) {
+					t.Fatal("unexpected failure of cyclic prospective path", err)
+				}
+			}
+			result, _, err := session.ValidatePast(t.Context(), leaf.Raw, proofs)
+			if tc.want != nil {
+				if result != nil || !errors.Is(err, tc.want) {
+					t.Fatal("cycle/depth failure returned a historical result", result != nil, err)
+				}
+				return
+			}
+			if result == nil || err != nil || valid != 1 || len(result.Path().ChainDER()) != 3 || !bytes.Equal(result.Path().ChainDER()[1], escape.Raw) {
+				t.Fatal("cyclic branch hid independently valid anchored path", valid, result != nil, err)
+			}
+		})
+	}
+}
+
+func historicalResponderGraph(t *testing.T, cyclic bool) (chainData, pki.Evidence) {
+	t.Helper()
+	c := makeChain(t)
+	issued := verificationTime()
+	firstKey, secondKey := testcert.Key(t), testcert.Key(t)
+	firstName, secondName := pkix.Name{CommonName: "historical OCSP dependency"}, pkix.Name{CommonName: "historical CRL dependency"}
+	firstDER, err := asn1.Marshal(firstName.ToRDNSequence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDER, err := asn1.Marshal(secondName.ToRDNSequence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	point := func(uri string, issuer []byte) pkix.Extension {
+		fields := [][]byte{p6PointName(uri)}
+		if len(issuer) != 0 {
+			fields = append(fields, der.Wrap(2, 2, true, der.Ctx(4, issuer)))
+		}
+		return pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 31}, Value: der.Seq(der.Seq(fields...))}
+	}
+	first := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(260), Subject: firstName, NotBefore: issued.Add(-time.Hour), NotAfter: issued.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCRLSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}, SubjectKeyId: []byte{2, 6, 0}, ExtraExtensions: []pkix.Extension{point("urn:status:second", secondDER)}}, c.root, firstKey.Public(), c.rootKey)
+	lastPoint := point("urn:status:root", nil)
+	if cyclic {
+		lastPoint = point("urn:status:first", firstDER)
+	}
+	second := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(261), Subject: secondName, NotBefore: issued.Add(-time.Hour), NotAfter: issued.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCRLSign, SubjectKeyId: []byte{2, 6, 1}, ExtraExtensions: []pkix.Extension{lastPoint}}, c.root, secondKey.Public(), c.rootKey)
+	secondCRL := p6CRL(t, chainData{root: second, rootKey: secondKey}, 1, issued.Add(-time.Minute), issued.Add(2*time.Hour), -1, der.Seq(p6PointName("urn:status:second"), der.Wrap(2, 4, false, []byte{255})), nil)
+	lastCRL := p6CRL(t, c, 1, issued.Add(-time.Minute), issued.Add(2*time.Hour), -1, der.Seq(p6PointName("urn:status:root")), nil)
+	if cyclic {
+		lastCRL = p6CRL(t, chainData{root: first, rootKey: firstKey}, 1, issued.Add(-time.Minute), issued.Add(2*time.Hour), -1, der.Seq(p6PointName("urn:status:first"), der.Wrap(2, 4, false, []byte{255})), nil)
+	}
+	query, err := pki.CreateOCSPRequest(c.leaf.Raw, c.root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pki.CreateOCSPResponse(t.Context(), query, c.leaf.Raw, c.root.Raw, first.Raw, firstKey, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: issued, ThisUpdate: issued.Add(-time.Minute), NextUpdate: issued.Add(2 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, pki.Evidence{Intermediates: [][]byte{first.Raw, second.Raw}, CRLs: [][]byte{secondCRL, lastCRL}, OCSPResponses: [][]byte{raw}}
+}
+
+func TestHistoricalDelegatedResponderAuthority(t *testing.T) {
+	c := makeChain(t)
+	issued, now := verificationTime(), verificationTime().Add(3*time.Hour)
+	key, wrongIssuerKey := testcert.Key(t), testcert.Key(t)
+	other := testcert.New(t)
+	request, err := pki.CreateOCSPRequest(c.leaf.Raw, c.root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallback := p7Response(t, c, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: issued, ThisUpdate: issued.Add(-time.Minute), NextUpdate: now.Add(time.Hour)})
+	for _, tc := range []struct {
+		name                  string
+		mutate                func(*x509.Certificate)
+		wrongIssuer, wrongKey bool
+		authorized            bool
+	}{
+		{name: "authorized delegated responder", authorized: true},
+		{name: "missing OCSP signing EKU", mutate: func(c *x509.Certificate) { c.ExtKeyUsage = nil }},
+		{name: "unrelated EKU", mutate: func(c *x509.Certificate) { c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageTimeStamping} }},
+		{name: "missing digital signature usage", mutate: func(c *x509.Certificate) { c.KeyUsage = x509.KeyUsageKeyEncipherment }},
+		{name: "CA cannot be delegated responder", mutate: func(c *x509.Certificate) { c.IsCA, c.BasicConstraintsValid = true, true }},
+		{name: "unhandled critical extension", mutate: func(c *x509.Certificate) {
+			c.ExtraExtensions = append(c.ExtraExtensions, pkix.Extension{Id: asn1.ObjectIdentifier{1, 2, 3, 4, 99}, Critical: true, Value: []byte{5, 0}})
+		}},
+		{name: "critical nocheck", mutate: func(c *x509.Certificate) { c.ExtraExtensions[0].Critical = true }},
+		{name: "nocheck must be DER NULL", mutate: func(c *x509.Certificate) { c.ExtraExtensions[0].Value = []byte{4, 0} }},
+		{name: "different issuing CA", wrongIssuer: true},
+		{name: "claimed issuer with invalid certificate signature", wrongKey: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			template := &x509.Certificate{SerialNumber: big.NewInt(145), Subject: pkix.Name{CommonName: "historical authority responder"}, NotBefore: issued.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 5}, Value: []byte{5, 0}}}}
+			if tc.mutate != nil {
+				tc.mutate(template)
+			}
+			parent, signer := c.root, crypto.Signer(c.rootKey)
+			if tc.wrongIssuer {
+				parent, signer = other.Root, other.RootKey
+			}
+			if tc.wrongKey {
+				fakeParent := *c.root
+				fakeParent.PublicKey = wrongIssuerKey.Public()
+				parent, signer = &fakeParent, wrongIssuerKey
+			}
+			responder := testcert.Issue(t, template, parent, key.Public(), signer)
+			raw, err := pki.CreateOCSPResponse(t.Context(), request, c.leaf.Raw, c.root.Raw, responder.Raw, key, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: issued, ThisUpdate: issued.Add(-time.Minute), NextUpdate: now.Add(time.Hour)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, addFallback := range []bool{false, true} {
+				input := pki.Evidence{OCSPResponses: [][]byte{raw}}
+				objects, roles := [][]byte{c.leaf.Raw, responder.Raw, raw}, []string{"certificate", "certificate", "ocsp"}
+				if addFallback {
+					input.OCSPResponses = append(input.OCSPResponses, fallback)
+					objects, roles = append(objects, fallback), append(roles, "ocsp")
+				}
+				session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireOCSP}}, now, input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				paths, err := session.Paths(t.Context(), c.leaf.Raw)
+				if err != nil || len(paths) != 1 {
+					t.Fatal(len(paths), err)
+				}
+				facts, err := session.AuthenticateEvidence(t.Context(), paths[0])
+				wantFacts := 0
+				if tc.authorized {
+					wantFacts++
+				}
+				if addFallback {
+					wantFacts++
+				}
+				if err != nil || len(facts) != wantFacts {
+					t.Fatal("authenticated an unauthorized responder", len(facts), wantFacts, err)
+				}
+				result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, objects, roles, issued))
+				if tc.authorized || addFallback {
+					if result == nil || err != nil || !result.ValidationTime().Equal(now) {
+						t.Fatal("unauthorized response poisoned independently valid status", result != nil, err)
+					}
+				} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
+					t.Fatal("cryptographic signature was mistaken for delegation", result != nil, err)
+				}
+			}
+		})
+	}
+}
+
+func TestHistoricalDelegatedResponderRevocationAndProofs(t *testing.T) {
+	c := makeChain(t)
+	issued, now := verificationTime(), verificationTime().Add(30*time.Minute)
+	key := testcert.Key(t)
+	responder := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(146), Subject: pkix.Name{CommonName: "responder requiring status"}, NotBefore: issued.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}}, c.root, key.Public(), c.rootKey)
+	request, err := pki.CreateOCSPRequest(c.leaf.Raw, c.root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pki.CreateOCSPResponse(t.Context(), request, c.leaf.Raw, c.root.Raw, responder.Raw, key, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: issued, ThisUpdate: issued.Add(-time.Minute), NextUpdate: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.root.Raw}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _, err := base.Verify(t.Context(), c.leaf.Raw, now, pki.Evidence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name                       string
+		reason                     int
+		certificateProof, crlProof bool
+		pass                       bool
+		targetRevoked              bool
+	}{
+		{"good responder status", -1, true, true, true, false},
+		{"responder key revoked after issuance", 1, true, true, true, false},
+		{"responder put on hold", 6, true, true, true, false},
+		{"response PoE does not prove responder certificate", -1, false, true, false, false},
+		{"response PoE does not prove responder CRL", -1, true, false, false, false},
+		{"target revocation cannot advance an earlier source bound", 1, true, true, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var entries []x509.RevocationListEntry
+			revokedAt := issued.Add(10 * time.Minute)
+			if tc.reason >= 0 {
+				entries = []x509.RevocationListEntry{{SerialNumber: responder.SerialNumber, RevocationTime: revokedAt, ReasonCode: tc.reason}}
+			}
+			crl := p6CRL(t, c, 1, now.Add(-time.Minute), now.Add(time.Hour), -1, nil, entries)
+			response := raw
+			if tc.targetRevoked {
+				response, err = pki.CreateOCSPResponse(t.Context(), request, c.leaf.Raw, c.root.Raw, responder.Raw, key, pki.OCSPResponseTemplate{Status: pki.OCSPRevoked, ProducedAt: now.Add(-time.Minute), ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour), RevokedAt: issued.Add(20 * time.Minute), RevocationReason: 1})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireOCSP}}, now, pki.Evidence{OCSPResponses: [][]byte{response}, CRLs: [][]byte{crl}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sub, policyErr := session.CheckCurrentPolicy(t.Context(), current)
+			if tc.reason < 0 {
+				if policyErr != nil || sub != "" {
+					t.Fatal("valid current responder rejected", sub, policyErr)
+				}
+			} else {
+				want := "REVOKED_CA_NO_POE"
+				if tc.targetRevoked {
+					want = "REVOKED_NO_POE"
+				}
+				if !errors.Is(policyErr, pki.ErrRevoked) || sub != want {
+					t.Fatal("current policy ignored authenticated revocation", sub, policyErr)
+				}
+			}
+			objects, roles := [][]byte{c.leaf.Raw, response}, []string{"certificate", "ocsp"}
+			if tc.certificateProof {
+				objects, roles = append(objects, responder.Raw), append(roles, "certificate")
+			}
+			if tc.crlProof {
+				objects, roles = append(objects, crl), append(roles, "crl")
+			}
+			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, objects, roles, now))
+			if !tc.pass {
+				want := pki.ErrUnavailable
+				if tc.targetRevoked {
+					want = pki.ErrEvidence
+				}
+				if result != nil || !errors.Is(err, want) || report.SubIndication() != "NO_POE" {
+					t.Fatal("borrowed response proof for a source dependency", result != nil, report.SubIndication(), err)
+				}
+				return
+			}
+			want := now
+			if tc.reason >= 0 {
+				want = revokedAt
+			}
+			if result == nil || err != nil || !result.ValidationTime().Equal(want) {
+				t.Fatal("wrong historical source-signer bound", result != nil, report.Transitions(), err)
+			}
+			if tc.reason >= 0 {
+				found := false
+				digest := sha256.Sum256(responder.Raw)
+				for _, transition := range report.Transitions() {
+					if transition.Reason == "revocation" && transition.CertificateSHA256 == hex.EncodeToString(digest[:]) && transition.After.Equal(revokedAt) {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("responder revocation missing from historical explanation", report.Transitions())
+				}
 			}
 		})
 	}

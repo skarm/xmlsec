@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/big"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -198,18 +199,12 @@ func FormatFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
 	if pp.MaxFracDigits >= 0 {
 		scale := math.Pow(10, float64(pp.MaxFracDigits))
 		if scaled := f * scale; isFinite(scale) && isFinite(scaled) {
-			f = math.Round(scaled) / scale
+			f = math.RoundToEven(scaled) / scale
 		}
 	}
 
-	// Split into integer and fractional parts.
 	// Use math.Trunc to avoid int64 overflow for large floats.
 	trunc := math.Trunc(f)
-
-	frac := f - trunc
-	if frac < 0 {
-		frac = -frac
-	}
 
 	// Format integer part
 	bigTrunc, _ := new(big.Float).SetFloat64(trunc).Int(nil)
@@ -223,8 +218,15 @@ func FormatFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
 		return intStr
 	}
 
-	// Format fractional part
-	fracStr := FormatFrac(frac, pp.MinFracDigits, pp.MaxFracDigits, df)
+	// Render the rounded value as a whole. Subtracting its integer part and
+	// repeatedly multiplying the remainder can lose the last decimal digit
+	// (for example, 0.123456 became 0.123455).
+	_, fracStr, _ := strings.Cut(strconv.FormatFloat(f, 'f', pp.MaxFracDigits, 64), ".")
+	for len(fracStr) > pp.MinFracDigits && strings.HasSuffix(fracStr, "0") {
+		fracStr = fracStr[:len(fracStr)-1]
+	}
+
+	fracStr = localizeDigits(fracStr, df.ZeroDigit)
 
 	// XPath F&O: when both integer and fractional parts are empty (value rounds
 	// to zero with MinIntDigits=0 and MinFracDigits=0), show at least one digit.

@@ -130,6 +130,18 @@ func ebvAtomic(v xdm.AtomicValue) (bool, error) {
 	}
 }
 
+// atomizeStream atomizes a sequence per XPath 3.1 Section 2.6.2, invoking yield
+// for each produced atomic value. If yield returns false, streaming stops early
+// without error (used to bound work when a caller caps the number of atoms it
+// will accept). A typed atomization error (e.g. FOTY0013 for function/map items,
+// FORG0001 for an invalid list-member cast) propagates to the caller; this lets
+// callers distinguish a genuine atomization failure from a plain cardinality
+// rejection.
+func atomizeStream(seq xdm.Sequence, yield func(xdm.AtomicValue) (bool, error)) error {
+	_, err := atomizeStreamCont(seq, nil, yield)
+	return err
+}
+
 // atomizeBounded charges array traversal even when every leaf atomizes to ().
 // The callback can stop before a later item, preserving cardinality error order.
 func atomizeBounded(ctx context.Context, ec *evalContext, seq xdm.Sequence, yield func(xdm.AtomicValue) (bool, error)) error {
@@ -157,7 +169,9 @@ func atomizeBounded(ctx context.Context, ec *evalContext, seq xdm.Sequence, yiel
 			continue
 		}
 
-		cont, err := atomizeStreamCont(xdm.ItemSlice{item}, check, func(atom xdm.AtomicValue) (bool, error) {
+		// The array case was handled above. Atomize this item directly rather
+		// than boxing it in a temporary singleton sequence on every iteration.
+		cont, err := atomizeStreamItem(item, check, func(atom xdm.AtomicValue) (bool, error) {
 			if err := fnCountOp(ctx, ec); err != nil {
 				return false, err
 			}
@@ -488,16 +502,4 @@ func builtinListItemType(typeName string) string {
 	}
 
 	return ""
-}
-
-// atomizeStream atomizes a sequence per XPath 3.1 Section 2.6.2, invoking yield
-// for each produced atomic value. If yield returns false, streaming stops early
-// without error (used to bound work when a caller caps the number of atoms it
-// will accept). A typed atomization error (e.g. FOTY0013 for function/map items,
-// FORG0001 for an invalid list-member cast) propagates to the caller; this lets
-// callers distinguish a genuine atomization failure from a plain cardinality
-// rejection.
-func atomizeStream(seq xdm.Sequence, yield func(xdm.AtomicValue) (bool, error)) error {
-	_, err := atomizeStreamCont(seq, nil, yield)
-	return err
 }

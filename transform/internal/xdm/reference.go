@@ -104,11 +104,14 @@ func (nv *nodeView) Reference() tree.NodeRef {
 			return tree.NodeRef{}
 		}
 
-		e := tree.Wrap(d.native, raw)
-		for _, v := range e.AttributeNodes() {
-			name := v.Name()
-			if name.Local == a.LocalName() && name.Space == a.URI() {
-				return v
+		if i := a.attributeIndex; i >= 0 && i < len(raw.Attrs) && raw.Attrs[i].Name == a.key {
+			return tree.WrapAttribute(d.native, raw, i)
+		}
+		// Removed/stale draft views keep their name-based fallback. Reads must
+		// never update the cached index of a potentially frozen shared view.
+		for i, entry := range raw.Attrs {
+			if entry.Name == a.key {
+				return tree.WrapAttribute(d.native, raw, i)
 			}
 		}
 	case NamespaceNode:
@@ -117,11 +120,7 @@ func (nv *nodeView) Reference() tree.NodeRef {
 			return tree.NodeRef{}
 		}
 
-		for _, v := range tree.Wrap(d.native, owner.view().raw).NamespaceNodes() {
-			if v.Name().Local == n.Name() {
-				return v
-			}
-		}
+		return tree.WrapNamespace(d.native, owner.view().raw, n.Name())
 	default:
 		return tree.WrapNode(d.native, raw)
 	}

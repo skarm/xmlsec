@@ -314,11 +314,17 @@ func TestAttributeIndexMutationAndConcurrentReads(t *testing.T) {
 	if !root.RemoveAttribute("first") || removed.Parent() != nil || last.Value() != "B" || id.Value() != "own" {
 		t.Fatal("removing an earlier attribute invalidated retained views")
 	}
+	if removed.Reference().Valid() || doc.NodeView(last.Reference()) != last {
+		t.Fatal("attribute references lost removal or updated index")
+	}
 	if err := root.SetAttributeNS("last", "updated", xdm.NewNamespace("q", "urn:p")); err != nil {
 		t.Fatal(err)
 	}
 	if last.Value() != "updated" || last.Prefix() != "q" || last.Name() != "q:last" {
 		t.Fatal("replacement or prefix change lost the indexed attribute")
+	}
+	if ref := last.Reference(); ref.Prefix() != "q" || ref.Value() != "updated" || doc.NodeView(ref) != last {
+		t.Fatal("attribute reference lost replacement metadata")
 	}
 	if err := root.SetAttribute("first", "again"); err != nil {
 		t.Fatal(err)
@@ -339,7 +345,7 @@ func TestAttributeIndexMutationAndConcurrentReads(t *testing.T) {
 	for range 8 {
 		readers.Go(func() {
 			for range 100 {
-				if last.Value() != "updated" || last.Prefix() != "q" || id.Value() != "own" {
+				if last.Value() != "updated" || last.Prefix() != "q" || id.Value() != "own" || destination.NodeView(last.Reference()) != last {
 					t.Error("concurrent indexed reads changed attribute metadata")
 				}
 				// A retained removed view uses the read-only fallback. Reading it

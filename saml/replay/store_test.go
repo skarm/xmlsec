@@ -3,6 +3,7 @@ package replay_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -91,6 +92,57 @@ func TestReplayValidation(t *testing.T) {
 
 	if e := m.Consume(ctx, []replay.Entry{{Scope: "s", ID: "a", ExpiresAt: now.Add(time.Minute)}}, now); !errors.Is(e, context.Canceled) {
 		t.Fatal(e)
+	}
+}
+
+func TestReplayMassExpiryPreservesLiveScopes(t *testing.T) {
+	t.Parallel()
+	const count = 2048
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	m, err := replay.NewMemoryStore(replay.Config{Capacity: count})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := make([]replay.Entry, count)
+	for i := range entries {
+		expires := at.Add(time.Second)
+		if i >= 3*count/4 {
+			expires = at.Add(time.Minute)
+		}
+		entries[i] = replay.Entry{Scope: nameRequest, ID: strconv.Itoa(i), ExpiresAt: expires}
+	}
+	for start := 0; start < count; start += 16 {
+		if err := m.Consume(t.Context(), entries[start:start+16], at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	later := at.Add(time.Second)
+	for _, entry := range entries[3*count/4:] {
+		if err := m.Consume(t.Context(), []replay.Entry{entry}, later); !errors.Is(err, replay.ErrReplay) {
+			t.Fatalf("live identifier %s lost after expiry: %v", entry.ID, err)
+		}
+	}
+	if m.Len() != count/4 {
+		t.Fatalf("remaining entries = %d; want %d", m.Len(), count/4)
+	}
+	// Reuse expired identifiers and the same ID in a distinct scope. Neither
+	// operation may clear replay protection for a surviving request.
+	expired := entries[0]
+	expired.ExpiresAt = later.Add(time.Minute)
+	otherScope := entries[count-1]
+	otherScope.Scope = "assertion"
+	if err := m.Consume(t.Context(), []replay.Entry{expired, otherScope}, later); err != nil || m.Len() != count/4+2 {
+		t.Fatal("expired capacity or independent scope unavailable", err, m.Len())
+	}
+	if err := m.Consume(t.Context(), entries[count-1:], later); !errors.Is(err, replay.ErrReplay) {
+		t.Fatal("inserting another scope cleared original protection", err)
+	}
+	if err := m.Consume(t.Context(), []replay.Entry{expired}, expired.ExpiresAt); !errors.Is(err, replay.ErrPolicy) {
+		t.Fatal("expired input accepted", err)
+	}
+	expired.ExpiresAt = expired.ExpiresAt.Add(time.Minute)
+	if err := m.Consume(t.Context(), []replay.Entry{expired}, later.Add(time.Minute)); err != nil || m.Len() != 1 {
+		t.Fatal("store did not recover after all entries expired", err, m.Len())
 	}
 }
 

@@ -27,6 +27,78 @@ import (
 
 const runtimeASTMode = "AST"
 
+type castContractSchema struct {
+	SchemaDeclarations
+	failure error
+}
+
+func (s castContractSchema) LookupSchemaType(local, _ string) (string, bool) {
+	switch local {
+	case "decimal":
+		return xdm.TypeDecimal, true
+	case "qname":
+		return xdm.TypeQName, true
+	}
+
+	return "", false
+}
+
+func (s castContractSchema) ListItemType(name string) (string, bool) {
+	return xdm.TypeInteger, name == "Q{urn:cast}list"
+}
+
+func (s castContractSchema) UnionMemberTypes(name string) []string {
+	if name == "Q{urn:cast}union" {
+		return []string{"Q{urn:cast}decimal", xdm.TypeString}
+	}
+
+	return nil
+}
+
+func (s castContractSchema) ValidateCastWithNS(context.Context, string, string, map[string]string) error {
+	return s.failure
+}
+
+type indexedSequenceProbe struct {
+	xdm.Sequence
+	visited []int
+	cancel  context.CancelFunc
+}
+
+func (s *indexedSequenceProbe) Get(i int) xdm.Item {
+	s.visited = append(s.visited, i)
+	if s.cancel != nil && len(s.visited) == 3 {
+		s.cancel()
+	}
+	return s.Sequence.Get(i)
+}
+
+func (*indexedSequenceProbe) Items() iter.Seq[xdm.Item] {
+	panic("sequence operation must use bounded indexed access")
+}
+
+func (*indexedSequenceProbe) Materialize() []xdm.Item {
+	panic("sequence operation must not materialize the complete input")
+}
+
+type budgetCancelContext struct {
+	context.Context
+	remaining int
+}
+
+func (c *budgetCancelContext) Err() error {
+	c.remaining--
+	if c.remaining <= 0 {
+		return context.Canceled
+	}
+
+	return nil
+}
+
+type jsonShortWriter struct{}
+
+func (jsonShortWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
+
 func TestCompilerSyntaxErrorCodes(t *testing.T) {
 	for _, source := range []string{
 		"concat#1.5", "concat#1e2", "concat#99999999999999999999999999999999999999.0", "concat#99999999999999999999999999999999999999e0",
@@ -419,38 +491,6 @@ func TestNumericPreflightBudgets(t *testing.T) {
 	if err := preflightInteger(canceled, TokenStar, big.NewInt(2), big.NewInt(2)); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
-}
-
-type castContractSchema struct {
-	SchemaDeclarations
-	failure error
-}
-
-func (s castContractSchema) LookupSchemaType(local, _ string) (string, bool) {
-	switch local {
-	case "decimal":
-		return xdm.TypeDecimal, true
-	case "qname":
-		return xdm.TypeQName, true
-	}
-
-	return "", false
-}
-
-func (s castContractSchema) ListItemType(name string) (string, bool) {
-	return xdm.TypeInteger, name == "Q{urn:cast}list"
-}
-
-func (s castContractSchema) UnionMemberTypes(name string) []string {
-	if name == "Q{urn:cast}union" {
-		return []string{"Q{urn:cast}decimal", xdm.TypeString}
-	}
-
-	return nil
-}
-
-func (s castContractSchema) ValidateCastWithNS(context.Context, string, string, map[string]string) error {
-	return s.failure
 }
 
 func TestSchemaCastResourceFailures(t *testing.T) {
@@ -869,28 +909,6 @@ func TestSubsequenceIndexedBounds(t *testing.T) {
 	}
 }
 
-type indexedSequenceProbe struct {
-	xdm.Sequence
-	visited []int
-	cancel  context.CancelFunc
-}
-
-func (s *indexedSequenceProbe) Get(i int) xdm.Item {
-	s.visited = append(s.visited, i)
-	if s.cancel != nil && len(s.visited) == 3 {
-		s.cancel()
-	}
-	return s.Sequence.Get(i)
-}
-
-func (*indexedSequenceProbe) Items() iter.Seq[xdm.Item] {
-	panic("sequence operation must use bounded indexed access")
-}
-
-func (*indexedSequenceProbe) Materialize() []xdm.Item {
-	panic("sequence operation must not materialize the complete input")
-}
-
 func TestSubsequenceResourceLimits(t *testing.T) {
 	t.Run("indexed prefix and exact work", func(t *testing.T) {
 		operations := 0
@@ -952,17 +970,6 @@ func TestSubsequenceResourceLimits(t *testing.T) {
 			t.Fatal("subsequence changed the caller's input container", source)
 		}
 	})
-}
-
-func BenchmarkSubsequenceSkippedPrefix(b *testing.B) {
-	args := []xdm.Sequence{xdm.NewRangeSequence(1, 10_000_000), xdm.SingleInteger(9_999_996), xdm.SingleInteger(5)}
-	b.ReportAllocs()
-	for b.Loop() {
-		result, err := fnSubsequence(b.Context(), args)
-		if err != nil || xdm.SequenceLen(result) != 5 {
-			b.Fatal(result, err)
-		}
-	}
 }
 
 func TestSequenceMaterializationLimits(t *testing.T) {
@@ -1119,43 +1126,6 @@ func TestDeepEqualAttributeBudgetBeforeCopy(t *testing.T) {
 	}
 }
 
-func BenchmarkDeepEqualWideAttributes(b *testing.B) {
-	var source strings.Builder
-	source.WriteString(`<r `)
-	for i := range 2000 {
-		fmt.Fprintf(&source, "a%d='v' ", i)
-	}
-	source.WriteString(`/>`)
-	limits := tree.DefaultLimits()
-	limits.MaxAttributesPerElement = 2000
-	doc, err := (xdm.ParseOptions{Limits: limits}).Parse(b.Context(), []byte(source.String()))
-	if err != nil {
-		b.Fatal(err)
-	}
-	attributes := doc.DocumentElement().Attributes()
-	attributeItems := make(xdm.ItemSlice, len(attributes))
-	for i, attribute := range attributes {
-		attributeItems[i] = xdm.NodeItem{Node: attribute}
-	}
-	for _, tc := range []struct {
-		name string
-		seq  xdm.Sequence
-	}{
-		{"element", xdm.SingleNode(doc.DocumentElement())},
-		{"attribute nodes", attributeItems},
-	} {
-		b.Run(tc.name, func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				result, err := fnDeepEqual(b.Context(), []xdm.Sequence{tc.seq, tc.seq})
-				if err != nil || !result.Get(0).(xdm.AtomicValue).BooleanVal() {
-					b.Fatal(result, err)
-				}
-			}
-		})
-	}
-}
-
 func TestSequenceSortKeyLimits(t *testing.T) {
 	operations := 0
 	ec := &evalContext{maxNodes: 1000, opLimit: 16, opCount: &operations}
@@ -1258,21 +1228,6 @@ func TestArraySortEmptyMemberLimits(t *testing.T) {
 	}
 }
 
-func BenchmarkDeepEqualMapLookup(b *testing.B) {
-	entries := make([]xdm.MapEntry, 2000)
-	for i := range entries {
-		entries[i] = xdm.MapEntry{Key: xdm.AtomicValue{TypeName: xdm.TypeString, Value: strconv.Itoa(i)}, Value: xdm.SingleInteger(int64(i))}
-	}
-	seq := xdm.ItemSlice{xdm.NewMap(entries)}
-	b.ReportAllocs()
-	for b.Loop() {
-		result, err := fnDeepEqual(b.Context(), []xdm.Sequence{seq, seq})
-		if err != nil || !result.Get(0).(xdm.AtomicValue).BooleanVal() {
-			b.Fatal(result, err)
-		}
-	}
-}
-
 func TestSubstringRuneSemantics(t *testing.T) {
 	positions := []float64{math.Inf(-1), -2, -0.5, 0, 0.5, 1, 1.5, 2, 4, 7, 20, math.Inf(1), math.NaN()}
 	for _, source := range []string{"", "abc", "а🙂e\u0301𐀀", "a\xff\xfeb"} {
@@ -1284,19 +1239,6 @@ func TestSubstringRuneSemantics(t *testing.T) {
 			}
 		}
 	}
-}
-
-func FuzzSubstringRuneSemantics(f *testing.F) {
-	f.Add("а🙂e\u0301𐀀", 1.5, 3.0, true)
-	f.Add("a\xff\xfeb", 2.0, 2.0, true)
-	f.Add("abc", math.Inf(-1), math.Inf(1), true)
-	f.Fuzz(func(t *testing.T, source string, start, length float64, bounded bool) {
-		if len(source) > 4096 {
-			t.Skip()
-		}
-
-		checkSubstring(t, source, start, length, bounded)
-	})
 }
 
 func TestSubstringScanHonorsCancellation(t *testing.T) {
@@ -1338,20 +1280,6 @@ func TestWhitespaceNormalizationPreservesValues(t *testing.T) {
 			t.Fatalf("collapseWhitespace(%q): %q, want %q", tc.source, value, tc.cast)
 		}
 	}
-}
-
-type budgetCancelContext struct {
-	context.Context
-	remaining int
-}
-
-func (c *budgetCancelContext) Err() error {
-	c.remaining--
-	if c.remaining <= 0 {
-		return context.Canceled
-	}
-
-	return nil
 }
 
 func checkSubstring(t *testing.T, source string, start, length float64, bounded bool) {
@@ -1859,6 +1787,43 @@ func TestFunctionConversionAtomizationBeforeCasting(t *testing.T) {
 	}
 }
 
+func TestBoundedAtomizationOrderAndStop(t *testing.T) {
+	first := xdm.AtomicValue{TypeName: xdm.TypeString, Value: "first"}
+	second := xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(2)}
+	input := xdm.ItemSlice{xdm.NewArray([]xdm.Sequence{
+		nil,
+		xdm.ItemSlice{first, xdm.NewArray([]xdm.Sequence{nil, xdm.ItemSlice{second}})},
+		xdm.ItemSlice{xdm.NewMap(nil)}, // Must not be visited after a stop.
+	})}
+	for _, stopError := range []error{nil, errors.New("destination stopped")} {
+		var got []xdm.AtomicValue
+		err := atomizeBounded(t.Context(), nil, input, func(value xdm.AtomicValue) (bool, error) {
+			got = append(got, value)
+			return len(got) < 2, stopError
+		})
+		want := []xdm.AtomicValue{first, second}
+		if stopError != nil {
+			want = want[:1]
+		}
+		if !errors.Is(err, stopError) || !slices.Equal(got, want) {
+			t.Fatal("atomization changed order, stop or error", got, err)
+		}
+	}
+	var detail *xdm.Error
+	if err := atomizeBounded(t.Context(), nil, input, func(xdm.AtomicValue) (bool, error) {
+		return true, nil
+	}); !errors.As(err, &detail) || detail.Code != lexicon.ErrFOTY0013 {
+		t.Fatal("atomization lost the later map error", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	if err := atomizeBounded(ctx, nil, input, func(xdm.AtomicValue) (bool, error) {
+		cancel()
+		return true, nil
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatal("atomization lost cancellation", err)
+	}
+}
+
 func TestJSONNodeWriterBoundaries(t *testing.T) {
 	input := strings.Repeat("abc", 1400) + "é雪😀/\"\\\n\t" + strings.Repeat("z", 4100)
 	for _, ascii := range []bool{false, true} {
@@ -1900,9 +1865,92 @@ func TestJSONNodeWriterBoundaries(t *testing.T) {
 	}
 }
 
-type jsonShortWriter struct{}
+func TestJSONNodeWriterBudgets(t *testing.T) {
+	for _, limit := range []struct{ operations, bytes int }{{5, 64}, {100, 63}} {
+		var out bytes.Buffer
+		ctx := WithBudget(t.Context(), limit.operations, 100, limit.bytes, 100)
+		w := jsonNodeWriter{ctx: ctx, dst: &out}
+		if n, err := w.Write(bytes.Repeat([]byte{'x'}, 64)); n != 0 || !errors.Is(err, ErrBudget) || out.Len() != 0 {
+			t.Fatalf("escaped byte/work budget: %d, %v, %d", n, err, out.Len())
+		}
+	}
+}
 
-func (jsonShortWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
+func FuzzSubstringRuneSemantics(f *testing.F) {
+	f.Add("а🙂e\u0301𐀀", 1.5, 3.0, true)
+	f.Add("a\xff\xfeb", 2.0, 2.0, true)
+	f.Add("abc", math.Inf(-1), math.Inf(1), true)
+	f.Fuzz(func(t *testing.T, source string, start, length float64, bounded bool) {
+		if len(source) > 4096 {
+			t.Skip()
+		}
+
+		checkSubstring(t, source, start, length, bounded)
+	})
+}
+
+func BenchmarkSubsequenceSkippedPrefix(b *testing.B) {
+	args := []xdm.Sequence{xdm.NewRangeSequence(1, 10_000_000), xdm.SingleInteger(9_999_996), xdm.SingleInteger(5)}
+	b.ReportAllocs()
+	for b.Loop() {
+		result, err := fnSubsequence(b.Context(), args)
+		if err != nil || xdm.SequenceLen(result) != 5 {
+			b.Fatal(result, err)
+		}
+	}
+}
+
+func BenchmarkDeepEqualWideAttributes(b *testing.B) {
+	var source strings.Builder
+	source.WriteString(`<r `)
+	for i := range 2000 {
+		fmt.Fprintf(&source, "a%d='v' ", i)
+	}
+	source.WriteString(`/>`)
+	limits := tree.DefaultLimits()
+	limits.MaxAttributesPerElement = 2000
+	doc, err := (xdm.ParseOptions{Limits: limits}).Parse(b.Context(), []byte(source.String()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	attributes := doc.DocumentElement().Attributes()
+	attributeItems := make(xdm.ItemSlice, len(attributes))
+	for i, attribute := range attributes {
+		attributeItems[i] = xdm.NodeItem{Node: attribute}
+	}
+	for _, tc := range []struct {
+		name string
+		seq  xdm.Sequence
+	}{
+		{"element", xdm.SingleNode(doc.DocumentElement())},
+		{"attribute nodes", attributeItems},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				result, err := fnDeepEqual(b.Context(), []xdm.Sequence{tc.seq, tc.seq})
+				if err != nil || !result.Get(0).(xdm.AtomicValue).BooleanVal() {
+					b.Fatal(result, err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkDeepEqualMapLookup(b *testing.B) {
+	entries := make([]xdm.MapEntry, 2000)
+	for i := range entries {
+		entries[i] = xdm.MapEntry{Key: xdm.AtomicValue{TypeName: xdm.TypeString, Value: strconv.Itoa(i)}, Value: xdm.SingleInteger(int64(i))}
+	}
+	seq := xdm.ItemSlice{xdm.NewMap(entries)}
+	b.ReportAllocs()
+	for b.Loop() {
+		result, err := fnDeepEqual(b.Context(), []xdm.Sequence{seq, seq})
+		if err != nil || !result.Get(0).(xdm.AtomicValue).BooleanVal() {
+			b.Fatal(result, err)
+		}
+	}
+}
 
 func BenchmarkRegexRuntimeCache(b *testing.B) {
 	source := `^\i\c*[0-9]+$`
@@ -1938,15 +1986,4 @@ func BenchmarkRegexRuntimeCache(b *testing.B) {
 			}
 		})
 	})
-}
-
-func TestJSONNodeWriterBudgets(t *testing.T) {
-	for _, limit := range []struct{ operations, bytes int }{{5, 64}, {100, 63}} {
-		var out bytes.Buffer
-		ctx := WithBudget(t.Context(), limit.operations, 100, limit.bytes, 100)
-		w := jsonNodeWriter{ctx: ctx, dst: &out}
-		if n, err := w.Write(bytes.Repeat([]byte{'x'}, 64)); n != 0 || !errors.Is(err, ErrBudget) || out.Len() != 0 {
-			t.Fatalf("escaped byte/work budget: %d, %v, %d", n, err, out.Len())
-		}
-	}
 }

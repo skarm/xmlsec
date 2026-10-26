@@ -3,6 +3,7 @@ package state_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -128,6 +129,60 @@ func TestPendingURIStorageLimits(t *testing.T) {
 	}
 }
 
+func TestStateMassExpiryPreservesPendingRequests(t *testing.T) {
+	t.Parallel()
+	const count = 2048
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	m, err := state.NewMemoryStore(state.Config{Capacity: count})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := make([]state.Pending, count)
+	for i := range requests {
+		p := pending(at)
+		p.RelayState += strconv.Itoa(i)
+		p.RequestID += strconv.Itoa(i)
+		if i < 3*count/4 {
+			p.ExpiresAt = at.Add(time.Second)
+		}
+		requests[i] = p
+		if err := m.Put(t.Context(), p, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	later := at.Add(time.Second)
+	for _, p := range requests[3*count/4:] {
+		got, err := m.Get(t.Context(), p.SP, p.RelayState, later)
+		if err != nil || got.RequestID != p.RequestID || len(got.RequestedContexts) != 1 || got.RequestedContexts[0] != uriUrnTest {
+			t.Fatalf("surviving request changed: %+v, %v", got, err)
+		}
+		got.RequestedContexts[0] = "urn:changed"
+		if err := m.Put(t.Context(), p, later); !errors.Is(err, state.ErrExists) {
+			t.Fatal("live request replaced after expiry", err)
+		}
+	}
+	if m.Len() != count/4 {
+		t.Fatalf("remaining entries = %d; want %d", m.Len(), count/4)
+	}
+	for _, p := range requests[:3*count/4] {
+		if got, err := m.Get(t.Context(), p.SP, p.RelayState, later); !errors.Is(err, state.ErrMissing) || got.RequestID != "" {
+			t.Fatal("expired request returned", got, err)
+		}
+	}
+	p := requests[0]
+	p.IssuedAt, p.ExpiresAt = later, later.Add(time.Minute)
+	if err := m.Put(t.Context(), p, later); err != nil || m.Len() != count/4+1 {
+		t.Fatal("expired key or capacity not reusable", err, m.Len())
+	}
+	if _, err := m.Get(t.Context(), p.SP, p.RelayState, p.ExpiresAt); !errors.Is(err, state.ErrMissing) || m.Len() != 0 {
+		t.Fatal("final expiry did not empty store", err, m.Len())
+	}
+}
+
+func pending(at time.Time) state.Pending {
+	return state.Pending{SP: "https://sp.test", IDP: "https://idp.test", RequestID: nameRequest, RelayState: "abcdefghijklmnop", ACS: uriHTTPSSpTestAcs, IssuedAt: at, ExpiresAt: at.Add(time.Minute), RequestedContexts: []string{uriUrnTest}}
+}
+
 func BenchmarkPutAndExpire(b *testing.B) {
 	m, err := state.NewMemoryStore(state.Config{})
 	if err != nil {
@@ -173,8 +228,4 @@ func BenchmarkGetParallel(b *testing.B) {
 			}
 		}
 	})
-}
-
-func pending(at time.Time) state.Pending {
-	return state.Pending{SP: "https://sp.test", IDP: "https://idp.test", RequestID: nameRequest, RelayState: "abcdefghijklmnop", ACS: uriHTTPSSpTestAcs, IssuedAt: at, ExpiresAt: at.Add(time.Minute), RequestedContexts: []string{uriUrnTest}}
 }

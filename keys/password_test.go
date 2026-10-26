@@ -492,6 +492,48 @@ func TestPasswordProtectionPolicy(t *testing.T) {
 	}
 }
 
+func TestPKCS12ExportRejectsBeforeOutput(t *testing.T) {
+	c := testcert.New(t)
+	password := []byte("public password")
+	options := keys.PKCS12Options{Encryption: protection(crypto.SHA256, 256)}
+	identity := keys.PKCS12Identity{PrivateKey: c.LeafKey, Certificate: c.Leaf, ExtraCertificates: []*x509.Certificate{c.Root}}
+	for _, tc := range []struct {
+		name   string
+		limits keys.Limits
+		change func(*keys.PKCS12Identity)
+		want   error
+	}{
+		{"certificate count", keys.Limits{MaxCertificates: 1}, nil, keys.ErrLimit},
+		{"bag count", keys.Limits{MaxBags: 2}, nil, keys.ErrLimit},
+		{"content-info count", keys.Limits{MaxContentInfos: 1}, nil, keys.ErrLimit},
+		{"certificate byte budget", keys.Limits{MaxCertificateBytes: 1}, nil, keys.ErrLimit},
+		{"missing identity certificate", keys.Limits{}, func(i *keys.PKCS12Identity) { i.Certificate = nil }, keys.ErrPolicy},
+		{"nil extra certificate", keys.Limits{}, func(i *keys.PKCS12Identity) { i.ExtraCertificates = []*x509.Certificate{nil} }, keys.ErrPolicy},
+		{"malformed extra certificate", keys.Limits{}, func(i *keys.PKCS12Identity) { i.ExtraCertificates = []*x509.Certificate{{Raw: []byte{0x30, 0}}} }, keys.ErrFormat},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := identity
+			if tc.change != nil {
+				tc.change(&input)
+			}
+			var output bytes.Buffer
+			if n, err := keys.WritePKCS12(t.Context(), &output, input, password, options, tc.limits); n != 0 || output.Len() != 0 || !errors.Is(err, tc.want) {
+				t.Fatal("invalid export emitted partial PFX or lost cause", n, output.Len(), err)
+			}
+		})
+	}
+	var output bytes.Buffer
+	limits := keys.Limits{MaxCertificates: 2, MaxBags: 3, MaxContentInfos: 2}
+	n, err := keys.WritePKCS12(t.Context(), &output, identity, password, options, limits)
+	if err != nil || n != int64(output.Len()) || n == 0 {
+		t.Fatal("exact object-count limits rejected valid export", n, err)
+	}
+	parsed, err := keys.ParsePKCS12(t.Context(), output.Bytes(), password, limits)
+	if err != nil || parsed == nil || !bytes.Equal(parsed.Certificate.Raw, c.Leaf.Raw) || len(parsed.ExtraCertificates) != 1 || !bytes.Equal(parsed.ExtraCertificates[0].Raw, c.Root.Raw) || !c.LeafKey.PublicKey.Equal(parsed.PrivateKey.Public()) {
+		t.Fatal("bounded PFX lost identity or extra certificate", err)
+	}
+}
+
 func TestPrivateExportRejectsNilKeys(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -511,37 +553,6 @@ func TestPrivateExportRejectsNilKeys(t *testing.T) {
 			}
 		})
 	}
-}
-
-func FuzzPasswordContainers(f *testing.F) {
-	c := testcert.New(f)
-	ctx := f.Context()
-	password := []byte("public test password")
-	options := protection(crypto.SHA256, 256)
-
-	a, err := keys.MarshalEncryptedPrivate(ctx, c.LeafKey, password, options, keys.Limits{})
-	if err != nil {
-		f.Fatal(err)
-	}
-
-	b, err := keys.MarshalPKCS12(ctx, keys.PKCS12Identity{PrivateKey: c.LeafKey, Certificate: c.Leaf}, password, keys.PKCS12Options{Encryption: options}, keys.Limits{})
-	if err != nil {
-		f.Fatal(err)
-	}
-
-	for _, raw := range [][]byte{a, b, pem.EncodeToMemory(&pem.Block{Type: textENCRYPTEDPRIVATEKEY, Bytes: a})} {
-		f.Add(raw, password)
-	}
-
-	f.Fuzz(func(t *testing.T, raw, password []byte) {
-		if len(raw) > 64<<10 || len(password) > 128 {
-			return
-		}
-
-		limits := keys.Limits{MaxIterations: 1000, MaxKDFWork: 3000}
-		_, _ = keys.ParseEncryptedPrivate(ctx, raw, password, limits)
-		_, _ = keys.ParsePKCS12(ctx, raw, password, limits)
-	})
 }
 
 func TestPKCS8VersionAndAttributes(t *testing.T) {
@@ -801,4 +812,35 @@ func rejectPrivate(t *testing.T, raw []byte) {
 	if key, err := keys.ParsePrivate(raw, keys.Limits{}); key != nil || !errors.Is(err, keys.ErrFormat) {
 		t.Fatalf("invalid private-key structure accepted: key=%v, error=%v", key != nil, err)
 	}
+}
+
+func FuzzPasswordContainers(f *testing.F) {
+	c := testcert.New(f)
+	ctx := f.Context()
+	password := []byte("public test password")
+	options := protection(crypto.SHA256, 256)
+
+	a, err := keys.MarshalEncryptedPrivate(ctx, c.LeafKey, password, options, keys.Limits{})
+	if err != nil {
+		f.Fatal(err)
+	}
+
+	b, err := keys.MarshalPKCS12(ctx, keys.PKCS12Identity{PrivateKey: c.LeafKey, Certificate: c.Leaf}, password, keys.PKCS12Options{Encryption: options}, keys.Limits{})
+	if err != nil {
+		f.Fatal(err)
+	}
+
+	for _, raw := range [][]byte{a, b, pem.EncodeToMemory(&pem.Block{Type: textENCRYPTEDPRIVATEKEY, Bytes: a})} {
+		f.Add(raw, password)
+	}
+
+	f.Fuzz(func(t *testing.T, raw, password []byte) {
+		if len(raw) > 64<<10 || len(password) > 128 {
+			return
+		}
+
+		limits := keys.Limits{MaxIterations: 1000, MaxKDFWork: 3000}
+		_, _ = keys.ParseEncryptedPrivate(ctx, raw, password, limits)
+		_, _ = keys.ParsePKCS12(ctx, raw, password, limits)
+	})
 }

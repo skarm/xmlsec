@@ -560,6 +560,26 @@ func finishConstructedNamespaces(ctx context.Context, elem *xdm.Element, inherit
 // content construction. Empty-URI markers are not XDM namespace nodes and do
 // not block inheritance. A no-namespace element does block a default binding.
 func inheritConstructedNamespaces(ctx context.Context, parent *xdm.Element) error {
+	// Only element children can inherit namespaces. Leaf constructors are common
+	// (for example <v><xsl:value-of select="."/></v>); avoid collecting ancestor
+	// bindings and allocating maps when there is no element to update.
+	hasElement := false
+
+	for child := range xdm.Children(parent) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if _, ok := child.(*xdm.Element); ok {
+			hasElement = true
+			break
+		}
+	}
+
+	if !hasElement {
+		return ctx.Err()
+	}
+
 	bindings := make(map[string]string)
 
 	for _, namespace := range collectInScopeNamespaces(parent) {

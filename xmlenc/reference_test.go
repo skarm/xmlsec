@@ -24,6 +24,34 @@ const (
 	nameRsa    = "rsa"
 )
 
+type cipherReferenceProfile struct {
+	mode   string
+	rsaKey *rsa.PrivateKey
+	secret []byte
+}
+
+func (p cipherReferenceProfile) encrypt(ctx context.Context, plain []byte) (*document.Document, error) {
+	switch p.mode {
+	case nameRsa:
+		return xmlenc.EncryptBytes(ctx, plain, &p.rsaKey.PublicKey, xmlenc.Options{})
+	case nameWrap:
+		return xmlenc.EncryptBytesWithKeyWrap(ctx, plain, p.secret, xmlenc.KeyWrapOptions{})
+	default:
+		return xmlenc.EncryptBytesWithKey(ctx, plain, p.secret, xmlenc.SymmetricOptions{})
+	}
+}
+
+func (p cipherReferenceProfile) decrypt(ctx context.Context, input *document.Document, options xmlenc.Options) ([]byte, error) {
+	switch p.mode {
+	case nameRsa:
+		return xmlenc.DecryptBytes(ctx, input, p.rsaKey, options)
+	case nameWrap:
+		return xmlenc.DecryptBytesWithKeyWrap(ctx, input, p.secret, xmlenc.KeyWrapOptions{Data: options})
+	default:
+		return xmlenc.DecryptBytesWithKey(ctx, input, p.secret, xmlenc.SymmetricOptions{Data: options})
+	}
+}
+
 type cipherReferenceFixture struct {
 	profile  cipherReferenceProfile
 	uri      string
@@ -32,6 +60,29 @@ type cipherReferenceFixture struct {
 	body     []byte
 	plain    []byte
 }
+
+type resourceReader struct {
+	io.Reader
+	closed   bool
+	closeErr error
+}
+
+func (r *resourceReader) Close() error { r.closed = true; return r.closeErr }
+
+type errorReader struct{ err error }
+
+func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
+
+type cipherReaderFunc func([]byte) (int, error)
+
+func (f cipherReaderFunc) Read(p []byte) (int, error) { return f(p) }
+
+type sizedCipherReader struct {
+	io.ReadCloser
+	size int64
+}
+
+func (r sizedCipherReader) Size() int64 { return r.size }
 
 func TestCipherReferenceProfiles(t *testing.T) {
 	ctx := t.Context()
@@ -404,44 +455,6 @@ func TestCipherReferencePreservesReadAndCloseErrors(t *testing.T) {
 	}
 }
 
-func FuzzCipherReference(f *testing.F) {
-	secret := bytes.Repeat([]byte{0x71}, 32) // Public test key.
-	ctx := f.Context()
-	uri := "urn:example:fuzz-ciphertext"
-
-	d, err := xmlenc.EncryptBytesWithKey(ctx, []byte("positive"), secret, xmlenc.SymmetricOptions{})
-	if err != nil {
-		f.Fatal(err)
-	}
-
-	d, _, body, err := xmlenc.ExternalizeCiphertext(ctx, d, d.Root(), uri)
-	if err != nil {
-		f.Fatal(err)
-	}
-
-	raw, _ := d.XML(ctx)
-	f.Add(raw, body)
-
-	ref := `<xenc:CipherReference URI="` + uri + `"></xenc:CipherReference>`
-	transformed := `<xenc:CipherReference URI="` + uri + `"><xenc:Transforms><ds:Transform Algorithm="` + xmlenc.SignatureNamespace + `base64"/></xenc:Transforms></xenc:CipherReference>`
-	f.Add(bytes.Replace(raw, []byte(ref), []byte(transformed), 1), []byte(base64.StdEncoding.EncodeToString(body)))
-	f.Fuzz(func(t *testing.T, raw, resource []byte) {
-		if len(raw) > 64<<10 || len(resource) > 2048 {
-			return
-		}
-
-		d, err := document.Parse(ctx, raw, document.DefaultLimits())
-		if err != nil {
-			return
-		}
-
-		options := externalOptions(uri, resource)
-		options.MaxPlaintextBytes = 1024
-		options.External.MaxBytes = 2048
-		_, _ = xmlenc.DecryptBytesWithKey(ctx, d, secret, xmlenc.SymmetricOptions{Data: options})
-	})
-}
-
 func TestCipherReferenceRetainsErrorOnFullChunk(t *testing.T) {
 	secret := make([]byte, 32)
 	plaintext := bytes.Repeat([]byte("x"), (32<<10)-28) // Ciphertext fills one collection chunk exactly.
@@ -475,14 +488,6 @@ func TestCipherReferenceRetainsErrorOnFullChunk(t *testing.T) {
 	}
 }
 
-type resourceReader struct {
-	io.Reader
-	closed   bool
-	closeErr error
-}
-
-func (r *resourceReader) Close() error { r.closed = true; return r.closeErr }
-
 func externalOptions(uri string, body []byte) xmlenc.Options {
 	return xmlenc.Options{External: &xmlenc.ExternalCipherReference{
 		URI: uri,
@@ -491,38 +496,6 @@ func externalOptions(uri string, body []byte) xmlenc.Options {
 		}),
 	}}
 }
-
-type cipherReferenceProfile struct {
-	mode   string
-	rsaKey *rsa.PrivateKey
-	secret []byte
-}
-
-func (p cipherReferenceProfile) encrypt(ctx context.Context, plain []byte) (*document.Document, error) {
-	switch p.mode {
-	case nameRsa:
-		return xmlenc.EncryptBytes(ctx, plain, &p.rsaKey.PublicKey, xmlenc.Options{})
-	case nameWrap:
-		return xmlenc.EncryptBytesWithKeyWrap(ctx, plain, p.secret, xmlenc.KeyWrapOptions{})
-	default:
-		return xmlenc.EncryptBytesWithKey(ctx, plain, p.secret, xmlenc.SymmetricOptions{})
-	}
-}
-
-func (p cipherReferenceProfile) decrypt(ctx context.Context, input *document.Document, options xmlenc.Options) ([]byte, error) {
-	switch p.mode {
-	case nameRsa:
-		return xmlenc.DecryptBytes(ctx, input, p.rsaKey, options)
-	case nameWrap:
-		return xmlenc.DecryptBytesWithKeyWrap(ctx, input, p.secret, xmlenc.KeyWrapOptions{Data: options})
-	default:
-		return xmlenc.DecryptBytesWithKey(ctx, input, p.secret, xmlenc.SymmetricOptions{Data: options})
-	}
-}
-
-type errorReader struct{ err error }
-
-func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
 
 func decryptReader(t *testing.T, source io.ReadCloser) ([]byte, error) {
 	t.Helper()
@@ -543,10 +516,6 @@ func decryptReader(t *testing.T, source io.ReadCloser) ([]byte, error) {
 
 	return xmlenc.DecryptBytesWithKey(t.Context(), external, key, xmlenc.SymmetricOptions{Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return source, nil })}}})
 }
-
-type cipherReaderFunc func([]byte) (int, error)
-
-func (f cipherReaderFunc) Read(p []byte) (int, error) { return f(p) }
 
 func graphXML(t *testing.T, doc *document.Document) string {
 	t.Helper()
@@ -643,6 +612,49 @@ func TestKeyGraphRelationships(t *testing.T) {
 			t.Fatal("conflicting authorized paths accepted", err)
 		}
 	})
+}
+
+func TestKeyGraphOmittedEncryptionMethod(t *testing.T) {
+	secret, kek := bytes.Repeat([]byte{0x52}, 32), bytes.Repeat([]byte{0x93}, 32)
+	for _, tc := range []struct {
+		name, keyName string
+		keys          []xmlenc.KeyGraphKey
+		algorithms    []string
+		want          error
+	}{
+		{"named binding", "master", []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}, nil, nil},
+		{"name selects between algorithms", "master", []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}, {Name: "other", Algorithm: xmlenc.AES128KeyWrap, Secret: kek[:16]}}, nil, nil},
+		{"unnamed binding", "", []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}, nil, nil},
+		{"same name ambiguous algorithms", "master", []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}, {Name: "master", Algorithm: xmlenc.AES128KeyWrap, Secret: kek[:16]}}, nil, xmlenc.ErrPolicy},
+		{"policy fallback needs matching key", "missing", []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}, nil, xmlenc.ErrPolicy},
+		{"ambiguous policy fallback", "master", nil, []string{xmlenc.AES128KeyWrap, xmlenc.AES256KeyWrap}, xmlenc.ErrPolicy},
+		{"KDF is not a wrapping algorithm", "master", nil, []string{xmlenc.ConcatKDF}, xmlenc.ErrPolicy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapped := graphWrap(t, secret, kek, tc.keyName, "", "key", nil)
+			wire := graphXML(t, wrapped)
+			start := strings.Index(wire, "<xenc:EncryptionMethod")
+			const endTag = "</xenc:EncryptionMethod>"
+			end := strings.Index(wire, endTag)
+			if start < 0 || end < start {
+				t.Fatal("generated fixture lacks EncryptionMethod")
+			}
+			wire = wire[:start] + wire[end+len(endTag):]
+			data := graphData(t, secret, wire)
+			options := xmlenc.KeyGraphOptions{Keys: tc.keys, KeyAlgorithms: tc.algorithms}
+			if tc.want == nil {
+				graphAssert(t, data, data.Root(), options)
+				return
+			}
+			before := graphXML(t, data)
+			if plain, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), data, data.Root(), options); plain != nil || !errors.Is(err, tc.want) {
+				t.Fatalf("omitted method: %x, %v; want %v", plain, err, tc.want)
+			}
+			if graphXML(t, data) != before {
+				t.Fatal("failed key resolution changed input")
+			}
+		})
+	}
 }
 
 func TestKeyGraphDerivedKey(t *testing.T) {
@@ -746,6 +758,67 @@ func TestKeyGraphExternalResources(t *testing.T) {
 	calls = 0
 	if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), data, data.Root(), options); got != nil || !errors.Is(err, xmlenc.ErrPolicy) || calls != 0 {
 		t.Fatal("unapproved key I/O", err, calls)
+	}
+}
+
+func TestKeyGraphSharesExternalResourceBudget(t *testing.T) {
+	secret, kek := bytes.Repeat([]byte{0x61}, 32), bytes.Repeat([]byte{0x62}, 32)
+	const keyURI = "https://example.test/graph/key.xml"
+	const cipherURI = "https://example.test/graph/data.bin"
+	wrapped := graphWrap(t, secret, kek, "master", "session", "key", nil)
+	data := graphData(t, secret, `<ds:RetrievalMethod URI="`+keyURI+`#key"/>`)
+	external, selected, ciphertext, err := xmlenc.ExternalizeCiphertext(t.Context(), data, data.Root(), cipherURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		maximum    int
+		standalone bool
+		pass       bool
+	}{
+		{"two resources fit exact quota", 2, false, true},
+		{"key and cipher cannot each claim a separate quota", 1, false, false},
+		{"cached key reference consumes no second resource", 2, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keyReads, cipherReads := 0, 0
+			keyBody := &resourceReader{Reader: strings.NewReader(graphXML(t, wrapped))}
+			cipherBody := &resourceReader{Reader: bytes.NewReader(ciphertext)}
+			options := xmlenc.KeyGraphOptions{
+				Keys:   []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}},
+				Limits: xmlenc.KeyGraphLimits{MaxResources: tc.maximum},
+				External: &xmlenc.KeyGraphResources{AllowedURIs: []string{keyURI}, Resolver: xmlenc.CipherResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+					keyReads++
+					if uri != keyURI {
+						t.Fatal("unexpected key resource", uri)
+					}
+					return keyBody, nil
+				})},
+				Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: cipherURI, Resolver: xmlenc.CipherResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+					cipherReads++
+					if uri != cipherURI {
+						t.Fatal("unexpected ciphertext resource", uri)
+					}
+					return cipherBody, nil
+				})}},
+			}
+			if tc.standalone {
+				options.KeyURIs = []string{keyURI + "#key"}
+			}
+			before := graphXML(t, external)
+			plain, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), external, selected, options)
+			if tc.pass {
+				if err != nil || string(plain) != "graph payload\x00\xff" || cipherReads != 1 || !cipherBody.closed {
+					t.Fatal("exact shared resource quota failed", cipherReads, cipherBody.closed, err)
+				}
+			} else if plain != nil || !errors.Is(err, document.ErrLimit) || !errors.Is(err, xmlenc.ErrPolicy) || cipherReads != 0 || cipherBody.closed {
+				t.Fatal("resource quota returned partial plaintext or performed forbidden I/O", plain, cipherReads, cipherBody.closed, err)
+			}
+			if keyReads != 1 || !keyBody.closed || graphXML(t, external) != before {
+				t.Fatal("key resource was reloaded, leaked, or mutated the source", keyReads, keyBody.closed)
+			}
+		})
 	}
 }
 
@@ -859,6 +932,95 @@ func TestKeyGraphXMLRestoration(t *testing.T) {
 	plain, err := xmlenc.DecryptDocumentWithKeyGraph(t.Context(), standalone, standalone.Root(), options)
 	if err != nil || plain.Root().Name() != source.Root().Name() {
 		t.Fatal("document restoration", err)
+	}
+}
+
+func TestKeyGraphAuthenticatedPlaintextGrammar(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x72}, 32)
+	for _, tc := range []struct {
+		name             string
+		plain            []byte
+		element, content bool
+		maximumDepth     int
+	}{
+		{"single element", []byte(`<a>value</a>`), true, true, 0},
+		{"multiple elements are content", []byte(`<a/><b/>`), false, true, 0},
+		{"mixed content", []byte(`before<a/>after`), false, true, 0},
+		{"empty content", []byte{}, false, true, 0},
+		{"comment and element are content", []byte(`<!--note--><a/>`), false, true, 0},
+		{"invalid UTF8", []byte{'<', 'a', '>', 0xff, '<', '/', 'a', '>'}, false, false, 0},
+		{"non NFC text", []byte("<a>e\u0301</a>"), false, false, 0},
+		{"broken XML", []byte(`<a>`), false, false, 0},
+		{"unbound namespace prefix", []byte(`<p:a/>`), false, false, 0},
+		{"document declaration", []byte(`<?xml version="1.0"?><a/>`), false, false, 0},
+		{"DTD declaration", []byte(`<!DOCTYPE a><a/>`), false, false, 0},
+		{"nested XML at depth limit", []byte(`<a><b/></a>`), true, true, 2},
+		{"decrypted XML exceeds depth", []byte(`<a><b/></a>`), false, false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			encrypted, err := xmlenc.EncryptBytesWithKey(t.Context(), tc.plain, secret, xmlenc.SymmetricOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire := graphXML(t, encrypted)
+			typed := func(typ string) string {
+				changed := strings.Replace(wire, "<xenc:EncryptedData ", `<xenc:EncryptedData Type="`+typ+`" `, 1)
+				if changed == wire {
+					t.Fatal("missing EncryptedData type mutation")
+				}
+				return changed
+			}
+			options := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES256GCM, Secret: secret}}}
+			if tc.maximumDepth > 0 {
+				options.Data.XMLLimits = document.DefaultLimits()
+				options.Data.XMLLimits.MaxDepth = tc.maximumDepth
+			}
+			elementEnvelope := parse(t, []byte(typed(xmlenc.ElementType)))
+			// GCM authentication and exact byte recovery succeed even when XML parsing
+			// must fail. Type metadata does not transcode or normalize byte results.
+			if raw, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), elementEnvelope, elementEnvelope.Root(), options); err != nil || !bytes.Equal(raw, tc.plain) {
+				t.Fatal("authenticated plaintext control failed", err)
+			}
+			standalone, err := xmlenc.DecryptDocumentWithKeyGraph(t.Context(), elementEnvelope, elementEnvelope.Root(), options)
+			if tc.element {
+				if standalone == nil || err != nil {
+					t.Fatal("valid standalone element rejected", err)
+				}
+				sameXML(t, parse(t, tc.plain), standalone)
+			} else if standalone != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+				t.Fatal("invalid XML entered standalone graph API", standalone != nil, err)
+			}
+			for _, content := range []bool{false, true} {
+				typ, valid := xmlenc.ElementType, tc.element
+				if content {
+					typ, valid = xmlenc.ContentType, tc.content
+				}
+				container := parse(t, []byte(`<r><before/>`+typed(typ)+`<after/></r>`))
+				before := graphXML(t, container)
+				selected := container.Root().Children()[1]
+				var restored *document.Document
+				var handle document.Element
+				if content {
+					restored, handle, err = xmlenc.DecryptContentWithKeyGraph(t.Context(), container, selected, options)
+				} else {
+					restored, handle, err = xmlenc.DecryptElementWithKeyGraph(t.Context(), container, selected, options)
+				}
+				if valid {
+					if restored == nil || err != nil || !handle.Valid() {
+						t.Fatal("valid XML restoration rejected", content, err)
+					}
+					sameXML(t, parse(t, append(append([]byte(`<r><before/>`), tc.plain...), []byte(`<after/></r>`)...)), restored)
+					if content && !handle.Same(restored.Root()) || !content && !handle.Same(restored.Root().Children()[1]) {
+						t.Fatal("returned handle lost the restored snapshot")
+					}
+				} else if restored != nil || handle.Valid() || !errors.Is(err, xmlenc.ErrDecrypt) {
+					t.Fatal("invalid decrypted XML returned a partial snapshot", content, restored != nil, handle.Valid(), err)
+				}
+				if graphXML(t, container) != before {
+					t.Fatal("XML restoration mutated the encrypted input")
+				}
+			}
+		})
 	}
 }
 
@@ -1134,6 +1296,52 @@ func TestKeyGraphURIContext(t *testing.T) {
 	})
 }
 
+func TestExternalKeyBacklinksRespectPrincipalURI(t *testing.T) {
+	secret, kek := bytes.Repeat([]byte{0x21}, 32), bytes.Repeat([]byte{0x22}, 32)
+	const principalURI = "https://example.test/messages/data.xml"
+	const keyURI = "https://example.test/keys/key.xml"
+	for _, tc := range []struct {
+		name, reference string
+		want            error
+	}{
+		{"absolute reference", principalURI + "#data", xmlenc.ErrDecrypt},
+		{"relative reference", "../messages/data.xml#data", xmlenc.ErrDecrypt},
+		{"whole principal document", principalURI, xmlenc.ErrDecrypt},
+		{"other document", "https://other.test/messages/data.xml#data", nil},
+		{"fragment belongs to key document", "#data", nil},
+		{"malformed reference", "bad%xx", xmlenc.ErrFormat},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The explicit standalone key is authorized independently of backlinks.
+			// A second key must participate, and conflict, only when its reference
+			// resolves to this principal document. Unrelated backlinks are ignored.
+			discovery := graphWrap(t, secret, kek, "master", "", "discovery", nil)
+			wrapped := graphWrap(t, bytes.Repeat([]byte{0x99}, 32), kek, "master", "", "key", []xmlenc.KeyGraphReference{{URI: tc.reference}})
+			external := "<keys>" + graphXML(t, discovery) + graphXML(t, wrapped) + "</keys>"
+			data := graphData(t, secret, "")
+			calls := 0
+			options := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}, KeyURIs: []string{keyURI + "#discovery"}, External: &xmlenc.KeyGraphResources{BaseURI: principalURI, AllowedURIs: []string{keyURI}, Resolver: xmlenc.CipherResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+				calls++
+				if uri != keyURI {
+					t.Fatalf("backlink triggered unauthorized retrieval: %s", uri)
+				}
+				return io.NopCloser(strings.NewReader(external)), nil
+			})}}
+			if tc.want == nil {
+				graphAssert(t, data, data.Root(), options)
+			} else {
+				before := graphXML(t, data)
+				if plain, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), data, data.Root(), options); plain != nil || !errors.Is(err, tc.want) || graphXML(t, data) != before {
+					t.Fatal("backlink conflict or policy error lost", plain, err)
+				}
+			}
+			if calls != 1 {
+				t.Fatal("unexpected external reads", calls)
+			}
+		})
+	}
+}
+
 func TestKeyGraphCountsActualCipherResourceBytes(t *testing.T) {
 	secret, kek := bytes.Repeat([]byte{0x62}, 32), bytes.Repeat([]byte{0x63}, 32)
 	wrapped := graphWrap(t, secret, kek, "master", "", "", nil)
@@ -1173,50 +1381,6 @@ func TestKeyGraphCountsActualCipherResourceBytes(t *testing.T) {
 						t.Fatal("encoded whitespace escaped aggregate raw-byte budget", err, calls)
 					}
 				}
-			}
-		})
-	}
-}
-
-type sizedCipherReader struct {
-	io.ReadCloser
-	size int64
-}
-
-func (r sizedCipherReader) Size() int64 { return r.size }
-
-func BenchmarkExternalCiphertext(b *testing.B) {
-	for _, size := range []int{256, 16 << 10, 8 << 20} {
-		b.Run(strconv.Itoa(size), func(b *testing.B) {
-			profile := cipherReferenceProfile{secret: make([]byte, 32)}
-			plain := bytes.Repeat([]byte("x"), size)
-			encrypted, err := profile.encrypt(b.Context(), plain)
-			if err != nil {
-				b.Fatal(err)
-			}
-			const uri = "urn:benchmark:ciphertext"
-			external, _, body, err := xmlenc.ExternalizeCiphertext(b.Context(), encrypted, encrypted.Root(), uri)
-			if err != nil {
-				b.Fatal(err)
-			}
-			for _, known := range []bool{false, true} {
-				b.Run(strconv.FormatBool(known), func(b *testing.B) {
-					options := xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
-						r := io.NopCloser(bytes.NewReader(body))
-						if known {
-							return sizedCipherReader{r, int64(len(body))}, nil
-						}
-						return r, nil
-					})}}
-					b.ReportAllocs()
-					b.SetBytes(int64(size))
-					for b.Loop() {
-						out, err := profile.decrypt(b.Context(), external, options)
-						if err != nil || !bytes.Equal(out, plain) {
-							b.Fatal(err)
-						}
-					}
-				})
 			}
 		})
 	}
@@ -1297,6 +1461,81 @@ func TestSizedCiphertextVerifiesActualStream(t *testing.T) {
 				}
 			} else if err != nil || string(out) != "protected" {
 				t.Fatal(string(out), err)
+			}
+		})
+	}
+}
+
+func FuzzCipherReference(f *testing.F) {
+	secret := bytes.Repeat([]byte{0x71}, 32) // Public test key.
+	ctx := f.Context()
+	uri := "urn:example:fuzz-ciphertext"
+
+	d, err := xmlenc.EncryptBytesWithKey(ctx, []byte("positive"), secret, xmlenc.SymmetricOptions{})
+	if err != nil {
+		f.Fatal(err)
+	}
+
+	d, _, body, err := xmlenc.ExternalizeCiphertext(ctx, d, d.Root(), uri)
+	if err != nil {
+		f.Fatal(err)
+	}
+
+	raw, _ := d.XML(ctx)
+	f.Add(raw, body)
+
+	ref := `<xenc:CipherReference URI="` + uri + `"></xenc:CipherReference>`
+	transformed := `<xenc:CipherReference URI="` + uri + `"><xenc:Transforms><ds:Transform Algorithm="` + xmlenc.SignatureNamespace + `base64"/></xenc:Transforms></xenc:CipherReference>`
+	f.Add(bytes.Replace(raw, []byte(ref), []byte(transformed), 1), []byte(base64.StdEncoding.EncodeToString(body)))
+	f.Fuzz(func(t *testing.T, raw, resource []byte) {
+		if len(raw) > 64<<10 || len(resource) > 2048 {
+			return
+		}
+
+		d, err := document.Parse(ctx, raw, document.DefaultLimits())
+		if err != nil {
+			return
+		}
+
+		options := externalOptions(uri, resource)
+		options.MaxPlaintextBytes = 1024
+		options.External.MaxBytes = 2048
+		_, _ = xmlenc.DecryptBytesWithKey(ctx, d, secret, xmlenc.SymmetricOptions{Data: options})
+	})
+}
+
+func BenchmarkExternalCiphertext(b *testing.B) {
+	for _, size := range []int{256, 16 << 10, 8 << 20} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			profile := cipherReferenceProfile{secret: make([]byte, 32)}
+			plain := bytes.Repeat([]byte("x"), size)
+			encrypted, err := profile.encrypt(b.Context(), plain)
+			if err != nil {
+				b.Fatal(err)
+			}
+			const uri = "urn:benchmark:ciphertext"
+			external, _, body, err := xmlenc.ExternalizeCiphertext(b.Context(), encrypted, encrypted.Root(), uri)
+			if err != nil {
+				b.Fatal(err)
+			}
+			for _, known := range []bool{false, true} {
+				b.Run(strconv.FormatBool(known), func(b *testing.B) {
+					options := xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+						r := io.NopCloser(bytes.NewReader(body))
+						if known {
+							return sizedCipherReader{r, int64(len(body))}, nil
+						}
+						return r, nil
+					})}}
+					b.ReportAllocs()
+					b.SetBytes(int64(size))
+					for b.Loop() {
+						out, err := profile.decrypt(b.Context(), external, options)
+						if err != nil || !bytes.Equal(out, plain) {
+							b.Fatal(err)
+						}
+					}
+				})
 			}
 		})
 	}

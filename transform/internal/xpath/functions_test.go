@@ -2,6 +2,8 @@ package xpath //nolint:testpackage // Checks built-in function results on the AS
 
 import (
 	"errors"
+	"math"
+	"strconv"
 	"testing"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -146,6 +148,13 @@ func TestDateTimeFunctionsASTAndVM(t *testing.T) {
 		{"removing timezone retains local fields", `adjust-dateTime-to-timezone(xs:dateTime('2024-03-01T00:30:00+02:00'),())`, "2024-03-01T00:30:00"},
 		{"adding timezone to unzoned value", `adjust-dateTime-to-timezone(xs:dateTime('2024-03-01T00:30:00'),xs:dayTimeDuration('-PT5H'))`, "2024-03-01T00:30:00-05:00"},
 		{"month arithmetic clamps day", `xs:date('2024-01-31') + xs:yearMonthDuration('P1M')`, "2024-02-29"},
+		{"year month addition with negative operand", `xs:yearMonthDuration('P1Y2M') + xs:yearMonthDuration('-P3M')`, "P11M"},
+		{"year month subtraction crosses zero", `xs:yearMonthDuration('P3M') - xs:yearMonthDuration('P1Y2M')`, "-P11M"},
+		{"negative durations subtract to positive", `xs:yearMonthDuration('-P3M') - xs:yearMonthDuration('-P1Y2M')`, "P11M"},
+		{"year month cancellation", `xs:yearMonthDuration('P1Y') + xs:yearMonthDuration('-P12M')`, "P0M"},
+		{"fractional second addition stays exact", `xs:dayTimeDuration('PT0.05S') + xs:dayTimeDuration('PT0.05S')`, "PT0.1S"},
+		{"fractional second subtraction crosses zero", `xs:dayTimeDuration('PT0.05S') - xs:dayTimeDuration('PT0.15S')`, "-PT0.1S"},
+		{"negative second subtraction", `xs:dayTimeDuration('-PT0.05S') - xs:dayTimeDuration('-PT0.15S')`, "PT0.1S"},
 		{"date time composition", `dateTime(xs:date('2024-02-29Z'),xs:time('12:34:56Z'))`, "2024-02-29T12:34:56Z"},
 		{"unavailable components stay empty", `(count(year-from-dateTime(())),count(timezone-from-date(xs:date('2024-01-01'))))`, "0|0"},
 	})
@@ -174,6 +183,9 @@ func TestNumericAndSequenceFunctionsASTAndVM(t *testing.T) {
 	t.Parallel()
 	assertFunctionResults(t, []functionResultCase{
 		{"half even ties", `(round-half-to-even(1.5),round-half-to-even(2.5),round-half-to-even(-1.5),round-half-to-even(125,-1))`, "2|2|-2|120"},
+		{"exact decimal operators", `(xs:decimal('0.1') + xs:decimal('0.2'),xs:decimal('0.1') - xs:decimal('0.3'),xs:decimal('1.25') * xs:decimal('0.8'),xs:decimal('1') div xs:decimal('8'))`, "0.3|-0.2|1|0.125"},
+		{"decimal quotient truncates toward zero", `(xs:decimal('-5.5') idiv xs:decimal('2'),xs:decimal('5.5') idiv xs:decimal('-2'))`, "-2|-2"},
+		{"decimal modulo has dividend sign", `(xs:decimal('-5.5') mod xs:decimal('2'),xs:decimal('5.5') mod xs:decimal('-2'))`, "-1.5|1.5"},
 		{"round ties toward positive infinity", `(round(1.5),round(-1.5),ceiling(-1.5),floor(-1.5),abs(-3))`, "2|-1|-1|-2|3"},
 		{"numeric aggregate", `(sum((1,2,3)),avg((1,2,3)),min((3,1,2)),max((3,1,2)),sum((),9),count(avg(())))`, "6|2|1|3|9|0"},
 		{"distinct removes duplicate values", `sort(distinct-values((3,1,3,2,1)))`, "1|2|3"},
@@ -207,6 +219,13 @@ func TestFunctionErrorsASTAndVM(t *testing.T) {
 		{"JSON invalid duplicate option", `parse-json('{}',map{'duplicates':'combine'})`, "FOJS0005"},
 		{"timezone beyond fourteen hours", `adjust-dateTime-to-timezone(xs:dateTime('2024-01-01T00:00:00Z'),xs:dayTimeDuration('PT14H1M'))`, "FODT0003"},
 		{"date time timezone conflict", `dateTime(xs:date('2024-01-01+02:00'),xs:time('00:00:00+03:00'))`, "FORG0008"},
+		{"mixed duration kinds", `xs:yearMonthDuration('P1M') + xs:dayTimeDuration('P1D')`, "XPTY0004"},
+		{"generic duration arithmetic", `xs:duration('P1M') + xs:duration('P1M')`, "XPTY0004"},
+		{"duration multiplication by duration", `xs:yearMonthDuration('P1M') * xs:yearMonthDuration('P2M')`, "XPTY0004"},
+		{"year month duration overflow", `xs:yearMonthDuration('P` + strconv.Itoa(math.MaxInt) + `M') + xs:yearMonthDuration('P1M')`, "FODT0002"},
+		{"decimal division by zero", `xs:decimal('1') div xs:decimal('0')`, "FOAR0001"},
+		{"decimal integer division by zero", `xs:decimal('1') idiv xs:decimal('0')`, "FOAR0001"},
+		{"decimal modulo by zero", `xs:decimal('1') mod xs:decimal('0')`, "FOAR0001"},
 		{"invalid Unicode scalar", `codepoints-to-string(0)`, "FOCH0001"},
 		{"invalid regex flag", `matches('x','x','z')`, "FORX0001"},
 		{"invalid regex", `matches('x','[')`, "FORX0002"},

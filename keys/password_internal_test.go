@@ -23,6 +23,32 @@ import (
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 )
 
+// cancelOnCheck cancels at a deterministic checkpoint, avoiding timing races.
+type cancelOnCheck struct {
+	context.Context
+	cancel context.CancelFunc
+	at     int
+	checks int
+}
+
+func cancelAt(t testing.TB, n int) *cancelOnCheck {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	return &cancelOnCheck{Context: ctx, cancel: cancel, at: n}
+}
+
+func (c *cancelOnCheck) Err() error {
+	c.checks++
+	if c.checks >= c.at {
+		c.cancel()
+	}
+
+	return c.Context.Err()
+}
+
 func TestPasswordDerivation(t *testing.T) {
 	salt := []byte("independent salt")
 
@@ -128,6 +154,54 @@ func TestPKCS12AuthenticatedStructure(t *testing.T) {
 	ignored := der.Seq(f[0].FullBytes, f[1].FullBytes, der.Seq(mac[0].FullBytes, der.Octets(nil), huge))
 	if out, err := ParsePKCS12(t.Context(), ignored, []byte("public password"), Limits{}); out == nil || err != nil {
 		t.Fatal("PBMAC1 placeholder was interpreted as a KDF parameter", err)
+	}
+}
+
+func TestPKCS12AuthenticatedBagAttributes(t *testing.T) {
+	c := testcert.New(t)
+	private, err := x509.MarshalPKCS8PrivateKey(c.LeafKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(private)
+	certValue := der.Seq(der.OID(oidX509Cert()), der.Ctx(0, der.Octets(c.Leaf.Raw)))
+	attribute := func(oid asn1.ObjectIdentifier, values ...[]byte) []byte {
+		return der.Seq(der.OID(oid), der.Set(values...))
+	}
+	id := attribute(oidLocalKeyID(), der.Octets([]byte{42}))
+	friendly := attribute(oidFriendlyName(), der.Wrap(0, asn1.TagBMPString, false, []byte{0, 'A'}))
+	for _, tc := range []struct {
+		name  string
+		attrs []byte
+		want  error
+	}{
+		{"both attributes", der.Set(id, friendly), nil},
+		{"maximum identifier", der.Set(attribute(oidLocalKeyID(), der.Octets(bytes.Repeat([]byte{42}, 64)))), nil},
+		{"maximum friendly name", der.Set(attribute(oidFriendlyName(), der.Wrap(0, asn1.TagBMPString, false, bytes.Repeat([]byte{0, 'A'}, 256)))), nil},
+		{"empty identifier", der.Set(attribute(oidLocalKeyID(), der.Octets(nil))), ErrFormat},
+		{"oversized identifier", der.Set(attribute(oidLocalKeyID(), der.Octets(bytes.Repeat([]byte{42}, 65)))), ErrFormat},
+		{"wrong identifier type", der.Set(attribute(oidLocalKeyID(), der.Int(42))), ErrFormat},
+		{"duplicate identifier", der.Set(id, id), ErrFormat},
+		{"duplicate friendly name", der.Set(friendly, friendly), ErrFormat},
+		{"wrong friendly name type", der.Set(attribute(oidFriendlyName(), der.Octets([]byte("A")))), ErrFormat},
+		{"oversized friendly name", der.Set(attribute(oidFriendlyName(), der.Wrap(0, asn1.TagBMPString, false, bytes.Repeat([]byte{0, 'A'}, 257)))), ErrFormat},
+		{"missing attribute value", der.Set(attribute(oidLocalKeyID())), ErrFormat},
+		{"multiple attribute values", der.Set(attribute(oidLocalKeyID(), der.Octets([]byte{1}), der.Octets([]byte{2}))), ErrFormat},
+		{"unknown attribute", der.Set(attribute(asn1.ObjectIdentifier{1, 2, 3, 4}, der.Int(1))), ErrPolicy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			contents := der.Seq(safeBag(oidKeyBag(), private, tc.attrs), safeBag(oidCertBag(), certValue, tc.attrs))
+			identity, err := ParsePKCS12(t.Context(), authenticatedPFX(t, contents), []byte("public password"), Limits{})
+			if tc.want != nil {
+				if identity != nil || !errors.Is(err, tc.want) {
+					t.Fatalf("invalid authenticated attributes: %v, %v; want %v", identity != nil, err, tc.want)
+				}
+				return
+			}
+			if err != nil || identity == nil || !bytes.Equal(identity.Certificate.Raw, c.Leaf.Raw) || !c.LeafKey.PublicKey.Equal(identity.PrivateKey.Public()) {
+				t.Fatal("valid attributes changed identity", err)
+			}
+		})
 	}
 }
 
@@ -394,55 +468,6 @@ func TestPBES2WorkingStorage(t *testing.T) {
 	}
 }
 
-func FuzzPEMDecoding(f *testing.F) {
-	raw := der.Seq(der.Int(0), der.Octets([]byte("PEM decoder fixture")))
-
-	encoded := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: raw})
-	for _, input := range [][]byte{encoded, bytes.ReplaceAll(encoded, []byte{'\n'}, []byte{' ', '\t', '\r', '\n'}), bytes.TrimSpace(encoded), append(bytes.Clone(encoded), encoded...), []byte("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----")} {
-		f.Add(input)
-	}
-
-	f.Fuzz(func(t *testing.T, input []byte) {
-		if len(input) > 16<<10 {
-			return
-		}
-
-		trimmed := bytes.TrimSpace(input)
-
-		block, rest := pem.Decode(trimmed)
-		if block != nil && block.Type != "PRIVATE KEY" {
-			return
-		}
-
-		valid := block != nil && len(block.Headers) == 0 && len(bytes.TrimSpace(rest)) == 0 && bytes.HasPrefix(trimmed, []byte("-----BEGIN ")) && bytes.Count(trimmed, []byte("-----BEGIN ")) == 1
-		if valid {
-			_, err := readDER(block.Bytes, 64<<10, DefaultLimits())
-			valid = err == nil
-		}
-
-		if !bytes.HasPrefix(trimmed, []byte("-----BEGIN ")) {
-			return
-		}
-
-		original := bytes.Clone(input)
-
-		decoded, err := material(t.Context(), input, 64<<10, DefaultLimits())
-		defer decoded.clear()
-
-		if valid && (err != nil || decoded.label != block.Type || !bytes.Equal(decoded.der, block.Bytes)) {
-			t.Fatal("PEM decoding differs from encoding/pem", err)
-		}
-
-		if !valid && err == nil {
-			t.Fatal("ambiguous/malformed PEM accepted")
-		}
-
-		if !bytes.Equal(input, original) {
-			t.Fatal("PEM input changed")
-		}
-	})
-}
-
 func rawValue(t testing.TB, b []byte) asn1.RawValue {
 	t.Helper()
 
@@ -477,32 +502,6 @@ func testState(ctx context.Context, t testing.TB) *passwordState {
 	t.Cleanup(s.close)
 
 	return s
-}
-
-// cancelOnCheck cancels at a deterministic checkpoint, avoiding timing races.
-type cancelOnCheck struct {
-	context.Context
-	cancel context.CancelFunc
-	at     int
-	checks int
-}
-
-func (c *cancelOnCheck) Err() error {
-	c.checks++
-	if c.checks >= c.at {
-		c.cancel()
-	}
-
-	return c.Context.Err()
-}
-
-func cancelAt(t testing.TB, n int) *cancelOnCheck {
-	t.Helper()
-
-	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-
-	return &cancelOnCheck{Context: ctx, cancel: cancel, at: n}
 }
 
 func keyAllocated(t *testing.T, run func() error) uint64 {
@@ -803,6 +802,51 @@ func TestPKCS8ExplicitBERForms(t *testing.T) {
 	checkPKCS8BERFailures(t, plain, inner)
 }
 
+func TestPKCS8DecryptedStructureAndLimits(t *testing.T) {
+	c := testcert.New(t)
+	private, err := x509.MarshalPKCS8PrivateKey(c.LeafKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(private)
+	traditional, err := x509.MarshalECPrivateKey(c.LeafKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(traditional)
+	if key, err := ParsePrivateWithOptions(t.Context(), traditional, PrivateParseOptions{AllowBER: true}, Limits{}); err != nil || key == nil || !c.LeafKey.PublicKey.Equal(key.Public()) {
+		t.Fatal("compatibility rejected a strict traditional EC key", err)
+	}
+	fields := sequence(t, private)
+	password := []byte("public password")
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+	}{
+		{"wrong outer type", der.Int(0)},
+		{"missing private-key payload", der.Seq(fields[0].FullBytes, fields[1].FullBytes)},
+		{"wrong version", der.Seq(der.Int(2), fields[1].FullBytes, fields[2].FullBytes)},
+		{"traditional key forbidden inside encryption", traditional},
+	} {
+		protected := protectedPKCS8Fixture(t, tc.raw, password, crypto.SHA256, 256, false)
+		for _, allowBER := range []bool{false, true} {
+			key, err := ParseEncryptedPrivateWithOptions(t.Context(), protected, password, EncryptedPrivateParseOptions{AllowBER: allowBER}, Limits{})
+			if key != nil || !errors.Is(err, ErrDecrypt) {
+				t.Fatalf("%s, BER=%v: key=%v, error=%v", tc.name, allowBER, key != nil, err)
+			}
+		}
+		clear(protected)
+	}
+	protected := protectedPKCS8Fixture(t, private, password, crypto.SHA256, 256, false)
+	defer clear(protected)
+	for _, allowBER := range []bool{false, true} {
+		key, err := ParseEncryptedPrivateWithOptions(t.Context(), protected, password, EncryptedPrivateParseOptions{AllowBER: allowBER}, Limits{MaxKeyBytes: len(private) - 1})
+		if key != nil || !errors.Is(err, ErrLimit) {
+			t.Fatal("decrypted-key limit was masked as a password error", allowBER, err)
+		}
+	}
+}
+
 func checkPKCS8BERFailures(t *testing.T, plain, inner []byte) {
 	t.Helper()
 	fields := sequence(t, plain)
@@ -875,4 +919,53 @@ func TestPBMAC1RejectsShortDigests(t *testing.T) {
 			t.Fatal("short digest reached KDF despite compatibility flags", err, state.remaining)
 		}
 	}
+}
+
+func FuzzPEMDecoding(f *testing.F) {
+	raw := der.Seq(der.Int(0), der.Octets([]byte("PEM decoder fixture")))
+
+	encoded := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: raw})
+	for _, input := range [][]byte{encoded, bytes.ReplaceAll(encoded, []byte{'\n'}, []byte{' ', '\t', '\r', '\n'}), bytes.TrimSpace(encoded), append(bytes.Clone(encoded), encoded...), []byte("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----")} {
+		f.Add(input)
+	}
+
+	f.Fuzz(func(t *testing.T, input []byte) {
+		if len(input) > 16<<10 {
+			return
+		}
+
+		trimmed := bytes.TrimSpace(input)
+
+		block, rest := pem.Decode(trimmed)
+		if block != nil && block.Type != "PRIVATE KEY" {
+			return
+		}
+
+		valid := block != nil && len(block.Headers) == 0 && len(bytes.TrimSpace(rest)) == 0 && bytes.HasPrefix(trimmed, []byte("-----BEGIN ")) && bytes.Count(trimmed, []byte("-----BEGIN ")) == 1
+		if valid {
+			_, err := readDER(block.Bytes, 64<<10, DefaultLimits())
+			valid = err == nil
+		}
+
+		if !bytes.HasPrefix(trimmed, []byte("-----BEGIN ")) {
+			return
+		}
+
+		original := bytes.Clone(input)
+
+		decoded, err := material(t.Context(), input, 64<<10, DefaultLimits())
+		defer decoded.clear()
+
+		if valid && (err != nil || decoded.label != block.Type || !bytes.Equal(decoded.der, block.Bytes)) {
+			t.Fatal("PEM decoding differs from encoding/pem", err)
+		}
+
+		if !valid && err == nil {
+			t.Fatal("ambiguous/malformed PEM accepted")
+		}
+
+		if !bytes.Equal(input, original) {
+			t.Fatal("PEM input changed")
+		}
+	})
 }

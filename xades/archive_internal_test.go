@@ -22,11 +22,161 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/pki"
 	"github.com/skarm/xmlsec/timestamp"
 	"github.com/skarm/xmlsec/xmldsig"
 )
+
+type decodeCancelContext struct {
+	context.Context
+	cancel context.CancelFunc
+	checks int
+}
+
+func (c *decodeCancelContext) Err() error {
+	c.checks++
+	if c.checks == 3 {
+		c.cancel()
+	}
+
+	return c.Context.Err()
+}
+
+func TestEmbeddedOCSPMaterialSchema(t *testing.T) {
+	c := testcert.New(t)
+	request, err := pki.CreateOCSPRequest(c.Leaf.Raw, c.Root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid, err := pki.CreateOCSPResponse(t.Context(), request, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, c.RootKey, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: testcert.Now(), ThisUpdate: testcert.Now().Add(-time.Minute), NextUpdate: testcert.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkRawMaterial(t.Context(), ValidationMaterial{OCSPResponses: [][]byte{valid}}); err != nil {
+		t.Fatal("complete OCSPResponse rejected", err)
+	}
+	value, err := der.Read(valid, len(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := der.Sequence(value, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := der.Explicit(fields[1], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseBytes, err := der.Sequence(wrapped, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := []byte{10, 1, 0}
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+	}{
+		{"truncated outer DER", valid[:len(valid)-1]},
+		{"bare BasicOCSPResponse", responseBytes[1].Bytes},
+		{"missing response bytes", der.Seq(status)},
+		{"wrong status type", der.Seq(der.Int(0), fields[1].FullBytes)},
+		{"unsuccessful response", der.Seq([]byte{10, 1, 3}, fields[1].FullBytes)},
+		{"wrong explicit wrapper", der.Seq(status, der.Ctx(1, wrapped.FullBytes))},
+		{"unknown response type", der.Seq(status, der.Ctx(0, der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 3, 4}), responseBytes[1].FullBytes)))},
+		{"wrong response value type", der.Seq(status, der.Ctx(0, der.Seq(responseBytes[0].FullBytes, der.Int(1))))},
+		{"invalid inner DER", der.Seq(status, der.Ctx(0, der.Seq(responseBytes[0].FullBytes, der.Octets([]byte{0x30, 1}))))},
+		{"trailing inner DER", der.Seq(status, der.Ctx(0, der.Seq(responseBytes[0].FullBytes, der.Octets(append(bytes.Clone(responseBytes[1].Bytes), 0)))))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := checkRawMaterial(t.Context(), ValidationMaterial{OCSPResponses: [][]byte{tc.raw}}); !errors.Is(err, ErrProfile) {
+				t.Fatal("malformed embedded OCSP accepted", err)
+			}
+		})
+	}
+	if err := checkRawMaterial(t.Context(), ValidationMaterial{OCSPResponses: [][]byte{valid, valid}}); !errors.Is(err, ErrProfile) {
+		t.Fatal("duplicate OCSP material accepted", err)
+	}
+}
+
+func TestBaselineReferenceKeyBaseResolution(t *testing.T) {
+	for _, tc := range []struct{ name, value, base, xmlBase, want string }{
+		{"same document", "#data", "", "", "#data"},
+		{"decoded fragment", "#%64ata", "", "", "#data"},
+		{"relative without base", "objects.xml#data", "", "", "objects.xml#data"},
+		{"relative with base", "objects.xml#data", "https://example.test/root/signature.xml", "", "https://example.test/root/objects.xml#data"},
+		{"inherited XML base", "objects.xml#data", "https://example.test/root/signature.xml", ` xml:base="assets/"`, "https://example.test/root/assets/objects.xml#data"},
+		{"absolute URI", "https://other.test/objects.xml#data", "https://example.test/root/signature.xml", ` xml:base="assets/"`, "https://other.test/objects.xml#data"},
+		{"missing fragment", "objects.xml", "", "", ""},
+		{"invalid ID", "#1data", "", "", ""},
+		{"invalid escape", "objects%ZZ.xml#data", "", "", ""},
+		{"malformed base URI", "objects.xml#data", "https://example.test/%ZZ", "", ""},
+		{"malformed XML base", "objects.xml#data", "https://example.test/root/signature.xml", ` xml:base="%ZZ"`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, err := document.Parse(t.Context(), []byte(`<r`+tc.xmlBase+`><child/></r>`), document.DefaultLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := BaselineVerifyOptions{}
+			if tc.base != "" {
+				options.Signature.External = &xmldsig.ExternalReferences{BaseURI: tc.base}
+			}
+			got, err := baselineReferenceKey(tc.value, doc.Root().Children()[0], options)
+			if tc.want == "" {
+				if got != "" || !errors.Is(err, ErrProfile) {
+					t.Fatal("invalid reference accepted", got, err)
+				}
+			} else if err != nil || got != tc.want {
+				t.Fatalf("reference resolved to %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestHistoricalCanonicalDataProofLinks(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw, canonical string
+		referenced, linked   bool
+	}{
+		{"exact canonical reference", `<r b="2" a="1"/>`, `<r a="1" b="2"></r>`, true, true},
+		{"known bytes without signed reference", `<r b="2" a="1"/>`, `<r a="1" b="2"></r>`, false, false},
+		{"unprotected namespace cannot be borrowed", `<r/>`, `<r xmlns:p="urn:unprotected"></r>`, true, false},
+		{"canonical parent has no self edge", `<r></r>`, `<r></r>`, true, false},
+		{"binary content has no XML proof link", "\x00binary", `<r></r>`, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			objects := &historicalObjects{ctx: t.Context(), maximum: 16, remaining: 1 << 20, index: make(map[[32]byte]int)}
+			known, err := objects.add([]byte(tc.canonical), historicalDataObject, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent, err := objects.add([]byte(tc.raw), historicalDataObject, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.referenced {
+				objects.references = append(objects.references, known)
+			}
+			// Repeating the link operation must not duplicate proof edges.
+			for range 2 {
+				if err := linkDataTimestampCanonicalEncoding(t.Context(), objects, parent, []byte(tc.raw), 1<<20); err != nil {
+					t.Fatal(err)
+				}
+			}
+			children := objects.objects[objects.index[parent]].Contains
+			if tc.linked {
+				if len(children) != 1 || children[0] != sha256.Sum256([]byte(tc.canonical)) {
+					t.Fatal("exact reference did not receive one proof edge", children)
+				}
+			} else if len(children) != 0 {
+				t.Fatal("unprotected or self-referential proof edge created", children)
+			}
+		})
+	}
+}
 
 func TestArchiveImprintWorkingStorage(t *testing.T) {
 	ctx := t.Context()
@@ -356,57 +506,6 @@ func TestTokenEncodingWorkingStorage(t *testing.T) {
 	}
 }
 
-func FuzzEmbeddedBase64(f *testing.F) {
-	for _, seed := range []string{"", "YQ==", "YR==", "YQ==YQ==", "\tY Q= =\n", "YQ="} {
-		f.Add(seed)
-	}
-
-	f.Fuzz(func(t *testing.T, input string) {
-		if len(input) > 8192 {
-			t.Skip()
-		}
-
-		var source bytes.Buffer
-		source.WriteString("<v>")
-
-		for offset := 0; offset < len(input); {
-			end := min(offset+3, len(input))
-			if err := xml.EscapeText(&source, []byte(input[offset:end])); err != nil {
-				t.Fatal(err)
-			}
-
-			source.WriteString("<!--split-->")
-
-			offset = end
-		}
-
-		source.WriteString("</v>")
-
-		doc, err := document.Parse(t.Context(), source.Bytes(), document.DefaultLimits())
-		if err != nil {
-			t.Skip()
-		}
-
-		filtered := strings.Map(func(r rune) rune {
-			if r == ' ' || r == '\t' || r == '\r' || r == '\n' {
-				return -1
-			}
-
-			return r
-		}, input)
-		want, wantErr := base64.StdEncoding.Strict().DecodeString(filtered)
-
-		got, err := decodeElementBase64(t.Context(), doc.Root(), source.Len(), 8192)
-		if wantErr == nil && (err != nil || !bytes.Equal(got, want)) {
-			t.Fatalf("base64 %q: %x %v, want %x", input, got, err, want)
-		}
-
-		if wantErr != nil && (err == nil || got != nil) {
-			t.Fatalf("accepted invalid base64 %q", input)
-		}
-	})
-}
-
 func TestValidationMaterialWorkingStorage(t *testing.T) {
 	c := testcert.New(t)
 
@@ -573,21 +672,6 @@ func TestUnsignedDraftWorkingStorageAndOwnership(t *testing.T) {
 	}
 }
 
-type decodeCancelContext struct {
-	context.Context
-	cancel context.CancelFunc
-	checks int
-}
-
-func (c *decodeCancelContext) Err() error {
-	c.checks++
-	if c.checks == 3 {
-		c.cancel()
-	}
-
-	return c.Context.Err()
-}
-
 func TestValidationMaterialCertificateEncodings(t *testing.T) {
 	chain := testcert.New(t)
 	for _, test := range testcert.CertificateEncodings(t, chain) {
@@ -650,4 +734,55 @@ func TestValidationMaterialCRLVersions(t *testing.T) {
 	if err := checkRawMaterial(t.Context(), ValidationMaterial{CRLs: [][]byte{make([]byte, (4<<20)+1)}}); !errors.Is(err, ErrProfile) {
 		t.Fatal("material byte cap weakened", err)
 	}
+}
+
+func FuzzEmbeddedBase64(f *testing.F) {
+	for _, seed := range []string{"", "YQ==", "YR==", "YQ==YQ==", "\tY Q= =\n", "YQ="} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, input string) {
+		if len(input) > 8192 {
+			t.Skip()
+		}
+
+		var source bytes.Buffer
+		source.WriteString("<v>")
+
+		for offset := 0; offset < len(input); {
+			end := min(offset+3, len(input))
+			if err := xml.EscapeText(&source, []byte(input[offset:end])); err != nil {
+				t.Fatal(err)
+			}
+
+			source.WriteString("<!--split-->")
+
+			offset = end
+		}
+
+		source.WriteString("</v>")
+
+		doc, err := document.Parse(t.Context(), source.Bytes(), document.DefaultLimits())
+		if err != nil {
+			t.Skip()
+		}
+
+		filtered := strings.Map(func(r rune) rune {
+			if r == ' ' || r == '\t' || r == '\r' || r == '\n' {
+				return -1
+			}
+
+			return r
+		}, input)
+		want, wantErr := base64.StdEncoding.Strict().DecodeString(filtered)
+
+		got, err := decodeElementBase64(t.Context(), doc.Root(), source.Len(), 8192)
+		if wantErr == nil && (err != nil || !bytes.Equal(got, want)) {
+			t.Fatalf("base64 %q: %x %v, want %x", input, got, err, want)
+		}
+
+		if wantErr != nil && (err == nil || got != nil) {
+			t.Fatalf("accepted invalid base64 %q", input)
+		}
+	})
 }
