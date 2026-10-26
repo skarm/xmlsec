@@ -1,7 +1,6 @@
 package xmldsig_test
 
 import (
-	"context"
 	"crypto"
 	"crypto/x509"
 	"encoding/json"
@@ -70,7 +69,7 @@ func testCoreIndependentFixturesCase(t *testing.T, tc *coreFixtureCase, dir *str
 		t.Fatal(err)
 	}
 
-	result, report, err := xmldsig.VerifySignatureDetailed(context.Background(), d, xmldsig.Signatures(d)[tc.SignatureIndex], key, xmldsig.SignatureOptions{AllowedCanonicalizationMethods: []string{tc.Canonicalization}})
+	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), d, xmldsig.Signatures(d)[tc.SignatureIndex], key, xmldsig.SignatureOptions{AllowedCanonicalizationMethods: []string{tc.Canonicalization}})
 	if tc.Valid {
 		if err != nil || result == nil || report.Status != xmldsig.Valid || len(result.References()) != tc.References {
 			t.Fatal(err, report)
@@ -146,7 +145,7 @@ func TestDetachedIndependentFixtures(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			result, err := xmldsig.VerifyDetached(context.Background(), doc, key, resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: uris, AllowedCanonicalizationMethods: []string{tc.Canonicalization}})
+			result, err := xmldsig.VerifyDetached(t.Context(), doc, key, resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: uris, AllowedCanonicalizationMethods: []string{tc.Canonicalization}})
 			if tc.Valid {
 				if err != nil || len(result.References()) != len(uris) {
 					t.Fatal(result, err)
@@ -240,7 +239,7 @@ func testIndependentFixturesCase(t *testing.T, name *string) {
 		t.Fatal(err)
 	}
 
-	r, err := xmldsig.Verify(context.Background(), d, key, xmldsig.VerifyOptions{})
+	r, err := xmldsig.Verify(t.Context(), d, key, xmldsig.VerifyOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +258,7 @@ func testIndependentFixturesCase(t *testing.T, name *string) {
 		t.Fatal(err)
 	}
 
-	r, err = xmldsig.Verify(context.Background(), d, key, xmldsig.VerifyOptions{})
+	r, err = xmldsig.Verify(t.Context(), d, key, xmldsig.VerifyOptions{})
 	// SignatureValue and the first reference are AUTHENTIC and correct.
 	// Success here would mean the verifier had skipped the second reference.
 	if r != nil || !errors.Is(err, xmldsig.ErrDigest) || !strings.Contains(err.Error(), "reference 1 (#one)") {

@@ -1973,7 +1973,7 @@ func TestVersionBoundaries(t *testing.T) {
 		{`for $v at $i in 1 to 2 return $i`, transform.XPath31, errCodeXPST0003},
 	}
 	for _, c := range cases {
-		_, err := e.CompileXPath(context.Background(), c.source, transform.XPathOptions{Version: c.version})
+		_, err := e.CompileXPath(t.Context(), c.source, transform.XPathOptions{Version: c.version})
 
 		var detail *transform.Error
 		if !errors.As(err, &detail) || detail.Code != c.code {
@@ -1982,7 +1982,7 @@ func TestVersionBoundaries(t *testing.T) {
 	}
 
 	for _, source := range []string{nameMatchesAbcAbC, `matches('a.c','a.c','q')`} {
-		_, err := query(t, e, source, transform.XPath20).Evaluate(context.Background(), nil, transform.XPathContext{})
+		_, err := query(t, e, source, transform.XPath20).Evaluate(t.Context(), nil, transform.XPathContext{})
 
 		var detail *transform.Error
 		if !errors.As(err, &detail) || detail.Code != "FORX0001" && detail.Code != errCodeFORX0002 {
@@ -1990,7 +1990,7 @@ func TestVersionBoundaries(t *testing.T) {
 		}
 	}
 
-	if _, err := e.CompileXPath(context.Background(), "1", transform.XPathOptions{Version: 11}); !errors.Is(err, transform.ErrUnsupported) {
+	if _, err := e.CompileXPath(t.Context(), "1", transform.XPathOptions{Version: 11}); !errors.Is(err, transform.ErrUnsupported) {
 		t.Fatal(err)
 	}
 }
@@ -1999,7 +1999,7 @@ func TestDocumentsAndBindings(t *testing.T) {
 	e := engine(t, transform.Config{})
 	raw := []byte(`<r xmlns:p="urn:p"><p:item>2</p:item><p:item>3</p:item></r>`)
 
-	d, err := e.Parse(context.Background(), raw)
+	d, err := e.Parse(t.Context(), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2007,7 +2007,7 @@ func TestDocumentsAndBindings(t *testing.T) {
 	raw[1] = 'x'
 	namespaces := map[string]string{"p": namespaceP}
 
-	q, err := e.CompileXPath(context.Background(), `sum(/r/p:item) + $v:extra`, transform.XPathOptions{Namespaces: map[string]string{"p": namespaces["p"], "v": "urn:vars"}})
+	q, err := e.CompileXPath(t.Context(), `sum(/r/p:item) + $v:extra`, transform.XPathOptions{Namespaces: map[string]string{"p": namespaces["p"], "v": "urn:vars"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2016,7 +2016,7 @@ func TestDocumentsAndBindings(t *testing.T) {
 	value := transform.BigInteger(huge)
 	huge.SetInt64(100)
 
-	result, err := q.Evaluate(context.Background(), d, transform.XPathContext{Variables: transform.Bindings{{Space: "urn:vars", Local: "extra"}: transform.Values(value)}})
+	result, err := q.Evaluate(t.Context(), d, transform.XPathContext{Variables: transform.Bindings{{Space: "urn:vars", Local: "extra"}: transform.Values(value)}})
 	if err != nil || text(t, result) != "12" {
 		t.Fatal(text(t, result), err)
 	}
@@ -2042,12 +2042,12 @@ func TestDocumentsAndBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mapped, err := query(t, e, `$data?x?1 + 1`, transform.XPath31).Evaluate(context.Background(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "data"}: transform.Values(m)}})
+	mapped, err := query(t, e, `$data?x?1 + 1`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "data"}: transform.Values(m)}})
 	if err != nil || text(t, mapped) != "6" {
 		t.Fatal(mapped, err)
 	}
 
-	nodes, err := query(t, e, `/r/*`, transform.XPath31).Evaluate(context.Background(), d, transform.XPathContext{})
+	nodes, err := query(t, e, `/r/*`, transform.XPath31).Evaluate(t.Context(), d, transform.XPathContext{})
 	if err != nil || nodes.Len() != 2 {
 		t.Fatal(nodes, err)
 	}
@@ -2059,7 +2059,7 @@ func TestDocumentsAndBindings(t *testing.T) {
 		t.Fatal(n)
 	}
 
-	atomic, err := query(t, e, `. + 1`, transform.XPath31).Evaluate(context.Background(), nil, transform.XPathContext{ContextItem: transform.Integer(41)})
+	atomic, err := query(t, e, `. + 1`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{ContextItem: transform.Integer(41)})
 	if err != nil || text(t, atomic) != "42" {
 		t.Fatal(atomic, err)
 	}
@@ -2304,7 +2304,7 @@ func TestSumUntypedPromotion(t *testing.T) {
 		`sum((xs:dayTimeDuration('PT1S'),xs:untypedAtomic('2')))`:  "FORG0006",
 		`sum((xs:untypedAtomic('2'),xs:yearMonthDuration('P1M')))`: "FORG0006",
 	} {
-		_, err := query(t, e, source, transform.XPath31).Evaluate(context.Background(), nil, transform.XPathContext{})
+		_, err := query(t, e, source, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
 
 		var detail *transform.Error
 		if !errors.As(err, &detail) || detail.Code != code {

@@ -33,7 +33,7 @@ func TestTimestampAugmentation(t *testing.T) {
 
 	for _, alg := range []string{c14n.Exclusive, c14n.Canonical10, c14n.Canonical11, c14n.ExclusiveWithComments, c14n.Canonical10WithComments, c14n.Canonical11WithComments} {
 		t.Run(alg, func(t *testing.T) {
-			d, r, e := xades.AddSignatureTimestamp(context.Background(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, server, xades.AddTimestampOptions{Validation: o, Canonicalization: alg, Request: timestamp.RequestOptions{Policy: tsaPolicy()}})
+			d, r, e := xades.AddSignatureTimestamp(t.Context(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, server, xades.AddTimestampOptions{Validation: o, Canonicalization: alg, Request: timestamp.RequestOptions{Policy: tsaPolicy()}})
 			if e != nil || d == nil || r == nil {
 				t.Fatal(e)
 			}
@@ -43,11 +43,11 @@ func TestTimestampAugmentation(t *testing.T) {
 				t.Fatal("snapshot/coverage")
 			}
 
-			if _, e := xades.VerifyBasicEnveloped(context.Background(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, xades.VerifyOptions{}); e == nil {
+			if _, e := xades.VerifyBasicEnveloped(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, xades.VerifyOptions{}); e == nil {
 				t.Fatal("old profile silently broadened")
 			}
 
-			d2, r2, e := xades.AddSignatureTimestamp(context.Background(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, server, xades.AddTimestampOptions{Validation: o, Request: timestamp.RequestOptions{Policy: tsaPolicy()}})
+			d2, r2, e := xades.AddSignatureTimestamp(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, server, xades.AddTimestampOptions{Validation: o, Request: timestamp.RequestOptions{Policy: tsaPolicy()}})
 			if e != nil || d2 == nil || r2 == nil || len(r2.Timestamps()) != 2 {
 				t.Fatal(e)
 			}
@@ -67,7 +67,7 @@ func TestTimestampFailureNoPartialDocument(t *testing.T) {
 	o := timeOptions(t, c)
 	bad := &localTSA{chain: c, bad: true}
 
-	d, r, e := xades.AddSignatureTimestamp(context.Background(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, bad, xades.AddTimestampOptions{Validation: o})
+	d, r, e := xades.AddSignatureTimestamp(t.Context(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, bad, xades.AddTimestampOptions{Validation: o})
 	if d != nil || r != nil || !errors.Is(e, timestamp.ErrBinding) {
 		t.Fatal("mismatch accepted", e)
 	}
@@ -79,7 +79,7 @@ func TestTimestampFailureNoPartialDocument(t *testing.T) {
 
 	good := &localTSA{chain: c}
 
-	d, r, e = xades.AddSignatureTimestamp(context.Background(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, good, xades.AddTimestampOptions{Validation: o})
+	d, r, e = xades.AddSignatureTimestamp(t.Context(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, good, xades.AddTimestampOptions{Validation: o})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -105,7 +105,7 @@ func TestTimestampFailureNoPartialDocument(t *testing.T) {
 				t.Fatal(e)
 			}
 
-			if rr, e := xades.VerifyTimedEnveloped(context.Background(), p, xmldsig.Signatures(p)[0], c.Leaf.Raw, o); rr != nil || e == nil {
+			if rr, e := xades.VerifyTimedEnveloped(t.Context(), p, xmldsig.Signatures(p)[0], c.Leaf.Raw, o); rr != nil || e == nil {
 				t.Fatal("accepted")
 			}
 		})
@@ -117,7 +117,7 @@ func TestTimestampFailureNoPartialDocument(t *testing.T) {
 	}
 
 	calls := good.calls
-	if dd, rr, e := xades.AddSignatureTimestamp(context.Background(), p, xmldsig.Signatures(p)[0], c.Leaf.Raw, good, xades.AddTimestampOptions{Validation: o}); dd != nil || rr != nil || e == nil || good.calls != calls {
+	if dd, rr, e := xades.AddSignatureTimestamp(t.Context(), p, xmldsig.Signatures(p)[0], c.Leaf.Raw, good, xades.AddTimestampOptions{Validation: o}); dd != nil || rr != nil || e == nil || good.calls != calls {
 		t.Fatal("TSA invoked before primary validation")
 	}
 }
@@ -134,16 +134,16 @@ func TestBaselineValidatorNoDowngrade(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if r, e := v.ValidateEnveloped(context.Background(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, testcert.Now(), evidence); r != nil || e == nil {
+	if r, e := v.ValidateEnveloped(t.Context(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, testcert.Now(), evidence); r != nil || e == nil {
 		t.Fatal("B-T downgraded to B-B")
 	}
 
-	d, _, e := xades.AddSignatureTimestamp(context.Background(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, &localTSA{chain: c}, xades.AddTimestampOptions{Validation: o})
+	d, _, e := xades.AddSignatureTimestamp(t.Context(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, &localTSA{chain: c}, xades.AddTimestampOptions{Validation: o})
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	r, e := v.ValidateEnveloped(context.Background(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence)
+	r, e := v.ValidateEnveloped(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence)
 	if e != nil || r.Level() != xades.LevelBT || r.SignerTrust().RevocationStatus() != pki.Valid {
 		t.Fatal(e)
 	}
@@ -155,13 +155,13 @@ func TestBaselineValidatorNoDowngrade(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	r, e = v.ValidateEnveloped(context.Background(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, testcert.Now(), evidence)
+	r, e = v.ValidateEnveloped(t.Context(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, testcert.Now(), evidence)
 	if e != nil || r.Level() != xades.LevelBB {
 		t.Fatal(e)
 	}
 
 	evidence.Signer.CRLs = [][]byte{testcert.CRL(t, c, c.Leaf)}
-	if r, e := v.ValidateEnveloped(context.Background(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence); r != nil || !errors.Is(e, pki.ErrRevoked) {
+	if r, e := v.ValidateEnveloped(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence); r != nil || !errors.Is(e, pki.ErrRevoked) {
 		t.Fatal("revoked signer", e)
 	}
 }
@@ -204,7 +204,7 @@ func timeOptions(t testing.TB, c testcert.Chain) xades.TimedOptions {
 func basicDocument(t *testing.T, c testcert.Chain) *document.Document {
 	t.Helper()
 
-	d, _, e := xades.SignBasicEnveloped(context.Background(), input(t), c.LeafKey, c.Leaf.Raw, xades.SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: testcert.Now().Add(-time.Second)})
+	d, _, e := xades.SignBasicEnveloped(t.Context(), input(t), c.LeafKey, c.Leaf.Raw, xades.SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: testcert.Now().Add(-time.Second)})
 	if e != nil {
 		t.Fatal(e)
 	}

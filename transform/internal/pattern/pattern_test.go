@@ -57,7 +57,7 @@ func TestMatchSemantics(t *testing.T) {
 		t.Run(c.pattern+"/"+c.input, func(t *testing.T) {
 			p := compileTest(t, c.pattern, c.options)
 
-			got, err := p.Match(context.Background(), c.input, patternpkg.Work{})
+			got, err := p.Match(t.Context(), c.input, patternpkg.Work{})
 			if err != nil || got != c.want {
 				t.Fatalf("match=%v, want=%v, error=%v", got, c.want, err)
 			}
@@ -87,7 +87,7 @@ func TestMatchCapturesAndStreaming(t *testing.T) {
 
 			var got [][]int
 
-			err := p.Each(context.Background(), c.input, -1, patternpkg.Work{}, func(m []int) bool {
+			err := p.Each(t.Context(), c.input, -1, patternpkg.Work{}, func(m []int) bool {
 				got = append(got, m)
 				return true
 			})
@@ -106,12 +106,12 @@ func TestLimitsAndCancellation(t *testing.T) {
 
 	p := compileTest(t, `^(a|aa)*b$`, patternpkg.Options{})
 	for _, work := range []patternpkg.Work{{MaxSteps: 10}, {MaxCells: 10}} {
-		if _, err := p.Match(context.Background(), strings.Repeat("a", 500), work); !errors.Is(err, patternpkg.ErrLimit) {
+		if _, err := p.Match(t.Context(), strings.Repeat("a", 500), work); !errors.Is(err, patternpkg.ErrLimit) {
 			t.Fatal("resource error lost", err)
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	steps := 0
 
 	work := patternpkg.Work{Charge: func(n int) error {
@@ -153,7 +153,7 @@ func TestConcurrentProgram(t *testing.T) {
 	for range 12 {
 		wg.Go(func() {
 			for range 20 {
-				ok, err := p.Match(context.Background(), "αβαβ", patternpkg.Work{})
+				ok, err := p.Match(t.Context(), "αβαβ", patternpkg.Work{})
 				if err != nil || !ok {
 					t.Error(ok, err)
 				}
@@ -179,7 +179,7 @@ func FuzzPattern(f *testing.F) {
 			return
 		}
 
-		err = p.Each(context.Background(), input, 100, patternpkg.Work{MaxSteps: 20_000, MaxCells: 20_000}, func(m []int) bool {
+		err = p.Each(t.Context(), input, 100, patternpkg.Work{MaxSteps: 20_000, MaxCells: 20_000}, func(m []int) bool {
 			if len(m) != 2*(p.Groups()+1) || m[0] < 0 || m[0] > m[1] || m[1] > len(input) {
 				t.Fatalf("invalid match: %v", m)
 			}

@@ -325,7 +325,7 @@ func TestBuildPolicyAndZeroValues(t *testing.T) {
 		{"invalid-point", keyinfo.Template{Keys: []keyinfo.PublicKeyValue{{Key: &invalidPoint}}}, keyinfo.ErrKey},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			d, e := keyinfo.Build(context.Background(), test.spec)
+			d, e := keyinfo.Build(t.Context(), test.spec)
 			if d != nil || !errors.Is(e, test.want) {
 				t.Fatalf("got %v, want %v", e, test.want)
 			}
@@ -336,7 +336,7 @@ func TestBuildPolicyAndZeroValues(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, e := keyinfo.Build(ctx, keyinfo.Template{Names: []string{"x"}}); !errors.Is(e, context.Canceled) {
@@ -366,9 +366,7 @@ func BenchmarkBuildCertificateKeyInfo(b *testing.B) {
 	key := ec(b, elliptic.P256())
 	template := keyinfo.Template{Certificates: [][]byte{cert(b, key)}}
 	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := keyinfo.Build(b.Context(), template); err != nil {
 			b.Fatal(err)
 		}

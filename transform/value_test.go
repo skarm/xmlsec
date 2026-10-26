@@ -1068,7 +1068,7 @@ func TestFunctionValuesConcurrentReuse(t *testing.T) {
 		var wg sync.WaitGroup
 		for range 16 {
 			wg.Go(func() {
-				out, err := q.Evaluate(context.Background(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "f"}: callable}})
+				out, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "f"}: callable}})
 				if err != nil {
 					t.Error(err)
 					return

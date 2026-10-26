@@ -85,7 +85,7 @@ func testNextIndependentFixturesCase(t *testing.T, dir string, tc nextFixture) {
 			return io.NopCloser(bytes.NewReader(payload)), nil
 		})}}
 
-		result, report, e := xmldsig.VerifySignatureDetailed(context.Background(), doc, sigs[0], public, o)
+		result, report, e := xmldsig.VerifySignatureDetailed(t.Context(), doc, sigs[0], public, o)
 		if tc.Valid {
 			if e != nil {
 				t.Fatal(e)
@@ -106,7 +106,7 @@ func testNextIndependentFixturesCase(t *testing.T, dir string, tc nextFixture) {
 			t.Fatal(e)
 		}
 
-		r, e := xades.VerifyBasicEnveloped(context.Background(), doc, sigs[0], der, xades.VerifyOptions{Policy: xmldsig.ModernPolicy()})
+		r, e := xades.VerifyBasicEnveloped(t.Context(), doc, sigs[0], der, xades.VerifyOptions{Policy: xmldsig.ModernPolicy()})
 		if e != nil || !r.Signature().CoversElement(doc.Root()) {
 			t.Fatal(e)
 		}
@@ -139,7 +139,7 @@ func fixturePublicKey(t *testing.T, path string) crypto.PublicKey {
 func verifyRedirectFixture(t *testing.T, b []byte, public crypto.PublicKey) {
 	t.Helper()
 
-	r, e := binding.VerifyRedirect(context.Background(), string(b), public, binding.Options{Policy: xmldsig.ModernPolicy()})
+	r, e := binding.VerifyRedirect(t.Context(), string(b), public, binding.Options{Policy: xmldsig.ModernPolicy()})
 	if e != nil {
 		t.Fatal(e)
 	}

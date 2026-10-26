@@ -501,7 +501,7 @@ func TestStreamingSequenceAdjacency(t *testing.T) {
 	for _, tc := range cases {
 		s := stylesheet(t, e, sheet(version30, `<xsl:template name="start">`+tc.body+`</xsl:template>`))
 
-		out, err := s.Transform(context.Background(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+		out, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
 		if err != nil {
 			t.Fatal(err)
 		}

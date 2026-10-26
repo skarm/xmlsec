@@ -90,7 +90,7 @@ func TestXPathPatternFunctions(t *testing.T) {
 
 	q := query(t, e, `matches($input,'^a{1001}$')`, transform.XPath20)
 
-	result, err := q.Evaluate(context.Background(), nil, transform.XPathContext{Variables: transform.Bindings{
+	result, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{
 		{Local: "input"}: transform.Values(transform.String(strings.Repeat("a", 1001))),
 	}})
 	if err != nil || text(t, result) != nameTrue {
@@ -105,7 +105,7 @@ func TestXPathPatternFunctions(t *testing.T) {
 		`tokenize('a', 'a?')`:          errCodeFORX0003,
 		`replace('a', 'a', '$')`:       "FORX0004",
 	} {
-		_, err := query(t, e, source, transform.XPath31).Evaluate(context.Background(), nil, transform.XPathContext{})
+		_, err := query(t, e, source, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
 
 		var detail *transform.Error
 		if !errors.As(err, &detail) || detail.Code != code {
@@ -153,7 +153,7 @@ func TestXSLTPatternGroups(t *testing.T) {
 	for _, version := range []string{version20, version30} {
 		s := stylesheet(t, e, sheet(version, `<xsl:template name="start"><xsl:analyze-string select="'A1,C15'" regex="([A-Z])([0-9]+)"><xsl:matching-substring><xsl:value-of select="concat(regex-group(2),regex-group(1))"/></xsl:matching-substring><xsl:non-matching-substring><xsl:value-of select="."/></xsl:non-matching-substring></xsl:analyze-string></xsl:template>`))
 
-		out, err := s.Transform(context.Background(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+		out, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
 		if err != nil || string(out.Primary) != "1A,15C" {
 			t.Fatal(version, out, err)
 		}
@@ -165,7 +165,7 @@ func TestPatternBudgetErrors(t *testing.T) {
 
 	input := transform.Bindings{{Local: "input"}: transform.Values(transform.String(strings.Repeat("a", 500)))}
 	for _, source := range []string{`matches($input,'^(a|aa)*b$')`, `replace($input,'(a|aa)+b','X')`, `tokenize($input,'(a|aa)+b')`, `analyze-string($input,'(a|aa)+b')`} {
-		_, err := query(t, e, source, transform.XPath31).Evaluate(context.Background(), nil, transform.XPathContext{Variables: input})
+		_, err := query(t, e, source, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: input})
 		if !errors.Is(err, transform.ErrLimit) {
 			t.Errorf("%s: limit cause lost: %v", source, err)
 		}
@@ -173,13 +173,13 @@ func TestPatternBudgetErrors(t *testing.T) {
 
 	s := stylesheet(t, e, sheet(version30, `<xsl:param name="input"/><xsl:template name="start"><xsl:analyze-string select="$input" regex="(a|aa)+b"><xsl:matching-substring>match</xsl:matching-substring></xsl:analyze-string></xsl:template>`))
 
-	_, err := s.Transform(context.Background(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, Parameters: input})
+	_, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, Parameters: input})
 	if !errors.Is(err, transform.ErrLimit) {
 		t.Fatal("XSLT limit cause lost", err)
 	}
 
 	q := query(t, e, `matches('a','a{999999999999999999999999999999999999}')`, transform.XPath31)
-	if _, err := q.Evaluate(context.Background(), nil, transform.XPathContext{}); !errors.Is(err, transform.ErrLimit) {
+	if _, err := q.Evaluate(t.Context(), nil, transform.XPathContext{}); !errors.Is(err, transform.ErrLimit) {
 		t.Fatal("compile limit cause lost", err)
 	}
 
@@ -204,7 +204,7 @@ func TestPatternBudgetErrors(t *testing.T) {
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, err := q.Evaluate(ctx, nil, transform.XPathContext{}); !errors.Is(err, context.Canceled) {

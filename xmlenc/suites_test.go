@@ -33,7 +33,7 @@ func TestRSADataAlgorithms(t *testing.T) {
 func testRSADataAlgorithmsCase(t *testing.T, algorithm *algorithmSpec, k **rsa.PrivateKey) {
 	options := xmlenc.Options{DataAlgorithm: algorithm.uri}
 
-	doc, err := xmlenc.EncryptBytes(context.Background(), []byte("payload"), &(*k).PublicKey, options)
+	doc, err := xmlenc.EncryptBytes(t.Context(), []byte("payload"), &(*k).PublicKey, options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func testRSADataAlgorithmsCase(t *testing.T, algorithm *algorithmSpec, k **rsa.P
 		t.Fatalf("wrong data-key size %d: %v", len(symmetric), err)
 	}
 
-	out, err := xmlenc.DecryptBytes(context.Background(), doc, *k, options)
+	out, err := xmlenc.DecryptBytes(t.Context(), doc, *k, options)
 	if err != nil || string(out) != "payload" {
 		t.Fatal(err)
 	}
@@ -55,20 +55,20 @@ func testRSADataAlgorithmsCase(t *testing.T, algorithm *algorithmSpec, k **rsa.P
 			continue
 		}
 
-		if out, err := xmlenc.DecryptBytes(context.Background(), doc, *k, xmlenc.Options{DataAlgorithm: other.uri}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+		if out, err := xmlenc.DecryptBytes(t.Context(), doc, *k, xmlenc.Options{DataAlgorithm: other.uri}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 			t.Fatalf("accepted different algorithm %s: %v", other.uri, err)
 		}
 	}
 
 	if algorithm.uri != xmlenc.AES256GCM {
-		if out, err := xmlenc.DecryptBytes(context.Background(), doc, *k, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+		if out, err := xmlenc.DecryptBytes(t.Context(), doc, *k, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 			t.Fatal("default policy weakened", err)
 		}
 	}
 }
 
 func TestKeyWrapSuites(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	source := parse(t, []byte(`<?outside ok?><r xmlns="urn:test"><v>Текст &amp; 😀</v><!--inside--></r><!--outside-->`))
 	before, _ := source.XML(ctx)
 
@@ -134,7 +134,7 @@ func testKeyWrapSuitesCase(t *testing.T, keyAlgorithm *algorithmSpec, dataAlgori
 }
 
 func TestKeyWrapRejectsTamperingAndConfusion(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	kek := bytes.Repeat([]byte{0x42}, 32)
 
 	doc, err := xmlenc.EncryptBytesWithKeyWrap(ctx, []byte("secret"), kek, xmlenc.KeyWrapOptions{})
@@ -207,7 +207,7 @@ func TestKeyWrapRejectsTamperingAndConfusion(t *testing.T) {
 }
 
 func TestEncryptionPolicyAndLimits(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	kek := make([]byte, 32)
 	for _, options := range []xmlenc.KeyWrapOptions{
@@ -285,7 +285,7 @@ func TestEncryptionPolicyAndLimits(t *testing.T) {
 func TestProviderFailureNeverReturnsPlaintext(t *testing.T) {
 	k := key(t)
 
-	doc, err := xmlenc.EncryptBytes(context.Background(), []byte("secret"), &k.PublicKey, xmlenc.Options{})
+	doc, err := xmlenc.EncryptBytes(t.Context(), []byte("secret"), &k.PublicKey, xmlenc.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestProviderFailureNeverReturnsPlaintext(t *testing.T) {
 				p.err = errors.New("private provider detail")
 			}
 
-			if out, err := xmlenc.DecryptBytes(context.Background(), doc, p, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+			if out, err := xmlenc.DecryptBytes(t.Context(), doc, p, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 				t.Fatalf("provider length %d error %t: %v", size, failed, err)
 			}
 
@@ -315,7 +315,7 @@ func TestConcurrentKeyWrapReads(t *testing.T) {
 
 	kek := bytes.Repeat([]byte{0x71}, 32)
 
-	doc, err := xmlenc.EncryptBytesWithKeyWrap(context.Background(), []byte("parallel"), kek, xmlenc.KeyWrapOptions{})
+	doc, err := xmlenc.EncryptBytesWithKeyWrap(t.Context(), []byte("parallel"), kek, xmlenc.KeyWrapOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestConcurrentKeyWrapReads(t *testing.T) {
 		t.Run("reader", func(t *testing.T) {
 			t.Parallel()
 
-			out, err := xmlenc.DecryptBytesWithKeyWrap(context.Background(), doc, kek, xmlenc.KeyWrapOptions{})
+			out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), doc, kek, xmlenc.KeyWrapOptions{})
 			if err != nil || string(out) != "parallel" {
 				t.Fatal(err)
 			}
@@ -335,12 +335,12 @@ func TestConcurrentKeyWrapReads(t *testing.T) {
 func FuzzDecryptWithKeyWrap(f *testing.F) {
 	kek := bytes.Repeat([]byte{0x37}, 32) // fixed public TEST secret in every worker
 	for _, plaintext := range [][]byte{{}, []byte("seed")} {
-		doc, err := xmlenc.EncryptBytesWithKeyWrap(context.Background(), plaintext, kek, xmlenc.KeyWrapOptions{})
+		doc, err := xmlenc.EncryptBytesWithKeyWrap(f.Context(), plaintext, kek, xmlenc.KeyWrapOptions{})
 		if err != nil {
 			f.Fatal(err)
 		}
 
-		raw, _ := doc.XML(context.Background())
+		raw, _ := doc.XML(f.Context())
 		f.Add(raw)
 	}
 
@@ -355,7 +355,7 @@ func FuzzDecryptWithKeyWrap(f *testing.F) {
 			return
 		}
 
-		_, _ = xmlenc.DecryptBytesWithKeyWrap(context.Background(), doc, kek, xmlenc.KeyWrapOptions{Data: xmlenc.Options{MaxPlaintextBytes: 1024}})
+		_, _ = xmlenc.DecryptBytesWithKeyWrap(t.Context(), doc, kek, xmlenc.KeyWrapOptions{Data: xmlenc.Options{MaxPlaintextBytes: 1024}})
 	})
 }
 

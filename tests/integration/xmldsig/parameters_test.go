@@ -1,7 +1,6 @@
 package xmldsig_test
 
 import (
-	"context"
 	"crypto/x509"
 	"encoding/json"
 	"os"
@@ -77,12 +76,12 @@ func testParameterizedIndependentFixturesCase(t *testing.T, read *func(name stri
 	if c.Kind == "hmac" {
 		options.Policy = xmldsig.HMACPolicy()
 		options.Policy.AllowHMACTruncation = true
-		result, r, err := xmldsig.VerifyHMACSignatureDetailed(context.Background(), d, d.Root(), *testSecret, options)
+		result, r, err := xmldsig.VerifyHMACSignatureDetailed(t.Context(), d, d.Root(), *testSecret, options)
 		report = r
 		e = err
 		hasResult = result != nil
 	} else {
-		result, r, err := xmldsig.VerifySignatureDetailed(context.Background(), d, d.Root(), *pub, options)
+		result, r, err := xmldsig.VerifySignatureDetailed(t.Context(), d, d.Root(), *pub, options)
 		report = r
 		e = err
 		hasResult = result != nil

@@ -259,7 +259,7 @@ func TestStreamedSerializationPreservesOutputPolicy(t *testing.T) {
 }
 
 func TestDoctypeSerialization(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	e := newEngine(t, transform.Config{})
 	for _, method := range []string{"xml", "html"} {
 		q, err := e.CompileXPath(ctx, `serialize(parse-xml('<r/>'), map{'method':'`+method+`','doctype-system':'a"b','omit-xml-declaration':true()})`, transform.XPathOptions{})

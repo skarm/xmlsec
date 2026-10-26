@@ -1,7 +1,6 @@
 package xmldsig_test
 
 import (
-	"context"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -73,7 +72,7 @@ func TestJDKV1Transforms(t *testing.T) {
 				t.Fatal(e)
 			}
 
-			r, report, e := xmldsig.VerifySignatureDetailed(context.Background(), d, xmldsig.Signatures(d)[0], key, o)
+			r, report, e := xmldsig.VerifySignatureDetailed(t.Context(), d, xmldsig.Signatures(d)[0], key, o)
 			if c.Valid {
 				if e != nil || r == nil || report.Status != "valid" {
 					t.Fatal(report, e)

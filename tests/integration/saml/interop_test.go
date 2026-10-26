@@ -1,7 +1,6 @@
 package saml_test
 
 import (
-	"context"
 	"crypto"
 	"crypto/x509"
 	"encoding/json"
@@ -55,7 +54,7 @@ func TestIndependentSignedSAMLFixtures(t *testing.T) {
 			}
 
 			keys := []crypto.PublicKey{cert.PublicKey}
-			ctx := context.Background()
+			ctx := t.Context()
 
 			switch c.Kind {
 			case "metadata":

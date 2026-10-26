@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -71,7 +70,7 @@ func TestDetachedCLI(t *testing.T) {
 	}
 
 	var sig, report, stderr bytes.Buffer
-	if err := run(context.Background(), []string{nameSignDetached, flagKey, private, flagResources, manifest, flagC14n, c14n.Canonical11}, nil, &sig, &stderr); err != nil {
+	if err := run(t.Context(), []string{nameSignDetached, flagKey, private, flagResources, manifest, flagC14n, c14n.Canonical11}, nil, &sig, &stderr); err != nil {
 		t.Fatal(err, stderr.String())
 	}
 
@@ -79,7 +78,7 @@ func TestDetachedCLI(t *testing.T) {
 		t.Fatal(sig.String())
 	}
 
-	if err := run(context.Background(), []string{nameVerifyDetached, flagKey, public, flagResources, verifyManifest, flagC14n, c14n.Canonical11}, bytes.NewReader(sig.Bytes()), &report, &stderr); err != nil {
+	if err := run(t.Context(), []string{nameVerifyDetached, flagKey, public, flagResources, verifyManifest, flagC14n, c14n.Canonical11}, bytes.NewReader(sig.Bytes()), &report, &stderr); err != nil {
 		t.Fatal(err, stderr.String())
 	}
 
@@ -105,7 +104,7 @@ func TestDetachedCLI(t *testing.T) {
 
 	tampered := strings.Replace(sig.String(), "<ds:SignatureValue>", "<ds:SignatureValue>A", 1)
 
-	err = run(context.Background(), []string{nameVerifyDetached, flagKey, public, flagResources, verifyManifest, flagC14n, c14n.Canonical11}, strings.NewReader(tampered), &report, &stderr)
+	err = run(t.Context(), []string{nameVerifyDetached, flagKey, public, flagResources, verifyManifest, flagC14n, c14n.Canonical11}, strings.NewReader(tampered), &report, &stderr)
 	if err == nil || strings.Contains(err.Error(), "no such file") {
 		t.Fatal("resource read before authentication", err)
 	}
@@ -122,7 +121,7 @@ func TestResourceManifestRejects(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if _, _, err := loadResourcesContext(context.Background(), file); err == nil {
+			if _, _, err := loadResourcesContext(t.Context(), file); err == nil {
 				t.Fatal("invalid manifest accepted")
 			}
 		})
@@ -130,14 +129,14 @@ func TestResourceManifestRejects(t *testing.T) {
 
 	for _, args := range [][]string{{nameSignDetached}, {nameVerifyDetached}, {nameSignDetached, flagResources, "-", flagKey, "x"}, {nameVerifyDetached, nameExtra}} {
 		var out, stderr bytes.Buffer
-		if err := run(context.Background(), args, nil, &out, &stderr); err == nil {
+		if err := run(t.Context(), args, nil, &out, &stderr); err == nil {
 			t.Fatal(args)
 		}
 	}
 
 	for _, cmd := range []string{nameSignDetached, nameVerifyDetached} {
 		var out, stderr bytes.Buffer
-		if err := run(context.Background(), []string{cmd, "-h"}, nil, &out, &stderr); err != nil {
+		if err := run(t.Context(), []string{cmd, "-h"}, nil, &out, &stderr); err != nil {
 			t.Fatal(err)
 		}
 	}

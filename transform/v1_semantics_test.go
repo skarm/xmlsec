@@ -53,7 +53,7 @@ func TestProgramFingerprints(t *testing.T) {
 }
 
 func TestXPathAndFilter2(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, tt := range []struct {
 		name  string
@@ -89,7 +89,7 @@ func TestXPathAndFilter2(t *testing.T) {
 }
 
 func TestNamespaceAttributeAndInputIntersection(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	d := doc(t, `<r xmlns:p="urn:p" a="1"><child><!--not-selected--></child></r>`)
 
 	var selected []document.Node
@@ -125,7 +125,7 @@ func TestNamespaceAttributeAndInputIntersection(t *testing.T) {
 }
 
 func TestHereAndID(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	d := doc(t, `<r><a ID="A"/><b xml:id="B"/><ds:Signature xmlns:ds="`+ds+`"><ds:XPath>here</ds:XPath></ds:Signature></r>`)
 	tr := f2(reference.XPathExpression{Expression: `here()/ancestor::ds:Signature[1]`, Filter: "subtract", Namespaces: map[string]string{"ds": ds}, Here: d.Root().Children()[2].Children()[0]})
 	p := proc(t, tr)
@@ -175,19 +175,19 @@ func TestProgramPreflight(t *testing.T) {
 	tr := xp(trueExpression)
 
 	p := proc(t, tr)
-	if e := p.Validate(context.Background(), xp(falseExpression)); !errors.Is(e, reference.ErrPolicy) {
+	if e := p.Validate(t.Context(), xp(falseExpression)); !errors.Is(e, reference.ErrPolicy) {
 		t.Fatal(e)
 	}
 
 	tr.XPath[0].Expression = falseExpression
 
-	if e := p.Validate(context.Background(), xp(trueExpression)); e != nil {
+	if e := p.Validate(t.Context(), xp(trueExpression)); e != nil {
 		t.Fatal("config mutated", e)
 	}
 }
 
 func TestXSLTAndLimits(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := style(`<xsl:output method="xml" omit-xml-declaration="yes"/><xsl:template match="/"><out><xsl:value-of select="/r/value"/></out></xsl:template>`)
 
 	p := proc(t, tr)
@@ -250,7 +250,7 @@ func TestConcurrentAndCancelled(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
-			if _, e := p.Apply(context.Background(), tr, in, reference.ExtensionContext{}); e != nil {
+			if _, e := p.Apply(t.Context(), tr, in, reference.ExtensionContext{}); e != nil {
 				t.Error(e)
 			}
 		})
@@ -258,7 +258,7 @@ func TestConcurrentAndCancelled(t *testing.T) {
 
 	wg.Wait()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, e := p.Apply(ctx, tr, in, reference.ExtensionContext{}); !errors.Is(e, context.Canceled) {
@@ -314,7 +314,7 @@ func canon(t testing.TB, d reference.Data) string {
 	}
 
 	var b bytes.Buffer
-	if e := c14n.WriteNodeSet(context.Background(), &b, n, c14n.Options{Algorithm: c14n.Canonical10WithComments}); e != nil {
+	if e := c14n.WriteNodeSet(t.Context(), &b, n, c14n.Options{Algorithm: c14n.Canonical10WithComments}); e != nil {
 		t.Fatal(e)
 	}
 

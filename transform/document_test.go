@@ -2,7 +2,6 @@ package transform_test
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -145,7 +144,7 @@ func TestParseXMLFragmentTextDeclaration(t *testing.T) {
 func TestProjectDOMNavigationAndSerialization(t *testing.T) {
 	e := engine(t, transform.Config{})
 
-	d, err := e.Parse(context.Background(), []byte(`<r xmlns:p="urn:p" xml:id="root"><p:item a="&amp;">ab</p:item><p:item>c</p:item></r>`))
+	d, err := e.Parse(t.Context(), []byte(`<r xmlns:p="urn:p" xml:id="root"><p:item a="&amp;">ab</p:item><p:item>c</p:item></r>`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +161,7 @@ func TestProjectDOMNavigationAndSerialization(t *testing.T) {
 	} {
 		q := query(t, e, source, transform.XPath31)
 
-		v, err := q.Evaluate(context.Background(), d, transform.XPathContext{})
+		v, err := q.Evaluate(t.Context(), d, transform.XPathContext{})
 		if err != nil {
 			t.Errorf("%s: %v", source, err)
 			continue
@@ -266,7 +265,7 @@ func TestXSLTBuildsOnProjectDOMWithoutMutatingSource(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d, err := e.Import(context.Background(), source)
+	d, err := e.Import(t.Context(), source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +275,7 @@ func TestXSLTBuildsOnProjectDOMWithoutMutatingSource(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
-			out, err := s.Transform(context.Background(), d, transform.XSLTContext{})
+			out, err := s.Transform(t.Context(), d, transform.XSLTContext{})
 			if err != nil {
 				t.Error(err)
 				return
@@ -307,7 +306,7 @@ func TestXSLTBuildsOnProjectDOMWithoutMutatingSource(t *testing.T) {
 	// Adjacent text instructions form one XDM text node.
 	s = stylesheet(t, e, sheet(version30, `<xsl:template name="start"><xsl:variable name="v"><xsl:text>a</xsl:text><xsl:text>b</xsl:text></xsl:variable><xsl:value-of select="concat(count($v/text()),':',string($v))"/></xsl:template>`))
 
-	out, err := s.Transform(context.Background(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+	out, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
 	if err != nil || string(out.Primary) != "1:ab" {
 		t.Fatal("adjacent text nodes were not merged", out, err)
 	}
@@ -321,7 +320,7 @@ func TestXSLTProjectDOMSequenceSplices(t *testing.T) {
 	} {
 		s := stylesheet(t, e, sheet(version30, `<xsl:template name="start">`+body+`</xsl:template>`))
 
-		out, err := s.Transform(context.Background(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+		out, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -303,14 +303,14 @@ func TestLimitsAndContext(t *testing.T) {
 			l := document.DefaultLimits()
 			tt.change(&l)
 
-			_, err := document.Parse(context.Background(), []byte(tt.xml), l)
+			_, err := document.Parse(t.Context(), []byte(tt.xml), l)
 			if !errors.Is(err, document.ErrLimit) {
 				t.Fatal(err)
 			}
 		})
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, err := document.Parse(ctx, []byte("<a/>"), document.DefaultLimits()); !errors.Is(err, context.Canceled) {
@@ -406,24 +406,24 @@ func TestStreamXML(t *testing.T) {
 
 			var b bytes.Buffer
 
-			n, e := d.WriteXML(context.Background(), &b, len(want))
+			n, e := d.WriteXML(t.Context(), &b, len(want))
 			if e != nil || n != int64(len(want)) || !bytes.Equal(b.Bytes(), want) {
 				t.Fatal(n, e, b.String())
 			}
 
 			b.Reset()
 
-			_, e = d.WriteXML(context.Background(), &b, len(want)-1)
+			_, e = d.WriteXML(t.Context(), &b, len(want)-1)
 			if !errors.Is(e, document.ErrLimit) || b.Len() >= len(want) {
 				t.Fatal(e, b.Len())
 			}
 
-			_, e = d.WriteXML(context.Background(), shortXMLWriter{}, 1000)
+			_, e = d.WriteXML(t.Context(), shortXMLWriter{}, 1000)
 			if !errors.Is(e, io.ErrShortWrite) {
 				t.Fatal(e)
 			}
 
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
 			b.Reset()
 
@@ -481,7 +481,7 @@ func BenchmarkDeepParse(b *testing.B) {
 	b.SetBytes(int64(len(raw)))
 
 	for b.Loop() {
-		if _, err := document.Parse(context.Background(), raw, limits); err != nil {
+		if _, err := document.Parse(b.Context(), raw, limits); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -493,7 +493,7 @@ func BenchmarkParse(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(int64(len(src)))
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := document.Parse(b.Context(), src, document.DefaultLimits()); err != nil {
 			b.Fatal(err)
 		}

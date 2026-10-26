@@ -11,7 +11,7 @@ import (
 func TestEvaluationContextOwnsItsConfiguration(t *testing.T) {
 	at := time.Date(2026, 1, 1, 2, 3, 4, 0, time.UTC)
 	original := EvaluationContext{CurrentTime: at, Language: "fr", Timezone: time.FixedZone("", 3600)}
-	ctx := WithEvaluationContext(context.Background(), original)
+	ctx := WithEvaluationContext(t.Context(), original)
 	original.CurrentTime = at.Add(time.Hour)
 	original.Language = "en"
 

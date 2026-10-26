@@ -9,7 +9,7 @@ import (
 )
 
 func TestFilterNodeSetKeepsSnapshotsIndependent(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := treepkg.Parse(ctx, []byte(`<r><a x="1">text</a><!--c--><b/></r>`), treepkg.DefaultLimits())
 	if err != nil {

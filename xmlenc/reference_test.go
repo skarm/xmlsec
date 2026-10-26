@@ -34,7 +34,7 @@ type cipherReferenceFixture struct {
 }
 
 func TestCipherReferenceProfiles(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	secret := bytes.Repeat([]byte{0x44}, 32)
 
 	rsaKey := key(t)
@@ -113,7 +113,7 @@ func checkCipherReferenceTransform(t *testing.T, ctx context.Context, fixture ci
 }
 
 func TestCipherReferenceSelectedSnapshots(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	secret := bytes.Repeat([]byte{0x51}, 32)
 	uri := "https://example.invalid/encrypted/1"
 	source := parse(t, []byte(`<?before ok?><r xmlns="urn:r" xmlns:p="urn:p"><box>text<p:v>é</p:v><!--inside--></box><tail/></r>`))
@@ -167,7 +167,7 @@ func TestCipherReferenceSelectedSnapshots(t *testing.T) {
 }
 
 func TestCipherReferenceRejectsBeforeIO(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	secret := make([]byte, 32)
 	uri := "urn:example:1"
 
@@ -231,7 +231,7 @@ func TestCipherReferenceRejectsBeforeIO(t *testing.T) {
 }
 
 func TestCipherReferenceReaderLifecycle(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	secret := make([]byte, 32)
 	uri := "urn:example:1"
 
@@ -370,7 +370,7 @@ func TestCipherReferencePreservesReadAndCloseErrors(t *testing.T) {
 
 func FuzzCipherReference(f *testing.F) {
 	secret := bytes.Repeat([]byte{0x71}, 32) // Public test key.
-	ctx := context.Background()
+	ctx := f.Context()
 	uri := "urn:example:fuzz-ciphertext"
 
 	d, err := xmlenc.EncryptBytesWithKey(ctx, []byte("positive"), secret, xmlenc.SymmetricOptions{})

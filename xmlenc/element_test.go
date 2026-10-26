@@ -15,7 +15,7 @@ import (
 )
 
 func TestElementPlaintextProfile(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	kek := make([]byte, 32)
 	rsaKey := key(t)
 	// A correctly authenticated octet stream may still be invalid #Element
@@ -116,7 +116,7 @@ func TestEncryptElementRefusesNormalization(t *testing.T) {
 	doc := parse(t, []byte("<r>e\u0301</r>"))
 	before, _ := doc.XML(t.Context())
 
-	ctx := context.Background()
+	ctx := t.Context()
 	if result, err := xmlenc.EncryptDocumentWithKeyWrap(ctx, doc, make([]byte, 32), xmlenc.KeyWrapOptions{}); result != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 		t.Fatalf("normalized or encrypted NFD input: %v", err)
 	}

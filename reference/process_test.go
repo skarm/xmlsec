@@ -59,7 +59,7 @@ func TestOctetsAndImplicitCanonicalization(t *testing.T) {
 		}
 	})
 	t.Run("implicit conversion needs permission", func(t *testing.T) {
-		out, err := reference.Process(context.Background(), all(t, parse(t, `<r/>`)), nil, reference.Options{AllowedTransforms: []string{c14n.Exclusive}})
+		out, err := reference.Process(t.Context(), all(t, parse(t, `<r/>`)), nil, reference.Options{AllowedTransforms: []string{c14n.Exclusive}})
 		if out != nil || !errors.Is(err, reference.ErrPolicy) {
 			t.Fatal(out, err)
 		}
@@ -75,7 +75,7 @@ func TestOctetsAndImplicitCanonicalization(t *testing.T) {
 			t.Fatal("not empty")
 		}
 
-		if out, err := reference.Process(context.Background(), reference.Data{}, nil, reference.Options{}); out != nil || !errors.Is(err, reference.ErrInput) {
+		if out, err := reference.Process(t.Context(), reference.Data{}, nil, reference.Options{}); out != nil || !errors.Is(err, reference.ErrInput) {
 			t.Fatal(out, err)
 		}
 
@@ -123,7 +123,7 @@ func TestCanonicalizationConversions(t *testing.T) {
 		}
 	})
 	t.Run("DTD stays forbidden", func(t *testing.T) {
-		_, err := reference.Process(context.Background(), reference.Octets([]byte(`<!DOCTYPE r [<!ENTITY e "xx">]><r>&e;</r>`)), []reference.Transform{{Algorithm: c14n.Canonical11}}, reference.Options{})
+		_, err := reference.Process(t.Context(), reference.Octets([]byte(`<!DOCTYPE r [<!ENTITY e "xx">]><r>&e;</r>`)), []reference.Transform{{Algorithm: c14n.Canonical11}}, reference.Options{})
 		if !errors.Is(err, document.ErrUnsupported) {
 			t.Fatal(err)
 		}
@@ -178,7 +178,7 @@ func TestBase64(t *testing.T) {
 
 	for _, input := range []string{"A", "AA", "AAA", "=AAA", "AA=A", "TQ===", "TQ==AA=="} {
 		t.Run("invalid-"+input, func(t *testing.T) {
-			out, err := reference.Process(context.Background(), reference.Octets([]byte(input)), []reference.Transform{{Algorithm: reference.Base64}}, reference.Options{})
+			out, err := reference.Process(t.Context(), reference.Octets([]byte(input)), []reference.Transform{{Algorithm: reference.Base64}}, reference.Options{})
 			if out != nil || !errors.Is(err, reference.ErrInput) {
 				t.Fatal(out, err)
 			}
@@ -216,13 +216,13 @@ func TestEnvelopedIdentity(t *testing.T) {
 
 	foreign := parse(t, xml)
 	for _, opt := range []reference.Options{{}, {Signature: foreign.Root().Children()[0]}, {Signature: d.Root()}} {
-		out, err := reference.Process(context.Background(), all(t, d), ts, opt)
+		out, err := reference.Process(t.Context(), all(t, d), ts, opt)
 		if out != nil || !errors.Is(err, reference.ErrInput) {
 			t.Fatal(out, err)
 		}
 	}
 	// Re-serialization breaks node identity; do not strip a lookalike signature.
-	out, err := reference.Process(context.Background(), all(t, d), []reference.Transform{{Algorithm: c14n.Exclusive}, {Algorithm: reference.EnvelopedSignature}}, reference.Options{Signature: signature})
+	out, err := reference.Process(t.Context(), all(t, d), []reference.Transform{{Algorithm: c14n.Exclusive}, {Algorithm: reference.EnvelopedSignature}}, reference.Options{Signature: signature})
 	if out != nil || !errors.Is(err, reference.ErrInput) {
 		t.Fatal(out, err)
 	}
@@ -249,7 +249,7 @@ func TestLimitsAndPolicies(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := reference.Process(context.Background(), reference.Octets([]byte(nested)), transforms, tc.opt)
+			out, err := reference.Process(t.Context(), reference.Octets([]byte(nested)), transforms, tc.opt)
 			if tc.want == nil {
 				if err != nil || out.ProducedBytes() != 13 {
 					t.Fatal(out, err)
@@ -267,23 +267,23 @@ func TestLimitsAndPolicies(t *testing.T) {
 		{{Algorithm: c14n.Exclusive, InclusivePrefixes: []string{"a:b"}}},
 		{{Algorithm: ""}},
 	} {
-		if out, err := reference.Process(context.Background(), reference.Octets([]byte("TQ==")), ts, reference.Options{}); out != nil || err == nil {
+		if out, err := reference.Process(t.Context(), reference.Octets([]byte("TQ==")), ts, reference.Options{}); out != nil || err == nil {
 			t.Fatal(out, err)
 		}
 	}
 
-	if out, err := reference.Process(context.Background(), all(t, parse(t, `<r><x/></r>`)), nil, reference.Options{MaxNodeVisits: 1}); out != nil || !errors.Is(err, reference.ErrLimit) {
+	if out, err := reference.Process(t.Context(), all(t, parse(t, `<r><x/></r>`)), nil, reference.Options{MaxNodeVisits: 1}); out != nil || !errors.Is(err, reference.ErrLimit) {
 		t.Fatal(out, err)
 	}
 
-	if out, err := reference.Process(context.Background(), reference.Octets([]byte(`<r>long</r>`)), []reference.Transform{{Algorithm: c14n.Exclusive}}, reference.Options{MaxOutputBytes: 1}); out != nil || err == nil {
+	if out, err := reference.Process(t.Context(), reference.Octets([]byte(`<r>long</r>`)), []reference.Transform{{Algorithm: c14n.Exclusive}}, reference.Options{MaxOutputBytes: 1}); out != nil || err == nil {
 		t.Fatal(out, err)
 	}
 }
 
 func TestCancellationAndConcurrency(t *testing.T) {
 	data := all(t, parse(t, `<r><x>ok</x></r>`))
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if out, err := reference.Process(ctx, data, nil, reference.Options{}); out != nil || !errors.Is(err, context.Canceled) {
@@ -297,7 +297,7 @@ func TestCancellationAndConcurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 16 {
 		wg.Go(func() {
-			out, err := reference.Process(context.Background(), data, nil, reference.Options{})
+			out, err := reference.Process(t.Context(), data, nil, reference.Options{})
 			if err != nil || string(out.Bytes()) != `<r><x>ok</x></r>` {
 				t.Error(out, err)
 			}
@@ -396,8 +396,8 @@ func BenchmarkBase64Pipeline(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(8192)
 
-	for i := 0; i < b.N; i++ {
-		if _, err := reference.Process(context.Background(), data, tr, reference.Options{}); err != nil {
+	for b.Loop() {
+		if _, err := reference.Process(b.Context(), data, tr, reference.Options{}); err != nil {
 			b.Fatal(err)
 		}
 	}

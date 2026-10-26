@@ -40,7 +40,7 @@ func TestPKIXAndCRL(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			r, report, e := v.Verify(context.Background(), c.leaf.Raw, tc.at, pki.Evidence{CRLs: tc.crls})
+			r, report, e := v.Verify(t.Context(), c.leaf.Raw, tc.at, pki.Evidence{CRLs: tc.crls})
 			if tc.want == nil {
 				if e != nil || r == nil || report.Chain != pki.Valid || report.Revocation != pki.Valid {
 					t.Fatalf("%v %+v", e, report)
@@ -74,7 +74,7 @@ func TestPKIDistinctTrustModels(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	r, report, e := v.Verify(context.Background(), c.leaf.Raw, verificationTime(), pki.Evidence{})
+	r, report, e := v.Verify(t.Context(), c.leaf.Raw, verificationTime(), pki.Evidence{})
 	if e != nil || r == nil || report.Revocation != pki.NotChecked {
 		t.Fatalf("%v %+v", e, report)
 	}
@@ -99,7 +99,7 @@ func TestPKIDistinctTrustModels(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if r, _, e = untrusted.Verify(context.Background(), c.leaf.Raw, verificationTime(), pki.Evidence{}); r != nil || !errors.Is(e, pki.ErrCertificate) {
+	if r, _, e = untrusted.Verify(t.Context(), c.leaf.Raw, verificationTime(), pki.Evidence{}); r != nil || !errors.Is(e, pki.ErrCertificate) {
 		t.Fatal("untrusted chain accepted")
 	}
 
@@ -108,7 +108,7 @@ func TestPKIDistinctTrustModels(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if r, _, e = noEKU.Verify(context.Background(), c.leaf.Raw, verificationTime(), pki.Evidence{}); r != nil || !errors.Is(e, pki.ErrCertificate) {
+	if r, _, e = noEKU.Verify(t.Context(), c.leaf.Raw, verificationTime(), pki.Evidence{}); r != nil || !errors.Is(e, pki.ErrCertificate) {
 		t.Fatal("wrong EKU accepted")
 	}
 }
@@ -124,14 +124,14 @@ func TestCRLRejectsUnsupportedAndWrongSignature(t *testing.T) {
 
 	delta := makeCRL(t, c, false, &x509.RevocationList{Number: big.NewInt(2), ThisUpdate: verificationTime().Add(-time.Minute), NextUpdate: verificationTime().Add(time.Minute), ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 27}, Critical: true, Value: []byte{2, 1, 1}}}})
 
-	r, _, e := v.Verify(context.Background(), c.leaf.Raw, verificationTime(), pki.Evidence{CRLs: [][]byte{delta}})
+	r, _, e := v.Verify(t.Context(), c.leaf.Raw, verificationTime(), pki.Evidence{CRLs: [][]byte{delta}})
 	if r != nil || !errors.Is(e, pki.ErrUnavailable) {
 		t.Fatalf("recognized delta without base treated as full: %v", e)
 	}
 
 	wrong := makeCRL(t, other, false, nil)
 
-	r, _, e = v.Verify(context.Background(), c.leaf.Raw, verificationTime(), pki.Evidence{CRLs: [][]byte{wrong}})
+	r, _, e = v.Verify(t.Context(), c.leaf.Raw, verificationTime(), pki.Evidence{CRLs: [][]byte{wrong}})
 	if r != nil || !errors.Is(e, pki.ErrUnavailable) {
 		t.Fatalf("wrong CRL signer: %v", e)
 	}
@@ -148,7 +148,7 @@ func TestPKIConcurrentAndCancellation(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 16 {
 		wg.Go(func() {
-			if _, _, e := v.Verify(context.Background(), c.leaf.Raw, verificationTime(), pki.Evidence{}); e != nil {
+			if _, _, e := v.Verify(t.Context(), c.leaf.Raw, verificationTime(), pki.Evidence{}); e != nil {
 				t.Error(e)
 			}
 		})
@@ -156,7 +156,7 @@ func TestPKIConcurrentAndCancellation(t *testing.T) {
 
 	wg.Wait()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, _, e = v.Verify(ctx, c.leaf.Raw, verificationTime(), pki.Evidence{}); !errors.Is(e, context.Canceled) {
@@ -189,7 +189,7 @@ func TestPythonCRLFixtures(t *testing.T) {
 		status pki.Status
 	}{{"fresh", pki.Valid}, {"revoked", pki.Invalid}, {"stale", pki.Indeterminate}} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, report, e := v.Verify(context.Background(), leaf, at, pki.Evidence{CRLs: [][]byte{read(tc.name + ".crl.der")}})
+			r, report, e := v.Verify(t.Context(), leaf, at, pki.Evidence{CRLs: [][]byte{read(tc.name + ".crl.der")}})
 			if report.Chain != pki.Valid || report.Revocation != tc.status {
 				t.Fatalf("%v %+v", e, report)
 			}
@@ -230,7 +230,7 @@ func FuzzCRL(f *testing.F) {
 			return
 		}
 
-		_, _, _ = v.Verify(context.Background(), leaf, at, pki.Evidence{CRLs: [][]byte{b}})
+		_, _, _ = v.Verify(t.Context(), leaf, at, pki.Evidence{CRLs: [][]byte{b}})
 	})
 }
 
@@ -246,7 +246,7 @@ func BenchmarkVerifyCRL(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		if _, _, err := v.Verify(context.Background(), c.Leaf.Raw, testcert.Now(), e); err != nil {
+		if _, _, err := v.Verify(b.Context(), c.Leaf.Raw, testcert.Now(), e); err != nil {
 			b.Fatal(err)
 		}
 	}

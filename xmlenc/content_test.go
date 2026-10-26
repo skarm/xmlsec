@@ -19,7 +19,7 @@ import (
 )
 
 func TestContentAllSuites(t *testing.T) {
-	ctx, recipient := context.Background(), key(t)
+	ctx, recipient := t.Context(), key(t)
 
 	for _, data := range []string{xmlenc.AES128GCM, xmlenc.AES192GCM, xmlenc.AES256GCM} {
 		for _, wrap := range []string{"", xmlenc.AES128KeyWrap, xmlenc.AES192KeyWrap, xmlenc.AES256KeyWrap} {
@@ -77,7 +77,7 @@ func testContentAllSuitesCase(t *testing.T, content *string, data *string, wrap 
 }
 
 func TestContentEmbeddedSignatures(t *testing.T) {
-	ctx, signer, kek := context.Background(), key(t), make([]byte, 32)
+	ctx, signer, kek := t.Context(), key(t), make([]byte, 32)
 	for _, method := range []string{c14n.Exclusive, c14n.ExclusiveWithComments, c14n.Canonical10, c14n.Canonical10WithComments, c14n.Canonical11, c14n.Canonical11WithComments} {
 		t.Run(method, func(t *testing.T) {
 			source := parse(t, []byte(`<r xmlns="urn:r" xmlns:p="urn:p" xmlns:q="urn:unused" xml:lang="ru"><box>text<p:v ID="payload" xmlns=""><bare>signed</bare></p:v>after</box></r>`))
@@ -119,7 +119,7 @@ func TestContentEmbeddedSignatures(t *testing.T) {
 }
 
 func TestContentAuthenticatedXMLAndLimits(t *testing.T) {
-	ctx, kek := context.Background(), make([]byte, 32)
+	ctx, kek := t.Context(), make([]byte, 32)
 	prefix, suffix := `<r xmlns="urn:r" xmlns:p="urn:p" xmlns:q="urn:unused">before`, `after</r>`
 
 	for _, raw := range []string{"", "text&amp;й", `<!--only comment--><?only pi?>`, `<p:v/>middle<bare xmlns=""/>`, `<![CDATA[<valid text>]]>`} {
@@ -176,7 +176,7 @@ func TestContentAuthenticatedXMLAndLimits(t *testing.T) {
 }
 
 func TestContentSelectionAndSuperEncryption(t *testing.T) {
-	ctx, kek := context.Background(), make([]byte, 32)
+	ctx, kek := t.Context(), make([]byte, 32)
 	source := parse(t, []byte(`<!--before--><r ID="root">before<secret>protected</secret>after</r><!--after-->`))
 
 	inner, cipherElement, err := xmlenc.EncryptElementWithKeyWrap(ctx, source, source.Root().Children()[0], kek, xmlenc.KeyWrapOptions{})
@@ -249,7 +249,7 @@ func FuzzContentPlaintext(f *testing.F) {
 		limits := document.DefaultLimits()
 		limits.MaxBytes, limits.MaxNodes, limits.MaxDepth, limits.MaxAttributesPerElement = 4096, 64, 8, 8
 
-		result, parent, err := xmlenc.DecryptContentWithKeyWrap(context.Background(), encrypted, encrypted.Root().Children()[1].Children()[0], make([]byte, 32), xmlenc.KeyWrapOptions{Data: xmlenc.Options{XMLLimits: limits}})
+		result, parent, err := xmlenc.DecryptContentWithKeyWrap(t.Context(), encrypted, encrypted.Root().Children()[1].Children()[0], make([]byte, 32), xmlenc.KeyWrapOptions{Data: xmlenc.Options{XMLLimits: limits}})
 		if !bytes.Equal(before, xmlBytes(t, encrypted)) {
 			t.Fatal("source snapshot mutated")
 		}
@@ -275,7 +275,7 @@ func FuzzContentPlaintext(f *testing.F) {
 func authenticatedContent(t testing.TB, raw []byte, prefix, suffix string) *document.Document {
 	t.Helper()
 
-	encrypted, err := xmlenc.EncryptBytesWithKeyWrap(context.Background(), raw, make([]byte, 32), xmlenc.KeyWrapOptions{})
+	encrypted, err := xmlenc.EncryptBytesWithKeyWrap(t.Context(), raw, make([]byte, 32), xmlenc.KeyWrapOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

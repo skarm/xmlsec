@@ -2,7 +2,6 @@ package tree_test
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -97,12 +96,12 @@ func TestFragmentUsesSemanticLimits(t *testing.T) {
 	limits.MaxNodes = 1
 	limits.MaxDepth = 1
 
-	d, err := treepkg.ParseFragment(context.Background(), []byte("a"), limits)
+	d, err := treepkg.ParseFragment(t.Context(), []byte("a"), limits)
 	if err != nil || len(treepkg.Children(d)) != 1 || treepkg.Children(d)[0].Data != "a" {
 		t.Fatal(d, err)
 	}
 
-	if _, err := treepkg.ParseFragment(context.Background(), []byte("ab"), limits); !errors.Is(err, treepkg.ErrLimit) {
+	if _, err := treepkg.ParseFragment(t.Context(), []byte("ab"), limits); !errors.Is(err, treepkg.ErrLimit) {
 		t.Fatal("fragment bytes were not bounded", err)
 	}
 
@@ -111,12 +110,12 @@ func TestFragmentUsesSemanticLimits(t *testing.T) {
 	limits.MaxNodes = 512
 
 	data := []byte(strings.Repeat("<n>", 512) + strings.Repeat("</n>", 512))
-	if _, err := treepkg.ParseFragment(context.Background(), data, limits); err != nil {
+	if _, err := treepkg.ParseFragment(t.Context(), data, limits); err != nil {
 		t.Fatal("synthetic root consumed a depth/node slot", err)
 	}
 
 	for _, xml := range []string{`<!DOCTYPE r [<!ENTITY x "x">]><r>&x;</r>`, `<p:r/>`, `<r a="1" a="2"/>`} {
-		if _, err := treepkg.ParseFragment(context.Background(), []byte(xml), treepkg.DefaultLimits()); err == nil {
+		if _, err := treepkg.ParseFragment(t.Context(), []byte(xml), treepkg.DefaultLimits()); err == nil {
 			t.Error("invalid fragment accepted", xml)
 		}
 	}

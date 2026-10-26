@@ -1,89 +1,63 @@
 # Performance and storage
 
-## Contents
-
-- [Choose an execution path](#choose-an-execution-path)
-- [Retained state](#retained-state)
-- [Measure the current code](#measure-the-current-code)
-
 ## Choose an execution path
 
-Compile XPath expressions and XSLT stylesheets once when reusing the same
-program and static policy. Published programs support concurrent invocations;
-each invocation has separate variables, context and budgets.
+Compile reusable XPath/XSLT programs once; invocations have separate contexts,
+variables and budgets. Reader/writer APIs avoid complete byte slices where the
+operation allows it. XML parsing and ordinary XSLT still retain trees/results.
+Use `Stylesheet.WriteRecords` for independent subtrees without cross-record
+navigation, sorting or grouping. See [streaming](streaming.md).
 
-Use reader and writer APIs when a complete input or output byte slice is
-unnecessary. XML parsing still retains a tree, and ordinary XSLT execution retains
-its result before serialization. `Stylesheet.WriteRecords` processes independent
-records when cross-record navigation, sorting and grouping are unnecessary.
-The [streaming guide](streaming.md) describes storage for each API family.
-
-XMLDSig and detached CMS hash supported input incrementally. Pure Ed25519 needs
-a complete message; Ed25519ph is a separate algorithm that both endpoints must
-select explicitly. XML Encryption uses complete bounded messages. GCM decryption
-releases plaintext only after authentication.
-
-`evidence.Observation` retains complete untrusted bytes in memory. Use
-`evidence.Store` and `collect.HTTP.CollectTo` to retain payloads in private temporary
-files. Close records and stores when finished. File storage adds filesystem I/O,
-and subsequent parsing still retains certificate or evidence models.
-
-The CLI serializes file output through a bounded buffer into a same-directory
-temporary file, then renames it after successful serialization and close.
-Application stdout buffers output before publication. JSON encoding can retain a
-complete encoded value; a writer parameter alone does not establish fixed memory.
+XMLDSig and detached CMS can hash input incrementally. Pure Ed25519 needs the
+complete message; Ed25519ph is a separate explicitly selected algorithm.
+XML Encryption retains bounded complete messages. `evidence.Store` moves payloads
+to temporary files, while subsequent parsing still retains models.
 
 ## Retained state
 
-Documents, node handles and result values retain the snapshots they reference.
-Keeping a small subtree handle can therefore retain its complete source document.
-`Result.Document(ctx)` creates an independent snapshot for a selected element.
-Mutable byte and certificate accessors return owned copies where documented.
+Node handles and values retain their owning snapshots. `Result.Document(ctx)`
+can detach a selected element into an independent document. Close evidence
+records/stores to release their storage.
 
-SAML Redirect signing retains at most four idle DEFLATE compressors. Concurrent
-bursts can allocate additional active compressors; excess idle instances are
-discarded. Reset detaches the output writer but does not erase the compressor's
-internal byte history. The count limit is not a portable byte-size guarantee.
+SAML memory stores retain entries until pruning or their configured capacity.
+State reads do not consume requests. Redirect signing keeps at most four idle
+DEFLATE compressors; active calls can allocate more, and reset does not erase
+internal history.
 
-Memory state and replay stores retain entries up to their configured capacities.
-State Put/Get and replay Consume prune expired entries; Len reports stored counts
-without pruning. Reading request state does not consume it, so completed logins
-can leave state until expiration and later pruning. Atomic multi-identifier
-consumption uses a lock; throughput under contention depends on the application
-workload.
-
-Input, output, node and operation limits bound their documented quantities.
-They do not specify total heap or RSS. Trees, indexes, temporary representations,
-callbacks, caches and the Go runtime contribute additional storage. Exact Unicode
-normalization can retain an unfinished combining sequence within operation
-budgets. No universal constant-memory or latency guarantee applies.
+Byte/node/work limits bound their documented quantities, not total heap or RSS.
+Trees, indexes, callbacks, simultaneous representations and the Go runtime add
+storage. Allocation volume (`B/op`, `TotalAlloc`) is not retained or peak memory.
 
 ## Measure the current code
 
-Run benchmarks against the exact source, toolchain, fixtures and policy used by
-the application. Record Go version, platform, CPU count, GOMAXPROCS and GC settings.
-Keep fixture construction and compilation outside timed loops. Compare small and
-large inputs, serial calls and concurrent complete workflows.
+Use the same sources, fixtures, policies and toolchain for comparisons. Record
+platform, CPU count, GOMAXPROCS and GC settings; exclude setup from timed loops.
+Compare small/large inputs and serial/concurrent workflows. Collect repeated
+samples and compare them with `benchstat`:
 
-The benchmark families include:
+```sh
+GOMAXPROCS=2 make bench BENCH_ARGS='-benchtime=300ms -count=6'
+benchstat /tmp/before.bench /tmp/after.bench
+```
 
-- `document.BenchmarkDocumentOperations` for document and selection operations.
-- `transform.BenchmarkEngineXPath`, `BenchmarkEngineXSLT` and
-  `BenchmarkEngineParallel` for language execution.
-- `cms.BenchmarkCMS`, `BenchmarkCMSBER` and `BenchmarkCMSBERReader` for CMS paths.
-- `resource.BenchmarkEvidenceCollect` and `BenchmarkEvidenceStorage` for
-  collection and storage adapters.
-- `saml/binding.BenchmarkSignRedirect` and `BenchmarkVerifyRedirect` for bindings.
-- `tests/integration/saml.BenchmarkLogin`, `BenchmarkSPBegin`,
-  `BenchmarkSPConsumePOST` and `BenchmarkLoginParallel` for complete SAML flows.
-- `xades.BenchmarkHistoricalValidation` for the historical evidence workflow.
-- `cmd/xmlsec.BenchmarkDocumentIO` for CLI XML input and file output.
+Collect CPU and heap profiles separately; race/profiling instrumentation changes
+timings. For example:
 
-Allocation volume (`B/op` or `TotalAlloc`) is not retained or peak memory.
-Post-GC heap profiles measure retained objects; sampled peaks can miss short
-allocations. Measure process RSS separately. Profiling, tracing and race
-instrumentation can alter timings.
+```sh
+go test ./transform -run '^$' -bench '^BenchmarkEngineXSLT/1024/3.0$' \
+  -benchtime=5s -cpuprofile=/tmp/xmlsec-cpu.out -o /tmp/xmlsec-transform.test
+go tool pprof -top /tmp/xmlsec-cpu.out
+```
 
-See [benchmark and profiling commands](testing.md#performance) for repeated
-samples, `benchstat`, CPU and heap profiles, and the sustained local load harness.
-Keep raw measurements, profiles, traces and generated reports outside Git.
+The optional sustained-load harness uses local fixtures and loopback HTTP:
+
+```sh
+XMLSEC_SOAK_DURATION=10m XMLSEC_SOAK_SCENARIO=transform \
+  go test -count=1 -timeout=12m -artifacts -outputdir=/tmp/xmlsec-soak \
+  ./tests/integration/saml -run '^TestSustainedLoad$'
+```
+
+Scenarios are `transform`, `http` and `saml`. `XMLSEC_SOAK_OUT` overrides the
+saved JSON report path. The harness measures throughput, latency, allocation,
+sampled heap and cancellation. Samples can miss peaks; measure process RSS
+separately. Keep profiles and generated reports outside Git.

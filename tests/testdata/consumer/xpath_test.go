@@ -300,7 +300,7 @@ func TestXPathPeakWorkingHeap(t *testing.T) {
 }
 
 func TestXPathHandlesComposeWithCanonicalization(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	original, err := document.Parse(ctx, []byte(`<r><n b="2" a="1">value</n><n>other</n></r>`), document.DefaultLimits())
 	if err != nil {
 		t.Fatal(err)

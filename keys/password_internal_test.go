@@ -28,7 +28,7 @@ func TestPasswordDerivation(t *testing.T) {
 
 	for _, h := range []crypto.Hash{crypto.SHA256, crypto.SHA384, crypto.SHA512} {
 		for _, size := range []int{16, 24, 32, 48, 64} {
-			s := testState(context.Background(), t)
+			s := testState(t.Context(), t)
 			got, err := s.derive(h, salt, 1000, size)
 
 			want, oracleErr := pbkdf2.Key(h.New, "public password", salt, 1000, size)
@@ -46,7 +46,7 @@ func TestPasswordDerivation(t *testing.T) {
 	}
 
 	for _, classic := range []bool{false, true} {
-		ctx := cancelAt(3)
+		ctx := cancelAt(t, 3)
 		s := testState(ctx, t)
 
 		var (
@@ -79,7 +79,7 @@ func TestPKCS12AuthenticatedStructure(t *testing.T) {
 	certBag := safeBag(oidCertBag(), certValue, nil)
 	good := authenticatedPFX(t, der.Seq(keyBag, certBag))
 
-	identity, err := ParsePKCS12(context.Background(), good, []byte("public password"), Limits{})
+	identity, err := ParsePKCS12(t.Context(), good, []byte("public password"), Limits{})
 	if err != nil || identity == nil || !bytes.Equal(identity.Certificate.Raw, c.Leaf.Raw) {
 		t.Fatal("MAC-protected plaintext bags rejected", err)
 	}
@@ -98,7 +98,7 @@ func TestPKCS12AuthenticatedStructure(t *testing.T) {
 		"too many bags":                  der.Seq(bytes.Repeat(keyBag, 33)),
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := ParsePKCS12(context.Background(), authenticatedPFX(t, contents), []byte("public password"), Limits{})
+			out, err := ParsePKCS12(t.Context(), authenticatedPFX(t, contents), []byte("public password"), Limits{})
 			if out != nil || err == nil {
 				t.Fatal("invalid authenticated structure accepted")
 			}
@@ -115,7 +115,7 @@ func TestPKCS12AuthenticatedStructure(t *testing.T) {
 		"changed safe bytes": der.Seq(f[0].FullBytes, dataInfo(der.Seq(dataInfo(der.Seq(certBag)))), f[2].FullBytes),
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := ParsePKCS12(context.Background(), bad, []byte("public password"), Limits{})
+			out, err := ParsePKCS12(t.Context(), bad, []byte("public password"), Limits{})
 			if out != nil || err == nil {
 				t.Fatal("unauthenticated structure accepted")
 			}
@@ -126,7 +126,7 @@ func TestPKCS12AuthenticatedStructure(t *testing.T) {
 	huge, _ := asn1.Marshal(new(big.Int).Lsh(big.NewInt(1), 200))
 
 	ignored := der.Seq(f[0].FullBytes, f[1].FullBytes, der.Seq(mac[0].FullBytes, der.Octets(nil), huge))
-	if out, err := ParsePKCS12(context.Background(), ignored, []byte("public password"), Limits{}); out == nil || err != nil {
+	if out, err := ParsePKCS12(t.Context(), ignored, []byte("public password"), Limits{}); out == nil || err != nil {
 		t.Fatal("PBMAC1 placeholder was interpreted as a KDF parameter", err)
 	}
 }
@@ -135,7 +135,7 @@ func authenticatedPFX(t testing.TB, contents []byte) []byte {
 	t.Helper()
 
 	authSafe := der.Seq(dataInfo(contents))
-	s := testState(context.Background(), t)
+	s := testState(t.Context(), t)
 
 	mac, err := encodePKCS12MAC(s, authSafe, PKCS12Options{Encryption: EncryptionOptions{Hash: crypto.SHA256, Iterations: 1000}})
 	if err != nil {
@@ -161,7 +161,7 @@ func TestProtectionParameterPolicy(t *testing.T) {
 			want := map[string]error{"omitted default SHA1": ErrPolicy, "wrong key size": ErrPolicy, "zero iterations": ErrLimit, "excessive iterations": ErrLimit, "tiny salt": ErrPolicy, "duplicate parameters": ErrFormat}[name]
 			alg := der.Seq(der.OID(oidPBES2()), der.Seq(kdf, der.Seq(der.OID(oidAES256CBC()), der.Octets(iv))))
 
-			out, err := decryptPBES2(testState(context.Background(), t), rawValue(t, alg), make([]byte, 16), DefaultLimits().MaxContainerBytes)
+			out, err := decryptPBES2(testState(t.Context(), t), rawValue(t, alg), make([]byte, 16), DefaultLimits().MaxContainerBytes)
 			if out != nil || !errors.Is(err, want) {
 				t.Fatal("unsupported protection parameter reached decryption", name, err)
 			}
@@ -184,13 +184,13 @@ func TestProtectionParameterPolicy(t *testing.T) {
 		return rawValue(t, der.Seq(der.Seq(alg, der.Octets(h.Sum(nil))), der.Octets(nil), der.Int(0)))
 	}
 
-	s := testState(context.Background(), t)
+	s := testState(t.Context(), t)
 	if err := verifyPKCS12MAC(s, makeMAC(kdfEncoding(salt, 1000, 64, crypto.SHA256)), message); err != nil || s.remaining != 2998000 {
 		t.Fatal("PBKDF2 PRF and MAC hash were incorrectly coupled", err)
 	}
 
 	noLength := der.Seq(der.OID(oidPBKDF2()), der.Seq(der.Octets(salt), der.Int(1000), prf))
-	if err := verifyPKCS12MAC(testState(context.Background(), t), makeMAC(noLength), message); err == nil {
+	if err := verifyPKCS12MAC(testState(t.Context(), t), makeMAC(noLength), message); err == nil {
 		t.Fatal("PBMAC1 without mandatory keyLength accepted")
 	}
 }
@@ -208,7 +208,7 @@ func TestDecryptedPKCS8Schema(t *testing.T) {
 	attr := der.Seq(der.OID(oidFriendlyName()), der.Set(der.Wrap(0, asn1.TagUTF8String, false, []byte("example"))))
 
 	valid := der.Seq(f[0].FullBytes, f[1].FullBytes, f[2].FullBytes, der.Ctx(0, attr))
-	if key, err := parseDecryptedPrivate(testState(context.Background(), t), valid); key == nil || err != nil {
+	if key, err := parseDecryptedPrivate(testState(t.Context(), t), valid); key == nil || err != nil {
 		t.Fatal("valid version-zero PrivateKeyInfo attributes rejected", err)
 	}
 
@@ -218,7 +218,7 @@ func TestDecryptedPKCS8Schema(t *testing.T) {
 		der.Seq(f[0].FullBytes, f[1].FullBytes, f[2].FullBytes, der.Ctx(0, der.Int(0))),
 		der.Seq(f[0].FullBytes, f[1].FullBytes, f[2].FullBytes, der.Ctx(0, der.Seq(der.OID(oidFriendlyName()), der.Set()))),
 	} {
-		if key, err := parseDecryptedPrivate(testState(context.Background(), t), bad); key != nil || !errors.Is(err, ErrDecrypt) {
+		if key, err := parseDecryptedPrivate(testState(t.Context(), t), bad); key != nil || !errors.Is(err, ErrDecrypt) {
 			t.Fatal("invalid PrivateKeyInfo schema accepted", err)
 		}
 	}
@@ -229,7 +229,7 @@ func TestProtectionCancellationCheckpoints(t *testing.T) {
 
 	for at := 1; at <= 16; at++ {
 		for _, pfx := range []bool{false, true} {
-			ctx := cancelAt(at)
+			ctx := cancelAt(t, at)
 			options := EncryptionOptions{Hash: crypto.SHA256, KeyBits: 256, Iterations: 1000}
 
 			var (
@@ -251,7 +251,7 @@ func TestProtectionCancellationCheckpoints(t *testing.T) {
 	}
 	// Invalid structures must fail without dereferencing missing key components.
 	for _, key := range []crypto.Signer{&rsa.PrivateKey{}, &rsa.PrivateKey{N: big.NewInt(5), D: big.NewInt(1), Primes: []*big.Int{nil, nil}}} {
-		if out, err := MarshalEncryptedPrivate(context.Background(), key, []byte("password"), EncryptionOptions{Iterations: 1000}, Limits{}); out != nil || err == nil {
+		if out, err := MarshalEncryptedPrivate(t.Context(), key, []byte("password"), EncryptionOptions{Iterations: 1000}, Limits{}); out != nil || err == nil {
 			t.Fatal("invalid RSA key exported")
 		}
 	}
@@ -386,7 +386,7 @@ func TestPBES2WorkingStorage(t *testing.T) {
 
 	clear(got)
 
-	ctx := cancelAt(3)
+	ctx := cancelAt(t, 3)
 	defer ctx.cancel()
 
 	if err := cryptCBC(ctx, cipher.NewCBCDecrypter(block, make([]byte, aes.BlockSize)), got, want); !errors.Is(err, context.Canceled) || !bytes.Equal(got[:64<<10], plain[:64<<10]) || !bytes.Equal(got[64<<10:], make([]byte, len(got)-(64<<10))) {
@@ -496,8 +496,12 @@ func (c *cancelOnCheck) Err() error {
 	return c.Context.Err()
 }
 
-func cancelAt(n int) *cancelOnCheck {
-	ctx, cancel := context.WithCancel(context.Background())
+func cancelAt(t testing.TB, n int) *cancelOnCheck {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
 	return &cancelOnCheck{Context: ctx, cancel: cancel, at: n}
 }
 

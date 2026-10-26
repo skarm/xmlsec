@@ -22,7 +22,7 @@ import (
 )
 
 func TestParameterizedPSSMessages(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	key := pssKey(t, 2048)
 	msg := []byte("message with exact bytes\x00\xff")
 	policy := xmldsig.ParameterizedPolicy()
@@ -80,7 +80,7 @@ func TestParameterizedPSSMessages(t *testing.T) {
 }
 
 func TestParameterizedProviderAndPreflight(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	key := pssKey(t, 2048)
 	provider := &pssProvider{PrivateKey: key}
 	param := xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{Hash: crypto.SHA384, SaltLength: 24}}
@@ -139,7 +139,7 @@ func TestParameterizedProviderAndPreflight(t *testing.T) {
 }
 
 func TestParameterizedPSSXML(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	key := pssKey(t, 2048)
 	for _, params := range []xmldsig.SignatureParameters{{}, {PSS: &xmldsig.PSSParameters{Hash: crypto.SHA384, SaltLength: 20}}, {PSS: &xmldsig.PSSParameters{Hash: crypto.SHA512, MGFHash: crypto.SHA512, SaltLength: 64}}} {
@@ -230,7 +230,7 @@ func TestSignatureParameterXMLRejects(t *testing.T) {
 			d := coreParse(t, changed)
 			before := key.calls
 
-			out, e := xmldsig.SignTemplate(context.Background(), d, d.Root(), key, xmldsig.TemplateSignOptions{Validation: xmldsig.SignatureOptions{Policy: xmldsig.ParameterizedPolicy()}})
+			out, e := xmldsig.SignTemplate(t.Context(), d, d.Root(), key, xmldsig.TemplateSignOptions{Validation: xmldsig.SignatureOptions{Policy: xmldsig.ParameterizedPolicy()}})
 			if out != nil || e == nil || key.calls != before {
 				t.Fatalf("invalid parameter accepted or reached provider %v", e)
 			}
@@ -238,7 +238,7 @@ func TestSignatureParameterXMLRejects(t *testing.T) {
 	}
 
 	for _, p := range []xmldsig.SignatureParameters{{PSS: &xmldsig.PSSParameters{Hash: crypto.SHA1, SaltLength: 20}}, {PSS: &xmldsig.PSSParameters{Hash: crypto.SHA256, SaltLength: -1}}, {HMACOutputLength: 256}} {
-		_, _, e := xmldsig.BuildTemplate(context.Background(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.RSAPSS, SignatureParameters: p, References: []xmldsig.ReferenceTemplate{{URI: "#a"}}})
+		_, _, e := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.RSAPSS, SignatureParameters: p, References: []xmldsig.ReferenceTemplate{{URI: "#a"}}})
 		if e == nil {
 			t.Fatal("builder accepted inappropriate parameters")
 		}
@@ -246,7 +246,7 @@ func TestSignatureParameterXMLRejects(t *testing.T) {
 }
 
 func TestParameterizedContextAdapter(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	base := &pssProvider{PrivateKey: pssKey(t, 2048)}
 	provider := &contextPSSProvider{base}
 
@@ -273,7 +273,7 @@ func TestParameterizedContextAdapter(t *testing.T) {
 }
 
 func TestPSSPolicyAndLegacyIsolation(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	key := pssKey(t, 2048)
 	msg := []byte("m")
 	params := xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{Hash: crypto.SHA384, SaltLength: 20}}
@@ -340,7 +340,7 @@ func FuzzVerifyParameters(f *testing.F) {
 		lim.MaxNodes = 2048
 		lim.MaxDepth = 32
 
-		d, e := document.Parse(context.Background(), raw, lim)
+		d, e := document.Parse(t.Context(), raw, lim)
 		if e != nil {
 			return
 		}
@@ -349,7 +349,7 @@ func FuzzVerifyParameters(f *testing.F) {
 		p.MaxCanonicalBytes = 256 << 10
 
 		p.MaxReferences = 4
-		if r, _, e := xmldsig.VerifySignatureDetailed(context.Background(), d, d.Root(), pub, xmldsig.SignatureOptions{Policy: p}); (r != nil) != (e == nil) {
+		if r, _, e := xmldsig.VerifySignatureDetailed(t.Context(), d, d.Root(), pub, xmldsig.SignatureOptions{Policy: p}); (r != nil) != (e == nil) {
 			t.Fatal("partial public-key result")
 		}
 
@@ -358,7 +358,7 @@ func FuzzVerifyParameters(f *testing.F) {
 		p.MaxCanonicalBytes = 256 << 10
 
 		p.MaxReferences = 4
-		if r, _, e := xmldsig.VerifyHMACSignatureDetailed(context.Background(), d, d.Root(), testKey, xmldsig.SignatureOptions{Policy: p}); (r != nil) != (e == nil) {
+		if r, _, e := xmldsig.VerifyHMACSignatureDetailed(t.Context(), d, d.Root(), testKey, xmldsig.SignatureOptions{Policy: p}); (r != nil) != (e == nil) {
 			t.Fatal("partial HMAC result")
 		}
 	})
@@ -378,7 +378,7 @@ func FuzzHMACMessage(f *testing.F) {
 		p := xmldsig.HMACPolicy()
 		p.AllowHMACTruncation = true
 
-		tag, e := xmldsig.ComputeHMAC(context.Background(), msg, testMACKey(), methods[int(selector)%3], bits, p)
+		tag, e := xmldsig.ComputeHMAC(t.Context(), msg, testMACKey(), methods[int(selector)%3], bits, p)
 		if e != nil {
 			if tag != nil {
 				t.Fatal("partial tag")
@@ -387,12 +387,12 @@ func FuzzHMACMessage(f *testing.F) {
 			return
 		}
 
-		if e = xmldsig.VerifyHMAC(context.Background(), msg, tag, testMACKey(), methods[int(selector)%3], bits, p); e != nil {
+		if e = xmldsig.VerifyHMAC(t.Context(), msg, tag, testMACKey(), methods[int(selector)%3], bits, p); e != nil {
 			t.Fatal(e)
 		}
 
 		tag[0] ^= 1
-		if e = xmldsig.VerifyHMAC(context.Background(), msg, tag, testMACKey(), methods[int(selector)%3], bits, p); e == nil {
+		if e = xmldsig.VerifyHMAC(t.Context(), msg, tag, testMACKey(), methods[int(selector)%3], bits, p); e == nil {
 			t.Fatal("modified tag accepted")
 		}
 	})
@@ -449,7 +449,7 @@ func paramTemplate(t testing.TB, method string, params xmldsig.SignatureParamete
 
 	a, b := "payload-a", "payload-b"
 
-	d, s, e := xmldsig.BuildTemplate(context.Background(), nil, document.Element{}, xmldsig.SignatureTemplate{ID: "s", SignatureMethod: method, SignatureParameters: params, References: []xmldsig.ReferenceTemplate{{URI: "#a", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}, {URI: "#b", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}}, Objects: []xmldsig.ObjectTemplate{{ID: "a", Text: &a}, {ID: "b", Text: &b}}})
+	d, s, e := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{ID: "s", SignatureMethod: method, SignatureParameters: params, References: []xmldsig.ReferenceTemplate{{URI: "#a", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}, {URI: "#b", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}}, Objects: []xmldsig.ObjectTemplate{{ID: "a", Text: &a}, {ID: "b", Text: &b}}})
 	if e != nil {
 		t.Fatal(e)
 	}

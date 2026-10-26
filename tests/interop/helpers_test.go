@@ -51,6 +51,7 @@ func javaExports() []string {
 
 func selected(t *testing.T, suite string) {
 	t.Helper()
+	t.Attr("interop.suite", suite)
 
 	for _, s := range strings.Split(flag.Lookup("suite").Value.String(), ",") {
 		if s == suite || s == "all" {
@@ -64,7 +65,7 @@ func selected(t *testing.T, suite string) {
 func command(t *testing.T, fixture *interopFixture, success bool, input []byte, name string, args ...string) ([]byte, []byte) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
 	c := exec.CommandContext(ctx, name, args...)
@@ -76,6 +77,13 @@ func command(t *testing.T, fixture *interopFixture, success bool, input []byte, 
 	c.Stdout = &out
 	c.Stderr = &errout
 	err := c.Run()
+
+	if ctx.Err() != nil || (err == nil) != success {
+		directory := t.ArtifactDir()
+		testutil.WriteFile(t, directory, "command-stdout.txt", out.Bytes())
+		testutil.WriteFile(t, directory, "command-stderr.txt", errout.Bytes())
+		t.Log("external command diagnostics:", directory)
+	}
 
 	if ctx.Err() != nil {
 		t.Fatalf("%s: %v", name, ctx.Err())

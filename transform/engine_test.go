@@ -76,7 +76,7 @@ func TestSingleByteXMLInputs(t *testing.T) {
 }
 
 func TestLimitsCancellationAndResources(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 64, MaxOperations: 100, MaxNodes: 50}})
 	for _, source := range []string{`sum(1 to 10000)`, `fold-left(1 to 20,'x',function($a,$b){$a||$a})`} {
@@ -684,7 +684,7 @@ func TestConcurrentReuse(t *testing.T) {
 		wg.Go(func() {
 			binding := transform.Bindings{{Local: "n"}: transform.Values(transform.Integer(i))}
 
-			result, err := q.Evaluate(context.Background(), nil, transform.XPathContext{Variables: binding})
+			result, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: binding})
 			if err != nil {
 				t.Error(err)
 				return
@@ -701,7 +701,7 @@ func TestConcurrentReuse(t *testing.T) {
 				t.Error(number, err)
 			}
 
-			out, err := s.Transform(context.Background(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, Parameters: binding})
+			out, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, Parameters: binding})
 			if err != nil {
 				t.Error(err)
 				return
@@ -720,7 +720,7 @@ func TestConcurrentReuse(t *testing.T) {
 }
 
 func TestInvocationChecksForeignDocumentLimits(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	producer := engine(t, transform.Config{})
 	for _, tc := range []struct {
@@ -771,7 +771,7 @@ func TestInvocationChecksForeignDocumentLimits(t *testing.T) {
 }
 
 func TestXPathContextItemSetsNodeFocus(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	e := engine(t, transform.Config{})
 
 	a, err := e.Parse(ctx, []byte(`<a><child/></a>`))
@@ -798,7 +798,7 @@ func TestXPathContextItemSetsNodeFocus(t *testing.T) {
 func TestXPathAtomicContextRejectsNodeAxes(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, source := range []string{`/`, `/*`, `child::*`} {
-		_, err := query(t, e, source, transform.XPath31).Evaluate(context.Background(), nil, transform.XPathContext{ContextItem: transform.Integer(1)})
+		_, err := query(t, e, source, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{ContextItem: transform.Integer(1)})
 
 		var detail *transform.Error
 		if !errors.As(err, &detail) || detail.Code != "XPTY0020" {
@@ -808,7 +808,7 @@ func TestXPathAtomicContextRejectsNodeAxes(t *testing.T) {
 }
 
 func TestImportChecksDecodedInputBudget(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	input := []byte{0xff, 0xfe}
 	for _, u := range utf16.Encode([]rune(`<r>` + strings.Repeat("中", 100) + `</r>`)) {

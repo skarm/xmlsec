@@ -2,7 +2,6 @@ package c14n_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -287,11 +286,11 @@ func testCanonicalAlgorithmsCase(t *testing.T, tt *struct {
 
 				set, err = e.Subtree(t.Context())
 				if err == nil {
-					err = c14n.WriteElement(context.Background(), &direct, e, opt)
+					err = c14n.WriteElement(t.Context(), &direct, e, opt)
 				}
 			} else {
 				set = all(t, d)
-				err = c14n.WriteDocument(context.Background(), &direct, d, opt)
+				err = c14n.WriteDocument(t.Context(), &direct, d, opt)
 			}
 
 			if err != nil {
@@ -470,13 +469,13 @@ func TestNewCanonicalErrors(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := c14n.WriteNodeSet(context.Background(), io.Discard, s, tt.opt); !errors.Is(err, tt.want) {
+			if err := c14n.WriteNodeSet(t.Context(), io.Discard, s, tt.opt); !errors.Is(err, tt.want) {
 				t.Fatal(err)
 			}
 		})
 	}
 
-	if err := c14n.WriteNodeSet(context.Background(), io.Discard, document.NodeSet{}, c14n.Options{}); !errors.Is(err, document.ErrMalformed) {
+	if err := c14n.WriteNodeSet(t.Context(), io.Discard, document.NodeSet{}, c14n.Options{}); !errors.Is(err, document.ErrMalformed) {
 		t.Fatal(err)
 	}
 
@@ -484,12 +483,12 @@ func TestNewCanonicalErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := c14n.WriteNodeSet(context.Background(), nil, s, c14n.Options{}); !errors.Is(err, document.ErrMalformed) {
+	if err := c14n.WriteNodeSet(t.Context(), nil, s, c14n.Options{}); !errors.Is(err, document.ErrMalformed) {
 		t.Fatal(err)
 	}
 
 	sentinel := errors.New("sentinel writer error")
-	if err := c14n.WriteNodeSet(context.Background(), failingWriter{sentinel}, s, c14n.Options{}); !errors.Is(err, sentinel) {
+	if err := c14n.WriteNodeSet(t.Context(), failingWriter{sentinel}, s, c14n.Options{}); !errors.Is(err, sentinel) {
 		t.Fatal(err)
 	}
 }
@@ -522,7 +521,7 @@ func TestSparseDocumentBoundaryComments(t *testing.T) {
 		t.Run(alg, func(t *testing.T) {
 			var out bytes.Buffer
 
-			err := c14n.WriteNodeSet(context.Background(), &out, set, c14n.Options{Algorithm: alg, WithComments: true})
+			err := c14n.WriteNodeSet(t.Context(), &out, set, c14n.Options{Algorithm: alg, WithComments: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -571,9 +570,9 @@ func FuzzNodeSets(f *testing.F) {
 		var a, b bytes.Buffer
 
 		opt := c14n.Options{Algorithm: alg, WithComments: mode&4 != 0, MaxOutputBytes: 128 << 10}
-		ea := c14n.WriteNodeSet(context.Background(), &a, set, opt)
+		ea := c14n.WriteNodeSet(t.Context(), &a, set, opt)
 
-		eb := c14n.WriteNodeSet(context.Background(), &b, set, opt)
+		eb := c14n.WriteNodeSet(t.Context(), &b, set, opt)
 		if (ea == nil) != (eb == nil) || !bytes.Equal(a.Bytes(), b.Bytes()) {
 			t.Fatal("non-deterministic canonicalization")
 		}
@@ -636,7 +635,7 @@ func canonSet(t *testing.T, set document.NodeSet, opt c14n.Options) string {
 	t.Helper()
 
 	var b bytes.Buffer
-	if err := c14n.WriteNodeSet(context.Background(), &b, set, opt); err != nil {
+	if err := c14n.WriteNodeSet(t.Context(), &b, set, opt); err != nil {
 		t.Fatal(err)
 	}
 

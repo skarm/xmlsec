@@ -148,15 +148,10 @@ and XSLT 1.0/2.0/3.0 features. Complete Basic XSLT conformance remains open;
 Schema awareness and W3C streamable execution are unsupported. SAML support covers
 solicited WebSSO; it does not include SLO, Artifact/ECP or encrypted assertions.
 
-Check [supported profiles and compatibility](docs/compatibility.md) for the full
-scope, exclusions and known interoperability differences. The
-[conformance register](docs/conformance.json) separates supported capabilities,
-normative obligations, policy and remaining gaps. Each declared profile has a
-pinned document/role/mode matrix, selected correction IDs and a named clause/contract
-inventory. Missing implementation, local tests and independent evidence remain
-explicit; inventory completion does not grant a full standards claim;
-see [normative traceability](docs/conformance.md) and the pinned
-[standards](docs/standards.md).
+See [compatibility](docs/compatibility.md) for supported profiles, exclusions and
+known interoperability differences, and [standards](docs/standards.md) for primary
+sources. Contributors maintain a [requirements and evidence register](docs/conformance.md);
+its consistency checks do not establish full standards conformance.
 
 ## Documentation and examples
 

@@ -2,7 +2,6 @@ package document_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"errors"
 	"strings"
@@ -89,7 +88,7 @@ func TestUTF16DecodedBudget(t *testing.T) {
 	limits := document.DefaultLimits()
 
 	limits.MaxBytes = len(input)
-	if _, err := document.Parse(context.Background(), input, limits); !errors.Is(err, document.ErrLimit) {
+	if _, err := document.Parse(t.Context(), input, limits); !errors.Is(err, document.ErrLimit) {
 		t.Fatal(err)
 	}
 }
@@ -98,7 +97,7 @@ func TestCoalescingBeforeNodeLimit(t *testing.T) {
 	limits := document.DefaultLimits()
 	limits.MaxNodes = 2
 
-	d, err := document.Parse(context.Background(), []byte(`<r>a<![CDATA[b]]>&amp;<![CDATA[]]>c</r>`), limits)
+	d, err := document.Parse(t.Context(), []byte(`<r>a<![CDATA[b]]>&amp;<![CDATA[]]>c</r>`), limits)
 	if err != nil {
 		t.Fatal(err)
 	}

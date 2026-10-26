@@ -1,7 +1,6 @@
 package transform_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -19,7 +18,7 @@ func BenchmarkEngineXPath(b *testing.B) {
 		b.Run(strconv.Itoa(size), func(b *testing.B) {
 			e := engine(b, transform.Config{})
 
-			d, err := e.Parse(context.Background(), []byte(`<r>`+strings.Repeat(`<item a="2">text</item>`, size)+`</r>`))
+			d, err := e.Parse(b.Context(), []byte(`<r>`+strings.Repeat(`<item a="2">text</item>`, size)+`</r>`))
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -31,7 +30,7 @@ func BenchmarkEngineXPath(b *testing.B) {
 						b.ReportAllocs()
 
 						for b.Loop() {
-							if _, err := q.Evaluate(context.Background(), d, transform.XPathContext{}); err != nil {
+							if _, err := q.Evaluate(b.Context(), d, transform.XPathContext{}); err != nil {
 								b.Fatal(err)
 							}
 						}
@@ -103,7 +102,7 @@ func BenchmarkEngineXSLT(b *testing.B) {
 		b.Run(strconv.Itoa(size), func(b *testing.B) {
 			e := engine(b, transform.Config{})
 
-			d, err := e.Parse(context.Background(), []byte(`<r>`+strings.Repeat(`<item a="2">text</item>`, size)+`</r>`))
+			d, err := e.Parse(b.Context(), []byte(`<r>`+strings.Repeat(`<item a="2">text</item>`, size)+`</r>`))
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -114,7 +113,7 @@ func BenchmarkEngineXSLT(b *testing.B) {
 					b.ReportAllocs()
 
 					for b.Loop() {
-						if _, err := s.Transform(context.Background(), d, transform.XSLTContext{}); err != nil {
+						if _, err := s.Transform(b.Context(), d, transform.XSLTContext{}); err != nil {
 							b.Fatal(err)
 						}
 					}
@@ -127,7 +126,7 @@ func BenchmarkEngineXSLT(b *testing.B) {
 func BenchmarkEngineParallel(b *testing.B) {
 	e := engine(b, transform.Config{})
 
-	d, err := e.Parse(context.Background(), []byte(`<r>`+strings.Repeat(`<item a="2">text</item>`, 1024)+`</r>`))
+	d, err := e.Parse(b.Context(), []byte(`<r>`+strings.Repeat(`<item a="2">text</item>`, 1024)+`</r>`))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -138,7 +137,7 @@ func BenchmarkEngineParallel(b *testing.B) {
 		b.ReportAllocs()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				if _, err := q.Evaluate(context.Background(), d, transform.XPathContext{}); err != nil {
+				if _, err := q.Evaluate(b.Context(), d, transform.XPathContext{}); err != nil {
 					b.Error(err)
 				}
 			}
@@ -148,7 +147,7 @@ func BenchmarkEngineParallel(b *testing.B) {
 		b.ReportAllocs()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				if _, err := s.Transform(context.Background(), d, transform.XSLTContext{}); err != nil {
+				if _, err := s.Transform(b.Context(), d, transform.XSLTContext{}); err != nil {
 					b.Error(err)
 				}
 			}
@@ -170,7 +169,7 @@ func BenchmarkDynamicCollation(b *testing.B) {
 			if parallel {
 				b.RunParallel(func(pb *testing.PB) {
 					for pb.Next() {
-						if _, err := q.Evaluate(context.Background(), nil, options); err != nil {
+						if _, err := q.Evaluate(b.Context(), nil, options); err != nil {
 							b.Error(err)
 						}
 					}
@@ -180,7 +179,7 @@ func BenchmarkDynamicCollation(b *testing.B) {
 			}
 
 			for b.Loop() {
-				if _, err := q.Evaluate(context.Background(), nil, options); err != nil {
+				if _, err := q.Evaluate(b.Context(), nil, options); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -196,7 +195,7 @@ func BenchmarkTypedSort(b *testing.B) {
 			e := engine(b, transform.Config{})
 			q := query(b, e, fmt.Sprintf(`for $i in 1 to %d return if ($i mod 31 = 0) then xs:float(($i * 7919) mod %d) else xs:decimal(($i * 7919) mod %d) + 0.125`, size, size, size), transform.XPath31)
 
-			items, err := q.Evaluate(context.Background(), nil, transform.XPathContext{})
+			items, err := q.Evaluate(b.Context(), nil, transform.XPathContext{})
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -209,7 +208,7 @@ func BenchmarkTypedSort(b *testing.B) {
 					b.ReportAllocs()
 
 					for b.Loop() {
-						result, err := s.Execute(context.Background(), nil, options)
+						result, err := s.Execute(b.Context(), nil, options)
 						if err != nil {
 							b.Fatal(err)
 						}

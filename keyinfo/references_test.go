@@ -189,7 +189,7 @@ func TestRetrievalTypesAndPreflight(t *testing.T) {
 				return io.NopCloser(strings.NewReader(remote)), nil
 			})}}
 
-			r, e := keyinfo.Parse(context.Background(), d, d.Root(), o)
+			r, e := keyinfo.Parse(t.Context(), d, d.Root(), o)
 			if test.err != nil {
 				if r != nil || !errors.Is(e, test.err) {
 					t.Fatal(e)
@@ -265,7 +265,7 @@ func TestLocalAndRemoteBudgets(t *testing.T) {
 	requireErr(t, wrap(`<ds:KeyName>x</ds:KeyName><ds:KeyName>x</ds:KeyName>`), keyinfo.Options{Limits: keyinfo.Limits{MaxElements: 2}}, keyinfo.ErrLimit)
 	requireErr(t, wrap(`<k:DEREncodedKeyValue>`+strings.Repeat("A", 80)+`</k:DEREncodedKeyValue>`), keyinfo.Options{Limits: keyinfo.Limits{MaxBlobBytes: 4}}, keyinfo.ErrLimit)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	r := &reader{read: func([]byte) (int, error) { cancel(); return 0, nil }}
 	d := parseXML(t, wrap(`<k:KeyInfoReference URI="urn:key"/>`))
 

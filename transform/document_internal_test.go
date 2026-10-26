@@ -14,7 +14,7 @@ import (
 )
 
 func TestImportUsesProjectStorage(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	source, err := document.Parse(ctx, []byte(`<r xmlns:p="urn:p" xml:id=" root "><p:item a="&amp;">text</p:item></r>`), document.DefaultLimits())
 	if err != nil {
@@ -90,7 +90,7 @@ func TestImportAppliesConsumerLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if _, err := e.Import(context.Background(), d); !errors.Is(err, ErrLimit) {
+		if _, err := e.Import(t.Context(), d); !errors.Is(err, ErrLimit) {
 			t.Fatal("import limit lost", limits, err)
 		}
 	}
@@ -108,7 +108,7 @@ func TestImportAppliesConsumerLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := e.Import(context.Background(), d); err != nil {
+	if _, err := e.Import(t.Context(), d); err != nil {
 		t.Fatal("namespace expansion inflated input bytes", err)
 	}
 }
@@ -122,7 +122,7 @@ func TestParseUsesProjectParser(t *testing.T) {
 	for _, xml := range []string{`<r xmlns="urn:r">a<![CDATA[b]]>&amp;c<!--note--><?pi v?></r>`, `<r p:a="1"/>`, `<!DOCTYPE r [<!ENTITY x "value">]><r>&x;</r>`, `<r a="1" a="2"/>`} {
 		d, parseErr := document.Parse(t.Context(), []byte(xml), document.DefaultLimits())
 
-		view, viewErr := e.Parse(context.Background(), []byte(xml))
+		view, viewErr := e.Parse(t.Context(), []byte(xml))
 		if (parseErr == nil) != (viewErr == nil) {
 			t.Fatalf("different XML parsing policy for %s: %v / %v", xml, parseErr, viewErr)
 		}
@@ -139,7 +139,7 @@ func TestParseUsesProjectParser(t *testing.T) {
 }
 
 func TestInputPolicyCacheRemainsBoundedAndChecksStricterLimits(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	e, err := NewEngine(Config{})
 	if err != nil {
@@ -187,7 +187,7 @@ func TestParserReaderMaximumByteLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d, err := e.parseOptions().ParseReader(context.Background(), strings.NewReader(`<r/>`))
+	d, err := e.parseOptions().ParseReader(t.Context(), strings.NewReader(`<r/>`))
 	if err != nil {
 		t.Fatal(err)
 	}

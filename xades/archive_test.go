@@ -30,7 +30,7 @@ import (
 
 func TestEmbeddedMaterialAndArchiveRenewal(t *testing.T) {
 	c, lt, lr, v := preparedLT(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	m := lr.EmbeddedMaterial()
 
 	m.Certificates[0][0] ^= 1
@@ -102,7 +102,7 @@ func TestArchiveProtectsUnsignedMaterialAndNoFallback(t *testing.T) {
 	c, lt, _, v := preparedLT(t)
 	tr := &archiveTransport{key: c.TSAKey, cert: c.TSA.Raw, root: c.Root.Raw, now: testcert.Now()}
 
-	doc, _, e := v.AddArchiveTimestamp(context.Background(), lt, xmldsig.Signatures(lt)[0], c.Leaf.Raw, testcert.Now(), tr, xades.AddArchiveOptions{})
+	doc, _, e := v.AddArchiveTimestamp(t.Context(), lt, xmldsig.Signatures(lt)[0], c.Leaf.Raw, testcert.Now(), tr, xades.AddArchiveOptions{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -122,7 +122,7 @@ func TestArchiveProtectsUnsignedMaterialAndNoFallback(t *testing.T) {
 	verifyOnlyXML(t, bad, c)
 	evenBB := preservationValidator(t, c, xades.LevelBB, 0)
 
-	r, e := evenBB.ValidateEnveloped(context.Background(), bad, xmldsig.Signatures(bad)[0], c.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{Signer: pki.Evidence{CRLs: [][]byte{testcert.CRL(t, c)}}, TSA: pki.Evidence{CRLs: [][]byte{testcert.CRL(t, c)}}})
+	r, e := evenBB.ValidateEnveloped(t.Context(), bad, xmldsig.Signatures(bad)[0], c.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{Signer: pki.Evidence{CRLs: [][]byte{testcert.CRL(t, c)}}, TSA: pki.Evidence{CRLs: [][]byte{testcert.CRL(t, c)}}})
 	if r != nil || e == nil {
 		t.Fatal("invalid archive ignored at minimum BB")
 	}
@@ -138,11 +138,11 @@ func TestArchiveProtectsUnsignedMaterialAndNoFallback(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if r, e := v.ValidateEnveloped(context.Background(), bad, xmldsig.Signatures(bad)[0], c.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{}); r != nil || e == nil {
+	if r, e := v.ValidateEnveloped(t.Context(), bad, xmldsig.Signatures(bad)[0], c.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{}); r != nil || e == nil {
 		t.Fatal("external roots hid missing embedded chain")
 	}
 	// Claimed/archived past time does not bypass CURRENT-time PKIX policy.
-	if r, e := v.ValidateEnveloped(context.Background(), doc, xmldsig.Signatures(doc)[0], c.Leaf.Raw, testcert.Now().Add(48*time.Hour), xades.ValidationEvidence{}); r != nil || e == nil {
+	if r, e := v.ValidateEnveloped(t.Context(), doc, xmldsig.Signatures(doc)[0], c.Leaf.Raw, testcert.Now().Add(48*time.Hour), xades.ValidationEvidence{}); r != nil || e == nil {
 		t.Fatal("silently switched to historical validation")
 	}
 }
@@ -150,7 +150,7 @@ func TestArchiveProtectsUnsignedMaterialAndNoFallback(t *testing.T) {
 func verifyOnlyXML(t *testing.T, d *document.Document, c testcert.Chain) {
 	t.Helper()
 
-	_, e := xmldsig.VerifySignature(context.Background(), d, xmldsig.Signatures(d)[0], c.Leaf.PublicKey, xmldsig.SignatureOptions{IDAttribute: document.Name{Local: "ID"}, AdditionalIDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: xades.Namespace, Local: signedPropertiesLocal}}}}, ExpectedURIs: nil})
+	_, e := xmldsig.VerifySignature(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.PublicKey, xmldsig.SignatureOptions{IDAttribute: document.Name{Local: "ID"}, AdditionalIDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: xades.Namespace, Local: signedPropertiesLocal}}}}, ExpectedURIs: nil})
 	if e != nil {
 		t.Fatalf("test mutation damaged primary XMLDSig: %v", e)
 	}
@@ -161,16 +161,16 @@ func TestArchiveBudgetsAndWrongToken(t *testing.T) {
 	small := preservationValidator(t, c, xades.LevelLT, 128)
 
 	tr := &archiveTransport{key: c.TSAKey, cert: c.TSA.Raw, root: c.Root.Raw, now: testcert.Now()}
-	if d, r, e := small.AddArchiveTimestamp(context.Background(), lt, xmldsig.Signatures(lt)[0], c.Leaf.Raw, testcert.Now(), tr, xades.AddArchiveOptions{}); d != nil || r != nil || e == nil || tr.calls != 0 {
+	if d, r, e := small.AddArchiveTimestamp(t.Context(), lt, xmldsig.Signatures(lt)[0], c.Leaf.Raw, testcert.Now(), tr, xades.AddArchiveOptions{}); d != nil || r != nil || e == nil || tr.calls != 0 {
 		t.Fatal("budget not checked before transport", e, tr.calls)
 	}
 
 	v := preservationValidator(t, c, xades.LevelLT, 0)
-	if d, r, e := v.AttachArchiveTimestamp(context.Background(), lt, xmldsig.Signatures(lt)[0], c.Leaf.Raw, testcert.Now(), lr.Timestamps()[0].TokenDER(), c14n.Exclusive); d != nil || r != nil || e == nil {
+	if d, r, e := v.AttachArchiveTimestamp(t.Context(), lt, xmldsig.Signatures(lt)[0], c.Leaf.Raw, testcert.Now(), lr.Timestamps()[0].TokenDER(), c14n.Exclusive); d != nil || r != nil || e == nil {
 		t.Fatal("SignatureTimeStamp reused as ArchiveTimeStamp")
 	}
 
-	if d, r, e := v.EmbedValidationMaterial(context.Background(), lt, xmldsig.Signatures(lt)[0], c.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{}); d != nil || r != nil || e == nil {
+	if d, r, e := v.EmbedValidationMaterial(t.Context(), lt, xmldsig.Signatures(lt)[0], c.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{}); d != nil || r != nil || e == nil {
 		t.Fatal("existing evidence replaced")
 	}
 }
@@ -248,7 +248,7 @@ func FuzzValidatePreservation(f *testing.F) {
 			return
 		}
 
-		_, _ = verifier.ValidateEnveloped(context.Background(), d, sigs[0], cert, at, xades.ValidationEvidence{})
+		_, _ = verifier.ValidateEnveloped(t.Context(), d, sigs[0], cert, at, xades.ValidationEvidence{})
 	})
 }
 
@@ -272,7 +272,7 @@ func preparedLT(t *testing.T) (testcert.Chain, *document.Document, *xades.Valida
 	timed := xades.TimedOptions{TSA: tsa, At: testcert.Now(), Evidence: proof}
 	tr := &archiveTransport{key: c.TSAKey, cert: c.TSA.Raw, root: c.Root.Raw, now: testcert.Now().Add(-time.Second)}
 
-	bt, _, e := xades.AddSignatureTimestamp(context.Background(), doc, xmldsig.Signatures(doc)[0], c.Leaf.Raw, tr, xades.AddTimestampOptions{Validation: timed})
+	bt, _, e := xades.AddSignatureTimestamp(t.Context(), doc, xmldsig.Signatures(doc)[0], c.Leaf.Raw, tr, xades.AddTimestampOptions{Validation: timed})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -280,7 +280,7 @@ func preparedLT(t *testing.T) (testcert.Chain, *document.Document, *xades.Valida
 	v := preservationValidator(t, c, xades.LevelLT, 0)
 	rawBefore, _ := bt.XML(t.Context())
 
-	lt, r, e := v.EmbedValidationMaterial(context.Background(), bt, xmldsig.Signatures(bt)[0], c.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{Signer: proof, TSA: proof})
+	lt, r, e := v.EmbedValidationMaterial(t.Context(), bt, xmldsig.Signatures(bt)[0], c.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{Signer: proof, TSA: proof})
 	if e != nil {
 		t.Fatal(e)
 	}

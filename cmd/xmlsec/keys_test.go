@@ -95,7 +95,7 @@ func testCLIKeyFormatsCase(t *testing.T, dir *string, name *string, encoded *[]b
 	}
 
 	var signed, stderr bytes.Buffer
-	if err := run(context.Background(), []string{nameSign, flagKey, path, "-modern-algorithms"}, strings.NewReader(`<r ID="root"><v>protected</v></r>`), &signed, &stderr); err != nil {
+	if err := run(t.Context(), []string{nameSign, flagKey, path, "-modern-algorithms"}, strings.NewReader(`<r ID="root"><v>protected</v></r>`), &signed, &stderr); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,7 +106,7 @@ func testCLIKeyFormatsCase(t *testing.T, dir *string, name *string, encoded *[]b
 		}
 
 		var output bytes.Buffer
-		if err := run(context.Background(), []string{nameVerify, flagKey, publicPath, "-modern-algorithms"}, bytes.NewReader(signed.Bytes()), &output, &stderr); err != nil {
+		if err := run(t.Context(), []string{nameVerify, flagKey, publicPath, "-modern-algorithms"}, bytes.NewReader(signed.Bytes()), &output, &stderr); err != nil {
 			t.Fatalf("%s: %v", publicName, err)
 		}
 	}
@@ -114,7 +114,7 @@ func testCLIKeyFormatsCase(t *testing.T, dir *string, name *string, encoded *[]b
 
 func TestCLIProtectedKeys(t *testing.T) {
 	c := testcert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	password := []byte("public пароль ü")
 	options := keys.EncryptionOptions{Iterations: 1000}
 
@@ -251,11 +251,11 @@ func TestCLIKeyMaterialRejectsAmbiguity(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if key, err := loadPrivateContext(context.Background(), path); err == nil || key != nil {
+		if key, err := loadPrivateContext(t.Context(), path); err == nil || key != nil {
 			t.Fatal("ambiguous private key accepted")
 		}
 
-		if key, err := loadPublicContext(context.Background(), path); err == nil || key != nil {
+		if key, err := loadPublicContext(t.Context(), path); err == nil || key != nil {
 			t.Fatal("ambiguous public key accepted")
 		}
 	}
@@ -265,7 +265,7 @@ func TestCLIKeyMaterialRejectsAmbiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if key, err := loadPrivateContext(context.Background(), path); err == nil || key != nil {
+	if key, err := loadPrivateContext(t.Context(), path); err == nil || key != nil {
 		t.Fatal("mismatched PEM label accepted")
 	}
 }

@@ -39,7 +39,7 @@ const (
 func TestRoundTripAndPrimitives(t *testing.T) {
 	k := key(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	for _, b := range [][]byte{{}, []byte("payload\x00\xff"), bytes.Repeat([]byte{1, 2, 3}, 2048)} {
 		d, e := xmlenc.EncryptBytes(ctx, b, &k.PublicKey, xmlenc.Options{})
 		if e != nil {
@@ -79,12 +79,12 @@ func TestXMLDocument(t *testing.T) {
 	d := parse(t, []byte(`<?outside ok?><r xmlns="urn:test" xml:lang="ru"><v>Текст &amp; 😀</v><!--inside--></r><!--outside-->`))
 	raw, _ := d.XML(t.Context())
 
-	encrypted, e := xmlenc.EncryptDocument(context.Background(), d, &k.PublicKey, xmlenc.Options{})
+	encrypted, e := xmlenc.EncryptDocument(t.Context(), d, &k.PublicKey, xmlenc.Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	out, e := xmlenc.DecryptDocument(context.Background(), encrypted, k, xmlenc.Options{})
+	out, e := xmlenc.DecryptDocument(t.Context(), encrypted, k, xmlenc.Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -99,7 +99,7 @@ func TestXMLDocument(t *testing.T) {
 		t.Fatal("mutation")
 	}
 
-	if _, e := xmlenc.DecryptBytes(context.Background(), encrypted, k, xmlenc.Options{}); !errors.Is(e, xmlenc.ErrFormat) {
+	if _, e := xmlenc.DecryptBytes(t.Context(), encrypted, k, xmlenc.Options{}); !errors.Is(e, xmlenc.ErrFormat) {
 		t.Fatal("type confusion", e)
 	}
 }
@@ -107,7 +107,7 @@ func TestXMLDocument(t *testing.T) {
 func TestRejectsTamperingAndDowngrade(t *testing.T) {
 	k := key(t)
 
-	d, e := xmlenc.EncryptBytes(context.Background(), []byte("hello"), &k.PublicKey, xmlenc.Options{})
+	d, e := xmlenc.EncryptBytes(t.Context(), []byte("hello"), &k.PublicKey, xmlenc.Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -122,7 +122,7 @@ func TestRejectsTamperingAndDowngrade(t *testing.T) {
 	}{{"gcm", xmlenc.AES256GCM, xmlenc.Namespace + "aes256-cbc"}, {"oaep", xmlenc.RSAOAEP, xmlenc.Namespace + "rsa-1_5"}, {"hash", xmlenc.SHA256, "urn:sha1"}, {"mgf", xmlenc.MGF1SHA256, xmlenc.Namespace11 + "mgf1sha1"}, {"extra-key", `</ds:KeyInfo>`, `<xenc:EncryptedKey/></ds:KeyInfo>`}} {
 		t.Run(tc.name, func(t *testing.T) {
 			bad := parse(t, []byte(strings.Replace(text, tc.from, tc.to, 1)))
-			if p, e := xmlenc.DecryptBytes(context.Background(), bad, k, xmlenc.Options{}); p != nil || !errors.Is(e, xmlenc.ErrFormat) {
+			if p, e := xmlenc.DecryptBytes(t.Context(), bad, k, xmlenc.Options{}); p != nil || !errors.Is(e, xmlenc.ErrFormat) {
 				t.Fatal(e)
 			}
 		})
@@ -133,21 +133,21 @@ func TestRejectsTamperingAndDowngrade(t *testing.T) {
 		b[len(b)-1] ^= 1
 
 		bad := parse(t, []byte(strings.Replace(text, v.Text(), base64.StdEncoding.EncodeToString(b), 1)))
-		if p, e := xmlenc.DecryptBytes(context.Background(), bad, k, xmlenc.Options{}); p != nil || !errors.Is(e, xmlenc.ErrDecrypt) {
+		if p, e := xmlenc.DecryptBytes(t.Context(), bad, k, xmlenc.Options{}); p != nil || !errors.Is(e, xmlenc.ErrDecrypt) {
 			t.Fatalf("%d %v", i, e)
 		}
 	}
 
 	wrong := key(t)
-	if p, e := xmlenc.DecryptBytes(context.Background(), d, wrong, xmlenc.Options{}); p != nil || !errors.Is(e, xmlenc.ErrDecrypt) {
+	if p, e := xmlenc.DecryptBytes(t.Context(), d, wrong, xmlenc.Options{}); p != nil || !errors.Is(e, xmlenc.ErrDecrypt) {
 		t.Fatal(e)
 	}
 
-	if _, e := xmlenc.EncryptBytes(context.Background(), []byte("12345"), &k.PublicKey, xmlenc.Options{MaxPlaintextBytes: 4}); !errors.Is(e, xmlenc.ErrPolicy) {
+	if _, e := xmlenc.EncryptBytes(t.Context(), []byte("12345"), &k.PublicKey, xmlenc.Options{MaxPlaintextBytes: 4}); !errors.Is(e, xmlenc.ErrPolicy) {
 		t.Fatal(e)
 	}
 
-	if p, e := xmlenc.DecryptBytes(context.Background(), d, k, xmlenc.Options{MaxPlaintextBytes: 1}); p != nil || e == nil {
+	if p, e := xmlenc.DecryptBytes(t.Context(), d, k, xmlenc.Options{MaxPlaintextBytes: 1}); p != nil || e == nil {
 		t.Fatal(nameLimit)
 	}
 }
@@ -155,12 +155,12 @@ func TestRejectsTamperingAndDowngrade(t *testing.T) {
 func TestProviderAndCancellation(t *testing.T) {
 	k := key(t)
 
-	d, e := xmlenc.EncryptBytes(context.Background(), []byte("hello"), &k.PublicKey, xmlenc.Options{})
+	d, e := xmlenc.EncryptBytes(t.Context(), []byte("hello"), &k.PublicKey, xmlenc.Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	p := &provider{k: k, want: ctx}
 
 	a, e := xmlenc.AdaptContextDecrypter(p)
@@ -201,13 +201,13 @@ func FuzzDecrypt(f *testing.F) {
 			return
 		}
 
-		_, _ = xmlenc.DecryptBytes(context.Background(), d, k, xmlenc.Options{MaxPlaintextBytes: 1024})
+		_, _ = xmlenc.DecryptBytes(t.Context(), d, k, xmlenc.Options{MaxPlaintextBytes: 1024})
 	})
 }
 
 func BenchmarkKeyWrap(b *testing.B) {
 	kek := make([]byte, 32)
-	ctx := context.Background()
+	ctx := b.Context()
 	opt := xmlenc.KeyWrapOptions{}
 
 	benchmarkByteEncryption(b,
@@ -222,7 +222,7 @@ func BenchmarkKeyWrap(b *testing.B) {
 
 func BenchmarkDirectKey(b *testing.B) {
 	secret := make([]byte, 32)
-	ctx := context.Background()
+	ctx := b.Context()
 	opt := xmlenc.SymmetricOptions{}
 
 	benchmarkByteEncryption(b,

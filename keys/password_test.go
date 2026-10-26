@@ -248,7 +248,7 @@ func TestPrivateExportOwnership(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 4 {
 		wg.Go(func() {
-			raw, err := keys.MarshalEncryptedPrivate(context.Background(), r, []byte("password"), options, keys.Limits{})
+			raw, err := keys.MarshalEncryptedPrivate(t.Context(), r, []byte("password"), options, keys.Limits{})
 			if err != nil || len(raw) == 0 {
 				t.Error("parallel export failed", err)
 			}
@@ -272,7 +272,7 @@ func TestPrivateExportOwnership(t *testing.T) {
 
 	ed[len(ed)-1] ^= 1
 	for _, invalid := range []crypto.Signer{&ecdsa.PrivateKey{}, &ecdsa.PrivateKey{Curve: elliptic.P256()}, &badEC, ed25519.PrivateKey{1}, ed} {
-		if raw, err := keys.MarshalEncryptedPrivate(context.Background(), invalid, []byte("password"), options, keys.Limits{}); raw != nil || !errors.Is(err, keys.ErrFormat) && !errors.Is(err, keys.ErrPolicy) {
+		if raw, err := keys.MarshalEncryptedPrivate(t.Context(), invalid, []byte("password"), options, keys.Limits{}); raw != nil || !errors.Is(err, keys.ErrFormat) && !errors.Is(err, keys.ErrPolicy) {
 			t.Fatal("invalid exportable key accepted", err)
 		}
 	}
@@ -293,7 +293,7 @@ func TestEncryptedPrivateKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	password := []byte("explicit\x00binary password")
 	beforePassword := bytes.Clone(password)
 
@@ -366,7 +366,7 @@ func TestPKCS12Identity(t *testing.T) {
 
 	c := testcert.New(t)
 	identity := keys.PKCS12Identity{PrivateKey: c.LeafKey, Certificate: c.Leaf, ExtraCertificates: []*x509.Certificate{c.Root}}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, classic := range []bool{false, true} {
 		for _, hash := range []crypto.Hash{crypto.SHA256, crypto.SHA384, crypto.SHA512} {
@@ -440,7 +440,7 @@ func TestPasswordProtectionPolicy(t *testing.T) {
 	t.Parallel()
 
 	c := testcert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	password := []byte("public test password")
 
 	identity := keys.PKCS12Identity{PrivateKey: c.LeafKey, Certificate: c.Leaf}
@@ -515,7 +515,7 @@ func TestPrivateExportRejectsNilKeys(t *testing.T) {
 
 func FuzzPasswordContainers(f *testing.F) {
 	c := testcert.New(f)
-	ctx := context.Background()
+	ctx := f.Context()
 	password := []byte("public test password")
 	options := protection(crypto.SHA256, 256)
 

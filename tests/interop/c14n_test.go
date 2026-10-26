@@ -258,7 +258,8 @@ func newCanonicalSession(t *testing.T, fixture *interopFixture) *canonicalSessio
 func lines(t *testing.T, fixture *interopFixture, name string, args ...string) *lineProcess {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	// These helpers exit on EOF in Cleanup, after the test context is canceled.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 8*time.Minute)
 	p := &lineProcess{cmd: exec.CommandContext(ctx, name, args...), cancel: cancel}
 	p.cmd.Dir = fixture.root
 	p.cmd.Stderr = &p.stderr

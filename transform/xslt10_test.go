@@ -15,7 +15,7 @@ import (
 
 func TestXSLT10XMLConstructionAndSimplifiedStylesheet(t *testing.T) {
 	e := engine(t, transform.Config{})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := e.Parse(ctx, []byte(`<r/>`))
 	if err != nil {
@@ -72,7 +72,7 @@ func TestXSLT10XMLConstructionAndSimplifiedStylesheet(t *testing.T) {
 
 func TestXSLT10CoreAndTemporaryTrees(t *testing.T) {
 	e := engine(t, transform.Config{})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := e.Parse(ctx, []byte(`<r><n k="a">2</n><n k="a">3</n><n k="b">bad</n></r>`))
 	if err != nil {
@@ -149,7 +149,7 @@ func TestXSLT10ModulesAndConcurrentReuse(t *testing.T) {
 
 		return io.NopCloser(strings.NewReader(s)), nil
 	})})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := e.Parse(ctx, []byte(`<r><n/></r>`))
 	if err != nil {
@@ -181,7 +181,7 @@ func TestXSLT10ModulesAndConcurrentReuse(t *testing.T) {
 
 func TestXSLT10RejectsModernPatternsAndFunctions(t *testing.T) {
 	e := engine(t, transform.Config{})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, pattern := range []string{`.`, `ancestor::n`, `n[$global]`, `element(n)`} {
 		source := xslt10(`<xsl:variable name="global" select="true()"/><xsl:template match="` + pattern + `"/>`)
@@ -209,7 +209,7 @@ func TestXSLT10RejectsModernPatternsAndFunctions(t *testing.T) {
 
 func TestXSLT10ForwardsProcessingDefersInactiveErrors(t *testing.T) {
 	e := engine(t, transform.Config{})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := e.Parse(ctx, []byte(`<r/>`))
 	if err != nil {
@@ -246,7 +246,7 @@ func TestXSLT10ForwardsProcessingDefersInactiveErrors(t *testing.T) {
 
 func TestXSLT10SerializationDefaults(t *testing.T) {
 	e := engine(t, transform.Config{})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := e.Parse(ctx, []byte(`<r/>`))
 	if err != nil {

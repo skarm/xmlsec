@@ -148,7 +148,7 @@ func testProcess(t *testing.T, args ...string) *exec.Cmd {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 
 	raw, err := json.Marshal(args)
 	if err != nil {

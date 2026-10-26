@@ -99,7 +99,7 @@ func BenchmarkVerify(b *testing.B) {
 
 	m := make([]byte, 4096)
 
-	s, err := signature.Sign(context.Background(), c.LeafKey, a, m)
+	s, err := signature.Sign(b.Context(), c.LeafKey, a, m)
 	if err != nil {
 		b.Fatal(err)
 	}

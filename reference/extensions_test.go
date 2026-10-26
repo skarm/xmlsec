@@ -18,7 +18,7 @@ import (
 const expressionFalse = "false()"
 
 func TestExtensionBoundary(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	d := parse(t, `<r><included/><excluded/></r>`)
 	sparse, _ := document.NewNodeSet(d, d.Root().Children()[0].Node())
 	input, _ := reference.Nodes(sparse)

@@ -2201,12 +2201,12 @@ func TestResolverClosesReaderOnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	q, err := e.CompileXPath(context.Background(), `doc('urn:failed')`, transform.XPathOptions{})
+	q, err := e.CompileXPath(t.Context(), `doc('urn:failed')`, transform.XPathOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = q.Evaluate(context.Background(), nil, transform.XPathContext{})
+	_, err = q.Evaluate(t.Context(), nil, transform.XPathContext{})
 	if !errors.Is(err, transform.ErrResource) || !errors.Is(err, failure) || !r.closed {
 		t.Fatalf("closed=%v, error=%v", r.closed, err)
 	}
@@ -2228,19 +2228,19 @@ func TestResolverTypedNilReader(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	q, err := e.CompileXPath(context.Background(), `doc('urn:nil')`, transform.XPathOptions{})
+	q, err := e.CompileXPath(t.Context(), `doc('urn:nil')`, transform.XPathOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := q.Evaluate(context.Background(), nil, transform.XPathContext{}); !errors.Is(err, transform.ErrResource) {
+	if _, err := q.Evaluate(t.Context(), nil, transform.XPathContext{}); !errors.Is(err, transform.ErrResource) {
 		t.Fatalf("error=%v", err)
 	}
 }
 
 func TestNilResolverFunction(t *testing.T) {
 	var resolver transform.ResolverFunc
-	if _, err := resolver.Resolve(context.Background(), "urn:nil"); !errors.Is(err, transform.ErrResource) {
+	if _, err := resolver.Resolve(t.Context(), "urn:nil"); !errors.Is(err, transform.ErrResource) {
 		t.Fatal(err)
 	}
 
@@ -2249,18 +2249,18 @@ func TestNilResolverFunction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	q, err := e.CompileXPath(context.Background(), `doc('urn:nil')`, transform.XPathOptions{})
+	q, err := e.CompileXPath(t.Context(), `doc('urn:nil')`, transform.XPathOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := q.Evaluate(context.Background(), nil, transform.XPathContext{}); err == nil {
+	if _, err := q.Evaluate(t.Context(), nil, transform.XPathContext{}); err == nil {
 		t.Fatal("nil resolver allowed a resource lookup")
 	}
 }
 
 func TestResolverStopsReadingAfterCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	r := &cancelReadResource{Reader: strings.NewReader(`<r/>`), cancel: cancel}
@@ -2291,12 +2291,12 @@ func TestMaximumInputBudgetDoesNotOverflowResourceRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	q, err := e.CompileXPath(context.Background(), `count(doc('urn:small')/r)`, transform.XPathOptions{})
+	q, err := e.CompileXPath(t.Context(), `count(doc('urn:small')/r)`, transform.XPathOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	out, err := q.Evaluate(context.Background(), nil, transform.XPathContext{})
+	out, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2307,7 +2307,7 @@ func TestMaximumInputBudgetDoesNotOverflowResourceRead(t *testing.T) {
 }
 
 func TestImportedModulesAndResourceLimits(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	closed := false
 	included := sheet(version20, `<xsl:template name="included"><xsl:text>included</xsl:text></xsl:template>`)
 	e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {

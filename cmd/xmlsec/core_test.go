@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -128,7 +127,7 @@ func testStage4CLI(t *testing.T, test stage4CLICase, public string) {
 }
 
 func TestCoreCLI(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	dir := t.TempDir()
 
 	key, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
