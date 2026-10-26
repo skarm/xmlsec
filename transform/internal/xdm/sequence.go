@@ -22,18 +22,6 @@ func NewRangeSequence(start, end int64) Sequence {
 	return &rangeSequence{start: start, n: rangeLen(start, end)}
 }
 
-// rangeLen returns the number of integers in start..end (start <= end),
-// saturated at math.MaxInt. The span is computed in uint64, where end-start
-// cannot overflow.
-func rangeLen(start, end int64) int {
-	span := uint64(end) - uint64(start)
-	if span >= math.MaxInt {
-		return math.MaxInt
-	}
-
-	return int(span) + 1
-}
-
 // SingleNode creates a Sequence containing a single NodeItem.
 func SingleNode(n Node) Sequence {
 	return ItemSlice{NodeItem{Node: n}}
@@ -130,4 +118,16 @@ func AppendSequenceNodes(dst []Node, seq Sequence) ([]Node, bool) {
 	}
 
 	return dst, true
+}
+
+// rangeLen returns the number of integers in start..end (start <= end),
+// saturated at math.MaxInt. The span is computed in uint64, where end-start
+// cannot overflow.
+func rangeLen(start, end int64) int {
+	span := uint64(end) - uint64(start)
+	if span >= math.MaxInt {
+		return math.MaxInt
+	}
+
+	return int(span) + 1
 }

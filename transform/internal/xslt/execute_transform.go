@@ -296,54 +296,6 @@ func (ec *execContext) prepareTransformSource(ctx context.Context, matchSelectio
 	return matchSelection, nil
 }
 
-// remapNamespaceWrapper rebuilds an initial-selection namespace node so that it
-// belongs to the copied tree. It maps the wrapper's owner element onto the copy,
-// then returns a fresh wrapper bound to a matching namespace, with the COPIED
-// owner as parent. Returns nil only if the owner element could not be mapped.
-//
-// The wrapper is re-bound by preference to an in-scope declaration on the copied
-// owner (or an ancestor) with the same prefix and URI, since namespace nodes can
-// be reported on a descendant of the element that declares them. When no such
-// declaration exists, the namespace is one the XPath axis SYNTHESIZES, and none
-// stored in Namespaces() — most notably the implicit `xml` binding, which the
-// namespace axis fabricates and which never appears in any element's declarations
-// (see transform/internal/xpath/axes.go CollectNamespaceNodes). For those, synthesize an
-// equivalent Namespace bound to the copied owner, mirroring the axis, so the
-// wrapper still points into the stripped copy instead of falling back to the
-// unstripped original.
-func remapNamespaceWrapper(nodeMap map[xdm.Node]xdm.Node, nsw *xdm.NamespaceNodeWrapper) xdm.Node {
-	owner := nsw.Parent()
-	if owner == nil {
-		return nil
-	}
-
-	mappedOwner, ok := nodeMap[owner]
-	if !ok {
-		return nil
-	}
-
-	prefix := nsw.Name()
-	uri := xdm.CharacterData(nsw)
-	// Prefer an actual in-scope declaration on the copied owner or an ancestor
-	// that matches the original wrapper's (prefix, URI).
-	for n := mappedOwner; n != nil; n = n.Parent() {
-		nc, ok := n.(xdm.NamespaceContainer)
-		if !ok {
-			continue
-		}
-
-		for _, ns := range nc.Namespaces() {
-			if ns.Prefix() == prefix && ns.URI() == uri {
-				return xdm.NewNamespaceNodeWrapper(ns, mappedOwner)
-			}
-		}
-	}
-	// No stored declaration matches: the namespace is synthesized by the axis
-	// (e.g. the implicit `xml` binding). Re-synthesize it against the copied
-	// owner so the wrapper still belongs to the stripped copy.
-	return xdm.NewNamespaceNodeWrapper(xdm.NewNamespace(prefix, uri), mappedOwner)
-}
-
 func (ec *execContext) prepareTransformGlobalContext(ctx context.Context, cfg *transformConfig) bool {
 	effectiveSource := ec.sourceDoc
 	ss := ec.stylesheet
@@ -972,6 +924,54 @@ func (ec *execContext) checkInitialMode(mode string) error {
 	}
 
 	return dynamicError(errCodeXTDE0045, "initial mode %q is not eligible in the top-level package", mode)
+}
+
+// remapNamespaceWrapper rebuilds an initial-selection namespace node so that it
+// belongs to the copied tree. It maps the wrapper's owner element onto the copy,
+// then returns a fresh wrapper bound to a matching namespace, with the COPIED
+// owner as parent. Returns nil only if the owner element could not be mapped.
+//
+// The wrapper is re-bound by preference to an in-scope declaration on the copied
+// owner (or an ancestor) with the same prefix and URI, since namespace nodes can
+// be reported on a descendant of the element that declares them. When no such
+// declaration exists, the namespace is one the XPath axis SYNTHESIZES, and none
+// stored in Namespaces() — most notably the implicit `xml` binding, which the
+// namespace axis fabricates and which never appears in any element's declarations
+// (see transform/internal/xpath/axes.go CollectNamespaceNodes). For those, synthesize an
+// equivalent Namespace bound to the copied owner, mirroring the axis, so the
+// wrapper still points into the stripped copy instead of falling back to the
+// unstripped original.
+func remapNamespaceWrapper(nodeMap map[xdm.Node]xdm.Node, nsw *xdm.NamespaceNodeWrapper) xdm.Node {
+	owner := nsw.Parent()
+	if owner == nil {
+		return nil
+	}
+
+	mappedOwner, ok := nodeMap[owner]
+	if !ok {
+		return nil
+	}
+
+	prefix := nsw.Name()
+	uri := xdm.CharacterData(nsw)
+	// Prefer an actual in-scope declaration on the copied owner or an ancestor
+	// that matches the original wrapper's (prefix, URI).
+	for n := mappedOwner; n != nil; n = n.Parent() {
+		nc, ok := n.(xdm.NamespaceContainer)
+		if !ok {
+			continue
+		}
+
+		for _, ns := range nc.Namespaces() {
+			if ns.Prefix() == prefix && ns.URI() == uri {
+				return xdm.NewNamespaceNodeWrapper(ns, mappedOwner)
+			}
+		}
+	}
+	// No stored declaration matches: the namespace is synthesized by the axis
+	// (e.g. the implicit `xml` binding). Re-synthesize it against the copied
+	// owner so the wrapper still belongs to the stripped copy.
+	return xdm.NewNamespaceNodeWrapper(xdm.NewNamespace(prefix, uri), mappedOwner)
 }
 
 // cloneOutputDef returns a deep copy of an OutputDef. All pointer, slice, and

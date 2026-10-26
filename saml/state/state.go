@@ -172,20 +172,6 @@ func (m *MemoryStore) Put(ctx context.Context, p Pending, at time.Time) error {
 	return nil
 }
 
-func valid(p Pending, at time.Time, maxTTL time.Duration) bool {
-	if !profile.URI(p.SP) || !profile.URI(p.IDP) || !profile.ID(p.RequestID) || len(p.RelayState) < 16 || len(p.RelayState) > 80 || !profile.Endpoint(p.ACS, true) || p.IssuedAt.IsZero() || p.IssuedAt.After(at) || !p.ExpiresAt.After(at) || p.ExpiresAt.Sub(p.IssuedAt) > maxTTL || len(p.RequestedContexts) > 8 || p.NameIDFormat != "" && !profile.URI(p.NameIDFormat) {
-		return false
-	}
-
-	for _, uri := range p.RequestedContexts {
-		if !profile.URI(uri) {
-			return false
-		}
-	}
-
-	return true
-}
-
 // Get returns an owned copy of unexpired request state without consuming it.
 func (m *MemoryStore) Get(ctx context.Context, sp, relay string, at time.Time) (Pending, error) {
 	if m == nil || ctx == nil || at.IsZero() || sp == "" || relay == "" || len(relay) > 80 {
@@ -272,4 +258,18 @@ func BrowserDigest(secret []byte) ([32]byte, error) {
 	}
 
 	return sha256.Sum256(secret), nil
+}
+
+func valid(p Pending, at time.Time, maxTTL time.Duration) bool {
+	if !profile.URI(p.SP) || !profile.URI(p.IDP) || !profile.ID(p.RequestID) || len(p.RelayState) < 16 || len(p.RelayState) > 80 || !profile.Endpoint(p.ACS, true) || p.IssuedAt.IsZero() || p.IssuedAt.After(at) || !p.ExpiresAt.After(at) || p.ExpiresAt.Sub(p.IssuedAt) > maxTTL || len(p.RequestedContexts) > 8 || p.NameIDFormat != "" && !profile.URI(p.NameIDFormat) {
+		return false
+	}
+
+	for _, uri := range p.RequestedContexts {
+		if !profile.URI(uri) {
+			return false
+		}
+	}
+
+	return true
 }

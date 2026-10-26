@@ -43,17 +43,6 @@ func ParseProgram(ctx context.Context, n *tree.Node, doc *document.Document) (re
 	return t, nil
 }
 
-func standaloneTransformXML(ctx context.Context, doc *document.Document, n *tree.Node) ([]byte, error) {
-	d := tree.FromNodes([]*tree.Node{tree.ImportSubtree(n)}, tree.Policy(doc))
-
-	var output bytes.Buffer
-	if _, err := d.WriteXML(ctx, &output, 1<<20); err != nil {
-		return nil, err
-	}
-
-	return output.Bytes(), nil
-}
-
 func AppendProgram(ctx context.Context, n *tree.Node, t reference.Transform) error {
 	if err := reference.ValidateTransformParameters(t); err != nil {
 		return err
@@ -107,6 +96,149 @@ func AppendProgram(ctx context.Context, n *tree.Node, t reference.Transform) err
 	}
 
 	return nil
+}
+
+func ParseCanonical(n *tree.Node, local string) (reference.Transform, error) {
+	children, err := structure(n, local, "Algorithm")
+	if err != nil {
+		return reference.Transform{}, err
+	}
+
+	uri, err := requiredAttribute(n, "Algorithm")
+	if err != nil {
+		return reference.Transform{}, err
+	}
+
+	if !canonicalAlgorithm(uri) {
+		return reference.Transform{}, fmt.Errorf("%w: canonicalization method", reference.ErrUnsupported)
+	}
+
+	if len(children) == 0 {
+		return reference.Transform{Algorithm: uri}, nil
+	}
+
+	if uri != c14n.Exclusive && uri != c14n.ExclusiveWithComments {
+		return reference.Transform{}, fmt.Errorf("%w: canonicalization parameters", reference.ErrInput)
+	}
+
+	if len(children) != 1 || children[0].Name != (document.Name{Space: c14n.Exclusive, Local: "InclusiveNamespaces"}) {
+		return reference.Transform{}, fmt.Errorf("%w: canonicalization parameters", reference.ErrInput)
+	}
+
+	child := children[0]
+	if err := attributes(child, "PrefixList"); err != nil {
+		return reference.Transform{}, err
+	}
+
+	nested, err := elementChildren(child)
+	if err != nil {
+		return reference.Transform{}, err
+	}
+
+	if len(nested) != 0 {
+		return reference.Transform{}, fmt.Errorf("%w: InclusiveNamespaces must be empty", reference.ErrInput)
+	}
+
+	list, err := requiredAttribute(child, "PrefixList")
+	if err != nil {
+		return reference.Transform{}, err
+	}
+
+	prefixes := strings.FieldsFunc(list, func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' })
+	if len(prefixes) > 128 {
+		return reference.Transform{}, fmt.Errorf("%w: too many inclusive prefixes", reference.ErrLimit)
+	}
+
+	for _, p := range prefixes {
+		if p != "#default" && (!tree.NCName(p) || p == "xmlns") {
+			return reference.Transform{}, fmt.Errorf("%w: inclusive prefix", reference.ErrInput)
+		}
+	}
+
+	return reference.Transform{Algorithm: uri, InclusivePrefixes: prefixes}, nil
+}
+
+// Parse reads a complete ds:Transform without executing an application program.
+func Parse(ctx context.Context, doc *document.Document, n *tree.Node) (reference.Transform, error) {
+	if ctx == nil || n == nil {
+		return reference.Transform{}, reference.ErrInput
+	}
+
+	if err := ctx.Err(); err != nil {
+		return reference.Transform{}, err
+	}
+
+	algorithm, err := requiredAttribute(n, "Algorithm")
+	if err != nil {
+		return reference.Transform{}, err
+	}
+
+	if reference.IsExtension(algorithm) {
+		return ParseProgram(ctx, n, doc)
+	}
+
+	if canonicalAlgorithm(algorithm) {
+		return ParseCanonical(n, lexicon.DSigElementTransform)
+	}
+
+	children, err := structure(n, lexicon.DSigElementTransform, "Algorithm")
+	if err != nil {
+		return reference.Transform{}, err
+	}
+
+	if len(children) != 0 {
+		return reference.Transform{}, reference.ErrInput
+	}
+
+	return reference.Transform{Algorithm: algorithm}, nil
+}
+
+// AppendParameters emits supported canonicalization or program parameters.
+func AppendParameters(ctx context.Context, n *tree.Node, t reference.Transform) error {
+	if err := reference.ValidateTransformParameters(t); err != nil {
+		return err
+	}
+
+	if len(t.InclusivePrefixes) != 0 {
+		if t.Algorithm != c14n.Exclusive && t.Algorithm != c14n.ExclusiveWithComments {
+			return reference.ErrInput
+		}
+
+		child := &tree.Node{
+			Kind:   tree.ElementNode,
+			Name:   document.Name{Space: c14n.Exclusive, Local: "InclusiveNamespaces"},
+			Prefix: "ec",
+			NS:     []tree.Namespace{{Prefix: "ec", URI: c14n.Exclusive}},
+		}
+
+		setAttr(child, "PrefixList", strings.Join(t.InclusivePrefixes, " "))
+		add(n, child)
+
+		if _, err := ParseCanonical(n, lexicon.DSigElementTransform); err != nil {
+			return err
+		}
+	}
+
+	if reference.IsExtension(t.Algorithm) {
+		return AppendProgram(ctx, n, t)
+	}
+
+	if !canonicalAlgorithm(t.Algorithm) && t.Algorithm != reference.Base64 && t.Algorithm != reference.EnvelopedSignature {
+		return reference.ErrUnsupported
+	}
+
+	return nil
+}
+
+func standaloneTransformXML(ctx context.Context, doc *document.Document, n *tree.Node) ([]byte, error) {
+	d := tree.FromNodes([]*tree.Node{tree.ImportSubtree(n)}, tree.Policy(doc))
+
+	var output bytes.Buffer
+	if _, err := d.WriteXML(ctx, &output, 1<<20); err != nil {
+		return nil, err
+	}
+
+	return output.Bytes(), nil
 }
 
 func parseTransformContent(ctx context.Context, t *reference.Transform, children []*tree.Node, doc *document.Document) error {
@@ -200,66 +332,6 @@ func parseXPathParameter(ctx context.Context, n *tree.Node, doc *document.Docume
 	return x, nil
 }
 
-func ParseCanonical(n *tree.Node, local string) (reference.Transform, error) {
-	children, err := structure(n, local, "Algorithm")
-	if err != nil {
-		return reference.Transform{}, err
-	}
-
-	uri, err := requiredAttribute(n, "Algorithm")
-	if err != nil {
-		return reference.Transform{}, err
-	}
-
-	if !canonicalAlgorithm(uri) {
-		return reference.Transform{}, fmt.Errorf("%w: canonicalization method", reference.ErrUnsupported)
-	}
-
-	if len(children) == 0 {
-		return reference.Transform{Algorithm: uri}, nil
-	}
-
-	if uri != c14n.Exclusive && uri != c14n.ExclusiveWithComments {
-		return reference.Transform{}, fmt.Errorf("%w: canonicalization parameters", reference.ErrInput)
-	}
-
-	if len(children) != 1 || children[0].Name != (document.Name{Space: c14n.Exclusive, Local: "InclusiveNamespaces"}) {
-		return reference.Transform{}, fmt.Errorf("%w: canonicalization parameters", reference.ErrInput)
-	}
-
-	child := children[0]
-	if err := attributes(child, "PrefixList"); err != nil {
-		return reference.Transform{}, err
-	}
-
-	nested, err := elementChildren(child)
-	if err != nil {
-		return reference.Transform{}, err
-	}
-
-	if len(nested) != 0 {
-		return reference.Transform{}, fmt.Errorf("%w: InclusiveNamespaces must be empty", reference.ErrInput)
-	}
-
-	list, err := requiredAttribute(child, "PrefixList")
-	if err != nil {
-		return reference.Transform{}, err
-	}
-
-	prefixes := strings.FieldsFunc(list, func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' })
-	if len(prefixes) > 128 {
-		return reference.Transform{}, fmt.Errorf("%w: too many inclusive prefixes", reference.ErrLimit)
-	}
-
-	for _, p := range prefixes {
-		if p != "#default" && (!tree.NCName(p) || p == "xmlns") {
-			return reference.Transform{}, fmt.Errorf("%w: inclusive prefix", reference.ErrInput)
-		}
-	}
-
-	return reference.Transform{Algorithm: uri, InclusivePrefixes: prefixes}, nil
-}
-
 func canonicalAlgorithm(uri string) bool {
 	switch uri {
 	case c14n.Exclusive, c14n.ExclusiveWithComments, c14n.Canonical10, c14n.Canonical10WithComments, c14n.Canonical11, c14n.Canonical11WithComments:
@@ -319,78 +391,6 @@ func elementChildren(n *tree.Node) ([]*tree.Node, error) {
 	return children, nil
 }
 
-// Parse reads a complete ds:Transform without executing an application program.
-func Parse(ctx context.Context, doc *document.Document, n *tree.Node) (reference.Transform, error) {
-	if ctx == nil || n == nil {
-		return reference.Transform{}, reference.ErrInput
-	}
-
-	if err := ctx.Err(); err != nil {
-		return reference.Transform{}, err
-	}
-
-	algorithm, err := requiredAttribute(n, "Algorithm")
-	if err != nil {
-		return reference.Transform{}, err
-	}
-
-	if reference.IsExtension(algorithm) {
-		return ParseProgram(ctx, n, doc)
-	}
-
-	if canonicalAlgorithm(algorithm) {
-		return ParseCanonical(n, lexicon.DSigElementTransform)
-	}
-
-	children, err := structure(n, lexicon.DSigElementTransform, "Algorithm")
-	if err != nil {
-		return reference.Transform{}, err
-	}
-
-	if len(children) != 0 {
-		return reference.Transform{}, reference.ErrInput
-	}
-
-	return reference.Transform{Algorithm: algorithm}, nil
-}
-
-// AppendParameters emits supported canonicalization or program parameters.
-func AppendParameters(ctx context.Context, n *tree.Node, t reference.Transform) error {
-	if err := reference.ValidateTransformParameters(t); err != nil {
-		return err
-	}
-
-	if len(t.InclusivePrefixes) != 0 {
-		if t.Algorithm != c14n.Exclusive && t.Algorithm != c14n.ExclusiveWithComments {
-			return reference.ErrInput
-		}
-
-		child := &tree.Node{
-			Kind:   tree.ElementNode,
-			Name:   document.Name{Space: c14n.Exclusive, Local: "InclusiveNamespaces"},
-			Prefix: "ec",
-			NS:     []tree.Namespace{{Prefix: "ec", URI: c14n.Exclusive}},
-		}
-
-		setAttr(child, "PrefixList", strings.Join(t.InclusivePrefixes, " "))
-		add(n, child)
-
-		if _, err := ParseCanonical(n, lexicon.DSigElementTransform); err != nil {
-			return err
-		}
-	}
-
-	if reference.IsExtension(t.Algorithm) {
-		return AppendProgram(ctx, n, t)
-	}
-
-	if !canonicalAlgorithm(t.Algorithm) && t.Algorithm != reference.Base64 && t.Algorithm != reference.EnvelopedSignature {
-		return reference.ErrUnsupported
-	}
-
-	return nil
-}
-
 func requiredAttribute(n *tree.Node, local string) (string, error) {
 	value, ok := getAttr(n, document.Name{Local: local})
 	if !ok {
@@ -422,4 +422,5 @@ func add(parent, child *tree.Node) {
 func setAttr(n *tree.Node, local, value string) {
 	n.Attrs = append(n.Attrs, tree.Attribute{Name: document.Name{Local: local}, Value: value})
 }
+
 func text(n *tree.Node, value string) { add(n, &tree.Node{Kind: tree.TextNode, Data: value}) }

@@ -24,6 +24,44 @@ func GeneralCompare(op TokenType, left, right xdm.Sequence) (bool, error) {
 	return generalCompareWithCollation(context.Background(), op, left, right, nil, nil)
 }
 
+// ValueCompare performs a value comparison between two atomic values.
+func ValueCompare(op TokenType, a, b xdm.AtomicValue) (bool, error) {
+	return ValueCompareWithImplicitTimezone(op, a, b, nil)
+}
+
+// ValueCompareWithImplicitTimezone compares two atomic values after XPath
+// value-comparison promotion, using implicitTZ for values without a timezone.
+func ValueCompareWithImplicitTimezone(op TokenType, a, b xdm.AtomicValue, implicitTZ *time.Location) (bool, error) {
+	pa, pb := promoteForValueComparison(a, b)
+	return compareAtomicWithImplicitTimezone(op, pa, pb, implicitTZ)
+}
+
+// AtomicEquals tests two atomic values for equality using XPath value
+// comparison (eq) semantics, including untypedAtomic promotion.
+// Returns false when the types are not comparable (instead of an error),
+// making it suitable for key() lookup where type mismatches mean "no match".
+func AtomicEquals(a, b xdm.AtomicValue) bool {
+	result, err := ValueCompare(TokenEq, a, b)
+	if err != nil {
+		return false
+	}
+
+	return result
+}
+
+// TimeToReferenceDateTime converts an xs:time to an xs:dateTime using the
+// XPath reference date 1972-12-31, preserving the timezone offset.
+// This is the canonical conversion for comparing xs:time values per F&O §10.4.4.
+func TimeToReferenceDateTime(t time.Time) time.Time {
+	return timeToReferenceDateTime(t)
+}
+
+// ApplyImplicitTZ applies the implicit timezone to a time that has
+// no explicit timezone. Times with explicit timezones are returned as-is.
+func ApplyImplicitTZ(t time.Time, implicitTZ *time.Location) time.Time {
+	return applyImplicitTZ(t, implicitTZ)
+}
+
 // generalCompareWithCollation is the collation-aware implementation of
 // general comparison.  When coll is nil, codepoint collation is used.
 //
@@ -191,18 +229,6 @@ func compareAtomicCollation(op TokenType, a, b xdm.AtomicValue, implicitTZ *time
 	return compareAtomicWithImplicitTimezone(op, a, b, implicitTZ)
 }
 
-// ValueCompare performs a value comparison between two atomic values.
-func ValueCompare(op TokenType, a, b xdm.AtomicValue) (bool, error) {
-	return ValueCompareWithImplicitTimezone(op, a, b, nil)
-}
-
-// ValueCompareWithImplicitTimezone compares two atomic values after XPath
-// value-comparison promotion, using implicitTZ for values without a timezone.
-func ValueCompareWithImplicitTimezone(op TokenType, a, b xdm.AtomicValue, implicitTZ *time.Location) (bool, error) {
-	pa, pb := promoteForValueComparison(a, b)
-	return compareAtomicWithImplicitTimezone(op, pa, pb, implicitTZ)
-}
-
 // promoteForValueComparison applies type promotion rules for value comparison (eq/ne/lt/gt/le/ge).
 // Per XPath 3.1 Section 3.7.2: xs:untypedAtomic is always cast to xs:string.
 // This differs from general comparison where untypedAtomic is cast to the other operand's type.
@@ -216,32 +242,6 @@ func promoteForValueComparison(a, b xdm.AtomicValue) (xdm.AtomicValue, xdm.Atomi
 	}
 
 	return a, b
-}
-
-// AtomicEquals tests two atomic values for equality using XPath value
-// comparison (eq) semantics, including untypedAtomic promotion.
-// Returns false when the types are not comparable (instead of an error),
-// making it suitable for key() lookup where type mismatches mean "no match".
-func AtomicEquals(a, b xdm.AtomicValue) bool {
-	result, err := ValueCompare(TokenEq, a, b)
-	if err != nil {
-		return false
-	}
-
-	return result
-}
-
-// TimeToReferenceDateTime converts an xs:time to an xs:dateTime using the
-// XPath reference date 1972-12-31, preserving the timezone offset.
-// This is the canonical conversion for comparing xs:time values per F&O §10.4.4.
-func TimeToReferenceDateTime(t time.Time) time.Time {
-	return timeToReferenceDateTime(t)
-}
-
-// ApplyImplicitTZ applies the implicit timezone to a time that has
-// no explicit timezone. Times with explicit timezones are returned as-is.
-func ApplyImplicitTZ(t time.Time, implicitTZ *time.Location) time.Time {
-	return applyImplicitTZ(t, implicitTZ)
 }
 
 // evalGeneralComparison implements general comparison (= != < <= > >=).

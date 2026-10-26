@@ -90,6 +90,75 @@ type listDecoder struct {
 	algorithm pkix.AlgorithmIdentifier
 }
 
+func (d *listDecoder) entries(maximum int) ([]asn1.RawValue, error) {
+	var entries []asn1.RawValue
+
+	if d.index < len(d.body) && der.Is(d.body[d.index], 0, asn1.TagSequence, true) {
+		var err error
+
+		entries, err = der.Sequence(d.body[d.index], 1, maximum)
+		if err != nil {
+			if errors.Is(err, der.ErrLimit) {
+				return nil, fmt.Errorf("%w: %w", ErrLimit, err)
+			}
+
+			return nil, err
+		}
+
+		d.index++
+	}
+
+	for _, entry := range entries {
+		if err := validateEntry(entry, d.version); err != nil {
+			return nil, err
+		}
+	}
+
+	if d.version == 1 && d.index < len(d.body) {
+		extension, err := der.Explicit(d.body[d.index], 0)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := validateExtensions(extension); err != nil {
+			return nil, err
+		}
+
+		d.index++
+	}
+
+	if d.index != len(d.body) {
+		return nil, der.ErrInvalidDER
+	}
+
+	return entries, nil
+}
+
+func (d *listDecoder) decodeV1Entries(entries []asn1.RawValue) error {
+	for _, entry := range entries {
+		fields, err := der.Sequence(entry, 2, 2)
+		if err != nil {
+			return err
+		}
+
+		var serial *big.Int
+		if der.Decode(fields[0], &serial) != nil || serial == nil {
+			return der.ErrInvalidDER
+		}
+
+		revoked, err := parseTime(fields[1])
+		if err != nil {
+			return err
+		}
+
+		d.list.RevokedCertificateEntries = append(d.list.RevokedCertificateEntries, x509.RevocationListEntry{Raw: entry.FullBytes, SerialNumber: serial, RevocationTime: revoked})
+	}
+
+	d.list.SignatureAlgorithm = signatureAlgorithm(d.algorithm)
+
+	return nil
+}
+
 func parseHeader(raw []byte, outer []asn1.RawValue) (*listDecoder, error) {
 	body, err := der.Sequence(outer[0], 3, 7)
 	if err != nil {
@@ -151,50 +220,6 @@ func parseHeader(raw []byte, outer []asn1.RawValue) (*listDecoder, error) {
 	return decoder, nil
 }
 
-func (d *listDecoder) entries(maximum int) ([]asn1.RawValue, error) {
-	var entries []asn1.RawValue
-
-	if d.index < len(d.body) && der.Is(d.body[d.index], 0, asn1.TagSequence, true) {
-		var err error
-
-		entries, err = der.Sequence(d.body[d.index], 1, maximum)
-		if err != nil {
-			if errors.Is(err, der.ErrLimit) {
-				return nil, fmt.Errorf("%w: %w", ErrLimit, err)
-			}
-
-			return nil, err
-		}
-
-		d.index++
-	}
-
-	for _, entry := range entries {
-		if err := validateEntry(entry, d.version); err != nil {
-			return nil, err
-		}
-	}
-
-	if d.version == 1 && d.index < len(d.body) {
-		extension, err := der.Explicit(d.body[d.index], 0)
-		if err != nil {
-			return nil, err
-		}
-
-		if err := validateExtensions(extension); err != nil {
-			return nil, err
-		}
-
-		d.index++
-	}
-
-	if d.index != len(d.body) {
-		return nil, der.ErrInvalidDER
-	}
-
-	return entries, nil
-}
-
 func validateEntry(entry asn1.RawValue, version int) error {
 	fields, err := der.Sequence(entry, 2, 3)
 	if err != nil {
@@ -212,31 +237,6 @@ func validateEntry(entry asn1.RawValue, version int) error {
 
 		return validateExtensions(fields[2])
 	}
-
-	return nil
-}
-
-func (d *listDecoder) decodeV1Entries(entries []asn1.RawValue) error {
-	for _, entry := range entries {
-		fields, err := der.Sequence(entry, 2, 2)
-		if err != nil {
-			return err
-		}
-
-		var serial *big.Int
-		if der.Decode(fields[0], &serial) != nil || serial == nil {
-			return der.ErrInvalidDER
-		}
-
-		revoked, err := parseTime(fields[1])
-		if err != nil {
-			return err
-		}
-
-		d.list.RevokedCertificateEntries = append(d.list.RevokedCertificateEntries, x509.RevocationListEntry{Raw: entry.FullBytes, SerialNumber: serial, RevocationTime: revoked})
-	}
-
-	d.list.SignatureAlgorithm = signatureAlgorithm(d.algorithm)
 
 	return nil
 }

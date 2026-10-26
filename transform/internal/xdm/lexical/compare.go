@@ -101,6 +101,155 @@ func Compare(a, b, builtinLocal string) (int, bool) {
 	}
 }
 
+// CanonicalKey maps a lexical value to a value-space canonical string for the
+// given builtin type, so lexically-distinct but value-equal inputs (e.g. "5"
+// and "+5" for xs:integer) produce the same key. It returns (key, true) when a
+// canonical form is defined; otherwise (collapsed-whitespace value, false) for
+// string-family types and anything unrecognized or unparsable.
+func CanonicalKey(s, builtinLocal string) (string, bool) {
+	switch builtinLocal {
+	case lexicon.TypeBoolean:
+		trimmed := trimXSDSpace(s)
+		if ValidateBuiltin(trimmed, lexicon.TypeBoolean, Version11) != nil {
+			return trimmed, false
+		}
+
+		if trimmed == lexicon.ValueTrue || trimmed == "1" {
+			return "1", true
+		}
+
+		return "0", true
+	case lexicon.TypeFloat:
+		return canonicalFloatKey(s, 32) // xs:float is 32-bit IEEE-754
+	case lexicon.TypeDouble:
+		return canonicalFloatKey(s, 64)
+	case lexicon.TypeDateTime, lexicon.TypeDate, lexicon.TypeTime, lexicon.TypeGYear, lexicon.TypeGYearMonth, lexicon.TypeGMonth, lexicon.TypeGDay, lexicon.TypeGMonthDay:
+		return canonicalDateTimeKey(trimXSDSpace(s), builtinLocal)
+	case lexicon.TypeDateTimeStamp:
+		// xs:dateTimeStamp canonicalizes in the xs:dateTime value space.
+		return canonicalDateTimeKey(trimXSDSpace(s), lexicon.TypeDateTime)
+	case lexicon.TypeHexBinary:
+		trimmed := trimXSDSpace(s)
+		if ValidateBuiltin(trimmed, lexicon.TypeHexBinary, Version11) != nil {
+			return trimmed, false
+		}
+
+		decoded, err := hex.DecodeString(trimmed)
+		if err != nil {
+			return trimmed, false
+		}
+		// Stable byte key so case-distinct forms ("0A"/"0a") canonicalize equal.
+		return hex.EncodeToString(decoded), true
+	case lexicon.TypeBase64Binary:
+		trimmed := trimXSDSpace(s)
+		if ValidateBuiltin(trimmed, lexicon.TypeBase64Binary, Version11) != nil {
+			return trimmed, false
+		}
+
+		decoded, ok := decodeBase64Binary(trimmed)
+		if !ok {
+			return trimmed, false
+		}
+		// Stable byte key so whitespace-distinct forms ("YWJj"/"YW Jj")
+		// canonicalize equal; hex of the decoded octets is a canonical encoding.
+		return hex.EncodeToString(decoded), true
+	case lexicon.TypeDuration, lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration:
+		// xs:dayTimeDuration / xs:yearMonthDuration canonicalize in the xs:duration
+		// value space (they are valid xs:duration lexicals).
+		trimmed := trimXSDSpace(s)
+		// Validate against the strict xs:duration lexical space before the lenient
+		// parseXSDDurationValue below, so CanonicalKey never canonicalizes a value
+		// the validator rejects.
+		if ValidateBuiltin(trimmed, lexicon.TypeDuration, Version11) != nil {
+			return trimmed, false
+		}
+
+		d, ok := parseXSDDurationValue(trimmed)
+		if !ok {
+			return trimmed, false
+		}
+		// The xs:duration value space is the (months, seconds) pair; two lexicals
+		// that compare equal via compareDuration must canonicalize equal. Apply the
+		// sign to both components and emit a stable signed key consistent with
+		// compareDuration, so e.g. "P1D" and "PT24H" (both 0 months, 86400 seconds)
+		// collide while values with differing month/second components stay distinct.
+		months, seconds := d.monVal(), d.secVal()
+		if d.negative {
+			months, seconds = new(big.Int).Neg(months), new(big.Rat).Neg(seconds)
+		}
+
+		return fmt.Sprintf("%s|%s", months.String(), seconds.RatString()), true
+	case lexicon.TypeDecimal, lexicon.TypeInteger,
+		lexicon.TypeNonPositiveInteger, lexicon.TypeNegativeInteger, lexicon.TypeLong, lexicon.TypeInt, lexicon.TypeShort, lexicon.TypeByte,
+		lexicon.TypeNonNegativeInteger, lexicon.TypeUnsignedLong, lexicon.TypeUnsignedInt, lexicon.TypeUnsignedShort, lexicon.TypeUnsignedByte,
+		lexicon.TypePositiveInteger:
+		trimmed := trimXSDSpace(s)
+		// Validate strictly (lexical space + range for bounded subtypes) before
+		// canonicalizing, so e.g. "1.0"/integer, "2147483648"/int and "1/2"/
+		// decimal yield ok=false, and no spurious canonical key.
+		if ValidateBuiltin(trimmed, builtinLocal, Version11) != nil {
+			return trimmed, false
+		}
+
+		r, ok := new(big.Rat).SetString(trimmed)
+		if !ok {
+			return trimmed, false
+		}
+
+		return r.RatString(), true
+	case "string":
+		// whiteSpace=preserve: the value space is the exact lexical string, so
+		// leading/trailing/internal whitespace is significant. Do not alter it.
+		return s, false
+	case lexicon.TypeNormalizedString:
+		// whiteSpace=replace: tab/newline/carriage-return become spaces.
+		return whitespaceReplace(s), false
+	case lexicon.TypeNMTokens, lexicon.TypeIDREFS, lexicon.TypeENTITIES:
+		// List types: collapse internal whitespace so token sequences that
+		// differ only in separator whitespace are value-equal. Split on XSD
+		// whitespace only so a token containing NBSP is preserved (and stays
+		// invalid), and is never silently split into two tokens.
+		return strings.Join(xsdFields(s), " "), false
+	default:
+		// Remaining string-derived types (token, NMTOKEN, Name, NCName, ID,
+		// IDREF, ENTITY, language, anyURI, …) have whiteSpace=collapse.
+		return strings.Join(xsdFields(s), " "), false
+	}
+}
+
+// WhiteSpace returns the effective XSD whiteSpace facet ("preserve", "replace",
+// or "collapse") for a builtin datatype's local name. xs:string preserves,
+// xs:normalizedString replaces, and every other builtin (token, the integer and
+// date/time families, boolean, the NCName/Name/NMTOKEN family, list types,
+// anyURI, …) collapses, per the XSD 1.1 datatype spec. Unknown names default to
+// "collapse" so callers normalize conservatively.
+func WhiteSpace(builtinLocal string) string {
+	switch builtinLocal {
+	case "string":
+		return "preserve"
+	case lexicon.TypeNormalizedString:
+		return "replace"
+	default:
+		return "collapse"
+	}
+}
+
+// Normalize applies the XSD whiteSpace facet of the named builtin datatype to a
+// lexical value, returning the whitespace-processed form that must be used
+// before lexical validation (ValidateBuiltin) or value comparison. "preserve"
+// leaves the value untouched, "replace" turns each tab/newline/CR into a space,
+// and "collapse" additionally collapses runs of spaces and trims the ends.
+func Normalize(s, builtinLocal string) string {
+	switch WhiteSpace(builtinLocal) {
+	case "preserve":
+		return s
+	case "replace":
+		return whitespaceReplace(s)
+	default: // collapse
+		return whitespaceCollapse(s)
+	}
+}
+
 // numericComparableTypes is the set of integer-family and decimal builtins that
 // Compare and CanonicalKey treat as value-comparable via math/big.Rat after
 // strict lexical validation (including range checks for the bounded subtypes).
@@ -613,122 +762,6 @@ func splitSecondsInDay(seconds *big.Rat) (*big.Int, *big.Rat) {
 	return dayOffset, secondOfDay
 }
 
-// CanonicalKey maps a lexical value to a value-space canonical string for the
-// given builtin type, so lexically-distinct but value-equal inputs (e.g. "5"
-// and "+5" for xs:integer) produce the same key. It returns (key, true) when a
-// canonical form is defined; otherwise (collapsed-whitespace value, false) for
-// string-family types and anything unrecognized or unparsable.
-func CanonicalKey(s, builtinLocal string) (string, bool) {
-	switch builtinLocal {
-	case lexicon.TypeBoolean:
-		trimmed := trimXSDSpace(s)
-		if ValidateBuiltin(trimmed, lexicon.TypeBoolean, Version11) != nil {
-			return trimmed, false
-		}
-
-		if trimmed == lexicon.ValueTrue || trimmed == "1" {
-			return "1", true
-		}
-
-		return "0", true
-	case lexicon.TypeFloat:
-		return canonicalFloatKey(s, 32) // xs:float is 32-bit IEEE-754
-	case lexicon.TypeDouble:
-		return canonicalFloatKey(s, 64)
-	case lexicon.TypeDateTime, lexicon.TypeDate, lexicon.TypeTime, lexicon.TypeGYear, lexicon.TypeGYearMonth, lexicon.TypeGMonth, lexicon.TypeGDay, lexicon.TypeGMonthDay:
-		return canonicalDateTimeKey(trimXSDSpace(s), builtinLocal)
-	case lexicon.TypeDateTimeStamp:
-		// xs:dateTimeStamp canonicalizes in the xs:dateTime value space.
-		return canonicalDateTimeKey(trimXSDSpace(s), lexicon.TypeDateTime)
-	case lexicon.TypeHexBinary:
-		trimmed := trimXSDSpace(s)
-		if ValidateBuiltin(trimmed, lexicon.TypeHexBinary, Version11) != nil {
-			return trimmed, false
-		}
-
-		decoded, err := hex.DecodeString(trimmed)
-		if err != nil {
-			return trimmed, false
-		}
-		// Stable byte key so case-distinct forms ("0A"/"0a") canonicalize equal.
-		return hex.EncodeToString(decoded), true
-	case lexicon.TypeBase64Binary:
-		trimmed := trimXSDSpace(s)
-		if ValidateBuiltin(trimmed, lexicon.TypeBase64Binary, Version11) != nil {
-			return trimmed, false
-		}
-
-		decoded, ok := decodeBase64Binary(trimmed)
-		if !ok {
-			return trimmed, false
-		}
-		// Stable byte key so whitespace-distinct forms ("YWJj"/"YW Jj")
-		// canonicalize equal; hex of the decoded octets is a canonical encoding.
-		return hex.EncodeToString(decoded), true
-	case lexicon.TypeDuration, lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration:
-		// xs:dayTimeDuration / xs:yearMonthDuration canonicalize in the xs:duration
-		// value space (they are valid xs:duration lexicals).
-		trimmed := trimXSDSpace(s)
-		// Validate against the strict xs:duration lexical space before the lenient
-		// parseXSDDurationValue below, so CanonicalKey never canonicalizes a value
-		// the validator rejects.
-		if ValidateBuiltin(trimmed, lexicon.TypeDuration, Version11) != nil {
-			return trimmed, false
-		}
-
-		d, ok := parseXSDDurationValue(trimmed)
-		if !ok {
-			return trimmed, false
-		}
-		// The xs:duration value space is the (months, seconds) pair; two lexicals
-		// that compare equal via compareDuration must canonicalize equal. Apply the
-		// sign to both components and emit a stable signed key consistent with
-		// compareDuration, so e.g. "P1D" and "PT24H" (both 0 months, 86400 seconds)
-		// collide while values with differing month/second components stay distinct.
-		months, seconds := d.monVal(), d.secVal()
-		if d.negative {
-			months, seconds = new(big.Int).Neg(months), new(big.Rat).Neg(seconds)
-		}
-
-		return fmt.Sprintf("%s|%s", months.String(), seconds.RatString()), true
-	case lexicon.TypeDecimal, lexicon.TypeInteger,
-		lexicon.TypeNonPositiveInteger, lexicon.TypeNegativeInteger, lexicon.TypeLong, lexicon.TypeInt, lexicon.TypeShort, lexicon.TypeByte,
-		lexicon.TypeNonNegativeInteger, lexicon.TypeUnsignedLong, lexicon.TypeUnsignedInt, lexicon.TypeUnsignedShort, lexicon.TypeUnsignedByte,
-		lexicon.TypePositiveInteger:
-		trimmed := trimXSDSpace(s)
-		// Validate strictly (lexical space + range for bounded subtypes) before
-		// canonicalizing, so e.g. "1.0"/integer, "2147483648"/int and "1/2"/
-		// decimal yield ok=false, and no spurious canonical key.
-		if ValidateBuiltin(trimmed, builtinLocal, Version11) != nil {
-			return trimmed, false
-		}
-
-		r, ok := new(big.Rat).SetString(trimmed)
-		if !ok {
-			return trimmed, false
-		}
-
-		return r.RatString(), true
-	case "string":
-		// whiteSpace=preserve: the value space is the exact lexical string, so
-		// leading/trailing/internal whitespace is significant. Do not alter it.
-		return s, false
-	case lexicon.TypeNormalizedString:
-		// whiteSpace=replace: tab/newline/carriage-return become spaces.
-		return whitespaceReplace(s), false
-	case lexicon.TypeNMTokens, lexicon.TypeIDREFS, lexicon.TypeENTITIES:
-		// List types: collapse internal whitespace so token sequences that
-		// differ only in separator whitespace are value-equal. Split on XSD
-		// whitespace only so a token containing NBSP is preserved (and stays
-		// invalid), and is never silently split into two tokens.
-		return strings.Join(xsdFields(s), " "), false
-	default:
-		// Remaining string-derived types (token, NMTOKEN, Name, NCName, ID,
-		// IDREF, ENTITY, language, anyURI, …) have whiteSpace=collapse.
-		return strings.Join(xsdFields(s), " "), false
-	}
-}
-
 // canonicalFloatKey canonicalizes an xs:float/xs:double value at the given IEEE
 // precision (bitSize 32 for xs:float, 64 for xs:double). Using the correct
 // precision ensures values that are equal in xs:float's 32-bit value space (but
@@ -837,39 +870,6 @@ func canonicalDateTimeKey(s, builtinLocal string) (string, bool) {
 	return fmt.Sprintf("%s|%d|%d|%d|%d|%s|%t", dt.yearVal().String(), dt.month, dt.day, dt.hour, dt.min, dt.secVal().RatString(), dt.hasTZ), true
 }
 
-// WhiteSpace returns the effective XSD whiteSpace facet ("preserve", "replace",
-// or "collapse") for a builtin datatype's local name. xs:string preserves,
-// xs:normalizedString replaces, and every other builtin (token, the integer and
-// date/time families, boolean, the NCName/Name/NMTOKEN family, list types,
-// anyURI, …) collapses, per the XSD 1.1 datatype spec. Unknown names default to
-// "collapse" so callers normalize conservatively.
-func WhiteSpace(builtinLocal string) string {
-	switch builtinLocal {
-	case "string":
-		return "preserve"
-	case lexicon.TypeNormalizedString:
-		return "replace"
-	default:
-		return "collapse"
-	}
-}
-
-// Normalize applies the XSD whiteSpace facet of the named builtin datatype to a
-// lexical value, returning the whitespace-processed form that must be used
-// before lexical validation (ValidateBuiltin) or value comparison. "preserve"
-// leaves the value untouched, "replace" turns each tab/newline/CR into a space,
-// and "collapse" additionally collapses runs of spaces and trims the ends.
-func Normalize(s, builtinLocal string) string {
-	switch WhiteSpace(builtinLocal) {
-	case "preserve":
-		return s
-	case "replace":
-		return whitespaceReplace(s)
-	default: // collapse
-		return whitespaceCollapse(s)
-	}
-}
-
 // whitespaceCollapse applies the XSD whiteSpace="collapse" normalization:
 // replace tab/newline/CR with space (ASCII-only, like whitespaceReplace), then
 // collapse runs of spaces and trim leading/trailing spaces. Only the four XSD
@@ -932,6 +932,60 @@ func CompareDecimal(a, b string) int {
 	}
 
 	return comparePlainDecimal(da, db)
+}
+
+// IsFloatNaN reports whether s is a valid xs:float/xs:double lexical form that
+// denotes NaN. Only the bare "NaN" qualifies; the sign-prefixed +NaN/-NaN are
+// not valid XSD lexical forms and are rejected.
+func IsFloatNaN(s string) bool {
+	f, ok := parseXSDFloat(s)
+	return ok && math.IsNaN(f)
+}
+
+// CompareFloatFacetBound compares two xs:float/xs:double facet BOUND lexicals for
+// the purpose of the same-type range-facet consistency check (e.g. minInclusive
+// vs maxInclusive). It differs from the ordinary value-space Compare in its
+// treatment of NaN: where Compare returns incomparable (ok=false) for any NaN
+// operand, this orders NaN as EQUAL to NaN and GREATER THAN every non-NaN value.
+// That matches xmllint, which rejects a schema whose minInclusive="NaN" exceeds
+// a finite maxInclusive while accepting minInclusive=finite with maxInclusive=NaN.
+//
+// builtinLocal must be xs:float or xs:double; for any other type it returns
+// ok=false so the caller falls back to its normal comparator. Both operands are
+// validated as valid float/double lexicals first: an invalid bound yields
+// ok=false (no ordering decision), so the caller's invalid-bound check — not this
+// consistency check — reports the error.
+func CompareFloatFacetBound(a, b, builtinLocal string) (int, bool) {
+	if builtinLocal != lexicon.TypeFloat && builtinLocal != lexicon.TypeDouble {
+		return 0, false
+	}
+
+	if !validBuiltinOperands(a, b, builtinLocal) {
+		return 0, false
+	}
+
+	fa, ok1 := parseXSDFloat(trimXSDSpace(a))
+
+	fb, ok2 := parseXSDFloat(trimXSDSpace(b))
+	if !ok1 || !ok2 {
+		return 0, false
+	}
+
+	aNaN := math.IsNaN(fa)
+
+	bNaN := math.IsNaN(fb)
+	if aNaN || bNaN {
+		switch {
+		case aNaN && bNaN:
+			return 0, true
+		case aNaN:
+			return 1, true
+		default:
+			return -1, true
+		}
+	}
+
+	return compareFloat(a, b, builtinLocal == lexicon.TypeFloat)
 }
 
 // parsePlainDecimal parses s against the xs:decimal lexical grammar
@@ -1032,60 +1086,6 @@ func compareDecimalRat(a, b string) int {
 	}
 
 	return ra.Cmp(rb)
-}
-
-// IsFloatNaN reports whether s is a valid xs:float/xs:double lexical form that
-// denotes NaN. Only the bare "NaN" qualifies; the sign-prefixed +NaN/-NaN are
-// not valid XSD lexical forms and are rejected.
-func IsFloatNaN(s string) bool {
-	f, ok := parseXSDFloat(s)
-	return ok && math.IsNaN(f)
-}
-
-// CompareFloatFacetBound compares two xs:float/xs:double facet BOUND lexicals for
-// the purpose of the same-type range-facet consistency check (e.g. minInclusive
-// vs maxInclusive). It differs from the ordinary value-space Compare in its
-// treatment of NaN: where Compare returns incomparable (ok=false) for any NaN
-// operand, this orders NaN as EQUAL to NaN and GREATER THAN every non-NaN value.
-// That matches xmllint, which rejects a schema whose minInclusive="NaN" exceeds
-// a finite maxInclusive while accepting minInclusive=finite with maxInclusive=NaN.
-//
-// builtinLocal must be xs:float or xs:double; for any other type it returns
-// ok=false so the caller falls back to its normal comparator. Both operands are
-// validated as valid float/double lexicals first: an invalid bound yields
-// ok=false (no ordering decision), so the caller's invalid-bound check — not this
-// consistency check — reports the error.
-func CompareFloatFacetBound(a, b, builtinLocal string) (int, bool) {
-	if builtinLocal != lexicon.TypeFloat && builtinLocal != lexicon.TypeDouble {
-		return 0, false
-	}
-
-	if !validBuiltinOperands(a, b, builtinLocal) {
-		return 0, false
-	}
-
-	fa, ok1 := parseXSDFloat(trimXSDSpace(a))
-
-	fb, ok2 := parseXSDFloat(trimXSDSpace(b))
-	if !ok1 || !ok2 {
-		return 0, false
-	}
-
-	aNaN := math.IsNaN(fa)
-
-	bNaN := math.IsNaN(fb)
-	if aNaN || bNaN {
-		switch {
-		case aNaN && bNaN:
-			return 0, true
-		case aNaN:
-			return 1, true
-		default:
-			return -1, true
-		}
-	}
-
-	return compareFloat(a, b, builtinLocal == lexicon.TypeFloat)
 }
 
 // trimXSDSpace trims only XSD whitespace from both ends of s, leaving any other

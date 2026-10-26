@@ -94,12 +94,146 @@ type HistoricalSession struct {
 	claims        map[[32]byte][]historicalClaim
 }
 
+// NewHistoricalSession snapshots an explicit trust configuration and operation.
+func NewHistoricalSession(ctx context.Context, config HistoricalConfig, now time.Time, input Evidence) (*HistoricalSession, error) {
+	verifier, err := NewVerifier(config.PKI)
+	if err != nil {
+		return nil, err
+	}
+
+	return verifier.NewHistoricalSession(ctx, config.HistoricalOptions, now, input)
+}
+
+// Paths discovers bounded prospective exact paths without rejecting current
+// expiration. Discovery is not historical authentication or trust acceptance.
+func (s *HistoricalSession) Paths(ctx context.Context, targetDER []byte) ([]*HistoricalPath, error) {
+	if err := s.request(ctx); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	target, err := s.historicalTarget(ctx, targetDER)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.pathsFor(ctx, target)
+}
+
+// CheckPath validates one same-session path under its selected calendar model.
+func (s *HistoricalSession) CheckPath(ctx context.Context, path *HistoricalPath) (*HistoricalPathAssessment, error) {
+	if err := s.request(ctx); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.checkPath(ctx, path)
+}
+
+// AuthenticateEvidence authenticates source signatures, issuer authority and
+// exact target/scope bindings at issuance. Stale/revoked claims are not Results.
+func (s *HistoricalSession) AuthenticateEvidence(ctx context.Context, path *HistoricalPath) ([]*VerifiedEvidence, error) {
+	if err := s.request(ctx); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, err := s.checkPath(ctx, path); err != nil {
+		return nil, err
+	}
+
+	claims, err := s.authenticate(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+
+	facts := make([]*VerifiedEvidence, 0, len(claims))
+	for _, claim := range claims {
+		facts = append(facts, claim.fact)
+	}
+
+	return canonicalEvidence(facts), nil
+}
+
+// VerifyCurrent applies the unchanged current-time verifier to this session's
+// fixed present time and owned evidence. Diagnostic authentication remains
+// available separately through AuthenticateEvidence when the target is expired.
+func (s *HistoricalSession) VerifyCurrent(ctx context.Context, targetDER []byte) (*Result, Report, error) {
+	if err := s.request(ctx); err != nil {
+		return nil, Report{}, err
+	}
+
+	return s.verifier.Verify(ctx, targetDER, s.now, s.evidence)
+}
+
+// ValidatePast executes past certificate validation and time sliding. The proof
+// set is minted by the library historical workflow, never caller timestamps.
+func (s *HistoricalSession) ValidatePast(ctx context.Context, targetDER []byte, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
+	if err := s.request(ctx); err != nil {
+		return nil, &PastCertificateReport{cause: err}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.validatePast(ctx, targetDER, proofs)
+}
+
+// ValidatePastPath evaluates one prospective path for callers with additional
+// signature-specific issuer-PoE guards, without silently selecting another path.
+func (s *HistoricalSession) ValidatePastPath(ctx context.Context, path *HistoricalPath, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
+	if err := s.request(ctx); err != nil {
+		return nil, &PastCertificateReport{cause: err}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.validatePastPath(ctx, path, proofs)
+}
+
+func (s *HistoricalSession) request(ctx context.Context) error {
+	if s == nil || s.verifier == nil || ctx == nil || s.now.IsZero() {
+		return ErrPolicy
+	}
+
+	return ctx.Err()
+}
+
+func (s *HistoricalSession) validPath(path *HistoricalPath) error {
+	if path == nil || path.session != s || len(path.chain) < 1 {
+		return fmt.Errorf("%w: foreign or zero historical path", ErrPolicy)
+	}
+
+	return nil
+}
+
 // HistoricalPath is a candidate certificate path bound to its producing session.
 // Only that session can assess or use it. Constructing a path grants no trust.
 type HistoricalPath struct {
 	session     *HistoricalSession
 	chain       []*x509.Certificate
 	fingerprint [32]byte
+}
+
+// ChainDER returns owned copies in target-to-anchor order.
+func (p *HistoricalPath) ChainDER() [][]byte {
+	if p == nil || p.session == nil {
+		return nil
+	}
+
+	out := make([][]byte, len(p.chain))
+	for index, certificate := range p.chain {
+		out[index] = bytes.Clone(certificate.Raw)
+	}
+
+	return out
 }
 
 // HistoricalPathAssessment records structural and calendar checks for a candidate
@@ -109,6 +243,33 @@ type HistoricalPathAssessment struct {
 	path      *HistoricalPath
 	reference time.Time
 	model     ValidityModel
+}
+
+// Model returns the selected calendar model.
+func (a *HistoricalPathAssessment) Model() ValidityModel {
+	if a == nil {
+		return ""
+	}
+
+	return a.model
+}
+
+// ReferenceTime returns the model-specific path checking time, not a proven signing time.
+func (a *HistoricalPathAssessment) ReferenceTime() time.Time {
+	if a == nil {
+		return time.Time{}
+	}
+
+	return a.reference
+}
+
+// Path returns the assessed immutable prospective path.
+func (a *HistoricalPathAssessment) Path() *HistoricalPath {
+	if a == nil {
+		return nil
+	}
+
+	return a.path
 }
 
 // TimeTransition records the authenticated evidence or policy reason for a change
@@ -137,6 +298,33 @@ type PastCertificateResult struct {
 	evidence []*VerifiedEvidence
 }
 
+// Path returns the exact path used by past validation.
+func (r *PastCertificateResult) Path() *HistoricalPath {
+	if r == nil {
+		return nil
+	}
+
+	return r.path
+}
+
+// ValidationTime returns the calculated historical control bound.
+func (r *PastCertificateResult) ValidationTime() time.Time {
+	if r == nil {
+		return time.Time{}
+	}
+
+	return r.at
+}
+
+// Evidence returns immutable authenticated source assertions used by the process.
+func (r *PastCertificateResult) Evidence() []*VerifiedEvidence {
+	if r == nil {
+		return nil
+	}
+
+	return append([]*VerifiedEvidence(nil), r.evidence...)
+}
+
 // PastCertificateReport contains past certificate diagnostics. Acceptance requires
 // a non-nil result in addition to the report.
 type PastCertificateReport struct {
@@ -147,14 +335,49 @@ type PastCertificateReport struct {
 	evidence      []*VerifiedEvidence
 }
 
-// NewHistoricalSession snapshots an explicit trust configuration and operation.
-func NewHistoricalSession(ctx context.Context, config HistoricalConfig, now time.Time, input Evidence) (*HistoricalSession, error) {
-	verifier, err := NewVerifier(config.PKI)
-	if err != nil {
-		return nil, err
+// SubIndication returns the precise diagnostic code, or empty on success.
+func (r *PastCertificateReport) SubIndication() string {
+	if r == nil {
+		return ""
 	}
 
-	return verifier.NewHistoricalSession(ctx, config.HistoricalOptions, now, input)
+	return r.subIndication
+}
+
+// Transitions returns an owned copy of internal time transitions.
+func (r *PastCertificateReport) Transitions() []TimeTransition {
+	if r == nil {
+		return nil
+	}
+
+	return append([]TimeTransition(nil), r.transitions...)
+}
+
+// Cause retains the underlying policy, cryptographic or resource failure.
+func (r *PastCertificateReport) Cause() error {
+	if r == nil {
+		return nil
+	}
+
+	return r.cause
+}
+
+// Path returns the last examined path for diagnostics, never a successful Result.
+func (r *PastCertificateReport) Path() *HistoricalPath {
+	if r == nil {
+		return nil
+	}
+
+	return r.path
+}
+
+// Evidence returns authenticated diagnostics without granting past validation.
+func (r *PastCertificateReport) Evidence() []*VerifiedEvidence {
+	if r == nil {
+		return nil
+	}
+
+	return append([]*VerifiedEvidence(nil), r.evidence...)
 }
 
 // NewHistoricalSession retains existing privately owned trust/usage policy and
@@ -296,227 +519,4 @@ func snapshotHistoricalEvidence(ctx context.Context, input Evidence) (Evidence, 
 	}
 
 	return owned, nil
-}
-
-// Paths discovers bounded prospective exact paths without rejecting current
-// expiration. Discovery is not historical authentication or trust acceptance.
-func (s *HistoricalSession) Paths(ctx context.Context, targetDER []byte) ([]*HistoricalPath, error) {
-	if err := s.request(ctx); err != nil {
-		return nil, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	target, err := s.historicalTarget(ctx, targetDER)
-	if err != nil {
-		return nil, err
-	}
-
-	return s.pathsFor(ctx, target)
-}
-
-// CheckPath validates one same-session path under its selected calendar model.
-func (s *HistoricalSession) CheckPath(ctx context.Context, path *HistoricalPath) (*HistoricalPathAssessment, error) {
-	if err := s.request(ctx); err != nil {
-		return nil, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.checkPath(ctx, path)
-}
-
-// AuthenticateEvidence authenticates source signatures, issuer authority and
-// exact target/scope bindings at issuance. Stale/revoked claims are not Results.
-func (s *HistoricalSession) AuthenticateEvidence(ctx context.Context, path *HistoricalPath) ([]*VerifiedEvidence, error) {
-	if err := s.request(ctx); err != nil {
-		return nil, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, err := s.checkPath(ctx, path); err != nil {
-		return nil, err
-	}
-
-	claims, err := s.authenticate(ctx, path)
-	if err != nil {
-		return nil, err
-	}
-
-	facts := make([]*VerifiedEvidence, 0, len(claims))
-	for _, claim := range claims {
-		facts = append(facts, claim.fact)
-	}
-
-	return canonicalEvidence(facts), nil
-}
-
-// VerifyCurrent applies the unchanged current-time verifier to this session's
-// fixed present time and owned evidence. Diagnostic authentication remains
-// available separately through AuthenticateEvidence when the target is expired.
-func (s *HistoricalSession) VerifyCurrent(ctx context.Context, targetDER []byte) (*Result, Report, error) {
-	if err := s.request(ctx); err != nil {
-		return nil, Report{}, err
-	}
-
-	return s.verifier.Verify(ctx, targetDER, s.now, s.evidence)
-}
-
-// ValidatePast executes past certificate validation and time sliding. The proof
-// set is minted by the library historical workflow, never caller timestamps.
-func (s *HistoricalSession) ValidatePast(ctx context.Context, targetDER []byte, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
-	if err := s.request(ctx); err != nil {
-		return nil, &PastCertificateReport{cause: err}, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.validatePast(ctx, targetDER, proofs)
-}
-
-// ValidatePastPath evaluates one prospective path for callers with additional
-// signature-specific issuer-PoE guards, without silently selecting another path.
-func (s *HistoricalSession) ValidatePastPath(ctx context.Context, path *HistoricalPath, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
-	if err := s.request(ctx); err != nil {
-		return nil, &PastCertificateReport{cause: err}, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.validatePastPath(ctx, path, proofs)
-}
-
-// ChainDER returns owned copies in target-to-anchor order.
-func (p *HistoricalPath) ChainDER() [][]byte {
-	if p == nil || p.session == nil {
-		return nil
-	}
-
-	out := make([][]byte, len(p.chain))
-	for index, certificate := range p.chain {
-		out[index] = bytes.Clone(certificate.Raw)
-	}
-
-	return out
-}
-
-// Model returns the selected calendar model.
-func (a *HistoricalPathAssessment) Model() ValidityModel {
-	if a == nil {
-		return ""
-	}
-
-	return a.model
-}
-
-// ReferenceTime returns the model-specific path checking time, not a proven signing time.
-func (a *HistoricalPathAssessment) ReferenceTime() time.Time {
-	if a == nil {
-		return time.Time{}
-	}
-
-	return a.reference
-}
-
-// Path returns the assessed immutable prospective path.
-func (a *HistoricalPathAssessment) Path() *HistoricalPath {
-	if a == nil {
-		return nil
-	}
-
-	return a.path
-}
-
-// Path returns the exact path used by past validation.
-func (r *PastCertificateResult) Path() *HistoricalPath {
-	if r == nil {
-		return nil
-	}
-
-	return r.path
-}
-
-// ValidationTime returns the calculated historical control bound.
-func (r *PastCertificateResult) ValidationTime() time.Time {
-	if r == nil {
-		return time.Time{}
-	}
-
-	return r.at
-}
-
-// Evidence returns immutable authenticated source assertions used by the process.
-func (r *PastCertificateResult) Evidence() []*VerifiedEvidence {
-	if r == nil {
-		return nil
-	}
-
-	return append([]*VerifiedEvidence(nil), r.evidence...)
-}
-
-// SubIndication returns the precise diagnostic code, or empty on success.
-func (r *PastCertificateReport) SubIndication() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.subIndication
-}
-
-// Transitions returns an owned copy of internal time transitions.
-func (r *PastCertificateReport) Transitions() []TimeTransition {
-	if r == nil {
-		return nil
-	}
-
-	return append([]TimeTransition(nil), r.transitions...)
-}
-
-// Cause retains the underlying policy, cryptographic or resource failure.
-func (r *PastCertificateReport) Cause() error {
-	if r == nil {
-		return nil
-	}
-
-	return r.cause
-}
-
-// Path returns the last examined path for diagnostics, never a successful Result.
-func (r *PastCertificateReport) Path() *HistoricalPath {
-	if r == nil {
-		return nil
-	}
-
-	return r.path
-}
-
-// Evidence returns authenticated diagnostics without granting past validation.
-func (r *PastCertificateReport) Evidence() []*VerifiedEvidence {
-	if r == nil {
-		return nil
-	}
-
-	return append([]*VerifiedEvidence(nil), r.evidence...)
-}
-
-func (s *HistoricalSession) request(ctx context.Context) error {
-	if s == nil || s.verifier == nil || ctx == nil || s.now.IsZero() {
-		return ErrPolicy
-	}
-
-	return ctx.Err()
-}
-
-func (s *HistoricalSession) validPath(path *HistoricalPath) error {
-	if path == nil || path.session != s || len(path.chain) < 1 {
-		return fmt.Errorf("%w: foreign or zero historical path", ErrPolicy)
-	}
-
-	return nil
 }

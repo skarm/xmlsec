@@ -1707,16 +1707,6 @@ func (r *compiledXPathRegex) Split(ctx context.Context, s string, n int) ([]stri
 	return append(out, stringPart(s, last, len(s))), nil
 }
 
-// stringPart detaches a proper substring so a small value cannot retain the
-// complete source. An unchanged string keeps its existing immutable storage.
-func stringPart(s string, start, end int) string {
-	if start == 0 && end == len(s) {
-		return s
-	}
-
-	return strings.Clone(s[start:end])
-}
-
 func (r *compiledXPathRegex) FindAllStringSubmatchIndex(ctx context.Context, s string, n int) ([][]int, error) {
 	var out [][]int
 
@@ -1731,6 +1721,16 @@ func (r *compiledXPathRegex) eachStringSubmatchIndex(ctx context.Context, s stri
 	}
 
 	return r.program.Each(ctx, s, limit, patternWork(ctx), fn)
+}
+
+// stringPart detaches a proper substring so a small value cannot retain the
+// complete source. An unchanged string keeps its existing immutable storage.
+func stringPart(s string, start, end int) string {
+	if start == 0 && end == len(s) {
+		return s
+	}
+
+	return strings.Clone(s[start:end])
 }
 
 func patternWork(ctx context.Context) pattern.Work {

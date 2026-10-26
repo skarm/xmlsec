@@ -143,44 +143,6 @@ func ReadObservation(ctx context.Context, kind Kind, src io.Reader, provenance P
 	return &Observation{kind: kind, data: owned, digest: digest, provenance: provenance}, nil
 }
 
-func snapshotProvenance(provenance Provenance) (Provenance, error) {
-	if len(provenance.Redirects) > 10 {
-		return Provenance{}, ErrLimit
-	}
-
-	if provenance.URI != "" && !validProvenanceURI(provenance.URI) {
-		return Provenance{}, ErrInput
-	}
-
-	for _, uri := range provenance.Redirects {
-		if !validProvenanceURI(uri) {
-			return Provenance{}, ErrInput
-		}
-	}
-
-	provenance.Redirects = append([]string(nil), provenance.Redirects...)
-	if !provenance.RetrievedAt.IsZero() {
-		provenance.RetrievedAt = provenance.RetrievedAt.UTC()
-	}
-
-	return provenance, nil
-}
-
-// ValidKind reports whether kind names a supported observation category.
-func ValidKind(kind Kind) bool {
-	return kind == Certificate || kind == CRL || kind == OCSP || kind == Timestamp
-}
-
-func validProvenanceURI(raw string) bool {
-	if len(raw) > 8192 || !utf8.ValidString(raw) || strings.ContainsAny(raw, "\x00\r\n") {
-		return false
-	}
-
-	u, err := url.Parse(raw)
-
-	return err == nil && u.IsAbs() && u.User == nil
-}
-
 // Valid reports that this observation owns a nonempty byte snapshot.
 func (o *Observation) Valid() bool { return o != nil && len(o.data) != 0 }
 
@@ -239,4 +201,42 @@ func (o *Observation) Provenance() Provenance {
 	p.Redirects = append([]string(nil), p.Redirects...)
 
 	return p
+}
+
+// ValidKind reports whether kind names a supported observation category.
+func ValidKind(kind Kind) bool {
+	return kind == Certificate || kind == CRL || kind == OCSP || kind == Timestamp
+}
+
+func snapshotProvenance(provenance Provenance) (Provenance, error) {
+	if len(provenance.Redirects) > 10 {
+		return Provenance{}, ErrLimit
+	}
+
+	if provenance.URI != "" && !validProvenanceURI(provenance.URI) {
+		return Provenance{}, ErrInput
+	}
+
+	for _, uri := range provenance.Redirects {
+		if !validProvenanceURI(uri) {
+			return Provenance{}, ErrInput
+		}
+	}
+
+	provenance.Redirects = append([]string(nil), provenance.Redirects...)
+	if !provenance.RetrievedAt.IsZero() {
+		provenance.RetrievedAt = provenance.RetrievedAt.UTC()
+	}
+
+	return provenance, nil
+}
+
+func validProvenanceURI(raw string) bool {
+	if len(raw) > 8192 || !utf8.ValidString(raw) || strings.ContainsAny(raw, "\x00\r\n") {
+		return false
+	}
+
+	u, err := url.Parse(raw)
+
+	return err == nil && u.IsAbs() && u.User == nil
 }

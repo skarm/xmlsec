@@ -13,6 +13,26 @@ import (
 	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
+// ResolveURIReference applies fn:resolve-uri's IRI rules to explicit strings.
+// An absolute reference does not inspect the base. Hosts can share the standard
+// URI semantics without invoking an XPath evaluator or rewriting IRI characters.
+func ResolveURIReference(relative, base string) (string, error) {
+	if err := validateIRI(relative); err != nil {
+		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid relative URI: " + relative}
+	}
+
+	parsed, err := parseURIReference(relative)
+	if err != nil {
+		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid relative URI: " + relative}
+	}
+
+	if parsed.IsAbs() {
+		return relative, nil
+	}
+
+	return resolveRelativeURIReference(relative, base)
+}
+
 func lookupFunctionsURI(name string) (*builtinFunc, bool) {
 	switch name {
 	case "encode-for-uri":
@@ -145,26 +165,6 @@ func fnResolveURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 	}
 
 	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: result}), nil
-}
-
-// ResolveURIReference applies fn:resolve-uri's IRI rules to explicit strings.
-// An absolute reference does not inspect the base. Hosts can share the standard
-// URI semantics without invoking an XPath evaluator or rewriting IRI characters.
-func ResolveURIReference(relative, base string) (string, error) {
-	if err := validateIRI(relative); err != nil {
-		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid relative URI: " + relative}
-	}
-
-	parsed, err := parseURIReference(relative)
-	if err != nil {
-		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid relative URI: " + relative}
-	}
-
-	if parsed.IsAbs() {
-		return relative, nil
-	}
-
-	return resolveRelativeURIReference(relative, base)
 }
 
 func resolveRelativeURIReference(relative, base string) (string, error) {

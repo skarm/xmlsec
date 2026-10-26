@@ -246,27 +246,6 @@ func (ec *execContext) validateAndAnnotateCopiedElement(ctx context.Context, out
 	return nil
 }
 
-// propagateAnnotationToPending sets the TypeAnnotation on the most recent
-// pending NodeItem (or the document element within a pending document node)
-// so that variable references carry type annotations for instance-of checks.
-func propagateAnnotationToPending(out *outputFrame, pendingBefore int, elem *xdm.Element, typeName string) {
-	if !out.sequenceMode || len(out.pendingItems) <= pendingBefore {
-		return
-	}
-
-	idx := len(out.pendingItems) - 1
-
-	ni, ok := out.pendingItems[idx].(xdm.NodeItem)
-	if !ok {
-		return
-	}
-
-	if ni.Node == elem {
-		ni.TypeAnnotation = typeName
-		out.pendingItems[idx] = ni
-	}
-}
-
 // effectiveValidation returns the validation mode for a copy/copy-of instruction,
 // falling back to the stylesheet default when the instruction has none.
 func (ec *execContext) effectiveValidation(instValidation string) string {
@@ -358,34 +337,6 @@ func (ec *execContext) execCopyElement(ctx context.Context, src *xdm.Element, op
 	}
 
 	return nil
-}
-
-// copyElementNamespaces copies in-scope bindings when requested and always
-// declares the element name's namespace, which is required for well-formedness.
-func copyElementNamespaces(src, dst *xdm.Element, copyNS bool) error {
-	if copyNS {
-		for _, ns := range collectInScopeNamespaces(src) {
-			if ns.URI() == "" {
-				continue
-			}
-
-			if err := dst.DeclareNamespace(ns.Prefix(), ns.URI()); err != nil {
-				return err
-			}
-		}
-	}
-
-	if src.URI() == "" {
-		return nil
-	}
-
-	if !hasNSDecl(dst, src.Prefix(), src.URI()) {
-		if err := dst.DeclareNamespace(src.Prefix(), src.URI()); err != nil {
-			return err
-		}
-	}
-
-	return dst.SetActiveNamespace(src.Prefix(), src.URI())
 }
 
 func (ec *execContext) execCopyDocument(ctx context.Context, source xdm.Node, body []instruction) error {
@@ -577,50 +528,6 @@ func (ec *execContext) execCopyOfNode(ctx context.Context, inst *copyOfInst, nod
 	}
 
 	return nil
-}
-
-func isCopyTypeNode(node xdm.Node) bool {
-	switch node.Type() {
-	case xdm.ElementNode, xdm.AttributeNode, xdm.DocumentNode:
-		return true
-	default:
-		return false
-	}
-}
-
-// propagateAncestorNamespaces copies in-scope namespace declarations from
-// ancestors of src onto dst. This ensures that copy-namespaces="yes" includes
-// all inherited namespace bindings, not just those directly declared on the
-// element. The xml namespace is excluded since it is always in scope.
-func propagateAncestorNamespaces(src, dst *xdm.Element) {
-	declared := make(map[string]struct{})
-	for _, ns := range dst.Namespaces() {
-		declared[ns.Prefix()] = struct{}{}
-	}
-
-	// Walk up ancestors and add any undeclared namespace bindings.
-	for cur := src.Parent(); cur != nil; {
-		pElem, ok := cur.(*xdm.Element)
-		if !ok {
-			break
-		}
-
-		for _, ns := range pElem.Namespaces() {
-			prefix := ns.Prefix()
-			if prefix == lexicon.MethodXML {
-				continue
-			}
-
-			if _, exists := declared[prefix]; exists {
-				continue
-			}
-
-			_ = dst.DeclareNamespace(prefix, ns.URI())
-			declared[prefix] = struct{}{}
-		}
-
-		cur = pElem.Parent()
-	}
 }
 
 func (ec *execContext) checkCopyOfNamespaceContent(node xdm.Node, copyNS bool) error {
@@ -1009,59 +916,6 @@ func (ec *execContext) copyElementNoNamespaces(src *xdm.Element) error {
 	return nil
 }
 
-// undeclareParentCopyNS adds namespace undeclarations on each direct child
-// element of parent for every namespace declared on parent that the child
-// does not itself require. This prevents copy-internal namespace leakage:
-// when copy-namespaces="no", a parent element may need a namespace for its
-// name/attributes, but children should not inherit those bindings.
-func undeclareParentCopyNS(parent *xdm.Element) {
-	parentNS := parent.Namespaces()
-	if len(parentNS) == 0 {
-		return
-	}
-
-	for child := parent.FirstChild(); child != nil; child = child.NextSibling() {
-		childElem, ok := child.(*xdm.Element)
-		if !ok {
-			continue
-		}
-
-		childNeeded := make(map[string]struct{})
-		if childElem.URI() != "" {
-			childNeeded[childElem.Prefix()] = struct{}{}
-		}
-
-		for _, a := range childElem.Attributes() {
-			if a.URI() != "" {
-				childNeeded[a.Prefix()] = struct{}{}
-			}
-		}
-
-		childDeclared := make(map[string]struct{})
-		for _, ns := range childElem.Namespaces() {
-			childDeclared[ns.Prefix()] = struct{}{}
-		}
-
-		for _, ns := range parentNS {
-			prefix := ns.Prefix()
-			if prefix == lexicon.MethodXML {
-				continue
-			}
-
-			if _, ok := childDeclared[prefix]; ok {
-				continue
-			}
-
-			if _, ok := childNeeded[prefix]; ok {
-				continue
-			}
-			// Undeclare: the child doesn't need this binding.
-			_ = childElem.DeclareNamespace(prefix, "")
-			childDeclared[prefix] = struct{}{}
-		}
-	}
-}
-
 // checkCopyAccumulators verifies that all accumulators declared in the
 // stylesheet are applicable to the tree containing node. This implements
 // the XTDE3362 check for xsl:copy-of/@copy-accumulators="yes".
@@ -1171,19 +1025,6 @@ func (ec *execContext) checkNodeNSSensitive(node xdm.Node) bool {
 	return false
 }
 
-// isNamespaceSensitiveType returns true if the given type name is xs:QName,
-// xs:NOTATION, or common derived forms.
-func isNamespaceSensitiveType(typeName string) bool {
-	switch typeName {
-	case "xs:QName", "xs:NOTATION",
-		"Q{http://www.w3.org/2001/XMLSchema}QName",
-		"Q{http://www.w3.org/2001/XMLSchema}NOTATION":
-		return true
-	}
-
-	return false
-}
-
 // isComplexTypeName returns true if the given type name refers to a complex
 // type definition in the imported schemas.
 func (ec *execContext) isComplexTypeName(typeName string) bool {
@@ -1201,6 +1042,165 @@ func (ec *execContext) validateAttributeValueForType(_ context.Context, value, t
 	}
 
 	return castErr
+}
+
+// propagateAnnotationToPending sets the TypeAnnotation on the most recent
+// pending NodeItem (or the document element within a pending document node)
+// so that variable references carry type annotations for instance-of checks.
+func propagateAnnotationToPending(out *outputFrame, pendingBefore int, elem *xdm.Element, typeName string) {
+	if !out.sequenceMode || len(out.pendingItems) <= pendingBefore {
+		return
+	}
+
+	idx := len(out.pendingItems) - 1
+
+	ni, ok := out.pendingItems[idx].(xdm.NodeItem)
+	if !ok {
+		return
+	}
+
+	if ni.Node == elem {
+		ni.TypeAnnotation = typeName
+		out.pendingItems[idx] = ni
+	}
+}
+
+// copyElementNamespaces copies in-scope bindings when requested and always
+// declares the element name's namespace, which is required for well-formedness.
+func copyElementNamespaces(src, dst *xdm.Element, copyNS bool) error {
+	if copyNS {
+		for _, ns := range collectInScopeNamespaces(src) {
+			if ns.URI() == "" {
+				continue
+			}
+
+			if err := dst.DeclareNamespace(ns.Prefix(), ns.URI()); err != nil {
+				return err
+			}
+		}
+	}
+
+	if src.URI() == "" {
+		return nil
+	}
+
+	if !hasNSDecl(dst, src.Prefix(), src.URI()) {
+		if err := dst.DeclareNamespace(src.Prefix(), src.URI()); err != nil {
+			return err
+		}
+	}
+
+	return dst.SetActiveNamespace(src.Prefix(), src.URI())
+}
+
+func isCopyTypeNode(node xdm.Node) bool {
+	switch node.Type() {
+	case xdm.ElementNode, xdm.AttributeNode, xdm.DocumentNode:
+		return true
+	default:
+		return false
+	}
+}
+
+// propagateAncestorNamespaces copies in-scope namespace declarations from
+// ancestors of src onto dst. This ensures that copy-namespaces="yes" includes
+// all inherited namespace bindings, not just those directly declared on the
+// element. The xml namespace is excluded since it is always in scope.
+func propagateAncestorNamespaces(src, dst *xdm.Element) {
+	declared := make(map[string]struct{})
+	for _, ns := range dst.Namespaces() {
+		declared[ns.Prefix()] = struct{}{}
+	}
+
+	// Walk up ancestors and add any undeclared namespace bindings.
+	for cur := src.Parent(); cur != nil; {
+		pElem, ok := cur.(*xdm.Element)
+		if !ok {
+			break
+		}
+
+		for _, ns := range pElem.Namespaces() {
+			prefix := ns.Prefix()
+			if prefix == lexicon.MethodXML {
+				continue
+			}
+
+			if _, exists := declared[prefix]; exists {
+				continue
+			}
+
+			_ = dst.DeclareNamespace(prefix, ns.URI())
+			declared[prefix] = struct{}{}
+		}
+
+		cur = pElem.Parent()
+	}
+}
+
+// undeclareParentCopyNS adds namespace undeclarations on each direct child
+// element of parent for every namespace declared on parent that the child
+// does not itself require. This prevents copy-internal namespace leakage:
+// when copy-namespaces="no", a parent element may need a namespace for its
+// name/attributes, but children should not inherit those bindings.
+func undeclareParentCopyNS(parent *xdm.Element) {
+	parentNS := parent.Namespaces()
+	if len(parentNS) == 0 {
+		return
+	}
+
+	for child := parent.FirstChild(); child != nil; child = child.NextSibling() {
+		childElem, ok := child.(*xdm.Element)
+		if !ok {
+			continue
+		}
+
+		childNeeded := make(map[string]struct{})
+		if childElem.URI() != "" {
+			childNeeded[childElem.Prefix()] = struct{}{}
+		}
+
+		for _, a := range childElem.Attributes() {
+			if a.URI() != "" {
+				childNeeded[a.Prefix()] = struct{}{}
+			}
+		}
+
+		childDeclared := make(map[string]struct{})
+		for _, ns := range childElem.Namespaces() {
+			childDeclared[ns.Prefix()] = struct{}{}
+		}
+
+		for _, ns := range parentNS {
+			prefix := ns.Prefix()
+			if prefix == lexicon.MethodXML {
+				continue
+			}
+
+			if _, ok := childDeclared[prefix]; ok {
+				continue
+			}
+
+			if _, ok := childNeeded[prefix]; ok {
+				continue
+			}
+			// Undeclare: the child doesn't need this binding.
+			_ = childElem.DeclareNamespace(prefix, "")
+			childDeclared[prefix] = struct{}{}
+		}
+	}
+}
+
+// isNamespaceSensitiveType returns true if the given type name is xs:QName,
+// xs:NOTATION, or common derived forms.
+func isNamespaceSensitiveType(typeName string) bool {
+	switch typeName {
+	case "xs:QName", "xs:NOTATION",
+		"Q{http://www.w3.org/2001/XMLSchema}QName",
+		"Q{http://www.w3.org/2001/XMLSchema}NOTATION":
+		return true
+	}
+
+	return false
 }
 
 // evaluateCopyBoolean resolves a shadow attribute, retaining its static value

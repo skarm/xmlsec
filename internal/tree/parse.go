@@ -209,6 +209,85 @@ func (p *documentParser) startElement(element xml.StartElement) error {
 	return nil
 }
 
+func (p *documentParser) endElement(element xml.EndElement) error {
+	if len(p.stack) == 0 {
+		return fmt.Errorf("%w: unexpected end element", ErrMalformed)
+	}
+
+	frame := p.stack[len(p.stack)-1]
+	if frame.node.Prefix != element.Name.Space || frame.node.Name.Local != element.Name.Local {
+		return fmt.Errorf("%w: mismatched end element", ErrMalformed)
+	}
+
+	p.scope.pop(frame.namespaceMark)
+	p.stack = p.stack[:len(p.stack)-1]
+
+	return nil
+}
+
+func (p *documentParser) characterData(data xml.CharData) error {
+	if len(p.stack) == 0 {
+		// xmlInput already rejected lexical references, CDATA and nonspace
+		// characters outside the root, before entity decoding.
+		return nil
+	}
+
+	if p.pendingText.Cap()-p.pendingText.Len() < len(data) {
+		p.pendingText.Grow(max(len(data), p.pendingText.Cap()))
+	}
+
+	p.pendingText.Write(data)
+
+	return nil
+}
+
+func (p *documentParser) processingInstruction(instruction xml.ProcInst, offset int64) error {
+	if strings.EqualFold(instruction.Target, lexicon.PrefixXML) {
+		if instruction.Target != lexicon.PrefixXML || offset != 0 || p.seenDecl {
+			return fmt.Errorf("%w: XML declaration position", ErrMalformed)
+		}
+
+		if err := p.declaration(instruction.Inst); err != nil {
+			return err
+		}
+
+		p.seenDecl = true
+
+		return nil
+	}
+
+	if !NCName(instruction.Target) {
+		return fmt.Errorf("%w: PI target", ErrMalformed)
+	}
+
+	return p.appendNode(&Node{Kind: PINode, Name: Name{Local: instruction.Target}, Data: string(instruction.Inst)})
+}
+
+func (p *documentParser) declaration(s []byte) error {
+	label, err := validateDeclaration(s)
+	if err != nil {
+		return err
+	}
+
+	if label == "" {
+		if p.encoding.name != nameUTF8 && !p.encoding.bom {
+			return fmt.Errorf("%w: missing endian-specific encoding declaration", ErrMalformed)
+		}
+
+		return nil
+	}
+
+	if p.characterInput || p.encoding.accepts(label) {
+		return nil
+	}
+
+	if !p.singleByteEncodings || p.encoding.name != nameUTF8 || p.encoding.bom {
+		return fmt.Errorf("%w: unsupported or conflicting encoding declaration", ErrUnsupported)
+	}
+
+	return p.input.singleByteEncoding(label)
+}
+
 func parseNamespaceAttributes(attrs []xml.Attr, relativeNamespaces bool) ([]Namespace, error) {
 	lexical := make(map[xml.Name]struct{}, len(attrs))
 
@@ -308,60 +387,6 @@ func validateNamespace(p, v string, relativeNamespaces bool) error {
 	}
 
 	return nil
-}
-
-func (p *documentParser) endElement(element xml.EndElement) error {
-	if len(p.stack) == 0 {
-		return fmt.Errorf("%w: unexpected end element", ErrMalformed)
-	}
-
-	frame := p.stack[len(p.stack)-1]
-	if frame.node.Prefix != element.Name.Space || frame.node.Name.Local != element.Name.Local {
-		return fmt.Errorf("%w: mismatched end element", ErrMalformed)
-	}
-
-	p.scope.pop(frame.namespaceMark)
-	p.stack = p.stack[:len(p.stack)-1]
-
-	return nil
-}
-
-func (p *documentParser) characterData(data xml.CharData) error {
-	if len(p.stack) == 0 {
-		// xmlInput already rejected lexical references, CDATA and nonspace
-		// characters outside the root, before entity decoding.
-		return nil
-	}
-
-	if p.pendingText.Cap()-p.pendingText.Len() < len(data) {
-		p.pendingText.Grow(max(len(data), p.pendingText.Cap()))
-	}
-
-	p.pendingText.Write(data)
-
-	return nil
-}
-
-func (p *documentParser) processingInstruction(instruction xml.ProcInst, offset int64) error {
-	if strings.EqualFold(instruction.Target, lexicon.PrefixXML) {
-		if instruction.Target != lexicon.PrefixXML || offset != 0 || p.seenDecl {
-			return fmt.Errorf("%w: XML declaration position", ErrMalformed)
-		}
-
-		if err := p.declaration(instruction.Inst); err != nil {
-			return err
-		}
-
-		p.seenDecl = true
-
-		return nil
-	}
-
-	if !NCName(instruction.Target) {
-		return fmt.Errorf("%w: PI target", ErrMalformed)
-	}
-
-	return p.appendNode(&Node{Kind: PINode, Name: Name{Local: instruction.Target}, Data: string(instruction.Inst)})
 }
 
 // normalizeLexical performs XML 1.0 end-of-line and CDATA-attribute whitespace
@@ -597,31 +622,6 @@ func lexicalSpaceEnd(out []byte, index int) int {
 }
 
 func spaceByte(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\r' }
-
-func (p *documentParser) declaration(s []byte) error {
-	label, err := validateDeclaration(s)
-	if err != nil {
-		return err
-	}
-
-	if label == "" {
-		if p.encoding.name != nameUTF8 && !p.encoding.bom {
-			return fmt.Errorf("%w: missing endian-specific encoding declaration", ErrMalformed)
-		}
-
-		return nil
-	}
-
-	if p.characterInput || p.encoding.accepts(label) {
-		return nil
-	}
-
-	if !p.singleByteEncodings || p.encoding.name != nameUTF8 || p.encoding.bom {
-		return fmt.Errorf("%w: unsupported or conflicting encoding declaration", ErrUnsupported)
-	}
-
-	return p.input.singleByteEncoding(label)
-}
 
 func validateDeclaration(s []byte) (string, error) {
 	attrs, err := declarationAttributes(s)

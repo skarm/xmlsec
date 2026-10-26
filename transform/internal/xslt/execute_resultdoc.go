@@ -24,6 +24,82 @@ type parameterDocumentResult struct {
 	presence paramDocPresence
 }
 
+func (ec *execContext) CheckRead(ctx context.Context, uri string) error {
+	if ec.resourceOwner != nil {
+		return ec.resourceOwner.CheckRead(ctx, uri)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if ec.stylesheet.processorLanguage() < 30 {
+		return nil
+	}
+
+	if len(ec.usedResultURIs) == 0 && (!ec.primaryClaimedImplicitly || ec.canonicalPrimaryURI == "") {
+		return nil
+	}
+
+	key := resourceURIKey(uri)
+	if key == "" {
+		return nil
+	}
+
+	if key == ec.canonicalPrimaryURI {
+		if ec.primaryClaimedImplicitly {
+			return dynamicError("XTDE1500", "resource %q is both read and written", key)
+		}
+
+		key = ""
+	}
+
+	if _, written := ec.usedResultURIs[key]; written {
+		return dynamicError("XTDE1500", "resource %q is both read and written", uri)
+	}
+
+	return nil
+}
+
+func (ec *execContext) RecordRead(ctx context.Context, uri string) error {
+	if uri == "" {
+		return ctx.Err()
+	}
+
+	if ec.resourceOwner != nil {
+		return ec.resourceOwner.RecordRead(ctx, uri)
+	}
+
+	if err := ec.CheckRead(ctx, uri); err != nil {
+		return err
+	}
+
+	if ec.stylesheet.processorLanguage() < 30 {
+		return nil
+	}
+
+	key := resourceURIKey(uri)
+	if key == "" {
+		return nil
+	}
+
+	if _, read := ec.readResourceURIs[key]; read {
+		return nil
+	}
+
+	if err := xpath.ChargeString(ctx, len(key)+32); err != nil {
+		return err
+	}
+
+	if ec.readResourceURIs == nil {
+		ec.readResourceURIs = make(map[string]struct{})
+	}
+
+	ec.readResourceURIs[key] = struct{}{}
+
+	return nil
+}
+
 func (ec *execContext) pushResultParameterDocument(inst *resultDocumentInst) func() {
 	output, hadOutput := ec.paramDocOutputDefs[inst]
 	presence, hadPresence := ec.paramDocPresences[inst]
@@ -425,99 +501,6 @@ func (ec *execContext) cacheInputDocument(node xdm.Node) *xdm.Document {
 	return doc
 }
 
-func resourceURIKey(uri string) string {
-	if uri == "" {
-		return ""
-	}
-
-	uri = uripath.EscapeResourceReference(uri)
-
-	ref, err := url.Parse(ensureFileURI(uri))
-	if err != nil || !ref.IsAbs() {
-		return ""
-	}
-
-	ref.Fragment, ref.RawFragment = "", ""
-
-	return canonicalResultURIKey(ref.String(), "")
-}
-
-func (ec *execContext) CheckRead(ctx context.Context, uri string) error {
-	if ec.resourceOwner != nil {
-		return ec.resourceOwner.CheckRead(ctx, uri)
-	}
-
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	if ec.stylesheet.processorLanguage() < 30 {
-		return nil
-	}
-
-	if len(ec.usedResultURIs) == 0 && (!ec.primaryClaimedImplicitly || ec.canonicalPrimaryURI == "") {
-		return nil
-	}
-
-	key := resourceURIKey(uri)
-	if key == "" {
-		return nil
-	}
-
-	if key == ec.canonicalPrimaryURI {
-		if ec.primaryClaimedImplicitly {
-			return dynamicError("XTDE1500", "resource %q is both read and written", key)
-		}
-
-		key = ""
-	}
-
-	if _, written := ec.usedResultURIs[key]; written {
-		return dynamicError("XTDE1500", "resource %q is both read and written", uri)
-	}
-
-	return nil
-}
-
-func (ec *execContext) RecordRead(ctx context.Context, uri string) error {
-	if uri == "" {
-		return ctx.Err()
-	}
-
-	if ec.resourceOwner != nil {
-		return ec.resourceOwner.RecordRead(ctx, uri)
-	}
-
-	if err := ec.CheckRead(ctx, uri); err != nil {
-		return err
-	}
-
-	if ec.stylesheet.processorLanguage() < 30 {
-		return nil
-	}
-
-	key := resourceURIKey(uri)
-	if key == "" {
-		return nil
-	}
-
-	if _, read := ec.readResourceURIs[key]; read {
-		return nil
-	}
-
-	if err := xpath.ChargeString(ctx, len(key)+32); err != nil {
-		return err
-	}
-
-	if ec.readResourceURIs == nil {
-		ec.readResourceURIs = make(map[string]struct{})
-	}
-
-	ec.readResourceURIs[key] = struct{}{}
-
-	return nil
-}
-
 func (ec *execContext) checkResourceWrite(uri string) error {
 	if uri == "" {
 		return nil
@@ -540,50 +523,6 @@ func (ec *execContext) checkResourceWrite(uri string) error {
 	}
 
 	return nil
-}
-
-// canonicalResultURIKey produces a canonical key for XTDE1490 duplicate
-// detection. Unlike xdm.BuildURI (which strips the file: scheme for file:
-// bases, turning "file:///d/out.xml" into "/d/out.xml"), this resolves the
-// href as a URI and PRESERVES the scheme/host for both absolute and relative
-// hrefs. That ensures a relative href ("out.xml") and the equivalent absolute
-// href ("file:///d/out.xml") under the same base collapse to the same key, so
-// two result documents denoting the same file are detected as duplicates.
-func canonicalResultURIKey(href, base string) string {
-	href = uripath.EscapeResourceReference(href)
-	base = uripath.EscapeResourceReference(base)
-
-	ref, err := url.Parse(href)
-	if err != nil {
-		return href
-	}
-
-	if ref.IsAbs() {
-		// Collapse "." / ".." dot-segments so that
-		// "file:///base/dir/a/../out.xml" and "file:///base/dir/out.xml" produce
-		// the SAME key (XTDE1490 duplicate detection). Resolving an absolute
-		// hierarchical reference against itself runs RFC 3986 remove_dot_segments
-		// while preserving the scheme/authority.
-		return ref.ResolveReference(ref).String()
-	}
-
-	if base == "" {
-		return href
-	}
-
-	baseURL, err := url.Parse(base)
-	if err != nil || !baseURL.IsAbs() {
-		// Without a usable absolute base we cannot canonicalize URI-wise;
-		// fall back to xdm.BuildURI's filesystem-style resolution so that
-		// distinct relative hrefs denoting the same path still collide.
-		if resolved := xdm.BuildURI(href, base); resolved != "" {
-			return resolved
-		}
-
-		return href
-	}
-
-	return baseURL.ResolveReference(ref).String()
 }
 
 func (ec *execContext) resolveResultParameterDocument(ctx context.Context, inst *resultDocumentInst) error {
@@ -1068,107 +1007,6 @@ func (ec *execContext) resultDocOutputBase(effectiveFormat string) OutputDef {
 	return base
 }
 
-// foldParamDocOverrides applies the highest-priority parameter document after
-// output-definition and local instruction values. The two element-name lists
-// are unions; every other present parameter replaces its prior value.
-func foldParamDocOverrides(base, pd *OutputDef, pres paramDocPresence) {
-	if _, present := pres[lexicon.SerializationMethod]; present {
-		base.Method = pd.Method
-		base.MethodExplicit = pd.MethodExplicit
-	}
-
-	if _, present := pres[lexicon.SerializationEncoding]; present {
-		base.Encoding = pd.Encoding
-	}
-
-	if _, present := pres[lexicon.SerializationStandalone]; present {
-		base.Standalone = pd.Standalone
-	}
-
-	if len(pd.CDATASections) > 0 {
-		base.CDATASections = unionOutputNames(base.CDATASections, pd.CDATASections)
-	}
-
-	if _, present := pres[lexicon.SerializationDoctypePublic]; present {
-		base.DoctypePublic = pd.DoctypePublic
-	}
-
-	if _, present := pres[lexicon.SerializationDoctypeSystem]; present {
-		base.DoctypeSystem = pd.DoctypeSystem
-	}
-
-	if _, present := pres[lexicon.SerializationMediaType]; present {
-		base.MediaType = pd.MediaType
-	}
-
-	if _, present := pres[lexicon.SerializationVersion]; present {
-		base.Version = pd.Version
-	}
-
-	if _, present := pres[lexicon.SerializationNormalizationForm]; present {
-		base.NormalizationForm = pd.NormalizationForm
-	}
-
-	if _, present := pres[lexicon.SerializationHTMLVersion]; present {
-		base.HTMLVersion = pd.HTMLVersion
-	}
-
-	if _, present := pres[lexicon.SerializationJSONNodeOutputMethod]; present {
-		base.JSONNodeOutputMethod = pd.JSONNodeOutputMethod
-	}
-
-	if len(pd.SuppressIndentation) > 0 {
-		base.SuppressIndentation = unionOutputNames(base.SuppressIndentation, pd.SuppressIndentation)
-	}
-
-	if pd.IncludeContentType != nil {
-		v := *pd.IncludeContentType
-		base.IncludeContentType = &v
-	}
-
-	if pd.EscapeURIAttributes != nil {
-		v := *pd.EscapeURIAttributes
-		base.EscapeURIAttributes = &v
-	}
-
-	if pd.BuildTree != nil {
-		v := *pd.BuildTree
-		base.BuildTree = &v
-	}
-
-	if pd.ItemSeparator != nil {
-		v := *pd.ItemSeparator
-		base.ItemSeparator, base.ItemSeparatorAbsent = &v, false
-	}
-
-	if _, present := pres[lexicon.SerializationUseCharacterMaps]; present {
-		base.UseCharacterMaps = nil
-		base.ResolvedCharMap = make(map[rune]string, len(pd.ResolvedCharMap))
-		maps.Copy(base.ResolvedCharMap, pd.ResolvedCharMap)
-	}
-
-	if pd.OmitDeclarationExplicit {
-		base.OmitDeclaration = pd.OmitDeclaration
-		base.OmitDeclarationExplicit = true
-	}
-
-	if _, present := pres[lexicon.SerializationIndent]; present {
-		base.Indent = pd.Indent
-	}
-
-	if _, present := pres[lexicon.SerializationByteOrderMark]; present {
-		base.ByteOrderMark = pd.ByteOrderMark
-	}
-
-	if _, present := pres[lexicon.SerializationAllowDuplicateNames]; present {
-		base.AllowDuplicateNames = pd.AllowDuplicateNames
-	}
-
-	if _, present := pres[lexicon.SerializationUndeclarePrefixes]; present {
-		base.UndeclarePrefixes = pd.UndeclarePrefixes
-	}
-}
-
 func (ec *execContext) evalSerializationAVT(ctx context.Context, value *avt) (string, error) {
 	if value == nil {
 		return "", nil
@@ -1457,6 +1295,168 @@ func (ec *execContext) resultDocumentCharacterMap(inst *resultDocumentInst, form
 	}
 
 	return result
+}
+
+func resourceURIKey(uri string) string {
+	if uri == "" {
+		return ""
+	}
+
+	uri = uripath.EscapeResourceReference(uri)
+
+	ref, err := url.Parse(ensureFileURI(uri))
+	if err != nil || !ref.IsAbs() {
+		return ""
+	}
+
+	ref.Fragment, ref.RawFragment = "", ""
+
+	return canonicalResultURIKey(ref.String(), "")
+}
+
+// canonicalResultURIKey produces a canonical key for XTDE1490 duplicate
+// detection. Unlike xdm.BuildURI (which strips the file: scheme for file:
+// bases, turning "file:///d/out.xml" into "/d/out.xml"), this resolves the
+// href as a URI and PRESERVES the scheme/host for both absolute and relative
+// hrefs. That ensures a relative href ("out.xml") and the equivalent absolute
+// href ("file:///d/out.xml") under the same base collapse to the same key, so
+// two result documents denoting the same file are detected as duplicates.
+func canonicalResultURIKey(href, base string) string {
+	href = uripath.EscapeResourceReference(href)
+	base = uripath.EscapeResourceReference(base)
+
+	ref, err := url.Parse(href)
+	if err != nil {
+		return href
+	}
+
+	if ref.IsAbs() {
+		// Collapse "." / ".." dot-segments so that
+		// "file:///base/dir/a/../out.xml" and "file:///base/dir/out.xml" produce
+		// the SAME key (XTDE1490 duplicate detection). Resolving an absolute
+		// hierarchical reference against itself runs RFC 3986 remove_dot_segments
+		// while preserving the scheme/authority.
+		return ref.ResolveReference(ref).String()
+	}
+
+	if base == "" {
+		return href
+	}
+
+	baseURL, err := url.Parse(base)
+	if err != nil || !baseURL.IsAbs() {
+		// Without a usable absolute base we cannot canonicalize URI-wise;
+		// fall back to xdm.BuildURI's filesystem-style resolution so that
+		// distinct relative hrefs denoting the same path still collide.
+		if resolved := xdm.BuildURI(href, base); resolved != "" {
+			return resolved
+		}
+
+		return href
+	}
+
+	return baseURL.ResolveReference(ref).String()
+}
+
+// foldParamDocOverrides applies the highest-priority parameter document after
+// output-definition and local instruction values. The two element-name lists
+// are unions; every other present parameter replaces its prior value.
+func foldParamDocOverrides(base, pd *OutputDef, pres paramDocPresence) {
+	if _, present := pres[lexicon.SerializationMethod]; present {
+		base.Method = pd.Method
+		base.MethodExplicit = pd.MethodExplicit
+	}
+
+	if _, present := pres[lexicon.SerializationEncoding]; present {
+		base.Encoding = pd.Encoding
+	}
+
+	if _, present := pres[lexicon.SerializationStandalone]; present {
+		base.Standalone = pd.Standalone
+	}
+
+	if len(pd.CDATASections) > 0 {
+		base.CDATASections = unionOutputNames(base.CDATASections, pd.CDATASections)
+	}
+
+	if _, present := pres[lexicon.SerializationDoctypePublic]; present {
+		base.DoctypePublic = pd.DoctypePublic
+	}
+
+	if _, present := pres[lexicon.SerializationDoctypeSystem]; present {
+		base.DoctypeSystem = pd.DoctypeSystem
+	}
+
+	if _, present := pres[lexicon.SerializationMediaType]; present {
+		base.MediaType = pd.MediaType
+	}
+
+	if _, present := pres[lexicon.SerializationVersion]; present {
+		base.Version = pd.Version
+	}
+
+	if _, present := pres[lexicon.SerializationNormalizationForm]; present {
+		base.NormalizationForm = pd.NormalizationForm
+	}
+
+	if _, present := pres[lexicon.SerializationHTMLVersion]; present {
+		base.HTMLVersion = pd.HTMLVersion
+	}
+
+	if _, present := pres[lexicon.SerializationJSONNodeOutputMethod]; present {
+		base.JSONNodeOutputMethod = pd.JSONNodeOutputMethod
+	}
+
+	if len(pd.SuppressIndentation) > 0 {
+		base.SuppressIndentation = unionOutputNames(base.SuppressIndentation, pd.SuppressIndentation)
+	}
+
+	if pd.IncludeContentType != nil {
+		v := *pd.IncludeContentType
+		base.IncludeContentType = &v
+	}
+
+	if pd.EscapeURIAttributes != nil {
+		v := *pd.EscapeURIAttributes
+		base.EscapeURIAttributes = &v
+	}
+
+	if pd.BuildTree != nil {
+		v := *pd.BuildTree
+		base.BuildTree = &v
+	}
+
+	if pd.ItemSeparator != nil {
+		v := *pd.ItemSeparator
+		base.ItemSeparator, base.ItemSeparatorAbsent = &v, false
+	}
+
+	if _, present := pres[lexicon.SerializationUseCharacterMaps]; present {
+		base.UseCharacterMaps = nil
+		base.ResolvedCharMap = make(map[rune]string, len(pd.ResolvedCharMap))
+		maps.Copy(base.ResolvedCharMap, pd.ResolvedCharMap)
+	}
+
+	if pd.OmitDeclarationExplicit {
+		base.OmitDeclaration = pd.OmitDeclaration
+		base.OmitDeclarationExplicit = true
+	}
+
+	if _, present := pres[lexicon.SerializationIndent]; present {
+		base.Indent = pd.Indent
+	}
+
+	if _, present := pres[lexicon.SerializationByteOrderMark]; present {
+		base.ByteOrderMark = pd.ByteOrderMark
+	}
+
+	if _, present := pres[lexicon.SerializationAllowDuplicateNames]; present {
+		base.AllowDuplicateNames = pd.AllowDuplicateNames
+	}
+
+	if _, present := pres[lexicon.SerializationUndeclarePrefixes]; present {
+		base.UndeclarePrefixes = pd.UndeclarePrefixes
+	}
 }
 
 // validateDocumentStructure checks that a document node has exactly one element

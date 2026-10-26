@@ -198,6 +198,37 @@ const (
 	fmtTokenUnknown
 )
 
+// FormatGreekAlphabetic uses the 24-letter Greek alphabet, excluding the
+// unassigned capital U+03A2 and the context-specific lowercase final sigma.
+// It is shared with XSLT numbering so both execution paths use the same digits.
+func FormatGreekAlphabetic(n *big.Int, upper bool) string {
+	if n.Sign() <= 0 {
+		return n.String()
+	}
+
+	alphabet := []rune("αβγδεζηθικλμνξοπρστυφχψω")
+	if upper {
+		alphabet = []rune("ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ")
+	}
+
+	value, one, size := new(big.Int).Set(n), big.NewInt(1), big.NewInt(int64(len(alphabet)))
+
+	var (
+		digits    []rune
+		remainder big.Int
+	)
+
+	for value.Sign() > 0 {
+		value.Sub(value, one)
+		value.DivMod(value, size, &remainder)
+		digits = append(digits, alphabet[remainder.Int64()])
+	}
+
+	slices.Reverse(digits)
+
+	return string(digits)
+}
+
 func classifyFormatToken(primary string) formatTokenKind {
 	runes := []rune(primary)
 	if len(runes) == 0 {
@@ -271,37 +302,6 @@ func formatSpecialToken(n *big.Int, primary string, kind formatTokenKind) (strin
 	default:
 		return formatIntegerDecimal(n, primary)
 	}
-}
-
-// FormatGreekAlphabetic uses the 24-letter Greek alphabet, excluding the
-// unassigned capital U+03A2 and the context-specific lowercase final sigma.
-// It is shared with XSLT numbering so both execution paths use the same digits.
-func FormatGreekAlphabetic(n *big.Int, upper bool) string {
-	if n.Sign() <= 0 {
-		return n.String()
-	}
-
-	alphabet := []rune("αβγδεζηθικλμνξοπρστυφχψω")
-	if upper {
-		alphabet = []rune("ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ")
-	}
-
-	value, one, size := new(big.Int).Set(n), big.NewInt(1), big.NewInt(int64(len(alphabet)))
-
-	var (
-		digits    []rune
-		remainder big.Int
-	)
-
-	for value.Sign() > 0 {
-		value.Sub(value, one)
-		value.DivMod(value, size, &remainder)
-		digits = append(digits, alphabet[remainder.Int64()])
-	}
-
-	slices.Reverse(digits)
-
-	return string(digits)
 }
 
 // formatSequentialSymbol formats using a sequential Unicode symbol range (e.g., circled digits).

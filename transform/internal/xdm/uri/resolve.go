@@ -205,6 +205,25 @@ func (r iriReference) String() string {
 	return b.String()
 }
 
+// ValidatePercentEncoding checks every percent escape, including query and fragment.
+func ValidatePercentEncoding(uri string) error {
+	for i := 0; i < len(uri); i++ {
+		if uri[i] == '%' {
+			if i+2 >= len(uri) {
+				return fmt.Errorf("incomplete percent-encoding at position %d", i)
+			}
+
+			if !xmlchar.IsHexDigit(uri[i+1]) || !xmlchar.IsHexDigit(uri[i+2]) {
+				return fmt.Errorf("invalid percent-encoding %%%c%c", uri[i+1], uri[i+2])
+			}
+
+			i += 2
+		}
+	}
+
+	return nil
+}
+
 func splitIRIReference(raw string) (iriReference, error) {
 	if err := ValidatePercentEncoding(raw); err != nil {
 		return iriReference{}, err
@@ -291,23 +310,4 @@ func indexScheme(raw string) int {
 	}
 
 	return -1
-}
-
-// ValidatePercentEncoding checks every percent escape, including query and fragment.
-func ValidatePercentEncoding(uri string) error {
-	for i := 0; i < len(uri); i++ {
-		if uri[i] == '%' {
-			if i+2 >= len(uri) {
-				return fmt.Errorf("incomplete percent-encoding at position %d", i)
-			}
-
-			if !xmlchar.IsHexDigit(uri[i+1]) || !xmlchar.IsHexDigit(uri[i+2]) {
-				return fmt.Errorf("invalid percent-encoding %%%c%c", uri[i+1], uri[i+2])
-			}
-
-			i += 2
-		}
-	}
-
-	return nil
 }

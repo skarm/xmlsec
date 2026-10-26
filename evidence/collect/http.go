@@ -127,6 +127,25 @@ func NewHTTP(config Config) (*HTTP, error) {
 	return c, nil
 }
 
+// Collect returns observations only when every requested retrieval succeeds.
+// On any HTTP, redirect, reader, close, budget or cancellation error it returns
+// no partial result. Returned bytes remain untrusted, including over HTTPS.
+func (c *HTTP) Collect(ctx context.Context, requests []Request) ([]*evidence.Observation, error) {
+	return collect(c, ctx, requests, evidence.ReadObservation)
+}
+
+// CollectTo stores exact response bytes in store, retaining only metadata in
+// heap. The caller owns store and each returned record. All records created by
+// this call are removed on any retrieval, close, cancellation or budget error.
+// The returned records remain untrusted and require offline authentication.
+func (c *HTTP) CollectTo(ctx context.Context, store *evidence.Store, requests []Request) ([]*evidence.Record, error) {
+	if store == nil {
+		return nil, evidence.ErrInput
+	}
+
+	return collect(c, ctx, requests, store.PutReader)
+}
+
 func normalizeLimits(limits Limits) (Limits, error) {
 	for _, field := range []struct {
 		value    *int
@@ -180,25 +199,6 @@ type collection struct {
 	collector *HTTP
 	requests  int
 	octets    int
-}
-
-// Collect returns observations only when every requested retrieval succeeds.
-// On any HTTP, redirect, reader, close, budget or cancellation error it returns
-// no partial result. Returned bytes remain untrusted, including over HTTPS.
-func (c *HTTP) Collect(ctx context.Context, requests []Request) ([]*evidence.Observation, error) {
-	return collect(c, ctx, requests, evidence.ReadObservation)
-}
-
-// CollectTo stores exact response bytes in store, retaining only metadata in
-// heap. The caller owns store and each returned record. All records created by
-// this call are removed on any retrieval, close, cancellation or budget error.
-// The returned records remain untrusted and require offline authentication.
-func (c *HTTP) CollectTo(ctx context.Context, store *evidence.Store, requests []Request) ([]*evidence.Record, error) {
-	if store == nil {
-		return nil, evidence.ErrInput
-	}
-
-	return collect(c, ctx, requests, store.PutReader)
 }
 
 type (
@@ -383,24 +383,6 @@ type responseTransport struct {
 	failureError error
 }
 
-func (t *responseTransport) failure() error {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
-
-	return t.failureError
-}
-
-func (t *responseTransport) record(err error) {
-	if err == nil {
-		return
-	}
-
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
-
-	t.failureError = errors.Join(t.failureError, err)
-}
-
 func (t *responseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if err := t.failure(); err != nil {
 		return nil, err
@@ -423,6 +405,24 @@ func (t *responseTransport) RoundTrip(request *http.Request) (*http.Response, er
 	}
 
 	return response, nil
+}
+
+func (t *responseTransport) failure() error {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	return t.failureError
+}
+
+func (t *responseTransport) record(err error) {
+	if err == nil {
+		return
+	}
+
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	t.failureError = errors.Join(t.failureError, err)
 }
 
 type responseBody struct {

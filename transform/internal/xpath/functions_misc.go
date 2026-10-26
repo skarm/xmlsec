@@ -16,6 +16,9 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+//nolint:gochecknoglobals // One immutable process seed hashes canonical atomic values consistently.
+var randomSeedHash = sync.OnceValue(maphash.MakeSeed)
+
 func lookupFunctionsMisc(name string) (*builtinFunc, bool) {
 	switch name {
 	case "static-base-uri":
@@ -128,9 +131,6 @@ func currentTimeFromCtx(ctx context.Context) time.Time {
 
 	return time.Now()
 }
-
-//nolint:gochecknoglobals // One immutable process seed hashes canonical atomic values consistently.
-var randomSeedHash = sync.OnceValue(maphash.MakeSeed)
 
 func fnRandomNumberGenerator(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	var seed int64

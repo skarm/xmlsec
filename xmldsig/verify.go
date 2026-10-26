@@ -186,6 +186,67 @@ func Verify(ctx context.Context, d *document.Document, key crypto.PublicKey, opt
 	return result, nil
 }
 
+// Root returns the immutable document root.
+func (r *Result) Root() document.Element {
+	if r == nil {
+		return document.Element{}
+	}
+
+	return r.doc.Root()
+}
+
+// SignatureMethod returns the authenticated signature algorithm URI.
+func (r *Result) SignatureMethod() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.algorithm
+}
+
+// KeyFingerprintSHA256 returns the hexadecimal SHA-256 fingerprint of the externally
+// trusted verification key.
+func (r *Result) KeyFingerprintSHA256() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.fingerprint
+}
+
+// References returns an owned slice of immutable validated reference results.
+func (r *Result) References() []ReferenceResult {
+	if r == nil {
+		return nil
+	}
+
+	return append([]ReferenceResult(nil), r.references...)
+}
+
+// CoversElement checks element identity in this EXACT snapshot and membership
+// in a checked reference subtree, excluding Signature. It does NOT certify
+// comments, omitted namespace bindings, inherited context, XPath/QName values,
+// schema defaults or application semantics. It is not a generic node-set API.
+func (r *Result) CoversElement(e document.Element) bool {
+	if r == nil {
+		return false
+	}
+
+	d, n := tree.Unwrap(e)
+	if d != r.doc || n == nil || within(n, r.signature) {
+		return false
+	}
+
+	for _, ref := range r.references {
+		_, target := tree.Unwrap(ref.target)
+		if within(n, target) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func envelopedSignatureNode(d *document.Document, expected document.Name) (*tree.Node, error) {
 	root := tree.Root(d)
 	if expected != (document.Name{}) && root.Name != expected {
@@ -508,67 +569,6 @@ func validateEnvelopedSignedInfo(signed []*tree.Node, maximum int) error {
 	return nil
 }
 
-// Root returns the immutable document root.
-func (r *Result) Root() document.Element {
-	if r == nil {
-		return document.Element{}
-	}
-
-	return r.doc.Root()
-}
-
-// SignatureMethod returns the authenticated signature algorithm URI.
-func (r *Result) SignatureMethod() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.algorithm
-}
-
-// KeyFingerprintSHA256 returns the hexadecimal SHA-256 fingerprint of the externally
-// trusted verification key.
-func (r *Result) KeyFingerprintSHA256() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.fingerprint
-}
-
-// References returns an owned slice of immutable validated reference results.
-func (r *Result) References() []ReferenceResult {
-	if r == nil {
-		return nil
-	}
-
-	return append([]ReferenceResult(nil), r.references...)
-}
-
-// CoversElement checks element identity in this EXACT snapshot and membership
-// in a checked reference subtree, excluding Signature. It does NOT certify
-// comments, omitted namespace bindings, inherited context, XPath/QName values,
-// schema defaults or application semantics. It is not a generic node-set API.
-func (r *Result) CoversElement(e document.Element) bool {
-	if r == nil {
-		return false
-	}
-
-	d, n := tree.Unwrap(e)
-	if d != r.doc || n == nil || within(n, r.signature) {
-		return false
-	}
-
-	for _, ref := range r.references {
-		_, target := tree.Unwrap(ref.target)
-		if within(n, target) {
-			return true
-		}
-	}
-
-	return false
-}
-
 // ReferenceResult retains an authenticated digest and processing trace without
 // canonical bytes. Explicit Manifest traversal also retains bounded original
 // subresource bytes. Target is valid only for a same-document element reference;
@@ -696,16 +696,6 @@ func (r ReferenceResult) Transforms() []reference.Transform {
 // Steps returns an owned copy of the processing trace.
 func (r ReferenceResult) Steps() []reference.Step { return r.processed.Steps() }
 
-func within(n, ancestor *tree.Node) bool {
-	for ; n != nil; n = n.Parent {
-		if n == ancestor {
-			return true
-		}
-	}
-
-	return false
-}
-
 // WriteCanonicalizedInput replays the approved transforms once and checks the
 // original signed digest while writing a timestamp input. Final octets are
 // unchanged; a final node set is serialized with method instead of the implicit
@@ -760,4 +750,14 @@ func (r ReferenceResult) WriteCanonicalizedInput(ctx context.Context, dst io.Wri
 	}
 
 	return writer.Written, nil
+}
+
+func within(n, ancestor *tree.Node) bool {
+	for ; n != nil; n = n.Parent {
+		if n == ancestor {
+			return true
+		}
+	}
+
+	return false
 }

@@ -102,6 +102,205 @@ func VerifyBasicEnveloped(ctx context.Context, doc *document.Document, selected 
 	return verifyBasicEnveloped(ctx, doc, selected, trustedCertificateDER, o, false)
 }
 
+// Signature returns the underlying verified XML signature result.
+func (r *BasicResult) Signature() *xmldsig.SignatureResult {
+	if r == nil {
+		return nil
+	}
+
+	return r.signature
+}
+
+// SignedProperties returns the authenticated SignedProperties handle.
+func (r *BasicResult) SignedProperties() document.Element {
+	if r == nil {
+		return document.Element{}
+	}
+
+	return r.properties
+}
+
+// CertificateDER returns an owned copy of the certificate DER.
+func (r *BasicResult) CertificateDER() []byte {
+	if r == nil {
+		return nil
+	}
+
+	return bytes.Clone(r.certificate)
+}
+
+// ClaimedSigningTime returns the signed claimed signing time; it is not trusted timestamp
+// evidence.
+func (r *BasicResult) ClaimedSigningTime() time.Time {
+	if r == nil {
+		return time.Time{}
+	}
+
+	return r.claimedTime
+}
+
+// MIMEType returns the signed MIME type claim.
+func (r *BasicResult) MIMEType() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.mimeType
+}
+
+// SignBasicEnveloped creates and self-verifies a new document. The input must
+// have an application ID on its root and no existing Signature. Certificate DER
+// is bound by SHA-256, embedded as X509Data, and must match signer's public key.
+// No trust chain or revocation status is inferred from the embedded certificate.
+func SignBasicEnveloped(ctx context.Context, doc *document.Document, signer crypto.Signer, certificateDER []byte, o SignOptions) (*document.Document, *BasicResult, error) {
+	if ctx == nil || doc == nil || !doc.Root().Valid() || nilcheck.IsNil(signer) {
+		return nil, nil, ErrProfile
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	c, err := cert(certificateDER)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if len(xmldsig.Signatures(doc)) != 0 || o.ClaimedSigningTime.IsZero() || o.ClaimedSigningTime.UTC().Year() < 1 || o.ClaimedSigningTime.UTC().Year() > 9999 {
+		return nil, nil, ErrProfile
+	}
+	// Use a DER pin rather than relying on a provider-specific key representation.
+	if key, ok := signer.(ed25519.PrivateKey); ok && len(key) != ed25519.PrivateKeySize {
+		return nil, nil, ErrCertificate
+	}
+
+	pin, err := pki.NewKeyPin(signer.Public())
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", ErrCertificate, err)
+	}
+
+	if err := pin.MatchCertificate(c.Raw); err != nil {
+		return nil, nil, ErrCertificate
+	}
+
+	if o.SignatureID == "" {
+		o.SignatureID = "signature"
+	}
+
+	if o.SignedPropertiesID == "" {
+		o.SignedPropertiesID = "signed-properties"
+	}
+
+	if o.DataReferenceID == "" {
+		o.DataReferenceID = "data-reference"
+	}
+
+	for _, id := range []string{o.SignatureID, o.SignedPropertiesID, o.DataReferenceID} {
+		if !tree.NCName(id) {
+			return nil, nil, ErrProfile
+		}
+	}
+
+	if o.MIMEType == "" {
+		o.MIMEType = "application/xml"
+	}
+
+	if !validMime(o.MIMEType) {
+		return nil, nil, ErrProfile
+	}
+
+	idAttr := normalizeID(o.IDAttribute)
+
+	rootID, ok := doc.Root().Attribute(idAttr)
+	if !ok || !tree.NCName(rootID) {
+		return nil, nil, ErrProfile
+	}
+
+	qp := xnode("QualifyingProperties")
+	qp.NS = []tree.Namespace{{Prefix: nameXades, URI: Namespace}, {Prefix: "ds", URI: xmldsig.Namespace}}
+	attr(qp, "Target", "#"+o.SignatureID)
+
+	sp := xnode("SignedProperties")
+	attr(sp, "Id", o.SignedPropertiesID)
+	add(qp, sp)
+
+	ssp := xnode("SignedSignatureProperties")
+	add(sp, ssp)
+
+	st := xnode("SigningTime")
+	text(st, o.ClaimedSigningTime.UTC().Format(time.RFC3339Nano))
+	add(ssp, st)
+
+	sc := xnode("SigningCertificateV2")
+	ce := xnode("Cert")
+	cd := xnode("CertDigest")
+	dm := dsnode(lexicon.DSigElementDigestMethod)
+	attr(dm, "Algorithm", xmldsig.SHA256)
+
+	dv := dsnode(lexicon.DSigElementDigestValue)
+	sum := sha256.Sum256(c.Raw)
+	text(dv, base64.StdEncoding.EncodeToString(sum[:]))
+	add(cd, dm)
+	add(cd, dv)
+	add(ce, cd)
+	add(sc, ce)
+	add(ssp, sc)
+
+	sdop := xnode("SignedDataObjectProperties")
+	dof := xnode("DataObjectFormat")
+	attr(dof, "ObjectReference", "#"+o.DataReferenceID)
+
+	mt := xnode("MimeType")
+	text(mt, o.MIMEType)
+	add(dof, mt)
+	add(sdop, dof)
+	add(sp, sdop)
+
+	propsDoc := tree.FromNodes([]*tree.Node{qp}, document.DefaultLimits())
+	ex := reference.Transform{Algorithm: c14n.Exclusive}
+
+	draft, selected, err := xmldsig.BuildTemplate(ctx, doc, doc.Root(), xmldsig.SignatureTemplate{
+		ID: o.SignatureID, SignatureMethod: o.SignatureMethod, Canonicalization: ex, Certificates: [][]byte{c.Raw},
+		References: []xmldsig.ReferenceTemplate{
+			{ID: o.DataReferenceID, URI: "#" + rootID, Transforms: []reference.Transform{{Algorithm: reference.EnvelopedSignature}, ex}},
+			{URI: "#" + o.SignedPropertiesID, Type: SignedPropertiesType, Transforms: []reference.Transform{ex}},
+		},
+		Objects: []xmldsig.ObjectTemplate{{XML: propsDoc}},
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	object, err := childNamed(selected, ds("Object"))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	properties, err := childNamed(object, name("QualifyingProperties"))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	props, err := childNamed(properties, name("SignedProperties"))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	opt := profileOptions(idAttr, o.Policy, draft.Root(), props, rootID, o.SignedPropertiesID)
+
+	signed, err := xmldsig.SignTemplate(ctx, draft, selected, signer, xmldsig.TemplateSignOptions{Validation: opt})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	result, err := VerifyBasicEnveloped(ctx, signed, xmldsig.Signatures(signed)[0], c.Raw, VerifyOptions{IDAttribute: idAttr, Policy: o.Policy})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return signed, result, nil
+}
+
 func localAttribute(e document.Element, k string) string {
 	v, _ := e.Attribute(document.Name{Local: k})
 	return v
@@ -190,7 +389,7 @@ func decodeElementBase64(ctx context.Context, element document.Element, encodedL
 		return nil, ErrProfile
 	}
 
-	decoder := base64.NewDecoder(base64.StdEncoding.Strict(), &base64TextReader{ctx: ctx, nodes: node.Children})
+	decoder := streamio.NewBase64Decoder(base64.StdEncoding.Strict(), &base64TextReader{ctx: ctx, nodes: node.Children})
 	reader := &streamio.Reader{Context: ctx, Source: decoder, Limit: int64(decodedLimit), LimitError: ErrProfile}
 	output := make([]byte, min(base64.StdEncoding.DecodedLen(encodedLength), decodedLimit))
 	used := 0
@@ -551,205 +750,6 @@ func base64TextLength(ctx context.Context, nodes []*tree.Node, encodedLimit int)
 	}
 
 	return encodedLength, nil
-}
-
-// Signature returns the underlying verified XML signature result.
-func (r *BasicResult) Signature() *xmldsig.SignatureResult {
-	if r == nil {
-		return nil
-	}
-
-	return r.signature
-}
-
-// SignedProperties returns the authenticated SignedProperties handle.
-func (r *BasicResult) SignedProperties() document.Element {
-	if r == nil {
-		return document.Element{}
-	}
-
-	return r.properties
-}
-
-// CertificateDER returns an owned copy of the certificate DER.
-func (r *BasicResult) CertificateDER() []byte {
-	if r == nil {
-		return nil
-	}
-
-	return bytes.Clone(r.certificate)
-}
-
-// ClaimedSigningTime returns the signed claimed signing time; it is not trusted timestamp
-// evidence.
-func (r *BasicResult) ClaimedSigningTime() time.Time {
-	if r == nil {
-		return time.Time{}
-	}
-
-	return r.claimedTime
-}
-
-// MIMEType returns the signed MIME type claim.
-func (r *BasicResult) MIMEType() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.mimeType
-}
-
-// SignBasicEnveloped creates and self-verifies a new document. The input must
-// have an application ID on its root and no existing Signature. Certificate DER
-// is bound by SHA-256, embedded as X509Data, and must match signer's public key.
-// No trust chain or revocation status is inferred from the embedded certificate.
-func SignBasicEnveloped(ctx context.Context, doc *document.Document, signer crypto.Signer, certificateDER []byte, o SignOptions) (*document.Document, *BasicResult, error) {
-	if ctx == nil || doc == nil || !doc.Root().Valid() || nilcheck.IsNil(signer) {
-		return nil, nil, ErrProfile
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, nil, err
-	}
-
-	c, err := cert(certificateDER)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if len(xmldsig.Signatures(doc)) != 0 || o.ClaimedSigningTime.IsZero() || o.ClaimedSigningTime.UTC().Year() < 1 || o.ClaimedSigningTime.UTC().Year() > 9999 {
-		return nil, nil, ErrProfile
-	}
-	// Use a DER pin rather than relying on a provider-specific key representation.
-	if key, ok := signer.(ed25519.PrivateKey); ok && len(key) != ed25519.PrivateKeySize {
-		return nil, nil, ErrCertificate
-	}
-
-	pin, err := pki.NewKeyPin(signer.Public())
-	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %w", ErrCertificate, err)
-	}
-
-	if err := pin.MatchCertificate(c.Raw); err != nil {
-		return nil, nil, ErrCertificate
-	}
-
-	if o.SignatureID == "" {
-		o.SignatureID = "signature"
-	}
-
-	if o.SignedPropertiesID == "" {
-		o.SignedPropertiesID = "signed-properties"
-	}
-
-	if o.DataReferenceID == "" {
-		o.DataReferenceID = "data-reference"
-	}
-
-	for _, id := range []string{o.SignatureID, o.SignedPropertiesID, o.DataReferenceID} {
-		if !tree.NCName(id) {
-			return nil, nil, ErrProfile
-		}
-	}
-
-	if o.MIMEType == "" {
-		o.MIMEType = "application/xml"
-	}
-
-	if !validMime(o.MIMEType) {
-		return nil, nil, ErrProfile
-	}
-
-	idAttr := normalizeID(o.IDAttribute)
-
-	rootID, ok := doc.Root().Attribute(idAttr)
-	if !ok || !tree.NCName(rootID) {
-		return nil, nil, ErrProfile
-	}
-
-	qp := xnode("QualifyingProperties")
-	qp.NS = []tree.Namespace{{Prefix: nameXades, URI: Namespace}, {Prefix: "ds", URI: xmldsig.Namespace}}
-	attr(qp, "Target", "#"+o.SignatureID)
-
-	sp := xnode("SignedProperties")
-	attr(sp, "Id", o.SignedPropertiesID)
-	add(qp, sp)
-
-	ssp := xnode("SignedSignatureProperties")
-	add(sp, ssp)
-
-	st := xnode("SigningTime")
-	text(st, o.ClaimedSigningTime.UTC().Format(time.RFC3339Nano))
-	add(ssp, st)
-
-	sc := xnode("SigningCertificateV2")
-	ce := xnode("Cert")
-	cd := xnode("CertDigest")
-	dm := dsnode(lexicon.DSigElementDigestMethod)
-	attr(dm, "Algorithm", xmldsig.SHA256)
-
-	dv := dsnode(lexicon.DSigElementDigestValue)
-	sum := sha256.Sum256(c.Raw)
-	text(dv, base64.StdEncoding.EncodeToString(sum[:]))
-	add(cd, dm)
-	add(cd, dv)
-	add(ce, cd)
-	add(sc, ce)
-	add(ssp, sc)
-
-	sdop := xnode("SignedDataObjectProperties")
-	dof := xnode("DataObjectFormat")
-	attr(dof, "ObjectReference", "#"+o.DataReferenceID)
-
-	mt := xnode("MimeType")
-	text(mt, o.MIMEType)
-	add(dof, mt)
-	add(sdop, dof)
-	add(sp, sdop)
-
-	propsDoc := tree.FromNodes([]*tree.Node{qp}, document.DefaultLimits())
-	ex := reference.Transform{Algorithm: c14n.Exclusive}
-
-	draft, selected, err := xmldsig.BuildTemplate(ctx, doc, doc.Root(), xmldsig.SignatureTemplate{
-		ID: o.SignatureID, SignatureMethod: o.SignatureMethod, Canonicalization: ex, Certificates: [][]byte{c.Raw},
-		References: []xmldsig.ReferenceTemplate{
-			{ID: o.DataReferenceID, URI: "#" + rootID, Transforms: []reference.Transform{{Algorithm: reference.EnvelopedSignature}, ex}},
-			{URI: "#" + o.SignedPropertiesID, Type: SignedPropertiesType, Transforms: []reference.Transform{ex}},
-		},
-		Objects: []xmldsig.ObjectTemplate{{XML: propsDoc}},
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	object, err := childNamed(selected, ds("Object"))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	properties, err := childNamed(object, name("QualifyingProperties"))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	props, err := childNamed(properties, name("SignedProperties"))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	opt := profileOptions(idAttr, o.Policy, draft.Root(), props, rootID, o.SignedPropertiesID)
-
-	signed, err := xmldsig.SignTemplate(ctx, draft, selected, signer, xmldsig.TemplateSignOptions{Validation: opt})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	result, err := VerifyBasicEnveloped(ctx, signed, xmldsig.Signatures(signed)[0], c.Raw, VerifyOptions{IDAttribute: idAttr, Policy: o.Policy})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return signed, result, nil
 }
 
 func xnode(local string) *tree.Node {

@@ -326,36 +326,6 @@ func (ec *execContext) hasConflictingMatchIn(ctx context.Context, templates []*t
 	return false
 }
 
-// classifyConflictCandidate applies hasConflictingMatchIn's per-candidate
-// rules: skip best itself, stop once precedence/priority drops below best's,
-// skip a sibling split from the same union rule (spec bug 30402, tracked by
-// splitOriginID), and otherwise probe the pattern.
-func classifyConflictCandidate(ctx context.Context, ec *execContext, tmpl, best *template, node xdm.Node) conflictCandidateResult {
-	if tmpl == best {
-		return conflictCandidateNone
-	}
-
-	if tmpl.ImportPrec < best.ImportPrec {
-		return conflictCandidateStop
-	}
-
-	if tmpl.ImportPrec == best.ImportPrec && tmpl.Priority < best.Priority {
-		return conflictCandidateStop
-	}
-	// Split union pattern branches originate from the same template rule and
-	// should not be treated as conflicting with each other (spec bug 30402).
-	// They carry a shared non-zero splitOriginID.
-	if tmpl.splitOriginID != nil && tmpl.splitOriginID == best.splitOriginID {
-		return conflictCandidateNone
-	}
-
-	if ec.matchTemplatePattern(ctx, tmpl, node, true) {
-		return conflictCandidateFound
-	}
-
-	return conflictCandidateNone
-}
-
 // findAtomicTemplate finds a template matching an atomic value.
 // XSLT 3.0 patterns like ".[. instance of xs:integer]" can match atomic items.
 func (ec *execContext) findAtomicTemplate(ctx context.Context, item xdm.Item, mode string) (*template, error) {
@@ -845,38 +815,6 @@ func (ec *execContext) executeTemplateBodyWithAs(ctx context.Context, tmpl *temp
 	return nil
 }
 
-// stripDOEMarkers removes disable-output-escaping / enable-output-escaping
-// marker PIs from a sequence, returning the cleaned sequence and a map of
-// indices (in the cleaned sequence) that had DOE markers around them.
-func stripDOEMarkers(seq xdm.Sequence) (xdm.Sequence, map[int]struct{}) {
-	doeIndices := map[int]struct{}{}
-	result := make(xdm.ItemSlice, 0, xdm.SequenceLen(seq))
-	doeActive := false
-
-	for item := range xdm.SequenceItems(seq) {
-		if ni, ok := item.(xdm.NodeItem); ok && ni.Node.Type() == xdm.ProcessingInstructionNode {
-			piName := ni.Node.Name()
-			if piName == lexicon.OutputDisableEscaping {
-				doeActive = true
-				continue
-			}
-
-			if piName == "enable-output-escaping" {
-				doeActive = false
-				continue
-			}
-		}
-
-		if doeActive {
-			doeIndices[len(result)] = struct{}{}
-		}
-
-		result = append(result, item)
-	}
-
-	return result, doeIndices
-}
-
 func (ec *execContext) writeTypedTemplateNode(v xdm.NodeItem, out *outputFrame, isDOE bool) error {
 	out.prevWasAtomic = false
 	// Re-insert DOE markers when writing directly to the result tree
@@ -942,4 +880,66 @@ func (ec *execContext) writeTypedTemplateAtomic(v xdm.AtomicValue, out *outputFr
 	}
 
 	return nil
+}
+
+// classifyConflictCandidate applies hasConflictingMatchIn's per-candidate
+// rules: skip best itself, stop once precedence/priority drops below best's,
+// skip a sibling split from the same union rule (spec bug 30402, tracked by
+// splitOriginID), and otherwise probe the pattern.
+func classifyConflictCandidate(ctx context.Context, ec *execContext, tmpl, best *template, node xdm.Node) conflictCandidateResult {
+	if tmpl == best {
+		return conflictCandidateNone
+	}
+
+	if tmpl.ImportPrec < best.ImportPrec {
+		return conflictCandidateStop
+	}
+
+	if tmpl.ImportPrec == best.ImportPrec && tmpl.Priority < best.Priority {
+		return conflictCandidateStop
+	}
+	// Split union pattern branches originate from the same template rule and
+	// should not be treated as conflicting with each other (spec bug 30402).
+	// They carry a shared non-zero splitOriginID.
+	if tmpl.splitOriginID != nil && tmpl.splitOriginID == best.splitOriginID {
+		return conflictCandidateNone
+	}
+
+	if ec.matchTemplatePattern(ctx, tmpl, node, true) {
+		return conflictCandidateFound
+	}
+
+	return conflictCandidateNone
+}
+
+// stripDOEMarkers removes disable-output-escaping / enable-output-escaping
+// marker PIs from a sequence, returning the cleaned sequence and a map of
+// indices (in the cleaned sequence) that had DOE markers around them.
+func stripDOEMarkers(seq xdm.Sequence) (xdm.Sequence, map[int]struct{}) {
+	doeIndices := map[int]struct{}{}
+	result := make(xdm.ItemSlice, 0, xdm.SequenceLen(seq))
+	doeActive := false
+
+	for item := range xdm.SequenceItems(seq) {
+		if ni, ok := item.(xdm.NodeItem); ok && ni.Node.Type() == xdm.ProcessingInstructionNode {
+			piName := ni.Node.Name()
+			if piName == lexicon.OutputDisableEscaping {
+				doeActive = true
+				continue
+			}
+
+			if piName == "enable-output-escaping" {
+				doeActive = false
+				continue
+			}
+		}
+
+		if doeActive {
+			doeIndices[len(result)] = struct{}{}
+		}
+
+		result = append(result, item)
+	}
+
+	return result, doeIndices
 }

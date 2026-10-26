@@ -411,6 +411,11 @@ func (c *compiler) checkFragment10(doc *xdm.Document, fragment string) error {
 	return checkLanguage10(root)
 }
 
+func (c *compiler) forwardsCompatible(version string) bool {
+	comparison, valid := compareLanguageVersion(version, c.stylesheet.processorLanguage()/10)
+	return valid && comparison > 0
+}
+
 func checkLanguage10(root *xdm.Element) error {
 	return checkElementLanguage10(root, root, 1)
 }
@@ -498,11 +503,6 @@ func contains10Word(words, word string) bool {
 	}
 
 	return false
-}
-
-func (c *compiler) forwardsCompatible(version string) bool {
-	comparison, valid := compareLanguageVersion(version, c.stylesheet.processorLanguage()/10)
-	return valid && comparison > 0
 }
 
 func lookupXSLT10FunctionArity(key string) ([2]int, bool) {

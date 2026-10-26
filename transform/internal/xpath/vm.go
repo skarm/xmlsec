@@ -238,97 +238,6 @@ func (b *vmBuilder) appendInstruction(lowered Expr) compiledExprRef {
 	return ref
 }
 
-func opcodeForExpr(expr Expr) vmOpcode {
-	switch expr.(type) {
-	case LiteralExpr:
-		return vmOpLiteral
-	case VariableExpr:
-		return vmOpVariable
-	case RootExpr:
-		return vmOpRoot
-	case ContextItemExpr:
-		return vmOpContextItem
-	case vmLocationPathExpr:
-		return vmOpLocationPath
-	case FilterExpr:
-		return vmOpFilter
-	case vmPathExpr:
-		return vmOpPath
-	case PathStepExpr:
-		return vmOpPathStep
-	case LookupExpr:
-		return vmOpLookup
-	case UnaryLookupExpr:
-		return vmOpUnaryLookup
-	case FLWORExpr:
-		return vmOpFLWOR
-	case QuantifiedExpr:
-		return vmOpQuantified
-	case IfExpr:
-		return vmOpIf
-	case TryCatchExpr:
-		return vmOpTryCatch
-	case InstanceOfExpr:
-		return vmOpInstanceOf
-	case CastExpr:
-		return vmOpCast
-	case CastableExpr:
-		return vmOpCastable
-	case TreatAsExpr:
-		return vmOpTreatAs
-	case FunctionCall, DynamicFunctionCall, NamedFunctionRef, InlineFunctionExpr, PlaceholderExpr, MapConstructorExpr, ArrayConstructorExpr, SequenceExpr:
-		return opcodeForFunctionExpr(expr)
-	case BinaryExpr, UnaryExpr, ConcatExpr, SimpleMapExpr, RangeExpr, UnionExpr, IntersectExceptExpr:
-		return opcodeForOperatorExpr(expr)
-	default:
-		panic(fmt.Sprintf("xpath: unknown VM opcode for %T", expr))
-	}
-}
-
-func opcodeForFunctionExpr(expr Expr) vmOpcode {
-	switch expr.(type) {
-	case FunctionCall:
-		return vmOpFunctionCall
-	case DynamicFunctionCall:
-		return vmOpDynamicFunctionCall
-	case NamedFunctionRef:
-		return vmOpNamedFunctionRef
-	case InlineFunctionExpr:
-		return vmOpInlineFunction
-	case PlaceholderExpr:
-		return vmOpPlaceholder
-	case MapConstructorExpr:
-		return vmOpMapConstructor
-	case ArrayConstructorExpr:
-		return vmOpArrayConstructor
-	case SequenceExpr:
-		return vmOpSequence
-	default:
-		panic(fmt.Sprintf("xpath: unknown VM opcode for %T", expr))
-	}
-}
-
-func opcodeForOperatorExpr(expr Expr) vmOpcode {
-	switch expr.(type) {
-	case BinaryExpr:
-		return vmOpBinary
-	case UnaryExpr:
-		return vmOpUnary
-	case ConcatExpr:
-		return vmOpConcat
-	case SimpleMapExpr:
-		return vmOpSimpleMap
-	case RangeExpr:
-		return vmOpRange
-	case UnionExpr:
-		return vmOpUnion
-	case IntersectExceptExpr:
-		return vmOpIntersectExcept
-	default:
-		panic(fmt.Sprintf("xpath: unknown VM opcode for %T", expr))
-	}
-}
-
 func (b *vmBuilder) lowerChildExpr(expr Expr) (Expr, error) {
 	lowered, err := b.lowerExpr(expr)
 	if err != nil {
@@ -342,15 +251,6 @@ func (b *vmBuilder) lowerChildExpr(expr Expr) (Expr, error) {
 	}
 
 	return b.appendInstruction(lowered), nil
-}
-
-func isImmediateVMExpr(expr Expr) bool {
-	switch expr.(type) {
-	case LiteralExpr, VariableExpr, RootExpr, ContextItemExpr, NamedFunctionRef, PlaceholderExpr:
-		return true
-	default:
-		return false
-	}
 }
 
 func (b *vmBuilder) lowerExpr(expr Expr) (Expr, error) {
@@ -458,15 +358,6 @@ func (b *vmBuilder) lowerBinaryOperand(op TokenType, expr Expr) (Expr, error) {
 		return lowerPointerExpr(e, "RangeExpr", b.lowerRangeExpr)
 	default:
 		return b.lowerChildExpr(expr)
-	}
-}
-
-func isGeneralComparisonToken(op TokenType) bool {
-	switch op {
-	case TokenEquals, TokenNotEquals, TokenLess, TokenLessEq, TokenGreater, TokenGreaterEq:
-		return true
-	default:
-		return false
 	}
 }
 
@@ -590,18 +481,6 @@ func (b *vmBuilder) lowerPathExpr(expr PathExpr) (Expr, error) {
 	}
 
 	return vmPathExpr{Filter: filter, Path: path, OrderFilter: orderFilterFrom(expr.Filter)}, nil
-}
-
-// orderFilterFrom returns the filter expression to retain for runtime
-// order-preservation resolution: the un-lowered function call when the filter is
-// one, otherwise nil. Keeping only function calls avoids holding unrelated
-// subtrees alive.
-func orderFilterFrom(filter Expr) Expr {
-	if _, ok := filter.(FunctionCall); ok {
-		return filter
-	}
-
-	return nil
 }
 
 func (b *vmBuilder) lowerVMPathExpr(expr vmPathExpr) (Expr, error) {
@@ -1124,6 +1003,127 @@ func (b *vmBuilder) lowerTypeConstruct(expr Expr) (Expr, error) {
 	default:
 		return nil, fmt.Errorf("%w: %T", ErrUnsupportedExpr, expr)
 	}
+}
+
+func opcodeForExpr(expr Expr) vmOpcode {
+	switch expr.(type) {
+	case LiteralExpr:
+		return vmOpLiteral
+	case VariableExpr:
+		return vmOpVariable
+	case RootExpr:
+		return vmOpRoot
+	case ContextItemExpr:
+		return vmOpContextItem
+	case vmLocationPathExpr:
+		return vmOpLocationPath
+	case FilterExpr:
+		return vmOpFilter
+	case vmPathExpr:
+		return vmOpPath
+	case PathStepExpr:
+		return vmOpPathStep
+	case LookupExpr:
+		return vmOpLookup
+	case UnaryLookupExpr:
+		return vmOpUnaryLookup
+	case FLWORExpr:
+		return vmOpFLWOR
+	case QuantifiedExpr:
+		return vmOpQuantified
+	case IfExpr:
+		return vmOpIf
+	case TryCatchExpr:
+		return vmOpTryCatch
+	case InstanceOfExpr:
+		return vmOpInstanceOf
+	case CastExpr:
+		return vmOpCast
+	case CastableExpr:
+		return vmOpCastable
+	case TreatAsExpr:
+		return vmOpTreatAs
+	case FunctionCall, DynamicFunctionCall, NamedFunctionRef, InlineFunctionExpr, PlaceholderExpr, MapConstructorExpr, ArrayConstructorExpr, SequenceExpr:
+		return opcodeForFunctionExpr(expr)
+	case BinaryExpr, UnaryExpr, ConcatExpr, SimpleMapExpr, RangeExpr, UnionExpr, IntersectExceptExpr:
+		return opcodeForOperatorExpr(expr)
+	default:
+		panic(fmt.Sprintf("xpath: unknown VM opcode for %T", expr))
+	}
+}
+
+func opcodeForFunctionExpr(expr Expr) vmOpcode {
+	switch expr.(type) {
+	case FunctionCall:
+		return vmOpFunctionCall
+	case DynamicFunctionCall:
+		return vmOpDynamicFunctionCall
+	case NamedFunctionRef:
+		return vmOpNamedFunctionRef
+	case InlineFunctionExpr:
+		return vmOpInlineFunction
+	case PlaceholderExpr:
+		return vmOpPlaceholder
+	case MapConstructorExpr:
+		return vmOpMapConstructor
+	case ArrayConstructorExpr:
+		return vmOpArrayConstructor
+	case SequenceExpr:
+		return vmOpSequence
+	default:
+		panic(fmt.Sprintf("xpath: unknown VM opcode for %T", expr))
+	}
+}
+
+func opcodeForOperatorExpr(expr Expr) vmOpcode {
+	switch expr.(type) {
+	case BinaryExpr:
+		return vmOpBinary
+	case UnaryExpr:
+		return vmOpUnary
+	case ConcatExpr:
+		return vmOpConcat
+	case SimpleMapExpr:
+		return vmOpSimpleMap
+	case RangeExpr:
+		return vmOpRange
+	case UnionExpr:
+		return vmOpUnion
+	case IntersectExceptExpr:
+		return vmOpIntersectExcept
+	default:
+		panic(fmt.Sprintf("xpath: unknown VM opcode for %T", expr))
+	}
+}
+
+func isImmediateVMExpr(expr Expr) bool {
+	switch expr.(type) {
+	case LiteralExpr, VariableExpr, RootExpr, ContextItemExpr, NamedFunctionRef, PlaceholderExpr:
+		return true
+	default:
+		return false
+	}
+}
+
+func isGeneralComparisonToken(op TokenType) bool {
+	switch op {
+	case TokenEquals, TokenNotEquals, TokenLess, TokenLessEq, TokenGreater, TokenGreaterEq:
+		return true
+	default:
+		return false
+	}
+}
+
+// orderFilterFrom returns the filter expression to retain for runtime
+// order-preservation resolution: the un-lowered function call when the filter is
+// one, otherwise nil. Keeping only function calls avoids holding unrelated
+// subtrees alive.
+func orderFilterFrom(filter Expr) Expr {
+	if _, ok := filter.(FunctionCall); ok {
+		return filter
+	}
+
+	return nil
 }
 
 func lowerPointerExpr[T Expr](expr *T, kind string, lower func(T) (Expr, error)) (Expr, error) {

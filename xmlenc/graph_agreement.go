@@ -49,45 +49,6 @@ func (g *keyGraph) validateAgreementBinding(binding KeyGraphKey) error {
 	return err
 }
 
-func graphAgreementName(info document.Element) (string, error) {
-	if !graphAttributes(info, "Id") || !graphStructuralText(info) {
-		return "", ErrFormat
-	}
-
-	methods, err := childElements(info, elementName(Namespace, "AgreementMethod"))
-	if err != nil {
-		return "", err
-	}
-
-	if attributeValue(methods[0], "Algorithm") != ECDHES {
-		return "", ErrPolicy
-	}
-
-	for _, child := range methods[0].Children() {
-		if child.Name() != elementName(Namespace, "RecipientKeyInfo") {
-			continue
-		}
-
-		for _, hint := range child.Children() {
-			if hint.Name() == elementName(SignatureNamespace, lexicon.DSigElementKeyName) {
-				return graphNameText(hint)
-			}
-		}
-	}
-
-	return "", nil
-}
-
-func graphHasAgreement(info document.Element) bool {
-	for _, child := range info.Children() {
-		if child.Name() == elementName(Namespace, "AgreementMethod") {
-			return true
-		}
-	}
-
-	return false
-}
-
 func (g *keyGraph) agreementEncryptedPlan(node graphNode, fields graphEncryptedFields, algorithm string, size int) (*graphKeyPlan, error) {
 	name, err := graphAgreementName(fields.keyInfo)
 	if err != nil {
@@ -134,6 +95,45 @@ func (g *keyGraph) agreementEncryptedPlan(node graphNode, fields graphEncryptedF
 	}
 
 	return &graphKeyPlan{algorithm: algorithm, keyBytes: size, cipher: cipher, unwrap: transport.unwrap}, nil
+}
+
+func graphAgreementName(info document.Element) (string, error) {
+	if !graphAttributes(info, "Id") || !graphStructuralText(info) {
+		return "", ErrFormat
+	}
+
+	methods, err := childElements(info, elementName(Namespace, "AgreementMethod"))
+	if err != nil {
+		return "", err
+	}
+
+	if attributeValue(methods[0], "Algorithm") != ECDHES {
+		return "", ErrPolicy
+	}
+
+	for _, child := range methods[0].Children() {
+		if child.Name() != elementName(Namespace, "RecipientKeyInfo") {
+			continue
+		}
+
+		for _, hint := range child.Children() {
+			if hint.Name() == elementName(SignatureNamespace, lexicon.DSigElementKeyName) {
+				return graphNameText(hint)
+			}
+		}
+	}
+
+	return "", nil
+}
+
+func graphHasAgreement(info document.Element) bool {
+	for _, child := range info.Children() {
+		if child.Name() == elementName(Namespace, "AgreementMethod") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Graph ID indexing has already validated the original Id attributes. The

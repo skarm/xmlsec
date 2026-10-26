@@ -170,15 +170,6 @@ func CreateImprintRequest(m Imprint, o RequestOptions) (*Request, error) {
 	return parseOwnedRequest(der.Seq(f...))
 }
 
-func validImprint(m Imprint) bool {
-	return (m.Hash == crypto.SHA256 || m.Hash == crypto.SHA384 || m.Hash == crypto.SHA512) && len(m.Digest) == m.Hash.Size()
-}
-
-func encodeImprint(m Imprint) []byte {
-	a, _ := signature.DigestAlgorithm(m.Hash)
-	return der.Seq(signature.EncAlgorithm(a), der.Octets(m.Digest))
-}
-
 // ParseRequest parses one complete bounded RFC 3161 request without authenticating its
 // origin.
 func ParseRequest(b []byte) (*Request, error) {
@@ -228,6 +219,15 @@ func (r *Request) Policy() asn1.ObjectIdentifier {
 // CertificatesRequested returns whether the timestamp request asks the TSA to include
 // certificates.
 func (r *Request) CertificatesRequested() bool { return r != nil && r.certReq }
+
+func validImprint(m Imprint) bool {
+	return (m.Hash == crypto.SHA256 || m.Hash == crypto.SHA384 || m.Hash == crypto.SHA512) && len(m.Digest) == m.Hash.Size()
+}
+
+func encodeImprint(m Imprint) []byte {
+	a, _ := signature.DigestAlgorithm(m.Hash)
+	return der.Seq(signature.EncAlgorithm(a), der.Octets(m.Digest))
+}
 
 func parseOwnedRequest(b []byte) (*Request, error) {
 	if len(b) > 1<<16 {
@@ -359,46 +359,6 @@ func (i *Info) parseRequiredFields(fields []asn1.RawValue) error {
 	return nil
 }
 
-func encodeTime(t time.Time) ([]byte, error) {
-	if t.IsZero() || t.Year() < 1 || t.Year() > 9999 {
-		return nil, ErrPolicy
-	}
-
-	s := t.UTC().Format("20060102150405")
-	if t.Nanosecond() != 0 {
-		s += "." + strings.TrimRight(fmt.Sprintf("%09d", t.Nanosecond()), "0")
-	}
-
-	return der.Wrap(0, asn1.TagGeneralizedTime, false, []byte(s+"Z")), nil
-}
-
-func parseTime(v asn1.RawValue) (time.Time, error) {
-	if !der.Is(v, 0, asn1.TagGeneralizedTime, false) {
-		return time.Time{}, ErrFormat
-	}
-
-	s := string(v.Bytes)
-	if len(s) < 15 || !strings.HasSuffix(s, "Z") {
-		return time.Time{}, ErrFormat
-	}
-
-	if len(s) > 15 && (s[14] != '.' || len(s) < 17 || len(s) > 25 || s[len(s)-2] == '0') {
-		return time.Time{}, ErrFormat
-	}
-
-	var t time.Time
-	if der.Decode(v, &t) != nil || t.Year() < 1 {
-		return time.Time{}, ErrFormat
-	}
-
-	b, e := encodeTime(t)
-	if e != nil || !bytes.Equal(b, v.FullBytes) {
-		return time.Time{}, ErrFormat
-	}
-
-	return t, nil
-}
-
 func (i *Info) parseOptionalFields(fields []asn1.RawValue) error {
 	index := 0
 	if index < len(fields) && der.Is(fields[index], 0, asn1.TagSequence, true) {
@@ -453,6 +413,46 @@ func (i *Info) parseOptionalFields(fields []asn1.RawValue) error {
 	}
 
 	return nil
+}
+
+func encodeTime(t time.Time) ([]byte, error) {
+	if t.IsZero() || t.Year() < 1 || t.Year() > 9999 {
+		return nil, ErrPolicy
+	}
+
+	s := t.UTC().Format("20060102150405")
+	if t.Nanosecond() != 0 {
+		s += "." + strings.TrimRight(fmt.Sprintf("%09d", t.Nanosecond()), "0")
+	}
+
+	return der.Wrap(0, asn1.TagGeneralizedTime, false, []byte(s+"Z")), nil
+}
+
+func parseTime(v asn1.RawValue) (time.Time, error) {
+	if !der.Is(v, 0, asn1.TagGeneralizedTime, false) {
+		return time.Time{}, ErrFormat
+	}
+
+	s := string(v.Bytes)
+	if len(s) < 15 || !strings.HasSuffix(s, "Z") {
+		return time.Time{}, ErrFormat
+	}
+
+	if len(s) > 15 && (s[14] != '.' || len(s) < 17 || len(s) > 25 || s[len(s)-2] == '0') {
+		return time.Time{}, ErrFormat
+	}
+
+	var t time.Time
+	if der.Decode(v, &t) != nil || t.Year() < 1 {
+		return time.Time{}, ErrFormat
+	}
+
+	b, e := encodeTime(t)
+	if e != nil || !bytes.Equal(b, v.FullBytes) {
+		return time.Time{}, ErrFormat
+	}
+
+	return t, nil
 }
 
 func parseAccuracy(v asn1.RawValue) (time.Duration, error) {
@@ -580,64 +580,6 @@ func ParseResponseReader(ctx context.Context, src io.Reader) (*Response, error) 
 	return parseResponseValue(ctx, value, true)
 }
 
-func parseResponseValue(ctx context.Context, v asn1.RawValue, validateToken bool) (*Response, error) {
-	b := v.FullBytes
-
-	f, e := der.Sequence(v, 1, 2)
-	if e != nil {
-		return nil, ErrFormat
-	}
-
-	sf, e := der.Sequence(f[0], 1, 3)
-	if e != nil {
-		return nil, ErrFormat
-	}
-
-	r := &Response{raw: b}
-	if der.Decode(sf[0], &r.status) != nil || r.status < 0 || r.status > 5 {
-		return nil, ErrFormat
-	}
-
-	i := 1
-	if i < len(sf) && der.Is(sf[i], 0, asn1.TagSequence, true) {
-		texts, e := der.Sequence(sf[i], 1, 16)
-		if e != nil {
-			return nil, ErrFormat
-		}
-
-		for _, s := range texts {
-			var msg string
-			if !der.Is(s, 0, asn1.TagUTF8String, false) || der.Decode(s, &msg) != nil || len(msg) > 4096 {
-				return nil, ErrFormat
-			}
-
-			r.text = append(r.text, msg)
-		}
-
-		i++
-	}
-
-	if i < len(sf) {
-		if der.Decode(sf[i], &r.fail) != nil || r.fail.BitLength > 26 {
-			return nil, ErrFormat
-		}
-
-		i++
-
-		for n := 0; n < r.fail.BitLength; n++ {
-			if r.fail.At(n) != 0 && n != 0 && n != 2 && n != 5 && n != 14 && n != 15 && n != 16 && n != 17 && n != 25 {
-				return nil, ErrFormat
-			}
-		}
-	}
-
-	if i != len(sf) {
-		return nil, ErrFormat
-	}
-
-	return r.bindToken(ctx, f, validateToken)
-}
-
 // DER returns an owned copy of the original DER encoding.
 func (r *Response) DER() []byte {
 	if r == nil {
@@ -694,6 +636,64 @@ func (r *Response) bindToken(ctx context.Context, f []asn1.RawValue, validateTok
 	}
 
 	return r, nil
+}
+
+func parseResponseValue(ctx context.Context, v asn1.RawValue, validateToken bool) (*Response, error) {
+	b := v.FullBytes
+
+	f, e := der.Sequence(v, 1, 2)
+	if e != nil {
+		return nil, ErrFormat
+	}
+
+	sf, e := der.Sequence(f[0], 1, 3)
+	if e != nil {
+		return nil, ErrFormat
+	}
+
+	r := &Response{raw: b}
+	if der.Decode(sf[0], &r.status) != nil || r.status < 0 || r.status > 5 {
+		return nil, ErrFormat
+	}
+
+	i := 1
+	if i < len(sf) && der.Is(sf[i], 0, asn1.TagSequence, true) {
+		texts, e := der.Sequence(sf[i], 1, 16)
+		if e != nil {
+			return nil, ErrFormat
+		}
+
+		for _, s := range texts {
+			var msg string
+			if !der.Is(s, 0, asn1.TagUTF8String, false) || der.Decode(s, &msg) != nil || len(msg) > 4096 {
+				return nil, ErrFormat
+			}
+
+			r.text = append(r.text, msg)
+		}
+
+		i++
+	}
+
+	if i < len(sf) {
+		if der.Decode(sf[i], &r.fail) != nil || r.fail.BitLength > 26 {
+			return nil, ErrFormat
+		}
+
+		i++
+
+		for n := 0; n < r.fail.BitLength; n++ {
+			if r.fail.At(n) != 0 && n != 0 && n != 2 && n != 5 && n != 14 && n != 15 && n != 16 && n != 17 && n != 25 {
+				return nil, ErrFormat
+			}
+		}
+	}
+
+	if i != len(sf) {
+		return nil, ErrFormat
+	}
+
+	return r.bindToken(ctx, f, validateToken)
 }
 
 // ResponseError reports a TSA failure status, untrusted status text and failure bit

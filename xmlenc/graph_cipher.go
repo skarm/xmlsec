@@ -159,69 +159,6 @@ func (g *keyGraph) authorizeCipher(p *graphCipherPlan) error {
 	return nil
 }
 
-func graphCipherTransforms(child document.Element) ([]reference.Transform, error) {
-	if len(child.Children()) == 0 {
-		return nil, nil
-	}
-
-	containers, err := childElements(child, elementName(Namespace, lexicon.DSigElementTransforms))
-	if err != nil {
-		return nil, err
-	}
-
-	transforms := containers[0]
-	if !exactAttributes(transforms) || !graphStructuralText(transforms) || len(transforms.Children()) == 0 {
-		return nil, ErrFormat
-	}
-
-	result := make([]reference.Transform, 0, len(transforms.Children()))
-	for _, item := range transforms.Children() {
-		transform, err := graphCipherTransform(item)
-		if err != nil {
-			return nil, err
-		}
-
-		result = append(result, transform)
-	}
-
-	return result, nil
-}
-
-func graphCipherTransform(item document.Element) (reference.Transform, error) {
-	if item.Name() != elementName(SignatureNamespace, lexicon.DSigElementTransform) || !exactAttributes(item, "Algorithm") || !graphStructuralText(item) {
-		return reference.Transform{}, ErrFormat
-	}
-
-	t := reference.Transform{Algorithm: attributeValue(item, "Algorithm")}
-	if len(item.Children()) == 0 {
-		return t, nil
-	}
-
-	children, err := childElements(item, elementName(c14n.Exclusive, "InclusiveNamespaces"))
-	if err != nil || !exactAttributes(children[0], "PrefixList") || len(children[0].Children()) != 0 || !xmlSpace(children[0].Text()) {
-		return reference.Transform{}, ErrFormat
-	}
-
-	t.InclusivePrefixes = strings.Fields(attributeValue(children[0], "PrefixList"))
-
-	return t, nil
-}
-
-func graphStructuralText(element document.Element) bool {
-	_, node := tree.Unwrap(element)
-	if node == nil {
-		return false
-	}
-
-	for _, child := range node.Children {
-		if child.Kind == tree.TextNode && !xmlSpace(child.Data) {
-			return false
-		}
-	}
-
-	return true
-}
-
 func (g *keyGraph) readCipher(plan *graphCipherPlan) ([]byte, error) {
 	if err := g.ctx.Err(); err != nil {
 		return nil, err
@@ -307,6 +244,69 @@ func (g *keyGraph) readCipher(plan *graphCipherPlan) ([]byte, error) {
 	}
 
 	return value, nil
+}
+
+func graphCipherTransforms(child document.Element) ([]reference.Transform, error) {
+	if len(child.Children()) == 0 {
+		return nil, nil
+	}
+
+	containers, err := childElements(child, elementName(Namespace, lexicon.DSigElementTransforms))
+	if err != nil {
+		return nil, err
+	}
+
+	transforms := containers[0]
+	if !exactAttributes(transforms) || !graphStructuralText(transforms) || len(transforms.Children()) == 0 {
+		return nil, ErrFormat
+	}
+
+	result := make([]reference.Transform, 0, len(transforms.Children()))
+	for _, item := range transforms.Children() {
+		transform, err := graphCipherTransform(item)
+		if err != nil {
+			return nil, err
+		}
+
+		result = append(result, transform)
+	}
+
+	return result, nil
+}
+
+func graphCipherTransform(item document.Element) (reference.Transform, error) {
+	if item.Name() != elementName(SignatureNamespace, lexicon.DSigElementTransform) || !exactAttributes(item, "Algorithm") || !graphStructuralText(item) {
+		return reference.Transform{}, ErrFormat
+	}
+
+	t := reference.Transform{Algorithm: attributeValue(item, "Algorithm")}
+	if len(item.Children()) == 0 {
+		return t, nil
+	}
+
+	children, err := childElements(item, elementName(c14n.Exclusive, "InclusiveNamespaces"))
+	if err != nil || !exactAttributes(children[0], "PrefixList") || len(children[0].Children()) != 0 || !xmlSpace(children[0].Text()) {
+		return reference.Transform{}, ErrFormat
+	}
+
+	t.InclusivePrefixes = strings.Fields(attributeValue(children[0], "PrefixList"))
+
+	return t, nil
+}
+
+func graphStructuralText(element document.Element) bool {
+	_, node := tree.Unwrap(element)
+	if node == nil {
+		return false
+	}
+
+	for _, child := range node.Children {
+		if child.Kind == tree.TextNode && !xmlSpace(child.Data) {
+			return false
+		}
+	}
+
+	return true
 }
 
 type graphCountedReader struct {

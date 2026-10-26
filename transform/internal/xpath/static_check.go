@@ -31,31 +31,6 @@ type prefixValidationPlan struct {
 	qnameLiterals   []literalQNameRequirement
 }
 
-// ValidateSequenceType checks type names and namespace bindings at a declaration
-// site, using the same static rules as an XPath instance-of expression.
-func ValidateSequenceType(st xdm.SequenceType, namespaces map[string]string, defaultNS string, decls SchemaDeclarations) error {
-	return ValidateSequenceTypeForVersion(st, namespaces, defaultNS, decls, 31)
-}
-
-// ValidateSequenceTypeForVersion checks a declaration using the selected
-// XPath version's predefined schema types and sequence type grammar.
-func ValidateSequenceTypeForVersion(st xdm.SequenceType, namespaces map[string]string, defaultNS string, decls SchemaDeclarations, version int) error {
-	if err := CheckTypeLanguage(st, version); err != nil {
-		return err
-	}
-
-	namespaces = maps.Clone(namespaces)
-	if namespaces == nil {
-		namespaces = make(map[string]string, 1)
-	}
-
-	namespaces[""] = defaultNS
-	plan := newPrefixPlanBuilder()
-	appendSequenceTypePrefixChecks(&plan, st)
-
-	return plan.plan().Validate(namespaces, true, decls, version)
-}
-
 func (p prefixValidationPlan) Validate(namespaces map[string]string, strict bool, decls SchemaDeclarations, version int) error {
 	for _, prefix := range p.prefixes {
 		if err := validatePrefix(prefix, namespaces, strict); err != nil {
@@ -90,6 +65,31 @@ func (p prefixValidationPlan) Validate(namespaces map[string]string, strict bool
 	}
 
 	return nil
+}
+
+// ValidateSequenceType checks type names and namespace bindings at a declaration
+// site, using the same static rules as an XPath instance-of expression.
+func ValidateSequenceType(st xdm.SequenceType, namespaces map[string]string, defaultNS string, decls SchemaDeclarations) error {
+	return ValidateSequenceTypeForVersion(st, namespaces, defaultNS, decls, 31)
+}
+
+// ValidateSequenceTypeForVersion checks a declaration using the selected
+// XPath version's predefined schema types and sequence type grammar.
+func ValidateSequenceTypeForVersion(st xdm.SequenceType, namespaces map[string]string, defaultNS string, decls SchemaDeclarations, version int) error {
+	if err := CheckTypeLanguage(st, version); err != nil {
+		return err
+	}
+
+	namespaces = maps.Clone(namespaces)
+	if namespaces == nil {
+		namespaces = make(map[string]string, 1)
+	}
+
+	namespaces[""] = defaultNS
+	plan := newPrefixPlanBuilder()
+	appendSequenceTypePrefixChecks(&plan, st)
+
+	return plan.plan().Validate(namespaces, true, decls, version)
 }
 
 func validateAtomicTypeRequirement(req atomicTypeRequirement, namespaces map[string]string, strict bool, decls SchemaDeclarations, version int) error {

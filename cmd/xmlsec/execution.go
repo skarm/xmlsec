@@ -145,6 +145,26 @@ func (e *executionFlags) processing(ctx context.Context, maxResource int, allowe
 	return opt, reference.ValidateTransforms(nil, opt)
 }
 
+func (e *executionFlags) validateCryptoLimits() error {
+	if e.minRSABits < 2048 || e.maxRSABits < e.minRSABits || e.maxRSABits > 16384 {
+		return usageError("RSA bounds require 2048 <= min <= max <= 16384")
+	}
+
+	if e.minPSSSalt < 0 || e.maxPSSSalt < e.minPSSSalt || e.maxPSSSalt > 2048 {
+		return usageError("invalid PSS salt limits")
+	}
+
+	if e.minHMACKey < 32 || e.maxHMACKey < e.minHMACKey || e.maxHMACKey > 1<<20 {
+		return usageError("invalid HMAC key bounds")
+	}
+
+	if e.minHMACBits < 128 || e.minHMACBits > 512 || e.minHMACBits%8 != 0 {
+		return usageError("HMAC output floor must be 128..512 bits in multiples of 8")
+	}
+
+	return nil
+}
+
 func readInputContext(ctx context.Context, path string, stdin io.Reader, maximum int) (data []byte, err error) {
 	err = consumeInput(ctx, path, stdin, maximum, func(r io.Reader) error {
 		var readErr error
@@ -338,26 +358,6 @@ func uniqueJSON(d *json.Decoder, depth int) error {
 	_, err = d.Token()
 
 	return err
-}
-
-func (e *executionFlags) validateCryptoLimits() error {
-	if e.minRSABits < 2048 || e.maxRSABits < e.minRSABits || e.maxRSABits > 16384 {
-		return usageError("RSA bounds require 2048 <= min <= max <= 16384")
-	}
-
-	if e.minPSSSalt < 0 || e.maxPSSSalt < e.minPSSSalt || e.maxPSSSalt > 2048 {
-		return usageError("invalid PSS salt limits")
-	}
-
-	if e.minHMACKey < 32 || e.maxHMACKey < e.minHMACKey || e.maxHMACKey > 1<<20 {
-		return usageError("invalid HMAC key bounds")
-	}
-
-	if e.minHMACBits < 128 || e.minHMACBits > 512 || e.minHMACBits%8 != 0 {
-		return usageError("HMAC output floor must be 128..512 bits in multiples of 8")
-	}
-
-	return nil
 }
 
 func splitList(s string) []string {

@@ -67,6 +67,14 @@ func (view completeCRLView) crlNumber() *big.Int {
 	return view.base.list.number
 }
 
+func (view completeCRLView) source() *parsedCRL {
+	if view.delta != nil {
+		return view.delta.list
+	}
+
+	return view.base.list
+}
+
 func checkEquivalentCRLViews(ctx context.Context, views []completeCRLView) error {
 	// RFC5280§5.2.3 permits simultaneous complete/delta CRLs with one number
 	// only when their effective revocation information is identical.
@@ -107,17 +115,6 @@ type crlState struct {
 	byIssuer map[string]*crlEntry
 }
 
-func crlEntryNames(entry *crlEntry) []string {
-	keys := make([]string, 0, len(entry.issuers))
-	for _, name := range entry.issuers {
-		if name.tag == 4 {
-			keys = append(keys, name.key+"/"+entry.serial.String())
-		}
-	}
-
-	return keys
-}
-
 func (state crlState) find(entry *crlEntry) *crlEntry {
 	for _, key := range crlEntryNames(entry) {
 		if item := state.byIssuer[key]; item != nil {
@@ -145,6 +142,17 @@ func (state crlState) apply(entry *crlEntry) {
 	for _, key := range crlEntryNames(entry) {
 		state.byIssuer[key] = entry
 	}
+}
+
+func crlEntryNames(entry *crlEntry) []string {
+	keys := make([]string, 0, len(entry.issuers))
+	for _, name := range entry.issuers {
+		if name.tag == 4 {
+			keys = append(keys, name.key+"/"+entry.serial.String())
+		}
+	}
+
+	return keys
 }
 
 func crlViewState(ctx context.Context, view completeCRLView) (crlState, error) {
@@ -199,12 +207,4 @@ func equalCRLViewState(ctx context.Context, a, b completeCRLView) (bool, error) 
 	}
 
 	return true, ctx.Err()
-}
-
-func (view completeCRLView) source() *parsedCRL {
-	if view.delta != nil {
-		return view.delta.list
-	}
-
-	return view.base.list
 }

@@ -165,6 +165,12 @@ func BindSequenceType(ctx context.Context, st xdm.SequenceType, namespaces map[s
 	return st, nil
 }
 
+// MatchesSequenceType checks if a sequence matches a SequenceType using
+// the XPath 3.1 SequenceType matching rules (no coercion).
+func MatchesSequenceType(seq xdm.Sequence, st xdm.SequenceType) bool {
+	return matchesSequenceType(seq, st, nil)
+}
+
 func bindPITestSequenceType(st xdm.SequenceType, test xdm.PITest) (xdm.SequenceType, error) {
 	bound, err := normalizePITest(test)
 	if err != nil {
@@ -174,12 +180,6 @@ func bindPITestSequenceType(st xdm.SequenceType, test xdm.PITest) (xdm.SequenceT
 	st.ItemTest = bound
 
 	return st, nil
-}
-
-// MatchesSequenceType checks if a sequence matches a SequenceType using
-// the XPath 3.1 SequenceType matching rules (no coercion).
-func MatchesSequenceType(seq xdm.Sequence, st xdm.SequenceType) bool {
-	return matchesSequenceType(seq, st, nil)
 }
 
 func evalInstanceOfExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e InstanceOfExpr) (xdm.Sequence, error) {

@@ -276,28 +276,6 @@ func (p *btParser) parseBraces(at int) (least, most, end int, err error) {
 	return least, most, end, nil
 }
 
-func parseCount(s string) (int, error) {
-	if s == "" {
-		return 0, errors.New("empty repeat count")
-	}
-
-	n := 0
-
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, errors.New("invalid repeat count")
-		}
-
-		if n > (int(^uint(0)>>1)-int(c-'0'))/10 {
-			return 0, ErrLimit
-		}
-
-		n = n*10 + int(c-'0')
-	}
-
-	return n, nil
-}
-
 // parseAtom reads one atom: a group, a class, an escape, a dot, an anchor, or
 // a run of literal characters.
 func (p *btParser) parseAtom() (btNode, error) {
@@ -559,4 +537,26 @@ func (p *btParser) parseGroupModifiers() (bool, error) {
 	p.pos++ // ':'
 
 	return false, nil
+}
+
+func parseCount(s string) (int, error) {
+	if s == "" {
+		return 0, errors.New("empty repeat count")
+	}
+
+	n := 0
+
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, errors.New("invalid repeat count")
+		}
+
+		if n > (int(^uint(0)>>1)-int(c-'0'))/10 {
+			return 0, ErrLimit
+		}
+
+		n = n*10 + int(c-'0')
+	}
+
+	return n, nil
 }

@@ -115,10 +115,6 @@ func (a *expressionAnalyzer) visit(expr Expr) bool {
 	return a.err == nil
 }
 
-func downwardAxis(axis AxisType) bool {
-	return axis == AxisChild || axis == AxisDescendant || axis == AxisDescendantOrSelf
-}
-
 func (a *expressionAnalyzer) predicates(predicates []Expr) {
 	for _, predicate := range predicates {
 		if a.result.NonMotionlessPredicates || a.err != nil {
@@ -163,4 +159,8 @@ func (a *expressionAnalyzer) function(prefix, name string, arity int) {
 		a.seen[reference] = struct{}{}
 		a.result.Functions = append(a.result.Functions, reference)
 	}
+}
+
+func downwardAxis(axis AxisType) bool {
+	return axis == AxisChild || axis == AxisDescendant || axis == AxisDescendantOrSelf
 }

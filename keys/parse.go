@@ -47,6 +47,135 @@ func ParsePrivate(data []byte, limits Limits) (crypto.Signer, error) {
 	return parsePrivateDER(decoded.label, decoded.der, limits)
 }
 
+// ParsePublic parses exactly one SPKI or RSA PKCS#1 public key, or extracts the
+// public key from one X.509 certificate, in PEM or DER. It does not validate
+// certificate trust, lifetime or revocation. Returned data does not alias input.
+func ParsePublic(data []byte, limits Limits) (crypto.PublicKey, error) {
+	limits, err := normalizeLimits(limits)
+	if err != nil {
+		return nil, err
+	}
+
+	decoded, err := material(context.Background(), data, max(limits.MaxKeyBytes, limits.MaxCertificateBytes), limits)
+	if err != nil {
+		return nil, err
+	}
+
+	label, raw := decoded.label, decoded.der
+
+	// A certificate has three outer fields; SPKI and PKCS#1 public keys have two.
+	value, err := readDER(raw, max(limits.MaxKeyBytes, limits.MaxCertificateBytes), limits)
+	if err != nil {
+		return nil, err
+	}
+
+	fields, err := der.Sequence(value, 2, 3)
+	if err != nil {
+		return nil, derError(err)
+	}
+
+	certificate := label == certificatePEMType || label == "" && len(fields) == 3
+	if !certificate && len(raw) > limits.MaxKeyBytes {
+		return nil, ErrLimit
+	}
+
+	if !certificate && !decoded.owned {
+		// Some x509 public-key models borrow SPKI bytes. Keep that small key
+		// encoding owned, while certificate extraction owns only its SPKI.
+		raw = bytes.Clone(raw)
+	}
+
+	var key any
+
+	switch label {
+	case "PUBLIC KEY":
+		key, err = x509.ParsePKIXPublicKey(raw)
+	case "RSA PUBLIC KEY":
+		key, err = x509.ParsePKCS1PublicKey(raw)
+	case certificatePEMType:
+		return certificateKey(raw, limits)
+	case "":
+		key, err = x509.ParsePKIXPublicKey(raw)
+		if err != nil {
+			key, err = x509.ParsePKCS1PublicKey(raw)
+		}
+
+		if err != nil {
+			return certificateKey(raw, limits)
+		}
+	default:
+		return nil, ErrFormat
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("%w: public key: %w", ErrFormat, err)
+	}
+
+	if err := publicBudget(key, limits); err != nil {
+		return nil, err
+	}
+
+	return key, nil
+}
+
+// ParseCertificate parses exactly one X.509 certificate in PEM or DER into an
+// owned object. A successful parse is not a certificate validation or trust decision.
+func ParseCertificate(data []byte, limits Limits) (*x509.Certificate, error) {
+	limits, err := normalizeLimits(limits)
+	if err != nil {
+		return nil, err
+	}
+
+	decoded, err := material(context.Background(), data, limits.MaxCertificateBytes, limits)
+	if err != nil {
+		return nil, err
+	}
+
+	if decoded.label != "" && decoded.label != certificatePEMType {
+		return nil, ErrFormat
+	}
+
+	cert, err := x509cert.Parse(decoded.ownedDER(), x509cert.Limits{Bytes: limits.MaxCertificateBytes, Depth: limits.MaxASN1Depth, Nodes: limits.MaxASN1Nodes})
+	if err != nil {
+		return nil, fmt.Errorf("%w: certificate: %w", ErrFormat, err)
+	}
+
+	if err := publicBudget(cert.PublicKey, limits); err != nil {
+		return nil, err
+	}
+
+	return cert, nil
+}
+
+// ParseCRL parses exactly one X.509 CRL in PEM or DER into an owned object.
+// It does not validate the issuer, signature, times or revocation applicability.
+func ParseCRL(data []byte, limits Limits) (*x509.RevocationList, error) {
+	limits, err := normalizeLimits(limits)
+	if err != nil {
+		return nil, err
+	}
+
+	decoded, err := material(context.Background(), data, limits.MaxCRLBytes, limits)
+	if err != nil {
+		return nil, err
+	}
+
+	if decoded.label != "" && decoded.label != "X509 CRL" {
+		return nil, ErrFormat
+	}
+
+	if err := crlBudget(decoded.der, limits); err != nil {
+		return nil, err
+	}
+
+	view, err := x509crl.Parse(decoded.ownedDER(), x509crl.Limits{Bytes: limits.MaxCRLBytes, Depth: limits.MaxASN1Depth, Nodes: limits.MaxASN1Nodes, Entries: limits.MaxCRLEntries})
+	if err != nil {
+		return nil, fmt.Errorf("%w: CRL: %w", ErrFormat, err)
+	}
+
+	return view.CRL, nil
+}
+
 func parsePrivateDER(label string, raw []byte, limits Limits) (crypto.Signer, error) {
 	if err := privateBudget(raw, limits); err != nil {
 		return nil, err
@@ -181,77 +310,6 @@ func integerWithinBits(value []byte, maximum int) bool {
 	return (len(value)-1)*8+bits.Len8(value[0]) <= maximum
 }
 
-// ParsePublic parses exactly one SPKI or RSA PKCS#1 public key, or extracts the
-// public key from one X.509 certificate, in PEM or DER. It does not validate
-// certificate trust, lifetime or revocation. Returned data does not alias input.
-func ParsePublic(data []byte, limits Limits) (crypto.PublicKey, error) {
-	limits, err := normalizeLimits(limits)
-	if err != nil {
-		return nil, err
-	}
-
-	decoded, err := material(context.Background(), data, max(limits.MaxKeyBytes, limits.MaxCertificateBytes), limits)
-	if err != nil {
-		return nil, err
-	}
-
-	label, raw := decoded.label, decoded.der
-
-	// A certificate has three outer fields; SPKI and PKCS#1 public keys have two.
-	value, err := readDER(raw, max(limits.MaxKeyBytes, limits.MaxCertificateBytes), limits)
-	if err != nil {
-		return nil, err
-	}
-
-	fields, err := der.Sequence(value, 2, 3)
-	if err != nil {
-		return nil, derError(err)
-	}
-
-	certificate := label == certificatePEMType || label == "" && len(fields) == 3
-	if !certificate && len(raw) > limits.MaxKeyBytes {
-		return nil, ErrLimit
-	}
-
-	if !certificate && !decoded.owned {
-		// Some x509 public-key models borrow SPKI bytes. Keep that small key
-		// encoding owned, while certificate extraction owns only its SPKI.
-		raw = bytes.Clone(raw)
-	}
-
-	var key any
-
-	switch label {
-	case "PUBLIC KEY":
-		key, err = x509.ParsePKIXPublicKey(raw)
-	case "RSA PUBLIC KEY":
-		key, err = x509.ParsePKCS1PublicKey(raw)
-	case certificatePEMType:
-		return certificateKey(raw, limits)
-	case "":
-		key, err = x509.ParsePKIXPublicKey(raw)
-		if err != nil {
-			key, err = x509.ParsePKCS1PublicKey(raw)
-		}
-
-		if err != nil {
-			return certificateKey(raw, limits)
-		}
-	default:
-		return nil, ErrFormat
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("%w: public key: %w", ErrFormat, err)
-	}
-
-	if err := publicBudget(key, limits); err != nil {
-		return nil, err
-	}
-
-	return key, nil
-}
-
 func certificateKey(raw []byte, limits Limits) (crypto.PublicKey, error) {
 	if len(raw) > limits.MaxCertificateBytes {
 		return nil, ErrLimit
@@ -274,64 +332,6 @@ func certificateKey(raw []byte, limits Limits) (crypto.PublicKey, error) {
 	}
 
 	return key, nil
-}
-
-// ParseCertificate parses exactly one X.509 certificate in PEM or DER into an
-// owned object. A successful parse is not a certificate validation or trust decision.
-func ParseCertificate(data []byte, limits Limits) (*x509.Certificate, error) {
-	limits, err := normalizeLimits(limits)
-	if err != nil {
-		return nil, err
-	}
-
-	decoded, err := material(context.Background(), data, limits.MaxCertificateBytes, limits)
-	if err != nil {
-		return nil, err
-	}
-
-	if decoded.label != "" && decoded.label != certificatePEMType {
-		return nil, ErrFormat
-	}
-
-	cert, err := x509cert.Parse(decoded.ownedDER(), x509cert.Limits{Bytes: limits.MaxCertificateBytes, Depth: limits.MaxASN1Depth, Nodes: limits.MaxASN1Nodes})
-	if err != nil {
-		return nil, fmt.Errorf("%w: certificate: %w", ErrFormat, err)
-	}
-
-	if err := publicBudget(cert.PublicKey, limits); err != nil {
-		return nil, err
-	}
-
-	return cert, nil
-}
-
-// ParseCRL parses exactly one X.509 CRL in PEM or DER into an owned object.
-// It does not validate the issuer, signature, times or revocation applicability.
-func ParseCRL(data []byte, limits Limits) (*x509.RevocationList, error) {
-	limits, err := normalizeLimits(limits)
-	if err != nil {
-		return nil, err
-	}
-
-	decoded, err := material(context.Background(), data, limits.MaxCRLBytes, limits)
-	if err != nil {
-		return nil, err
-	}
-
-	if decoded.label != "" && decoded.label != "X509 CRL" {
-		return nil, ErrFormat
-	}
-
-	if err := crlBudget(decoded.der, limits); err != nil {
-		return nil, err
-	}
-
-	view, err := x509crl.Parse(decoded.ownedDER(), x509crl.Limits{Bytes: limits.MaxCRLBytes, Depth: limits.MaxASN1Depth, Nodes: limits.MaxASN1Nodes, Entries: limits.MaxCRLEntries})
-	if err != nil {
-		return nil, fmt.Errorf("%w: CRL: %w", ErrFormat, err)
-	}
-
-	return view.CRL, nil
 }
 
 func crlBudget(raw []byte, limits Limits) error {

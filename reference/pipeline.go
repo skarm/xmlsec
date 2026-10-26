@@ -157,7 +157,7 @@ func (p *transformPipeline) base64(tr Transform, index int) error {
 		size = func() int { return int(input.ReadBytes) }
 	}
 
-	decoded := decodedBase64{base64.NewDecoder(base64.StdEncoding, &base64Reader{source: p.reader})}
+	decoded := decodedBase64{streamio.NewBase64Decoder(base64.StdEncoding, &base64Reader{source: p.reader})}
 	output := p.input(&producedInput{processor: p.processor, src: decoded, index: index, algorithm: Base64}, p.processor.opt.MaxOutputBytes)
 	output.LimitError = &StepError{index, Base64, ErrLimit}
 	p.step(tr, kind, size, output, false)
@@ -176,21 +176,6 @@ func (p *transformPipeline) generated(produce func(io.Writer) error) *streamio.R
 	p.closers = append(p.closers, source)
 
 	return p.input(source, p.processor.opt.MaxOutputBytes)
-}
-
-// readTransform connects a writer-based transform to the next stage's reader.
-// Each pull resumes production only until the next borrowed chunk. Close unwinds
-// a suspended transform and its deferred cleanup without concurrent execution.
-func readTransform(ctx context.Context, produce func(io.Writer) error) io.ReadCloser {
-	sequence := func(yield func([]byte, error) bool) {
-		writer := yieldWriter{ctx: ctx, yield: yield}
-		if err := produce(&writer); err != nil && !writer.stopped {
-			yield(nil, err)
-		}
-	}
-	next, stop := iter.Pull2(sequence)
-
-	return &producedReader{ctx: ctx, next: next, stop: stop}
 }
 
 func (p *transformPipeline) canonical(tr Transform, implicit bool, index int) error {
@@ -269,6 +254,43 @@ func (p *transformPipeline) xslt(tr Transform, index int) error {
 	p.processor.out.canonicalization = ""
 
 	return nil
+}
+
+// writeAlternate observes only the final immutable transform value. It never
+// reruns a resolver or application transform to construct the second output.
+func (p *transformPipeline) writeAlternate(original io.Writer) (io.Writer, error) {
+	output := p.alternate
+	if p.value.kind != NodeSet || output.method.Algorithm == c14n.Canonical10 {
+		return io.MultiWriter(original, output.writer), nil
+	}
+
+	if err := p.processor.visit(p.value); err != nil {
+		return nil, err
+	}
+
+	writer := &producedWriter{processor: p.processor, dst: output.writer}
+
+	err := c14n.WriteNodeSet(p.ctx, writer, p.value.nodes, c14n.Options{Algorithm: output.method.Algorithm, InclusivePrefixes: output.method.InclusivePrefixes, MaxOutputBytes: p.processor.opt.MaxOutputBytes})
+	if err != nil {
+		return nil, err
+	}
+
+	return original, nil
+}
+
+// readTransform connects a writer-based transform to the next stage's reader.
+// Each pull resumes production only until the next borrowed chunk. Close unwinds
+// a suspended transform and its deferred cleanup without concurrent execution.
+func readTransform(ctx context.Context, produce func(io.Writer) error) io.ReadCloser {
+	sequence := func(yield func([]byte, error) bool) {
+		writer := yieldWriter{ctx: ctx, yield: yield}
+		if err := produce(&writer); err != nil && !writer.stopped {
+			yield(nil, err)
+		}
+	}
+	next, stop := iter.Pull2(sequence)
+
+	return &producedReader{ctx: ctx, next: next, stop: stop}
 }
 
 func pipelineError(index int, algorithm string, err error) error {
@@ -391,26 +413,4 @@ func (r *producedReader) Close() error {
 	}
 
 	return nil
-}
-
-// writeAlternate observes only the final immutable transform value. It never
-// reruns a resolver or application transform to construct the second output.
-func (p *transformPipeline) writeAlternate(original io.Writer) (io.Writer, error) {
-	output := p.alternate
-	if p.value.kind != NodeSet || output.method.Algorithm == c14n.Canonical10 {
-		return io.MultiWriter(original, output.writer), nil
-	}
-
-	if err := p.processor.visit(p.value); err != nil {
-		return nil, err
-	}
-
-	writer := &producedWriter{processor: p.processor, dst: output.writer}
-
-	err := c14n.WriteNodeSet(p.ctx, writer, p.value.nodes, c14n.Options{Algorithm: output.method.Algorithm, InclusivePrefixes: output.method.InclusivePrefixes, MaxOutputBytes: p.processor.opt.MaxOutputBytes})
-	if err != nil {
-		return nil, err
-	}
-
-	return original, nil
 }

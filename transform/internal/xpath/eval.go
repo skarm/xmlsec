@@ -256,23 +256,6 @@ func newVariableScope(vars map[string]xdm.Sequence) *variableScope {
 	return scopeWithBindings(nil, vars)
 }
 
-func scopeWithBindings(parent *variableScope, bindings map[string]xdm.Sequence) *variableScope {
-	if len(bindings) == 0 {
-		return parent
-	}
-
-	if len(bindings) == 1 {
-		for name, value := range bindings {
-			return scopeWithBinding(parent, name, value)
-		}
-	}
-
-	values := make(map[string]xdm.Sequence, len(bindings))
-	maps.Copy(values, bindings)
-
-	return &variableScope{parent: parent, values: values}
-}
-
 func (s *variableScope) Lookup(name string) (xdm.Sequence, bool) {
 	for scope := s; scope != nil; scope = scope.parent {
 		if scope.singleValue {
@@ -289,6 +272,23 @@ func (s *variableScope) Lookup(name string) (xdm.Sequence, bool) {
 	}
 
 	return nil, false
+}
+
+func scopeWithBindings(parent *variableScope, bindings map[string]xdm.Sequence) *variableScope {
+	if len(bindings) == 0 {
+		return parent
+	}
+
+	if len(bindings) == 1 {
+		for name, value := range bindings {
+			return scopeWithBinding(parent, name, value)
+		}
+	}
+
+	values := make(map[string]xdm.Sequence, len(bindings))
+	maps.Copy(values, bindings)
+
+	return &variableScope{parent: parent, values: values}
 }
 
 func scopeWithBinding(parent *variableScope, name string, value xdm.Sequence) *variableScope {

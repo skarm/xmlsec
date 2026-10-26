@@ -266,26 +266,6 @@ func (d *htmlDumper) checkName(kind, name string) {
 	}
 }
 
-// isUnsafeNameRune reports whether r may not appear in a serialized HTML
-// element or attribute name because it would terminate or escape the tag.
-// The set mirrors the characters that terminate an attribute name in the
-// HTML parseOptions (see parseOptions.parseAttrName) plus ASCII control characters.
-// '&' is intentionally excluded: the parseOptions's liberal attribute-name rule
-// accepts it and it does not break out of the tag, so rejecting it would
-// regress parse/serialize round-trip parity. A validly-encoded U+FFFD is
-// likewise accepted; only invalid UTF-8 is rejected, by the caller.
-//
-// This is the loose rule used for ATTRIBUTE names. Element names use the
-// stricter checkElementName / isElementNameRune grammar instead.
-func isUnsafeNameRune(r rune) bool {
-	switch r {
-	case ' ', '\t', '\n', '\r', '\f', '"', '\'', '<', '>', '=', '/':
-		return true
-	}
-
-	return r < 0x20 || r == 0x7f
-}
-
 // checkElementName verifies that an element name is a valid HTML tag name
 // before it is written into a tag. Unlike checkName (the loose attribute
 // rule), this enforces the HTML tag-name grammar so that names libxml2 treats
@@ -332,34 +312,6 @@ func (d *htmlDumper) checkElementName(name string) {
 
 		i += size
 	}
-}
-
-// isElementNameRune reports whether r may appear in a serialized HTML element
-// name. ASCII runes must be a valid HTML tag-name character (letters, digits,
-// ':', '-', '_', '.'), mirroring the parseOptions's isNameChar; this rejects
-// tag-breaking and clearly-malformed characters such as '?', '&', '=', '/',
-// quotes, angle brackets, whitespace and control characters. Non-ASCII runes
-// are permitted to avoid over-rejecting legitimate Unicode element names.
-func isElementNameRune(r rune) bool {
-	if r >= 0x80 {
-		return true
-	}
-
-	switch {
-	case r >= 'A' && r <= 'Z':
-		return true
-	case r >= 'a' && r <= 'z':
-		return true
-	case r >= '0' && r <= '9':
-		return true
-	}
-
-	switch r {
-	case ':', '-', '_', '.':
-		return true
-	}
-
-	return false
 }
 
 func (d *htmlDumper) dumpNode(out io.Writer, n xdm.Node) error {
@@ -581,42 +533,6 @@ func (d *htmlDumper) dumpTextContent(out io.Writer, content string, rawText bool
 	return d.err
 }
 
-// writeHTMLCharMapped writes s to w, substituting each character-map rune with
-// its literal (unescaped) replacement string. With a nil/empty map it writes s
-// unchanged.
-func writeHTMLCharMapped(w io.Writer, s string, charMap map[rune]string) error {
-	if len(charMap) == 0 {
-		_, err := io.WriteString(w, s)
-		return err
-	}
-
-	last := 0
-
-	for i := 0; i < len(s); {
-		r, width := utf8.DecodeRuneInString(s[i:])
-		if repl, ok := charMap[r]; ok {
-			if _, err := io.WriteString(w, s[last:i]); err != nil {
-				return err
-			}
-
-			if _, err := io.WriteString(w, repl); err != nil {
-				return err
-			}
-
-			i += width
-			last = i
-
-			continue
-		}
-
-		i += width
-	}
-
-	_, err := io.WriteString(w, s[last:])
-
-	return err
-}
-
 // writeNormalizedText writes a text node's character content under an active
 // Normalization request: each non-mapped segment is normalized and (outside a
 // raw text element) escaped as ordinary text with no character map, and each
@@ -717,50 +633,6 @@ func (d *htmlDumper) htmlEscapeAttrValue(w io.Writer, s string, isURI bool, noEn
 	_, err := io.WriteString(w, s[last:])
 
 	return err
-}
-
-func flushHTMLAttributeAmp(w io.Writer, next string, pending *bool) error {
-	if pending == nil || !*pending || next == "" {
-		return nil
-	}
-
-	*pending = false
-
-	replacement := htmlAttrEscAmp
-	if next[0] == '{' {
-		replacement = "&"
-	}
-
-	written, err := io.WriteString(w, replacement)
-	if err == nil && written != len(replacement) {
-		return io.ErrShortWrite
-	}
-
-	return err
-}
-
-func writeHTMLAttributeReplacement(w io.Writer, prefix, replacement string, entity bool) error {
-	if _, err := io.WriteString(w, prefix); err != nil {
-		return err
-	}
-
-	if entity {
-		if _, err := io.WriteString(w, "&"); err != nil {
-			return err
-		}
-	}
-
-	if _, err := io.WriteString(w, replacement); err != nil {
-		return err
-	}
-
-	if entity {
-		if _, err := io.WriteString(w, ";"); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 func (d *htmlDumper) attributeRuneEscape(r rune, isURI, noEntityEnc bool) (string, bool) {
@@ -899,6 +771,134 @@ func (d *htmlDumper) dumpElement(out io.Writer, e *xdm.Element) error {
 
 func (d *htmlDumper) rawTextElement(element *xdm.Element) bool {
 	return d.isHTMLElement(element) && (EqualFoldASCII(element.LocalName(), nameScript) || EqualFoldASCII(element.LocalName(), "style"))
+}
+
+// isUnsafeNameRune reports whether r may not appear in a serialized HTML
+// element or attribute name because it would terminate or escape the tag.
+// The set mirrors the characters that terminate an attribute name in the
+// HTML parseOptions (see parseOptions.parseAttrName) plus ASCII control characters.
+// '&' is intentionally excluded: the parseOptions's liberal attribute-name rule
+// accepts it and it does not break out of the tag, so rejecting it would
+// regress parse/serialize round-trip parity. A validly-encoded U+FFFD is
+// likewise accepted; only invalid UTF-8 is rejected, by the caller.
+//
+// This is the loose rule used for ATTRIBUTE names. Element names use the
+// stricter checkElementName / isElementNameRune grammar instead.
+func isUnsafeNameRune(r rune) bool {
+	switch r {
+	case ' ', '\t', '\n', '\r', '\f', '"', '\'', '<', '>', '=', '/':
+		return true
+	}
+
+	return r < 0x20 || r == 0x7f
+}
+
+// isElementNameRune reports whether r may appear in a serialized HTML element
+// name. ASCII runes must be a valid HTML tag-name character (letters, digits,
+// ':', '-', '_', '.'), mirroring the parseOptions's isNameChar; this rejects
+// tag-breaking and clearly-malformed characters such as '?', '&', '=', '/',
+// quotes, angle brackets, whitespace and control characters. Non-ASCII runes
+// are permitted to avoid over-rejecting legitimate Unicode element names.
+func isElementNameRune(r rune) bool {
+	if r >= 0x80 {
+		return true
+	}
+
+	switch {
+	case r >= 'A' && r <= 'Z':
+		return true
+	case r >= 'a' && r <= 'z':
+		return true
+	case r >= '0' && r <= '9':
+		return true
+	}
+
+	switch r {
+	case ':', '-', '_', '.':
+		return true
+	}
+
+	return false
+}
+
+// writeHTMLCharMapped writes s to w, substituting each character-map rune with
+// its literal (unescaped) replacement string. With a nil/empty map it writes s
+// unchanged.
+func writeHTMLCharMapped(w io.Writer, s string, charMap map[rune]string) error {
+	if len(charMap) == 0 {
+		_, err := io.WriteString(w, s)
+		return err
+	}
+
+	last := 0
+
+	for i := 0; i < len(s); {
+		r, width := utf8.DecodeRuneInString(s[i:])
+		if repl, ok := charMap[r]; ok {
+			if _, err := io.WriteString(w, s[last:i]); err != nil {
+				return err
+			}
+
+			if _, err := io.WriteString(w, repl); err != nil {
+				return err
+			}
+
+			i += width
+			last = i
+
+			continue
+		}
+
+		i += width
+	}
+
+	_, err := io.WriteString(w, s[last:])
+
+	return err
+}
+
+func flushHTMLAttributeAmp(w io.Writer, next string, pending *bool) error {
+	if pending == nil || !*pending || next == "" {
+		return nil
+	}
+
+	*pending = false
+
+	replacement := htmlAttrEscAmp
+	if next[0] == '{' {
+		replacement = "&"
+	}
+
+	written, err := io.WriteString(w, replacement)
+	if err == nil && written != len(replacement) {
+		return io.ErrShortWrite
+	}
+
+	return err
+}
+
+func writeHTMLAttributeReplacement(w io.Writer, prefix, replacement string, entity bool) error {
+	if _, err := io.WriteString(w, prefix); err != nil {
+		return err
+	}
+
+	if entity {
+		if _, err := io.WriteString(w, "&"); err != nil {
+			return err
+		}
+	}
+
+	if _, err := io.WriteString(w, replacement); err != nil {
+		return err
+	}
+
+	if entity {
+		if _, err := io.WriteString(w, ";"); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Format newline helper functions matching libxml2's HTMLtree.c:968-1108.
@@ -1082,15 +1082,6 @@ func (d *htmlDumper) pushElementNamespaces(e *xdm.Element) (map[string]string, m
 	return savedEmitted, savedAvailable
 }
 
-// copyMap returns a shallow copy of a string map. If src is nil, returns
-// an empty map.
-func copyMap(src map[string]string) map[string]string {
-	m := make(map[string]string, len(src))
-	maps.Copy(m, src)
-
-	return m
-}
-
 func (d *htmlDumper) dumpAttributes(out io.Writer, e *xdm.Element) error {
 	for _, attr := range e.Attributes() {
 		attrNameLower := LowerASCII(attr.Name())
@@ -1159,6 +1150,89 @@ func (d *htmlDumper) dumpAttributes(out io.Writer, e *xdm.Element) error {
 	}
 
 	return d.err
+}
+
+func (d *htmlDumper) writeNSDecl(out io.Writer, prefix, uri string) {
+	// The "xml" prefix is predefined by the Namespaces in XML spec (bound
+	// implicitly to the XML namespace everywhere), so a literal
+	// xmlns:xml="http://www.w3.org/XML/1998/namespace" declaration is
+	// redundant and non-canonical and must never be emitted.
+	if prefix == "xml" {
+		return
+	}
+
+	if prefix == "" {
+		d.writeString(out, " xmlns=\"")
+		d.writeString(out, uri)
+		d.writeString(out, "\"")
+
+		return
+	}
+	// A non-empty prefix is written verbatim into the xmlns: attribute name,
+	// so an unsafe prefix could break out of the tag (e.g. a prefix
+	// containing a space and quote yields a separate injected attribute).
+	// Reject it the same way element/attribute names are rejected.
+	d.checkName("namespace prefix", prefix)
+
+	if d.err != nil {
+		return
+	}
+
+	d.writeString(out, " xmlns:")
+	d.writeString(out, prefix)
+	d.writeString(out, "=\"")
+	d.writeString(out, uri)
+	d.writeString(out, "\"")
+}
+
+// emitAttrNSDecls emits namespace declarations for attribute prefixes
+// that aren't already declared on the element or emitted by an ancestor.
+func (d *htmlDumper) emitAttrNSDecls(out io.Writer, e *xdm.Element) {
+	declared := make(map[string]struct{})
+
+	for _, ns := range e.Namespaces() {
+		if d.namespaceAllowed(e, ns) {
+			declared[ns.Prefix()] = struct{}{}
+		}
+	}
+
+	seen := make(map[string]struct{})
+
+	for _, attr := range e.Attributes() {
+		prefix := attr.Prefix()
+		if prefix == "" || prefix == "xml" {
+			continue
+		}
+
+		if _, ok := declared[prefix]; ok {
+			continue
+		}
+
+		if _, ok := seen[prefix]; ok {
+			continue
+		}
+
+		uri := attr.URI()
+		if uri == "" {
+			continue
+		}
+
+		if d.nsEmitted != nil && d.nsEmitted[prefix] == uri {
+			continue
+		}
+
+		seen[prefix] = struct{}{}
+		d.writeNSDecl(out, prefix, uri)
+	}
+}
+
+// copyMap returns a shallow copy of a string map. If src is nil, returns
+// an empty map.
+func copyMap(src map[string]string) map[string]string {
+	m := make(map[string]string, len(src))
+	maps.Copy(m, src)
+
+	return m
 }
 
 // isURIAttr reports HTML attributes whose values contain URIs.
@@ -1409,80 +1483,6 @@ func writeURIAttributeMode(ctx context.Context, out io.Writer, s string, htmlAtt
 	}
 
 	return flush()
-}
-
-func (d *htmlDumper) writeNSDecl(out io.Writer, prefix, uri string) {
-	// The "xml" prefix is predefined by the Namespaces in XML spec (bound
-	// implicitly to the XML namespace everywhere), so a literal
-	// xmlns:xml="http://www.w3.org/XML/1998/namespace" declaration is
-	// redundant and non-canonical and must never be emitted.
-	if prefix == "xml" {
-		return
-	}
-
-	if prefix == "" {
-		d.writeString(out, " xmlns=\"")
-		d.writeString(out, uri)
-		d.writeString(out, "\"")
-
-		return
-	}
-	// A non-empty prefix is written verbatim into the xmlns: attribute name,
-	// so an unsafe prefix could break out of the tag (e.g. a prefix
-	// containing a space and quote yields a separate injected attribute).
-	// Reject it the same way element/attribute names are rejected.
-	d.checkName("namespace prefix", prefix)
-
-	if d.err != nil {
-		return
-	}
-
-	d.writeString(out, " xmlns:")
-	d.writeString(out, prefix)
-	d.writeString(out, "=\"")
-	d.writeString(out, uri)
-	d.writeString(out, "\"")
-}
-
-// emitAttrNSDecls emits namespace declarations for attribute prefixes
-// that aren't already declared on the element or emitted by an ancestor.
-func (d *htmlDumper) emitAttrNSDecls(out io.Writer, e *xdm.Element) {
-	declared := make(map[string]struct{})
-
-	for _, ns := range e.Namespaces() {
-		if d.namespaceAllowed(e, ns) {
-			declared[ns.Prefix()] = struct{}{}
-		}
-	}
-
-	seen := make(map[string]struct{})
-
-	for _, attr := range e.Attributes() {
-		prefix := attr.Prefix()
-		if prefix == "" || prefix == "xml" {
-			continue
-		}
-
-		if _, ok := declared[prefix]; ok {
-			continue
-		}
-
-		if _, ok := seen[prefix]; ok {
-			continue
-		}
-
-		uri := attr.URI()
-		if uri == "" {
-			continue
-		}
-
-		if d.nsEmitted != nil && d.nsEmitted[prefix] == uri {
-			continue
-		}
-
-		seen[prefix] = struct{}{}
-		d.writeNSDecl(out, prefix, uri)
-	}
 }
 
 func htmlEscapeString(w io.Writer, s string, escCtrl bool, charMap map[rune]string, canEncode func(rune) bool) error {

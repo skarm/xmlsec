@@ -194,22 +194,6 @@ func (r *HistoricalReport) Cause() error {
 // Standard names the published process edition used by this workflow.
 func (r *HistoricalReport) Standard() string { return "ETSI EN 319 102-1 V1.4.1 (2024-06)" }
 
-// HistoricalProof records existence of an exact object by a specified time.
-// SourceSHA256 is empty only for present-time observation. Acquisition provenance
-// cannot establish this proof.
-type HistoricalProof struct {
-	// ObjectSHA256 is the hexadecimal SHA-256 digest of the exact object whose existence
-	// was established.
-	ObjectSHA256 string
-	// SourceSHA256 identifies the protecting source. Empty denotes present-time
-	// observation.
-	SourceSHA256 string
-	// Kind identifies the proof's role in the validation workflow.
-	Kind string
-	// At is the time by which the exact object is known to have existed.
-	At time.Time
-}
-
 // Proofs returns owned diagnostic records from the completed graph.
 func (r *HistoricalReport) Proofs() []HistoricalProof {
 	if r == nil || r.state == nil || r.state.Proofs == nil {
@@ -231,6 +215,50 @@ func (r *HistoricalReport) Proofs() []HistoricalProof {
 	return out
 }
 
+// Steps returns an owned, reproducible explanation of proof extraction/sliding.
+func (r *HistoricalReport) Steps() []HistoricalStep {
+	if r == nil || r.state == nil {
+		return nil
+	}
+
+	out := make([]HistoricalStep, 0, len(r.state.Steps))
+	for _, step := range r.state.Steps {
+		out = append(out, HistoricalStep{Clause: step.Clause, Action: step.Action, SubIndication: step.SubIndication, ObjectSHA256: hex.EncodeToString(step.Object[:]), SourceSHA256: hex.EncodeToString(step.Source[:]), Before: step.Before, After: step.After})
+	}
+
+	return out
+}
+
+// Timestamps returns owned outcomes, including unusable optional attributes.
+func (r *HistoricalReport) Timestamps() []HistoricalTimestamp {
+	if r == nil || r.state == nil {
+		return nil
+	}
+
+	out := make([]HistoricalTimestamp, 0, len(r.state.Stamps))
+	for _, stamp := range r.state.Stamps {
+		out = append(out, HistoricalTimestamp{TokenSHA256: hex.EncodeToString(stamp.Token[:]), CertificateSHA256: hex.EncodeToString(stamp.Certificate[:]), SubIndication: stamp.SubIndication, Generation: stamp.Generation, Upper: stamp.Upper, BestSignatureTime: stamp.Best, ValidationTime: stamp.Validation, Indication: Indication(stamp.Indication), Archive: stamp.Archive, Content: stamp.Content, Ordering: stamp.Ordering})
+	}
+
+	return out
+}
+
+// HistoricalProof records existence of an exact object by a specified time.
+// SourceSHA256 is empty only for present-time observation. Acquisition provenance
+// cannot establish this proof.
+type HistoricalProof struct {
+	// ObjectSHA256 is the hexadecimal SHA-256 digest of the exact object whose existence
+	// was established.
+	ObjectSHA256 string
+	// SourceSHA256 identifies the protecting source. Empty denotes present-time
+	// observation.
+	SourceSHA256 string
+	// Kind identifies the proof's role in the validation workflow.
+	Kind string
+	// At is the time by which the exact object is known to have existed.
+	At time.Time
+}
+
 // HistoricalStep identifies one applied validation rule and its exact object and
 // evidence sources.
 type HistoricalStep struct {
@@ -248,20 +276,6 @@ type HistoricalStep struct {
 	Before time.Time
 	// After is the relevant control time after this step, when applicable.
 	After time.Time
-}
-
-// Steps returns an owned, reproducible explanation of proof extraction/sliding.
-func (r *HistoricalReport) Steps() []HistoricalStep {
-	if r == nil || r.state == nil {
-		return nil
-	}
-
-	out := make([]HistoricalStep, 0, len(r.state.Steps))
-	for _, step := range r.state.Steps {
-		out = append(out, HistoricalStep{Clause: step.Clause, Action: step.Action, SubIndication: step.SubIndication, ObjectSHA256: hex.EncodeToString(step.Object[:]), SourceSHA256: hex.EncodeToString(step.Source[:]), Before: step.Before, After: step.After})
-	}
-
-	return out
 }
 
 // HistoricalTimestamp records a timestamp token's exact identity, time bounds and
@@ -290,20 +304,6 @@ type HistoricalTimestamp struct {
 	Content bool
 	// Ordering records the token's signed ordering assertion.
 	Ordering bool
-}
-
-// Timestamps returns owned outcomes, including unusable optional attributes.
-func (r *HistoricalReport) Timestamps() []HistoricalTimestamp {
-	if r == nil || r.state == nil {
-		return nil
-	}
-
-	out := make([]HistoricalTimestamp, 0, len(r.state.Stamps))
-	for _, stamp := range r.state.Stamps {
-		out = append(out, HistoricalTimestamp{TokenSHA256: hex.EncodeToString(stamp.Token[:]), CertificateSHA256: hex.EncodeToString(stamp.Certificate[:]), SubIndication: stamp.SubIndication, Generation: stamp.Generation, Upper: stamp.Upper, BestSignatureTime: stamp.Best, ValidationTime: stamp.Validation, Indication: Indication(stamp.Indication), Archive: stamp.Archive, Content: stamp.Content, Ordering: stamp.Ordering})
-	}
-
-	return out
 }
 
 // HistoricalResult records acceptance after every configured historical validation

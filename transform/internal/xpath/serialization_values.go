@@ -100,26 +100,6 @@ func (opts serializeOptions) characterRuns(value string, plain, mapped func(stri
 	return emit(value[start:])
 }
 
-// Keep normalization out of markup and character-map replacement strings.
-func normalizeSerializedValue(value string, opts serializeOptions) (string, error) {
-	form, normalize := serializeNormForm(opts.normalizationForm)
-	if !normalize || !opts.methodAppliesNormalization() {
-		return value, nil
-	}
-
-	ctx := opts.serializationContext()
-	if err := Charge(ctx, 1+len(value)/64); err != nil {
-		return "", err
-	}
-
-	var buf serializationBuffer
-
-	buf.ctx = ctx
-	err := form.Each(ctx, value, func(part string) error { _, err := buf.WriteString(part); return err })
-
-	return buf.String(), err
-}
-
 // SerializeTextValue shares bounded character expansion with item serializers.
 func SerializeTextValue(ctx context.Context, value string, charMap map[rune]string, form string) (string, error) {
 	opts := serializeOptions{ctx: ctx, method: lexicon.MethodText, charMap: charMap, normalizationForm: form}
@@ -147,6 +127,60 @@ func WriteJSONString(ctx context.Context, dst io.Writer, value string, charMap m
 	}
 
 	return writeSerializationString(dst, `"`)
+}
+
+// WriteJSONNode fuses XML node serialization with JSON escaping when character
+// expansion needs no cross-write state. Other node methods and mapped/normalized
+// values retain their established value-local expansion path.
+func WriteJSONNode(ctx context.Context, dst io.Writer, value xdm.NodeItem, method string, charMap map[rune]string, normalizationForm string, canEncode func(rune) bool) error {
+	if method != "" && method != lexicon.MethodXML || len(charMap) != 0 || serializeNormalizationActive(normalizationForm) {
+		text, err := SerializeNodeForJSON(ctx, value, method)
+		if err != nil {
+			return err
+		}
+
+		return WriteJSONString(ctx, dst, text, charMap, normalizationForm, canEncode)
+	}
+
+	opts := serializeOptions{ctx: ctx, method: lexicon.MethodXML, omitXMLDeclaration: true, standalone: lexicon.ValueOmit, includeContentType: true, escapeURIAttributes: true}
+	if err := opts.validate(); err != nil {
+		return err
+	}
+
+	if err := writeSerializationString(dst, `"`); err != nil {
+		return err
+	}
+
+	escaped := jsonNodeWriter{ctx: ctx, dst: dst, canEncode: canEncode}
+	if err := writeXMLSequence(xdm.ItemSlice{value}, opts, &escaped); err != nil {
+		return err
+	}
+
+	if escaped.tailSize != 0 {
+		return io.ErrUnexpectedEOF
+	}
+
+	return writeSerializationString(dst, `"`)
+}
+
+// Keep normalization out of markup and character-map replacement strings.
+func normalizeSerializedValue(value string, opts serializeOptions) (string, error) {
+	form, normalize := serializeNormForm(opts.normalizationForm)
+	if !normalize || !opts.methodAppliesNormalization() {
+		return value, nil
+	}
+
+	ctx := opts.serializationContext()
+	if err := Charge(ctx, 1+len(value)/64); err != nil {
+		return "", err
+	}
+
+	var buf serializationBuffer
+
+	buf.ctx = ctx
+	err := form.Each(ctx, value, func(part string) error { _, err := buf.WriteString(part); return err })
+
+	return buf.String(), err
 }
 
 func writeSerializationString(dst io.Writer, value string) error {
@@ -227,40 +261,6 @@ func serializedJSONRune(r rune, canEncode func(rune) bool) string {
 	unit(6, lo)
 
 	return string(data[:])
-}
-
-// WriteJSONNode fuses XML node serialization with JSON escaping when character
-// expansion needs no cross-write state. Other node methods and mapped/normalized
-// values retain their established value-local expansion path.
-func WriteJSONNode(ctx context.Context, dst io.Writer, value xdm.NodeItem, method string, charMap map[rune]string, normalizationForm string, canEncode func(rune) bool) error {
-	if method != "" && method != lexicon.MethodXML || len(charMap) != 0 || serializeNormalizationActive(normalizationForm) {
-		text, err := SerializeNodeForJSON(ctx, value, method)
-		if err != nil {
-			return err
-		}
-
-		return WriteJSONString(ctx, dst, text, charMap, normalizationForm, canEncode)
-	}
-
-	opts := serializeOptions{ctx: ctx, method: lexicon.MethodXML, omitXMLDeclaration: true, standalone: lexicon.ValueOmit, includeContentType: true, escapeURIAttributes: true}
-	if err := opts.validate(); err != nil {
-		return err
-	}
-
-	if err := writeSerializationString(dst, `"`); err != nil {
-		return err
-	}
-
-	escaped := jsonNodeWriter{ctx: ctx, dst: dst, canEncode: canEncode}
-	if err := writeXMLSequence(xdm.ItemSlice{value}, opts, &escaped); err != nil {
-		return err
-	}
-
-	if escaped.tailSize != 0 {
-		return io.ErrUnexpectedEOF
-	}
-
-	return writeSerializationString(dst, `"`)
 }
 
 type jsonNodeWriter struct {

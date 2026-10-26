@@ -206,6 +206,67 @@ func ParseOCSPRequest(b []byte) (*OCSPRequest, error) {
 	return r, nil
 }
 
+// DER returns an owned copy of the original DER encoding.
+func (r *OCSPRequest) DER() []byte {
+	if r == nil {
+		return nil
+	}
+
+	return bytes.Clone(r.raw)
+}
+
+// Nonce returns an owned copy of the nonce, or nil when absent.
+func (r *OCSPRequest) Nonce() []byte {
+	if r == nil {
+		return nil
+	}
+
+	return bytes.Clone(r.nonce)
+}
+
+// Hash returns the request hash algorithm.
+func (r *OCSPRequest) Hash() crypto.Hash {
+	if r == nil {
+		return 0
+	}
+
+	h, _ := signature.Hash(r.id.alg, true)
+
+	return h
+}
+
+// CreateOCSPRequest encodes a single-certificate OCSP request for the explicit issuer,
+// hash and optional nonce. A supplied nonce must contain 32--128 bytes generated
+// by a cryptographically strong random source (RFC 9654 section 2.1). Incoming
+// requests retain support for legacy 1--31 byte nonces.
+func CreateOCSPRequest(certificateDER, issuerDER []byte, h crypto.Hash, nonce []byte) ([]byte, error) {
+	if len(nonce) > 0 && len(nonce) < 32 || len(nonce) > 128 {
+		return nil, ErrPolicy
+	}
+
+	c, e := parseBorrowedCertificate(certificateDER)
+	if e != nil {
+		return nil, e
+	}
+
+	issuer, e := parseBorrowedCertificate(issuerDER)
+	if e != nil {
+		return nil, e
+	}
+
+	id, e := makeCertID(context.Background(), c, issuer, h)
+	if e != nil {
+		return nil, e
+	}
+
+	f := [][]byte{der.Seq(der.Seq(encodeCertID(id)))}
+	if len(nonce) > 0 {
+		f = append(f, der.Ctx(2, nonceExtensions(nonce)))
+	}
+
+	return der.Seq(der.Seq(f...)), nil
+}
+
 func parseCertID(v asn1.RawValue) (certID, error) {
 	f, e := der.Sequence(v, 4, 4)
 	if e != nil {
@@ -300,67 +361,6 @@ func nonceFrom(exts []pkix.Extension, allow bool) ([]byte, error) {
 	}
 
 	return nonce, nil
-}
-
-// DER returns an owned copy of the original DER encoding.
-func (r *OCSPRequest) DER() []byte {
-	if r == nil {
-		return nil
-	}
-
-	return bytes.Clone(r.raw)
-}
-
-// Nonce returns an owned copy of the nonce, or nil when absent.
-func (r *OCSPRequest) Nonce() []byte {
-	if r == nil {
-		return nil
-	}
-
-	return bytes.Clone(r.nonce)
-}
-
-// Hash returns the request hash algorithm.
-func (r *OCSPRequest) Hash() crypto.Hash {
-	if r == nil {
-		return 0
-	}
-
-	h, _ := signature.Hash(r.id.alg, true)
-
-	return h
-}
-
-// CreateOCSPRequest encodes a single-certificate OCSP request for the explicit issuer,
-// hash and optional nonce. A supplied nonce must contain 32--128 bytes generated
-// by a cryptographically strong random source (RFC 9654 section 2.1). Incoming
-// requests retain support for legacy 1--31 byte nonces.
-func CreateOCSPRequest(certificateDER, issuerDER []byte, h crypto.Hash, nonce []byte) ([]byte, error) {
-	if len(nonce) > 0 && len(nonce) < 32 || len(nonce) > 128 {
-		return nil, ErrPolicy
-	}
-
-	c, e := parseBorrowedCertificate(certificateDER)
-	if e != nil {
-		return nil, e
-	}
-
-	issuer, e := parseBorrowedCertificate(issuerDER)
-	if e != nil {
-		return nil, e
-	}
-
-	id, e := makeCertID(context.Background(), c, issuer, h)
-	if e != nil {
-		return nil, e
-	}
-
-	f := [][]byte{der.Seq(der.Seq(encodeCertID(id)))}
-	if len(nonce) > 0 {
-		f = append(f, der.Ctx(2, nonceExtensions(nonce)))
-	}
-
-	return der.Seq(der.Seq(f...)), nil
 }
 
 func publicBits(c *x509.Certificate) ([]byte, error) {

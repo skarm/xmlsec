@@ -17,45 +17,6 @@ import (
 // XPath10String implements XPath 1.0 string(), including double formatting.
 func XPath10String(seq xdm.Sequence) (string, error) { return xpath10String(seq) }
 
-// XPath 1.0 section 4.2 requires decimal notation, including Infinity and -0.
-// Adapted from lestrrat-go/helium number.ToString; Copyright (c) 2015
-// lestrrat, MIT license in licenses/MIT-helium.txt.
-func xpath10NumberString(v float64) string {
-	switch {
-	case math.IsNaN(v):
-		return lexicon.FloatNaN
-	case math.IsInf(v, 1):
-		return "Infinity"
-	case math.IsInf(v, -1):
-		return "-Infinity"
-	case v == 0:
-		return "0"
-	}
-
-	return strconv.FormatFloat(v, 'f', -1, 64)
-}
-
-func xpath10String(seq xdm.Sequence) (string, error) {
-	if xdm.SequenceLen(seq) == 0 {
-		return "", nil
-	}
-
-	if n, ok := seq.Get(0).(xdm.NodeItem); ok {
-		return xdm.StringValue(n.Node), nil
-	}
-
-	a, err := AtomizeItem(seq.Get(0))
-	if err != nil {
-		return "", err
-	}
-
-	if a.IsNumeric() {
-		return xpath10NumberString(a.ToFloat64()), nil
-	}
-
-	return atomicToString(a)
-}
-
 // XPath10Value admits the four XPath 1.0 value kinds and normalizes a node-set
 // to document order without losing node identity. Numeric values are doubles.
 func XPath10Value(ctx context.Context, seq xdm.Sequence) (xdm.Sequence, error) {
@@ -97,15 +58,57 @@ func XPath10Value(ctx context.Context, seq xdm.Sequence) (xdm.Sequence, error) {
 	return sequenceFromDocOrderedNodes(ctx, nodes)
 }
 
-func xpath10Double(v float64) xdm.Sequence {
-	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: xdm.NewDouble(v)})
-}
-
 // XPath10FunctionArity reports the core function's minimum and maximum arity.
 // A maximum of -1 is variadic. Host functions live in the host's own registry.
 func XPath10FunctionArity(name string) ([2]int, bool) {
 	v, ok := lookupXPath10FunctionArity(name)
 	return v, ok
+}
+
+// XPath10Number implements XPath 1.0 number() for stylesheet host functions.
+func XPath10Number(seq xdm.Sequence) (xdm.AtomicValue, error) { return xpath10Number(seq) }
+
+// XPath 1.0 section 4.2 requires decimal notation, including Infinity and -0.
+// Adapted from lestrrat-go/helium number.ToString; Copyright (c) 2015
+// lestrrat, MIT license in licenses/MIT-helium.txt.
+func xpath10NumberString(v float64) string {
+	switch {
+	case math.IsNaN(v):
+		return lexicon.FloatNaN
+	case math.IsInf(v, 1):
+		return "Infinity"
+	case math.IsInf(v, -1):
+		return "-Infinity"
+	case v == 0:
+		return "0"
+	}
+
+	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+func xpath10String(seq xdm.Sequence) (string, error) {
+	if xdm.SequenceLen(seq) == 0 {
+		return "", nil
+	}
+
+	if n, ok := seq.Get(0).(xdm.NodeItem); ok {
+		return xdm.StringValue(n.Node), nil
+	}
+
+	a, err := AtomizeItem(seq.Get(0))
+	if err != nil {
+		return "", err
+	}
+
+	if a.IsNumeric() {
+		return xpath10NumberString(a.ToFloat64()), nil
+	}
+
+	return atomicToString(a)
+}
+
+func xpath10Double(v float64) xdm.Sequence {
+	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: xdm.NewDouble(v)})
 }
 
 // XPath 1.0 uses the same parseOptions, VM, axes and builtins. This table specifies
@@ -133,9 +136,6 @@ func lookupXPath10FunctionArity(key string) ([2]int, bool) {
 
 	return zero, false
 }
-
-// XPath10Number implements XPath 1.0 number() for stylesheet host functions.
-func XPath10Number(seq xdm.Sequence) (xdm.AtomicValue, error) { return xpath10Number(seq) }
 
 func xpath10Number(seq xdm.Sequence) (xdm.AtomicValue, error) {
 	if xdm.SequenceLen(seq) == 0 {

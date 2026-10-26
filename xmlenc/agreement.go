@@ -57,16 +57,6 @@ type ECDHRecipient interface {
 	ECDH(*ecdh.PublicKey) ([]byte, error)
 }
 
-// ContextECDHRecipient accepts the caller's cancellation and deadline context for
-// key agreement. Its returned secret follows ECDHRecipient's ownership and
-// full-width encoding contract.
-type ContextECDHRecipient interface {
-	// PublicKey returns the static recipient public key corresponding to the private operation.
-	PublicKey() *ecdh.PublicKey
-	// ECDH derives an owned, full-width secret and must honor cancellation.
-	ECDH(context.Context, *ecdh.PublicKey) ([]byte, error)
-}
-
 // AdaptContextECDHRecipient adapts an explicit contextual provider. XML decrypt
 // passes the invocation context; calling the adapter directly uses Background.
 func AdaptContextECDHRecipient(provider ContextECDHRecipient) (ECDHRecipient, error) {
@@ -75,6 +65,16 @@ func AdaptContextECDHRecipient(provider ContextECDHRecipient) (ECDHRecipient, er
 	}
 
 	return &contextECDHAdapter{provider}, nil
+}
+
+// ContextECDHRecipient accepts the caller's cancellation and deadline context for
+// key agreement. Its returned secret follows ECDHRecipient's ownership and
+// full-width encoding contract.
+type ContextECDHRecipient interface {
+	// PublicKey returns the static recipient public key corresponding to the private operation.
+	PublicKey() *ecdh.PublicKey
+	// ECDH derives an owned, full-width secret and must honor cancellation.
+	ECDH(context.Context, *ecdh.PublicKey) ([]byte, error)
 }
 
 type contextECDHAdapter struct{ ContextECDHRecipient }
@@ -98,6 +98,110 @@ type agreementParameters struct {
 	curveURI    string
 	secretBytes int
 	kekBytes    int
+}
+
+// EncryptBytesWithECDH uses an explicit static ECDH recipient and AES key wrap.
+func EncryptBytesWithECDH(ctx context.Context, plaintext []byte, recipient *ecdh.PublicKey, options ECDHOptions) (*document.Document, error) {
+	p, err := ecdhEncryptProfile(ctx, recipient, options)
+	if err != nil {
+		return nil, err
+	}
+
+	return encrypt(ctx, plaintext, p)
+}
+
+// DecryptBytesWithECDH uses an explicit static ECDH recipient and AES key wrap.
+func DecryptBytesWithECDH(ctx context.Context, doc *document.Document, recipient ECDHRecipient, options ECDHOptions) ([]byte, error) {
+	p, err := ecdhDecryptProfile(ctx, recipient, options)
+	if err != nil {
+		return nil, err
+	}
+
+	return decrypt(ctx, doc, p, "")
+}
+
+// EncryptDocumentWithECDH has the root-element, NFC and snapshot contracts of EncryptDocument.
+func EncryptDocumentWithECDH(ctx context.Context, doc *document.Document, recipient *ecdh.PublicKey, options ECDHOptions) (*document.Document, error) {
+	p, err := ecdhEncryptProfile(ctx, recipient, options)
+	if err != nil {
+		return nil, err
+	}
+
+	return encryptDocument(ctx, doc, p)
+}
+
+// DecryptDocumentWithECDH has the root-element, NFC and snapshot contracts of DecryptDocument.
+func DecryptDocumentWithECDH(ctx context.Context, doc *document.Document, recipient ECDHRecipient, options ECDHOptions) (*document.Document, error) {
+	p, err := ecdhDecryptProfile(ctx, recipient, options)
+	if err != nil {
+		return nil, err
+	}
+
+	return decryptDocument(ctx, doc, p)
+}
+
+// EncryptElementWithECDH has the selected-node, namespace and budget contracts of EncryptElement.
+func EncryptElementWithECDH(ctx context.Context, doc *document.Document, selected document.Element, recipient *ecdh.PublicKey, options ECDHOptions) (*document.Document, document.Element, error) {
+	node, err := selectedNode(doc, selected)
+	if err != nil {
+		return nil, document.Element{}, err
+	}
+
+	p, err := ecdhEncryptProfile(ctx, recipient, options)
+	if err != nil {
+		return nil, document.Element{}, err
+	}
+
+	return encryptSelected(ctx, doc, node, p)
+}
+
+// DecryptElementWithECDH has the selected-node, namespace and budget contracts of DecryptElement.
+func DecryptElementWithECDH(ctx context.Context, doc *document.Document, selected document.Element, recipient ECDHRecipient, options ECDHOptions) (*document.Document, document.Element, error) {
+	node, err := selectedNode(doc, selected)
+	if err != nil {
+		return nil, document.Element{}, err
+	}
+
+	p, err := ecdhDecryptProfile(ctx, recipient, options)
+	if err != nil {
+		return nil, document.Element{}, err
+	}
+
+	return decryptSelected(ctx, doc, node, p)
+}
+
+// EncryptContentWithECDH has the selected-node, namespace and budget contracts of EncryptContent.
+func EncryptContentWithECDH(ctx context.Context, doc *document.Document, selected document.Element, recipient *ecdh.PublicKey, options ECDHOptions) (*document.Document, document.Element, error) {
+	node, err := contentParent(doc, selected)
+	if err != nil {
+		return nil, document.Element{}, err
+	}
+
+	p, err := ecdhEncryptProfile(ctx, recipient, options)
+	if err != nil {
+		return nil, document.Element{}, err
+	}
+
+	return encryptContent(ctx, doc, node, p)
+}
+
+// DecryptContentWithECDH has the selected-node, namespace and budget contracts of DecryptContent.
+func DecryptContentWithECDH(ctx context.Context, doc *document.Document, selected document.Element, recipient ECDHRecipient, options ECDHOptions) (*document.Document, document.Element, error) {
+	node, err := selectedNode(doc, selected)
+	if err != nil {
+		return nil, document.Element{}, err
+	}
+
+	if node.Parent == nil {
+		return nil, document.Element{}, ErrFormat
+	}
+
+	p, err := ecdhDecryptProfile(ctx, recipient, options)
+	if err != nil {
+		return nil, document.Element{}, err
+	}
+
+	return decryptContent(ctx, doc, node, p)
 }
 
 func agreementProfile(ctx context.Context, recipient *ecdh.PublicKey, options ECDHOptions) (profile, agreementParameters, error) {
@@ -559,108 +663,4 @@ func checkAgreementRecipient(ctx context.Context, info document.Element, recipie
 	}
 
 	return ctx.Err()
-}
-
-// EncryptBytesWithECDH uses an explicit static ECDH recipient and AES key wrap.
-func EncryptBytesWithECDH(ctx context.Context, plaintext []byte, recipient *ecdh.PublicKey, options ECDHOptions) (*document.Document, error) {
-	p, err := ecdhEncryptProfile(ctx, recipient, options)
-	if err != nil {
-		return nil, err
-	}
-
-	return encrypt(ctx, plaintext, p)
-}
-
-// DecryptBytesWithECDH uses an explicit static ECDH recipient and AES key wrap.
-func DecryptBytesWithECDH(ctx context.Context, doc *document.Document, recipient ECDHRecipient, options ECDHOptions) ([]byte, error) {
-	p, err := ecdhDecryptProfile(ctx, recipient, options)
-	if err != nil {
-		return nil, err
-	}
-
-	return decrypt(ctx, doc, p, "")
-}
-
-// EncryptDocumentWithECDH has the root-element, NFC and snapshot contracts of EncryptDocument.
-func EncryptDocumentWithECDH(ctx context.Context, doc *document.Document, recipient *ecdh.PublicKey, options ECDHOptions) (*document.Document, error) {
-	p, err := ecdhEncryptProfile(ctx, recipient, options)
-	if err != nil {
-		return nil, err
-	}
-
-	return encryptDocument(ctx, doc, p)
-}
-
-// DecryptDocumentWithECDH has the root-element, NFC and snapshot contracts of DecryptDocument.
-func DecryptDocumentWithECDH(ctx context.Context, doc *document.Document, recipient ECDHRecipient, options ECDHOptions) (*document.Document, error) {
-	p, err := ecdhDecryptProfile(ctx, recipient, options)
-	if err != nil {
-		return nil, err
-	}
-
-	return decryptDocument(ctx, doc, p)
-}
-
-// EncryptElementWithECDH has the selected-node, namespace and budget contracts of EncryptElement.
-func EncryptElementWithECDH(ctx context.Context, doc *document.Document, selected document.Element, recipient *ecdh.PublicKey, options ECDHOptions) (*document.Document, document.Element, error) {
-	node, err := selectedNode(doc, selected)
-	if err != nil {
-		return nil, document.Element{}, err
-	}
-
-	p, err := ecdhEncryptProfile(ctx, recipient, options)
-	if err != nil {
-		return nil, document.Element{}, err
-	}
-
-	return encryptSelected(ctx, doc, node, p)
-}
-
-// DecryptElementWithECDH has the selected-node, namespace and budget contracts of DecryptElement.
-func DecryptElementWithECDH(ctx context.Context, doc *document.Document, selected document.Element, recipient ECDHRecipient, options ECDHOptions) (*document.Document, document.Element, error) {
-	node, err := selectedNode(doc, selected)
-	if err != nil {
-		return nil, document.Element{}, err
-	}
-
-	p, err := ecdhDecryptProfile(ctx, recipient, options)
-	if err != nil {
-		return nil, document.Element{}, err
-	}
-
-	return decryptSelected(ctx, doc, node, p)
-}
-
-// EncryptContentWithECDH has the selected-node, namespace and budget contracts of EncryptContent.
-func EncryptContentWithECDH(ctx context.Context, doc *document.Document, selected document.Element, recipient *ecdh.PublicKey, options ECDHOptions) (*document.Document, document.Element, error) {
-	node, err := contentParent(doc, selected)
-	if err != nil {
-		return nil, document.Element{}, err
-	}
-
-	p, err := ecdhEncryptProfile(ctx, recipient, options)
-	if err != nil {
-		return nil, document.Element{}, err
-	}
-
-	return encryptContent(ctx, doc, node, p)
-}
-
-// DecryptContentWithECDH has the selected-node, namespace and budget contracts of DecryptContent.
-func DecryptContentWithECDH(ctx context.Context, doc *document.Document, selected document.Element, recipient ECDHRecipient, options ECDHOptions) (*document.Document, document.Element, error) {
-	node, err := selectedNode(doc, selected)
-	if err != nil {
-		return nil, document.Element{}, err
-	}
-
-	if node.Parent == nil {
-		return nil, document.Element{}, ErrFormat
-	}
-
-	p, err := ecdhDecryptProfile(ctx, recipient, options)
-	if err != nil {
-		return nil, document.Element{}, err
-	}
-
-	return decryptContent(ctx, doc, node, p)
 }

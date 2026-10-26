@@ -386,6 +386,20 @@ type suitePackage struct {
 	uri     string
 }
 
+func (e *preparedSuiteEnvironment) query(ctx context.Context, expression string, extra transform.Bindings) (transform.Sequence, error) {
+	bindings := make(transform.Bindings, len(e.variables)+len(extra))
+	maps.Copy(bindings, e.variables)
+
+	maps.Copy(bindings, extra)
+
+	query, err := e.engine.CompileXPath(ctx, expression, transform.XPathOptions{Version: transform.XPath31, Namespaces: e.namespaces, BaseURI: e.baseURI, DefaultCollation: e.collation, DecimalFormats: e.decimalFormats})
+	if err != nil {
+		return transform.Sequence{}, err
+	}
+
+	return query.Evaluate(ctx, e.document, transform.XPathContext{Variables: bindings, ContextItem: e.contextItem, Context: suiteDynamicContext(e.currentTime)})
+}
+
 type suiteResourceResolver struct {
 	root           string
 	resources      map[string]string
@@ -396,13 +410,6 @@ type suiteResourceResolver struct {
 	fileLimit      int
 	mediaTypes     map[string]string
 }
-
-type suiteMediaReader struct {
-	io.ReadCloser
-	mediaType string
-}
-
-func (r *suiteMediaReader) MediaType() string { return r.mediaType }
 
 func (r *suiteResourceResolver) ResolvePackage(ctx context.Context, name, constraint string) (transform.PackageResource, error) {
 	var selected *suitePackage
@@ -491,6 +498,13 @@ func (r *suiteResourceResolver) ResolveURICollection(ctx context.Context, uri st
 
 	return slices.Clone(values), nil
 }
+
+type suiteMediaReader struct {
+	io.ReadCloser
+	mediaType string
+}
+
+func (r *suiteMediaReader) MediaType() string { return r.mediaType }
 
 func prepareSuiteEnvironment(ctx context.Context, options suiteOptions, item suiteCase) (*preparedSuiteEnvironment, error) {
 	return prepareSuiteEnvironmentWithLimits(ctx, options, item, suiteLimits(options))
@@ -1378,20 +1392,6 @@ func suiteQName(lexical string, namespaces map[string]string) (transform.Name, e
 	}
 
 	return transform.Name{Space: space, Local: local}, nil
-}
-
-func (e *preparedSuiteEnvironment) query(ctx context.Context, expression string, extra transform.Bindings) (transform.Sequence, error) {
-	bindings := make(transform.Bindings, len(e.variables)+len(extra))
-	maps.Copy(bindings, e.variables)
-
-	maps.Copy(bindings, extra)
-
-	query, err := e.engine.CompileXPath(ctx, expression, transform.XPathOptions{Version: transform.XPath31, Namespaces: e.namespaces, BaseURI: e.baseURI, DefaultCollation: e.collation, DecimalFormats: e.decimalFormats})
-	if err != nil {
-		return transform.Sequence{}, err
-	}
-
-	return query.Evaluate(ctx, e.document, transform.XPathContext{Variables: bindings, ContextItem: e.contextItem, Context: suiteDynamicContext(e.currentTime)})
 }
 
 func suiteDynamicContext(currentTime time.Time) transform.DynamicContext {

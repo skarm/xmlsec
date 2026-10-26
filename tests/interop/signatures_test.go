@@ -44,6 +44,15 @@ const (
 	stage4Payload  = "payload"
 )
 
+const (
+	uriSignedPayload         = "#payload"
+	uriSharedKeyInfo         = "#shared"
+	nameEnveloping           = "enveloping"
+	nameMulti                = "multi"
+	uriRetrievalKey          = "urn:key"
+	flagMixedCaseIDAttribute = "--id-attr:Id"
+)
+
 func TestXMLSecX509DataGroups(t *testing.T) {
 	fixture := newInteropFixture(t)
 	selected(t, "xmlsec")
@@ -212,15 +221,6 @@ func x509DataNativeGeneration(t *testing.T, fixture *interopFixture, key testKey
 		t.Fatal(err)
 	}
 }
-
-const (
-	uriSignedPayload         = "#payload"
-	uriSharedKeyInfo         = "#shared"
-	nameEnveloping           = "enveloping"
-	nameMulti                = "multi"
-	uriRetrievalKey          = "urn:key"
-	flagMixedCaseIDAttribute = "--id-attr:Id"
-)
 
 func TestLegacySignatureFixtures(t *testing.T) {
 	fixture := newInteropFixture(t)
@@ -872,54 +872,6 @@ func (scenario coreSignatureCase) exchange(t *testing.T, recipe coreSignatureRec
 	}
 }
 
-func referenceTemplate(uri string, transforms ...string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, `<ds:Reference URI="%s">`, strings.ReplaceAll(uri, `"`, "&quot;"))
-
-	if len(transforms) > 0 {
-		b.WriteString("<ds:Transforms>")
-
-		for _, alg := range transforms {
-			fmt.Fprintf(&b, `<ds:Transform Algorithm="%s"/>`, alg)
-		}
-
-		b.WriteString("</ds:Transforms>")
-	}
-
-	fmt.Fprintf(&b, `<ds:DigestMethod Algorithm="%s"/><ds:DigestValue/></ds:Reference>`, digests()[0])
-
-	return b.String()
-}
-
-func signatureTemplate(index int, method, cm, refs, objects string) string {
-	return fmt.Sprintf(`<ds:Signature xmlns:ds="%s" Id="s%d"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="%s"/><ds:SignatureMethod Algorithm="%s"/>%s</ds:SignedInfo><ds:SignatureValue/>%s</ds:Signature>`, ds, index, cm, method, refs, objects)
-}
-
-func coreTemplate(form, method, cm string) string {
-	if form == nameEnveloping {
-		refs := referenceTemplate("#data", cm) + referenceTemplate("#bin", ds+"base64") + referenceTemplate("#data", exc)
-		return signatureTemplate(0, method, cm, refs, `<ds:Object Id="data" MimeType="text/xml"><p:item xmlns:p="urn:payload">one<!--comment--></p:item></ds:Object><ds:Object Id="bin">aGVsbG8=</ds:Object>`)
-	}
-
-	var refs string
-
-	switch form {
-	case "whole":
-		refs = referenceTemplate("", ds+"enveloped-signature", cm) + referenceTemplate("#root", ds+"enveloped-signature", exc)
-	case "xpointer":
-		refs = referenceTemplate("#xpointer(id('data'))", exc+"WithComments") + referenceTemplate("#data", exc+"WithComments")
-	default:
-		refs = referenceTemplate("#data", cm) + referenceTemplate("#other", c11)
-	}
-
-	sigs := signatureTemplate(0, method, cm, refs, "")
-	if form == nameMulti {
-		sigs += signatureTemplate(1, method, cm, refs, "")
-	}
-
-	return `<root xmlns:z="urn:unused" ID="root"><item ID="data">one<!--comment--></item><item ID="other">two<!--comment--></item>` + sigs + `</root>`
-}
-
 func (scenario coreSignatureCase) signExchange(t *testing.T, exchange coreSignatureExchange) {
 	t.Helper()
 
@@ -1007,6 +959,54 @@ func (scenario coreSignatureCase) rejectBadSecond(t *testing.T) {
 
 	raw, _ := command(t, scenario.suite.fixture, false, nil, scenario.suite.cli, "verify-core", flagKey, scenario.key.public, "-signature-index", "0", flagIn, bad)
 	badSecond(t, verifyReport(t, raw, false))
+}
+
+func referenceTemplate(uri string, transforms ...string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `<ds:Reference URI="%s">`, strings.ReplaceAll(uri, `"`, "&quot;"))
+
+	if len(transforms) > 0 {
+		b.WriteString("<ds:Transforms>")
+
+		for _, alg := range transforms {
+			fmt.Fprintf(&b, `<ds:Transform Algorithm="%s"/>`, alg)
+		}
+
+		b.WriteString("</ds:Transforms>")
+	}
+
+	fmt.Fprintf(&b, `<ds:DigestMethod Algorithm="%s"/><ds:DigestValue/></ds:Reference>`, digests()[0])
+
+	return b.String()
+}
+
+func signatureTemplate(index int, method, cm, refs, objects string) string {
+	return fmt.Sprintf(`<ds:Signature xmlns:ds="%s" Id="s%d"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="%s"/><ds:SignatureMethod Algorithm="%s"/>%s</ds:SignedInfo><ds:SignatureValue/>%s</ds:Signature>`, ds, index, cm, method, refs, objects)
+}
+
+func coreTemplate(form, method, cm string) string {
+	if form == nameEnveloping {
+		refs := referenceTemplate("#data", cm) + referenceTemplate("#bin", ds+"base64") + referenceTemplate("#data", exc)
+		return signatureTemplate(0, method, cm, refs, `<ds:Object Id="data" MimeType="text/xml"><p:item xmlns:p="urn:payload">one<!--comment--></p:item></ds:Object><ds:Object Id="bin">aGVsbG8=</ds:Object>`)
+	}
+
+	var refs string
+
+	switch form {
+	case "whole":
+		refs = referenceTemplate("", ds+"enveloped-signature", cm) + referenceTemplate("#root", ds+"enveloped-signature", exc)
+	case "xpointer":
+		refs = referenceTemplate("#xpointer(id('data'))", exc+"WithComments") + referenceTemplate("#data", exc+"WithComments")
+	default:
+		refs = referenceTemplate("#data", cm) + referenceTemplate("#other", c11)
+	}
+
+	sigs := signatureTemplate(0, method, cm, refs, "")
+	if form == nameMulti {
+		sigs += signatureTemplate(1, method, cm, refs, "")
+	}
+
+	return `<root xmlns:z="urn:unused" ID="root"><item ID="data">one<!--comment--></item><item ID="other">two<!--comment--></item>` + sigs + `</root>`
 }
 
 func verifyReport(t *testing.T, raw []byte, valid bool) verification {

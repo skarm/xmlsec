@@ -23,41 +23,6 @@ func Validate(value string) error {
 	return err
 }
 
-// parse retains the validated components for callers that also need to resolve
-// them, avoiding a second net/url parse and its allocations.
-func parse(value string) (*url.URL, error) {
-	if strings.Contains(value, "\\") || !utf8.ValidString(value) {
-		return nil, fmt.Errorf("%w: URI encoding", Err)
-	}
-
-	if _, fragment, ok := strings.Cut(value, "#"); ok && strings.Contains(fragment, "#") {
-		return nil, fmt.Errorf("%w: multiple URI fragments", Err)
-	}
-
-	for i := 0; i < len(value); i++ {
-		if value[i] == '%' {
-			if i+2 >= len(value) || !xmlchar.IsHexDigit(value[i+1]) || !xmlchar.IsHexDigit(value[i+2]) {
-				return nil, fmt.Errorf("%w: malformed URI escape", Err)
-			}
-
-			i += 2
-		}
-	}
-
-	for _, r := range value {
-		if unicode.IsSpace(r) || unicode.IsControl(r) {
-			return nil, fmt.Errorf("%w: unescaped URI whitespace/control", Err)
-		}
-	}
-
-	parsed, err := url.Parse(value)
-	if err != nil {
-		return nil, fmt.Errorf("%w: malformed URI: %w", Err, err)
-	}
-
-	return parsed, nil
-}
-
 // Base parses an optional absolute hierarchical, fragment-free document base.
 func Base(value string) (*url.URL, error) {
 	if value == "" {
@@ -129,4 +94,39 @@ func Resolve(value string, base *url.URL, resource string, source *tree.Node) (s
 	}
 
 	return resolved, Validate(resolved)
+}
+
+// parse retains the validated components for callers that also need to resolve
+// them, avoiding a second net/url parse and its allocations.
+func parse(value string) (*url.URL, error) {
+	if strings.Contains(value, "\\") || !utf8.ValidString(value) {
+		return nil, fmt.Errorf("%w: URI encoding", Err)
+	}
+
+	if _, fragment, ok := strings.Cut(value, "#"); ok && strings.Contains(fragment, "#") {
+		return nil, fmt.Errorf("%w: multiple URI fragments", Err)
+	}
+
+	for i := 0; i < len(value); i++ {
+		if value[i] == '%' {
+			if i+2 >= len(value) || !xmlchar.IsHexDigit(value[i+1]) || !xmlchar.IsHexDigit(value[i+2]) {
+				return nil, fmt.Errorf("%w: malformed URI escape", Err)
+			}
+
+			i += 2
+		}
+	}
+
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return nil, fmt.Errorf("%w: unescaped URI whitespace/control", Err)
+		}
+	}
+
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return nil, fmt.Errorf("%w: malformed URI: %w", Err, err)
+	}
+
+	return parsed, nil
 }

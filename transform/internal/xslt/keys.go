@@ -296,124 +296,6 @@ func (ec *execContext) buildKeyTable(ctx context.Context, name string, root xdm.
 	return table, nil
 }
 
-func keyDefinitionsMatchAttributes(defs []*keyDef) bool {
-	for _, def := range defs {
-		if def.Match.matchesAttributes() {
-			return true
-		}
-	}
-
-	return false
-}
-
-func keyDefinitionsMatchNamespaces(defs []*keyDef) bool {
-	for _, def := range defs {
-		if def.Match.matchesNamespaceNodes() {
-			return true
-		}
-	}
-
-	return false
-}
-
-// indexKeyTree calls indexNode on root and on each XDM descendant of root in
-// document order, as the descendant-or-self axis selects them, and also on
-// the attributes (needsAttrs) and in-scope namespace nodes (needsNSNodes) of
-// each element right after the element. A cancelled context ends the walk
-// with its error.
-func indexKeyTree(ctx context.Context, root xdm.Node, needsAttrs, needsNSNodes bool, indexNode func(xdm.Node) error) error {
-	stack := []xdm.Node{root}
-	for len(stack) > 0 {
-		last := len(stack) - 1
-		node := stack[last]
-		stack = stack[:last]
-
-		if err := indexNode(node); err != nil {
-			return err
-		}
-
-		if node.Type() == xdm.AttributeNode {
-			continue
-		}
-
-		if elem, ok := node.(*xdm.Element); ok {
-			if err := indexKeyElementNodes(elem, needsAttrs, needsNSNodes, indexNode); err != nil {
-				return err
-			}
-		}
-
-		var err error
-
-		stack, err = xdm.PushXDMChildren(ctx, stack, node)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func indexKeyElementNodes(elem *xdm.Element, needsAttrs, needsNSNodes bool, indexNode func(xdm.Node) error) error {
-	if needsAttrs {
-		for _, attr := range elem.Attributes() {
-			if err := indexNode(attr); err != nil {
-				return err
-			}
-		}
-	}
-
-	if needsNSNodes {
-		// Include inherited namespaces, as selected by the XPath namespace axis.
-		for _, namespace := range collectInScopeNSNodes(elem) {
-			if err := indexNode(namespace); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-// collectInScopeNSNodes returns NamespaceNodeWrapper nodes for all in-scope
-// namespaces of an element, including those inherited from ancestors.
-// This matches XPath namespace axis semantics.
-func collectInScopeNSNodes(elem *xdm.Element) []xdm.Node {
-	seen := make(map[string]struct{})
-
-	var result []xdm.Node
-
-	// Walk from the element up through ancestors collecting namespace declarations.
-	var cur xdm.Node = elem
-	for cur != nil {
-		if e, ok := cur.(*xdm.Element); ok {
-			for _, ns := range e.Namespaces() {
-				prefix := ns.Prefix()
-				if _, exists := seen[prefix]; exists {
-					continue
-				}
-
-				if ns.URI() == "" {
-					seen[prefix] = struct{}{}
-					continue
-				}
-
-				seen[prefix] = struct{}{}
-
-				result = append(result, xdm.NewNamespaceNodeWrapper(ns, elem))
-			}
-		}
-
-		cur = cur.Parent()
-	}
-
-	if _, exists := seen[lexicon.PrefixXML]; !exists {
-		xmlNS := xdm.NewNamespace(lexicon.PrefixXML, lexicon.NamespaceXML)
-		result = append(result, xdm.NewNamespaceNodeWrapper(xmlNS, elem))
-	}
-
-	return result
-}
-
 func (ec *execContext) cachedKeyTable(cacheKey, name string) (*keyTable, error) {
 	table, found := ec.keyTables[cacheKey]
 	if !found {
@@ -571,6 +453,124 @@ func (ec *execContext) lookupCompositeKey(ctx context.Context, name string, valu
 	}
 
 	return result, nil
+}
+
+func keyDefinitionsMatchAttributes(defs []*keyDef) bool {
+	for _, def := range defs {
+		if def.Match.matchesAttributes() {
+			return true
+		}
+	}
+
+	return false
+}
+
+func keyDefinitionsMatchNamespaces(defs []*keyDef) bool {
+	for _, def := range defs {
+		if def.Match.matchesNamespaceNodes() {
+			return true
+		}
+	}
+
+	return false
+}
+
+// indexKeyTree calls indexNode on root and on each XDM descendant of root in
+// document order, as the descendant-or-self axis selects them, and also on
+// the attributes (needsAttrs) and in-scope namespace nodes (needsNSNodes) of
+// each element right after the element. A cancelled context ends the walk
+// with its error.
+func indexKeyTree(ctx context.Context, root xdm.Node, needsAttrs, needsNSNodes bool, indexNode func(xdm.Node) error) error {
+	stack := []xdm.Node{root}
+	for len(stack) > 0 {
+		last := len(stack) - 1
+		node := stack[last]
+		stack = stack[:last]
+
+		if err := indexNode(node); err != nil {
+			return err
+		}
+
+		if node.Type() == xdm.AttributeNode {
+			continue
+		}
+
+		if elem, ok := node.(*xdm.Element); ok {
+			if err := indexKeyElementNodes(elem, needsAttrs, needsNSNodes, indexNode); err != nil {
+				return err
+			}
+		}
+
+		var err error
+
+		stack, err = xdm.PushXDMChildren(ctx, stack, node)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func indexKeyElementNodes(elem *xdm.Element, needsAttrs, needsNSNodes bool, indexNode func(xdm.Node) error) error {
+	if needsAttrs {
+		for _, attr := range elem.Attributes() {
+			if err := indexNode(attr); err != nil {
+				return err
+			}
+		}
+	}
+
+	if needsNSNodes {
+		// Include inherited namespaces, as selected by the XPath namespace axis.
+		for _, namespace := range collectInScopeNSNodes(elem) {
+			if err := indexNode(namespace); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// collectInScopeNSNodes returns NamespaceNodeWrapper nodes for all in-scope
+// namespaces of an element, including those inherited from ancestors.
+// This matches XPath namespace axis semantics.
+func collectInScopeNSNodes(elem *xdm.Element) []xdm.Node {
+	seen := make(map[string]struct{})
+
+	var result []xdm.Node
+
+	// Walk from the element up through ancestors collecting namespace declarations.
+	var cur xdm.Node = elem
+	for cur != nil {
+		if e, ok := cur.(*xdm.Element); ok {
+			for _, ns := range e.Namespaces() {
+				prefix := ns.Prefix()
+				if _, exists := seen[prefix]; exists {
+					continue
+				}
+
+				if ns.URI() == "" {
+					seen[prefix] = struct{}{}
+					continue
+				}
+
+				seen[prefix] = struct{}{}
+
+				result = append(result, xdm.NewNamespaceNodeWrapper(ns, elem))
+			}
+		}
+
+		cur = cur.Parent()
+	}
+
+	if _, exists := seen[lexicon.PrefixXML]; !exists {
+		xmlNS := xdm.NewNamespace(lexicon.PrefixXML, lexicon.NamespaceXML)
+		result = append(result, xdm.NewNamespaceNodeWrapper(xmlNS, elem))
+	}
+
+	return result
 }
 
 // compositeAtomicEquals tests whether two composite keys are equal element-by-element.

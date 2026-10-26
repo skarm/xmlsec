@@ -2,11 +2,6 @@ package x509name
 
 import "sync"
 
-type cacheEntry struct {
-	raw string
-	key string
-}
-
 // This process cache is deliberately bounded by both entry count and retained
 // bytes. It stores only successful public DN comparisons, never control errors.
 //
@@ -16,6 +11,11 @@ var nameCache struct {
 	entries [64]cacheEntry
 	next    int
 	bytes   int
+}
+
+type cacheEntry struct {
+	raw string
+	key string
 }
 
 func nameCacheGet(raw []byte) (string, bool) {

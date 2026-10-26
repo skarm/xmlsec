@@ -136,6 +136,42 @@ func (p *parser) x509IssuerSerial(n *tree.Node) (IssuerSerial, error) {
 	return normalizeIssuerSerial(issuer, serial)
 }
 
+func (p *parser) x509Digest(n *tree.Node) (CertificateDigest, error) {
+	algorithm, ok := attr(n, "Algorithm")
+	if !ok {
+		return CertificateDigest{}, ErrInput
+	}
+
+	size := x509DigestSize(algorithm)
+	if size == 0 {
+		return CertificateDigest{}, fmt.Errorf("%w: certificate digest algorithm", ErrUnsupported)
+	}
+
+	value, err := p.binary(n, "Algorithm")
+	if err != nil {
+		return CertificateDigest{}, err
+	}
+
+	if len(value) != size {
+		return CertificateDigest{}, ErrInput
+	}
+
+	return CertificateDigest{algorithm, value}, nil
+}
+
+func (p *parser) tick() error {
+	if err := p.ctx.Err(); err != nil {
+		return err
+	}
+
+	p.elements++
+	if p.elements > p.limits.MaxElements {
+		return fmt.Errorf("%w: processing elements", ErrLimit)
+	}
+
+	return nil
+}
+
 func normalizeIssuerSerial(issuer, serial string) (IssuerSerial, error) {
 	serial = strings.Trim(serial, " \t\r\n")
 	serial = strings.TrimPrefix(serial, "+")
@@ -296,29 +332,6 @@ func buildX509Blobs(ctx context.Context, node *tree.Node, group X509Data) error 
 	return nil
 }
 
-func (p *parser) x509Digest(n *tree.Node) (CertificateDigest, error) {
-	algorithm, ok := attr(n, "Algorithm")
-	if !ok {
-		return CertificateDigest{}, ErrInput
-	}
-
-	size := x509DigestSize(algorithm)
-	if size == 0 {
-		return CertificateDigest{}, fmt.Errorf("%w: certificate digest algorithm", ErrUnsupported)
-	}
-
-	value, err := p.binary(n, "Algorithm")
-	if err != nil {
-		return CertificateDigest{}, err
-	}
-
-	if len(value) != size {
-		return CertificateDigest{}, ErrInput
-	}
-
-	return CertificateDigest{algorithm, value}, nil
-}
-
 func x509DigestSize(algorithm string) int {
 	switch algorithm {
 	case lexicon.DigestSHA1:
@@ -332,17 +345,4 @@ func x509DigestSize(algorithm string) int {
 	default:
 		return 0
 	}
-}
-
-func (p *parser) tick() error {
-	if err := p.ctx.Err(); err != nil {
-		return err
-	}
-
-	p.elements++
-	if p.elements > p.limits.MaxElements {
-		return fmt.Errorf("%w: processing elements", ErrLimit)
-	}
-
-	return nil
 }

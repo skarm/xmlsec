@@ -14,6 +14,8 @@ import (
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
 
+var errDTDPresent = errors.New("XML DOCTYPE present")
+
 // DTDEntityResolver resolves a SYSTEM identifier against the entity containing
 // its declaration. It returns both the authorized stream and its absolute URI.
 // No filesystem or network fallback is supplied by the XML parser.
@@ -279,6 +281,49 @@ func (o ParseOptions) parseDTDText(ctx context.Context, text string) (*Document,
 	return doc, nil
 }
 
+func (o ParseOptions) parseDTDReader(ctx context.Context, source io.Reader) (*Document, error) {
+	captured := dtdProbeReader{source: source}
+
+	probe, err := newDocumentReader(ctx, &captured, o.Limits, false, o.AllowSingleByteEncodings, o.AllowRelativeNamespaces)
+	if err != nil {
+		return nil, err
+	}
+
+	probe.input.dtdProbe, probe.stopAtRoot = true, true
+
+	_, probeErr := probe.parse(ctx)
+	if probeErr != nil && !errors.Is(probeErr, errDTDPresent) {
+		return nil, probeErr
+	}
+
+	captured.replay = true
+
+	replay := io.MultiReader(bytes.NewReader(captured.prefix.Bytes()), &captured)
+	if !errors.Is(probeErr, errDTDPresent) {
+		return parseXMLReader(ctx, replay, o.Limits, false, o.AllowSingleByteEncodings, o.AllowRelativeNamespaces)
+	}
+
+	text, err := decodeDTDInput(ctx, replay, o, false)
+	if err != nil {
+		return nil, err
+	}
+
+	doc, err := o.parseDTDText(ctx, text)
+	if err != nil {
+		return nil, err
+	}
+
+	if difference := captured.total - len(text); difference > 0 {
+		if difference > o.Limits.MaxBytes-doc.inputBytes {
+			return nil, ErrLimit
+		}
+
+		doc.inputBytes += difference
+	}
+
+	return doc, nil
+}
+
 type dtdOutput struct {
 	strings.Builder
 	maximum      int
@@ -303,6 +348,69 @@ func (b *dtdOutput) write(text string) error {
 	_, _ = b.WriteString(text)
 
 	return nil
+}
+
+func (b *dtdOutput) attribute(name, value string) error {
+	if err := b.write(" " + name + `="`); err != nil {
+		return err
+	}
+
+	if err := b.writeEscaped(value, true); err != nil {
+		return err
+	}
+
+	return b.write(`"`)
+}
+
+// Expand one bounded lexical chunk directly, rather than allocating an escaped
+// string before checking the expanded-output byte limit.
+func (b *dtdOutput) writeEscaped(text string, attribute bool) error {
+	start := 0
+
+	for at, r := range text {
+		replacement := ""
+
+		switch r {
+		case '&':
+			replacement = "&amp;"
+		case '<':
+			replacement = "&lt;"
+		case '>':
+			if !attribute {
+				replacement = "&gt;"
+			}
+		case '"':
+			if attribute {
+				replacement = "&quot;"
+			}
+		case '\r':
+			replacement = "&#13;"
+		case '\n':
+			if attribute {
+				replacement = "&#10;"
+			}
+		case '\t':
+			if attribute {
+				replacement = "&#9;"
+			}
+		}
+
+		if replacement == "" {
+			continue
+		}
+
+		if err := b.write(text[start:at]); err != nil {
+			return err
+		}
+
+		if err := b.write(replacement); err != nil {
+			return err
+		}
+
+		start = at + utf8.RuneLen(r)
+	}
+
+	return b.write(text[start:])
 }
 
 func dtdReference(text string) (name string, rest string, err error) {
@@ -462,114 +570,6 @@ func dtdTagEnd(text string) (int, error) {
 	}
 
 	return 0, fmt.Errorf("%w: unterminated XML markup", ErrMalformed)
-}
-
-func (b *dtdOutput) attribute(name, value string) error {
-	if err := b.write(" " + name + `="`); err != nil {
-		return err
-	}
-
-	if err := b.writeEscaped(value, true); err != nil {
-		return err
-	}
-
-	return b.write(`"`)
-}
-
-// Expand one bounded lexical chunk directly, rather than allocating an escaped
-// string before checking the expanded-output byte limit.
-func (b *dtdOutput) writeEscaped(text string, attribute bool) error {
-	start := 0
-
-	for at, r := range text {
-		replacement := ""
-
-		switch r {
-		case '&':
-			replacement = "&amp;"
-		case '<':
-			replacement = "&lt;"
-		case '>':
-			if !attribute {
-				replacement = "&gt;"
-			}
-		case '"':
-			if attribute {
-				replacement = "&quot;"
-			}
-		case '\r':
-			replacement = "&#13;"
-		case '\n':
-			if attribute {
-				replacement = "&#10;"
-			}
-		case '\t':
-			if attribute {
-				replacement = "&#9;"
-			}
-		}
-
-		if replacement == "" {
-			continue
-		}
-
-		if err := b.write(text[start:at]); err != nil {
-			return err
-		}
-
-		if err := b.write(replacement); err != nil {
-			return err
-		}
-
-		start = at + utf8.RuneLen(r)
-	}
-
-	return b.write(text[start:])
-}
-
-var errDTDPresent = errors.New("XML DOCTYPE present")
-
-func (o ParseOptions) parseDTDReader(ctx context.Context, source io.Reader) (*Document, error) {
-	captured := dtdProbeReader{source: source}
-
-	probe, err := newDocumentReader(ctx, &captured, o.Limits, false, o.AllowSingleByteEncodings, o.AllowRelativeNamespaces)
-	if err != nil {
-		return nil, err
-	}
-
-	probe.input.dtdProbe, probe.stopAtRoot = true, true
-
-	_, probeErr := probe.parse(ctx)
-	if probeErr != nil && !errors.Is(probeErr, errDTDPresent) {
-		return nil, probeErr
-	}
-
-	captured.replay = true
-
-	replay := io.MultiReader(bytes.NewReader(captured.prefix.Bytes()), &captured)
-	if !errors.Is(probeErr, errDTDPresent) {
-		return parseXMLReader(ctx, replay, o.Limits, false, o.AllowSingleByteEncodings, o.AllowRelativeNamespaces)
-	}
-
-	text, err := decodeDTDInput(ctx, replay, o, false)
-	if err != nil {
-		return nil, err
-	}
-
-	doc, err := o.parseDTDText(ctx, text)
-	if err != nil {
-		return nil, err
-	}
-
-	if difference := captured.total - len(text); difference > 0 {
-		if difference > o.Limits.MaxBytes-doc.inputBytes {
-			return nil, ErrLimit
-		}
-
-		doc.inputBytes += difference
-	}
-
-	return doc, nil
 }
 
 // Once replay starts, a prefetched terminal error is delivered after the

@@ -80,18 +80,24 @@ func (c *compiler) validateVariableReferences(ctx context.Context) error {
 	return nil
 }
 
-type variableScopeChecker struct {
-	globals map[string]globalBinding
-	sources map[*xdm.Element]globalBinding
-	names   map[*xdm.Element]string
-}
-
 func (c *compiler) recordGlobalBindingSource(element *xdm.Element, binding globalBinding) {
 	if c.globalVariableSources == nil {
 		c.globalVariableSources = make(map[*xdm.Element]globalBinding)
 	}
 
 	c.globalVariableSources[element] = binding
+}
+
+func (c *compiler) compileLiteralTextAt(node xdm.Node, text string) (*literalTextInst, error) {
+	defer c.pushVariableScopeNode(node)()
+
+	return c.compileLiteralText(text)
+}
+
+type variableScopeChecker struct {
+	globals map[string]globalBinding
+	sources map[*xdm.Element]globalBinding
+	names   map[*xdm.Element]string
 }
 
 func (s *variableScopeChecker) bindingName(element *xdm.Element) string {
@@ -191,10 +197,4 @@ func implicitVariableVisible(element *xdm.Element, reference pendingVariableRefe
 	}
 
 	return false
-}
-
-func (c *compiler) compileLiteralTextAt(node xdm.Node, text string) (*literalTextInst, error) {
-	defer c.pushVariableScopeNode(node)()
-
-	return c.compileLiteralText(text)
 }

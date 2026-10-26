@@ -234,6 +234,55 @@ func (v *Validator) validatePreserved(ctx context.Context, doc *document.Documen
 	return result, nil
 }
 
+func (v *Validator) appendArchive(ctx context.Context, doc *document.Document, selected document.Element, certificate []byte, at time.Time, method string, token *timestamp.Token) (*document.Document, *ValidationResult, error) {
+	limit := v.maxTokenBytes
+	if limit == 0 {
+		limit = 4 << 20
+	}
+
+	if token.Size() > limit {
+		return nil, nil, ErrTimestamp
+	}
+
+	draft, un, e := unsignedDraft(ctx, doc, selected)
+	if e != nil {
+		return nil, nil, e
+	}
+
+	archive := node141("ArchiveTimeStamp")
+	archive.NS = append(archive.NS, tree.Namespace{Prefix: "ds", URI: xmldsig.Namespace}, tree.Namespace{Prefix: nameXades, URI: Namespace})
+	cm := dsnode(lexicon.DSigElementCanonicalizationMethod)
+	attr(cm, "Algorithm", method)
+	add(archive, cm)
+
+	enc := xnode("EncapsulatedTimeStamp")
+	attr(enc, "Encoding", encodingDER)
+
+	encoded, e := encodeBase64(ctx, token.Size(), token.WriterTo(ctx))
+	if e != nil {
+		return nil, nil, e
+	}
+
+	text(enc, encoded)
+	add(archive, enc)
+	add(un, archive)
+
+	parsed, e := publishDraft(ctx, draft)
+	if e != nil {
+		return nil, nil, e
+	}
+
+	full := *v
+	full.minimum = LevelLTA
+
+	r, e := full.ValidateEnveloped(ctx, parsed, xmldsig.Signatures(parsed)[0], certificate, at, ValidationEvidence{})
+	if e != nil {
+		return nil, nil, e
+	}
+
+	return parsed, r, nil
+}
+
 func completeTSAChain(ctx context.Context, stamp *timestamp.Result, certificates [][]byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -288,55 +337,6 @@ func validatePreservedArchives(ctx context.Context, material *preservation, time
 	}
 
 	return nil
-}
-
-func (v *Validator) appendArchive(ctx context.Context, doc *document.Document, selected document.Element, certificate []byte, at time.Time, method string, token *timestamp.Token) (*document.Document, *ValidationResult, error) {
-	limit := v.maxTokenBytes
-	if limit == 0 {
-		limit = 4 << 20
-	}
-
-	if token.Size() > limit {
-		return nil, nil, ErrTimestamp
-	}
-
-	draft, un, e := unsignedDraft(ctx, doc, selected)
-	if e != nil {
-		return nil, nil, e
-	}
-
-	archive := node141("ArchiveTimeStamp")
-	archive.NS = append(archive.NS, tree.Namespace{Prefix: "ds", URI: xmldsig.Namespace}, tree.Namespace{Prefix: nameXades, URI: Namespace})
-	cm := dsnode(lexicon.DSigElementCanonicalizationMethod)
-	attr(cm, "Algorithm", method)
-	add(archive, cm)
-
-	enc := xnode("EncapsulatedTimeStamp")
-	attr(enc, "Encoding", encodingDER)
-
-	encoded, e := encodeBase64(ctx, token.Size(), token.WriterTo(ctx))
-	if e != nil {
-		return nil, nil, e
-	}
-
-	text(enc, encoded)
-	add(archive, enc)
-	add(un, archive)
-
-	parsed, e := publishDraft(ctx, draft)
-	if e != nil {
-		return nil, nil, e
-	}
-
-	full := *v
-	full.minimum = LevelLTA
-
-	r, e := full.ValidateEnveloped(ctx, parsed, xmldsig.Signatures(parsed)[0], certificate, at, ValidationEvidence{})
-	if e != nil {
-		return nil, nil, e
-	}
-
-	return parsed, r, nil
 }
 
 // writeArchiveInput implements EN 319 132-1 5.5.2.3's non-distributed input for this

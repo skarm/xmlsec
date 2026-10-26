@@ -335,6 +335,10 @@ func callParams(ctx context.Context, f *xslUserFunc, args []xdm.Sequence, ec *ex
 	return nil
 }
 
+func (ec *execContext) SnapshotVariableResolver() xpath.VariableResolver {
+	return &globalVariableResolver{lexical: ec.captureFunctionContext(), owner: ec.effectiveStylesheet(), original: ec.originalGlobal}
+}
+
 func (ec *execContext) convertSequenceType(ctx context.Context, value xdm.Sequence, st xdm.SequenceType) (xdm.Sequence, error) {
 	eval, _ := ec.baseXPathEvaluator()
 	if ec.typeAnnotations != nil {
@@ -354,88 +358,6 @@ func (ec *execContext) convertFunctionArgument(ctx context.Context, value xdm.Se
 	}
 
 	return converted, err
-}
-
-func callIsOverride(f *xslUserFunc, ec *execContext) {
-	if f.def.OwnerPackage != ec.currentPackage {
-		ec.cachedFnsNS = nil
-		ec.currentPackage = f.def.OwnerPackage
-	}
-}
-
-func callPendingItems(frame *outputFrame, tmpRoot *xdm.Element, result *xdm.ItemSlice, ec *execContext) {
-	if len(frame.pendingItems) == 0 {
-		*result = ec.collectNodeChildren(tmpRoot)
-		return
-	}
-
-	var seq xdm.ItemSlice
-	for child := range xdm.Children(tmpRoot) {
-		seq = append(seq, xdm.NodeItem{Node: child})
-	}
-
-	seq = append(seq, frame.pendingItems...)
-	*result = seq
-}
-
-type globalVariableResolver struct {
-	lexical  *execContext
-	owner    *Stylesheet
-	original globalBinding
-}
-
-func (ec *execContext) SnapshotVariableResolver() xpath.VariableResolver {
-	return &globalVariableResolver{lexical: ec.captureFunctionContext(), owner: ec.effectiveStylesheet(), original: ec.originalGlobal}
-}
-
-func (r *globalVariableResolver) ResolveVariable(ctx context.Context, name string) (xdm.Sequence, bool, error) {
-	ec, err := functionExecution(ctx, r.lexical)
-	if err != nil {
-		return nil, false, err
-	}
-	defer ec.pushPackage(r.owner)()
-
-	locals, original := ec.localVars, ec.originalGlobal
-	ec.localVars, ec.originalGlobal = nil, r.original
-
-	ec.localVarsVer++
-	defer func() { ec.localVars, ec.originalGlobal = locals, original; ec.localVarsVer++ }()
-
-	return ec.ResolveVariable(withExecContext(ctx, ec), name)
-}
-
-// Returned functions keep the producing transformation's global bindings,
-// even when called by another execution of the same compiled stylesheet.
-func functionExecution(ctx context.Context, lexical *execContext) (*execContext, error) {
-	caller := getExecContext(ctx)
-	if caller != nil && caller.execution != nil && caller.execution == lexical.execution {
-		return caller, nil
-	}
-
-	if lexical.functionLexical != nil {
-		lexical = lexical.functionLexical
-	}
-
-	value := xpath.InvocationState(ctx, lexical, func() any {
-		local := lexical.functionInvocation(ctx)
-		if caller != nil {
-			local.msgHandler = caller.msgHandler
-
-			local.resourceOwner = caller
-			if caller.resourceOwner != nil {
-				local.resourceOwner = caller.resourceOwner
-			}
-		}
-
-		return local
-	})
-
-	ec, ok := value.(*execContext)
-	if !ok {
-		return nil, dynamicError(errCodeXTDE0820, "invalid XSLT function invocation state")
-	}
-
-	return ec, nil
 }
 
 func (ec *execContext) captureFunctionContext() *execContext {
@@ -579,25 +501,6 @@ func (ec *execContext) functionCacheKey(def *xslFunction, args []xdm.Sequence) (
 	return b.String(), true
 }
 
-// A separately retrieved original function can still bind recursive calls to
-// an override. Its arithmetic body alone cannot establish that target's effects.
-func proactiveSelfBinding(def *xslFunction) bool {
-	if !def.cacheAtomicSelf {
-		return false
-	}
-
-	if def.OwnerPackage == nil {
-		return true
-	}
-
-	target := def.OwnerPackage.functions[funcKey{Name: def.Name, Arity: len(def.Params)}]
-	if target == nil || target.OwnerPackage != def.OwnerPackage || len(target.Body) != len(def.Body) {
-		return false
-	}
-
-	return len(def.Body) == 0 || &target.Body[0] == &def.Body[0]
-}
-
 func (ec *execContext) writeFunctionCacheSequence(b *strings.Builder, seq xdm.Sequence) bool {
 	b.WriteByte('[')
 	b.WriteString(strconv.Itoa(xdm.SequenceLen(seq)))
@@ -732,6 +635,103 @@ func (ec *execContext) collectNodeChildren(node xdm.Node) xdm.ItemSlice {
 	}
 
 	return seq
+}
+
+func callIsOverride(f *xslUserFunc, ec *execContext) {
+	if f.def.OwnerPackage != ec.currentPackage {
+		ec.cachedFnsNS = nil
+		ec.currentPackage = f.def.OwnerPackage
+	}
+}
+
+func callPendingItems(frame *outputFrame, tmpRoot *xdm.Element, result *xdm.ItemSlice, ec *execContext) {
+	if len(frame.pendingItems) == 0 {
+		*result = ec.collectNodeChildren(tmpRoot)
+		return
+	}
+
+	var seq xdm.ItemSlice
+	for child := range xdm.Children(tmpRoot) {
+		seq = append(seq, xdm.NodeItem{Node: child})
+	}
+
+	seq = append(seq, frame.pendingItems...)
+	*result = seq
+}
+
+type globalVariableResolver struct {
+	lexical  *execContext
+	owner    *Stylesheet
+	original globalBinding
+}
+
+func (r *globalVariableResolver) ResolveVariable(ctx context.Context, name string) (xdm.Sequence, bool, error) {
+	ec, err := functionExecution(ctx, r.lexical)
+	if err != nil {
+		return nil, false, err
+	}
+	defer ec.pushPackage(r.owner)()
+
+	locals, original := ec.localVars, ec.originalGlobal
+	ec.localVars, ec.originalGlobal = nil, r.original
+
+	ec.localVarsVer++
+	defer func() { ec.localVars, ec.originalGlobal = locals, original; ec.localVarsVer++ }()
+
+	return ec.ResolveVariable(withExecContext(ctx, ec), name)
+}
+
+// Returned functions keep the producing transformation's global bindings,
+// even when called by another execution of the same compiled stylesheet.
+func functionExecution(ctx context.Context, lexical *execContext) (*execContext, error) {
+	caller := getExecContext(ctx)
+	if caller != nil && caller.execution != nil && caller.execution == lexical.execution {
+		return caller, nil
+	}
+
+	if lexical.functionLexical != nil {
+		lexical = lexical.functionLexical
+	}
+
+	value := xpath.InvocationState(ctx, lexical, func() any {
+		local := lexical.functionInvocation(ctx)
+		if caller != nil {
+			local.msgHandler = caller.msgHandler
+
+			local.resourceOwner = caller
+			if caller.resourceOwner != nil {
+				local.resourceOwner = caller.resourceOwner
+			}
+		}
+
+		return local
+	})
+
+	ec, ok := value.(*execContext)
+	if !ok {
+		return nil, dynamicError(errCodeXTDE0820, "invalid XSLT function invocation state")
+	}
+
+	return ec, nil
+}
+
+// A separately retrieved original function can still bind recursive calls to
+// an override. Its arithmetic body alone cannot establish that target's effects.
+func proactiveSelfBinding(def *xslFunction) bool {
+	if !def.cacheAtomicSelf {
+		return false
+	}
+
+	if def.OwnerPackage == nil {
+		return true
+	}
+
+	target := def.OwnerPackage.functions[funcKey{Name: def.Name, Arity: len(def.Params)}]
+	if target == nil || target.OwnerPackage != def.OwnerPackage || len(target.Body) != len(def.Body) {
+		return false
+	}
+
+	return len(def.Body) == 0 || &target.Body[0] == &def.Body[0]
 }
 
 // prepareCompiledFunction recognizes a narrow scalar memoization case. A cache

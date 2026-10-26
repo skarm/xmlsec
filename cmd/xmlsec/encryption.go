@@ -312,6 +312,79 @@ func (c encryptionCommand) operations(ctx context.Context, opt xmlenc.Options) (
 	return wrapOperations(ctx, secret, xmlenc.KeyWrapOptions{Data: opt, KeyAlgorithm: c.wrap}), closeKey, nil
 }
 
+func (c encryptionCommand) externalize(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
+	if c.uri == "" || c.cipherOut == "" || c.cipherOut == "-" {
+		return usageError("externalize requires -uri and a local -cipher-out")
+	}
+
+	if c.output != "-" && samePath(c.cipherOut, c.output) {
+		return usageError("ciphertext and XML outputs must be distinct")
+	}
+
+	if c.input != "-" && samePath(c.input, c.cipherOut) {
+		return usageError("ciphertext output must not overwrite the input XML")
+	}
+
+	doc, err := readDocument(ctx, c.input, stdin)
+	if err != nil {
+		return err
+	}
+
+	selected, err := selectElement(doc, c.idName, c.id, c.index, document.Name{Space: xmlenc.Namespace, Local: "EncryptedData"})
+	if err != nil {
+		return err
+	}
+
+	result, _, cipher, err := xmlenc.ExternalizeCiphertext(ctx, doc, selected, c.uri)
+	if err != nil {
+		return err
+	}
+
+	raw, err := result.XML(ctx)
+	if err != nil {
+		return err
+	}
+
+	if len(raw) > execution(ctx).output || len(cipher) > execution(ctx).output {
+		return errors.New("externalized output exceeds byte limit")
+	}
+
+	if err := writeOutputContext(ctx, c.cipherOut, stdout, cipher); err != nil {
+		return err
+	}
+
+	return writeOutputContext(ctx, c.output, stdout, raw)
+}
+
+func (c encryptionCommand) xmlOperation(doc *document.Document, operations encryptionOperations) (*document.Document, error) {
+	if c.scope == "document" {
+		if c.command == nameEncrypt {
+			return operations.encryptDocument(doc)
+		}
+
+		return operations.decryptDocument(doc)
+	}
+
+	selected, err := c.selection(doc)
+	if err != nil {
+		return nil, err
+	}
+
+	operation := operations.decryptContent
+	if c.command == nameEncrypt {
+		operation = operations.encryptContent
+		if c.scope == scopeElement {
+			operation = operations.encryptElement
+		}
+	} else if c.scope == scopeElement {
+		operation = operations.decryptElement
+	}
+
+	result, _, err := operation(doc, selected)
+
+	return result, err
+}
+
 //nolint:dupl // These adapters bind distinct statically typed key and options APIs.
 func rsaOperations(ctx context.Context, public *rsa.PublicKey, private crypto.Decrypter, opt xmlenc.Options) encryptionOperations {
 	return encryptionOperations{
@@ -376,50 +449,6 @@ func wrapOperations(ctx context.Context, key []byte, opt xmlenc.KeyWrapOptions) 
 	}
 }
 
-func (c encryptionCommand) externalize(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
-	if c.uri == "" || c.cipherOut == "" || c.cipherOut == "-" {
-		return usageError("externalize requires -uri and a local -cipher-out")
-	}
-
-	if c.output != "-" && samePath(c.cipherOut, c.output) {
-		return usageError("ciphertext and XML outputs must be distinct")
-	}
-
-	if c.input != "-" && samePath(c.input, c.cipherOut) {
-		return usageError("ciphertext output must not overwrite the input XML")
-	}
-
-	doc, err := readDocument(ctx, c.input, stdin)
-	if err != nil {
-		return err
-	}
-
-	selected, err := selectElement(doc, c.idName, c.id, c.index, document.Name{Space: xmlenc.Namespace, Local: "EncryptedData"})
-	if err != nil {
-		return err
-	}
-
-	result, _, cipher, err := xmlenc.ExternalizeCiphertext(ctx, doc, selected, c.uri)
-	if err != nil {
-		return err
-	}
-
-	raw, err := result.XML(ctx)
-	if err != nil {
-		return err
-	}
-
-	if len(raw) > execution(ctx).output || len(cipher) > execution(ctx).output {
-		return errors.New("externalized output exceeds byte limit")
-	}
-
-	if err := writeOutputContext(ctx, c.cipherOut, stdout, cipher); err != nil {
-		return err
-	}
-
-	return writeOutputContext(ctx, c.output, stdout, raw)
-}
-
 func samePath(a, b string) bool {
 	x, e := filepath.Abs(a)
 	if e != nil {
@@ -429,33 +458,4 @@ func samePath(a, b string) bool {
 	y, e := filepath.Abs(b)
 
 	return e == nil && x == y
-}
-
-func (c encryptionCommand) xmlOperation(doc *document.Document, operations encryptionOperations) (*document.Document, error) {
-	if c.scope == "document" {
-		if c.command == nameEncrypt {
-			return operations.encryptDocument(doc)
-		}
-
-		return operations.decryptDocument(doc)
-	}
-
-	selected, err := c.selection(doc)
-	if err != nil {
-		return nil, err
-	}
-
-	operation := operations.decryptContent
-	if c.command == nameEncrypt {
-		operation = operations.encryptContent
-		if c.scope == scopeElement {
-			operation = operations.encryptElement
-		}
-	} else if c.scope == scopeElement {
-		operation = operations.decryptElement
-	}
-
-	result, _, err := operation(doc, selected)
-
-	return result, err
 }

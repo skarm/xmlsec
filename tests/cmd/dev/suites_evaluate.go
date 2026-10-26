@@ -20,6 +20,94 @@ type suiteEvaluation struct {
 	secondaryURI string
 }
 
+func (e *suiteEvaluation) prepareOutput(ctx context.Context) error {
+	if e.environment.output.attr("serialize") == suiteYes {
+		_, err := e.serialized(ctx)
+		return err
+	}
+
+	return nil
+}
+
+func (e *suiteEvaluation) serialized(ctx context.Context) ([]byte, error) {
+	if e.err != nil {
+		return nil, e.err
+	}
+
+	if e.result != nil {
+		if e.secondaryURI != "" {
+			var output bytes.Buffer
+
+			_, err := e.result.WriteSecondary(ctx, e.secondaryURI, &output)
+
+			return output.Bytes(), err
+		}
+
+		output, err := e.result.Serialize(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		return output.Primary, nil
+	}
+
+	result, err := e.environment.query(ctx, `serialize($result, map{'method':'xml', 'omit-xml-declaration':true(), 'indent':false()})`, transform.Bindings{{Local: suiteResultVariable}: e.sequence})
+	if err != nil {
+		return nil, err
+	}
+
+	text, err := result.Text()
+
+	return []byte(text), err
+}
+
+func (e *suiteEvaluation) assertionValue(ctx context.Context, expression string, extra transform.Bindings) (transform.Sequence, error) {
+	bindings := transform.Bindings{{Local: suiteResultVariable}: e.sequence}
+	if variable := e.environment.output.attr("result-var"); variable != "" {
+		bindings[transform.Name{Local: variable}] = e.sequence
+	}
+
+	maps.Copy(bindings, extra)
+
+	assertionContext := *e.environment
+	assertionContext.document = nil
+
+	assertionContext.contextItem = transform.Value{}
+	if e.sequence.Len() == 1 {
+		assertionContext.contextItem, _ = e.sequence.At(0)
+	}
+
+	result, err := assertionContext.query(ctx, expression, bindings)
+	if err != nil {
+		return transform.Sequence{}, suiteHarness("assertion evaluation: %w", err)
+	}
+
+	return result, nil
+}
+
+func (e *suiteEvaluation) assertionTrue(ctx context.Context, expression string, extra transform.Bindings) error {
+	result, err := e.assertionValue(ctx, expression, extra)
+	if err != nil {
+		return err
+	}
+
+	value, err := result.Single()
+	if err != nil {
+		return suiteHarness("assertion did not return one item: %w", err)
+	}
+
+	matched, err := value.Boolean()
+	if err != nil {
+		return suiteHarness("assertion did not return a boolean: %w", err)
+	}
+
+	if !matched {
+		return fmt.Errorf("%s assertion was false", e.item.node.attr("name"))
+	}
+
+	return nil
+}
+
 func evaluateSuiteCase(ctx context.Context, options suiteOptions, item suiteCase, environment *preparedSuiteEnvironment) *suiteEvaluation {
 	evaluation := &suiteEvaluation{environment: environment, options: options, item: item}
 	if options.kind == suiteQT3 {
@@ -35,15 +123,6 @@ func evaluateSuiteCase(ctx context.Context, options suiteOptions, item suiteCase
 	}
 
 	return evaluation
-}
-
-func (e *suiteEvaluation) prepareOutput(ctx context.Context) error {
-	if e.environment.output.attr("serialize") == suiteYes {
-		_, err := e.serialized(ctx)
-		return err
-	}
-
-	return nil
 }
 
 func evaluateQT3(ctx context.Context, options suiteOptions, item suiteCase, environment *preparedSuiteEnvironment) (transform.Sequence, error) {
@@ -306,83 +385,4 @@ func suiteStylesheetSource(options suiteOptions, environment *preparedSuiteEnvir
 	}
 
 	return raw, transform.XSLTOptions{ProcessorVersion: processor, BaseURI: baseURI, StaticParameters: environment.staticParameters}, nil
-}
-
-func (e *suiteEvaluation) serialized(ctx context.Context) ([]byte, error) {
-	if e.err != nil {
-		return nil, e.err
-	}
-
-	if e.result != nil {
-		if e.secondaryURI != "" {
-			var output bytes.Buffer
-
-			_, err := e.result.WriteSecondary(ctx, e.secondaryURI, &output)
-
-			return output.Bytes(), err
-		}
-
-		output, err := e.result.Serialize(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		return output.Primary, nil
-	}
-
-	result, err := e.environment.query(ctx, `serialize($result, map{'method':'xml', 'omit-xml-declaration':true(), 'indent':false()})`, transform.Bindings{{Local: suiteResultVariable}: e.sequence})
-	if err != nil {
-		return nil, err
-	}
-
-	text, err := result.Text()
-
-	return []byte(text), err
-}
-
-func (e *suiteEvaluation) assertionValue(ctx context.Context, expression string, extra transform.Bindings) (transform.Sequence, error) {
-	bindings := transform.Bindings{{Local: suiteResultVariable}: e.sequence}
-	if variable := e.environment.output.attr("result-var"); variable != "" {
-		bindings[transform.Name{Local: variable}] = e.sequence
-	}
-
-	maps.Copy(bindings, extra)
-
-	assertionContext := *e.environment
-	assertionContext.document = nil
-
-	assertionContext.contextItem = transform.Value{}
-	if e.sequence.Len() == 1 {
-		assertionContext.contextItem, _ = e.sequence.At(0)
-	}
-
-	result, err := assertionContext.query(ctx, expression, bindings)
-	if err != nil {
-		return transform.Sequence{}, suiteHarness("assertion evaluation: %w", err)
-	}
-
-	return result, nil
-}
-
-func (e *suiteEvaluation) assertionTrue(ctx context.Context, expression string, extra transform.Bindings) error {
-	result, err := e.assertionValue(ctx, expression, extra)
-	if err != nil {
-		return err
-	}
-
-	value, err := result.Single()
-	if err != nil {
-		return suiteHarness("assertion did not return one item: %w", err)
-	}
-
-	matched, err := value.Boolean()
-	if err != nil {
-		return suiteHarness("assertion did not return a boolean: %w", err)
-	}
-
-	if !matched {
-		return fmt.Errorf("%s assertion was false", e.item.node.attr("name"))
-	}
-
-	return nil
 }

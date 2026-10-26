@@ -5,55 +5,6 @@ package html
 
 import "strings"
 
-// LowerASCII folds HTML names without changing non-ASCII code points. Unicode
-// lowercasing would turn U+0130 into i and falsely recognize an HTML element.
-func LowerASCII(value string) string {
-	first := strings.IndexFunc(value, func(r rune) bool { return r >= 'A' && r <= 'Z' })
-	if first < 0 {
-		return value
-	}
-
-	var result strings.Builder
-	result.Grow(len(value))
-	result.WriteString(value[:first])
-
-	for i := first; i < len(value); i++ {
-		c := value[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-
-		result.WriteByte(c)
-	}
-
-	return result.String()
-}
-
-// EqualFoldASCII compares HTML names/keywords using only ASCII case aliases.
-// Unicode SimpleFold would incorrectly recognize U+017F as the s in script.
-func EqualFoldASCII(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
-	for i := range len(a) {
-		x, y := a[i], b[i]
-		if x >= 'A' && x <= 'Z' {
-			x += 'a' - 'A'
-		}
-
-		if y >= 'A' && y <= 'Z' {
-			y += 'a' - 'A'
-		}
-
-		if x != y {
-			return false
-		}
-	}
-
-	return true
-}
-
 // HTML element name constants used throughout the html package.
 // Extracted to satisfy the goconst linter; these names appear many times
 // in the element tables and parseOptions logic below.
@@ -103,6 +54,55 @@ const (
 // so they are kept distinct from the elem* constants.
 const ()
 
+// LowerASCII folds HTML names without changing non-ASCII code points. Unicode
+// lowercasing would turn U+0130 into i and falsely recognize an HTML element.
+func LowerASCII(value string) string {
+	first := strings.IndexFunc(value, func(r rune) bool { return r >= 'A' && r <= 'Z' })
+	if first < 0 {
+		return value
+	}
+
+	var result strings.Builder
+	result.Grow(len(value))
+	result.WriteString(value[:first])
+
+	for i := first; i < len(value); i++ {
+		c := value[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+
+		result.WriteByte(c)
+	}
+
+	return result.String()
+}
+
+// EqualFoldASCII compares HTML names/keywords using only ASCII case aliases.
+// Unicode SimpleFold would incorrectly recognize U+017F as the s in script.
+func EqualFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := range len(a) {
+		x, y := a[i], b[i]
+		if x >= 'A' && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+
+		if y >= 'A' && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+
+		if x != y {
+			return false
+		}
+	}
+
+	return true
+}
+
 // dataMode controls how element content is parsed.
 type dataMode int
 
@@ -120,6 +120,22 @@ type htmlElemDesc struct {
 	empty    bool
 	inline   int
 	dataMode dataMode
+}
+
+// SerializationVoidElement applies the pinned serializer's HTML empty-element
+// tables independently of the broader parser descriptors. For HTML5 this host
+// retains basefont, frame and isindex, an explicitly permitted choice.
+func SerializationVoidElement(name string, html5 bool, edition int) bool {
+	switch LowerASCII(name) {
+	case elemArea, "base", "br", elemCol, "hr", elemImg, elemInput, nameLink, "meta", "param", elemBasefont, elemFrame, elemIsindex:
+		return true
+	case elemEmbed:
+		return html5 || edition != 20
+	case elemKeygen, elemSource, elemTrack, elemWbr:
+		return html5
+	default:
+		return false
+	}
 }
 
 // lookupElement returns a descriptor for a case-insensitive HTML element name.
@@ -186,21 +202,5 @@ func lookupElement(name string) *htmlElemDesc {
 		return &htmlElemDesc{empty: false, inline: 1, dataMode: dataRawText}
 	default:
 		return nil
-	}
-}
-
-// SerializationVoidElement applies the pinned serializer's HTML empty-element
-// tables independently of the broader parser descriptors. For HTML5 this host
-// retains basefont, frame and isindex, an explicitly permitted choice.
-func SerializationVoidElement(name string, html5 bool, edition int) bool {
-	switch LowerASCII(name) {
-	case elemArea, "base", "br", elemCol, "hr", elemImg, elemInput, nameLink, "meta", "param", elemBasefont, elemFrame, elemIsindex:
-		return true
-	case elemEmbed:
-		return html5 || edition != 20
-	case elemKeygen, elemSource, elemTrack, elemWbr:
-		return html5
-	default:
-		return false
 	}
 }

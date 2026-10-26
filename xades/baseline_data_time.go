@@ -112,6 +112,58 @@ func (value DataTimestamp) WriteImprintInput(ctx context.Context, dst io.Writer)
 	return writer.Written, ctx.Err()
 }
 
+func (value *DataTimestamp) bindReferences(verified *xmldsig.SignatureResult, individual bool, options BaselineVerifyOptions) error {
+	refs, err := baselineDataReferences(verified)
+	if err != nil {
+		return err
+	}
+
+	if individual {
+		for _, identifier := range value.identifiers {
+			key, err := baselineReferenceKey(identifier, value.element, options)
+			if err != nil {
+				return err
+			}
+
+			ref, found := refs[key]
+			if !found || ref.result.Type() == SignedPropertiesType {
+				return ErrProfile
+			}
+
+			value.references = append(value.references, ref.result)
+		}
+	} else {
+		si, err := childNamed(verified.Signature(), ds(lexicon.DSigElementSignedInfo))
+		if err != nil {
+			return err
+		}
+
+		index := 0
+
+		for _, element := range si.Children() {
+			if element.Name() != ds(lexicon.DSigElementReference) {
+				continue
+			}
+
+			ref := verified.References()[index]
+			index++
+
+			if ref.Type() == SignedPropertiesType {
+				continue
+			}
+
+			value.references = append(value.references, ref)
+			value.identifiers = append(value.identifiers, "#"+localAttribute(element, "Id"))
+		}
+	}
+
+	if len(value.references) == 0 {
+		return ErrProfile
+	}
+
+	return nil
+}
+
 // DataTimestamps returns signed content claims. Their RFC3161 signatures, TSA
 // trust and temporal order require the separate evidence validation workflow.
 func (r *BaselineResult) DataTimestamps() []DataTimestamp {
@@ -272,56 +324,4 @@ func buildBaselineDataTimestamp(ctx context.Context, value DataTimestampProperty
 	leaf(node, "EncapsulatedTimeStamp", base64.StdEncoding.EncodeToString(value.TokenDER))
 
 	return node, nil
-}
-
-func (value *DataTimestamp) bindReferences(verified *xmldsig.SignatureResult, individual bool, options BaselineVerifyOptions) error {
-	refs, err := baselineDataReferences(verified)
-	if err != nil {
-		return err
-	}
-
-	if individual {
-		for _, identifier := range value.identifiers {
-			key, err := baselineReferenceKey(identifier, value.element, options)
-			if err != nil {
-				return err
-			}
-
-			ref, found := refs[key]
-			if !found || ref.result.Type() == SignedPropertiesType {
-				return ErrProfile
-			}
-
-			value.references = append(value.references, ref.result)
-		}
-	} else {
-		si, err := childNamed(verified.Signature(), ds(lexicon.DSigElementSignedInfo))
-		if err != nil {
-			return err
-		}
-
-		index := 0
-
-		for _, element := range si.Children() {
-			if element.Name() != ds(lexicon.DSigElementReference) {
-				continue
-			}
-
-			ref := verified.References()[index]
-			index++
-
-			if ref.Type() == SignedPropertiesType {
-				continue
-			}
-
-			value.references = append(value.references, ref)
-			value.identifiers = append(value.identifiers, "#"+localAttribute(element, "Id"))
-		}
-	}
-
-	if len(value.references) == 0 {
-		return ErrProfile
-	}
-
-	return nil
 }

@@ -136,6 +136,10 @@ func (v *Validator) EmbedValidationMaterial(ctx context.Context, doc *document.D
 	return resultDoc, r, nil
 }
 
+func (v *Validator) canEmbedMaterial(ctx context.Context) bool {
+	return !(v == nil || ctx == nil || v.tsa == nil || v.signer.RevocationMode() == pki.NoRevocation || v.tsa.RevocationMode() == pki.NoRevocation)
+}
+
 func node141(local string) *tree.Node {
 	return &tree.Node{Kind: tree.ElementNode, Name: name141(local), Prefix: "xades141", NS: []tree.Namespace{{Prefix: "xades141", URI: Namespace141}}}
 }
@@ -242,10 +246,6 @@ func appendValidationMaterial(ctx context.Context, parent *tree.Node, m Validati
 
 func publishDraft(ctx context.Context, d *document.Document) (*document.Document, error) {
 	return tree.Reparse(ctx, d, tree.Policy(d))
-}
-
-func (v *Validator) canEmbedMaterial(ctx context.Context) bool {
-	return !(v == nil || ctx == nil || v.tsa == nil || v.signer.RevocationMode() == pki.NoRevocation || v.tsa.RevocationMode() == pki.NoRevocation)
 }
 
 func name141(local string) document.Name { return document.Name{Space: Namespace141, Local: local} }

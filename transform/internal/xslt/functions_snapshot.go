@@ -422,6 +422,36 @@ func (ec *execContext) snapshotAttributeNode(node xdm.Node) (xdm.Node, error) {
 	return copied, nil
 }
 
+// regex-group(n) returns the nth captured group from the current regex match.
+// Returns empty string if called outside xsl:matching-substring or if the
+// group number is out of range.
+func (ec *execContext) fnRegexGroup(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	if xpath.IsDynamicCall(ctx) || ec.inPatternMatch || len(args) == 0 || (args[0] == nil || xdm.SequenceLen(args[0]) == 0) {
+		return xdm.SingleString(""), nil
+	}
+
+	av, err := xpath.AtomizeItem(args[0].Get(0))
+	if err != nil {
+		return xdm.SingleString(""), nil //nolint:nilerr // regex-group returns "" on atomization failure
+	}
+
+	s, err := xpath.AtomicToString(av)
+	if err != nil {
+		return xdm.SingleString(""), nil //nolint:nilerr // regex-group returns "" on string conversion failure
+	}
+
+	idx, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return xdm.SingleString(""), nil //nolint:nilerr // regex-group returns "" for non-integer group number
+	}
+
+	if idx < 0 || idx >= len(ec.regexGroups) {
+		return xdm.SingleString(""), nil
+	}
+
+	return xdm.SingleString(ec.regexGroups[idx]), nil
+}
+
 // snapshotAncestorShells copies the parent element and its ancestor chain.
 func snapshotAncestorShells(node xdm.Node) (*xdm.Document, *xdm.Element, error) {
 	var ancestors []*xdm.Element
@@ -466,36 +496,6 @@ func snapshotAncestorShells(node xdm.Node) (*xdm.Document, *xdm.Element, error) 
 	}
 
 	return snapDoc, innermostShell, nil
-}
-
-// regex-group(n) returns the nth captured group from the current regex match.
-// Returns empty string if called outside xsl:matching-substring or if the
-// group number is out of range.
-func (ec *execContext) fnRegexGroup(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if xpath.IsDynamicCall(ctx) || ec.inPatternMatch || len(args) == 0 || (args[0] == nil || xdm.SequenceLen(args[0]) == 0) {
-		return xdm.SingleString(""), nil
-	}
-
-	av, err := xpath.AtomizeItem(args[0].Get(0))
-	if err != nil {
-		return xdm.SingleString(""), nil //nolint:nilerr // regex-group returns "" on atomization failure
-	}
-
-	s, err := xpath.AtomicToString(av)
-	if err != nil {
-		return xdm.SingleString(""), nil //nolint:nilerr // regex-group returns "" on string conversion failure
-	}
-
-	idx, err := strconv.Atoi(strings.TrimSpace(s))
-	if err != nil {
-		return xdm.SingleString(""), nil //nolint:nilerr // regex-group returns "" for non-integer group number
-	}
-
-	if idx < 0 || idx >= len(ec.regexGroups) {
-		return xdm.SingleString(""), nil
-	}
-
-	return xdm.SingleString(ec.regexGroups[idx]), nil
 }
 
 // shallowCopyElement copies an element's name, namespace declarations, and

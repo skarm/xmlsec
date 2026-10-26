@@ -280,19 +280,6 @@ func (v *Verifier) verify(ctx context.Context, token *Token, want Expectation, a
 	return &Result{token: token, info: info, tsa: chosen, trust: trust, assertion: assertion}, certificates, nil
 }
 
-func tokenEvidence(evidence pki.Evidence, certificates [][]byte, chosen []byte) pki.Evidence {
-	ev := evidence
-	ev.Intermediates = append([][]byte(nil), evidence.Intermediates...)
-
-	for _, c := range certificates {
-		if !bytes.Equal(c, chosen) {
-			ev.Intermediates = append(ev.Intermediates, c)
-		}
-	}
-
-	return ev
-}
-
 func (v *Verifier) validateTokenInfo(ctx context.Context, info Info, want Expectation, cert *x509.Certificate, at time.Time) error {
 	if err := validateTimestampBinding(info, want); err != nil {
 		return err
@@ -319,6 +306,49 @@ func (v *Verifier) validateTokenInfo(ctx context.Context, info Info, want Expect
 	}
 
 	return nil
+}
+
+func (v *Verifier) selectTSASigner(s *cms.SignedData, certificates [][]byte) ([]byte, error) {
+	var chosen []byte
+
+	for _, certificate := range append(certificates, v.certificates...) {
+		if !s.MatchesSigner(0, certificate) {
+			continue
+		}
+
+		if chosen != nil && !bytes.Equal(chosen, certificate) {
+			return nil, fmt.Errorf("%w: ambiguous TSA signer", ErrTrust)
+		}
+
+		chosen = certificate
+	}
+
+	if chosen == nil {
+		return nil, ErrTrust
+	}
+
+	return chosen, nil
+}
+
+func (v *Verifier) validateTimestampTime(info Info, at time.Time) error {
+	if info.at.After(at.Add(v.skew)) || v.maxAge > 0 && info.at.Before(at.Add(-v.maxAge).Add(-v.skew)) {
+		return fmt.Errorf("%w: timestamp age/future time", ErrPolicy)
+	}
+
+	return nil
+}
+
+func tokenEvidence(evidence pki.Evidence, certificates [][]byte, chosen []byte) pki.Evidence {
+	ev := evidence
+	ev.Intermediates = append([][]byte(nil), evidence.Intermediates...)
+
+	for _, c := range certificates {
+		if !bytes.Equal(c, chosen) {
+			ev.Intermediates = append(ev.Intermediates, c)
+		}
+	}
+
+	return ev
 }
 
 func checkTSACertificate(c *x509.Certificate, at time.Time) error {
@@ -429,36 +459,6 @@ func tsaIPNameMatches(name []byte, c *x509.Certificate) bool {
 func validateTimestampBinding(info Info, want Expectation) error {
 	if want.Imprint.Hash != info.imprint.Hash || !bytes.Equal(want.Imprint.Digest, info.imprint.Digest) || len(want.Policy) > 0 && !want.Policy.Equal(info.policy) || want.Nonce != nil && (info.nonce == nil || want.Nonce.Cmp(info.nonce) != 0) {
 		return ErrBinding
-	}
-
-	return nil
-}
-
-func (v *Verifier) selectTSASigner(s *cms.SignedData, certificates [][]byte) ([]byte, error) {
-	var chosen []byte
-
-	for _, certificate := range append(certificates, v.certificates...) {
-		if !s.MatchesSigner(0, certificate) {
-			continue
-		}
-
-		if chosen != nil && !bytes.Equal(chosen, certificate) {
-			return nil, fmt.Errorf("%w: ambiguous TSA signer", ErrTrust)
-		}
-
-		chosen = certificate
-	}
-
-	if chosen == nil {
-		return nil, ErrTrust
-	}
-
-	return chosen, nil
-}
-
-func (v *Verifier) validateTimestampTime(info Info, at time.Time) error {
-	if info.at.After(at.Add(v.skew)) || v.maxAge > 0 && info.at.Before(at.Add(-v.maxAge).Add(-v.skew)) {
-		return fmt.Errorf("%w: timestamp age/future time", ErrPolicy)
 	}
 
 	return nil

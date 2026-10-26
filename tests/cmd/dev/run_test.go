@@ -3717,20 +3717,6 @@ type xsltResidualModuleResolver struct {
 	edits map[string][]xsltResidualModuleEdit
 }
 
-func (r *xsltResidualModuleResolver) replace(uri string, raw []byte) ([]byte, error) {
-	parsed, err := url.Parse(uri)
-	if err != nil {
-		return nil, err
-	}
-	for _, edit := range r.edits[filepath.Base(parsed.Path)] {
-		if !bytes.Contains(raw, []byte(edit.before)) {
-			return nil, fmt.Errorf("pinned secondary module %s no longer contains %q", uri, edit.before)
-		}
-		raw = bytes.ReplaceAll(raw, []byte(edit.before), []byte(edit.after))
-	}
-	return raw, nil
-}
-
 func (r *xsltResidualModuleResolver) Resolve(ctx context.Context, uri string) (io.ReadCloser, error) {
 	reader, err := r.base.Resolve(ctx, uri)
 	if err != nil {
@@ -3758,6 +3744,20 @@ func (r *xsltResidualModuleResolver) ResolvePackage(ctx context.Context, name, v
 	raw, err = r.replace(resource.BaseURI, raw)
 	resource.Reader = io.NopCloser(bytes.NewReader(raw))
 	return resource, err
+}
+
+func (r *xsltResidualModuleResolver) replace(uri string, raw []byte) ([]byte, error) {
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		return nil, err
+	}
+	for _, edit := range r.edits[filepath.Base(parsed.Path)] {
+		if !bytes.Contains(raw, []byte(edit.before)) {
+			return nil, fmt.Errorf("pinned secondary module %s no longer contains %q", uri, edit.before)
+		}
+		raw = bytes.ReplaceAll(raw, []byte(edit.before), []byte(edit.after))
+	}
+	return raw, nil
 }
 
 func runXSLTResidualPackageCorrections(t *testing.T, directory string) {

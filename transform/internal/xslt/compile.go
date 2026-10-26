@@ -164,6 +164,49 @@ func (c Compiler) Compile(ctx context.Context, doc *xdm.Document) (*Stylesheet, 
 	return compile(ctx, doc, c.toCompileConfig())
 }
 
+// MustCompile is like Compile but panics on error.
+// Note: context cancellation or timeout will cause a panic.
+func (c Compiler) MustCompile(ctx context.Context, doc *xdm.Document) *Stylesheet {
+	ss, err := c.Compile(ctx, doc)
+	if err != nil {
+		panic("xslt: Compile: " + err.Error())
+	}
+
+	return ss
+}
+
+func (c Compiler) clone() Compiler {
+	if c.cfg == nil {
+		return Compiler{cfg: &xsltCompilerCfg{}}
+	}
+
+	cp := *c.cfg
+
+	return Compiler{cfg: &cp}
+}
+
+func (c Compiler) toCompileConfig() *compileConfig {
+	if c.cfg == nil {
+		return &compileConfig{}
+	}
+
+	cfg := &compileConfig{
+		processorVersion: c.cfg.processorVersion,
+		baseURI:          c.cfg.baseURI,
+		resolver:         c.cfg.uriResolver,
+		packageResolver:  c.cfg.packageResolver,
+
+		maxResourceBytes: c.cfg.maxResourceBytes,
+
+		parseOptions: c.cfg.parseOptions,
+	}
+	if c.cfg.staticParams != nil {
+		cfg.staticParams = maps.Clone(c.cfg.staticParams.toMap())
+	}
+
+	return cfg
+}
+
 func compile(ctx context.Context, doc *xdm.Document, cfg *compileConfig) (*Stylesheet, error) {
 	processor := 0
 	if cfg != nil {
@@ -308,49 +351,6 @@ func compilePrepared(ctx context.Context, doc *xdm.Document, cfg *compileConfig)
 	c.finalizeCompiledStylesheet()
 
 	return c.stylesheet, nil
-}
-
-// MustCompile is like Compile but panics on error.
-// Note: context cancellation or timeout will cause a panic.
-func (c Compiler) MustCompile(ctx context.Context, doc *xdm.Document) *Stylesheet {
-	ss, err := c.Compile(ctx, doc)
-	if err != nil {
-		panic("xslt: Compile: " + err.Error())
-	}
-
-	return ss
-}
-
-func (c Compiler) clone() Compiler {
-	if c.cfg == nil {
-		return Compiler{cfg: &xsltCompilerCfg{}}
-	}
-
-	cp := *c.cfg
-
-	return Compiler{cfg: &cp}
-}
-
-func (c Compiler) toCompileConfig() *compileConfig {
-	if c.cfg == nil {
-		return &compileConfig{}
-	}
-
-	cfg := &compileConfig{
-		processorVersion: c.cfg.processorVersion,
-		baseURI:          c.cfg.baseURI,
-		resolver:         c.cfg.uriResolver,
-		packageResolver:  c.cfg.packageResolver,
-
-		maxResourceBytes: c.cfg.maxResourceBytes,
-
-		parseOptions: c.cfg.parseOptions,
-	}
-	if c.cfg.staticParams != nil {
-		cfg.staticParams = maps.Clone(c.cfg.staticParams.toMap())
-	}
-
-	return cfg
 }
 
 type pendingPatternValidation struct {
@@ -510,29 +510,6 @@ func (c *compiler) pushElementVersion(elem *xdm.Element) func() {
 	}
 }
 
-// elementXSLTVersion returns the XSLT version declared on an element: the
-// unqualified version attribute on an XSLT-namespace element, or the xsl:version
-// attribute on a literal result element. On an LRE an unqualified version is an
-// ordinary literal result attribute (copied to the output), NOT an XSLT version,
-// so it must not affect the effective version.
-func elementXSLTVersion(elem *xdm.Element) string {
-	value, _ := elementXSLTVersionAttribute(elem)
-
-	return value
-}
-
-func elementXSLTVersionAttribute(elem *xdm.Element) (string, bool) {
-	if elem.URI() == lexicon.NamespaceXSLT {
-		if elem.LocalName() == nameOutput || elem.LocalName() == lexicon.XSLTElementResultDocument {
-			return "", false // These select serialization, not the XSLT language.
-		}
-
-		return elem.GetAttribute(lexicon.SerializationVersion)
-	}
-
-	return elem.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
-}
-
 // pushStaticVersion forces a non-backwards-compatible effective version for the
 // duration of a compile-time static-context evaluation (a static="yes" variable
 // or parameter). The static context is NOT subject to backwards-compatible
@@ -673,10 +650,6 @@ func (c *compiler) checkQNamePrefix(_ context.Context, name, context string) err
 	}
 
 	return nil
-}
-
-func isShadowAttributeName(name string) bool {
-	return len(name) > 1 && name[0] == '_' && name[1] != '_' && name[1:] != "xmlns"
 }
 
 // resolveShadowAttributes processes shadow attributes on an XSLT element.
@@ -825,15 +798,6 @@ func (c *compiler) useWhenFunctions() map[string]xpath.Function {
 		}),
 		funcAvailableSystemProperties: &xsltFunc{min: 0, max: 0, fn: fnAvailableSystemProperties, name: funcAvailableSystemProperties},
 	}
-}
-
-func staticFunctionsNS(fns map[string]xpath.Function) map[xpath.QualifiedName]xpath.Function {
-	namespaced := make(map[xpath.QualifiedName]xpath.Function, len(fns))
-	for name, function := range fns {
-		namespaced[xpath.QualifiedName{URI: xpath.NSFn, Name: name}] = function
-	}
-
-	return namespaced
 }
 
 func (c *compiler) useWhenEvaluator(_ context.Context) xpath.Evaluator {
@@ -1030,13 +994,6 @@ func (c *compiler) readPackageMetadata(root *xdm.Element, localName string) erro
 	return nil
 }
 
-// isForwardsCompatible returns true if the version string indicates
-// forwards-compatible mode (version > 3.0).
-func isForwardsCompatible(ver string) bool {
-	comparison, valid := compareLanguageVersion(ver, 3)
-	return valid && comparison > 0
-}
-
 func (c *compiler) applyPreparedConfig(cfg *compileConfig) {
 	if cfg != nil {
 		c.stylesheet.processorVersion = cfg.processorVersion
@@ -1105,20 +1062,6 @@ func (c *compiler) configureRootContext(ctx context.Context, root *xdm.Element) 
 	return nil
 }
 
-// resolveDefaultCollation takes a space-separated list of collation URIs
-// (as specified by XSLT's default-collation attribute) and returns the first
-// URI that is supported by the XPath engine.  Returns "" if none is supported.
-func resolveDefaultCollation(list, baseURI string) string {
-	for _, reference := range strings.FieldsFunc(list, xmlchar.IsSpace) {
-		uri := resolveAgainstBaseURI(reference, baseURI)
-		if xpath.IsCollationSupported(uri) {
-			return uri
-		}
-	}
-
-	return ""
-}
-
 // declarationDefaultCollation uses lexical ancestors, independently of the
 // currently compiled module or the eventual caller's dynamic context.
 func (c *compiler) declarationDefaultCollation(node xdm.Node) (string, error) {
@@ -1167,20 +1110,6 @@ func (c *compiler) uncachedDefaultCollation(node xdm.Node) (string, error) {
 	return c.declarationDefaultCollation(node.Parent())
 }
 
-func standardAttribute(element *xdm.Element, name string) (string, bool) {
-	if element.URI() == lexicon.NamespaceXSLT {
-		return element.GetAttribute(name)
-	}
-
-	return element.GetAttributeNS(name, lexicon.NamespaceXSLT)
-}
-
-// Resolve xml:base as a URI reference. A directory result stays a directory;
-// appending the old module filename would change the XPath static base URI.
-func resolveRootXMLBase(baseURI, xmlBase string) string {
-	return foldXMLBases(baseURI, []string{xmlBase})
-}
-
 func (c *compiler) readRootVersion(ctx context.Context, root *xdm.Element, localName string) error {
 	// A _version shadow attribute takes precedence over a literal version
 	// attribute (XSLT 3.0 §3.5.2). Resolve it up front so the effective version —
@@ -1209,56 +1138,6 @@ func (c *compiler) readRootVersion(ctx context.Context, root *xdm.Element, local
 	return nil
 }
 
-// isXSDecimal returns true if s is a valid xs:decimal lexical form:
-// optional sign, digits, optional dot followed by digits. No exponent.
-func isXSDecimal(s string) bool {
-	s = strings.Trim(s, " \t\r\n")
-	if s == "" {
-		return false
-	}
-
-	i := 0
-	if s[i] == '+' || s[i] == '-' {
-		i++
-	}
-
-	if i >= len(s) {
-		return false
-	}
-
-	hasDigit := false
-	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-		hasDigit = true
-		i++
-	}
-
-	if i < len(s) && s[i] == '.' {
-		i++
-		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-			hasDigit = true
-			i++
-		}
-	}
-
-	return hasDigit && i == len(s)
-}
-
-func compilePreparedVersion(c *compiler, root *xdm.Element, localName string) error {
-	if _, present := root.GetAttribute(lexicon.SerializationVersion); !present {
-		if _, hasShadow := root.GetAttribute("_version"); !hasShadow {
-			return staticError(errCodeXTSE0010, "xsl:%s requires a version attribute", localName)
-		}
-
-		c.stylesheet.version = lexicon.XSLTVersion30 // placeholder until shadow resolution
-	} else if !isXSDecimal(c.stylesheet.version) {
-		// XTSE0110: version must be a valid xs:decimal value
-		return staticError(errCodeXTSE0110,
-			"xsl:%s version attribute %q is not a valid xs:decimal", localName, c.stylesheet.version)
-	}
-
-	return nil
-}
-
 func (c *compiler) readResultNamespacePolicy(root *xdm.Element) error {
 	excludes, err := c.elementResultExcludes(root)
 	if err != nil {
@@ -1269,23 +1148,6 @@ func (c *compiler) readResultNamespacePolicy(root *xdm.Element) error {
 	c.setInstructionExtensionURIs(root)
 
 	return nil
-}
-
-func isReservedNamespace(uri string) bool {
-	return reservedNamespaceForProcessor(uri, 30)
-}
-
-func reservedNamespaceForProcessor(uri string, processor int) bool {
-	switch uri {
-	case lexicon.NamespaceXSLT, lexicon.NamespaceXSD, lexicon.NamespaceXSI,
-		lexicon.NamespaceFn, lexicon.NamespaceXML:
-		return true
-	case lexicon.NamespaceMath, lexicon.NamespaceMap, lexicon.NamespaceArray,
-		lexicon.NamespaceErr, lexicon.NamespaceXMLNS:
-		return processor >= 30
-	}
-
-	return false
 }
 
 // completeTopLevelDeclarations runs checks that depend on finalized import
@@ -1354,32 +1216,6 @@ func (c *compiler) completeTopLevelDeclarations(ctx context.Context, root *xdm.E
 	if !cfg.isSubPackage {
 		if err := c.checkAbstractComponents(ctx); err != nil {
 			return err
-		}
-	}
-
-	return nil
-}
-
-func compilePreparedModeDefs(c *compiler) error {
-	for name, md := range c.stylesheet.modeDefs {
-		if md.conflictOnNoMatch {
-			return staticError(errCodeXTSE0545, "conflicting on-no-match values for mode %q", name)
-		}
-
-		if md.conflictStreamable {
-			return staticError(errCodeXTSE0545, "conflicting streamable values for mode %q", name)
-		}
-
-		if md.conflictVisibility {
-			return staticError(errCodeXTSE0545, "conflicting visibility values for mode %q", name)
-		}
-
-		if md.conflictOnMultiple {
-			return staticError(errCodeXTSE0545, "conflicting on-multiple-match values for mode %q", name)
-		}
-
-		if md.conflictAccumulator {
-			return staticError(errCodeXTSE0545, "conflicting use-accumulators values for mode %q", name)
 		}
 	}
 
@@ -1527,6 +1363,224 @@ func (c *compiler) hostFunctionAvailable(uri, name string, arity int) bool {
 		(c.stylesheet.processorLanguage() >= 30 || !xslt30Function(name))
 }
 
+func (c *compiler) finalizeCompiledStylesheet() {
+	// Preserve compiler configuration so fn:transform nested compiles
+	// behave consistently with top-level compilation.
+	if c.packageResolver != nil {
+		c.stylesheet.packageResolver = c.packageResolver
+	}
+
+	if c.resolver != nil {
+		c.stylesheet.uriResolver = c.resolver
+	}
+
+	c.stylesheet.maxResourceBytes = c.maxResourceBytes
+
+	c.stylesheet.parseOptions = c.parseOptions
+
+	// Topologically sort accumulators so dependencies are evaluated first.
+	sortAccumulatorOrder(c.stylesheet)
+
+	finalizeOutput10(c.stylesheet)
+}
+
+// checkAbstractComponents checks that no abstract components remain
+// unimplemented in the final compiled stylesheet. XTSE3080.
+func (c *compiler) checkAbstractComponents(_ context.Context) error {
+	for name, tmpl := range c.stylesheet.namedTemplates {
+		if tmpl.Visibility == visAbstract {
+			return staticError(errCodeXTSE3080,
+				"abstract template %q has no implementation", name)
+		}
+	}
+
+	for fk, fn := range c.stylesheet.functions {
+		if fn.Visibility == visAbstract {
+			return staticError(errCodeXTSE3080,
+				"abstract function %s#%d has no implementation",
+				fmt.Sprintf("{%s}%s", fk.Name.URI, fk.Name.Name), fk.Arity)
+		}
+	}
+
+	for _, v := range c.stylesheet.globalVars {
+		if v.Visibility == visAbstract {
+			return staticError(errCodeXTSE3080, "abstract variable %q has no implementation", v.Name)
+		}
+	}
+
+	for name, attrs := range c.stylesheet.attributeSets {
+		if attrs.Visibility == visAbstract {
+			return staticError(errCodeXTSE3080, "abstract attribute-set %q has no implementation", name)
+		}
+	}
+
+	return nil
+}
+
+// elementXSLTVersion returns the XSLT version declared on an element: the
+// unqualified version attribute on an XSLT-namespace element, or the xsl:version
+// attribute on a literal result element. On an LRE an unqualified version is an
+// ordinary literal result attribute (copied to the output), NOT an XSLT version,
+// so it must not affect the effective version.
+func elementXSLTVersion(elem *xdm.Element) string {
+	value, _ := elementXSLTVersionAttribute(elem)
+
+	return value
+}
+
+func elementXSLTVersionAttribute(elem *xdm.Element) (string, bool) {
+	if elem.URI() == lexicon.NamespaceXSLT {
+		if elem.LocalName() == nameOutput || elem.LocalName() == lexicon.XSLTElementResultDocument {
+			return "", false // These select serialization, not the XSLT language.
+		}
+
+		return elem.GetAttribute(lexicon.SerializationVersion)
+	}
+
+	return elem.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
+}
+
+func isShadowAttributeName(name string) bool {
+	return len(name) > 1 && name[0] == '_' && name[1] != '_' && name[1:] != "xmlns"
+}
+
+func staticFunctionsNS(fns map[string]xpath.Function) map[xpath.QualifiedName]xpath.Function {
+	namespaced := make(map[xpath.QualifiedName]xpath.Function, len(fns))
+	for name, function := range fns {
+		namespaced[xpath.QualifiedName{URI: xpath.NSFn, Name: name}] = function
+	}
+
+	return namespaced
+}
+
+// isForwardsCompatible returns true if the version string indicates
+// forwards-compatible mode (version > 3.0).
+func isForwardsCompatible(ver string) bool {
+	comparison, valid := compareLanguageVersion(ver, 3)
+	return valid && comparison > 0
+}
+
+// resolveDefaultCollation takes a space-separated list of collation URIs
+// (as specified by XSLT's default-collation attribute) and returns the first
+// URI that is supported by the XPath engine.  Returns "" if none is supported.
+func resolveDefaultCollation(list, baseURI string) string {
+	for _, reference := range strings.FieldsFunc(list, xmlchar.IsSpace) {
+		uri := resolveAgainstBaseURI(reference, baseURI)
+		if xpath.IsCollationSupported(uri) {
+			return uri
+		}
+	}
+
+	return ""
+}
+
+func standardAttribute(element *xdm.Element, name string) (string, bool) {
+	if element.URI() == lexicon.NamespaceXSLT {
+		return element.GetAttribute(name)
+	}
+
+	return element.GetAttributeNS(name, lexicon.NamespaceXSLT)
+}
+
+// Resolve xml:base as a URI reference. A directory result stays a directory;
+// appending the old module filename would change the XPath static base URI.
+func resolveRootXMLBase(baseURI, xmlBase string) string {
+	return foldXMLBases(baseURI, []string{xmlBase})
+}
+
+// isXSDecimal returns true if s is a valid xs:decimal lexical form:
+// optional sign, digits, optional dot followed by digits. No exponent.
+func isXSDecimal(s string) bool {
+	s = strings.Trim(s, " \t\r\n")
+	if s == "" {
+		return false
+	}
+
+	i := 0
+	if s[i] == '+' || s[i] == '-' {
+		i++
+	}
+
+	if i >= len(s) {
+		return false
+	}
+
+	hasDigit := false
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		hasDigit = true
+		i++
+	}
+
+	if i < len(s) && s[i] == '.' {
+		i++
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			hasDigit = true
+			i++
+		}
+	}
+
+	return hasDigit && i == len(s)
+}
+
+func compilePreparedVersion(c *compiler, root *xdm.Element, localName string) error {
+	if _, present := root.GetAttribute(lexicon.SerializationVersion); !present {
+		if _, hasShadow := root.GetAttribute("_version"); !hasShadow {
+			return staticError(errCodeXTSE0010, "xsl:%s requires a version attribute", localName)
+		}
+
+		c.stylesheet.version = lexicon.XSLTVersion30 // placeholder until shadow resolution
+	} else if !isXSDecimal(c.stylesheet.version) {
+		// XTSE0110: version must be a valid xs:decimal value
+		return staticError(errCodeXTSE0110,
+			"xsl:%s version attribute %q is not a valid xs:decimal", localName, c.stylesheet.version)
+	}
+
+	return nil
+}
+
+func isReservedNamespace(uri string) bool {
+	return reservedNamespaceForProcessor(uri, 30)
+}
+
+func reservedNamespaceForProcessor(uri string, processor int) bool {
+	switch uri {
+	case lexicon.NamespaceXSLT, lexicon.NamespaceXSD, lexicon.NamespaceXSI,
+		lexicon.NamespaceFn, lexicon.NamespaceXML:
+		return true
+	case lexicon.NamespaceMath, lexicon.NamespaceMap, lexicon.NamespaceArray,
+		lexicon.NamespaceErr, lexicon.NamespaceXMLNS:
+		return processor >= 30
+	}
+
+	return false
+}
+
+func compilePreparedModeDefs(c *compiler) error {
+	for name, md := range c.stylesheet.modeDefs {
+		if md.conflictOnNoMatch {
+			return staticError(errCodeXTSE0545, "conflicting on-no-match values for mode %q", name)
+		}
+
+		if md.conflictStreamable {
+			return staticError(errCodeXTSE0545, "conflicting streamable values for mode %q", name)
+		}
+
+		if md.conflictVisibility {
+			return staticError(errCodeXTSE0545, "conflicting visibility values for mode %q", name)
+		}
+
+		if md.conflictOnMultiple {
+			return staticError(errCodeXTSE0545, "conflicting on-multiple-match values for mode %q", name)
+		}
+
+		if md.conflictAccumulator {
+			return staticError(errCodeXTSE0545, "conflicting use-accumulators values for mode %q", name)
+		}
+	}
+
+	return nil
+}
+
 // checkDeclaredModes verifies that all modes referenced in the stylesheet
 // (on xsl:template and xsl:apply-templates) are declared via xsl:mode when
 // declared-modes is true (XTSE3085). The usedModes set is populated during
@@ -1669,60 +1723,6 @@ func collectTemplateCallParameters(ss *Stylesheet) templateCallParameters {
 	}
 
 	return params
-}
-
-func (c *compiler) finalizeCompiledStylesheet() {
-	// Preserve compiler configuration so fn:transform nested compiles
-	// behave consistently with top-level compilation.
-	if c.packageResolver != nil {
-		c.stylesheet.packageResolver = c.packageResolver
-	}
-
-	if c.resolver != nil {
-		c.stylesheet.uriResolver = c.resolver
-	}
-
-	c.stylesheet.maxResourceBytes = c.maxResourceBytes
-
-	c.stylesheet.parseOptions = c.parseOptions
-
-	// Topologically sort accumulators so dependencies are evaluated first.
-	sortAccumulatorOrder(c.stylesheet)
-
-	finalizeOutput10(c.stylesheet)
-}
-
-// checkAbstractComponents checks that no abstract components remain
-// unimplemented in the final compiled stylesheet. XTSE3080.
-func (c *compiler) checkAbstractComponents(_ context.Context) error {
-	for name, tmpl := range c.stylesheet.namedTemplates {
-		if tmpl.Visibility == visAbstract {
-			return staticError(errCodeXTSE3080,
-				"abstract template %q has no implementation", name)
-		}
-	}
-
-	for fk, fn := range c.stylesheet.functions {
-		if fn.Visibility == visAbstract {
-			return staticError(errCodeXTSE3080,
-				"abstract function %s#%d has no implementation",
-				fmt.Sprintf("{%s}%s", fk.Name.URI, fk.Name.Name), fk.Arity)
-		}
-	}
-
-	for _, v := range c.stylesheet.globalVars {
-		if v.Visibility == visAbstract {
-			return staticError(errCodeXTSE3080, "abstract variable %q has no implementation", v.Name)
-		}
-	}
-
-	for name, attrs := range c.stylesheet.attributeSets {
-		if attrs.Visibility == visAbstract {
-			return staticError(errCodeXTSE3080, "abstract attribute-set %q has no implementation", name)
-		}
-	}
-
-	return nil
 }
 
 // isXMLWhitespaceOnly returns true if s is empty or contains only XML

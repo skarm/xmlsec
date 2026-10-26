@@ -511,21 +511,6 @@ func (ec *execContext) groupAdjacent(ctx context.Context, seq xdm.Sequence, adjE
 	return appendAdjacentGroup(groups, initialKey, currentItems), nil
 }
 
-func atomicGroupingSequence(atoms []xdm.AtomicValue) xdm.Sequence {
-	keys := make(xdm.ItemSlice, len(atoms))
-	for i, atom := range atoms {
-		// XSLT grouping normalizes untypedAtomic keys to xs:string,
-		// including the value exposed by current-grouping-key().
-		if atom.TypeName == xdm.TypeUntypedAtomic {
-			atom.TypeName = xdm.TypeString
-		}
-
-		keys[i] = atom
-	}
-
-	return keys
-}
-
 func (ec *execContext) groupingKeysEqual(ctx context.Context, a, b xdm.Sequence, collationKey func(string) string) (bool, error) {
 	if err := xpath.Charge(ctx, 1); err != nil {
 		return false, err
@@ -571,23 +556,6 @@ func (ec *execContext) groupingAtomicEqual(a, b xdm.AtomicValue, collationKey fu
 	equal, err := xpath.ValueCompareWithImplicitTimezone(xpath.TokenEq, a, b, ec.dynamicProperties.Timezone)
 
 	return err == nil && equal // Incomparable atomic types belong to different groups.
-}
-
-func groupingString(value xdm.AtomicValue) (string, bool) {
-	value = xdm.PromoteSchemaType(value)
-	if xdm.IsStringDerived(value.TypeName) || value.TypeName == xdm.TypeUntypedAtomic || value.TypeName == xdm.TypeAnyURI {
-		return value.StringVal(), true
-	}
-
-	return "", false
-}
-
-func appendAdjacentGroup(groups []fegGroup, keySeq xdm.Sequence, items xdm.ItemSlice) []fegGroup {
-	if len(items) == 0 {
-		return groups
-	}
-
-	return append(groups, fegGroup{key: keySeq, items: items})
 }
 
 // groupStartingWith implements group-starting-with: a new group starts
@@ -739,6 +707,51 @@ func (ec *execContext) evaluateVariableBody(ctx context.Context, inst *variableI
 	return val, nil
 }
 
+func (ec *execContext) execParam(ctx context.Context, inst *paramInst) error {
+	if _, ok := ec.localVars.lookup(inst.Name); ok {
+		return nil
+	}
+	// Use default
+	return ec.execVariable(ctx, &variableInst{
+		Name:   inst.Name,
+		Select: inst.Select,
+		Body:   inst.Body,
+		As:     inst.As,
+	})
+}
+
+func atomicGroupingSequence(atoms []xdm.AtomicValue) xdm.Sequence {
+	keys := make(xdm.ItemSlice, len(atoms))
+	for i, atom := range atoms {
+		// XSLT grouping normalizes untypedAtomic keys to xs:string,
+		// including the value exposed by current-grouping-key().
+		if atom.TypeName == xdm.TypeUntypedAtomic {
+			atom.TypeName = xdm.TypeString
+		}
+
+		keys[i] = atom
+	}
+
+	return keys
+}
+
+func groupingString(value xdm.AtomicValue) (string, bool) {
+	value = xdm.PromoteSchemaType(value)
+	if xdm.IsStringDerived(value.TypeName) || value.TypeName == xdm.TypeUntypedAtomic || value.TypeName == xdm.TypeAnyURI {
+		return value.StringVal(), true
+	}
+
+	return "", false
+}
+
+func appendAdjacentGroup(groups []fegGroup, keySeq xdm.Sequence, items xdm.ItemSlice) []fegGroup {
+	if len(items) == 0 {
+		return groups
+	}
+
+	return append(groups, fegGroup{key: keySeq, items: items})
+}
+
 func isEmptyVariableDocument(val xdm.Sequence) bool {
 	if xdm.SequenceLen(val) != 1 {
 		return false
@@ -752,19 +765,6 @@ func isEmptyVariableDocument(val xdm.Sequence) bool {
 	doc, ok := item.Node.(*xdm.Document)
 
 	return ok && doc.FirstChild() == nil
-}
-
-func (ec *execContext) execParam(ctx context.Context, inst *paramInst) error {
-	if _, ok := ec.localVars.lookup(inst.Name); ok {
-		return nil
-	}
-	// Use default
-	return ec.execVariable(ctx, &variableInst{
-		Name:   inst.Name,
-		Select: inst.Select,
-		Body:   inst.Body,
-		As:     inst.As,
-	})
 }
 
 type fegGroup struct {
@@ -867,6 +867,15 @@ func (groups *groupByAccumulator) entryForKeys(ctx context.Context, keys xdm.Seq
 	return entry, nil
 }
 
+func (groups *groupByAccumulator) result() []fegGroup {
+	result := make([]fegGroup, len(groups.order))
+	for i, entry := range groups.order {
+		result[i] = fegGroup{key: entry.keySeq, items: entry.items}
+	}
+
+	return result
+}
+
 func groupingBucket(ctx context.Context, keys xdm.Sequence, collationKey func(string) string) (string, error) {
 	var bucket strings.Builder
 
@@ -910,13 +919,4 @@ func groupingBucket(ctx context.Context, keys xdm.Sequence, collationKey func(st
 	}
 
 	return bucket.String(), nil
-}
-
-func (groups *groupByAccumulator) result() []fegGroup {
-	result := make([]fegGroup, len(groups.order))
-	for i, entry := range groups.order {
-		result[i] = fegGroup{key: entry.keySeq, items: entry.items}
-	}
-
-	return result
 }

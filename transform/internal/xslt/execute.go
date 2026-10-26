@@ -261,19 +261,6 @@ type execContext struct {
 	patternPredicates map[*xpath.Expr]*patternPredicate
 }
 
-// Globals and key specifiers use the initial grouping/regex context.
-func (ec *execContext) pushAbsentGroupingContext() func() {
-	group, key, regex := ec.currentGroup, ec.currentGroupKey, ec.regexGroups
-	inGroup, hasKey, inMerge := ec.inGroupContext, ec.groupHasKey, ec.inMergeAction
-	ec.currentGroup, ec.currentGroupKey, ec.regexGroups = nil, nil, nil
-	ec.inGroupContext, ec.groupHasKey, ec.inMergeAction = false, false, false
-
-	return func() {
-		ec.currentGroup, ec.currentGroupKey, ec.regexGroups = group, key, regex
-		ec.inGroupContext, ec.groupHasKey, ec.inMergeAction = inGroup, hasKey, inMerge
-	}
-}
-
 // ResolveFunction implements xpath.FunctionResolver. It resolves
 // xsl:original() calls without exposing the function to function-lookup.
 func (ec *execContext) ResolveFunction(_ context.Context, uri, name string, arity int) (xpath.Function, bool, error) {
@@ -336,6 +323,19 @@ func (ec *execContext) ResolveVariable(ctx context.Context, name string) (xdm.Se
 	}
 
 	return ec.resolvePendingGlobalParam(ctx, lookupNames)
+}
+
+// Globals and key specifiers use the initial grouping/regex context.
+func (ec *execContext) pushAbsentGroupingContext() func() {
+	group, key, regex := ec.currentGroup, ec.currentGroupKey, ec.regexGroups
+	inGroup, hasKey, inMerge := ec.inGroupContext, ec.groupHasKey, ec.inMergeAction
+	ec.currentGroup, ec.currentGroupKey, ec.regexGroups = nil, nil, nil
+	ec.inGroupContext, ec.groupHasKey, ec.inMergeAction = false, false, false
+
+	return func() {
+		ec.currentGroup, ec.currentGroupKey, ec.regexGroups = group, key, regex
+		ec.inGroupContext, ec.groupHasKey, ec.inMergeAction = inGroup, hasKey, inMerge
+	}
 }
 
 func (ec *execContext) setCurrentTemplate(tmpl *template) {
@@ -497,23 +497,6 @@ func (ec *execContext) preserveIDAnnotations() {
 				}
 			}
 		}
-	}
-}
-
-func preserveAttributeIDType(attr *xdm.Attribute, annotation string) {
-	switch annotation {
-	case "xs:ID":
-		attr.SetIDType(xdm.IDAttribute)
-
-		if parent, ok := attr.Parent().(*xdm.Element); ok {
-			if doc, ok := documentRoot(parent).(*xdm.Document); ok {
-				doc.RegisterID(strings.TrimSpace(attr.Value()), parent)
-			}
-		}
-	case "xs:IDREF":
-		attr.SetIDType(xdm.IDRefAttribute)
-	case "xs:IDREFS":
-		attr.SetIDType(xdm.IDRefsAttribute)
 	}
 }
 
@@ -709,14 +692,6 @@ func (ec *execContext) idFamilyAnnotation(node xdm.Node) string {
 	}
 
 	return ""
-}
-
-func isIDRefType(ann string) bool {
-	return ann == "xs:IDREF"
-}
-
-func isIDRefsType(ann string) bool {
-	return ann == "xs:IDREFS"
 }
 
 func (ec *execContext) preserveNodeIDAnnotation(node xdm.Node, ann string) {
@@ -1233,32 +1208,6 @@ func (ec *execContext) resolveConditionalItems(ctx context.Context, scope condit
 	return nil
 }
 
-func conditionalActionForItem(actions map[xdm.Node]conditionalAction, item xdm.Item) (conditionalAction, bool) {
-	node, ok := item.(xdm.NodeItem)
-	if !ok {
-		return conditionalAction{}, false
-	}
-
-	action, ok := actions[node.Node]
-
-	return action, ok
-}
-
-func conditionalItemsNonVacuous(ctx context.Context, items xdm.ItemSlice, actions map[xdm.Node]conditionalAction) (bool, error) {
-	for _, item := range items {
-		if _, placeholder := conditionalActionForItem(actions, item); placeholder {
-			continue
-		}
-
-		empty, err := conditionalItemEmpty(ctx, item, vacuousItem, 0)
-		if err != nil || !empty {
-			return !empty, err
-		}
-	}
-
-	return false, nil
-}
-
 func (ec *execContext) spliceConditionalSequence(placeholder xdm.MutableNode, seq xdm.Sequence, prevWasAtomic bool) error {
 	if placeholder == nil {
 		return ec.outputSequence(seq)
@@ -1334,15 +1283,6 @@ func (ec *execContext) spliceConditionalSequence(placeholder xdm.MutableNode, se
 	out.noteOutput()
 
 	return nil
-}
-
-func spliceReplace(target xdm.MutableNode, nodes []xdm.Node) {
-	if len(nodes) == 0 {
-		xdm.UnlinkNode(target)
-		return
-	}
-
-	_ = target.Replace(nodes...)
 }
 
 func (ec *execContext) appendConditionalNode(nodes []xdm.Node, node, parent xdm.Node) ([]xdm.Node, error) {
@@ -1433,15 +1373,6 @@ func (ec *execContext) xpathContext(ctx context.Context) context.Context {
 	}
 
 	return withExecContext(ctx, ec)
-}
-
-func withExecContext(ctx context.Context, ec *execContext) context.Context {
-	return context.WithValue(ctx, execContextKey{}, ec)
-}
-
-func getExecContext(ctx context.Context) *execContext {
-	v, _ := ctx.Value(execContextKey{}).(*execContext)
-	return v
 }
 
 // baseXPathEvaluator returns a base XPath evaluator for the current static
@@ -1604,24 +1535,6 @@ func (ec *execContext) effectiveXPathNamespaces() map[string]string {
 	}
 
 	return ns
-}
-
-// collectPackageNamespaces recursively collects all namespace bindings from
-// used packages into the provided map. Main stylesheet bindings take precedence.
-func collectPackageNamespaces(ss *Stylesheet, ns map[string]string) {
-	for _, pkg := range ss.usedPackages {
-		collectPackageNamespaces(pkg, ns)
-
-		for k, v := range pkg.namespaces {
-			if k == "" {
-				continue
-			}
-
-			if _, exists := ns[k]; !exists {
-				ns[k] = v
-			}
-		}
-	}
 }
 
 // effectiveDecimalFormats returns the decimal formats for the current
@@ -2326,6 +2239,93 @@ func (ec *execContext) docCacheKey(uri string) string {
 	return uri
 }
 
+func preserveAttributeIDType(attr *xdm.Attribute, annotation string) {
+	switch annotation {
+	case "xs:ID":
+		attr.SetIDType(xdm.IDAttribute)
+
+		if parent, ok := attr.Parent().(*xdm.Element); ok {
+			if doc, ok := documentRoot(parent).(*xdm.Document); ok {
+				doc.RegisterID(strings.TrimSpace(attr.Value()), parent)
+			}
+		}
+	case "xs:IDREF":
+		attr.SetIDType(xdm.IDRefAttribute)
+	case "xs:IDREFS":
+		attr.SetIDType(xdm.IDRefsAttribute)
+	}
+}
+
+func isIDRefType(ann string) bool {
+	return ann == "xs:IDREF"
+}
+
+func isIDRefsType(ann string) bool {
+	return ann == "xs:IDREFS"
+}
+
+func conditionalActionForItem(actions map[xdm.Node]conditionalAction, item xdm.Item) (conditionalAction, bool) {
+	node, ok := item.(xdm.NodeItem)
+	if !ok {
+		return conditionalAction{}, false
+	}
+
+	action, ok := actions[node.Node]
+
+	return action, ok
+}
+
+func conditionalItemsNonVacuous(ctx context.Context, items xdm.ItemSlice, actions map[xdm.Node]conditionalAction) (bool, error) {
+	for _, item := range items {
+		if _, placeholder := conditionalActionForItem(actions, item); placeholder {
+			continue
+		}
+
+		empty, err := conditionalItemEmpty(ctx, item, vacuousItem, 0)
+		if err != nil || !empty {
+			return !empty, err
+		}
+	}
+
+	return false, nil
+}
+
+func spliceReplace(target xdm.MutableNode, nodes []xdm.Node) {
+	if len(nodes) == 0 {
+		xdm.UnlinkNode(target)
+		return
+	}
+
+	_ = target.Replace(nodes...)
+}
+
+func withExecContext(ctx context.Context, ec *execContext) context.Context {
+	return context.WithValue(ctx, execContextKey{}, ec)
+}
+
+func getExecContext(ctx context.Context) *execContext {
+	v, _ := ctx.Value(execContextKey{}).(*execContext)
+	return v
+}
+
+// collectPackageNamespaces recursively collects all namespace bindings from
+// used packages into the provided map. Main stylesheet bindings take precedence.
+func collectPackageNamespaces(ss *Stylesheet, ns map[string]string) {
+	for _, pkg := range ss.usedPackages {
+		collectPackageNamespaces(pkg, ns)
+
+		for k, v := range pkg.namespaces {
+			if k == "" {
+				continue
+			}
+
+			if _, exists := ns[k]; !exists {
+				ns[k] = v
+			}
+		}
+	}
+}
+
 func isIDType(ann string) bool {
 	return ann == "xs:ID"
 }
@@ -2439,6 +2439,22 @@ func (r executionCollectionResolver) ResolveCollection(ctx context.Context, uri 
 	return out, nil
 }
 
+func (r executionCollectionResolver) ResolveURICollection(ctx context.Context, uri string) ([]string, error) {
+	key := r.ec.docCacheKey(uri)
+	if values, found := r.ec.uriCollectionCache[key]; found {
+		return values, nil
+	}
+
+	values, err := r.base.ResolveURICollection(ctx, uri)
+	if err != nil {
+		return nil, err
+	}
+
+	r.ec.uriCollectionCache[key] = values
+
+	return values, nil
+}
+
 func (r executionCollectionResolver) prepareNode(ctx context.Context, node xdm.Node) (xdm.Node, error) {
 	if err := xpath.Charge(ctx, 1); err != nil {
 		return nil, err
@@ -2461,20 +2477,4 @@ func (r executionCollectionResolver) prepareNode(ctx context.Context, node xdm.N
 	}
 
 	return node, nil
-}
-
-func (r executionCollectionResolver) ResolveURICollection(ctx context.Context, uri string) ([]string, error) {
-	key := r.ec.docCacheKey(uri)
-	if values, found := r.ec.uriCollectionCache[key]; found {
-		return values, nil
-	}
-
-	values, err := r.base.ResolveURICollection(ctx, uri)
-	if err != nil {
-		return nil, err
-	}
-
-	r.ec.uriCollectionCache[key] = values
-
-	return values, nil
 }

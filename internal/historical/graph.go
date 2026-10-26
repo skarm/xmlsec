@@ -84,21 +84,6 @@ func (g *graph) admitObject(item Object, remaining, edges *int, maximum int) err
 	return nil
 }
 
-func checkObjectIdentity(previous, item Object) error {
-	if !bytes.Equal(previous.Bytes, item.Bytes) || previous.Kind != item.Kind || !slices.Equal(previous.Contains, item.Contains) || len(previous.Refs) != len(item.Refs) {
-		return fmt.Errorf("%w: conflicting exact-object binding", ErrInput)
-	}
-
-	for i, ref := range previous.Refs {
-		other := item.Refs[i]
-		if ref.Hash != other.Hash || ref.Target != other.Target || !bytes.Equal(ref.Digest, other.Digest) {
-			return ErrInput
-		}
-	}
-
-	return nil
-}
-
 func (g *graph) checkBindings() error {
 	for key, item := range g.objects {
 		for _, child := range item.Contains {
@@ -142,54 +127,6 @@ func (g *graph) checkAcyclic(ctx context.Context, maximum int) error {
 	}
 
 	return nil
-}
-
-type containmentWalk struct {
-	ctx     context.Context
-	objects map[[32]byte]Object
-	// 1 means active; completed entries store their subtree height plus 2.
-	states  map[[32]byte]uint8
-	maximum int
-}
-
-func (w *containmentWalk) visit(key [32]byte, depth int) (int, error) {
-	if err := w.ctx.Err(); err != nil {
-		return 0, err
-	}
-
-	if depth > 64 || depth > w.maximum {
-		return 0, ErrLimit
-	}
-
-	state := w.states[key]
-	if state == 1 {
-		return 0, fmt.Errorf("%w: containment cycle", ErrInput)
-	}
-
-	if state >= 2 {
-		height := int(state) - 2
-		if height > 64-depth || height > w.maximum-depth {
-			return 0, ErrLimit
-		}
-
-		return height, nil
-	}
-
-	w.states[key] = 1
-	height := 0
-
-	for _, child := range w.objects[key].Contains {
-		childHeight, err := w.visit(child, depth+1)
-		if err != nil {
-			return 0, err
-		}
-
-		height = max(height, childHeight+1)
-	}
-	// #nosec G115 -- Each child passed the depth/height checks above; height is 0..64.
-	w.states[key] = uint8(height) + 2
-
-	return height, nil
 }
 
 func (g *graph) set(ctx context.Context) (*historicalproof.Set, error) {
@@ -327,4 +264,67 @@ func (g *graph) add(fact historicalproof.Fact) error {
 	g.facts = append(g.facts, fact)
 
 	return nil
+}
+
+func checkObjectIdentity(previous, item Object) error {
+	if !bytes.Equal(previous.Bytes, item.Bytes) || previous.Kind != item.Kind || !slices.Equal(previous.Contains, item.Contains) || len(previous.Refs) != len(item.Refs) {
+		return fmt.Errorf("%w: conflicting exact-object binding", ErrInput)
+	}
+
+	for i, ref := range previous.Refs {
+		other := item.Refs[i]
+		if ref.Hash != other.Hash || ref.Target != other.Target || !bytes.Equal(ref.Digest, other.Digest) {
+			return ErrInput
+		}
+	}
+
+	return nil
+}
+
+type containmentWalk struct {
+	ctx     context.Context
+	objects map[[32]byte]Object
+	// 1 means active; completed entries store their subtree height plus 2.
+	states  map[[32]byte]uint8
+	maximum int
+}
+
+func (w *containmentWalk) visit(key [32]byte, depth int) (int, error) {
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	if depth > 64 || depth > w.maximum {
+		return 0, ErrLimit
+	}
+
+	state := w.states[key]
+	if state == 1 {
+		return 0, fmt.Errorf("%w: containment cycle", ErrInput)
+	}
+
+	if state >= 2 {
+		height := int(state) - 2
+		if height > 64-depth || height > w.maximum-depth {
+			return 0, ErrLimit
+		}
+
+		return height, nil
+	}
+
+	w.states[key] = 1
+	height := 0
+
+	for _, child := range w.objects[key].Contains {
+		childHeight, err := w.visit(child, depth+1)
+		if err != nil {
+			return 0, err
+		}
+
+		height = max(height, childHeight+1)
+	}
+	// #nosec G115 -- Each child passed the depth/height checks above; height is 0..64.
+	w.states[key] = uint8(height) + 2
+
+	return height, nil
 }

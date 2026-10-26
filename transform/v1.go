@@ -269,6 +269,44 @@ func (p *v1Processor) Apply(ctx context.Context, t reference.Transform, in refer
 	return reference.Nodes(out)
 }
 
+func (p *v1Processor) approved(ctx context.Context, t reference.Transform) ([]compiled, error) {
+	if ctx == nil {
+		return nil, reference.ErrInput
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if !reference.IsExtension(t.Algorithm) {
+		return nil, reference.ErrUnsupported
+	}
+
+	if p == nil || len(p.programs)+len(p.stylesheets) == 0 {
+		return nil, reference.ErrPolicy
+	}
+
+	key, err := reference.ProgramFingerprint(t)
+	if err != nil {
+		return nil, err
+	}
+
+	if t.Algorithm == reference.XSLT {
+		if _, ok := p.stylesheets[key]; !ok {
+			return nil, fmt.Errorf("%w: stylesheet is not approved", reference.ErrPolicy)
+		}
+
+		return nil, nil
+	}
+
+	program, ok := p.programs[key]
+	if !ok {
+		return nil, fmt.Errorf("%w: transform program is not approved", reference.ErrPolicy)
+	}
+
+	return program, nil
+}
+
 func idFunction(resolve func(string) xdm.Node, maxTokens int) xpath.Function {
 	return v1Function{1, 1, func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		values, err := idArgumentValues(ctx, args[0])
@@ -410,44 +448,6 @@ func applyFilter2Nodes(ctx context.Context, expressions []reference.XPathExpress
 	return kept, nil
 }
 
-func (p *v1Processor) approved(ctx context.Context, t reference.Transform) ([]compiled, error) {
-	if ctx == nil {
-		return nil, reference.ErrInput
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	if !reference.IsExtension(t.Algorithm) {
-		return nil, reference.ErrUnsupported
-	}
-
-	if p == nil || len(p.programs)+len(p.stylesheets) == 0 {
-		return nil, reference.ErrPolicy
-	}
-
-	key, err := reference.ProgramFingerprint(t)
-	if err != nil {
-		return nil, err
-	}
-
-	if t.Algorithm == reference.XSLT {
-		if _, ok := p.stylesheets[key]; !ok {
-			return nil, fmt.Errorf("%w: stylesheet is not approved", reference.ErrPolicy)
-		}
-
-		return nil, nil
-	}
-
-	program, ok := p.programs[key]
-	if !ok {
-		return nil, fmt.Errorf("%w: transform program is not approved", reference.ErrPolicy)
-	}
-
-	return program, nil
-}
-
 func hereFunction(here document.Element, doc *xdm.Document) xpath.Function {
 	return v1Function{0, 0, func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		if err := ctx.Err(); err != nil {
@@ -485,6 +485,7 @@ type v1Function struct {
 }
 
 func (f v1Function) MinArity() int { return f.min }
+
 func (f v1Function) MaxArity() int { return f.max }
 
 func (f v1Function) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {

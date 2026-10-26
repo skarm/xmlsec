@@ -138,19 +138,6 @@ func (c keyCommand) run(ctx context.Context, stdout io.Writer) error {
 	return writeOutputContext(ctx, c.output, stdout, raw)
 }
 
-func exportPublic(ctx context.Context, path string, w io.Writer, public crypto.PublicKey, asPEM bool) error {
-	raw, err := x509.MarshalPKIXPublicKey(public)
-	if err != nil {
-		return err
-	}
-
-	if asPEM {
-		raw = pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: raw})
-	}
-
-	return writeOutputContext(ctx, path, w, raw)
-}
-
 func (c keyCommand) generate() (crypto.Signer, []byte, error) {
 	sizes := map[string]int{"aes128": 16, "aes192": 24, "aes256": 32, "hmac256": 32, "hmac384": 48, "hmac512": 64}
 	if size := sizes[c.algorithm]; size != 0 {
@@ -274,28 +261,6 @@ func (c keyCommand) inspect(ctx context.Context, stdout io.Writer) error {
 	return jsonOutput(ctx, c.output, stdout, value)
 }
 
-func publicDescription(public crypto.PublicKey) map[string]any {
-	raw, _ := x509.MarshalPKIXPublicKey(public)
-	v := map[string]any{fieldStatus: statusUnverified, "spki_sha256": fingerprint(raw)}
-
-	switch k := public.(type) {
-	case *rsa.PublicKey:
-		v["algorithm"] = nameRSA
-		v["bits"] = k.N.BitLen()
-	case *ecdsa.PublicKey:
-		v["algorithm"] = "ecdsa"
-		v["curve"] = k.Curve.Params().Name
-	case ed25519.PublicKey:
-		v["algorithm"] = "ed25519"
-	}
-
-	return v
-}
-
-func certificateDescription(c *x509.Certificate) map[string]any {
-	return map[string]any{fieldStatus: statusUnverified, "certificate_sha256": fingerprint(c.Raw), "public_key": publicDescription(c.PublicKey), "subject": c.Subject.String(), fieldIssuer: c.Issuer.String(), "serial": c.SerialNumber.String(), "not_before": c.NotBefore, "not_after": c.NotAfter, "is_ca": c.IsCA, "key_usage": c.KeyUsage, "extended_key_usage": c.ExtKeyUsage}
-}
-
 func (c keyCommand) identity(ctx context.Context) (*keys.PKCS12Identity, error) {
 	password, err := passwordFromFile(ctx, c.flags.passwordFile)
 	if err != nil {
@@ -385,4 +350,39 @@ func (c keyCommand) exportIdentity(ctx context.Context, signer crypto.Signer) (k
 	}
 
 	return identity, nil
+}
+
+func exportPublic(ctx context.Context, path string, w io.Writer, public crypto.PublicKey, asPEM bool) error {
+	raw, err := x509.MarshalPKIXPublicKey(public)
+	if err != nil {
+		return err
+	}
+
+	if asPEM {
+		raw = pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: raw})
+	}
+
+	return writeOutputContext(ctx, path, w, raw)
+}
+
+func publicDescription(public crypto.PublicKey) map[string]any {
+	raw, _ := x509.MarshalPKIXPublicKey(public)
+	v := map[string]any{fieldStatus: statusUnverified, "spki_sha256": fingerprint(raw)}
+
+	switch k := public.(type) {
+	case *rsa.PublicKey:
+		v["algorithm"] = nameRSA
+		v["bits"] = k.N.BitLen()
+	case *ecdsa.PublicKey:
+		v["algorithm"] = "ecdsa"
+		v["curve"] = k.Curve.Params().Name
+	case ed25519.PublicKey:
+		v["algorithm"] = "ed25519"
+	}
+
+	return v
+}
+
+func certificateDescription(c *x509.Certificate) map[string]any {
+	return map[string]any{fieldStatus: statusUnverified, "certificate_sha256": fingerprint(c.Raw), "public_key": publicDescription(c.PublicKey), "subject": c.Subject.String(), fieldIssuer: c.Issuer.String(), "serial": c.SerialNumber.String(), "not_before": c.NotBefore, "not_after": c.NotAfter, "is_ca": c.IsCA, "key_usage": c.KeyUsage, "extended_key_usage": c.ExtKeyUsage}
 }

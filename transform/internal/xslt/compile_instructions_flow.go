@@ -700,33 +700,6 @@ func (c *compiler) compilePerformSortSelection(elem *xdm.Element, inst *performS
 	return validatePerformSortSelectContent(elem)
 }
 
-func validatePerformSortSelectContent(elem *xdm.Element) error {
-	// XTSE1040: when select is present, only xsl:sort and xsl:fallback are allowed
-	for child := range xdm.Children(elem) {
-		childElem, ok := child.(*xdm.Element)
-		if !ok {
-			if isStylesheetTextNode(child) {
-				return staticError(errCodeXTSE1040, "xsl:perform-sort with select attribute must not contain text")
-			}
-
-			continue
-		}
-
-		if childElem.URI() == lexicon.NamespaceXSLT {
-			ln := childElem.LocalName()
-			if ln != lexicon.XSLTElementSort && ln != nameFallback {
-				return staticError(errCodeXTSE1040,
-					"xsl:perform-sort with select attribute must not contain xsl:%s", ln)
-			}
-		} else {
-			return staticError(errCodeXTSE1040,
-				"xsl:perform-sort with select attribute must not contain non-XSLT content")
-		}
-	}
-
-	return nil
-}
-
 func (c *compiler) compileNextMatch(ctx context.Context, elem *xdm.Element) (*nextMatchInst, error) {
 	inst := &nextMatchInst{}
 
@@ -952,44 +925,6 @@ func (c *compiler) compileForEachGroup(ctx context.Context, elem *xdm.Element) (
 	}
 
 	return inst, nil
-}
-
-func validateGroupingAttributes(elem *xdm.Element) error {
-	// XTSE1080: exactly one of group-by, group-adjacent, group-starting-with,
-	// group-ending-with must be present
-	groupingCount := 0
-
-	for _, name := range []string{"group-by", "group-adjacent", "group-starting-with", "group-ending-with"} {
-		if _, present := elem.GetAttribute(name); present {
-			groupingCount++
-		}
-	}
-
-	if groupingCount == 0 {
-		return staticError(errCodeXTSE1080, "xsl:for-each-group requires one of group-by, group-adjacent, group-starting-with, or group-ending-with")
-	}
-
-	if groupingCount > 1 {
-		return staticError(errCodeXTSE1080, "xsl:for-each-group must have at most one of group-by, group-adjacent, group-starting-with, or group-ending-with")
-	}
-
-	// XTSE1090: collation/composite only with group-by or group-adjacent
-	_, hasGroupBy := elem.GetAttribute("group-by")
-
-	_, hasGroupAdjacent := elem.GetAttribute("group-adjacent")
-	if !hasGroupBy && !hasGroupAdjacent {
-		if getAttr(elem, nameCollation) != "" {
-			return staticError(errCodeXTSE1090,
-				"collation attribute on xsl:for-each-group requires group-by or group-adjacent")
-		}
-
-		if getAttr(elem, nameComposite) != "" {
-			return staticError(errCodeXTSE1090,
-				"composite attribute on xsl:for-each-group requires group-by or group-adjacent")
-		}
-	}
-
-	return nil
 }
 
 func (c *compiler) compileGroupingOptions(elem *xdm.Element, inst *forEachGroupInst) error {
@@ -1317,19 +1252,6 @@ func (c *compiler) compileEvaluateParams(ctx context.Context, elem *xdm.Element,
 	return nil
 }
 
-// checkDuplicateWithParam reports XTSE0670 when wp names the same expanded
-// QName as an earlier sibling xsl:with-param in params. Tunnel and non-tunnel
-// parameters share one name space for this rule.
-func checkDuplicateWithParam(params []*withParam, wp *withParam) error {
-	for _, prev := range params {
-		if prev.Name == wp.Name {
-			return staticError(errCodeXTSE0670, "duplicate xsl:with-param name %q", wp.Name)
-		}
-	}
-
-	return nil
-}
-
 // compileWithParams compiles a child list containing only xsl:with-param.
 func (c *compiler) compileWithParams(ctx context.Context, elem *xdm.Element) ([]*withParam, error) {
 	owner := "xsl:" + elem.LocalName()
@@ -1369,4 +1291,82 @@ func (c *compiler) compileWithParams(ctx context.Context, elem *xdm.Element) ([]
 	}
 
 	return params, nil
+}
+
+func validatePerformSortSelectContent(elem *xdm.Element) error {
+	// XTSE1040: when select is present, only xsl:sort and xsl:fallback are allowed
+	for child := range xdm.Children(elem) {
+		childElem, ok := child.(*xdm.Element)
+		if !ok {
+			if isStylesheetTextNode(child) {
+				return staticError(errCodeXTSE1040, "xsl:perform-sort with select attribute must not contain text")
+			}
+
+			continue
+		}
+
+		if childElem.URI() == lexicon.NamespaceXSLT {
+			ln := childElem.LocalName()
+			if ln != lexicon.XSLTElementSort && ln != nameFallback {
+				return staticError(errCodeXTSE1040,
+					"xsl:perform-sort with select attribute must not contain xsl:%s", ln)
+			}
+		} else {
+			return staticError(errCodeXTSE1040,
+				"xsl:perform-sort with select attribute must not contain non-XSLT content")
+		}
+	}
+
+	return nil
+}
+
+func validateGroupingAttributes(elem *xdm.Element) error {
+	// XTSE1080: exactly one of group-by, group-adjacent, group-starting-with,
+	// group-ending-with must be present
+	groupingCount := 0
+
+	for _, name := range []string{"group-by", "group-adjacent", "group-starting-with", "group-ending-with"} {
+		if _, present := elem.GetAttribute(name); present {
+			groupingCount++
+		}
+	}
+
+	if groupingCount == 0 {
+		return staticError(errCodeXTSE1080, "xsl:for-each-group requires one of group-by, group-adjacent, group-starting-with, or group-ending-with")
+	}
+
+	if groupingCount > 1 {
+		return staticError(errCodeXTSE1080, "xsl:for-each-group must have at most one of group-by, group-adjacent, group-starting-with, or group-ending-with")
+	}
+
+	// XTSE1090: collation/composite only with group-by or group-adjacent
+	_, hasGroupBy := elem.GetAttribute("group-by")
+
+	_, hasGroupAdjacent := elem.GetAttribute("group-adjacent")
+	if !hasGroupBy && !hasGroupAdjacent {
+		if getAttr(elem, nameCollation) != "" {
+			return staticError(errCodeXTSE1090,
+				"collation attribute on xsl:for-each-group requires group-by or group-adjacent")
+		}
+
+		if getAttr(elem, nameComposite) != "" {
+			return staticError(errCodeXTSE1090,
+				"composite attribute on xsl:for-each-group requires group-by or group-adjacent")
+		}
+	}
+
+	return nil
+}
+
+// checkDuplicateWithParam reports XTSE0670 when wp names the same expanded
+// QName as an earlier sibling xsl:with-param in params. Tunnel and non-tunnel
+// parameters share one name space for this rule.
+func checkDuplicateWithParam(params []*withParam, wp *withParam) error {
+	for _, prev := range params {
+		if prev.Name == wp.Name {
+			return staticError(errCodeXTSE0670, "duplicate xsl:with-param name %q", wp.Name)
+		}
+	}
+
+	return nil
 }

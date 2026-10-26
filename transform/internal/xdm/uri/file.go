@@ -45,19 +45,6 @@ func FileURIToPath(ref string) (string, error) {
 	return fileURIPathFor(runtime.GOOS, u.Path), nil
 }
 
-// fileURIPathFor is the OS-parameterized conversion of a "file:" URI path
-// component into a local filesystem path. The drive-letter slash strip only
-// applies on Windows; on POSIX "/C:/tmp/x" is a valid absolute path and is left
-// untouched. goos is threaded explicitly so the conversion is deterministically
-// testable on a non-Windows CI host.
-func fileURIPathFor(goos, p string) string {
-	if goos == "windows" && len(p) >= 3 && p[0] == '/' && xmlchar.IsASCIILetter(p[1]) && p[2] == ':' {
-		p = p[1:]
-	}
-
-	return filepath.FromSlash(p)
-}
-
 // IsUNCFileURIPath reports whether p — the (already percent-decoded) path
 // component of a "file:" URI — denotes a UNC path. A UNC path begins with two
 // path separators ("\\server\share"); on Windows filepath.FromSlash turns such
@@ -74,6 +61,19 @@ func fileURIPathFor(goos, p string) string {
 // the explicit XPath and XSLT resource loaders.
 func IsUNCFileURIPath(p string) bool {
 	return len(p) >= 2 && isPathSep(p[0]) && isPathSep(p[1])
+}
+
+// fileURIPathFor is the OS-parameterized conversion of a "file:" URI path
+// component into a local filesystem path. The drive-letter slash strip only
+// applies on Windows; on POSIX "/C:/tmp/x" is a valid absolute path and is left
+// untouched. goos is threaded explicitly so the conversion is deterministically
+// testable on a non-Windows CI host.
+func fileURIPathFor(goos, p string) string {
+	if goos == "windows" && len(p) >= 3 && p[0] == '/' && xmlchar.IsASCIILetter(p[1]) && p[2] == ':' {
+		p = p[1:]
+	}
+
+	return filepath.FromSlash(p)
 }
 
 // isPathSep reports whether c is a path separator in either POSIX ("/") or

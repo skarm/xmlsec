@@ -108,6 +108,29 @@ func ValidateTransformParameters(t Transform) error {
 	return nil
 }
 
+// PrepareTransforms approves the entire chain before execution. High-level
+// verifiers call this for every reachable reference before resolving resources.
+func PrepareTransforms(ctx context.Context, ts []Transform, opt Options) error {
+	if ctx == nil {
+		return ErrInput
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	opt, err := normalize(opt)
+	if err != nil {
+		return err
+	}
+
+	if err := validate(ctx, ts, opt); err != nil {
+		return err
+	}
+
+	return approveTransforms(ctx, ts, opt)
+}
+
 func checkedStylesheet(ctx context.Context, t Transform) (*document.Document, error) {
 	if len(t.InclusivePrefixes) != 0 || len(t.XPath) != 0 || len(t.Stylesheet) == 0 || len(t.Stylesheet) > 1<<20 {
 		return nil, fmt.Errorf("%w: stylesheet size/parameters", ErrInput)
@@ -165,29 +188,6 @@ func validateTransformParametersXPath(t *Transform) error {
 	}
 
 	return nil
-}
-
-// PrepareTransforms approves the entire chain before execution. High-level
-// verifiers call this for every reachable reference before resolving resources.
-func PrepareTransforms(ctx context.Context, ts []Transform, opt Options) error {
-	if ctx == nil {
-		return ErrInput
-	}
-
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	opt, err := normalize(opt)
-	if err != nil {
-		return err
-	}
-
-	if err := validate(ctx, ts, opt); err != nil {
-		return err
-	}
-
-	return approveTransforms(ctx, ts, opt)
 }
 
 func approveTransforms(ctx context.Context, ts []Transform, opt Options) error {

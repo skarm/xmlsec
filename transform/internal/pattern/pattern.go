@@ -542,24 +542,6 @@ func (m *machine) literal(pos int, text []rune, fold bool) (int, bool, error) {
 	return pos, true, nil
 }
 
-func equalRune(a, b rune, fold bool) bool {
-	if a == b {
-		return true
-	}
-
-	if !fold {
-		return false
-	}
-
-	for r := unicode.SimpleFold(a); r != a; r = unicode.SimpleFold(r) {
-		if r == b {
-			return true
-		}
-	}
-
-	return false
-}
-
 func (m *machine) attempt(start int) ([]int, error) {
 	p := m.program
 	if err := m.charge(2*(p.groups+1) + 3*p.counters + 2); err != nil {
@@ -805,6 +787,24 @@ func (m *machine) find(from int) ([]int, error) {
 	}
 
 	return nil, nil
+}
+
+func equalRune(a, b rune, fold bool) bool {
+	if a == b {
+		return true
+	}
+
+	if !fold {
+		return false
+	}
+
+	for r := unicode.SimpleFold(a); r != a; r = unicode.SimpleFold(r) {
+		if r == b {
+			return true
+		}
+	}
+
+	return false
 }
 
 type stateStack struct {

@@ -163,49 +163,6 @@ func (c timestampCommand) run(ctx context.Context, stdin io.Reader, stdout io.Wr
 	}
 }
 
-func inspectTimestamp(raw []byte, kind string) (any, error) {
-	switch kind {
-	case nameRequest:
-		q, err := timestamp.ParseRequest(raw)
-		if err != nil {
-			return nil, err
-		}
-
-		return map[string]any{
-			fieldStatus:              statusUnverified,
-			"imprint":                q.Imprint(),
-			"nonce":                  q.Nonce(),
-			"policy":                 q.Policy().String(),
-			"certificates_requested": q.CertificatesRequested(),
-		}, nil
-	case nameResponse:
-		r, err := timestamp.ParseResponse(context.Background(), raw)
-		if err != nil {
-			return nil, err
-		}
-
-		info, err := timestamp.InspectToken(context.Background(), r.TokenDER())
-		if err != nil {
-			return nil, err
-		}
-
-		return map[string]any{
-			fieldStatus:       statusUnverified,
-			"response_status": r.Status(),
-			nameToken:         timestampInfo(info),
-		}, nil
-	case nameToken:
-		info, err := timestamp.InspectToken(context.Background(), raw)
-		if err != nil {
-			return nil, err
-		}
-
-		return map[string]any{fieldStatus: statusUnverified, nameToken: timestampInfo(info)}, nil
-	default:
-		return nil, usageError("-kind must be request, response or token")
-	}
-}
-
 func (c timestampCommand) validate() error {
 	switch c.command {
 	case nameIssue:
@@ -378,6 +335,49 @@ func (c timestampCommand) verify(ctx context.Context, raw []byte, opt timestamp.
 	}
 
 	return errors.Join(verifyErr, jsonOutput(ctx, c.output, stdout, resultReport("timestamp verify", "explicit-tsa-pkix-policy", details, verifyErr)))
+}
+
+func inspectTimestamp(raw []byte, kind string) (any, error) {
+	switch kind {
+	case nameRequest:
+		q, err := timestamp.ParseRequest(raw)
+		if err != nil {
+			return nil, err
+		}
+
+		return map[string]any{
+			fieldStatus:              statusUnverified,
+			"imprint":                q.Imprint(),
+			"nonce":                  q.Nonce(),
+			"policy":                 q.Policy().String(),
+			"certificates_requested": q.CertificatesRequested(),
+		}, nil
+	case nameResponse:
+		r, err := timestamp.ParseResponse(context.Background(), raw)
+		if err != nil {
+			return nil, err
+		}
+
+		info, err := timestamp.InspectToken(context.Background(), r.TokenDER())
+		if err != nil {
+			return nil, err
+		}
+
+		return map[string]any{
+			fieldStatus:       statusUnverified,
+			"response_status": r.Status(),
+			nameToken:         timestampInfo(info),
+		}, nil
+	case nameToken:
+		info, err := timestamp.InspectToken(context.Background(), raw)
+		if err != nil {
+			return nil, err
+		}
+
+		return map[string]any{fieldStatus: statusUnverified, nameToken: timestampInfo(info)}, nil
+	default:
+		return nil, usageError("-kind must be request, response or token")
+	}
 }
 
 func timestampInfo(info timestamp.Info) map[string]any {

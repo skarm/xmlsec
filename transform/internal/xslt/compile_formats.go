@@ -246,21 +246,6 @@ func (c *compiler) compileKeyValue(ctx context.Context, elem *xdm.Element, kd *k
 	return nil
 }
 
-func validateLegacyKeyUse(expression *xpath.Expression, bindings map[string]string) error {
-	refs := expression.StaticReferences(bindings)
-	if len(refs.FreeVariables) > 0 {
-		return staticError("XTSE1205", "variables are unavailable in XSLT 1.0 keys")
-	}
-
-	for _, fn := range refs.FunctionNames {
-		if fn.Prefix == "" && fn.Name == nameKey2 {
-			return staticError("XTSE1205", "key() is unavailable in XSLT 1.0 key declarations")
-		}
-	}
-
-	return nil
-}
-
 func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, lexicon.SerializationMethod, lexicon.SerializationVersion, lexicon.SerializationEncoding, lexicon.SerializationOmitXMLDeclaration, lexicon.SerializationStandalone, lexicon.SerializationDoctypePublic, lexicon.SerializationDoctypeSystem, lexicon.SerializationCDATASectionElements, lexicon.SerializationIndent, lexicon.SerializationMediaType, lexicon.SerializationByteOrderMark, lexicon.SerializationEscapeURIAttributes, lexicon.SerializationIncludeContentType, lexicon.SerializationNormalizationForm, lexicon.SerializationUndeclarePrefixes, lexicon.SerializationUseCharacterMaps, lexicon.SerializationSuppressIndentation, lexicon.SerializationHTMLVersion, lexicon.SerializationItemSeparator, lexicon.SerializationJSONNodeOutputMethod, lexicon.SerializationParameterDocument, lexicon.SerializationBuildTree, lexicon.SerializationAllowDuplicateNames, xslAttrUseWhen)); err != nil {
 		return err
@@ -360,179 +345,6 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 	return nil
 }
 
-func validateOutputMethod(method string) error {
-	if method == "" {
-		return nil
-	}
-
-	if strings.Contains(method, ":") {
-		if !xmlchar.IsValidQName(method) && !isValidEQName(method) {
-			return staticError(errCodeXTSE1570, "invalid output method %q", method)
-		}
-
-		return nil
-	}
-
-	switch method {
-	case lexicon.MethodXML, lexicon.MethodHTML, lexicon.MethodXHTML, lexicon.MethodText, lexicon.MethodJSON, lexicon.MethodAdaptive:
-		return nil
-	default:
-		return staticError(errCodeXTSE1570, "invalid output method %q", method)
-	}
-}
-
-func compileOutputBooleans(elem *xdm.Element, out *OutputDef, yesNoOnly bool) error {
-	// Attribute metadata keeps value, explicitness and lexical spelling together.
-	plain := []struct {
-		name     string
-		value    *bool
-		explicit *bool
-		raw      *string
-	}{
-		{lexicon.SerializationIndent, &out.Indent, nil, &out.IndentRaw},
-		{lexicon.SerializationOmitXMLDeclaration, &out.OmitDeclaration, &out.OmitDeclarationExplicit, nil},
-		{lexicon.SerializationUndeclarePrefixes, &out.UndeclarePrefixes, nil, nil},
-		{lexicon.SerializationByteOrderMark, &out.ByteOrderMark, nil, nil},
-	}
-	for _, attribute := range plain {
-		value, present, err := outputBoolAttr(elem, attribute.name, yesNoOnly)
-		if err != nil {
-			return err
-		}
-
-		if !present {
-			continue
-		}
-
-		*attribute.value = value
-		if attribute.explicit != nil {
-			*attribute.explicit = true
-		}
-
-		if attribute.raw != nil {
-			*attribute.raw = getAttr(elem, attribute.name)
-		}
-	}
-
-	optional := []struct {
-		name  string
-		value **bool
-	}{
-		{lexicon.SerializationEscapeURIAttributes, &out.EscapeURIAttributes},
-		{lexicon.SerializationIncludeContentType, &out.IncludeContentType},
-	}
-	for _, attribute := range optional {
-		value, present, err := outputBoolAttr(elem, attribute.name, yesNoOnly)
-		if err != nil {
-			return err
-		}
-
-		if present {
-			*attribute.value = &value
-		}
-	}
-
-	return nil
-}
-
-func checkOutputConflicts(existing *OutputDef, elem *xdm.Element) error {
-	checks := []struct {
-		name     string
-		previous string
-	}{
-		{lexicon.SerializationMethod, existing.MethodRaw},
-		{lexicon.SerializationIndent, existing.IndentRaw},
-		{lexicon.SerializationEncoding, existing.EncodingRaw},
-		{lexicon.SerializationVersion, existing.VersionRaw},
-		{lexicon.SerializationStandalone, existing.StandaloneRaw},
-	}
-	for _, check := range checks {
-		value := getAttr(elem, check.name)
-		if value != "" && check.previous != "" && check.previous != value {
-			return staticError(errCodeXTSE1560,
-				"conflicting values for xsl:output/@%s: %q vs %q", check.name, check.previous, value)
-		}
-	}
-
-	return nil
-}
-
-// mergeOutputDefinition inherits settings omitted by a later declaration.
-func mergeOutputDefinition(out, existing *OutputDef, elem *xdm.Element) {
-	if !elem.HasAttribute(lexicon.SerializationParameterDocument) {
-		out.ParameterDocument = existing.ParameterDocument
-	}
-
-	if len(existing.UseCharacterMaps) > 0 {
-		out.UseCharacterMaps = append(existing.UseCharacterMaps, out.UseCharacterMaps...)
-	}
-
-	if getAttr(elem, lexicon.SerializationMethod) == "" {
-		out.Method = existing.Method
-		out.MethodExplicit = existing.MethodExplicit
-	}
-
-	if getAttr(elem, lexicon.SerializationEncoding) == "" {
-		out.Encoding = existing.Encoding
-	}
-
-	if getAttr(elem, lexicon.SerializationVersion) == "" {
-		out.Version = existing.Version
-	}
-
-	if getAttr(elem, lexicon.SerializationIndent) == "" {
-		out.Indent = existing.Indent
-	}
-
-	if getAttr(elem, lexicon.SerializationOmitXMLDeclaration) == "" {
-		out.OmitDeclaration = existing.OmitDeclaration
-		out.OmitDeclarationExplicit = existing.OmitDeclarationExplicit
-	}
-
-	if getAttr(elem, lexicon.SerializationStandalone) == "" {
-		out.Standalone = existing.Standalone
-	}
-
-	if getAttr(elem, lexicon.SerializationUndeclarePrefixes) == "" {
-		out.UndeclarePrefixes = existing.UndeclarePrefixes
-	}
-
-	if !elem.HasAttribute(lexicon.SerializationDoctypePublic) {
-		out.DoctypePublic = existing.DoctypePublic
-	}
-
-	if !elem.HasAttribute(lexicon.SerializationDoctypeSystem) {
-		out.DoctypeSystem = existing.DoctypeSystem
-	}
-
-	if getAttr(elem, lexicon.SerializationMediaType) == "" {
-		out.MediaType = existing.MediaType
-	}
-
-	out.CDATASections = slices.Concat(existing.CDATASections, out.CDATASections)
-	out.SuppressIndentation = slices.Concat(existing.SuppressIndentation, out.SuppressIndentation)
-
-	if getAttr(elem, lexicon.SerializationItemSeparator) == "" {
-		out.ItemSeparator = existing.ItemSeparator
-	}
-
-	if getAttr(elem, lexicon.SerializationNormalizationForm) == "" {
-		out.NormalizationForm = existing.NormalizationForm
-	}
-
-	if getAttr(elem, lexicon.SerializationHTMLVersion) == "" {
-		out.HTMLVersion = existing.HTMLVersion
-	}
-
-	if out.IncludeContentType == nil {
-		out.IncludeContentType = existing.IncludeContentType
-	}
-
-	if getAttr(elem, lexicon.SerializationJSONNodeOutputMethod) == "" {
-		out.JSONNodeOutputMethod = existing.JSONNodeOutputMethod
-	}
-}
-
 func (c *compiler) compileOutputSerialization(elem *xdm.Element, out *OutputDef, yesNoOnly bool) error {
 	standalone := getAttr(elem, lexicon.SerializationStandalone)
 
@@ -579,28 +391,6 @@ func (c *compiler) compileOutputSerialization(elem *xdm.Element, out *OutputDef,
 	return nil
 }
 
-func outputStandalone(value string, yesNoOnly bool) (string, error) {
-	if value == "" {
-		return "", nil
-	}
-
-	value = strings.TrimSpace(value)
-	switch value {
-	case lexicon.ValueYes, lexicon.ValueNo, lexicon.ValueOmit:
-		return value, nil
-	case lexicon.ValueTrue, "1":
-		if !yesNoOnly {
-			return lexicon.ValueYes, nil
-		}
-	case lexicon.ValueFalse, "0":
-		if !yesNoOnly {
-			return lexicon.ValueNo, nil
-		}
-	}
-
-	return "", staticError(lexicon.ErrSEPM0016, "%q is not a valid value for xsl:output/@standalone", value)
-}
-
 func (c *compiler) compileOutputSequenceParameters(elem *xdm.Element, out *OutputDef, yesNoOnly bool) (bool, error) {
 	value, explicit, err := outputBoolAttr(elem, lexicon.SerializationAllowDuplicateNames, yesNoOnly)
 	if err != nil {
@@ -640,91 +430,6 @@ func (c *compiler) loadParameterDocument(ctx context.Context, outDef *OutputDef,
 	}
 
 	return loadParameterDocumentFromFile(ctx, c.parseOptions, outDef, baseURI, href, openResource, false, adnExplicit, c.maxResourceBytes)
-}
-
-// loadParameterDocumentFromFile shares validated parameter extraction between
-// compile-time and runtime callers. Present false/empty values remain explicit;
-// malformed/schema-invalid documents retain their serialization error codes.
-// Ordinary missing resources are ignored, while authorization, cancellation,
-// exhausted budgets and non-missing retrieval failures preserve their causes.
-// adnExplicit is the existing allow-duplicate-names merge bookkeeping.
-func loadParameterDocumentFromFile(ctx context.Context, injected *xdm.ParseOptions, outDef *OutputDef, baseURI, href string, openResource func(context.Context, string) (io.ReadCloser, error), runtime bool, adnExplicit bool, resourceLimit int64) (bool, paramDocPresence, error) {
-	values := parameterDocumentValues{output: outDef, explicit: adnExplicit}
-
-	root, err := loadParameterDocumentRoot(ctx, injected, baseURI, href, openResource, runtime, resourceLimit)
-	if err != nil {
-		return values.explicit, values.presence, err
-	}
-
-	if root == nil {
-		return values.explicit, nil, nil
-	}
-
-	parameters, err := xpath.ReadSerializationParameters(ctx, root, 31)
-	if err != nil {
-		return values.explicit, nil, err
-	}
-
-	values.applyValidated(parameters)
-
-	return values.explicit, values.presence, nil
-}
-
-func parameterDocumentURI(baseURI, href string) string {
-	uri, err := resolveModuleURI(href, baseURI)
-	if err != nil {
-		return uripath.EscapeResourceReference(href)
-	}
-
-	return uri
-}
-
-func loadParameterDocumentRoot(ctx context.Context, injected *xdm.ParseOptions, baseURI, href string, openResource func(context.Context, string) (io.ReadCloser, error), runtime bool, resourceLimit int64) (*xdm.Element, error) {
-	reader, err := openResource(ctx, parameterDocumentURI(baseURI, href))
-	if err != nil {
-		if failure := preserveControlFailure(ctx, err); failure != nil {
-			return nil, failure
-		}
-
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-
-		return nil, parameterDocumentLoadError(err, href, runtime)
-	}
-	// Parameter documents use the fixed W3C schema and no external entities.
-	// The injected parse options and resource limit still apply to parsing.
-	doc, err := parseXMLResource(ctx, injected, reader, "", resourceLimit)
-	if err != nil {
-		if failure := preserveControlFailure(ctx, err); failure != nil {
-			return nil, failure
-		}
-
-		return nil, &xdm.Error{Code: "SEPM0017", Message: "ill-formed serialization parameter document", Cause: err}
-	}
-
-	root := doc.DocumentElement()
-	if root == nil || root.LocalName() != "serialization-parameters" || root.URI() != lexicon.NamespaceSerialization {
-		return nil, &xdm.Error{Code: "SEPM0017", Message: "serialization parameter document requires output:serialization-parameters"}
-	}
-
-	return root, nil
-}
-
-func parameterDocumentLoadError(err error, href string, runtime bool) error {
-	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
-		return err
-	}
-	// Runtime failures are dynamic, while their raw cause survives the wrapper.
-	if runtime {
-		return dynamicErrorCause(lexicon.ErrFODC0002, err, "cannot read parameter-document %q: %v", href, err)
-	}
-	// Compile-time loaders already supply XTSE0090; do not wrap it twice.
-	if _, ok := errors.AsType[*XSLTError](err); ok {
-		return err
-	}
-
-	return staticErrorCause(errCodeXTSE0090, err, "cannot read parameter-document %q: %v", href, err)
 }
 
 func (c *compiler) compileAttributeSet(ctx context.Context, elem *xdm.Element) error {
@@ -913,16 +618,6 @@ func (c *compiler) compileDecimalFormat(ctx context.Context, elem *xdm.Element) 
 	return nil
 }
 
-func validateDecimalFormatCharacters(elem *xdm.Element) error {
-	for _, name := range []string{nameDecimalSeparator, nameGroupingSeparator, namePercent, namePerMille, nameZeroDigit, nameDigit, namePatternSeparator, nameExponentSeparator, nameMinusSign} {
-		if value, present := elem.GetAttribute(name); present && utf8.RuneCountInString(value) != 1 {
-			return staticError(errCodeXTSE0020, "%s on xsl:decimal-format must be one character", name)
-		}
-	}
-
-	return nil
-}
-
 func (c *compiler) decimalFormatName(elem *xdm.Element) (xpath.QualifiedName, error) {
 	name, present := elem.GetAttribute(xslAttrName)
 	if !present {
@@ -937,114 +632,6 @@ func (c *compiler) decimalFormatName(elem *xdm.Element) (xpath.QualifiedName, er
 	qn, err := resolveIntrospectionName(name, "", errCodeXTSE0280, nsResolverFromMap(inScopeNamespaces(elem)))
 
 	return xpath.QualifiedName{URI: qn.URI, Name: qn.Local}, err
-}
-
-func applyDecimalFormatAttributes(df *xpath.DecimalFormat, elem *xdm.Element) {
-	// Merge explicitly-set properties
-	if v := getAttr(elem, nameDecimalSeparator); v != "" {
-		df.DecimalSeparator = firstRune(v)
-	}
-
-	if v := getAttr(elem, nameGroupingSeparator); v != "" {
-		df.GroupingSeparator = firstRune(v)
-	}
-
-	if v := getAttr(elem, namePercent); v != "" {
-		df.Percent = firstRune(v)
-	}
-
-	if v := getAttr(elem, namePerMille); v != "" {
-		df.PerMille = firstRune(v)
-	}
-
-	if v := getAttr(elem, nameZeroDigit); v != "" {
-		df.ZeroDigit = firstRune(v)
-	}
-
-	if v := getAttr(elem, nameDigit); v != "" {
-		df.Digit = firstRune(v)
-	}
-
-	if v := getAttr(elem, namePatternSeparator); v != "" {
-		df.PatternSeparator = firstRune(v)
-	}
-
-	if v := getAttr(elem, nameExponentSeparator); v != "" {
-		df.ExponentSeparator = firstRune(v)
-	}
-
-	if v, present := elem.GetAttribute(nameInfinity); present {
-		df.Infinity = v
-	}
-
-	if v, present := elem.GetAttribute(lexicon.FloatNaN); present {
-		df.NaN = v
-	}
-
-	if v := getAttr(elem, nameMinusSign); v != "" {
-		df.MinusSign = firstRune(v)
-	}
-}
-
-func isDigitZero(r rune) bool {
-	return xpath.DecimalZeroDigit(r)
-}
-
-// checkDecimalFormatConflictExplicit raises XTSE1290 if any property
-// explicitly set in elem conflicts with a property explicitly set in a prior
-// declaration of the same name at the same import precedence.
-func checkDecimalFormatConflictExplicit(existing xpath.DecimalFormat, elem *xdm.Element, prevSet map[string]struct{}) error {
-	type runeCheck struct {
-		attr string
-		cur  rune
-	}
-
-	runeChecks := []runeCheck{
-		{nameDecimalSeparator, existing.DecimalSeparator},
-		{nameGroupingSeparator, existing.GroupingSeparator},
-		{namePercent, existing.Percent},
-		{namePerMille, existing.PerMille},
-		{nameZeroDigit, existing.ZeroDigit},
-		{nameDigit, existing.Digit},
-		{namePatternSeparator, existing.PatternSeparator},
-		{nameExponentSeparator, existing.ExponentSeparator},
-		{nameMinusSign, existing.MinusSign},
-	}
-	for _, rc := range runeChecks {
-		v := getAttr(elem, rc.attr)
-		if v == "" {
-			continue
-		}
-		// Only conflict if the property was explicitly set in a prior declaration
-		if _, wasSet := prevSet[rc.attr]; !wasSet {
-			continue
-		}
-
-		newVal := firstRune(v)
-		if newVal != rc.cur {
-			return staticError(errCodeXTSE1290,
-				"conflicting xsl:decimal-format declarations: %s was %q, now %q",
-				rc.attr, string(rc.cur), string(newVal))
-		}
-	}
-	// String properties
-	if v, present := elem.GetAttribute(nameInfinity); present {
-		if _, wasSet := prevSet[nameInfinity]; wasSet && v != existing.Infinity {
-			return staticError(errCodeXTSE1290,
-				"conflicting xsl:decimal-format declarations: infinity was %q, now %q",
-				existing.Infinity, v)
-		}
-	}
-
-	if v, present := elem.GetAttribute(lexicon.FloatNaN); present {
-		if _, wasSet := prevSet[lexicon.FloatNaN]; wasSet && v != existing.NaN {
-			return staticError(errCodeXTSE1290,
-				"conflicting xsl:decimal-format declarations: NaN was %q, now %q",
-				existing.NaN, v)
-		}
-	}
-
-	return nil
 }
 
 func (c *compiler) compileSpaceHandling(ctx context.Context, elem *xdm.Element, strip bool) error {
@@ -1227,6 +814,443 @@ func (c *compiler) checkSpaceConflicts(_ context.Context) error {
 	return nil
 }
 
+// spaceRegionCovered reports whether the entire overlap region of a conflicting
+// strip/preserve pair (declared at import precedence prec) is matched by some
+// rule of STRICTLY HIGHER import precedence — strip OR preserve, either kind.
+// Such a rule resolves every name in the region per XSLT's per-name precedence
+// rule, so no XTSE0270 conflict survives. Coverage of a (possibly wildcard)
+// region is decided one rule at a time: a wildcard region is only ever covered by
+// a single rule at least as general as it, so a union of narrower higher rules
+// can never spuriously "cover" it (see ruleCoversRegion).
+func (c *compiler) spaceRegionCovered(region nameTest, prec int) bool {
+	for _, h := range c.stylesheet.stripSpace {
+		if h.ImportPrec > prec && ruleCoversRegion(h, region) {
+			return true
+		}
+	}
+
+	for _, h := range c.stylesheet.preserveSpace {
+		if h.ImportPrec > prec && ruleCoversRegion(h, region) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func validateLegacyKeyUse(expression *xpath.Expression, bindings map[string]string) error {
+	refs := expression.StaticReferences(bindings)
+	if len(refs.FreeVariables) > 0 {
+		return staticError("XTSE1205", "variables are unavailable in XSLT 1.0 keys")
+	}
+
+	for _, fn := range refs.FunctionNames {
+		if fn.Prefix == "" && fn.Name == nameKey2 {
+			return staticError("XTSE1205", "key() is unavailable in XSLT 1.0 key declarations")
+		}
+	}
+
+	return nil
+}
+
+func validateOutputMethod(method string) error {
+	if method == "" {
+		return nil
+	}
+
+	if strings.Contains(method, ":") {
+		if !xmlchar.IsValidQName(method) && !isValidEQName(method) {
+			return staticError(errCodeXTSE1570, "invalid output method %q", method)
+		}
+
+		return nil
+	}
+
+	switch method {
+	case lexicon.MethodXML, lexicon.MethodHTML, lexicon.MethodXHTML, lexicon.MethodText, lexicon.MethodJSON, lexicon.MethodAdaptive:
+		return nil
+	default:
+		return staticError(errCodeXTSE1570, "invalid output method %q", method)
+	}
+}
+
+func compileOutputBooleans(elem *xdm.Element, out *OutputDef, yesNoOnly bool) error {
+	// Attribute metadata keeps value, explicitness and lexical spelling together.
+	plain := []struct {
+		name     string
+		value    *bool
+		explicit *bool
+		raw      *string
+	}{
+		{lexicon.SerializationIndent, &out.Indent, nil, &out.IndentRaw},
+		{lexicon.SerializationOmitXMLDeclaration, &out.OmitDeclaration, &out.OmitDeclarationExplicit, nil},
+		{lexicon.SerializationUndeclarePrefixes, &out.UndeclarePrefixes, nil, nil},
+		{lexicon.SerializationByteOrderMark, &out.ByteOrderMark, nil, nil},
+	}
+	for _, attribute := range plain {
+		value, present, err := outputBoolAttr(elem, attribute.name, yesNoOnly)
+		if err != nil {
+			return err
+		}
+
+		if !present {
+			continue
+		}
+
+		*attribute.value = value
+		if attribute.explicit != nil {
+			*attribute.explicit = true
+		}
+
+		if attribute.raw != nil {
+			*attribute.raw = getAttr(elem, attribute.name)
+		}
+	}
+
+	optional := []struct {
+		name  string
+		value **bool
+	}{
+		{lexicon.SerializationEscapeURIAttributes, &out.EscapeURIAttributes},
+		{lexicon.SerializationIncludeContentType, &out.IncludeContentType},
+	}
+	for _, attribute := range optional {
+		value, present, err := outputBoolAttr(elem, attribute.name, yesNoOnly)
+		if err != nil {
+			return err
+		}
+
+		if present {
+			*attribute.value = &value
+		}
+	}
+
+	return nil
+}
+
+func checkOutputConflicts(existing *OutputDef, elem *xdm.Element) error {
+	checks := []struct {
+		name     string
+		previous string
+	}{
+		{lexicon.SerializationMethod, existing.MethodRaw},
+		{lexicon.SerializationIndent, existing.IndentRaw},
+		{lexicon.SerializationEncoding, existing.EncodingRaw},
+		{lexicon.SerializationVersion, existing.VersionRaw},
+		{lexicon.SerializationStandalone, existing.StandaloneRaw},
+	}
+	for _, check := range checks {
+		value := getAttr(elem, check.name)
+		if value != "" && check.previous != "" && check.previous != value {
+			return staticError(errCodeXTSE1560,
+				"conflicting values for xsl:output/@%s: %q vs %q", check.name, check.previous, value)
+		}
+	}
+
+	return nil
+}
+
+// mergeOutputDefinition inherits settings omitted by a later declaration.
+func mergeOutputDefinition(out, existing *OutputDef, elem *xdm.Element) {
+	if !elem.HasAttribute(lexicon.SerializationParameterDocument) {
+		out.ParameterDocument = existing.ParameterDocument
+	}
+
+	if len(existing.UseCharacterMaps) > 0 {
+		out.UseCharacterMaps = append(existing.UseCharacterMaps, out.UseCharacterMaps...)
+	}
+
+	if getAttr(elem, lexicon.SerializationMethod) == "" {
+		out.Method = existing.Method
+		out.MethodExplicit = existing.MethodExplicit
+	}
+
+	if getAttr(elem, lexicon.SerializationEncoding) == "" {
+		out.Encoding = existing.Encoding
+	}
+
+	if getAttr(elem, lexicon.SerializationVersion) == "" {
+		out.Version = existing.Version
+	}
+
+	if getAttr(elem, lexicon.SerializationIndent) == "" {
+		out.Indent = existing.Indent
+	}
+
+	if getAttr(elem, lexicon.SerializationOmitXMLDeclaration) == "" {
+		out.OmitDeclaration = existing.OmitDeclaration
+		out.OmitDeclarationExplicit = existing.OmitDeclarationExplicit
+	}
+
+	if getAttr(elem, lexicon.SerializationStandalone) == "" {
+		out.Standalone = existing.Standalone
+	}
+
+	if getAttr(elem, lexicon.SerializationUndeclarePrefixes) == "" {
+		out.UndeclarePrefixes = existing.UndeclarePrefixes
+	}
+
+	if !elem.HasAttribute(lexicon.SerializationDoctypePublic) {
+		out.DoctypePublic = existing.DoctypePublic
+	}
+
+	if !elem.HasAttribute(lexicon.SerializationDoctypeSystem) {
+		out.DoctypeSystem = existing.DoctypeSystem
+	}
+
+	if getAttr(elem, lexicon.SerializationMediaType) == "" {
+		out.MediaType = existing.MediaType
+	}
+
+	out.CDATASections = slices.Concat(existing.CDATASections, out.CDATASections)
+	out.SuppressIndentation = slices.Concat(existing.SuppressIndentation, out.SuppressIndentation)
+
+	if getAttr(elem, lexicon.SerializationItemSeparator) == "" {
+		out.ItemSeparator = existing.ItemSeparator
+	}
+
+	if getAttr(elem, lexicon.SerializationNormalizationForm) == "" {
+		out.NormalizationForm = existing.NormalizationForm
+	}
+
+	if getAttr(elem, lexicon.SerializationHTMLVersion) == "" {
+		out.HTMLVersion = existing.HTMLVersion
+	}
+
+	if out.IncludeContentType == nil {
+		out.IncludeContentType = existing.IncludeContentType
+	}
+
+	if getAttr(elem, lexicon.SerializationJSONNodeOutputMethod) == "" {
+		out.JSONNodeOutputMethod = existing.JSONNodeOutputMethod
+	}
+}
+
+func outputStandalone(value string, yesNoOnly bool) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+
+	value = strings.TrimSpace(value)
+	switch value {
+	case lexicon.ValueYes, lexicon.ValueNo, lexicon.ValueOmit:
+		return value, nil
+	case lexicon.ValueTrue, "1":
+		if !yesNoOnly {
+			return lexicon.ValueYes, nil
+		}
+	case lexicon.ValueFalse, "0":
+		if !yesNoOnly {
+			return lexicon.ValueNo, nil
+		}
+	}
+
+	return "", staticError(lexicon.ErrSEPM0016, "%q is not a valid value for xsl:output/@standalone", value)
+}
+
+// loadParameterDocumentFromFile shares validated parameter extraction between
+// compile-time and runtime callers. Present false/empty values remain explicit;
+// malformed/schema-invalid documents retain their serialization error codes.
+// Ordinary missing resources are ignored, while authorization, cancellation,
+// exhausted budgets and non-missing retrieval failures preserve their causes.
+// adnExplicit is the existing allow-duplicate-names merge bookkeeping.
+func loadParameterDocumentFromFile(ctx context.Context, injected *xdm.ParseOptions, outDef *OutputDef, baseURI, href string, openResource func(context.Context, string) (io.ReadCloser, error), runtime bool, adnExplicit bool, resourceLimit int64) (bool, paramDocPresence, error) {
+	values := parameterDocumentValues{output: outDef, explicit: adnExplicit}
+
+	root, err := loadParameterDocumentRoot(ctx, injected, baseURI, href, openResource, runtime, resourceLimit)
+	if err != nil {
+		return values.explicit, values.presence, err
+	}
+
+	if root == nil {
+		return values.explicit, nil, nil
+	}
+
+	parameters, err := xpath.ReadSerializationParameters(ctx, root, 31)
+	if err != nil {
+		return values.explicit, nil, err
+	}
+
+	values.applyValidated(parameters)
+
+	return values.explicit, values.presence, nil
+}
+
+func parameterDocumentURI(baseURI, href string) string {
+	uri, err := resolveModuleURI(href, baseURI)
+	if err != nil {
+		return uripath.EscapeResourceReference(href)
+	}
+
+	return uri
+}
+
+func loadParameterDocumentRoot(ctx context.Context, injected *xdm.ParseOptions, baseURI, href string, openResource func(context.Context, string) (io.ReadCloser, error), runtime bool, resourceLimit int64) (*xdm.Element, error) {
+	reader, err := openResource(ctx, parameterDocumentURI(baseURI, href))
+	if err != nil {
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return nil, failure
+		}
+
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+
+		return nil, parameterDocumentLoadError(err, href, runtime)
+	}
+	// Parameter documents use the fixed W3C schema and no external entities.
+	// The injected parse options and resource limit still apply to parsing.
+	doc, err := parseXMLResource(ctx, injected, reader, "", resourceLimit)
+	if err != nil {
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return nil, failure
+		}
+
+		return nil, &xdm.Error{Code: "SEPM0017", Message: "ill-formed serialization parameter document", Cause: err}
+	}
+
+	root := doc.DocumentElement()
+	if root == nil || root.LocalName() != "serialization-parameters" || root.URI() != lexicon.NamespaceSerialization {
+		return nil, &xdm.Error{Code: "SEPM0017", Message: "serialization parameter document requires output:serialization-parameters"}
+	}
+
+	return root, nil
+}
+
+func parameterDocumentLoadError(err error, href string, runtime bool) error {
+	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+		return err
+	}
+	// Runtime failures are dynamic, while their raw cause survives the wrapper.
+	if runtime {
+		return dynamicErrorCause(lexicon.ErrFODC0002, err, "cannot read parameter-document %q: %v", href, err)
+	}
+	// Compile-time loaders already supply XTSE0090; do not wrap it twice.
+	if _, ok := errors.AsType[*XSLTError](err); ok {
+		return err
+	}
+
+	return staticErrorCause(errCodeXTSE0090, err, "cannot read parameter-document %q: %v", href, err)
+}
+
+func validateDecimalFormatCharacters(elem *xdm.Element) error {
+	for _, name := range []string{nameDecimalSeparator, nameGroupingSeparator, namePercent, namePerMille, nameZeroDigit, nameDigit, namePatternSeparator, nameExponentSeparator, nameMinusSign} {
+		if value, present := elem.GetAttribute(name); present && utf8.RuneCountInString(value) != 1 {
+			return staticError(errCodeXTSE0020, "%s on xsl:decimal-format must be one character", name)
+		}
+	}
+
+	return nil
+}
+
+func applyDecimalFormatAttributes(df *xpath.DecimalFormat, elem *xdm.Element) {
+	// Merge explicitly-set properties
+	if v := getAttr(elem, nameDecimalSeparator); v != "" {
+		df.DecimalSeparator = firstRune(v)
+	}
+
+	if v := getAttr(elem, nameGroupingSeparator); v != "" {
+		df.GroupingSeparator = firstRune(v)
+	}
+
+	if v := getAttr(elem, namePercent); v != "" {
+		df.Percent = firstRune(v)
+	}
+
+	if v := getAttr(elem, namePerMille); v != "" {
+		df.PerMille = firstRune(v)
+	}
+
+	if v := getAttr(elem, nameZeroDigit); v != "" {
+		df.ZeroDigit = firstRune(v)
+	}
+
+	if v := getAttr(elem, nameDigit); v != "" {
+		df.Digit = firstRune(v)
+	}
+
+	if v := getAttr(elem, namePatternSeparator); v != "" {
+		df.PatternSeparator = firstRune(v)
+	}
+
+	if v := getAttr(elem, nameExponentSeparator); v != "" {
+		df.ExponentSeparator = firstRune(v)
+	}
+
+	if v, present := elem.GetAttribute(nameInfinity); present {
+		df.Infinity = v
+	}
+
+	if v, present := elem.GetAttribute(lexicon.FloatNaN); present {
+		df.NaN = v
+	}
+
+	if v := getAttr(elem, nameMinusSign); v != "" {
+		df.MinusSign = firstRune(v)
+	}
+}
+
+func isDigitZero(r rune) bool {
+	return xpath.DecimalZeroDigit(r)
+}
+
+// checkDecimalFormatConflictExplicit raises XTSE1290 if any property
+// explicitly set in elem conflicts with a property explicitly set in a prior
+// declaration of the same name at the same import precedence.
+func checkDecimalFormatConflictExplicit(existing xpath.DecimalFormat, elem *xdm.Element, prevSet map[string]struct{}) error {
+	type runeCheck struct {
+		attr string
+		cur  rune
+	}
+
+	runeChecks := []runeCheck{
+		{nameDecimalSeparator, existing.DecimalSeparator},
+		{nameGroupingSeparator, existing.GroupingSeparator},
+		{namePercent, existing.Percent},
+		{namePerMille, existing.PerMille},
+		{nameZeroDigit, existing.ZeroDigit},
+		{nameDigit, existing.Digit},
+		{namePatternSeparator, existing.PatternSeparator},
+		{nameExponentSeparator, existing.ExponentSeparator},
+		{nameMinusSign, existing.MinusSign},
+	}
+	for _, rc := range runeChecks {
+		v := getAttr(elem, rc.attr)
+		if v == "" {
+			continue
+		}
+		// Only conflict if the property was explicitly set in a prior declaration
+		if _, wasSet := prevSet[rc.attr]; !wasSet {
+			continue
+		}
+
+		newVal := firstRune(v)
+		if newVal != rc.cur {
+			return staticError(errCodeXTSE1290,
+				"conflicting xsl:decimal-format declarations: %s was %q, now %q",
+				rc.attr, string(rc.cur), string(newVal))
+		}
+	}
+	// String properties
+	if v, present := elem.GetAttribute(nameInfinity); present {
+		if _, wasSet := prevSet[nameInfinity]; wasSet && v != existing.Infinity {
+			return staticError(errCodeXTSE1290,
+				"conflicting xsl:decimal-format declarations: infinity was %q, now %q",
+				existing.Infinity, v)
+		}
+	}
+
+	if v, present := elem.GetAttribute(lexicon.FloatNaN); present {
+		if _, wasSet := prevSet[lexicon.FloatNaN]; wasSet && v != existing.NaN {
+			return staticError(errCodeXTSE1290,
+				"conflicting xsl:decimal-format declarations: NaN was %q, now %q",
+				existing.NaN, v)
+		}
+	}
+
+	return nil
+}
+
 // nameTestKey returns a canonical conflict key for a nameTest. The key encodes
 // the NameTest KIND in addition to its resolved name so that NameTests of
 // different shapes never collide. A collision would raise a false XTSE0270 for a
@@ -1326,30 +1350,6 @@ func nsAndLocalWildcardOverlap(a, b nameTest) (nameTest, bool) {
 		URI:    nameTestURI(nsw),
 		HasURI: nsw.HasURI,
 	}, true
-}
-
-// spaceRegionCovered reports whether the entire overlap region of a conflicting
-// strip/preserve pair (declared at import precedence prec) is matched by some
-// rule of STRICTLY HIGHER import precedence — strip OR preserve, either kind.
-// Such a rule resolves every name in the region per XSLT's per-name precedence
-// rule, so no XTSE0270 conflict survives. Coverage of a (possibly wildcard)
-// region is decided one rule at a time: a wildcard region is only ever covered by
-// a single rule at least as general as it, so a union of narrower higher rules
-// can never spuriously "cover" it (see ruleCoversRegion).
-func (c *compiler) spaceRegionCovered(region nameTest, prec int) bool {
-	for _, h := range c.stylesheet.stripSpace {
-		if h.ImportPrec > prec && ruleCoversRegion(h, region) {
-			return true
-		}
-	}
-
-	for _, h := range c.stylesheet.preserveSpace {
-		if h.ImportPrec > prec && ruleCoversRegion(h, region) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // ruleCoversRegion reports whether NameTest h matches EVERY expanded name in

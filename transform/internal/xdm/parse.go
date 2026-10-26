@@ -86,6 +86,11 @@ func (o ParseOptions) ParseFragment(ctx context.Context, fragment string) (*Docu
 	return o.wrapDocument(ctx, d)
 }
 
+// ReadRecords uses the same language input policy for independent records.
+func (o ParseOptions) ReadRecords(ctx context.Context, r io.Reader, options tree.RecordOptions, emit func(*tree.Document) error) error {
+	return o.parserOptions().ReadRecords(ctx, r, options, emit)
+}
+
 func (o ParseOptions) wrapDocument(ctx context.Context, doc *tree.Document) (*Document, error) {
 	view, err := WrapDocument(ctx, doc)
 	if err != nil {
@@ -95,11 +100,6 @@ func (o ParseOptions) wrapDocument(ctx context.Context, doc *tree.Document) (*Do
 	view.url = o.BaseURI
 
 	return view, nil
-}
-
-// ReadRecords uses the same language input policy for independent records.
-func (o ParseOptions) ReadRecords(ctx context.Context, r io.Reader, options tree.RecordOptions, emit func(*tree.Document) error) error {
-	return o.parserOptions().ReadRecords(ctx, r, options, emit)
 }
 
 func (o ParseOptions) parserOptions() tree.ParseOptions {

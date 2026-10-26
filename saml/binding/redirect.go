@@ -41,6 +41,13 @@ var (
 	ErrPolicy = errors.New("SAML Redirect policy violation")
 )
 
+// Keep at most four idle compressors; bursts never wait for an idle writer.
+// Reset detaches the previous output and starts an independent DEFLATE stream.
+// The retained compression workspace is bounded independently of caller input.
+//
+//nolint:gochecknoglobals // Bounded workspace reuse, not a shared protocol policy.
+var redirectCompressors = make(chan *flate.Writer, 4)
+
 // Kind identifies the SAMLRequest or SAMLResponse field in a supported binding.
 type Kind string
 
@@ -202,6 +209,159 @@ func VerifyRedirect(ctx context.Context, rawQuery string, key crypto.PublicKey, 
 	return &RedirectResult{doc: d, kind: kind, relay: relay.value, hasRelay: hasRelay, method: sm.value}, nil
 }
 
+// Document returns the immutable document snapshot.
+func (r *RedirectResult) Document() *document.Document {
+	if r == nil {
+		return nil
+	}
+
+	return r.doc
+}
+
+// Kind returns Request or Response for the authenticated Redirect message.
+func (r *RedirectResult) Kind() Kind {
+	if r == nil {
+		return ""
+	}
+
+	return r.kind
+}
+
+// RelayState returns the opaque relay state, with a separate presence flag where
+// applicable.
+func (r *RedirectResult) RelayState() (string, bool) {
+	if r == nil {
+		return "", false
+	}
+
+	return r.relay, r.hasRelay
+}
+
+// SignatureMethod returns the authenticated signature algorithm URI.
+func (r *RedirectResult) SignatureMethod() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.method
+}
+
+// SignRedirect returns the raw query component, NOT an endpoint URL. The endpoint
+// must come from trusted configuration/metadata, not an arbitrary RelayState.
+// Any direct ds:Signature on the protocol root is removed in a private snapshot;
+// nested signatures remain. RelayState nil and a present empty string differ.
+func SignRedirect(ctx context.Context, d *document.Document, kind Kind, relay *string, signer crypto.Signer, opt Options) (string, error) {
+	if ctx == nil {
+		return "", ErrPolicy
+	}
+
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	opt, err := normalize(opt)
+	if err != nil {
+		return "", err
+	}
+
+	actual, err := kindOf(d)
+	if err != nil {
+		return "", err
+	}
+
+	if kind != actual {
+		return "", ErrEncoding
+	}
+
+	if relay != nil && len(*relay) > 80 {
+		return "", fmt.Errorf("%w: RelayState exceeds 80 bytes", ErrPolicy)
+	}
+
+	// A shallow private root suffices: serialization only reads retained nodes.
+	root := *tree.Root(d)
+
+	root.Children = make([]*tree.Node, 0, len(root.Children))
+	for _, n := range tree.Root(d).Children {
+		if n.Kind == tree.ElementNode && n.Name == (document.Name{Space: xmldsig.Namespace, Local: nameSignature}) {
+			continue
+		}
+
+		root.Children = append(root.Children, n)
+	}
+
+	children := append([]*tree.Node(nil), tree.Children(d)...)
+	for i, node := range children {
+		if node == tree.Root(d) {
+			children[i] = &root
+			break
+		}
+	}
+
+	snapshot := tree.FromNodes(children, tree.Policy(d))
+
+	var encoded strings.Builder
+
+	queryWriter := &streamio.Writer{Context: ctx, Target: &encoded, Limit: int64(opt.MaxQueryBytes), LimitError: ErrPolicy}
+	if _, err := queryWriter.WriteString(string(kind) + "="); err != nil {
+		return "", err
+	}
+
+	base64Writer := base64.NewEncoder(base64.StdEncoding, &queryBase64Writer{dst: queryWriter})
+	compressed := &streamio.Writer{Context: ctx, Target: base64Writer, Limit: int64(opt.MaxCompressedBytes), LimitError: ErrPolicy}
+
+	compressor, err := redirectCompressor(compressed)
+	if err != nil {
+		return "", err
+	}
+
+	defer releaseRedirectCompressor(compressor)
+
+	if _, err := snapshot.WriteXML(ctx, compressor, opt.MaxMessageBytes); err != nil {
+		_ = compressor.Close()
+
+		if errors.Is(err, document.ErrLimit) {
+			return "", errors.Join(ErrPolicy, err)
+		}
+
+		return "", err
+	}
+
+	if err := compressor.Close(); err != nil {
+		return "", err
+	}
+
+	if err := base64Writer.Close(); err != nil {
+		return "", err
+	}
+
+	if relay != nil {
+		if _, err := queryWriter.WriteString("&RelayState=" + url.QueryEscape(*relay)); err != nil {
+			return "", err
+		}
+	}
+
+	if _, err := queryWriter.WriteString("&SigAlg=" + url.QueryEscape(opt.SignatureMethod)); err != nil {
+		return "", err
+	}
+
+	signature, err := xmldsig.SignMessageReader(ctx, strings.NewReader(encoded.String()), signer, opt.SignatureMethod, opt.Policy)
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := queryWriter.WriteString("&Signature=" + url.QueryEscape(base64.StdEncoding.EncodeToString(signature))); err != nil {
+		return "", err
+	}
+
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	query := encoded.String()
+
+	return query, nil
+}
+
 func parseQuery(ctx context.Context, raw string) (map[string]queryPart, error) {
 	for i := range len(raw) {
 		if i&4095 == 0 {
@@ -327,50 +487,6 @@ func decodeBase64(value string, maximum int) ([]byte, error) {
 	return out, nil
 }
 
-// Document returns the immutable document snapshot.
-func (r *RedirectResult) Document() *document.Document {
-	if r == nil {
-		return nil
-	}
-
-	return r.doc
-}
-
-// Kind returns Request or Response for the authenticated Redirect message.
-func (r *RedirectResult) Kind() Kind {
-	if r == nil {
-		return ""
-	}
-
-	return r.kind
-}
-
-// RelayState returns the opaque relay state, with a separate presence flag where
-// applicable.
-func (r *RedirectResult) RelayState() (string, bool) {
-	if r == nil {
-		return "", false
-	}
-
-	return r.relay, r.hasRelay
-}
-
-// SignatureMethod returns the authenticated signature algorithm URI.
-func (r *RedirectResult) SignatureMethod() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.method
-}
-
-// Keep at most four idle compressors; bursts never wait for an idle writer.
-// Reset detaches the previous output and starts an independent DEFLATE stream.
-// The retained compression workspace is bounded independently of caller input.
-//
-//nolint:gochecknoglobals // Bounded workspace reuse, not a shared protocol policy.
-var redirectCompressors = make(chan *flate.Writer, 4)
-
 func redirectCompressor(dst io.Writer) (*flate.Writer, error) {
 	select {
 	case writer := <-redirectCompressors:
@@ -388,122 +504,6 @@ func releaseRedirectCompressor(writer *flate.Writer) {
 	case redirectCompressors <- writer:
 	default:
 	}
-}
-
-// SignRedirect returns the raw query component, NOT an endpoint URL. The endpoint
-// must come from trusted configuration/metadata, not an arbitrary RelayState.
-// Any direct ds:Signature on the protocol root is removed in a private snapshot;
-// nested signatures remain. RelayState nil and a present empty string differ.
-func SignRedirect(ctx context.Context, d *document.Document, kind Kind, relay *string, signer crypto.Signer, opt Options) (string, error) {
-	if ctx == nil {
-		return "", ErrPolicy
-	}
-
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-
-	opt, err := normalize(opt)
-	if err != nil {
-		return "", err
-	}
-
-	actual, err := kindOf(d)
-	if err != nil {
-		return "", err
-	}
-
-	if kind != actual {
-		return "", ErrEncoding
-	}
-
-	if relay != nil && len(*relay) > 80 {
-		return "", fmt.Errorf("%w: RelayState exceeds 80 bytes", ErrPolicy)
-	}
-
-	// A shallow private root suffices: serialization only reads retained nodes.
-	root := *tree.Root(d)
-
-	root.Children = make([]*tree.Node, 0, len(root.Children))
-	for _, n := range tree.Root(d).Children {
-		if n.Kind == tree.ElementNode && n.Name == (document.Name{Space: xmldsig.Namespace, Local: nameSignature}) {
-			continue
-		}
-
-		root.Children = append(root.Children, n)
-	}
-
-	children := append([]*tree.Node(nil), tree.Children(d)...)
-	for i, node := range children {
-		if node == tree.Root(d) {
-			children[i] = &root
-			break
-		}
-	}
-
-	snapshot := tree.FromNodes(children, tree.Policy(d))
-
-	var encoded strings.Builder
-
-	queryWriter := &streamio.Writer{Context: ctx, Target: &encoded, Limit: int64(opt.MaxQueryBytes), LimitError: ErrPolicy}
-	if _, err := queryWriter.WriteString(string(kind) + "="); err != nil {
-		return "", err
-	}
-
-	base64Writer := base64.NewEncoder(base64.StdEncoding, &queryBase64Writer{dst: queryWriter})
-	compressed := &streamio.Writer{Context: ctx, Target: base64Writer, Limit: int64(opt.MaxCompressedBytes), LimitError: ErrPolicy}
-
-	compressor, err := redirectCompressor(compressed)
-	if err != nil {
-		return "", err
-	}
-
-	defer releaseRedirectCompressor(compressor)
-
-	if _, err := snapshot.WriteXML(ctx, compressor, opt.MaxMessageBytes); err != nil {
-		_ = compressor.Close()
-
-		if errors.Is(err, document.ErrLimit) {
-			return "", errors.Join(ErrPolicy, err)
-		}
-
-		return "", err
-	}
-
-	if err := compressor.Close(); err != nil {
-		return "", err
-	}
-
-	if err := base64Writer.Close(); err != nil {
-		return "", err
-	}
-
-	if relay != nil {
-		if _, err := queryWriter.WriteString("&RelayState=" + url.QueryEscape(*relay)); err != nil {
-			return "", err
-		}
-	}
-
-	if _, err := queryWriter.WriteString("&SigAlg=" + url.QueryEscape(opt.SignatureMethod)); err != nil {
-		return "", err
-	}
-
-	signature, err := xmldsig.SignMessageReader(ctx, strings.NewReader(encoded.String()), signer, opt.SignatureMethod, opt.Policy)
-	if err != nil {
-		return "", err
-	}
-
-	if _, err := queryWriter.WriteString("&Signature=" + url.QueryEscape(base64.StdEncoding.EncodeToString(signature))); err != nil {
-		return "", err
-	}
-
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-
-	query := encoded.String()
-
-	return query, nil
 }
 
 func normalize(o Options) (Options, error) {

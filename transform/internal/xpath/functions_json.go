@@ -520,6 +520,18 @@ func (p *jsonStringPreprocessor) writeUnicodeEscape(offset int) (int, error) {
 	return offset + 6, nil
 }
 
+func (p *jsonStringPreprocessor) writePlaceholder(escapeText string) error {
+	placeholder, err := nextJSONPlaceholderRune(p.source, p.invalidEsc)
+	if err != nil {
+		return err
+	}
+
+	p.invalidEsc[placeholder] = escapeText
+	p.output.WriteRune(placeholder)
+
+	return nil
+}
+
 func validJSONSurrogatePair(source string, offset int, high uint32) bool {
 	if high < 0xD800 || high > 0xDBFF || offset+12 > len(source) {
 		return false
@@ -552,18 +564,6 @@ func parseJSONHexEscape(hex string) (uint32, error) {
 	}
 
 	return cp, nil
-}
-
-func (p *jsonStringPreprocessor) writePlaceholder(escapeText string) error {
-	placeholder, err := nextJSONPlaceholderRune(p.source, p.invalidEsc)
-	if err != nil {
-		return err
-	}
-
-	p.invalidEsc[placeholder] = escapeText
-	p.output.WriteRune(placeholder)
-
-	return nil
 }
 
 func nextJSONPlaceholderRune(source string, used map[rune]string) (rune, error) {

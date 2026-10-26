@@ -182,16 +182,6 @@ func LocalBaseDir(base string) string {
 	return path.Dir(slashed)
 }
 
-func containsDot(s string) bool {
-	for i := range len(s) {
-		if s[i] == '.' {
-			return true
-		}
-	}
-
-	return false
-}
-
 // SlashDir returns the directory portion of a forward-slash path, equivalent to
 // path.Dir but provided here so callers that already work in slash space (e.g.
 // keys into an fs.FS) can derive a parent directory without reaching for the
@@ -298,6 +288,16 @@ func SlashCommonDir(a, b string) string {
 	}
 
 	return joinSlashSegments(aParts[:common])
+}
+
+func containsDot(s string) bool {
+	for i := range len(s) {
+		if s[i] == '.' {
+			return true
+		}
+	}
+
+	return false
 }
 
 // joinSlashSegments rejoins segments produced by splitSlash, preserving the

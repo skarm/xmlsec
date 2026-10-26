@@ -26,6 +26,29 @@ import (
 	"github.com/skarm/xmlsec/keys"
 )
 
+const (
+	protectedKeyIterations = "2048"
+	passwordFilePrefix     = "file:"
+	flagPasswordOut        = "-passout"
+	flagKDFIterations      = "-iter"
+	pkcs8PEM               = "pkcs8-pem"
+	flagCertificatePBE     = "-certpbe"
+	flagKeyPBE             = "-keypbe"
+	flagMACAlgorithm       = "-macalg"
+	flagExportPKCS12       = "-export"
+	flagPBMAC1             = "-pbmac1_pbkdf2"
+	flagPBMAC1Digest       = "-pbmac1_pbkdf2_md"
+	pkcs12Classic          = "pkcs12-classic"
+	flagCertificateFile    = "-certfile"
+	pemFormat              = "PEM"
+)
+
+const (
+	namePkcs12Pbmac1 = "pkcs12-pbmac1"
+	namePassword     = "Password"
+	namePkcs12       = "pkcs12"
+)
+
 func pkcs12InteropFields(t *testing.T, raw []byte) []asn1.RawValue {
 	t.Helper()
 	v, err := der.Read(raw, len(raw))
@@ -141,29 +164,6 @@ func pkcs12InteropNested(t *testing.T, infos [][]byte) [][]byte {
 	}
 	return out
 }
-
-const (
-	protectedKeyIterations = "2048"
-	passwordFilePrefix     = "file:"
-	flagPasswordOut        = "-passout"
-	flagKDFIterations      = "-iter"
-	pkcs8PEM               = "pkcs8-pem"
-	flagCertificatePBE     = "-certpbe"
-	flagKeyPBE             = "-keypbe"
-	flagMACAlgorithm       = "-macalg"
-	flagExportPKCS12       = "-export"
-	flagPBMAC1             = "-pbmac1_pbkdf2"
-	flagPBMAC1Digest       = "-pbmac1_pbkdf2_md"
-	pkcs12Classic          = "pkcs12-classic"
-	flagCertificateFile    = "-certfile"
-	pemFormat              = "PEM"
-)
-
-const (
-	namePkcs12Pbmac1 = "pkcs12-pbmac1"
-	namePassword     = "Password"
-	namePkcs12       = "pkcs12"
-)
 
 func TestXMLSecKeyFormats(t *testing.T) {
 	fixture := newInteropFixture(t)

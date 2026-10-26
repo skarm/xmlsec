@@ -17,6 +17,8 @@ import (
 	"strings"
 )
 
+const goTestSkipEvent = "skip"
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	err := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
@@ -128,10 +130,44 @@ type languageProofStream struct {
 	Events        []languageProofEvent `json:"events"`
 }
 
+func (s languageProofStream) validate(stamp languageProofStamp) error {
+	if s.SchemaVersion != 1 || s.Before != stamp || s.After != stamp {
+		return errors.New("test stream has stale or changed source/register stamps")
+	}
+
+	if s.ExitCode != 0 || s.DecodeError != "" {
+		return fmt.Errorf("test stream process failed with exit code %d", s.ExitCode)
+	}
+
+	if len(s.Arguments) < 4 || s.Arguments[0] != "test" || s.Arguments[1] != "-json" || s.Arguments[2] != "-count=1" {
+		return errors.New("test stream was not captured by the proof runner")
+	}
+
+	return validateLanguageProofPackages(s.Events)
+}
+
 type languageProofArtifact struct {
 	SchemaVersion int                   `json:"schema_version"`
 	Stamp         languageProofStamp    `json:"stamp"`
 	Streams       []languageProofStream `json:"streams"`
+}
+
+func (a languageProofArtifact) validate(stamp languageProofStamp) ([]languageProofEvent, error) {
+	if a.SchemaVersion != 1 || a.Stamp != stamp || len(a.Streams) == 0 {
+		return nil, errors.New("proof artifact has stale stamps or no captured streams")
+	}
+
+	var events []languageProofEvent
+
+	for index, stream := range a.Streams {
+		if err := stream.validate(stamp); err != nil {
+			return nil, fmt.Errorf("proof stream %d: %w", index+1, err)
+		}
+
+		events = append(events, stream.Events...)
+	}
+
+	return events, nil
 }
 
 func languageProofProfileKeys() []string {
@@ -156,22 +192,6 @@ func currentLanguageProofStamp(ctx context.Context, root string) (languageProofS
 	}
 
 	return languageProofStamp{SourceSHA256: source, RegisterSHA256: fmt.Sprintf("%x", sha256.Sum256(register))}, nil
-}
-
-func (s languageProofStream) validate(stamp languageProofStamp) error {
-	if s.SchemaVersion != 1 || s.Before != stamp || s.After != stamp {
-		return errors.New("test stream has stale or changed source/register stamps")
-	}
-
-	if s.ExitCode != 0 || s.DecodeError != "" {
-		return fmt.Errorf("test stream process failed with exit code %d", s.ExitCode)
-	}
-
-	if len(s.Arguments) < 4 || s.Arguments[0] != "test" || s.Arguments[1] != "-json" || s.Arguments[2] != "-count=1" {
-		return errors.New("test stream was not captured by the proof runner")
-	}
-
-	return validateLanguageProofPackages(s.Events)
 }
 
 func validateLanguageProofPackages(events []languageProofEvent) error {
@@ -225,24 +245,6 @@ func validateLanguageProofPackages(events []languageProofEvent) error {
 	}
 
 	return nil
-}
-
-func (a languageProofArtifact) validate(stamp languageProofStamp) ([]languageProofEvent, error) {
-	if a.SchemaVersion != 1 || a.Stamp != stamp || len(a.Streams) == 0 {
-		return nil, errors.New("proof artifact has stale stamps or no captured streams")
-	}
-
-	var events []languageProofEvent
-
-	for index, stream := range a.Streams {
-		if err := stream.validate(stamp); err != nil {
-			return nil, fmt.Errorf("proof stream %d: %w", index+1, err)
-		}
-
-		events = append(events, stream.Events...)
-	}
-
-	return events, nil
 }
 
 func readLanguageProofFile(path string, target any) (readErr error) {
@@ -483,8 +485,6 @@ func writeLanguageProofJSON(dst io.Writer, value any) error {
 		return json.NewEncoder(checkedJSONWriter{dst}).Encode(value)
 	}
 }
-
-const goTestSkipEvent = "skip"
 
 func runLanguageProof(ctx context.Context, root string, args []string, out, stderr io.Writer) error {
 	if len(args) == 1 && args[0] == "configure" {

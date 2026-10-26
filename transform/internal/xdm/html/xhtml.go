@@ -18,32 +18,6 @@ func XHTMLIsElement(uri, local string, html5 bool) bool {
 	return uri == lexicon.NamespaceXHTML || html5 && uri == "" && html5ElementName(LowerASCII(local))
 }
 
-func html5ElementName(local string) bool {
-	if lookupElement(local) != nil {
-		return true
-	}
-
-	switch local {
-	case "article", "aside", elemAudio, "bdi", "canvas", "command", elemData, "datalist", "details", "dialog", elemEmbed, "figcaption", "figure", "footer", "header", "hgroup", elemKeygen, "main", "mark", "math", "menuitem", "meter", "nav", "output", "picture", "progress", "rb", "rp", "rt", "rtc", "ruby", "section", "slot", elemSource, "summary", "svg", "template", "time", elemTrack, elemVideo, elemWbr:
-		return true
-	}
-
-	return false
-}
-
-func xhtmlInline(local string) bool {
-	if descriptor := lookupElement(local); descriptor != nil && descriptor.inline != 0 {
-		return true
-	}
-
-	switch local {
-	case elemAudio, "bdi", "canvas", elemData, "datalist", elemEmbed, elemKeygen, "mark", "math", "meter", "output", "picture", "progress", "rb", "rp", "rt", "rtc", "ruby", "svg", "template", "time", elemVideo, elemWbr:
-		return true
-	}
-
-	return false
-}
-
 // ConfigureXHTML applies name-aware rules before markup generation. URI values
 // bypass maps and requested normalization; they always use NFC URI escaping.
 func ConfigureXHTML(options *tree.XMLWriteOptions, html5, escapeURI bool, serializationVersion int) {
@@ -76,22 +50,6 @@ func ConfigureXHTML(options *tree.XMLWriteOptions, html5, escapeURI bool, serial
 
 		return xhtmlInline(local) || local == "pre" || local == nameScript || local == "style" || local == "title" || local == "textarea"
 	}
-}
-
-func xhtmlEmpty(local string, html5 bool, edition int) bool {
-	// XHTML's EMPTY/void lists contain case-sensitive XML names. The separate
-	// HTML5 null-namespace recognition rule does not rename BR or Br to br.
-	if local != LowerASCII(local) {
-		return false
-	}
-
-	// XHTML5's expected-empty rule does not include the three optional legacy
-	// HTML void elements. XHTML's XML well-formedness therefore keeps both tags.
-	if html5 && (local == elemBasefont || local == elemFrame || local == elemIsindex) {
-		return false
-	}
-
-	return SerializationVoidElement(local, html5, edition)
 }
 
 // PrepareXHTML mutates only an owned serialization copy. Metadata replacement
@@ -130,6 +88,48 @@ func PrepareXHTML(ctx context.Context, doc *xdm.Document, html5 bool, contentTyp
 	}
 
 	return nil
+}
+
+func html5ElementName(local string) bool {
+	if lookupElement(local) != nil {
+		return true
+	}
+
+	switch local {
+	case "article", "aside", elemAudio, "bdi", "canvas", "command", elemData, "datalist", "details", "dialog", elemEmbed, "figcaption", "figure", "footer", "header", "hgroup", elemKeygen, "main", "mark", "math", "menuitem", "meter", "nav", "output", "picture", "progress", "rb", "rp", "rt", "rtc", "ruby", "section", "slot", elemSource, "summary", "svg", "template", "time", elemTrack, elemVideo, elemWbr:
+		return true
+	}
+
+	return false
+}
+
+func xhtmlInline(local string) bool {
+	if descriptor := lookupElement(local); descriptor != nil && descriptor.inline != 0 {
+		return true
+	}
+
+	switch local {
+	case elemAudio, "bdi", "canvas", elemData, "datalist", elemEmbed, elemKeygen, "mark", "math", "meter", "output", "picture", "progress", "rb", "rp", "rt", "rtc", "ruby", "svg", "template", "time", elemVideo, elemWbr:
+		return true
+	}
+
+	return false
+}
+
+func xhtmlEmpty(local string, html5 bool, edition int) bool {
+	// XHTML's EMPTY/void lists contain case-sensitive XML names. The separate
+	// HTML5 null-namespace recognition rule does not rename BR or Br to br.
+	if local != LowerASCII(local) {
+		return false
+	}
+
+	// XHTML5's expected-empty rule does not include the three optional legacy
+	// HTML void elements. XHTML's XML well-formedness therefore keeps both tags.
+	if html5 && (local == elemBasefont || local == elemFrame || local == elemIsindex) {
+		return false
+	}
+
+	return SerializationVoidElement(local, html5, edition)
 }
 
 func replaceXHTMLMetadata(doc *xdm.Document, head *xdm.Element, html5 bool, contentType string) error {

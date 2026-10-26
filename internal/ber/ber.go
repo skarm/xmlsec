@@ -21,6 +21,14 @@ type Limits struct {
 	MaxNodes int
 }
 
+// Value preserves the original tag, complete encoding, body and child order.
+type Value struct {
+	Tag      byte
+	Full     []byte
+	Body     []byte
+	Children []Value
+}
+
 // Read scans exactly one value. Returned slices borrow input; no content is
 // authenticated or canonically re-encoded. Input must remain unchanged in use.
 func Read(ctx context.Context, input []byte, limits Limits) (Value, error) {
@@ -44,14 +52,6 @@ func Read(ctx context.Context, input []byte, limits Limits) (Value, error) {
 	}
 
 	return value, nil
-}
-
-// Value preserves the original tag, complete encoding, body and child order.
-type Value struct {
-	Tag      byte
-	Full     []byte
-	Body     []byte
-	Children []Value
 }
 
 type berScanner struct {
@@ -113,6 +113,64 @@ func (s *berScanner) value(b []byte, depth int) (Value, int, error) {
 	v.Body, v.Full = b[header:end], b[:end]
 
 	return v, end, nil
+}
+
+// AppendOctets flattens only primitive or recursively constructed OCTET STRINGs.
+// dst may contain a partial result on error; maximum bounds its total length.
+func AppendOctets(ctx context.Context, value Value, dst *bytes.Buffer, maximum int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	switch value.Tag {
+	case 4:
+		if len(value.Body) > maximum-dst.Len() {
+			return ErrLimit
+		}
+
+		dst.Write(value.Body)
+	case 0x24:
+		for _, child := range value.Children {
+			if err := AppendOctets(ctx, child, dst, maximum); err != nil {
+				return err
+			}
+		}
+	default:
+		return ErrSyntax
+	}
+
+	return nil
+}
+
+// OctetLength validates primitive or constructed OCTET STRINGs and measures
+// their flattened length without allocating content storage.
+func OctetLength(ctx context.Context, value Value, maximum int) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	switch value.Tag {
+	case 4:
+		if len(value.Body) > maximum {
+			return 0, ErrLimit
+		}
+
+		return len(value.Body), nil
+	case 0x24:
+		total := 0
+		for _, child := range value.Children {
+			size, err := OctetLength(ctx, child, maximum-total)
+			if err != nil {
+				return 0, err
+			}
+
+			total += size
+		}
+
+		return total, nil
+	default:
+		return 0, ErrSyntax
+	}
 }
 
 // BER permits nonminimal length octets; only the selected wrapper headers are
@@ -183,62 +241,4 @@ func berHeader(b []byte) (header, length int, indefinite bool, err error) {
 	}
 
 	return at, length, false, nil
-}
-
-// AppendOctets flattens only primitive or recursively constructed OCTET STRINGs.
-// dst may contain a partial result on error; maximum bounds its total length.
-func AppendOctets(ctx context.Context, value Value, dst *bytes.Buffer, maximum int) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	switch value.Tag {
-	case 4:
-		if len(value.Body) > maximum-dst.Len() {
-			return ErrLimit
-		}
-
-		dst.Write(value.Body)
-	case 0x24:
-		for _, child := range value.Children {
-			if err := AppendOctets(ctx, child, dst, maximum); err != nil {
-				return err
-			}
-		}
-	default:
-		return ErrSyntax
-	}
-
-	return nil
-}
-
-// OctetLength validates primitive or constructed OCTET STRINGs and measures
-// their flattened length without allocating content storage.
-func OctetLength(ctx context.Context, value Value, maximum int) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-
-	switch value.Tag {
-	case 4:
-		if len(value.Body) > maximum {
-			return 0, ErrLimit
-		}
-
-		return len(value.Body), nil
-	case 0x24:
-		total := 0
-		for _, child := range value.Children {
-			size, err := OctetLength(ctx, child, maximum-total)
-			if err != nil {
-				return 0, err
-			}
-
-			total += size
-		}
-
-		return total, nil
-	default:
-		return 0, ErrSyntax
-	}
 }

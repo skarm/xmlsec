@@ -28,6 +28,15 @@ import (
 	"github.com/skarm/xmlsec/transform"
 )
 
+// The HTTP response is shared by the native resolver and the independent
+// process, including MIME metadata. Mutable cases give each HTTP client one
+// valid representation followed by malformed data, rather than assuming a
+// particular number of resolver calls as part of the function's contract.
+const textUTF8MediaType = "text/plain; charset=UTF-8"
+
+// Cache immutable subprocess identities across thousands of comparison cases.
+var saxonProofVersions sync.Map //nolint:gochecknoglobals // Repeating a JVM launch for each witness would dominate the verification run.
+
 func TestCompareSaxonLanguageSemantics(t *testing.T) {
 	classpath, binary := saxonRuntime(t)
 
@@ -2274,9 +2283,6 @@ func TestCompareSaxonXMLDeclarationDiagnostic(t *testing.T) {
 	}
 }
 
-// Cache immutable subprocess identities across thousands of comparison cases.
-var saxonProofVersions sync.Map //nolint:gochecknoglobals // Repeating a JVM launch for each witness would dominate the verification run.
-
 func saxonProofOracle(t *testing.T, binary, classpath string) string {
 	t.Helper()
 	key := binary + "\x00" + classpath
@@ -3858,12 +3864,6 @@ func checkPublishedJSONSchemaCase(t *testing.T, e *transform.Engine, binary, sch
 	}
 	t.Log("P3_ORACLE published-schema")
 }
-
-// The HTTP response is shared by the native resolver and the independent
-// process, including MIME metadata. Mutable cases give each HTTP client one
-// valid representation followed by malformed data, rather than assuming a
-// particular number of resolver calls as part of the function's contract.
-const textUTF8MediaType = "text/plain; charset=UTF-8"
 
 func compareSaxonTextResources(t *testing.T, binary, classpath string) {
 	t.Helper()

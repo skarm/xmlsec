@@ -243,109 +243,6 @@ type conformanceCheck struct {
 	evidenceChecked map[string]struct{}
 }
 
-func checkConformanceRegister(root string, data []byte) (int, []error, error) {
-	var register conformanceRegister
-
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-
-	if err := decoder.Decode(&register); err != nil {
-		return 0, nil, fmt.Errorf("conformance register: %w", err)
-	}
-
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return 0, nil, errors.New("conformance register has trailing JSON")
-	}
-
-	if register.SchemaVersion != 4 || len(register.Requirements) == 0 || len(register.Normative) == 0 || len(register.Profiles) == 0 || len(register.Documents) == 0 {
-		return 0, nil, errors.New("conformance register requires schema 4 and nonempty scope, normative, profile and document inventories")
-	}
-
-	c := &conformanceCheck{root: root, documents: make(map[string]standardDocument), profiles: make(map[string]conformanceProfile), scopes: make(map[string]struct{}), symbols: make(map[string]map[string]struct{})}
-	c.text("register", register.Completeness, register.Scope, register.Stage)
-
-	if _, err := time.Parse(time.DateOnly, register.ReviewedOn); err != nil {
-		c.problem("register", "reviewed_on must be an ISO date")
-	}
-
-	for _, entry := range register.Requirements {
-		if _, duplicate := c.scopes[entry.ID]; entry.ID == "" || duplicate {
-			c.problem(entry.ID, "empty/duplicate capability ID")
-		}
-
-		c.scopes[entry.ID] = struct{}{}
-		c.text(entry.ID, entry.Title, entry.Status)
-
-		for _, name := range entry.Tests {
-			c.path(entry.ID, name)
-		}
-	}
-
-	for _, document := range register.Documents {
-		c.document(document)
-	}
-
-	for _, profile := range register.Profiles {
-		c.profile(profile)
-	}
-
-	ids := make(map[string]normativeRequirement)
-	for _, requirement := range register.Normative {
-		_, exists := ids[requirement.ID]
-
-		duplicate := requirement.ID == "" || exists
-		if !duplicate {
-			_, duplicate = c.scopes[requirement.ID]
-		}
-
-		if duplicate {
-			c.problem(requirement.ID, "empty/duplicate normative ID")
-		}
-
-		ids[requirement.ID] = requirement
-		c.requirement(requirement)
-	}
-
-	for _, profile := range register.Profiles {
-		c.matrix(profile, ids)
-
-		if !slices.ContainsFunc(register.Normative, func(r normativeRequirement) bool { return r.Applies.Profile == profile.ID }) {
-			c.problem(profile.ID, "profile has no normative entries")
-		}
-	}
-
-	for _, requirement := range register.Normative {
-		c.normativeEvidence(requirement, ids, make(map[string]struct{}))
-	}
-
-	residuals := make(map[string]struct{})
-
-	for _, residual := range register.Residual {
-		id := residual.Suite + "/" + residual.File + "/" + residual.Name
-		if _, exists := residuals[id]; exists {
-			c.problem(id, "duplicate residual evidence")
-		}
-
-		residuals[id] = struct{}{}
-		c.choice(id, residual.Suite, "qt3", "xslt30")
-		c.choice(id, residual.Disposition, "fixed", "resource-limit", "fixture", "environment", "optional-feature", "permitted-outcome")
-		c.text(id, residual.File, residual.Name, residual.Reason)
-
-		if len(residual.Checks) == 0 {
-			c.problem(id, "residual cause requires executable checks")
-		}
-
-		for _, check := range residual.Checks {
-			c.test(id, check)
-			c.text(id, check.Case)
-		}
-
-		c.residualConditions(id, residual)
-	}
-
-	return len(register.Requirements), c.problems, nil
-}
-
 func (c *conformanceCheck) residualConditions(id string, residual residualEvidence) {
 	if residual.Disposition == "fixed" && len(residual.Failures) != 0 || residual.Disposition != "fixed" && len(residual.Failures) == 0 {
 		c.problem(id, "retained failures require exact profile and typed cause conditions; fixed cases require none")
@@ -378,10 +275,6 @@ func (c *conformanceCheck) residualConditions(id string, residual residualEviden
 			codes[code] = struct{}{}
 		}
 	}
-}
-
-func languageVerificationDocument(id string) bool {
-	return slices.Contains([]string{normXPath20, normXPath30, normXPath31, "FO20", "FO30", "FO31", "XSLT20", "XSLT30", "SER20", "SER30", "SER31"}, id)
 }
 
 func (c *conformanceCheck) normativeEvidence(r normativeRequirement, ids map[string]normativeRequirement, visiting map[string]struct{}) {
@@ -487,54 +380,6 @@ func (c *conformanceCheck) evidenceProof(r normativeRequirement, proof normative
 	for _, item := range expandNormativeProof(r.ID, proof) {
 		c.proof(r, item)
 	}
-}
-
-func normativeAggregate(id string) bool {
-	return slices.Contains([]string{
-		"N-XSLT20-BASIC", "N-XSLT30-BASIC", "N-XSLT20-COMPILATION", "N-XSLT30-COMPILATION",
-		"N-XP20-CONTEXT", "N-XP30-CONTEXT", "N-XP31-CONTEXT", "N-FO20-FUNCTION-FAMILIES", "N-FO30-FUNCTION-FAMILIES", "N-FO31-FUNCTION-FAMILIES",
-		"N-XPATH30-SERIALIZATION", "N-XPATH31-SERIALIZATION", "N-XSLT20-SERIALIZATION", "N-XSLT30-SERIALIZATION",
-		"N-XP20-CLAUSE-F", "N-XP20-CLAUSE-G", "N-XP30-CLAUSE-F", "N-XP30-CLAUSE-G", "N-XP31-CLAUSE-4", "N-XP31-CLAUSE-F",
-	}, id)
-}
-
-// Structural inheritance means the complete recorded subtree. Other relations
-// require their own executable composition witnesses and a published basis.
-func normativeEvidenceChildren(r normativeRequirement, ids map[string]normativeRequirement) []string {
-	var children []string
-
-	aggregate := normativeAggregate(r.ID)
-	profileAggregate := slices.Contains([]string{"N-XP20-CLAUSE-F", "N-XP30-CLAUSE-F", "N-XP31-CLAUSE-4"}, r.ID)
-
-	canonical := strings.Contains(r.ID, "-CLAUSE-") || strings.Contains(r.ID, "-CONTRACT-")
-	for id, child := range ids {
-		if id == r.ID || !profileAggregate && child.Norm.Document != r.Norm.Document || child.Applies.Profile != r.Applies.Profile || child.Applies.Status == normNotApplicable || normativeAggregate(id) {
-			continue
-		}
-
-		if aggregate {
-			children = append(children, id)
-		} else if canonical && (strings.Contains(id, "-CLAUSE-") || strings.Contains(id, "-CONTRACT-")) && strings.HasPrefix(child.Norm.Clause, r.Norm.Clause+".") {
-			immediate := true
-
-			for _, between := range ids {
-				if between.Applies.Profile == r.Applies.Profile && between.Norm.Document == r.Norm.Document && between.Applies.Status != normNotApplicable &&
-					(strings.Contains(between.ID, "-CLAUSE-") || strings.Contains(between.ID, "-CONTRACT-")) &&
-					strings.HasPrefix(between.Norm.Clause, r.Norm.Clause+".") && strings.HasPrefix(child.Norm.Clause, between.Norm.Clause+".") {
-					immediate = false
-					break
-				}
-			}
-
-			if immediate {
-				children = append(children, id)
-			}
-		}
-	}
-
-	slices.Sort(children)
-
-	return children
 }
 
 func (c *conformanceCheck) proof(r normativeRequirement, proof normativeProof) {
@@ -854,46 +699,6 @@ func (c *conformanceCheck) requirementRole(r normativeRequirement, profile confo
 	}
 }
 
-// These declarations account for the finite Appendix D publication duty, not
-// portable defaults that another host is required to choose identically.
-func xpathHostChoiceDeclarations(version string) map[string]string {
-	choices := map[string]string{
-		"unicode-version":    "Unicode properties use Unicode 17.0",
-		"known-collations":   "Known collation URI families are Unicode codepoint",
-		"implicit-timezone":  "explicit implicit timezones use whole minutes within ±14 hours",
-		"warnings":           "Warnings are not emitted",
-		"error-transport":    "Errors are returned as `transform.Error`",
-		"xml-names-editions": "Names use XML 1.0 Fifth Edition and Namespaces 1.0 Third Edition",
-		"namespace-axis":     "The namespace axis is supported",
-		"static-typing":      "Static typing is not enabled",
-	}
-
-	if version != "20" {
-		maps.Copy(choices, map[string]string{
-			"non-infoset-construction": "Non-XML input comes from caller-built document trees and public `Value`/`Sequence`",
-			"schema-type-system":       "`XMLSchemaVersion` selects 1.0 or 1.1 datatype",
-			"extension-signatures":     "have their registered arity and generic `item()*` argument/result types",
-			"environment-variables":    "come only from the copied `Config.Environment` map",
-			"serialization-parameters": "Serialization occurs through explicit",
-			"external-result-mismatch": "invalid external-function results retain their type error",
-		})
-	}
-
-	return choices
-}
-
-func checkXPathHostChoiceDocumentation(text, version string) error {
-	var missing []error
-
-	for item, declaration := range xpathHostChoiceDeclarations(version) {
-		if !strings.Contains(text, declaration) {
-			missing = append(missing, fmt.Errorf("%s is not documented", item))
-		}
-	}
-
-	return errors.Join(missing...)
-}
-
 func (c *conformanceCheck) localEvidence(r normativeRequirement) {
 	c.choice(r.ID, r.Tests.Status, conformanceCovered, conformancePartial, conformancePending, normNotApplicable)
 	c.text(r.ID, r.Tests.Reason)
@@ -979,49 +784,6 @@ func (c *conformanceCheck) test(id string, test conformanceTest) {
 	}
 }
 
-func conformanceTestFunction(file *ast.File, fn *ast.FuncDecl) bool {
-	if fn.Recv != nil || fn.Type.TypeParams != nil || fn.Type.Results != nil || fn.Type.Params == nil || len(fn.Type.Params.List) != 1 {
-		return false
-	}
-
-	parameter := fn.Type.Params.List[0]
-	if len(parameter.Names) > 1 {
-		return false
-	}
-
-	pointer, ok := parameter.Type.(*ast.StarExpr)
-	if !ok {
-		return false
-	}
-
-	for _, imported := range file.Imports {
-		if imported.Path.Value != `"testing"` {
-			continue
-		}
-
-		alias := "testing"
-		if imported.Name != nil {
-			alias = imported.Name.Name
-		}
-
-		if alias == "." {
-			name, ok := pointer.X.(*ast.Ident)
-			return ok && name.Name == "T"
-		}
-
-		selector, ok := pointer.X.(*ast.SelectorExpr)
-		if !ok || selector.Sel.Name != "T" {
-			return false
-		}
-
-		name, ok := selector.X.(*ast.Ident)
-
-		return ok && name.Name == alias
-	}
-
-	return false
-}
-
 func (c *conformanceCheck) api(id, reference string) {
 	packagePath, symbol, ok := strings.Cut(reference, ".")
 	if !ok || symbol == "" {
@@ -1064,6 +826,280 @@ func (c *conformanceCheck) api(id, reference string) {
 	if _, exists := symbols[symbol]; !exists {
 		c.problem(id, "missing exported API "+reference)
 	}
+}
+
+func (c *conformanceCheck) path(id, path string) {
+	if path == "" {
+		c.problem(id, "empty evidence/code path")
+		return
+	}
+
+	if err := checkConformanceTest(c.root, path); err != nil {
+		c.problem(id, "missing/nonportable file "+path+": "+err.Error())
+	}
+}
+
+func (c *conformanceCheck) webURL(id, source string) {
+	u, err := url.Parse(source)
+	if err != nil || u == nil || u.Scheme != "https" || u.Host == "" {
+		c.problem(id, "source must be an absolute HTTPS URL")
+	}
+}
+
+func (c *conformanceCheck) text(id string, values ...string) {
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			c.problem(id, "missing required description or closure criterion")
+		}
+	}
+}
+
+func (c *conformanceCheck) choice(id, value string, allowed ...string) {
+	if !slices.Contains(allowed, value) {
+		c.problem(id, "unknown state "+value)
+	}
+}
+
+func (c *conformanceCheck) problem(id, message string) {
+	c.problems = append(c.problems, fmt.Errorf("conformance %s: %s", id, message))
+}
+
+func checkConformanceRegister(root string, data []byte) (int, []error, error) {
+	var register conformanceRegister
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&register); err != nil {
+		return 0, nil, fmt.Errorf("conformance register: %w", err)
+	}
+
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return 0, nil, errors.New("conformance register has trailing JSON")
+	}
+
+	if register.SchemaVersion != 4 || len(register.Requirements) == 0 || len(register.Normative) == 0 || len(register.Profiles) == 0 || len(register.Documents) == 0 {
+		return 0, nil, errors.New("conformance register requires schema 4 and nonempty scope, normative, profile and document inventories")
+	}
+
+	c := &conformanceCheck{root: root, documents: make(map[string]standardDocument), profiles: make(map[string]conformanceProfile), scopes: make(map[string]struct{}), symbols: make(map[string]map[string]struct{})}
+	c.text("register", register.Completeness, register.Scope, register.Stage)
+
+	if _, err := time.Parse(time.DateOnly, register.ReviewedOn); err != nil {
+		c.problem("register", "reviewed_on must be an ISO date")
+	}
+
+	for _, entry := range register.Requirements {
+		if _, duplicate := c.scopes[entry.ID]; entry.ID == "" || duplicate {
+			c.problem(entry.ID, "empty/duplicate capability ID")
+		}
+
+		c.scopes[entry.ID] = struct{}{}
+		c.text(entry.ID, entry.Title, entry.Status)
+
+		for _, name := range entry.Tests {
+			c.path(entry.ID, name)
+		}
+	}
+
+	for _, document := range register.Documents {
+		c.document(document)
+	}
+
+	for _, profile := range register.Profiles {
+		c.profile(profile)
+	}
+
+	ids := make(map[string]normativeRequirement)
+	for _, requirement := range register.Normative {
+		_, exists := ids[requirement.ID]
+
+		duplicate := requirement.ID == "" || exists
+		if !duplicate {
+			_, duplicate = c.scopes[requirement.ID]
+		}
+
+		if duplicate {
+			c.problem(requirement.ID, "empty/duplicate normative ID")
+		}
+
+		ids[requirement.ID] = requirement
+		c.requirement(requirement)
+	}
+
+	for _, profile := range register.Profiles {
+		c.matrix(profile, ids)
+
+		if !slices.ContainsFunc(register.Normative, func(r normativeRequirement) bool { return r.Applies.Profile == profile.ID }) {
+			c.problem(profile.ID, "profile has no normative entries")
+		}
+	}
+
+	for _, requirement := range register.Normative {
+		c.normativeEvidence(requirement, ids, make(map[string]struct{}))
+	}
+
+	residuals := make(map[string]struct{})
+
+	for _, residual := range register.Residual {
+		id := residual.Suite + "/" + residual.File + "/" + residual.Name
+		if _, exists := residuals[id]; exists {
+			c.problem(id, "duplicate residual evidence")
+		}
+
+		residuals[id] = struct{}{}
+		c.choice(id, residual.Suite, "qt3", "xslt30")
+		c.choice(id, residual.Disposition, "fixed", "resource-limit", "fixture", "environment", "optional-feature", "permitted-outcome")
+		c.text(id, residual.File, residual.Name, residual.Reason)
+
+		if len(residual.Checks) == 0 {
+			c.problem(id, "residual cause requires executable checks")
+		}
+
+		for _, check := range residual.Checks {
+			c.test(id, check)
+			c.text(id, check.Case)
+		}
+
+		c.residualConditions(id, residual)
+	}
+
+	return len(register.Requirements), c.problems, nil
+}
+
+func languageVerificationDocument(id string) bool {
+	return slices.Contains([]string{normXPath20, normXPath30, normXPath31, "FO20", "FO30", "FO31", "XSLT20", "XSLT30", "SER20", "SER30", "SER31"}, id)
+}
+
+func normativeAggregate(id string) bool {
+	return slices.Contains([]string{
+		"N-XSLT20-BASIC", "N-XSLT30-BASIC", "N-XSLT20-COMPILATION", "N-XSLT30-COMPILATION",
+		"N-XP20-CONTEXT", "N-XP30-CONTEXT", "N-XP31-CONTEXT", "N-FO20-FUNCTION-FAMILIES", "N-FO30-FUNCTION-FAMILIES", "N-FO31-FUNCTION-FAMILIES",
+		"N-XPATH30-SERIALIZATION", "N-XPATH31-SERIALIZATION", "N-XSLT20-SERIALIZATION", "N-XSLT30-SERIALIZATION",
+		"N-XP20-CLAUSE-F", "N-XP20-CLAUSE-G", "N-XP30-CLAUSE-F", "N-XP30-CLAUSE-G", "N-XP31-CLAUSE-4", "N-XP31-CLAUSE-F",
+	}, id)
+}
+
+// Structural inheritance means the complete recorded subtree. Other relations
+// require their own executable composition witnesses and a published basis.
+func normativeEvidenceChildren(r normativeRequirement, ids map[string]normativeRequirement) []string {
+	var children []string
+
+	aggregate := normativeAggregate(r.ID)
+	profileAggregate := slices.Contains([]string{"N-XP20-CLAUSE-F", "N-XP30-CLAUSE-F", "N-XP31-CLAUSE-4"}, r.ID)
+
+	canonical := strings.Contains(r.ID, "-CLAUSE-") || strings.Contains(r.ID, "-CONTRACT-")
+	for id, child := range ids {
+		if id == r.ID || !profileAggregate && child.Norm.Document != r.Norm.Document || child.Applies.Profile != r.Applies.Profile || child.Applies.Status == normNotApplicable || normativeAggregate(id) {
+			continue
+		}
+
+		if aggregate {
+			children = append(children, id)
+		} else if canonical && (strings.Contains(id, "-CLAUSE-") || strings.Contains(id, "-CONTRACT-")) && strings.HasPrefix(child.Norm.Clause, r.Norm.Clause+".") {
+			immediate := true
+
+			for _, between := range ids {
+				if between.Applies.Profile == r.Applies.Profile && between.Norm.Document == r.Norm.Document && between.Applies.Status != normNotApplicable &&
+					(strings.Contains(between.ID, "-CLAUSE-") || strings.Contains(between.ID, "-CONTRACT-")) &&
+					strings.HasPrefix(between.Norm.Clause, r.Norm.Clause+".") && strings.HasPrefix(child.Norm.Clause, between.Norm.Clause+".") {
+					immediate = false
+					break
+				}
+			}
+
+			if immediate {
+				children = append(children, id)
+			}
+		}
+	}
+
+	slices.Sort(children)
+
+	return children
+}
+
+// These declarations account for the finite Appendix D publication duty, not
+// portable defaults that another host is required to choose identically.
+func xpathHostChoiceDeclarations(version string) map[string]string {
+	choices := map[string]string{
+		"unicode-version":    "Unicode properties use Unicode 17.0",
+		"known-collations":   "Known collation URI families are Unicode codepoint",
+		"implicit-timezone":  "explicit implicit timezones use whole minutes within ±14 hours",
+		"warnings":           "Warnings are not emitted",
+		"error-transport":    "Errors are returned as `transform.Error`",
+		"xml-names-editions": "Names use XML 1.0 Fifth Edition and Namespaces 1.0 Third Edition",
+		"namespace-axis":     "The namespace axis is supported",
+		"static-typing":      "Static typing is not enabled",
+	}
+
+	if version != "20" {
+		maps.Copy(choices, map[string]string{
+			"non-infoset-construction": "Non-XML input comes from caller-built document trees and public `Value`/`Sequence`",
+			"schema-type-system":       "`XMLSchemaVersion` selects 1.0 or 1.1 datatype",
+			"extension-signatures":     "have their registered arity and generic `item()*` argument/result types",
+			"environment-variables":    "come only from the copied `Config.Environment` map",
+			"serialization-parameters": "Serialization occurs through explicit",
+			"external-result-mismatch": "invalid external-function results retain their type error",
+		})
+	}
+
+	return choices
+}
+
+func checkXPathHostChoiceDocumentation(text, version string) error {
+	var missing []error
+
+	for item, declaration := range xpathHostChoiceDeclarations(version) {
+		if !strings.Contains(text, declaration) {
+			missing = append(missing, fmt.Errorf("%s is not documented", item))
+		}
+	}
+
+	return errors.Join(missing...)
+}
+
+func conformanceTestFunction(file *ast.File, fn *ast.FuncDecl) bool {
+	if fn.Recv != nil || fn.Type.TypeParams != nil || fn.Type.Results != nil || fn.Type.Params == nil || len(fn.Type.Params.List) != 1 {
+		return false
+	}
+
+	parameter := fn.Type.Params.List[0]
+	if len(parameter.Names) > 1 {
+		return false
+	}
+
+	pointer, ok := parameter.Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+
+	for _, imported := range file.Imports {
+		if imported.Path.Value != `"testing"` {
+			continue
+		}
+
+		alias := "testing"
+		if imported.Name != nil {
+			alias = imported.Name.Name
+		}
+
+		if alias == "." {
+			name, ok := pointer.X.(*ast.Ident)
+			return ok && name.Name == "T"
+		}
+
+		selector, ok := pointer.X.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "T" {
+			return false
+		}
+
+		name, ok := selector.X.(*ast.Ident)
+
+		return ok && name.Name == alias
+	}
+
+	return false
 }
 
 func collectConformanceAPIs(file *ast.File, symbols map[string]struct{}) {
@@ -1125,40 +1161,4 @@ func collectConformanceType(decl *ast.TypeSpec, symbols map[string]struct{}) {
 			}
 		}
 	}
-}
-
-func (c *conformanceCheck) path(id, path string) {
-	if path == "" {
-		c.problem(id, "empty evidence/code path")
-		return
-	}
-
-	if err := checkConformanceTest(c.root, path); err != nil {
-		c.problem(id, "missing/nonportable file "+path+": "+err.Error())
-	}
-}
-
-func (c *conformanceCheck) webURL(id, source string) {
-	u, err := url.Parse(source)
-	if err != nil || u == nil || u.Scheme != "https" || u.Host == "" {
-		c.problem(id, "source must be an absolute HTTPS URL")
-	}
-}
-
-func (c *conformanceCheck) text(id string, values ...string) {
-	for _, value := range values {
-		if strings.TrimSpace(value) == "" {
-			c.problem(id, "missing required description or closure criterion")
-		}
-	}
-}
-
-func (c *conformanceCheck) choice(id, value string, allowed ...string) {
-	if !slices.Contains(allowed, value) {
-		c.problem(id, "unknown state "+value)
-	}
-}
-
-func (c *conformanceCheck) problem(id, message string) {
-	c.problems = append(c.problems, fmt.Errorf("conformance %s: %s", id, message))
 }

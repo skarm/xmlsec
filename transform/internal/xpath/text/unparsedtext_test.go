@@ -17,6 +17,8 @@ import (
 	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
+const textUTF8 = "utf-8"
+
 func TestLoadTextResourceBoundsAndOwnership(t *testing.T) {
 	for _, tc := range []struct {
 		input    string
@@ -56,8 +58,6 @@ func TestLoadTextResourceBoundsAndOwnership(t *testing.T) {
 		t.Fatal("implicit file access enabled")
 	}
 }
-
-const textUTF8 = "utf-8"
 
 func TestDecodeText(t *testing.T) {
 	for _, tc := range []struct {

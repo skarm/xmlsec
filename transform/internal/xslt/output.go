@@ -64,6 +64,16 @@ func SerializeItems(ctx context.Context, w io.Writer, items xdm.Sequence, doc *x
 	}
 }
 
+// SerializeResult writes the result document to a writer according to the
+// output definition. If outDef is nil, defaults to XML output. XDM has no DTD
+// node, so a DTD the document carries (for example one xsl:copy-of keeps with
+// a copied source document's unparsed entities) is not written: the output
+// definition alone decides the document type declaration. doc itself is left
+// unchanged.
+func SerializeResult(w io.Writer, doc *xdm.Document, outDef *OutputDef) error {
+	return serializeResult(context.Background(), w, doc, outDef)
+}
+
 // serializeItemsWithSeparator serializes a sequence of items using the specified
 // output method, joining them with the item-separator.
 func serializeItemsWithSeparator(w io.Writer, items xdm.Sequence, _ *xdm.Document, outDef *OutputDef) error {
@@ -152,16 +162,6 @@ func writeSeparatedNodeContent(buf *bytes.Buffer, node xdm.Node) {
 	} else {
 		buf.WriteString(xdm.CharacterData(node))
 	}
-}
-
-// SerializeResult writes the result document to a writer according to the
-// output definition. If outDef is nil, defaults to XML output. XDM has no DTD
-// node, so a DTD the document carries (for example one xsl:copy-of keeps with
-// a copied source document's unparsed entities) is not written: the output
-// definition alone decides the document type declaration. doc itself is left
-// unchanged.
-func SerializeResult(w io.Writer, doc *xdm.Document, outDef *OutputDef) error {
-	return serializeResult(context.Background(), w, doc, outDef)
 }
 
 // withoutDoctype copies a document before dropping serialization metadata.
@@ -506,14 +506,6 @@ type fullyNormalizedWriter struct {
 	checked   int
 }
 
-func (writer *fullyNormalizedWriter) finish() error {
-	if writer.used != 0 {
-		return dynamicError(lexicon.ErrSERE0006, "invalid UTF-8 in serialization")
-	}
-
-	return writer.ctx.Err()
-}
-
 func (writer *fullyNormalizedWriter) Write(p []byte) (int, error) {
 	if err := xpath.Charge(writer.ctx, 1+len(p)/64); err != nil {
 		return 0, err
@@ -540,6 +532,14 @@ func (writer *fullyNormalizedWriter) WriteString(s string) (int, error) {
 	}
 
 	return len(s), nil
+}
+
+func (writer *fullyNormalizedWriter) finish() error {
+	if writer.used != 0 {
+		return dynamicError(lexicon.ErrSERE0006, "invalid UTF-8 in serialization")
+	}
+
+	return writer.ctx.Err()
 }
 
 func (writer *fullyNormalizedWriter) consumeByte(b byte) error {

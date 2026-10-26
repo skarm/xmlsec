@@ -226,33 +226,6 @@ func NewEngine(config Config) (*Engine, error) {
 	return e, nil
 }
 
-// executionControlCause carries public limits across the internal callback and
-// resource interfaces, where language handlers must not recover from exhaustion.
-func executionControlCause(err error) error {
-	if errors.Is(err, ErrLimit) && !errors.Is(err, xpath.ErrBudget) {
-		return errors.Join(xpath.ErrBudget, err)
-	}
-
-	return err
-}
-
-func wrap(operation string, err error) error {
-	if err == nil {
-		return nil
-	}
-
-	code := ""
-	if xp, ok := errors.AsType[*xdm.Error](err); ok {
-		code = xp.CodeQName().Local
-	}
-
-	if errors.Is(err, pattern.ErrLimit) || errors.Is(err, xpath.ErrBudget) || errors.Is(err, xpath.ErrOpLimit) || errors.Is(err, xpath.ErrRecursionLimit) || errors.Is(err, xpath.ErrNodeSetLimit) || errors.Is(err, document.ErrLimit) {
-		err = errors.Join(ErrLimit, err)
-	}
-
-	return &Error{Operation: operation, Code: code, cause: err}
-}
-
 func (e *Engine) invocation(ctx context.Context) (context.Context, context.CancelFunc, error) {
 	if e == nil || e.limits.MaxNodes == 0 || ctx == nil {
 		return nil, nil, ErrInput
@@ -292,6 +265,33 @@ func (e *Engine) languageParseOptions() xdm.ParseOptions {
 	options.DTDOpen = resourceAdapter{engine: e}.Resolve
 
 	return options
+}
+
+// executionControlCause carries public limits across the internal callback and
+// resource interfaces, where language handlers must not recover from exhaustion.
+func executionControlCause(err error) error {
+	if errors.Is(err, ErrLimit) && !errors.Is(err, xpath.ErrBudget) {
+		return errors.Join(xpath.ErrBudget, err)
+	}
+
+	return err
+}
+
+func wrap(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	code := ""
+	if xp, ok := errors.AsType[*xdm.Error](err); ok {
+		code = xp.CodeQName().Local
+	}
+
+	if errors.Is(err, pattern.ErrLimit) || errors.Is(err, xpath.ErrBudget) || errors.Is(err, xpath.ErrOpLimit) || errors.Is(err, xpath.ErrRecursionLimit) || errors.Is(err, xpath.ErrNodeSetLimit) || errors.Is(err, document.ErrLimit) {
+		err = errors.Join(ErrLimit, err)
+	}
+
+	return &Error{Operation: operation, Code: code, cause: err}
 }
 
 // Error identifies a failed operation and retains its XPath, XSLT or application

@@ -37,84 +37,6 @@ type pastEvaluation struct {
 	work    int
 }
 
-func (s *HistoricalSession) validatePast(ctx context.Context, targetDER []byte, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
-	report := &PastCertificateReport{subIndication: "NO_CERTIFICATE_CHAIN_FOUND"}
-
-	target, err := s.historicalTarget(ctx, targetDER)
-	if err != nil {
-		report.subIndication = historicalPathFailure(err)
-		report.cause = err
-
-		return nil, report, err
-	}
-
-	paths, err := s.pathsFor(ctx, target)
-	if err != nil {
-		report.cause = err
-		return nil, report, err
-	}
-
-	for _, path := range paths {
-		result, candidate, err := s.validatePastPath(ctx, path, proofs)
-
-		report = candidate
-		if err == nil {
-			return result, report, nil
-		}
-
-		if errors.Is(err, ErrLimit) || ctx.Err() != nil {
-			return nil, report, err
-		}
-	}
-
-	if report.cause == nil {
-		report.cause = ErrUnavailable
-	}
-
-	return nil, report, report.cause
-}
-
-func (s *HistoricalSession) validatePastPath(ctx context.Context, path *HistoricalPath, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
-	report := &PastCertificateReport{path: path}
-
-	reject := func(sub string, err error) (*PastCertificateResult, *PastCertificateReport, error) {
-		report.subIndication = sub
-		report.cause = err
-
-		return nil, report, err
-	}
-	if proofs == nil || !proofs.Valid() || !proofs.Now().Equal(s.now) {
-		return reject("NO_POE", ErrPolicy)
-	}
-
-	if _, err := s.checkPath(ctx, path); err != nil {
-		return reject(historicalPathFailure(err), err)
-	}
-
-	evaluator := &pastEvaluation{session: s, proofs: proofs, active: make(map[[32]byte]struct{})}
-	bound := s.now
-
-	anchor := sha256.Sum256(path.chain[len(path.chain)-1].Raw)
-	if sunset, found := s.options.TrustAnchorSunsets[hex.EncodeToString(anchor[:])]; found && sunset.Before(bound) {
-		evaluator.transition(path.chain[len(path.chain)-1], nil, "5.6.2.2.4(1)", "trust-anchor-sunset", bound, sunset)
-		bound = sunset
-	}
-
-	at, err := evaluator.slide(ctx, path, bound, false, false)
-	report.transitions = evaluator.steps
-	report.evidence = canonicalEvidence(evaluator.used)
-
-	if err != nil {
-		return reject("NO_POE", err)
-	}
-
-	if err := ctx.Err(); err != nil {
-		return reject("NO_POE", err)
-	}
-
-	return &PastCertificateResult{path: path, at: at, evidence: report.evidence}, report, nil
-}
-
 func (e *pastEvaluation) slide(ctx context.Context, path *HistoricalPath, control time.Time, skipLeaf, authorizationLeaf bool) (time.Time, error) {
 	if err := ctx.Err(); err != nil {
 		return time.Time{}, err
@@ -262,26 +184,6 @@ func (e *pastEvaluation) slideStatus(certificate *x509.Certificate, status histo
 	return control, nil
 }
 
-func historicalProofAt(proofs *historicalproof.Set, digest [32]byte, kind historicalproof.Kind, at time.Time) bool {
-	proof, found := proofs.EarliestKind(digest, kind)
-	return found && !proof.After(at)
-}
-
-func historicalFresh(issued, next, at time.Time, configured *time.Duration) bool {
-	var freshness time.Duration
-	if configured != nil {
-		freshness = *configured
-	} else {
-		if next.IsZero() || !next.After(issued) {
-			return false
-		}
-
-		freshness = next.Sub(issued)
-	}
-
-	return issued.After(at.Add(-freshness))
-}
-
 func (e *pastEvaluation) transition(certificate *x509.Certificate, fact *VerifiedEvidence, clause, reason string, before, after time.Time) {
 	if !after.Before(before) {
 		return
@@ -297,12 +199,163 @@ func (e *pastEvaluation) transition(certificate *x509.Certificate, fact *Verifie
 	e.steps = append(e.steps, TimeTransition{CertificateSHA256: hex.EncodeToString(digest[:]), EvidenceSHA256: source, Clause: clause, Reason: reason, Before: before, After: after})
 }
 
-func historicalStatusMode(main RevocationMode, authorizationLeaf bool) RevocationMode {
-	if authorizationLeaf {
-		return RequireCRL
+func (e *pastEvaluation) materialCutoff(algorithm x509.SignatureAlgorithm, signer *x509.Certificate) time.Time {
+	var cutoff time.Time
+	for _, rule := range e.session.options.CryptoConstraints {
+		if historicalRuleMatches(rule, algorithm, signer) && (cutoff.IsZero() || rule.ReliableUntil.Before(cutoff)) {
+			cutoff = rule.ReliableUntil
+		}
 	}
 
-	return main
+	return cutoff
+}
+
+func (e *pastEvaluation) cryptoBoundary(certificate *x509.Certificate, status historicalStatus, at time.Time) bool {
+	if cutoff := e.materialCutoff(certificate.SignatureAlgorithm, status.primary.issuer); !cutoff.IsZero() && !at.Before(cutoff) {
+		return true
+	}
+
+	for _, claim := range status.claims {
+		algorithm := claim.ocspSignatureAlgorithm()
+		if claim.crl != nil {
+			algorithm = claim.crlSignatureAlgorithm()
+		}
+
+		if cutoff := e.materialCutoff(algorithm, claim.signer); !cutoff.IsZero() && !at.Before(cutoff) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (e *pastEvaluation) protectCrypto(certificate *x509.Certificate, status historicalStatus) error {
+	issuer := status.primary.issuer
+	if cutoff := e.materialCutoff(certificate.SignatureAlgorithm, issuer); !cutoff.IsZero() && !e.session.now.Before(cutoff) {
+		proof, found := e.proofs.EarliestKind(sha256.Sum256(certificate.Raw), historicalproof.Certificate)
+		if !found || !proof.Before(cutoff) {
+			return ErrUnavailable
+		}
+	}
+
+	for _, claim := range status.claims {
+		signer := claim.signer
+
+		algorithm := claim.ocspSignatureAlgorithm()
+		if claim.crl != nil {
+			algorithm = claim.crlSignatureAlgorithm()
+		}
+
+		if cutoff := e.materialCutoff(algorithm, signer); !cutoff.IsZero() && !e.session.now.Before(cutoff) {
+			proof, found := e.proofs.EarliestKind(claim.fact.fingerprint, historicalproof.Kind(claim.fact.kind))
+			if !found || !proof.Before(cutoff) {
+				return ErrUnavailable
+			}
+		}
+	}
+
+	return nil
+}
+
+func (e *pastEvaluation) cryptoBound(certificate *x509.Certificate, status historicalStatus, control time.Time) time.Time {
+	cutoff := e.materialCutoff(certificate.SignatureAlgorithm, status.primary.issuer)
+	if !cutoff.IsZero() && cutoff.Before(control) {
+		control = cutoff
+	}
+
+	for _, claim := range status.claims {
+		signer := claim.signer
+
+		algorithm := claim.ocspSignatureAlgorithm()
+		if claim.crl != nil {
+			algorithm = claim.crlSignatureAlgorithm()
+		}
+
+		cutoff = e.materialCutoff(algorithm, signer)
+		if !cutoff.IsZero() && cutoff.Before(control) {
+			control = cutoff
+		}
+	}
+
+	return control
+}
+
+func (s *HistoricalSession) validatePast(ctx context.Context, targetDER []byte, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
+	report := &PastCertificateReport{subIndication: "NO_CERTIFICATE_CHAIN_FOUND"}
+
+	target, err := s.historicalTarget(ctx, targetDER)
+	if err != nil {
+		report.subIndication = historicalPathFailure(err)
+		report.cause = err
+
+		return nil, report, err
+	}
+
+	paths, err := s.pathsFor(ctx, target)
+	if err != nil {
+		report.cause = err
+		return nil, report, err
+	}
+
+	for _, path := range paths {
+		result, candidate, err := s.validatePastPath(ctx, path, proofs)
+
+		report = candidate
+		if err == nil {
+			return result, report, nil
+		}
+
+		if errors.Is(err, ErrLimit) || ctx.Err() != nil {
+			return nil, report, err
+		}
+	}
+
+	if report.cause == nil {
+		report.cause = ErrUnavailable
+	}
+
+	return nil, report, report.cause
+}
+
+func (s *HistoricalSession) validatePastPath(ctx context.Context, path *HistoricalPath, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
+	report := &PastCertificateReport{path: path}
+
+	reject := func(sub string, err error) (*PastCertificateResult, *PastCertificateReport, error) {
+		report.subIndication = sub
+		report.cause = err
+
+		return nil, report, err
+	}
+	if proofs == nil || !proofs.Valid() || !proofs.Now().Equal(s.now) {
+		return reject("NO_POE", ErrPolicy)
+	}
+
+	if _, err := s.checkPath(ctx, path); err != nil {
+		return reject(historicalPathFailure(err), err)
+	}
+
+	evaluator := &pastEvaluation{session: s, proofs: proofs, active: make(map[[32]byte]struct{})}
+	bound := s.now
+
+	anchor := sha256.Sum256(path.chain[len(path.chain)-1].Raw)
+	if sunset, found := s.options.TrustAnchorSunsets[hex.EncodeToString(anchor[:])]; found && sunset.Before(bound) {
+		evaluator.transition(path.chain[len(path.chain)-1], nil, "5.6.2.2.4(1)", "trust-anchor-sunset", bound, sunset)
+		bound = sunset
+	}
+
+	at, err := evaluator.slide(ctx, path, bound, false, false)
+	report.transitions = evaluator.steps
+	report.evidence = canonicalEvidence(evaluator.used)
+
+	if err != nil {
+		return reject("NO_POE", err)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return reject("NO_POE", err)
+	}
+
+	return &PastCertificateResult{path: path, at: at, evidence: report.evidence}, report, nil
 }
 
 func (s *HistoricalSession) selectHistoricalStatusFor(ctx context.Context, certificate *x509.Certificate, claims []historicalClaim, proofs *historicalproof.Set, control time.Time, mode RevocationMode) (historicalStatus, error) {
@@ -351,6 +404,34 @@ func (s *HistoricalSession) selectHistoricalStatusFor(ctx context.Context, certi
 	}
 
 	return combineHistoricalStatuses(selected)
+}
+
+func historicalProofAt(proofs *historicalproof.Set, digest [32]byte, kind historicalproof.Kind, at time.Time) bool {
+	proof, found := proofs.EarliestKind(digest, kind)
+	return found && !proof.After(at)
+}
+
+func historicalFresh(issued, next, at time.Time, configured *time.Duration) bool {
+	var freshness time.Duration
+	if configured != nil {
+		freshness = *configured
+	} else {
+		if next.IsZero() || !next.After(issued) {
+			return false
+		}
+
+		freshness = next.Sub(issued)
+	}
+
+	return issued.After(at.Add(-freshness))
+}
+
+func historicalStatusMode(main RevocationMode, authorizationLeaf bool) RevocationMode {
+	if authorizationLeaf {
+		return RequireCRL
+	}
+
+	return main
 }
 
 func eligibleHistoricalClaims(ctx context.Context, certificate *x509.Certificate, claims []historicalClaim, proofs *historicalproof.Set, control time.Time) ([]historicalClaim, error) {
@@ -601,87 +682,6 @@ func historicalRuleMatches(rule CryptoConstraint, algorithm x509.SignatureAlgori
 	return signer != nil && rule.PublicKeyAlgorithm == signer.PublicKeyAlgorithm && historicalKeyBits(signer) < rule.MinimumKeyBits
 }
 
-func (e *pastEvaluation) materialCutoff(algorithm x509.SignatureAlgorithm, signer *x509.Certificate) time.Time {
-	var cutoff time.Time
-	for _, rule := range e.session.options.CryptoConstraints {
-		if historicalRuleMatches(rule, algorithm, signer) && (cutoff.IsZero() || rule.ReliableUntil.Before(cutoff)) {
-			cutoff = rule.ReliableUntil
-		}
-	}
-
-	return cutoff
-}
-
-func (e *pastEvaluation) cryptoBoundary(certificate *x509.Certificate, status historicalStatus, at time.Time) bool {
-	if cutoff := e.materialCutoff(certificate.SignatureAlgorithm, status.primary.issuer); !cutoff.IsZero() && !at.Before(cutoff) {
-		return true
-	}
-
-	for _, claim := range status.claims {
-		algorithm := claim.ocspSignatureAlgorithm()
-		if claim.crl != nil {
-			algorithm = claim.crlSignatureAlgorithm()
-		}
-
-		if cutoff := e.materialCutoff(algorithm, claim.signer); !cutoff.IsZero() && !at.Before(cutoff) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (e *pastEvaluation) protectCrypto(certificate *x509.Certificate, status historicalStatus) error {
-	issuer := status.primary.issuer
-	if cutoff := e.materialCutoff(certificate.SignatureAlgorithm, issuer); !cutoff.IsZero() && !e.session.now.Before(cutoff) {
-		proof, found := e.proofs.EarliestKind(sha256.Sum256(certificate.Raw), historicalproof.Certificate)
-		if !found || !proof.Before(cutoff) {
-			return ErrUnavailable
-		}
-	}
-
-	for _, claim := range status.claims {
-		signer := claim.signer
-
-		algorithm := claim.ocspSignatureAlgorithm()
-		if claim.crl != nil {
-			algorithm = claim.crlSignatureAlgorithm()
-		}
-
-		if cutoff := e.materialCutoff(algorithm, signer); !cutoff.IsZero() && !e.session.now.Before(cutoff) {
-			proof, found := e.proofs.EarliestKind(claim.fact.fingerprint, historicalproof.Kind(claim.fact.kind))
-			if !found || !proof.Before(cutoff) {
-				return ErrUnavailable
-			}
-		}
-	}
-
-	return nil
-}
-
-func (e *pastEvaluation) cryptoBound(certificate *x509.Certificate, status historicalStatus, control time.Time) time.Time {
-	cutoff := e.materialCutoff(certificate.SignatureAlgorithm, status.primary.issuer)
-	if !cutoff.IsZero() && cutoff.Before(control) {
-		control = cutoff
-	}
-
-	for _, claim := range status.claims {
-		signer := claim.signer
-
-		algorithm := claim.ocspSignatureAlgorithm()
-		if claim.crl != nil {
-			algorithm = claim.crlSignatureAlgorithm()
-		}
-
-		cutoff = e.materialCutoff(algorithm, signer)
-		if !cutoff.IsZero() && cutoff.Before(control) {
-			control = cutoff
-		}
-	}
-
-	return control
-}
-
 func (c historicalClaim) crlSignatureAlgorithm() x509.SignatureAlgorithm {
 	if c.crl == nil {
 		return x509.UnknownSignatureAlgorithm
@@ -689,4 +689,5 @@ func (c historicalClaim) crlSignatureAlgorithm() x509.SignatureAlgorithm {
 
 	return c.crl.signatureAlgorithm
 }
+
 func (c historicalClaim) ocspSignatureAlgorithm() x509.SignatureAlgorithm { return c.algorithm }

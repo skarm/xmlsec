@@ -221,18 +221,6 @@ func (p *pathProbe) release(pool chan *pathProbe) {
 	}
 }
 
-// trimProbeBuffer returns buf emptied of node references, or nil when its
-// capacity passed maxPooledProbeBuffer.
-func trimProbeBuffer(buf []xdm.Node) []xdm.Node {
-	if cap(buf) > maxPooledProbeBuffer {
-		return nil
-	}
-
-	clear(buf[:cap(buf)])
-
-	return buf[:0]
-}
-
 // settled reports whether stopping now leaves the order cache as the
 // step-by-step evaluation would leave it: the path's document is registered,
 // or the last step is a `//` walk that settled it.
@@ -515,45 +503,6 @@ func (p *pathProbe) countLastPredicate(evalFn exprEvaluator, ctx context.Context
 	return countPredicateUpTo(evalFn, ctx, p.ec, nodes, pred, need)
 }
 
-// countPredicateUpTo evaluates pred for the nodes of nodes as applyPredicate
-// does, and returns how many it keeps, stopping once it keeps need of them.
-// applyPredicate charges one operation per node before it evaluates any;
-// countPredicateUpTo charges each node before it evaluates it.
-func countPredicateUpTo(evalFn exprEvaluator, ctx context.Context, ec *evalContext, nodes []xdm.Node, pred Expr, need int) (int, error) {
-	size := len(nodes)
-	kept := 0
-
-	for i, n := range nodes {
-		if err := ec.countOps(ctx, 1); err != nil {
-			return 0, err
-		}
-
-		frame := ec.pushNodeContext(n, i+1, size)
-		r, err := evalFn(ctx, ec, pred)
-		ec.restoreContext(frame)
-
-		if err != nil {
-			return 0, err
-		}
-
-		match, err := predicateTrue(r, i+1)
-		if err != nil {
-			return 0, err
-		}
-
-		if !match {
-			continue
-		}
-
-		kept++
-		if kept == need {
-			break
-		}
-	}
-
-	return kept, nil
-}
-
 // runDescendant runs the `//` walk made of steps i and i+1 from contexts,
 // which must pass fusesDescendantContexts, as evalVMDescendantStep evaluates
 // it: one pre-order walk of each outermost context node's subtree, applying
@@ -611,20 +560,6 @@ func (p *pathProbe) runDescendant(evalFn exprEvaluator, ctx context.Context, i i
 	}
 
 	return false, nil
-}
-
-func hasXDMChild(n xdm.Node) bool {
-	if _, ok := n.(*xdm.Attribute); ok {
-		return false
-	}
-
-	for child := range xdm.Children(n) {
-		if xdm.IsXDMChild(child) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // walkSubtree walks the subtree of c in pre-order, applying step si to every
@@ -781,6 +716,79 @@ func (p *pathProbe) walkParent(evalFn exprEvaluator, ctx context.Context, si int
 	return stop, err
 }
 
+// charge charges the operations the `//` walk has not charged yet.
+func (p *pathProbe) charge(ctx context.Context) error {
+	n := p.pending
+	p.pending = 0
+
+	return p.ec.countOps(ctx, n)
+}
+
+// trimProbeBuffer returns buf emptied of node references, or nil when its
+// capacity passed maxPooledProbeBuffer.
+func trimProbeBuffer(buf []xdm.Node) []xdm.Node {
+	if cap(buf) > maxPooledProbeBuffer {
+		return nil
+	}
+
+	clear(buf[:cap(buf)])
+
+	return buf[:0]
+}
+
+// countPredicateUpTo evaluates pred for the nodes of nodes as applyPredicate
+// does, and returns how many it keeps, stopping once it keeps need of them.
+// applyPredicate charges one operation per node before it evaluates any;
+// countPredicateUpTo charges each node before it evaluates it.
+func countPredicateUpTo(evalFn exprEvaluator, ctx context.Context, ec *evalContext, nodes []xdm.Node, pred Expr, need int) (int, error) {
+	size := len(nodes)
+	kept := 0
+
+	for i, n := range nodes {
+		if err := ec.countOps(ctx, 1); err != nil {
+			return 0, err
+		}
+
+		frame := ec.pushNodeContext(n, i+1, size)
+		r, err := evalFn(ctx, ec, pred)
+		ec.restoreContext(frame)
+
+		if err != nil {
+			return 0, err
+		}
+
+		match, err := predicateTrue(r, i+1)
+		if err != nil {
+			return 0, err
+		}
+
+		if !match {
+			continue
+		}
+
+		kept++
+		if kept == need {
+			break
+		}
+	}
+
+	return kept, nil
+}
+
+func hasXDMChild(n xdm.Node) bool {
+	if _, ok := n.(*xdm.Attribute); ok {
+		return false
+	}
+
+	for child := range xdm.Children(n) {
+		if xdm.IsXDMChild(child) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // pushWalkCandidates pushes the XDM children of n onto the pre-order stack
 // and appends the candidates of step from n to matched: the children that
 // match its node test on the child axis, the matching attributes on the
@@ -829,14 +837,6 @@ func pushWalkCandidates(ctx context.Context, ec *evalContext, stack, matched []x
 	slices.Reverse(stack[start:])
 
 	return stack, matched, traversed, nil
-}
-
-// charge charges the operations the `//` walk has not charged yet.
-func (p *pathProbe) charge(ctx context.Context) error {
-	n := p.pending
-	p.pending = 0
-
-	return p.ec.countOps(ctx, n)
 }
 
 // nodeLocalPredicates reports whether preds keep or drop each node on its

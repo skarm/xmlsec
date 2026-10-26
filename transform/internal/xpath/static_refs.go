@@ -235,28 +235,6 @@ func (c *staticRefCollector) walkItemTest(it xdm.NodeTest) {
 	}
 }
 
-// derefNodeTest is the NodeTest analogue of derefExpr, normalizing a pointer-form
-// item test (e.g. &ArrayTest{...}) to its value form. ok is false for a nil node
-// test (a nil interface — e.g. an empty-sequence() type's ItemTest — yields the
-// reflect.Invalid kind, NOT a panic; a typed nil pointer is caught by IsNil), so a
-// caller can rely on this being nil-safe.
-func derefNodeTest(it xdm.NodeTest) (xdm.NodeTest, bool) {
-	rv := reflect.ValueOf(it)
-	if rv.Kind() != reflect.Pointer {
-		return it, it != nil
-	}
-
-	if rv.IsNil() {
-		return nil, false
-	}
-
-	if nt, ok := rv.Elem().Interface().(xdm.NodeTest); ok {
-		return nt, true
-	}
-
-	return it, true
-}
-
 func (c *staticRefCollector) walk(node Expr) { //nolint:gocyclo
 	c.visits++
 
@@ -374,59 +352,6 @@ func (c *staticRefCollector) walk(node Expr) { //nolint:gocyclo
 	}
 }
 
-// VariableKey resolves a variable's expanded name for binding and scope checks.
-// An unprefixed variable has no namespace, independently of the default element
-// namespace. Unknown prefixes remain lexical for the separate prefix validator.
-func VariableKey(name string, namespaces map[string]string) string {
-	if strings.HasPrefix(name, "Q{") {
-		name = name[1:]
-	}
-
-	if strings.HasPrefix(name, "{}") {
-		return name[2:]
-	}
-
-	if strings.HasPrefix(name, "{") {
-		return name
-	}
-
-	if prefix, local, ok := strings.Cut(name, ":"); ok {
-		uri, known := namespaces[prefix]
-		if !known {
-			uri, known = PredeclaredNamespace(prefix)
-		}
-
-		if known && uri != "" {
-			return xdm.ClarkName(uri, local)
-		}
-	}
-
-	return name
-}
-
-// derefExprNode normalizes any pointer-form Expr to its value form via reflection.
-// CompileExpr stores caller-built ASTs unchanged and the VM lowerer accepts both
-// value and pointer node forms (e.g. &CastExpr{...}), so StaticReferences must too.
-// (The package's other derefExpr in streamability.go only covers a fixed handful of
-// pointer types, so it is not reused here.) ok is false for a nil node (including a
-// typed nil pointer).
-func derefExprNode(node Expr) (Expr, bool) {
-	rv := reflect.ValueOf(node)
-	if rv.Kind() != reflect.Pointer {
-		return node, node != nil
-	}
-
-	if rv.IsNil() {
-		return nil, false
-	}
-
-	if e, ok := rv.Elem().Interface().(Expr); ok {
-		return e, true
-	}
-
-	return node, true
-}
-
 func (c *staticRefCollector) walkLocationPath(lp *LocationPath) {
 	if lp == nil {
 		return
@@ -494,23 +419,6 @@ func (c *staticRefCollector) walkTryCatch(n TryCatchExpr) {
 	}
 }
 
-// catchErrorVarKeys are the implicit error variables the evaluator binds inside a
-// try/catch catch clause (XPath/XQuery error namespace, conventional "err" prefix),
-// keyed by the SAME lexical "err:local" form a reference site produces. They are
-// bound for the scope of each catch body so a reference to one is not reported as a
-// free variable. Kept in sync with eval_control.go buildCatchContext.
-func catchErrorVarKeys() [7]string {
-	return [7]string{
-		"err:code",
-		"err:description",
-		"err:value",
-		"err:module",
-		"err:line-number",
-		"err:column-number",
-		"err:additional",
-	}
-}
-
 // walkQuantified binds every quantifier variable for the satisfies expression;
 // each binding's domain is in the scope of the prior bindings.
 func (c *staticRefCollector) walkQuantified(n QuantifiedExpr) {
@@ -554,6 +462,98 @@ func (c *staticRefCollector) walkInlineFunction(n InlineFunctionExpr) {
 
 	for _, k := range added {
 		c.unbindVar(k)
+	}
+}
+
+// VariableKey resolves a variable's expanded name for binding and scope checks.
+// An unprefixed variable has no namespace, independently of the default element
+// namespace. Unknown prefixes remain lexical for the separate prefix validator.
+func VariableKey(name string, namespaces map[string]string) string {
+	if strings.HasPrefix(name, "Q{") {
+		name = name[1:]
+	}
+
+	if strings.HasPrefix(name, "{}") {
+		return name[2:]
+	}
+
+	if strings.HasPrefix(name, "{") {
+		return name
+	}
+
+	if prefix, local, ok := strings.Cut(name, ":"); ok {
+		uri, known := namespaces[prefix]
+		if !known {
+			uri, known = PredeclaredNamespace(prefix)
+		}
+
+		if known && uri != "" {
+			return xdm.ClarkName(uri, local)
+		}
+	}
+
+	return name
+}
+
+// derefNodeTest is the NodeTest analogue of derefExpr, normalizing a pointer-form
+// item test (e.g. &ArrayTest{...}) to its value form. ok is false for a nil node
+// test (a nil interface — e.g. an empty-sequence() type's ItemTest — yields the
+// reflect.Invalid kind, NOT a panic; a typed nil pointer is caught by IsNil), so a
+// caller can rely on this being nil-safe.
+func derefNodeTest(it xdm.NodeTest) (xdm.NodeTest, bool) {
+	rv := reflect.ValueOf(it)
+	if rv.Kind() != reflect.Pointer {
+		return it, it != nil
+	}
+
+	if rv.IsNil() {
+		return nil, false
+	}
+
+	if nt, ok := rv.Elem().Interface().(xdm.NodeTest); ok {
+		return nt, true
+	}
+
+	return it, true
+}
+
+// derefExprNode normalizes any pointer-form Expr to its value form via reflection.
+// CompileExpr stores caller-built ASTs unchanged and the VM lowerer accepts both
+// value and pointer node forms (e.g. &CastExpr{...}), so StaticReferences must too.
+// (The package's other derefExpr in streamability.go only covers a fixed handful of
+// pointer types, so it is not reused here.) ok is false for a nil node (including a
+// typed nil pointer).
+func derefExprNode(node Expr) (Expr, bool) {
+	rv := reflect.ValueOf(node)
+	if rv.Kind() != reflect.Pointer {
+		return node, node != nil
+	}
+
+	if rv.IsNil() {
+		return nil, false
+	}
+
+	if e, ok := rv.Elem().Interface().(Expr); ok {
+		return e, true
+	}
+
+	return node, true
+}
+
+// catchErrorVarKeys are the implicit error variables the evaluator binds inside a
+// try/catch catch clause (XPath/XQuery error namespace, conventional "err" prefix),
+// keyed by the SAME lexical "err:local" form a reference site produces. They are
+// bound for the scope of each catch body so a reference to one is not reported as a
+// free variable. Kept in sync with eval_control.go buildCatchContext.
+func catchErrorVarKeys() [7]string {
+	return [7]string{
+		"err:code",
+		"err:description",
+		"err:value",
+		"err:module",
+		"err:line-number",
+		"err:column-number",
+		"err:additional",
 	}
 }
 

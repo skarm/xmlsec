@@ -691,18 +691,6 @@ func (parser *durationParser) addMonthComponent(component durationComponent, ord
 	return nil
 }
 
-// addCheckedMonths adds two non-negative month counts, reporting ok=false on
-// int64 overflow. A year/month total that exceeds int64 (e.g.
-// P768614336404564650Y11M) must be rejected BEFORE it wraps to an invalid
-// negative lexical form.
-func addCheckedMonths(a, b int64) (int64, bool) {
-	if b > math.MaxInt64-a {
-		return 0, false
-	}
-
-	return a + b, true
-}
-
 func (parser *durationParser) addTimeComponent(component durationComponent) error {
 	if component.designator != 'S' && component.fractional {
 		return parser.invalid()
@@ -740,19 +728,6 @@ func (parser *durationParser) addTimeComponent(component durationComponent) erro
 	return nil
 }
 
-func durationTimeComponent(designator byte) (int, int64) {
-	switch designator {
-	case 'H':
-		return 4, 3600
-	case 'M':
-		return 5, 60
-	case 'S':
-		return 6, 1
-	default:
-		return 0, 0
-	}
-}
-
 func (parser *durationParser) advanceOrder(order int) error {
 	if parser.lastOrder >= order {
 		return parser.invalid()
@@ -780,6 +755,31 @@ func (parser *durationParser) result() (xdm.Duration, error) {
 	}
 
 	return parser.value, nil
+}
+
+// addCheckedMonths adds two non-negative month counts, reporting ok=false on
+// int64 overflow. A year/month total that exceeds int64 (e.g.
+// P768614336404564650Y11M) must be rejected BEFORE it wraps to an invalid
+// negative lexical form.
+func addCheckedMonths(a, b int64) (int64, bool) {
+	if b > math.MaxInt64-a {
+		return 0, false
+	}
+
+	return a + b, true
+}
+
+func durationTimeComponent(designator byte) (int, int64) {
+	switch designator {
+	case 'H':
+		return 4, 3600
+	case 'M':
+		return 5, 60
+	case 'S':
+		return 6, 1
+	default:
+		return 0, 0
+	}
 }
 
 // exactFractionDigits returns the digits AFTER the decimal point for a

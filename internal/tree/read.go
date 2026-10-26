@@ -38,6 +38,20 @@ func ParseText(ctx context.Context, text string, limits Limits) (*Document, erro
 	return parseXMLReader(ctx, strings.NewReader(text), limits, true, false, false)
 }
 
+// CheckXMLProlog validates XML through the first complete element start tag.
+// It uses the document parser's encoding, namespace, DTD and resource policy.
+func CheckXMLProlog(ctx context.Context, src io.Reader, limits Limits, singleByteEncodings bool) error {
+	parser, err := newDocumentReader(ctx, src, limits, false, singleByteEncodings, false)
+	if err != nil {
+		return err
+	}
+
+	parser.stopAtRoot = true
+	_, err = parser.parse(ctx)
+
+	return err
+}
+
 func parseXMLReader(ctx context.Context, src io.Reader, limits Limits, characterInput, singleByteEncodings, relativeNamespaces bool) (*Document, error) {
 	parser, err := newDocumentReader(ctx, src, limits, characterInput, singleByteEncodings, relativeNamespaces)
 	if err != nil {
@@ -56,20 +70,6 @@ func parseXMLReader(ctx context.Context, src io.Reader, limits Limits, character
 	doc.inputBytes = int(max(parser.input.source.ReadBytes, parser.input.decoded))
 
 	return doc, nil
-}
-
-// CheckXMLProlog validates XML through the first complete element start tag.
-// It uses the document parser's encoding, namespace, DTD and resource policy.
-func CheckXMLProlog(ctx context.Context, src io.Reader, limits Limits, singleByteEncodings bool) error {
-	parser, err := newDocumentReader(ctx, src, limits, false, singleByteEncodings, false)
-	if err != nil {
-		return err
-	}
-
-	parser.stopAtRoot = true
-	_, err = parser.parse(ctx)
-
-	return err
 }
 
 func newDocumentReader(ctx context.Context, src io.Reader, limits Limits, characterInput, singleByteEncodings, relativeNamespaces bool) (documentParser, error) {
@@ -377,6 +377,27 @@ func (r *xmlInput) nextUnit() ([]byte, error) {
 	return normalizeOwnedLexical(unit)
 }
 
+func (r *xmlInput) unitComplete(unit []byte, markup bool, quote rune, inReference bool) (bool, error) {
+	if r.dtdProbe && len(unit) <= len(dtdDoctypeOpen) && bytes.Equal(unit, []byte(dtdDoctypeOpen)[:len(unit)]) {
+		if len(unit) == len(dtdDoctypeOpen) {
+			return false, errDTDPresent
+		}
+
+		return false, nil
+	}
+
+	return lexicalUnitComplete(unit, markup, quote, inReference)
+}
+
+func (r *xmlInput) unitRune(markup bool) (rune, error) {
+	value, err := r.rune()
+	if markup && err == io.EOF { //nolint:errorlint // Preserve other errors accompanying EOF.
+		return 0, fmt.Errorf("%w: unterminated XML token", ErrMalformed)
+	}
+
+	return value, err
+}
+
 func sourceLineBreaks(data []byte) uint64 {
 	var count uint64
 
@@ -439,25 +460,4 @@ func lexicalQuote(unit []byte, value, quote rune) rune {
 	}
 
 	return 0
-}
-
-func (r *xmlInput) unitComplete(unit []byte, markup bool, quote rune, inReference bool) (bool, error) {
-	if r.dtdProbe && len(unit) <= len(dtdDoctypeOpen) && bytes.Equal(unit, []byte(dtdDoctypeOpen)[:len(unit)]) {
-		if len(unit) == len(dtdDoctypeOpen) {
-			return false, errDTDPresent
-		}
-
-		return false, nil
-	}
-
-	return lexicalUnitComplete(unit, markup, quote, inReference)
-}
-
-func (r *xmlInput) unitRune(markup bool) (rune, error) {
-	value, err := r.rune()
-	if markup && err == io.EOF { //nolint:errorlint // Preserve other errors accompanying EOF.
-		return 0, fmt.Errorf("%w: unterminated XML token", ErrMalformed)
-	}
-
-	return value, err
 }

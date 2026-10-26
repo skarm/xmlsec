@@ -36,6 +36,45 @@ func EBV(seq xdm.Sequence) (bool, error) {
 	}
 }
 
+// AtomizeSequence atomizes all items in a sequence per XPath 3.1 Section 2.6.2.
+func AtomizeSequence(seq xdm.Sequence) ([]xdm.AtomicValue, error) {
+	if seq == nil {
+		return nil, nil
+	}
+
+	result := make([]xdm.AtomicValue, 0, seq.Len())
+
+	err := atomizeStream(seq, func(av xdm.AtomicValue) (bool, error) {
+		result = append(result, av)
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// FnAtomize applies typed atomization at an adapter function boundary, charging
+// array edges, empty members and emitted atoms to the current invocation.
+func FnAtomize(ctx context.Context, seq xdm.Sequence) ([]xdm.AtomicValue, error) {
+	ec := getFnContext(ctx)
+
+	var atoms []xdm.AtomicValue
+
+	err := atomizeBounded(ctx, ec, seq, func(atom xdm.AtomicValue) (bool, error) {
+		if len(atoms) >= fnMaxNodes(ec) {
+			return false, ErrBudget
+		}
+
+		atoms = append(atoms, atom)
+
+		return true, nil
+	})
+
+	return atoms, err
+}
+
 func ebvSingle(item xdm.Item) (bool, error) {
 	switch v := item.(type) {
 	case xdm.AtomicValue:
@@ -89,45 +128,6 @@ func ebvAtomic(v xdm.AtomicValue) (bool, error) {
 		Code:    errCodeFORG0006,
 		Message: fmt.Sprintf("effective boolean value not defined for %s", v.TypeName),
 	}
-}
-
-// AtomizeSequence atomizes all items in a sequence per XPath 3.1 Section 2.6.2.
-func AtomizeSequence(seq xdm.Sequence) ([]xdm.AtomicValue, error) {
-	if seq == nil {
-		return nil, nil
-	}
-
-	result := make([]xdm.AtomicValue, 0, seq.Len())
-
-	err := atomizeStream(seq, func(av xdm.AtomicValue) (bool, error) {
-		result = append(result, av)
-		return true, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
-}
-
-// FnAtomize applies typed atomization at an adapter function boundary, charging
-// array edges, empty members and emitted atoms to the current invocation.
-func FnAtomize(ctx context.Context, seq xdm.Sequence) ([]xdm.AtomicValue, error) {
-	ec := getFnContext(ctx)
-
-	var atoms []xdm.AtomicValue
-
-	err := atomizeBounded(ctx, ec, seq, func(atom xdm.AtomicValue) (bool, error) {
-		if len(atoms) >= fnMaxNodes(ec) {
-			return false, ErrBudget
-		}
-
-		atoms = append(atoms, atom)
-
-		return true, nil
-	})
-
-	return atoms, err
 }
 
 // atomizeBounded charges array traversal even when every leaf atomizes to ().

@@ -186,6 +186,21 @@ func (r *recordState) token(token xml.Token, offset int64) error {
 	return nil
 }
 
+func (r *recordState) matches() bool {
+	stack := r.parser.stack
+	if len(stack) != len(r.options.Path) {
+		return false
+	}
+
+	for i, frame := range stack {
+		if frame.node.Name != r.options.Path[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
 func inheritedRecordNamespaces(node *Node) []Namespace {
 	scope := namespaceScope(node)
 
@@ -269,19 +284,4 @@ func recordBaseURI(node *Node) (string, error) {
 	}
 
 	return base, nil
-}
-
-func (r *recordState) matches() bool {
-	stack := r.parser.stack
-	if len(stack) != len(r.options.Path) {
-		return false
-	}
-
-	for i, frame := range stack {
-		if frame.node.Name != r.options.Path[i] {
-			return false
-		}
-	}
-
-	return true
 }

@@ -169,113 +169,6 @@ func (ec *execContext) execLiteralResultElement(ctx context.Context, inst *liter
 	return nil
 }
 
-func execLiteralResultElementAttrs(ctx context.Context, inst *literalResultElement, ec *execContext, elem *xdm.Element) error {
-	for _, attr := range inst.Attrs {
-		val, err := attr.Value.evaluate(ctx, ec.contextNode)
-		if err != nil {
-			return err
-		}
-
-		if attr.Namespace != "" {
-			// Ensure the attribute's namespace is declared on the element
-			if !hasNSDecl(elem, attr.Prefix, attr.Namespace) && !ec.isNSDeclaredInScope(attr.Prefix, attr.Namespace) {
-				if err := elem.DeclareNamespace(attr.Prefix, attr.Namespace); err != nil {
-					return err
-				}
-			}
-
-			ns, err := ec.resultDoc.CreateNamespace(attr.Prefix, attr.Namespace)
-			if err != nil {
-				return err
-			}
-			// SetAttributeNS stores the value verbatim: avt evaluation
-			// produces plain text that may contain & from resolved entities
-			// (e.g. &amp; -> &), which SetParsedAttributeNS would wrongly
-			// re-parse as entity references.
-			_ = elem.SetAttributeNS(attr.LocalName, val, ns)
-		} else {
-			_ = elem.SetAttribute(attr.Name, val)
-		}
-	}
-
-	return nil
-}
-
-func execLiteralResultElementNamespaces(inst *literalResultElement, elem *xdm.Element) error {
-	for _, prefix := range inst.NamespacePrefixes {
-		uri := inst.Namespaces[prefix]
-		if prefix == "" {
-			continue // already handled above
-		}
-
-		if err := elem.DeclareNamespace(prefix, uri); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func execLiteralResultElementTypeName(ctx context.Context, inst *literalResultElement, ec *execContext, elem *xdm.Element) error {
-	if inst.TypeName != "" {
-		if err := ec.validateAndNormalizeElementContent(ctx, elem, inst.TypeName); err != nil {
-			if xsltErr, ok := errors.AsType[*XSLTError](err); ok && xsltErr.Code == errCodeXTTE1510 {
-				return dynamicError(errCodeXTTE1540,
-					"element content does not match declared type %s: %v", inst.TypeName, xsltErr.Message)
-			}
-
-			return err
-		}
-
-		ec.annotateNode(elem, inst.TypeName)
-		ec.annotateAttributesFromType(elem, inst.TypeName)
-	}
-
-	return nil
-}
-
-func execLiteralResultElementNamespace(inst *literalResultElement, elem *xdm.Element, ec *execContext, prefixExcluded *bool) (returned0 error, matchedBranch bool) {
-	if inst.Namespace != "" {
-		if err := elem.SetActiveNamespace(inst.Prefix, inst.Namespace); err != nil {
-			return err, true
-		}
-		// Ensure the namespace declaration is present for serialization.
-		// SetActiveNamespace only sets n.ns; we also need it in nsDefs.
-		// However, if the prefix was excluded (not in inst.Namespaces), defer
-		// declaration so that xsl:namespace instructions can claim the prefix.
-		// Namespace fixup after body execution will assign a new prefix if needed.
-		_, prefixInNS := inst.Namespaces[inst.Prefix]
-		if inst.Prefix == "" {
-			prefixInNS = true // default namespace is never "excluded" in this sense
-		}
-
-		if prefixInNS {
-			if !hasNSDecl(elem, inst.Prefix, inst.Namespace) && !ec.isNSDeclaredInScope(inst.Prefix, inst.Namespace) {
-				if err := elem.DeclareNamespace(inst.Prefix, inst.Namespace); err != nil {
-					return err, true
-				}
-			}
-		} else {
-			*prefixExcluded = true
-			// The declaration for the literal result element's own prefix is
-			// intentionally deferred. xsl:namespace may bind that prefix to a
-			// different URI, in which case namespace fixup renames the element.
-			if ec.nsFixupAllowed == nil {
-				ec.nsFixupAllowed = make(map[*xdm.Element]struct{})
-			}
-
-			ec.nsFixupAllowed[elem] = struct{}{}
-		}
-	} else if inst.Prefix == "" && ec.hasDefaultNSInScope() {
-		// No namespace on this LRE but default namespace in scope — undeclare it
-		if err := elem.DeclareNamespace("", ""); err != nil {
-			return err, true
-		}
-	}
-
-	return
-}
-
 // applyAttributeSets applies named attribute sets to the current output element.
 // Nested constructors and callbacks share the active component identities.
 func (ec *execContext) applyAttributeSets(ctx context.Context, names []string) error {
@@ -502,23 +395,6 @@ func (ec *execContext) fixNamespacesAfterCopy(elem *xdm.Element) {
 	}
 }
 
-func fixNamespacesAfterCopyURI(elem *xdm.Element) {
-	if elem.URI() == "" && elem.Prefix() == "" {
-		hasUndecl := false
-
-		for _, ns := range elem.Namespaces() {
-			if ns.Prefix() == "" {
-				hasUndecl = true
-				break
-			}
-		}
-
-		if !hasUndecl {
-			_ = elem.DeclareNamespace("", "")
-		}
-	}
-}
-
 // fixupExcludedElementNS handles namespace fixup for a literal result element
 // whose own prefix was excluded via exclude-result-prefixes. If no
 // xsl:namespace instruction claimed the prefix, it declares the element's
@@ -545,6 +421,130 @@ func (ec *execContext) fixupExcludedElementNS(elem *xdm.Element, origPrefix, ori
 	}
 	// Prefix is free — declare it for the element
 	_ = elem.DeclareNamespace(origPrefix, origURI)
+}
+
+func execLiteralResultElementAttrs(ctx context.Context, inst *literalResultElement, ec *execContext, elem *xdm.Element) error {
+	for _, attr := range inst.Attrs {
+		val, err := attr.Value.evaluate(ctx, ec.contextNode)
+		if err != nil {
+			return err
+		}
+
+		if attr.Namespace != "" {
+			// Ensure the attribute's namespace is declared on the element
+			if !hasNSDecl(elem, attr.Prefix, attr.Namespace) && !ec.isNSDeclaredInScope(attr.Prefix, attr.Namespace) {
+				if err := elem.DeclareNamespace(attr.Prefix, attr.Namespace); err != nil {
+					return err
+				}
+			}
+
+			ns, err := ec.resultDoc.CreateNamespace(attr.Prefix, attr.Namespace)
+			if err != nil {
+				return err
+			}
+			// SetAttributeNS stores the value verbatim: avt evaluation
+			// produces plain text that may contain & from resolved entities
+			// (e.g. &amp; -> &), which SetParsedAttributeNS would wrongly
+			// re-parse as entity references.
+			_ = elem.SetAttributeNS(attr.LocalName, val, ns)
+		} else {
+			_ = elem.SetAttribute(attr.Name, val)
+		}
+	}
+
+	return nil
+}
+
+func execLiteralResultElementNamespaces(inst *literalResultElement, elem *xdm.Element) error {
+	for _, prefix := range inst.NamespacePrefixes {
+		uri := inst.Namespaces[prefix]
+		if prefix == "" {
+			continue // already handled above
+		}
+
+		if err := elem.DeclareNamespace(prefix, uri); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func execLiteralResultElementTypeName(ctx context.Context, inst *literalResultElement, ec *execContext, elem *xdm.Element) error {
+	if inst.TypeName != "" {
+		if err := ec.validateAndNormalizeElementContent(ctx, elem, inst.TypeName); err != nil {
+			if xsltErr, ok := errors.AsType[*XSLTError](err); ok && xsltErr.Code == errCodeXTTE1510 {
+				return dynamicError(errCodeXTTE1540,
+					"element content does not match declared type %s: %v", inst.TypeName, xsltErr.Message)
+			}
+
+			return err
+		}
+
+		ec.annotateNode(elem, inst.TypeName)
+		ec.annotateAttributesFromType(elem, inst.TypeName)
+	}
+
+	return nil
+}
+
+func execLiteralResultElementNamespace(inst *literalResultElement, elem *xdm.Element, ec *execContext, prefixExcluded *bool) (returned0 error, matchedBranch bool) {
+	if inst.Namespace != "" {
+		if err := elem.SetActiveNamespace(inst.Prefix, inst.Namespace); err != nil {
+			return err, true
+		}
+		// Ensure the namespace declaration is present for serialization.
+		// SetActiveNamespace only sets n.ns; we also need it in nsDefs.
+		// However, if the prefix was excluded (not in inst.Namespaces), defer
+		// declaration so that xsl:namespace instructions can claim the prefix.
+		// Namespace fixup after body execution will assign a new prefix if needed.
+		_, prefixInNS := inst.Namespaces[inst.Prefix]
+		if inst.Prefix == "" {
+			prefixInNS = true // default namespace is never "excluded" in this sense
+		}
+
+		if prefixInNS {
+			if !hasNSDecl(elem, inst.Prefix, inst.Namespace) && !ec.isNSDeclaredInScope(inst.Prefix, inst.Namespace) {
+				if err := elem.DeclareNamespace(inst.Prefix, inst.Namespace); err != nil {
+					return err, true
+				}
+			}
+		} else {
+			*prefixExcluded = true
+			// The declaration for the literal result element's own prefix is
+			// intentionally deferred. xsl:namespace may bind that prefix to a
+			// different URI, in which case namespace fixup renames the element.
+			if ec.nsFixupAllowed == nil {
+				ec.nsFixupAllowed = make(map[*xdm.Element]struct{})
+			}
+
+			ec.nsFixupAllowed[elem] = struct{}{}
+		}
+	} else if inst.Prefix == "" && ec.hasDefaultNSInScope() {
+		// No namespace on this LRE but default namespace in scope — undeclare it
+		if err := elem.DeclareNamespace("", ""); err != nil {
+			return err, true
+		}
+	}
+
+	return
+}
+
+func fixNamespacesAfterCopyURI(elem *xdm.Element) {
+	if elem.URI() == "" && elem.Prefix() == "" {
+		hasUndecl := false
+
+		for _, ns := range elem.Namespaces() {
+			if ns.Prefix() == "" {
+				hasUndecl = true
+				break
+			}
+		}
+
+		if !hasUndecl {
+			_ = elem.DeclareNamespace("", "")
+		}
+	}
 }
 
 func finishConstructedNamespaces(ctx context.Context, elem *xdm.Element, inherit bool) error {

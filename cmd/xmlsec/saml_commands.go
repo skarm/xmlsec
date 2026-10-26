@@ -195,19 +195,6 @@ func (c samlCommand) signing(ctx context.Context) (protocol.SigningKey, error) {
 	return protocol.SigningKey{Key: key, CertificateDER: der, SignatureMethod: method, Policy: policy}, err
 }
 
-func signatureMethod(key crypto.PublicKey) string {
-	switch key.(type) {
-	case *rsa.PublicKey:
-		return xmldsig.RSASHA256
-	case *ecdsa.PublicKey:
-		return xmldsig.ECDSASHA256
-	case ed25519.PublicKey:
-		return xmldsig.Ed25519
-	}
-
-	return ""
-}
-
 func (c samlCommand) keys(ctx context.Context) ([]crypto.PublicKey, error) {
 	paths := append([]string(nil), c.trusted...)
 	if c.command == nameRedirectVerify && c.key != "" {
@@ -344,25 +331,6 @@ func (c samlCommand) redirect(ctx context.Context, stdin io.Reader, stdout io.Wr
 	return errors.Join(verifyErr, jsonOutput(ctx, c.output, stdout, resultReport("saml redirect-verify", "explicit-public-key-pins", detail, verifyErr)))
 }
 
-func verifyRedirectKeys(ctx context.Context, query string, keys []crypto.PublicKey, opt binding.Options) (*binding.RedirectResult, error) {
-	var (
-		result *binding.RedirectResult
-		err    error
-	)
-	for _, key := range keys {
-		result, err = binding.VerifyRedirect(ctx, query, key, opt)
-		if err == nil {
-			return result, nil
-		}
-
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-	}
-
-	return nil, err
-}
-
 func (c samlCommand) metadata(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	at, err := parseTime(c.at)
 	if err != nil {
@@ -422,47 +390,6 @@ func (c samlCommand) metadata(ctx context.Context, stdin io.Reader, stdout io.Wr
 	}
 
 	return errors.Join(verifyErr, jsonOutput(ctx, c.output, stdout, resultReport("saml metadata-verify", trust, detail, verifyErr)))
-}
-
-func metadataDescription(snapshot *metadata.Snapshot, at time.Time) any {
-	entities := make([]any, 0, len(snapshot.Entities()))
-
-	for _, entity := range snapshot.Entities() {
-		var roles []any
-
-		for _, kind := range []metadata.RoleType{metadata.ServiceProvider, metadata.IdentityProvider} {
-			role, err := entity.Role(kind, at)
-			if err != nil {
-				continue
-			}
-
-			endpoints := map[string]any{}
-
-			for _, name := range []string{
-				metadata.AssertionConsumerService,
-				metadata.SingleSignOnService,
-				metadata.SingleLogoutService,
-				metadata.ArtifactResolutionService,
-				metadata.ManageNameIDService,
-			} {
-				if list := role.Endpoints(name); len(list) > 0 {
-					endpoints[name] = list
-				}
-			}
-
-			roles = append(roles, map[string]any{
-				fieldType:         role.Type(),
-				fieldExpiresAt:    role.ExpiresAt(),
-				"endpoints":       endpoints,
-				"signing_keys":    len(role.SigningKeys()),
-				"name_id_formats": role.NameIDFormats(),
-			})
-		}
-
-		entities = append(entities, map[string]any{"id": entity.ID(), fieldExpiresAt: entity.ExpiresAt(), "roles": roles})
-	}
-
-	return map[string]any{"signature_authenticated": snapshot.AuthenticatedSignature(), fieldExpiresAt: snapshot.ExpiresAt(), "entities": entities}
 }
 
 func (c samlCommand) buildMetadata(ctx context.Context, at time.Time, opt metadata.Options, stdout io.Writer) error {
@@ -599,6 +526,79 @@ func (c samlCommand) verifyResponse(ctx context.Context, stdin io.Reader, stdout
 	}
 
 	return errors.Join(verifyErr, jsonOutput(ctx, c.output, stdout, resultReport("saml response-verify", "explicit-protocol-key-pins-and-expectations", detail, verifyErr)))
+}
+
+func signatureMethod(key crypto.PublicKey) string {
+	switch key.(type) {
+	case *rsa.PublicKey:
+		return xmldsig.RSASHA256
+	case *ecdsa.PublicKey:
+		return xmldsig.ECDSASHA256
+	case ed25519.PublicKey:
+		return xmldsig.Ed25519
+	}
+
+	return ""
+}
+
+func verifyRedirectKeys(ctx context.Context, query string, keys []crypto.PublicKey, opt binding.Options) (*binding.RedirectResult, error) {
+	var (
+		result *binding.RedirectResult
+		err    error
+	)
+	for _, key := range keys {
+		result, err = binding.VerifyRedirect(ctx, query, key, opt)
+		if err == nil {
+			return result, nil
+		}
+
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+
+	return nil, err
+}
+
+func metadataDescription(snapshot *metadata.Snapshot, at time.Time) any {
+	entities := make([]any, 0, len(snapshot.Entities()))
+
+	for _, entity := range snapshot.Entities() {
+		var roles []any
+
+		for _, kind := range []metadata.RoleType{metadata.ServiceProvider, metadata.IdentityProvider} {
+			role, err := entity.Role(kind, at)
+			if err != nil {
+				continue
+			}
+
+			endpoints := map[string]any{}
+
+			for _, name := range []string{
+				metadata.AssertionConsumerService,
+				metadata.SingleSignOnService,
+				metadata.SingleLogoutService,
+				metadata.ArtifactResolutionService,
+				metadata.ManageNameIDService,
+			} {
+				if list := role.Endpoints(name); len(list) > 0 {
+					endpoints[name] = list
+				}
+			}
+
+			roles = append(roles, map[string]any{
+				fieldType:         role.Type(),
+				fieldExpiresAt:    role.ExpiresAt(),
+				"endpoints":       endpoints,
+				"signing_keys":    len(role.SigningKeys()),
+				"name_id_formats": role.NameIDFormats(),
+			})
+		}
+
+		entities = append(entities, map[string]any{"id": entity.ID(), fieldExpiresAt: entity.ExpiresAt(), "roles": roles})
+	}
+
+	return map[string]any{"signature_authenticated": snapshot.AuthenticatedSignature(), fieldExpiresAt: snapshot.ExpiresAt(), "entities": entities}
 }
 
 func hasProtocolSignaturePolicy(p xmldsig.Policy) bool {

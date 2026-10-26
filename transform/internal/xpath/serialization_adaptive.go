@@ -163,16 +163,6 @@ func (s *adaptiveSerialization) atomic(value xdm.AtomicValue) error {
 	}
 }
 
-func adaptivePrimitiveType(name string) string {
-	for _, primitive := range []string{xdm.TypeDateTime, xdm.TypeDuration, xdm.TypeString} {
-		if xdm.IsSubtypeOf(name, primitive) {
-			return primitive
-		}
-	}
-
-	return name
-}
-
 func (s *adaptiveSerialization) quoted(value string) error {
 	// Quotes are doubled before the resulting text undergoes character mapping.
 	// A quote introduced by a map is emitted verbatim, never doubled again.
@@ -380,4 +370,14 @@ func (s *adaptiveSerialization) mapping(value xdm.MapItem, depth int) error {
 	}
 
 	return s.write("}")
+}
+
+func adaptivePrimitiveType(name string) string {
+	for _, primitive := range []string{xdm.TypeDateTime, xdm.TypeDuration, xdm.TypeString} {
+		if xdm.IsSubtypeOf(name, primitive) {
+			return primitive
+		}
+	}
+
+	return name
 }

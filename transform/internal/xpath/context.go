@@ -192,14 +192,6 @@ func WithTextResourceCacheLimit(ctx context.Context, bytes int) context.Context 
 
 type textResourceCacheLimitKey struct{}
 
-func bindInvocationScope(ctx context.Context, ec *evalContext) {
-	if state, ok := ctx.Value(invocationScopeKey{}).(*invocationState); ok {
-		ec.invocation = state
-	} else {
-		ec.invocation = &invocationState{}
-	}
-}
-
 // IsDynamicCall reports evaluation inside an invoked function item, including
 // inline functions and higher-order calls.
 func IsDynamicCall(ctx context.Context) bool {
@@ -281,6 +273,14 @@ func FnDefaultXMLNamespace(ctx context.Context) string {
 // FnXPath10Compat reports the current call's backwards compatibility policy.
 func FnXPath10Compat(ctx context.Context) bool {
 	return getFnContext(ctx) != nil && getFnContext(ctx).xpath10Compat
+}
+
+func bindInvocationScope(ctx context.Context, ec *evalContext) {
+	if state, ok := ctx.Value(invocationScopeKey{}).(*invocationState); ok {
+		ec.invocation = state
+	} else {
+		ec.invocation = &invocationState{}
+	}
 }
 
 // fnContextKey is used exclusively by the unexported withFnContext/getFnContext

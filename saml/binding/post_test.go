@@ -2,6 +2,7 @@ package binding_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"net/url"
 	"strings"
 	"testing"
@@ -9,6 +10,16 @@ import (
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/saml/binding"
 )
+
+func TestPOSTRejectsConcatenatedBase64Values(t *testing.T) {
+	xml := `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol">` + strings.Repeat("a", 900) + `</samlp:AuthnRequest>`
+	// The first padded value fills NewDecoder's 1024-byte input buffer.
+	value := base64.StdEncoding.EncodeToString([]byte(xml[:766])) + base64.StdEncoding.EncodeToString([]byte(xml[766:]))
+	form := []byte("SAMLRequest=" + url.QueryEscape(value))
+	if message, err := binding.DecodePOST(t.Context(), form, binding.Request, binding.POSTLimits{}); message != nil || err == nil {
+		t.Fatalf("concatenated Base64 values accepted: message=%v err=%v", message, err)
+	}
+}
 
 func TestPOST(t *testing.T) {
 	d, e := document.Parse(t.Context(), []byte(`<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="_request"/>`), document.DefaultLimits())

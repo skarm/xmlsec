@@ -55,59 +55,6 @@ type crlEntry struct {
 	issuers    []crlGeneralName
 }
 
-func parseCRL(ctx context.Context, raw []byte) (*parsedCRL, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	view, err := x509crl.ParseEvidence(raw, 64<<20)
-	if err != nil {
-		if errors.Is(err, x509crl.ErrLimit) {
-			return nil, fmt.Errorf("%w: %w: %w", ErrPolicy, ErrLimit, err)
-		}
-
-		return nil, fmt.Errorf("%w: CRL DER: %w", ErrEvidence, err)
-	}
-
-	source := view.CRL
-	list := &parsedCRL{
-		raw:                source.Raw,
-		tbs:                source.RawTBSRevocationList,
-		issuer:             source.RawIssuer,
-		signature:          source.Signature,
-		algorithm:          view.Algorithm,
-		version:            view.Version,
-		signatureAlgorithm: source.SignatureAlgorithm,
-		this:               source.ThisUpdate,
-		next:               source.NextUpdate,
-		scope:              crlScope{crlDistributionPoint: crlDistributionPoint{reasons: allCRLReasons}},
-	}
-
-	if !list.next.IsZero() && !list.next.After(list.this) {
-		return nil, ErrEvidence
-	}
-
-	if err := list.parseExtensions(ctx, source.Extensions); err != nil {
-		return nil, err
-	}
-
-	if list.version == 1 && list.number == nil || list.base != nil && (list.number == nil || list.number.Cmp(list.base) <= 0) {
-		return nil, ErrEvidence
-	}
-
-	issuerName, err := crlDirectoryName(ctx, list.issuer)
-	if err != nil {
-		return nil, err
-	}
-
-	list.issuerKey = issuerName.key
-	if err := list.parseEntries(ctx, source.RevokedCertificateEntries, issuerName); err != nil {
-		return nil, err
-	}
-
-	return list, ctx.Err()
-}
-
 func (l *parsedCRL) parseEntries(ctx context.Context, entries []x509.RevocationListEntry, issuerName crlGeneralName) error {
 	currentIssuer := []crlGeneralName{issuerName}
 
@@ -144,15 +91,6 @@ func (l *parsedCRL) parseEntries(ctx context.Context, entries []x509.RevocationL
 	}
 
 	return ctx.Err()
-}
-
-func crlNumber(raw []byte) (*big.Int, error) {
-	var number *big.Int
-	if der.Unmarshal(raw, &number) != nil || number == nil || number.Sign() < 0 || number.BitLen() > 160 {
-		return nil, ErrEvidence
-	}
-
-	return number, nil
 }
 
 func (l *parsedCRL) parseExtensions(ctx context.Context, list []pkix.Extension) error {
@@ -251,65 +189,6 @@ func (l *parsedCRL) parseExtension(ctx context.Context, ext pkix.Extension) erro
 	return nil
 }
 
-type crlAuthority struct {
-	keyID   []byte
-	issuers []crlGeneralName
-	serial  *big.Int
-}
-
-func parseCRLAuthority(ctx context.Context, raw []byte) (crlAuthority, error) {
-	out := crlAuthority{}
-
-	value, err := der.Read(raw, 1<<20)
-	if err != nil {
-		return out, ErrEvidence
-	}
-
-	fields, err := der.Sequence(value, 1, 3)
-	if err != nil {
-		return out, ErrEvidence
-	}
-
-	previous := -1
-	for _, field := range fields {
-		if field.Class != 2 || field.Tag <= previous {
-			return out, ErrEvidence
-		}
-
-		previous = field.Tag
-		switch field.Tag {
-		case 0:
-			if field.IsCompound || len(field.Bytes) == 0 {
-				return out, ErrEvidence
-			}
-
-			out.keyID = field.Bytes
-		case 1:
-			out.issuers, err = parseGeneralNames(ctx, field, true)
-			if err != nil {
-				return out, err
-			}
-		case 2:
-			if field.IsCompound {
-				return out, ErrEvidence
-			}
-
-			out.serial, err = crlNumber(der.Wrap(0, asn1.TagInteger, false, field.Bytes))
-			if err != nil {
-				return out, err
-			}
-		default:
-			return out, ErrEvidence
-		}
-	}
-
-	if (len(out.issuers) != 0) != (out.serial != nil) {
-		return out, ErrEvidence
-	}
-
-	return out, nil
-}
-
 func (l *parsedCRL) parseEntryExtensions(ctx context.Context, entry *crlEntry, extensions []pkix.Extension) error {
 	if err := uniqueCRLExtensions(extensions); err != nil {
 		return err
@@ -385,6 +264,144 @@ func (l *parsedCRL) verifySignature(public crypto.PublicKey) error {
 	return signature.Verify(public, l.algorithm, l.tbs, l.signature)
 }
 
+func (l *parsedCRL) parseFreshest(ctx context.Context, raw []byte) error {
+	points, err := parseCRLDistributionPoints(ctx, raw)
+	if err != nil {
+		return err
+	}
+
+	for _, point := range points {
+		if point.reasonsPresent || len(point.issuer) != 0 {
+			return ErrEvidence
+		}
+	}
+
+	l.freshest = points
+
+	return nil
+}
+
+func parseCRL(ctx context.Context, raw []byte) (*parsedCRL, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	view, err := x509crl.ParseEvidence(raw, 64<<20)
+	if err != nil {
+		if errors.Is(err, x509crl.ErrLimit) {
+			return nil, fmt.Errorf("%w: %w: %w", ErrPolicy, ErrLimit, err)
+		}
+
+		return nil, fmt.Errorf("%w: CRL DER: %w", ErrEvidence, err)
+	}
+
+	source := view.CRL
+	list := &parsedCRL{
+		raw:                source.Raw,
+		tbs:                source.RawTBSRevocationList,
+		issuer:             source.RawIssuer,
+		signature:          source.Signature,
+		algorithm:          view.Algorithm,
+		version:            view.Version,
+		signatureAlgorithm: source.SignatureAlgorithm,
+		this:               source.ThisUpdate,
+		next:               source.NextUpdate,
+		scope:              crlScope{crlDistributionPoint: crlDistributionPoint{reasons: allCRLReasons}},
+	}
+
+	if !list.next.IsZero() && !list.next.After(list.this) {
+		return nil, ErrEvidence
+	}
+
+	if err := list.parseExtensions(ctx, source.Extensions); err != nil {
+		return nil, err
+	}
+
+	if list.version == 1 && list.number == nil || list.base != nil && (list.number == nil || list.number.Cmp(list.base) <= 0) {
+		return nil, ErrEvidence
+	}
+
+	issuerName, err := crlDirectoryName(ctx, list.issuer)
+	if err != nil {
+		return nil, err
+	}
+
+	list.issuerKey = issuerName.key
+	if err := list.parseEntries(ctx, source.RevokedCertificateEntries, issuerName); err != nil {
+		return nil, err
+	}
+
+	return list, ctx.Err()
+}
+
+func crlNumber(raw []byte) (*big.Int, error) {
+	var number *big.Int
+	if der.Unmarshal(raw, &number) != nil || number == nil || number.Sign() < 0 || number.BitLen() > 160 {
+		return nil, ErrEvidence
+	}
+
+	return number, nil
+}
+
+type crlAuthority struct {
+	keyID   []byte
+	issuers []crlGeneralName
+	serial  *big.Int
+}
+
+func parseCRLAuthority(ctx context.Context, raw []byte) (crlAuthority, error) {
+	out := crlAuthority{}
+
+	value, err := der.Read(raw, 1<<20)
+	if err != nil {
+		return out, ErrEvidence
+	}
+
+	fields, err := der.Sequence(value, 1, 3)
+	if err != nil {
+		return out, ErrEvidence
+	}
+
+	previous := -1
+	for _, field := range fields {
+		if field.Class != 2 || field.Tag <= previous {
+			return out, ErrEvidence
+		}
+
+		previous = field.Tag
+		switch field.Tag {
+		case 0:
+			if field.IsCompound || len(field.Bytes) == 0 {
+				return out, ErrEvidence
+			}
+
+			out.keyID = field.Bytes
+		case 1:
+			out.issuers, err = parseGeneralNames(ctx, field, true)
+			if err != nil {
+				return out, err
+			}
+		case 2:
+			if field.IsCompound {
+				return out, ErrEvidence
+			}
+
+			out.serial, err = crlNumber(der.Wrap(0, asn1.TagInteger, false, field.Bytes))
+			if err != nil {
+				return out, err
+			}
+		default:
+			return out, ErrEvidence
+		}
+	}
+
+	if (len(out.issuers) != 0) != (out.serial != nil) {
+		return out, ErrEvidence
+	}
+
+	return out, nil
+}
+
 func uniqueCRLExtensions(extensions []pkix.Extension) error {
 	if len(extensions) > 32 {
 		return fmt.Errorf("%w: %w: CRL extension count", ErrPolicy, ErrLimit)
@@ -422,23 +439,6 @@ func reserveCRLEntryNames(seen map[string]struct{}, entry *crlEntry) error {
 
 		seen[key] = struct{}{}
 	}
-
-	return nil
-}
-
-func (l *parsedCRL) parseFreshest(ctx context.Context, raw []byte) error {
-	points, err := parseCRLDistributionPoints(ctx, raw)
-	if err != nil {
-		return err
-	}
-
-	for _, point := range points {
-		if point.reasonsPresent || len(point.issuer) != 0 {
-			return ErrEvidence
-		}
-	}
-
-	l.freshest = points
 
 	return nil
 }

@@ -635,19 +635,6 @@ func (p *parser) ecKeyValue(n *tree.Node) (*ecdsa.PublicKey, error) {
 	return key, nil
 }
 
-func curveForURI(s string) elliptic.Curve {
-	switch s {
-	case lexicon.CurveP256:
-		return elliptic.P256()
-	case lexicon.CurveP384:
-		return elliptic.P384()
-	case lexicon.CurveP521:
-		return elliptic.P521()
-	}
-
-	return nil
-}
-
 func (p *parser) derEncodedKeyValue(n *tree.Node) (crypto.PublicKey, error) {
 	encoded, err := p.binary(n, "Id")
 	if err != nil {
@@ -679,6 +666,19 @@ func (p *parser) addCandidate(s *scope, n *tree.Node, key crypto.PublicKey, cert
 	// Certificate DER is decoded/cached in privately owned storage; candidates
 	// and X509 groups can share it while their accessors still return copies.
 	p.result.candidates = append(p.result.candidates, Candidate{spki: spki, certificate: cert, source: tree.Wrap(s.doc, n), resource: s.resource, kind: n.Name})
+
+	return nil
+}
+
+func curveForURI(s string) elliptic.Curve {
+	switch s {
+	case lexicon.CurveP256:
+		return elliptic.P256()
+	case lexicon.CurveP384:
+		return elliptic.P384()
+	case lexicon.CurveP521:
+		return elliptic.P521()
+	}
 
 	return nil
 }

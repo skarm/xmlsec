@@ -211,7 +211,7 @@ func readCipherResource(ctx context.Context, p *ExternalCipherReference, limit, 
 
 	var decoded io.Reader = source
 	if decode {
-		decoded = base64.NewDecoder(base64.StdEncoding.Strict(), &streamio.XMLWhitespaceReader{Source: source})
+		decoded = streamio.NewBase64Decoder(base64.StdEncoding.Strict(), &streamio.XMLWhitespaceReader{Source: source})
 	}
 
 	size := int64(-1)

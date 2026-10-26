@@ -214,6 +214,8 @@ func newHTMLASCIICaseInsensitiveCollation() *collationImpl {
 	}
 }
 
+func (c *collationImpl) isCodepoint() bool { return c != nil && c.codepoint }
+
 func foldASCIIString(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -229,8 +231,6 @@ func foldASCIIString(s string) string {
 
 	return b.String()
 }
-
-func (c *collationImpl) isCodepoint() bool { return c != nil && c.codepoint }
 
 // makeUCACollation creates a collation based on the Unicode Collation Algorithm
 // with optional parameters parsed from the URI query string.

@@ -38,54 +38,6 @@ func (c *compiler) compilePendingPackageUse(ctx context.Context, use pendingPack
 	return c.collectTopLevelPackage(ctx, use.element)
 }
 
-type staticDeclarationBinding struct {
-	scope *staticImportScope
-	kind  string
-	value xdm.Sequence
-}
-
-func lowerStaticScope(current, previous *staticImportScope) bool {
-	for scope := current.parent; scope != nil; scope = scope.parent {
-		if scope == previous {
-			return true
-		}
-	}
-
-	return false
-}
-
-// Static values must be identical, rather than merely have equal string
-// representations. Function items (including maps/arrays) are forbidden in
-// initialized declarations being checked for consistency (XSLT 3.0 section 9.6).
-func staticSequenceIdentical(ctx context.Context, a, b xdm.Sequence) (bool, error) {
-	if xdm.SequenceLen(a) != xdm.SequenceLen(b) {
-		return false, nil
-	}
-
-	for i := range xdm.SequenceLen(a) {
-		if err := xpath.Charge(ctx, 1); err != nil {
-			return false, err
-		}
-
-		switch av := a.Get(i).(type) {
-		case xdm.AtomicValue:
-			bv, ok := b.Get(i).(xdm.AtomicValue)
-			if !ok || av.TypeName != bv.TypeName || !xpath.AtomicEquals(av, bv) {
-				return false, nil
-			}
-		case xdm.NodeItem:
-			bv, ok := b.Get(i).(xdm.NodeItem)
-			if !ok || !xdm.SameNode(av.Node, bv.Node) {
-				return false, nil
-			}
-		default:
-			return false, nil
-		}
-	}
-
-	return true, nil
-}
-
 // A prior declaration in an importing module has higher precedence even when
 // the imported module's declaration occurs later in stylesheet tree order.
 func (c *compiler) bindStaticValue(ctx context.Context, name string, value xdm.Sequence) {
@@ -116,27 +68,6 @@ func (c *compiler) completeLiteralResultAliases(ctx context.Context) {
 	}
 
 	c.pendingLiteralResults = nil
-}
-
-func hasConditionalAttributes(elem *xdm.Element, processor int) bool {
-	if elem.URI() != lexicon.NamespaceXSLT {
-		_, present := elem.GetAttributeNS(xslAttrUseWhen, lexicon.NamespaceXSLT)
-		return present
-	}
-
-	if _, present := elem.GetAttribute(xslAttrUseWhen); present {
-		return true
-	}
-
-	if processor >= 30 {
-		for _, attr := range elem.Attributes() {
-			if attr.URI() == "" && isShadowAttributeName(attr.LocalName()) {
-				return true
-			}
-		}
-	}
-
-	return false
 }
 
 // preprocessConditionalElement runs in stylesheet tree order, before later
@@ -215,19 +146,6 @@ func (c *compiler) validatePreparedLanguage(root *xdm.Element) error {
 	}
 
 	return c.validateDefaultCollations(root)
-}
-
-// A foreign top-level data element and its descendants are not XSLT
-// instructions. Its own use-when still participates in module inclusion.
-func isUserDefinedDataElement(element *xdm.Element) bool {
-	if element.URI() == "" || element.URI() == lexicon.NamespaceXSLT {
-		return false
-	}
-
-	parent, ok := element.Parent().(*xdm.Element)
-
-	return ok && parent.URI() == lexicon.NamespaceXSLT &&
-		(parent.LocalName() == nameStylesheet || parent.LocalName() == fnNameTransform || parent.LocalName() == namePackage)
 }
 
 // Check every retained declaration and instruction, including unused ones.
@@ -310,6 +228,88 @@ func (c *compiler) preprocessStaticSubtree(ctx context.Context, elem *xdm.Elemen
 	removeExcludedChildren(elem, excluded)
 
 	return true, nil
+}
+
+type staticDeclarationBinding struct {
+	scope *staticImportScope
+	kind  string
+	value xdm.Sequence
+}
+
+func lowerStaticScope(current, previous *staticImportScope) bool {
+	for scope := current.parent; scope != nil; scope = scope.parent {
+		if scope == previous {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Static values must be identical, rather than merely have equal string
+// representations. Function items (including maps/arrays) are forbidden in
+// initialized declarations being checked for consistency (XSLT 3.0 section 9.6).
+func staticSequenceIdentical(ctx context.Context, a, b xdm.Sequence) (bool, error) {
+	if xdm.SequenceLen(a) != xdm.SequenceLen(b) {
+		return false, nil
+	}
+
+	for i := range xdm.SequenceLen(a) {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return false, err
+		}
+
+		switch av := a.Get(i).(type) {
+		case xdm.AtomicValue:
+			bv, ok := b.Get(i).(xdm.AtomicValue)
+			if !ok || av.TypeName != bv.TypeName || !xpath.AtomicEquals(av, bv) {
+				return false, nil
+			}
+		case xdm.NodeItem:
+			bv, ok := b.Get(i).(xdm.NodeItem)
+			if !ok || !xdm.SameNode(av.Node, bv.Node) {
+				return false, nil
+			}
+		default:
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+func hasConditionalAttributes(elem *xdm.Element, processor int) bool {
+	if elem.URI() != lexicon.NamespaceXSLT {
+		_, present := elem.GetAttributeNS(xslAttrUseWhen, lexicon.NamespaceXSLT)
+		return present
+	}
+
+	if _, present := elem.GetAttribute(xslAttrUseWhen); present {
+		return true
+	}
+
+	if processor >= 30 {
+		for _, attr := range elem.Attributes() {
+			if attr.URI() == "" && isShadowAttributeName(attr.LocalName()) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// A foreign top-level data element and its descendants are not XSLT
+// instructions. Its own use-when still participates in module inclusion.
+func isUserDefinedDataElement(element *xdm.Element) bool {
+	if element.URI() == "" || element.URI() == lexicon.NamespaceXSLT {
+		return false
+	}
+
+	parent, ok := element.Parent().(*xdm.Element)
+
+	return ok && parent.URI() == lexicon.NamespaceXSLT &&
+		(parent.LocalName() == nameStylesheet || parent.LocalName() == fnNameTransform || parent.LocalName() == namePackage)
 }
 
 // Remove excluded siblings in one pass, avoiding repeated slice shifts and

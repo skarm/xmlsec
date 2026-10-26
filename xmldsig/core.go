@@ -81,6 +81,81 @@ func VerifySignatureDetailed(ctx context.Context, doc *document.Document, select
 	return verifySignatureDetailed(ctx, doc, selected, signatureCredential{public: key}, opt)
 }
 
+// Signature returns the validated Signature element in the verified snapshot.
+func (r *SignatureResult) Signature() document.Element {
+	if r == nil {
+		return document.Element{}
+	}
+
+	return r.signature
+}
+
+// SignatureMethod returns the authenticated signature algorithm URI.
+func (r *SignatureResult) SignatureMethod() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.algorithm
+}
+
+// Parameters returns a copy of the effective SignatureMethod parameters.
+func (r *SignatureResult) Parameters() SignatureParameters {
+	if r == nil {
+		return SignatureParameters{}
+	}
+
+	return copySignatureParameters(r.parameters)
+}
+
+// KeyFingerprintSHA256 returns the hexadecimal SHA-256 fingerprint of the externally
+// trusted verification key.
+func (r *SignatureResult) KeyFingerprintSHA256() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.fingerprint
+}
+
+// References returns an owned slice of immutable validated reference results.
+func (r *SignatureResult) References() []ReferenceResult {
+	if r == nil {
+		return nil
+	}
+
+	return append([]ReferenceResult(nil), r.references...)
+}
+
+// CoversElement reports whether a validated reference authenticates the complete element
+// under its coverage rules.
+func (r *SignatureResult) CoversElement(e document.Element) bool {
+	if r == nil {
+		return false
+	}
+
+	d, n := tree.Unwrap(e)
+	if d != r.doc || n == nil {
+		return false
+	}
+
+	for _, m := range r.manifests {
+		for _, ref := range m.references {
+			if ref.CoversElement(e) {
+				return true
+			}
+		}
+	}
+
+	for _, ref := range r.references {
+		if ref.CoversElement(e) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func failureStatus(err error) CheckStatus {
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -414,81 +489,6 @@ func recordReferenceFailure(references []ReferenceReport, re *ReferenceError, st
 	r.Status = status
 	r.Stage = re.Stage
 	r.Error = re.Err.Error()
-}
-
-// Signature returns the validated Signature element in the verified snapshot.
-func (r *SignatureResult) Signature() document.Element {
-	if r == nil {
-		return document.Element{}
-	}
-
-	return r.signature
-}
-
-// SignatureMethod returns the authenticated signature algorithm URI.
-func (r *SignatureResult) SignatureMethod() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.algorithm
-}
-
-// Parameters returns a copy of the effective SignatureMethod parameters.
-func (r *SignatureResult) Parameters() SignatureParameters {
-	if r == nil {
-		return SignatureParameters{}
-	}
-
-	return copySignatureParameters(r.parameters)
-}
-
-// KeyFingerprintSHA256 returns the hexadecimal SHA-256 fingerprint of the externally
-// trusted verification key.
-func (r *SignatureResult) KeyFingerprintSHA256() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.fingerprint
-}
-
-// References returns an owned slice of immutable validated reference results.
-func (r *SignatureResult) References() []ReferenceResult {
-	if r == nil {
-		return nil
-	}
-
-	return append([]ReferenceResult(nil), r.references...)
-}
-
-// CoversElement reports whether a validated reference authenticates the complete element
-// under its coverage rules.
-func (r *SignatureResult) CoversElement(e document.Element) bool {
-	if r == nil {
-		return false
-	}
-
-	d, n := tree.Unwrap(e)
-	if d != r.doc || n == nil {
-		return false
-	}
-
-	for _, m := range r.manifests {
-		for _, ref := range m.references {
-			if ref.CoversElement(e) {
-				return true
-			}
-		}
-	}
-
-	for _, ref := range r.references {
-		if ref.CoversElement(e) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // CheckStatus records a diagnostic outcome. It grants no partial trust in returned

@@ -38,6 +38,12 @@ type Expression struct {
 	version    int // 10, 20, 30 or 31 selects a profile; zero leaves internal visibility unrestricted.
 }
 
+// DeferredExpression preserves an invalid expression for XSLT 1.0 forwards
+// processing, which reports a syntax error only if that expression is evaluated.
+func DeferredExpression(err error, version int) *Expression {
+	return &Expression{deferred: err, version: version}
+}
+
 // BindNamespaces returns a copy bound to an immutable static namespace context.
 // Unbound expressions retain the evaluator-supplied namespace behavior.
 func (e *Expression) BindNamespaces(ns map[string]string) *Expression {
@@ -63,12 +69,6 @@ func (e *Expression) BindDefaultCollation(uri string) *Expression {
 	bound.staticCollation = uri
 
 	return &bound
-}
-
-// DeferredExpression preserves an invalid expression for XSLT 1.0 forwards
-// processing, which reports a syntax error only if that expression is evaluated.
-func DeferredExpression(err error, version int) *Expression {
-	return &Expression{deferred: err, version: version}
 }
 
 // Validate runs static namespace prefix validation using the given bindings.

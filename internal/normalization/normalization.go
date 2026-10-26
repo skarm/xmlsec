@@ -270,6 +270,54 @@ func (f Form) normalizedCharacters(ctx context.Context, size int, input iter.Seq
 	return chars, nil
 }
 
+func (f Form) segmentBytes(ctx context.Context, s []byte) ([]byte, error) {
+	if len(s) > 4096+utf8.UTFMax {
+		return f.longSegmentBytes(ctx, s)
+	}
+
+	result := norm.Form(f).Bytes(s)
+	if bytes.Count(result, []byte("\u034f")) == bytes.Count(s, []byte("\u034f")) {
+		return result, ctx.Err()
+	}
+
+	return f.longSegmentBytes(ctx, s)
+}
+
+func (f Form) byteSegments(ctx context.Context, s []byte) iter.Seq2[[]byte, error] {
+	return func(yield func([]byte, error) bool) {
+		for len(s) > 0 {
+			if err := ctx.Err(); err != nil {
+				yield(nil, err)
+				return
+			}
+
+			end := len(s)
+			for at := 0; at < len(s); {
+				if at >= 4096 && norm.Form(f).Properties(s[at:]).BoundaryBefore() {
+					end = at
+					break
+				}
+
+				_, size := utf8.DecodeRune(s[at:])
+
+				at += size
+				if at%4096 < utf8.UTFMax {
+					if err := ctx.Err(); err != nil {
+						yield(nil, err)
+						return
+					}
+				}
+			}
+
+			if !yield(s[:end], nil) {
+				return
+			}
+
+			s = s[end:]
+		}
+	}
+}
+
 // reorder uses stable counting sort on each non-starter run: long adversarial
 // combining sequences must not turn canonical ordering into quadratic work.
 func reorder(ctx context.Context, chars []character) error {
@@ -462,25 +510,6 @@ func (w *Writer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (w *Writer) writeASCII(p []byte) (int, error) {
-	if len(w.pending) >= 4096 {
-		if err := w.flush(); err != nil {
-			return 1, err
-		}
-	}
-
-	end := 1
-	limit := min(len(p), 4096-len(w.pending))
-
-	for end < limit && p[end] < utf8.RuneSelf {
-		end++
-	}
-
-	w.pending = append(w.pending, p[:end]...)
-
-	return end, nil
-}
-
 // WriteString feeds bounded chunks without copying the complete source string.
 func (w *Writer) WriteString(s string) (int, error) {
 	var buffer [4096]byte
@@ -520,6 +549,25 @@ func (w *Writer) Close() error {
 	w.err = w.flush()
 
 	return w.err
+}
+
+func (w *Writer) writeASCII(p []byte) (int, error) {
+	if len(w.pending) >= 4096 {
+		if err := w.flush(); err != nil {
+			return 1, err
+		}
+	}
+
+	end := 1
+	limit := min(len(p), 4096-len(w.pending))
+
+	for end < limit && p[end] < utf8.RuneSelf {
+		end++
+	}
+
+	w.pending = append(w.pending, p[:end]...)
+
+	return end, nil
 }
 
 func (w *Writer) flush() error {
@@ -622,52 +670,4 @@ func IsNormal(ctx context.Context, f Form, s []byte) (bool, error) {
 	}
 
 	return true, ctx.Err()
-}
-
-func (f Form) segmentBytes(ctx context.Context, s []byte) ([]byte, error) {
-	if len(s) > 4096+utf8.UTFMax {
-		return f.longSegmentBytes(ctx, s)
-	}
-
-	result := norm.Form(f).Bytes(s)
-	if bytes.Count(result, []byte("\u034f")) == bytes.Count(s, []byte("\u034f")) {
-		return result, ctx.Err()
-	}
-
-	return f.longSegmentBytes(ctx, s)
-}
-
-func (f Form) byteSegments(ctx context.Context, s []byte) iter.Seq2[[]byte, error] {
-	return func(yield func([]byte, error) bool) {
-		for len(s) > 0 {
-			if err := ctx.Err(); err != nil {
-				yield(nil, err)
-				return
-			}
-
-			end := len(s)
-			for at := 0; at < len(s); {
-				if at >= 4096 && norm.Form(f).Properties(s[at:]).BoundaryBefore() {
-					end = at
-					break
-				}
-
-				_, size := utf8.DecodeRune(s[at:])
-
-				at += size
-				if at%4096 < utf8.UTFMax {
-					if err := ctx.Err(); err != nil {
-						yield(nil, err)
-						return
-					}
-				}
-			}
-
-			if !yield(s[:end], nil) {
-				return
-			}
-
-			s = s[end:]
-		}
-	}
 }

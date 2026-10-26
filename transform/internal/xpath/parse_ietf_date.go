@@ -354,15 +354,6 @@ func (p *ietfDateParser) tryDayOfWeek() bool {
 	return true
 }
 
-func dayOfWeekNames(key string) bool {
-	switch key {
-	case "mon", "monday", "tue", "tuesday", "wed", "wednesday", "thu", "thursday", "fri", "friday", "sat", "saturday", "sun", "sunday":
-		return true
-	}
-
-	return false
-}
-
 func (p *ietfDateParser) peekMonth() bool {
 	saved := p.pos
 	s, err := p.readAlpha()
@@ -573,6 +564,15 @@ func (p *ietfDateParser) parseNumericTimezone() (*time.Location, error) {
 	}
 
 	return time.FixedZone("", offset), nil
+}
+
+func dayOfWeekNames(key string) bool {
+	switch key {
+	case "mon", "monday", "tue", "tuesday", "wed", "wednesday", "thu", "thursday", "fri", "friday", "sat", "saturday", "sun", "sunday":
+		return true
+	}
+
+	return false
 }
 
 func parseMonth(s string) (int, error) {

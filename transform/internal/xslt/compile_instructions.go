@@ -136,18 +136,6 @@ func (c *compiler) validateXSLTAttrs(ctx context.Context, elem *xdm.Element, all
 	return nil
 }
 
-// xsltStandardAttrs reports attributes permitted on every XSLT element.
-func xsltStandardAttrs(name string) bool {
-	switch name {
-	case nameDefaultCollation, nameDefaultMode, nameDefaultValidation, nameExcludeResultPrefixes,
-		nameExpandText, nameExtensionElementPrefixes, xslAttrUseWhen, nameXpathDefaultNamespace,
-		lexicon.SerializationVersion:
-		return true
-	default:
-		return false
-	}
-}
-
 // checkTypeAttrSchemaAware verifies that the type attribute is only used when
 // the stylesheet has imported at least one schema, unless typeName resolves to
 // a built-in XSD type (xs: / xsd: namespace). Returns XTSE0215 otherwise.
@@ -157,24 +145,6 @@ func (c *compiler) checkTypeAttrSchemaAware(_ context.Context, elemName, typeNam
 	}
 
 	return staticError(errCodeXTSE0215, "%s/@type requires a schema import (xsl:import-schema)", elemName)
-}
-
-// isBuiltinXSDTypeName reports whether typeName refers to the built-in XSD
-// namespace (http://www.w3.org/2001/XMLSchema). It recognises the conventional
-// xs: and xsd: prefixes directly, and also resolves any other prefix via ns.
-func isBuiltinXSDTypeName(typeName string, ns map[string]string) bool {
-	if strings.HasPrefix(typeName, "xs:") || strings.HasPrefix(typeName, "xsd:") {
-		return true
-	}
-
-	prefix, _, ok := strings.Cut(typeName, ":")
-	if !ok {
-		return false
-	}
-
-	uri, ok := ns[prefix]
-
-	return ok && uri == lexicon.NamespaceXSD
 }
 
 func (c *compiler) compileInstruction(ctx context.Context, elem *xdm.Element) (instruction, error) {
@@ -554,42 +524,6 @@ func (c *compiler) evaluateUseWhen(ctx context.Context, expr string) (bool, erro
 	return b, nil
 }
 
-func useWhenFunctionAvailable(ctx context.Context, args []xdm.Sequence, processor int) (xdm.Sequence, error) {
-	name, err := introspectionArgumentName(ctx, args, xpath.NSFn, errCodeXTDE1400, processor)
-	if err != nil {
-		return nil, err
-	}
-
-	arity, valid := functionAvailableArity(args)
-	if !valid {
-		return xdm.SingleBoolean(false), nil
-	}
-
-	if function := xpath.FnRegisteredFunction(ctx, name.URI, name.Local); function != nil {
-		return xdm.SingleBoolean(functionAvailableAtArity(function, arity)), nil
-	}
-
-	if name.URI == xpath.NSFn {
-		switch name.Local {
-		case fnNameFunctionAvailable, funcSystemProperty, fnNameTypeAvailable, fnNameElementAvailable:
-			return xdm.SingleBoolean(xsltFunctionAcceptsArity(name.Local, arity) || arity < 0), nil
-		case funcAvailableSystemProperties:
-			return xdm.SingleBoolean(processor >= 30 && (arity < 0 || arity == 0)), nil
-		}
-	}
-
-	version := 31
-	if processor == 20 {
-		version = 20
-	}
-
-	if processor == 10 {
-		version = 10
-	}
-
-	return xdm.SingleBoolean(xpath.BuiltinFunctionAvailable(version, name.URI, name.Local, arity)), nil
-}
-
 // pushElementNamespaces adds namespace declarations from elem to nsBindings
 // and to the stylesheet's runtime namespace map. Returns previous nsBindings
 // for restoring.
@@ -928,55 +862,6 @@ func (c *compiler) compileResultDocument(ctx context.Context, elem *xdm.Element)
 	return inst, nil
 }
 
-// validateValidationAttr checks that the validation attribute value is one of
-// the four legal values. Returns XTSE0020 for invalid values.
-func validateValidationAttr(elemName, validation string) error {
-	switch validation {
-	case validationStrict, validationLax, validationPreserve, validationStrip:
-		return nil
-	default:
-		return staticError(errCodeXTSE0020, "invalid value %q for %s/@validation: must be strict, lax, preserve, or strip", validation, elemName)
-	}
-}
-
-func validateResultDocumentOutputAttrs(elem *xdm.Element) error {
-	// Validate html-version: must be a decimal number if present and not an avt
-	if hv := getAttr(elem, lexicon.SerializationHTMLVersion); hv != "" {
-		if !strings.ContainsAny(hv, "{}") {
-			if _, err := strconv.ParseFloat(hv, 64); err != nil {
-				return staticError(errCodeXTSE0020, "%q is not a valid value for xsl:result-document/@html-version", hv)
-			}
-		}
-	}
-	// Validate boolean output attributes on xsl:result-document.
-	for _, boolAttr := range []string{
-		lexicon.SerializationAllowDuplicateNames, lexicon.SerializationBuildTree, lexicon.SerializationByteOrderMark, lexicon.SerializationEscapeURIAttributes,
-		lexicon.SerializationIncludeContentType, lexicon.SerializationIndent, lexicon.SerializationOmitXMLDeclaration, lexicon.SerializationUndeclarePrefixes,
-	} {
-		if v := getAttr(elem, boolAttr); v != "" {
-			if !strings.ContainsAny(v, "{}") {
-				if _, ok := parseXSDBool(v); !ok {
-					return staticError(lexicon.ErrSEPM0016, "%q is not a valid value for xsl:result-document/@%s", v, boolAttr)
-				}
-			}
-		}
-	}
-	// Validate standalone on xsl:result-document.
-	if v := getAttr(elem, lexicon.SerializationStandalone); v != "" {
-		if !strings.ContainsAny(v, "{}") {
-			sv := strings.TrimSpace(v)
-			switch sv {
-			case lexicon.ValueYes, lexicon.ValueNo, lexicon.ValueOmit, lexicon.ValueTrue, lexicon.ValueFalse, "1", "0":
-				// valid
-			default:
-				return staticError(lexicon.ErrSEPM0016, "%q is not a valid value for xsl:result-document/@standalone", v)
-			}
-		}
-	}
-
-	return nil
-}
-
 func (c *compiler) compileResultDocumentOutputAVTs(elem *xdm.Element, inst *resultDocumentInst) error {
 	// Compile serialization parameter AVTs.
 	for _, sp := range []struct {
@@ -1214,28 +1099,6 @@ func (c *compiler) compileChildren(ctx context.Context, parent *xdm.Element) ([]
 	}
 
 	return state.body, nil
-}
-
-// collectAdjacentStylesheetText merges text/CDATA across comments and PIs,
-// returning the final consumed text node for the caller's sibling traversal.
-func collectAdjacentStylesheetText(first xdm.Node) (string, xdm.Node) {
-	var buf strings.Builder
-	buf.WriteString(xdm.CharacterData(first))
-	last := first
-
-	for next := first.NextSibling(); next != nil; next = next.NextSibling() {
-		switch next.Type() {
-		case xdm.CommentNode, xdm.ProcessingInstructionNode:
-			continue
-		case xdm.TextNode, xdm.CDATASectionNode:
-			buf.WriteString(xdm.CharacterData(next))
-			last = next
-		default:
-			return buf.String(), last
-		}
-	}
-
-	return buf.String(), last
 }
 
 func (c *compiler) compileLiteralText(text string) (*literalTextInst, error) {
@@ -1477,6 +1340,143 @@ func (c *compiler) compileAssert(ctx context.Context, elem *xdm.Element) (instru
 	inst.Body = body
 
 	return inst, nil
+}
+
+// xsltStandardAttrs reports attributes permitted on every XSLT element.
+func xsltStandardAttrs(name string) bool {
+	switch name {
+	case nameDefaultCollation, nameDefaultMode, nameDefaultValidation, nameExcludeResultPrefixes,
+		nameExpandText, nameExtensionElementPrefixes, xslAttrUseWhen, nameXpathDefaultNamespace,
+		lexicon.SerializationVersion:
+		return true
+	default:
+		return false
+	}
+}
+
+// isBuiltinXSDTypeName reports whether typeName refers to the built-in XSD
+// namespace (http://www.w3.org/2001/XMLSchema). It recognises the conventional
+// xs: and xsd: prefixes directly, and also resolves any other prefix via ns.
+func isBuiltinXSDTypeName(typeName string, ns map[string]string) bool {
+	if strings.HasPrefix(typeName, "xs:") || strings.HasPrefix(typeName, "xsd:") {
+		return true
+	}
+
+	prefix, _, ok := strings.Cut(typeName, ":")
+	if !ok {
+		return false
+	}
+
+	uri, ok := ns[prefix]
+
+	return ok && uri == lexicon.NamespaceXSD
+}
+
+func useWhenFunctionAvailable(ctx context.Context, args []xdm.Sequence, processor int) (xdm.Sequence, error) {
+	name, err := introspectionArgumentName(ctx, args, xpath.NSFn, errCodeXTDE1400, processor)
+	if err != nil {
+		return nil, err
+	}
+
+	arity, valid := functionAvailableArity(args)
+	if !valid {
+		return xdm.SingleBoolean(false), nil
+	}
+
+	if function := xpath.FnRegisteredFunction(ctx, name.URI, name.Local); function != nil {
+		return xdm.SingleBoolean(functionAvailableAtArity(function, arity)), nil
+	}
+
+	if name.URI == xpath.NSFn {
+		switch name.Local {
+		case fnNameFunctionAvailable, funcSystemProperty, fnNameTypeAvailable, fnNameElementAvailable:
+			return xdm.SingleBoolean(xsltFunctionAcceptsArity(name.Local, arity) || arity < 0), nil
+		case funcAvailableSystemProperties:
+			return xdm.SingleBoolean(processor >= 30 && (arity < 0 || arity == 0)), nil
+		}
+	}
+
+	version := 31
+	if processor == 20 {
+		version = 20
+	}
+
+	if processor == 10 {
+		version = 10
+	}
+
+	return xdm.SingleBoolean(xpath.BuiltinFunctionAvailable(version, name.URI, name.Local, arity)), nil
+}
+
+// validateValidationAttr checks that the validation attribute value is one of
+// the four legal values. Returns XTSE0020 for invalid values.
+func validateValidationAttr(elemName, validation string) error {
+	switch validation {
+	case validationStrict, validationLax, validationPreserve, validationStrip:
+		return nil
+	default:
+		return staticError(errCodeXTSE0020, "invalid value %q for %s/@validation: must be strict, lax, preserve, or strip", validation, elemName)
+	}
+}
+
+func validateResultDocumentOutputAttrs(elem *xdm.Element) error {
+	// Validate html-version: must be a decimal number if present and not an avt
+	if hv := getAttr(elem, lexicon.SerializationHTMLVersion); hv != "" {
+		if !strings.ContainsAny(hv, "{}") {
+			if _, err := strconv.ParseFloat(hv, 64); err != nil {
+				return staticError(errCodeXTSE0020, "%q is not a valid value for xsl:result-document/@html-version", hv)
+			}
+		}
+	}
+	// Validate boolean output attributes on xsl:result-document.
+	for _, boolAttr := range []string{
+		lexicon.SerializationAllowDuplicateNames, lexicon.SerializationBuildTree, lexicon.SerializationByteOrderMark, lexicon.SerializationEscapeURIAttributes,
+		lexicon.SerializationIncludeContentType, lexicon.SerializationIndent, lexicon.SerializationOmitXMLDeclaration, lexicon.SerializationUndeclarePrefixes,
+	} {
+		if v := getAttr(elem, boolAttr); v != "" {
+			if !strings.ContainsAny(v, "{}") {
+				if _, ok := parseXSDBool(v); !ok {
+					return staticError(lexicon.ErrSEPM0016, "%q is not a valid value for xsl:result-document/@%s", v, boolAttr)
+				}
+			}
+		}
+	}
+	// Validate standalone on xsl:result-document.
+	if v := getAttr(elem, lexicon.SerializationStandalone); v != "" {
+		if !strings.ContainsAny(v, "{}") {
+			sv := strings.TrimSpace(v)
+			switch sv {
+			case lexicon.ValueYes, lexicon.ValueNo, lexicon.ValueOmit, lexicon.ValueTrue, lexicon.ValueFalse, "1", "0":
+				// valid
+			default:
+				return staticError(lexicon.ErrSEPM0016, "%q is not a valid value for xsl:result-document/@standalone", v)
+			}
+		}
+	}
+
+	return nil
+}
+
+// collectAdjacentStylesheetText merges text/CDATA across comments and PIs,
+// returning the final consumed text node for the caller's sibling traversal.
+func collectAdjacentStylesheetText(first xdm.Node) (string, xdm.Node) {
+	var buf strings.Builder
+	buf.WriteString(xdm.CharacterData(first))
+	last := first
+
+	for next := first.NextSibling(); next != nil; next = next.NextSibling() {
+		switch next.Type() {
+		case xdm.CommentNode, xdm.ProcessingInstructionNode:
+			continue
+		case xdm.TextNode, xdm.CDATASectionNode:
+			buf.WriteString(xdm.CharacterData(next))
+			last = next
+		default:
+			return buf.String(), last
+		}
+	}
+
+	return buf.String(), last
 }
 
 // checkValidationTypeExclusive verifies that validation and type are not both

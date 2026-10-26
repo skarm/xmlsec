@@ -16,18 +16,18 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
-// Sentinel errors for xsl:break and xsl:next-iteration control flow.
-var (
-	errBreak    = errors.New("xsl:break")
-	errNextIter = errors.New("xsl:next-iteration")
-)
-
 const (
 	mergeAttrOrder uint8 = 1 << iota
 	mergeAttrDataType
 	mergeAttrCollation
 	mergeAttrLang
 	mergeAttrCaseOrder
+)
+
+// Sentinel errors for xsl:break and xsl:next-iteration control flow.
+var (
+	errBreak    = errors.New("xsl:break")
+	errNextIter = errors.New("xsl:next-iteration")
 )
 
 // mergeSourceItems holds the items from one merge source along with
@@ -545,24 +545,6 @@ func (ec *execContext) execMerge(ctx context.Context, inst *mergeInst) error {
 	return ec.executeMergeGroups(ctx, inst, groups)
 }
 
-func validateMergeSourceCollations(sources []*mergeSource) error {
-	if len(sources) < 2 {
-		return nil
-	}
-
-	for _, source := range sources[1:] {
-		for i, first := range sources[0].Keys {
-			other := source.Keys[i]
-			if first.specified != other.specified || first.Order != other.Order || first.DataType != other.DataType ||
-				first.Collation != other.Collation || first.Lang != other.Lang || first.CaseOrder != other.CaseOrder {
-				return dynamicError(errCodeXTDE2210, "merge sources have differing effective attributes for merge key %d", i+1)
-			}
-		}
-	}
-
-	return nil
-}
-
 // Merge keys use the same globally promoted ordering as xsl:sort. Keep the
 // original atoms for current-merge-key(), and store comparison values separately.
 func (ec *execContext) prepareMergeComparisons(ctx context.Context, sources []mergeSourceItems, types []string, collations []func(a, b string) int) error {
@@ -600,80 +582,6 @@ func (ec *execContext) prepareMergeComparisons(ctx context.Context, sources []me
 		for _, entry := range entries {
 			entry.item.comparison = entry.key
 			entry.item.level = &level
-		}
-	}
-
-	return nil
-}
-
-func mergeComparisonValue(sequence xdm.Sequence, text string, mode *dataTypeMode, timezone *time.Location) sortValue {
-	if *mode == dataTypeNumber || *mode == dataTypeNumberAuto {
-		value := extractNumericSortValue(sequence, text, *mode == dataTypeNumber, timezone)
-		if *mode == dataTypeNumberAuto {
-			return autoNumericSortValue(value, sequence, timezone)
-		}
-
-		return value
-	}
-
-	return textSortValue(sequence, text, xdm.SequenceLen(sequence) == 1, mode, timezone)
-}
-
-func prepareMergeSourceOrder(sources []mergeSourceItems, orders []mergeKeyOrder) error {
-	for i := range sources {
-		source := &sources[i]
-		if len(source.items) <= 1 {
-			continue
-		}
-
-		if source.sortBeforeMerge {
-			sortMergeSourceItems(source, orders)
-		} else if err := verifyMergeSourceKeys(source.keys, orders); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func sortMergeSourceItems(src *mergeSourceItems, orders []mergeKeyOrder) {
-	type indexedEntry struct {
-		idx  int
-		item xdm.Item
-		keys []mergeKeyValue
-	}
-
-	// sort-before-merge="yes": sort the items by merge keys.
-	entries := make([]indexedEntry, len(src.items))
-	for i := range src.items {
-		entries[i] = indexedEntry{idx: i, item: src.items[i], keys: src.keys[i]}
-	}
-
-	slices.SortStableFunc(entries, func(a, b indexedEntry) int {
-		return compareMergeKeyValues(a.keys, b.keys, orders)
-	})
-
-	// Rebuild items and keys in sorted order using a temporary copy
-	// of the original keys to avoid in-place overwrite corruption.
-	origKeys := make([][]mergeKeyValue, len(src.keys))
-	copy(origKeys, src.keys)
-
-	for i, e := range entries {
-		src.items[i] = e.item
-		src.keys[i] = origKeys[e.idx]
-	}
-}
-
-func verifyMergeSourceKeys(verifyKeys [][]mergeKeyValue, orders []mergeKeyOrder) error {
-	// Default: verify items are already sorted (XTDE2220). String
-	// keys are compared under the declared collation (e.g. a UCA
-	// collation with lang/case-order/alternate), so data sorted for
-	// one collation but merged under another is detected as unsorted.
-	for i := 1; i < len(verifyKeys); i++ {
-		cmp := compareMergeKeyValues(verifyKeys[i-1], verifyKeys[i], orders)
-
-		if cmp > 0 {
-			return dynamicError(errCodeXTDE2220, "merge input is not sorted according to the declared merge key")
 		}
 	}
 
@@ -1527,24 +1435,6 @@ func (ec *execContext) evaluateSingleMergeKey(ctx context.Context, mk *mergeKey,
 	return mergeKeyFromSequence(seq)
 }
 
-func mergeKeyFromSequence(seq xdm.Sequence) (mergeKeyValue, error) {
-	atoms, err := xpath.AtomizeSequence(seq)
-	if err != nil {
-		return mergeKeyValue{}, err
-	}
-
-	// XTTE1020: cardinality is checked after atomization, including arrays.
-	if len(atoms) > 1 {
-		return mergeKeyValue{}, dynamicError(errCodeXTTE1020, "xsl:merge-key select expression must return a single atomic value, got %d items", len(atoms))
-	}
-
-	if len(atoms) == 1 {
-		return mergeKeyValue{atom: atoms[0]}, nil
-	}
-
-	return mergeKeyValue{}, nil
-}
-
 func (ec *execContext) evaluateMergeKeySequence(ctx context.Context, mk *mergeKey, node xdm.Node) (xdm.Sequence, error) {
 	var seq xdm.Sequence
 
@@ -1603,6 +1493,168 @@ func (ec *execContext) nWayMerge(ctx context.Context, sources []mergeSourceItems
 	}
 
 	return groups, nil
+}
+
+// resolveMergeKeyCollation resolves the collation URI for a merge key
+// definition at runtime. Returns nil compare function if no collation is
+// specified or if the collation is the default codepoint collation.
+// Raises XTDE1035 if the collation URI is not recognized.
+func (ec *execContext) resolveMergeKeyCollation(ctx context.Context, mk *mergeKey) (func(a, b string) int, error) {
+	cmpFn, _, err := ec.resolveMergeKeyCollationURI(ctx, mk)
+	return cmpFn, err
+}
+
+// resolveMergeKeyCollationURI is like resolveMergeKeyCollation but also
+// returns the resolved collation URI string for inspection.
+func (ec *execContext) resolveMergeKeyCollationURI(ctx context.Context, key *mergeKey) (func(a, b string) int, string, error) {
+	collation := key.Collation
+	if key.CollationAVT != nil {
+		value, err := key.CollationAVT.evaluate(ctx, ec.contextNode)
+		if err != nil {
+			return nil, "", err
+		}
+
+		collation = resolveAgainstBaseURI(strings.Trim(value, " \t\r\n"), key.BaseURI)
+	}
+
+	if key.specified&mergeAttrCollation == 0 {
+		var parameters []string
+		if key.Lang != "" {
+			parameters = append(parameters, "lang="+key.Lang)
+		}
+
+		switch key.CaseOrder {
+		case nameUpperFirst:
+			parameters = append(parameters, "caseFirst=upper")
+		case nameLowerFirst:
+			parameters = append(parameters, "caseFirst=lower")
+		}
+
+		if len(parameters) > 0 {
+			collation = "http://www.w3.org/2013/collation/UCA?" + strings.Join(parameters, ";")
+		}
+	}
+
+	if collation == "" || collation == lexicon.CollationCodepoint {
+		return nil, collation, nil
+	}
+
+	compare, err := xpath.ResolveCollationCompareFunc(collation)
+	if err != nil {
+		return nil, collation, dynamicError(errCodeXTDE1035, "unsupported merge-key collation URI %q: %v", collation, err)
+	}
+
+	return compare, collation, nil
+}
+
+func validateMergeSourceCollations(sources []*mergeSource) error {
+	if len(sources) < 2 {
+		return nil
+	}
+
+	for _, source := range sources[1:] {
+		for i, first := range sources[0].Keys {
+			other := source.Keys[i]
+			if first.specified != other.specified || first.Order != other.Order || first.DataType != other.DataType ||
+				first.Collation != other.Collation || first.Lang != other.Lang || first.CaseOrder != other.CaseOrder {
+				return dynamicError(errCodeXTDE2210, "merge sources have differing effective attributes for merge key %d", i+1)
+			}
+		}
+	}
+
+	return nil
+}
+
+func mergeComparisonValue(sequence xdm.Sequence, text string, mode *dataTypeMode, timezone *time.Location) sortValue {
+	if *mode == dataTypeNumber || *mode == dataTypeNumberAuto {
+		value := extractNumericSortValue(sequence, text, *mode == dataTypeNumber, timezone)
+		if *mode == dataTypeNumberAuto {
+			return autoNumericSortValue(value, sequence, timezone)
+		}
+
+		return value
+	}
+
+	return textSortValue(sequence, text, xdm.SequenceLen(sequence) == 1, mode, timezone)
+}
+
+func prepareMergeSourceOrder(sources []mergeSourceItems, orders []mergeKeyOrder) error {
+	for i := range sources {
+		source := &sources[i]
+		if len(source.items) <= 1 {
+			continue
+		}
+
+		if source.sortBeforeMerge {
+			sortMergeSourceItems(source, orders)
+		} else if err := verifyMergeSourceKeys(source.keys, orders); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func sortMergeSourceItems(src *mergeSourceItems, orders []mergeKeyOrder) {
+	type indexedEntry struct {
+		idx  int
+		item xdm.Item
+		keys []mergeKeyValue
+	}
+
+	// sort-before-merge="yes": sort the items by merge keys.
+	entries := make([]indexedEntry, len(src.items))
+	for i := range src.items {
+		entries[i] = indexedEntry{idx: i, item: src.items[i], keys: src.keys[i]}
+	}
+
+	slices.SortStableFunc(entries, func(a, b indexedEntry) int {
+		return compareMergeKeyValues(a.keys, b.keys, orders)
+	})
+
+	// Rebuild items and keys in sorted order using a temporary copy
+	// of the original keys to avoid in-place overwrite corruption.
+	origKeys := make([][]mergeKeyValue, len(src.keys))
+	copy(origKeys, src.keys)
+
+	for i, e := range entries {
+		src.items[i] = e.item
+		src.keys[i] = origKeys[e.idx]
+	}
+}
+
+func verifyMergeSourceKeys(verifyKeys [][]mergeKeyValue, orders []mergeKeyOrder) error {
+	// Default: verify items are already sorted (XTDE2220). String
+	// keys are compared under the declared collation (e.g. a UCA
+	// collation with lang/case-order/alternate), so data sorted for
+	// one collation but merged under another is detected as unsorted.
+	for i := 1; i < len(verifyKeys); i++ {
+		cmp := compareMergeKeyValues(verifyKeys[i-1], verifyKeys[i], orders)
+
+		if cmp > 0 {
+			return dynamicError(errCodeXTDE2220, "merge input is not sorted according to the declared merge key")
+		}
+	}
+
+	return nil
+}
+
+func mergeKeyFromSequence(seq xdm.Sequence) (mergeKeyValue, error) {
+	atoms, err := xpath.AtomizeSequence(seq)
+	if err != nil {
+		return mergeKeyValue{}, err
+	}
+
+	// XTTE1020: cardinality is checked after atomization, including arrays.
+	if len(atoms) > 1 {
+		return mergeKeyValue{}, dynamicError(errCodeXTTE1020, "xsl:merge-key select expression must return a single atomic value, got %d items", len(atoms))
+	}
+
+	if len(atoms) == 1 {
+		return mergeKeyValue{atom: atoms[0]}, nil
+	}
+
+	return mergeKeyValue{}, nil
 }
 
 func minimumMergeKeys(sources []mergeSourceItems, cursors []int, orders []mergeKeyOrder) ([]mergeKeyValue, bool) {
@@ -1678,58 +1730,6 @@ func mergeKeyValueToSequence(mkv mergeKeyValue) xdm.Sequence {
 	}
 
 	return xdm.EmptySequence()
-}
-
-// resolveMergeKeyCollation resolves the collation URI for a merge key
-// definition at runtime. Returns nil compare function if no collation is
-// specified or if the collation is the default codepoint collation.
-// Raises XTDE1035 if the collation URI is not recognized.
-func (ec *execContext) resolveMergeKeyCollation(ctx context.Context, mk *mergeKey) (func(a, b string) int, error) {
-	cmpFn, _, err := ec.resolveMergeKeyCollationURI(ctx, mk)
-	return cmpFn, err
-}
-
-// resolveMergeKeyCollationURI is like resolveMergeKeyCollation but also
-// returns the resolved collation URI string for inspection.
-func (ec *execContext) resolveMergeKeyCollationURI(ctx context.Context, key *mergeKey) (func(a, b string) int, string, error) {
-	collation := key.Collation
-	if key.CollationAVT != nil {
-		value, err := key.CollationAVT.evaluate(ctx, ec.contextNode)
-		if err != nil {
-			return nil, "", err
-		}
-
-		collation = resolveAgainstBaseURI(strings.Trim(value, " \t\r\n"), key.BaseURI)
-	}
-
-	if key.specified&mergeAttrCollation == 0 {
-		var parameters []string
-		if key.Lang != "" {
-			parameters = append(parameters, "lang="+key.Lang)
-		}
-
-		switch key.CaseOrder {
-		case nameUpperFirst:
-			parameters = append(parameters, "caseFirst=upper")
-		case nameLowerFirst:
-			parameters = append(parameters, "caseFirst=lower")
-		}
-
-		if len(parameters) > 0 {
-			collation = "http://www.w3.org/2013/collation/UCA?" + strings.Join(parameters, ";")
-		}
-	}
-
-	if collation == "" || collation == lexicon.CollationCodepoint {
-		return nil, collation, nil
-	}
-
-	compare, err := xpath.ResolveCollationCompareFunc(collation)
-	if err != nil {
-		return nil, collation, dynamicError(errCodeXTDE1035, "unsupported merge-key collation URI %q: %v", collation, err)
-	}
-
-	return compare, collation, nil
 }
 
 // compareMergeKeyValues compares two merge key value arrays using the

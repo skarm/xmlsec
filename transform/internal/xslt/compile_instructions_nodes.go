@@ -498,36 +498,6 @@ func (c *compiler) compileCopyOf(_ context.Context, elem *xdm.Element) (*copyOfI
 	return inst, nil
 }
 
-func validateCopyOfStructure(elem *xdm.Element) error {
-	// XTSE0260: xsl:copy-of must have no significant content
-	for child := range xdm.Children(elem) {
-		switch child.Type() {
-		case xdm.ElementNode:
-			return staticError(errCodeXTSE0260,
-				"xsl:copy-of must be empty, but contains child element %s", child.Name())
-		case xdm.TextNode, xdm.CDATASectionNode:
-			if xdm.CharacterData(child) != "" {
-				return staticError(errCodeXTSE0260,
-					"xsl:copy-of must be empty, but contains text content")
-			}
-		}
-	}
-
-	// XTSE0090: reject specific attributes that are not allowed on xsl:copy-of
-	for _, attr := range elem.Attributes() {
-		if attr.URI() != "" {
-			continue
-		}
-
-		if attr.LocalName() == lexicon.AttrMatch || attr.LocalName() == lexicon.AttrCount || attr.LocalName() == "from" {
-			return staticError(errCodeXTSE0090,
-				"attribute %q is not allowed on xsl:copy-of", attr.LocalName())
-		}
-	}
-
-	return nil
-}
-
 func (c *compiler) compileNumber(_ context.Context, elem *xdm.Element) (*numberInst, error) {
 	inst := &numberInst{
 		Level: getAttr(elem, "level"),
@@ -606,22 +576,6 @@ func (c *compiler) compileNumberCounting(elem *xdm.Element, inst *numberInst) er
 	}
 
 	return nil
-}
-
-// patternReadsVariables reports whether any alternative of p references a
-// variable it does not bind itself. A nil pattern reads none.
-func patternReadsVariables(p *pattern) bool {
-	if p == nil {
-		return false
-	}
-
-	for _, alt := range p.Alternatives {
-		if len(alt.compiled.StaticReferences(nil).FreeVariables) > 0 {
-			return true
-		}
-	}
-
-	return false
 }
 
 func (c *compiler) compileNumberFormatting(elem *xdm.Element, inst *numberInst) error {
@@ -1019,11 +973,6 @@ func (c *compiler) literalResultNamespaces(elem *xdm.Element) map[string]string 
 	return namespaces
 }
 
-func namespaceURIExcluded(excluded map[string]struct{}, uri string) bool {
-	_, ok := excluded[uri]
-	return ok
-}
-
 func (c *compiler) compileLiteralResultAttrs(elem *xdm.Element, lre *literalResultElement) error {
 	// Validate and compile attributes
 	for _, attr := range elem.Attributes() {
@@ -1168,6 +1117,57 @@ func (c *compiler) compileLiteralResultOptions(ctx context.Context, elem *xdm.El
 	}
 
 	return nil
+}
+
+func validateCopyOfStructure(elem *xdm.Element) error {
+	// XTSE0260: xsl:copy-of must have no significant content
+	for child := range xdm.Children(elem) {
+		switch child.Type() {
+		case xdm.ElementNode:
+			return staticError(errCodeXTSE0260,
+				"xsl:copy-of must be empty, but contains child element %s", child.Name())
+		case xdm.TextNode, xdm.CDATASectionNode:
+			if xdm.CharacterData(child) != "" {
+				return staticError(errCodeXTSE0260,
+					"xsl:copy-of must be empty, but contains text content")
+			}
+		}
+	}
+
+	// XTSE0090: reject specific attributes that are not allowed on xsl:copy-of
+	for _, attr := range elem.Attributes() {
+		if attr.URI() != "" {
+			continue
+		}
+
+		if attr.LocalName() == lexicon.AttrMatch || attr.LocalName() == lexicon.AttrCount || attr.LocalName() == "from" {
+			return staticError(errCodeXTSE0090,
+				"attribute %q is not allowed on xsl:copy-of", attr.LocalName())
+		}
+	}
+
+	return nil
+}
+
+// patternReadsVariables reports whether any alternative of p references a
+// variable it does not bind itself. A nil pattern reads none.
+func patternReadsVariables(p *pattern) bool {
+	if p == nil {
+		return false
+	}
+
+	for _, alt := range p.Alternatives {
+		if len(alt.compiled.StaticReferences(nil).FreeVariables) > 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
+func namespaceURIExcluded(excluded map[string]struct{}, uri string) bool {
+	_, ok := excluded[uri]
+	return ok
 }
 
 func validateCopyBooleanAttrs(elem *xdm.Element, instructionName string, names ...string) error {

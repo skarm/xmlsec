@@ -19,41 +19,6 @@ type dataCipher struct {
 	tripleDES  bool
 }
 
-func dataAlgorithm(algorithm string, allowLegacy bool) (dataCipher, error) {
-	var d dataCipher
-
-	switch algorithm {
-	case AES128GCM, AES192GCM, AES256GCM:
-		d = dataCipher{keyBytes: 16, ivBytes: gcmNonceBytes, extraBytes: gcmTagBytes}
-
-		switch algorithm {
-		case AES192GCM:
-			d.keyBytes = 24
-		case AES256GCM:
-			d.keyBytes = 32
-		}
-	case AES128CBC, AES192CBC, AES256CBC:
-		d = dataCipher{keyBytes: 16, ivBytes: aes.BlockSize, blockBytes: aes.BlockSize, extraBytes: aes.BlockSize}
-
-		switch algorithm {
-		case AES192CBC:
-			d.keyBytes = 24
-		case AES256CBC:
-			d.keyBytes = 32
-		}
-	case TripleDESCBC:
-		d = dataCipher{keyBytes: 24, ivBytes: des.BlockSize, blockBytes: des.BlockSize, extraBytes: des.BlockSize, tripleDES: true}
-	default:
-		return dataCipher{}, ErrPolicy
-	}
-
-	if d.blockBytes != 0 && (!allowLegacy || fips140.Enabled()) {
-		return dataCipher{}, ErrPolicy
-	}
-
-	return d, nil
-}
-
 func (d dataCipher) overhead() int { return d.ivBytes + d.extraBytes }
 
 func (d dataCipher) block(key []byte) (cipher.Block, error) {
@@ -132,4 +97,39 @@ func (d dataCipher) open(ctx context.Context, data []byte, block cipher.Block, b
 	clear(plaintext[length:])
 
 	return plaintext[:length:length], nil
+}
+
+func dataAlgorithm(algorithm string, allowLegacy bool) (dataCipher, error) {
+	var d dataCipher
+
+	switch algorithm {
+	case AES128GCM, AES192GCM, AES256GCM:
+		d = dataCipher{keyBytes: 16, ivBytes: gcmNonceBytes, extraBytes: gcmTagBytes}
+
+		switch algorithm {
+		case AES192GCM:
+			d.keyBytes = 24
+		case AES256GCM:
+			d.keyBytes = 32
+		}
+	case AES128CBC, AES192CBC, AES256CBC:
+		d = dataCipher{keyBytes: 16, ivBytes: aes.BlockSize, blockBytes: aes.BlockSize, extraBytes: aes.BlockSize}
+
+		switch algorithm {
+		case AES192CBC:
+			d.keyBytes = 24
+		case AES256CBC:
+			d.keyBytes = 32
+		}
+	case TripleDESCBC:
+		d = dataCipher{keyBytes: 24, ivBytes: des.BlockSize, blockBytes: des.BlockSize, extraBytes: des.BlockSize, tripleDES: true}
+	default:
+		return dataCipher{}, ErrPolicy
+	}
+
+	if d.blockBytes != 0 && (!allowLegacy || fips140.Enabled()) {
+		return dataCipher{}, ErrPolicy
+	}
+
+	return d, nil
 }

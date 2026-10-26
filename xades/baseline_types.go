@@ -400,11 +400,6 @@ func (r *BaselineResult) SignaturePolicy() *SignaturePolicy {
 	return &out
 }
 
-func cloneObjectIdentifier(value ObjectIdentifier) ObjectIdentifier {
-	value.Documentation = slices.Clone(value.Documentation)
-	return value
-}
-
 // CertifiedRoles returns authenticated third-party attribute-certificate claims.
 // Their signature, issuer, holder and authority require a separate policy check.
 func (r *BaselineResult) CertifiedRoles() []document.Element {
@@ -422,4 +417,9 @@ func (r *BaselineResult) SignedAssertions() []document.Element {
 	}
 
 	return slices.Clone(r.assertions)
+}
+
+func cloneObjectIdentifier(value ObjectIdentifier) ObjectIdentifier {
+	value.Documentation = slices.Clone(value.Documentation)
+	return value
 }

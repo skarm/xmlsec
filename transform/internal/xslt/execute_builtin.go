@@ -156,33 +156,6 @@ func (ec *execContext) onNoMatchShallowCopy(ctx context.Context, node xdm.Node, 
 	}
 }
 
-func onNoMatchShallowCopyDocumentNode(ctx context.Context, ec *execContext, node xdm.Node, mode string, paramValues []map[string]xdm.Sequence) error {
-	out := ec.currentOutput()
-	if out.sequenceMode || out.captureItems {
-		tmpDoc := newCopyDocument(node)
-
-		frame := &outputFrame{doc: tmpDoc, current: tmpDoc}
-		ec.outputStack = append(ec.outputStack, frame)
-		savedResult := ec.resultDoc
-
-		ec.resultDoc = tmpDoc
-
-		err := ec.applyTemplatesToChildren(ctx, node, mode, paramValues...)
-		ec.resultDoc = savedResult
-		ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
-
-		if err != nil {
-			return err
-		}
-		// Always capture the document (even empty) so fn:base-uri works.
-		out.captureSequenceItems(xdm.ItemSlice{xdm.NodeItem{Node: tmpDoc}})
-
-		return nil
-	}
-
-	return ec.applyTemplatesToChildren(ctx, node, mode, paramValues...)
-}
-
 func (ec *execContext) onNoMatchDeepCopy(node xdm.Node) error {
 	// Deep copy: copy the entire subtree to the output without template matching.
 	switch node.Type() {
@@ -225,30 +198,6 @@ func (ec *execContext) onNoMatchDeepCopy(node xdm.Node) error {
 	default:
 		return nil
 	}
-}
-
-func onNoMatchDeepCopyDocumentNode(ec *execContext, node xdm.Node) error {
-	out := ec.currentOutput()
-	if out.sequenceMode || out.captureItems {
-		copied, err := ec.copyDocumentNode(node)
-		if err != nil {
-			return err
-		}
-
-		ec.deepTransferAnnotations(node, copied)
-
-		out.captureSequenceItems(xdm.ItemSlice{xdm.NodeItem{Node: copied}})
-
-		return nil
-	}
-
-	for child := range xdm.Children(node) {
-		if err := ec.onNoMatchDeepCopy(child); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 // stripVerdict reports whether elem's whitespace-only text-node children would
@@ -386,6 +335,147 @@ func (ec *execContext) isElementStripped(elem *xdm.Element) bool {
 	return true
 }
 
+// stripWhitespaceFromDoc removes whitespace-only text nodes from a document
+// tree according to the stylesheet's xsl:strip-space and xsl:preserve-space rules.
+// This is called when loading documents so that XPath evaluation sees the
+// correctly stripped tree.
+func (ec *execContext) stripWhitespaceFromDoc(doc *xdm.Document) {
+	ec.stripWhitespaceFromNode(doc)
+}
+
+func (ec *execContext) stripWhitespaceFromNode(root xdm.Node) {
+	ec.stripWhitespaceFromNodeInto(root, nil)
+}
+
+// stripWhitespaceFromNodeInto is stripWhitespaceFromNode with an optional out
+// parameter: when removed is non-nil, every unlinked whitespace-only node is
+// recorded in it. The in-place strip of a schema-validated source copy uses this
+// so a selected node the strip removes can be dropped from the initial match
+// selection.
+//
+// preserve threads the in-scope xml:space state top-down through the stack,
+// mirroring copyAndStrip's childPreserve: it is seeded once from root via
+// inheritedXMLSpace (root can be an element subtree with real ancestors of its
+// own, not always a document root — see execute_transform.go's in-place strip
+// of a schema-validated copy), then recomputed at each pushed element from its
+// own xml:space attribute if it declares one, else inherited from its parent
+// frame. This replaces a per-whitespace-node ancestor walk with one O(1) check
+// per node, and keeps this pre-pass consistent with shouldStripWhitespace
+// (both ultimately consult stripVerdict) without calling it directly.
+func (ec *execContext) stripWhitespaceFromNodeInto(root xdm.Node, removed map[xdm.Node]struct{}) {
+	// Use an explicit stack to avoid deep recursion on large documents.
+	stack := make([]stripStackFrame, 0, 32)
+
+	stack = append(stack, stripStackFrame{node: root, preserve: inheritedXMLSpace(root) == lexicon.SpacePreserve})
+	for len(stack) > 0 {
+		frame := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		child := frame.node.FirstChild()
+		for child != nil {
+			next := child.NextSibling()
+			if elem, ok := whitespaceStripParent(child); ok && !frame.preserve && ec.stripVerdict(elem) {
+				if removed != nil {
+					removed[child] = struct{}{}
+				}
+
+				xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert
+			} else if child.FirstChild() != nil {
+				stack = append(stack, stripStackFrame{node: child, preserve: childXMLSpacePreserve(child, frame.preserve)})
+			}
+
+			child = next
+		}
+	}
+}
+
+// applyTemplatesToChildren applies templates in mode to the XDM children of
+// node, in document order, as the built-in template rules do. A DOCTYPE
+// declaration or an entity reference is not an XDM child, so no rule sees it.
+func (ec *execContext) applyTemplatesToChildren(ctx context.Context, node xdm.Node, mode string, paramValues ...map[string]xdm.Sequence) error {
+	var items xdm.ItemSlice
+
+	for child := range xdm.Children(node) {
+		if xdm.IsXDMChild(child) {
+			items = append(items, xdm.NodeItem{Node: child})
+		}
+	}
+
+	var params map[string]xdm.Sequence
+	if len(paramValues) > 0 {
+		params = paramValues[0]
+	}
+
+	return ec.applyTemplatesToSequence(ctx, items, mode, params)
+}
+
+func (ec *execContext) applyTemplatesToAttributes(ctx context.Context, element *xdm.Element, mode string, paramValues ...map[string]xdm.Sequence) error {
+	attributes := element.Attributes()
+
+	items := make(xdm.ItemSlice, 0, len(attributes))
+	for _, attribute := range attributes {
+		items = append(items, xdm.NodeItem{Node: attribute})
+	}
+
+	var params map[string]xdm.Sequence
+	if len(paramValues) > 0 {
+		params = paramValues[0]
+	}
+
+	return ec.applyTemplatesToSequence(ctx, items, mode, params)
+}
+
+func onNoMatchShallowCopyDocumentNode(ctx context.Context, ec *execContext, node xdm.Node, mode string, paramValues []map[string]xdm.Sequence) error {
+	out := ec.currentOutput()
+	if out.sequenceMode || out.captureItems {
+		tmpDoc := newCopyDocument(node)
+
+		frame := &outputFrame{doc: tmpDoc, current: tmpDoc}
+		ec.outputStack = append(ec.outputStack, frame)
+		savedResult := ec.resultDoc
+
+		ec.resultDoc = tmpDoc
+
+		err := ec.applyTemplatesToChildren(ctx, node, mode, paramValues...)
+		ec.resultDoc = savedResult
+		ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
+
+		if err != nil {
+			return err
+		}
+		// Always capture the document (even empty) so fn:base-uri works.
+		out.captureSequenceItems(xdm.ItemSlice{xdm.NodeItem{Node: tmpDoc}})
+
+		return nil
+	}
+
+	return ec.applyTemplatesToChildren(ctx, node, mode, paramValues...)
+}
+
+func onNoMatchDeepCopyDocumentNode(ec *execContext, node xdm.Node) error {
+	out := ec.currentOutput()
+	if out.sequenceMode || out.captureItems {
+		copied, err := ec.copyDocumentNode(node)
+		if err != nil {
+			return err
+		}
+
+		ec.deepTransferAnnotations(node, copied)
+
+		out.captureSequenceItems(xdm.ItemSlice{xdm.NodeItem{Node: copied}})
+
+		return nil
+	}
+
+	for child := range xdm.Children(node) {
+		if err := ec.onNoMatchDeepCopy(child); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // rankSpaceRule combines a rule's import precedence and NameTest specificity
 // into a single comparable rank (import precedence dominates).
 func rankSpaceRule(nt nameTest) int {
@@ -441,60 +531,6 @@ func nameTestPriority(nt nameTest) int {
 	return 2 // specific name
 }
 
-// stripWhitespaceFromDoc removes whitespace-only text nodes from a document
-// tree according to the stylesheet's xsl:strip-space and xsl:preserve-space rules.
-// This is called when loading documents so that XPath evaluation sees the
-// correctly stripped tree.
-func (ec *execContext) stripWhitespaceFromDoc(doc *xdm.Document) {
-	ec.stripWhitespaceFromNode(doc)
-}
-
-func (ec *execContext) stripWhitespaceFromNode(root xdm.Node) {
-	ec.stripWhitespaceFromNodeInto(root, nil)
-}
-
-// stripWhitespaceFromNodeInto is stripWhitespaceFromNode with an optional out
-// parameter: when removed is non-nil, every unlinked whitespace-only node is
-// recorded in it. The in-place strip of a schema-validated source copy uses this
-// so a selected node the strip removes can be dropped from the initial match
-// selection.
-//
-// preserve threads the in-scope xml:space state top-down through the stack,
-// mirroring copyAndStrip's childPreserve: it is seeded once from root via
-// inheritedXMLSpace (root can be an element subtree with real ancestors of its
-// own, not always a document root — see execute_transform.go's in-place strip
-// of a schema-validated copy), then recomputed at each pushed element from its
-// own xml:space attribute if it declares one, else inherited from its parent
-// frame. This replaces a per-whitespace-node ancestor walk with one O(1) check
-// per node, and keeps this pre-pass consistent with shouldStripWhitespace
-// (both ultimately consult stripVerdict) without calling it directly.
-func (ec *execContext) stripWhitespaceFromNodeInto(root xdm.Node, removed map[xdm.Node]struct{}) {
-	// Use an explicit stack to avoid deep recursion on large documents.
-	stack := make([]stripStackFrame, 0, 32)
-
-	stack = append(stack, stripStackFrame{node: root, preserve: inheritedXMLSpace(root) == lexicon.SpacePreserve})
-	for len(stack) > 0 {
-		frame := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-
-		child := frame.node.FirstChild()
-		for child != nil {
-			next := child.NextSibling()
-			if elem, ok := whitespaceStripParent(child); ok && !frame.preserve && ec.stripVerdict(elem) {
-				if removed != nil {
-					removed[child] = struct{}{}
-				}
-
-				xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert
-			} else if child.FirstChild() != nil {
-				stack = append(stack, stripStackFrame{node: child, preserve: childXMLSpacePreserve(child, frame.preserve)})
-			}
-
-			child = next
-		}
-	}
-}
-
 // whitespaceStripParent returns the parent element to evaluate strip/preserve
 // verdicts against for node, and whether node is even a candidate: a
 // whitespace-only text/CDATA node with an element parent. It is the preamble
@@ -542,42 +578,6 @@ func childXMLSpacePreserve(node xdm.Node, inherited bool) bool {
 	}
 
 	return inherited
-}
-
-// applyTemplatesToChildren applies templates in mode to the XDM children of
-// node, in document order, as the built-in template rules do. A DOCTYPE
-// declaration or an entity reference is not an XDM child, so no rule sees it.
-func (ec *execContext) applyTemplatesToChildren(ctx context.Context, node xdm.Node, mode string, paramValues ...map[string]xdm.Sequence) error {
-	var items xdm.ItemSlice
-
-	for child := range xdm.Children(node) {
-		if xdm.IsXDMChild(child) {
-			items = append(items, xdm.NodeItem{Node: child})
-		}
-	}
-
-	var params map[string]xdm.Sequence
-	if len(paramValues) > 0 {
-		params = paramValues[0]
-	}
-
-	return ec.applyTemplatesToSequence(ctx, items, mode, params)
-}
-
-func (ec *execContext) applyTemplatesToAttributes(ctx context.Context, element *xdm.Element, mode string, paramValues ...map[string]xdm.Sequence) error {
-	attributes := element.Attributes()
-
-	items := make(xdm.ItemSlice, 0, len(attributes))
-	for _, attribute := range attributes {
-		items = append(items, xdm.NodeItem{Node: attribute})
-	}
-
-	var params map[string]xdm.Sequence
-	if len(paramValues) > 0 {
-		params = paramValues[0]
-	}
-
-	return ec.applyTemplatesToSequence(ctx, items, mode, params)
 }
 
 // textStripParent returns the element whose strip/preserve verdict applies to

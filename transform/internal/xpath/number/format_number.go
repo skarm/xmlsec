@@ -119,6 +119,399 @@ func ParsePicture(pic string, df DecimalFormat) (ParsedPicture, error) {
 	return pp, nil
 }
 
+// FormatNumber formats a numeric value according to the given picture string
+// and decimal format. The caller provides pre-extracted numeric properties:
+//   - f: the float64 value
+//   - isNaN, isPosInf, isNegInf: special value flags
+//   - negative: true if the value is negative (or negative zero)
+//   - precise: if non-nil, use precise decimal formatting via *big.Rat
+//   - picture: the format picture string
+//   - df: the decimal format specification
+func FormatNumber(f float64, isNaN, isPosInf, isNegInf, negative bool, precise *big.Rat, picture string, df DecimalFormat) (string, error) {
+	parts := strings.Split(picture, string(df.PatternSeparator))
+	if len(parts) > 2 {
+		return "", fmt.Errorf("picture %q contains more than one pattern separator", picture)
+	}
+
+	positive, negativePicture := parts[0], ""
+	if len(parts) > 1 {
+		negativePicture = parts[1]
+	}
+
+	if isNaN {
+		return df.NaN, nil
+	}
+
+	if isPosInf {
+		return formatInfinityPicture(positive, false, df)
+	}
+
+	if isNegInf {
+		if negativePicture != "" {
+			return formatInfinityPicture(negativePicture, false, df)
+		}
+
+		return formatInfinityPicture(positive, true, df)
+	}
+
+	if negative {
+		f = math.Abs(f)
+	}
+
+	selected := positive
+	if negative && negativePicture != "" {
+		selected = negativePicture
+	}
+
+	pp, err := ParsePicture(selected, df)
+	if err != nil {
+		return "", err
+	}
+
+	if pp.IsPercent {
+		f *= 100
+	} else if pp.IsPerMille {
+		f *= 1000
+	}
+
+	prefix := pp.Prefix
+	if negative && negativePicture == "" {
+		prefix = string(df.MinusSign) + prefix
+	}
+
+	// Multiplier overflow takes priority even when a precise value is supplied.
+	if math.IsInf(f, 0) {
+		return prefix + df.Infinity + pp.Suffix, nil
+	}
+
+	return prefix + formatParsedNumber(f, precise, pp, df) + pp.Suffix, nil
+}
+
+// FormatFloat formats a float64 value using the parsed picture and decimal format.
+func FormatFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
+	// Round to maxFracDigits. Only scale when both the power-of-ten scale and the
+	// scaled product stay finite: a huge MaxFracDigits overflows math.Pow to +Inf
+	// (which would turn a finite f into NaN), and a large f overflows f*scale to
+	// +Inf (which would yield a non-finite result). In either case rounding is a
+	// no-op for the representable value, so leaving f unchanged is correct and
+	// keeps big.Float.SetFloat64 from ever seeing NaN/Inf.
+	if pp.MaxFracDigits >= 0 {
+		scale := math.Pow(10, float64(pp.MaxFracDigits))
+		if scaled := f * scale; isFinite(scale) && isFinite(scaled) {
+			f = math.Round(scaled) / scale
+		}
+	}
+
+	// Split into integer and fractional parts.
+	// Use math.Trunc to avoid int64 overflow for large floats.
+	trunc := math.Trunc(f)
+
+	frac := f - trunc
+	if frac < 0 {
+		frac = -frac
+	}
+
+	// Format integer part
+	bigTrunc, _ := new(big.Float).SetFloat64(trunc).Int(nil)
+	intStr := FormatBigInt(bigTrunc, pp.MinIntDigits, pp.GroupingSizes, pp.RepeatGrouping, df)
+
+	if !pp.HasDecimalPoint && pp.MaxFracDigits == 0 {
+		if intStr == "" {
+			intStr = "0"
+		}
+
+		return intStr
+	}
+
+	// Format fractional part
+	fracStr := FormatFrac(frac, pp.MinFracDigits, pp.MaxFracDigits, df)
+
+	// XPath F&O: when both integer and fractional parts are empty (value rounds
+	// to zero with MinIntDigits=0 and MinFracDigits=0), show at least one digit.
+	if intStr == "" && fracStr == "" {
+		if pp.MaxFracDigits > 0 {
+			fracStr = "0"
+		} else {
+			intStr = "0"
+		}
+	}
+
+	if fracStr == "" {
+		return intStr
+	}
+
+	fracStr = applyFractionGrouping(fracStr, pp.FracGroupSizes, df)
+
+	return intStr + string(df.DecimalSeparator) + fracStr
+}
+
+// FormatDecimalPrecise formats a *big.Rat value with exact decimal arithmetic.
+// The rat value should already have its sign removed (absolute value).
+func FormatDecimalPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) string {
+	r = new(big.Rat).Set(r)
+
+	if pp.IsPercent {
+		r.Mul(r, new(big.Rat).SetInt64(100))
+	} else if pp.IsPerMille {
+		r.Mul(r, new(big.Rat).SetInt64(1000))
+	}
+
+	if r.Sign() < 0 {
+		r.Neg(r)
+	}
+
+	// Round to maxFracDigits
+	rounded := RatRoundHalfToEven(r, pp.MaxFracDigits)
+
+	intPart := new(big.Int).Quo(rounded.Num(), rounded.Denom())
+	fracRat := new(big.Rat).Sub(rounded, new(big.Rat).SetInt(intPart))
+
+	intStr := FormatBigInt(intPart, pp.MinIntDigits, pp.GroupingSizes, pp.RepeatGrouping, df)
+
+	if !pp.HasDecimalPoint && pp.MaxFracDigits == 0 {
+		if intStr == "" {
+			intStr = "0"
+		}
+
+		return intStr
+	}
+
+	fracStr := FormatRatFrac(fracRat, pp.MinFracDigits, pp.MaxFracDigits, df)
+
+	// XPath F&O: when both integer and fractional parts are empty (value rounds
+	// to zero with MinIntDigits=0 and MinFracDigits=0), show at least one digit.
+	if intStr == "" && fracStr == "" {
+		if pp.MaxFracDigits > 0 {
+			fracStr = "0"
+		} else {
+			intStr = "0"
+		}
+	}
+
+	if fracStr == "" {
+		return intStr
+	}
+
+	fracStr = applyFractionGrouping(fracStr, pp.FracGroupSizes, df)
+
+	return intStr + string(df.DecimalSeparator) + fracStr
+}
+
+// FormatBigInt formats an integer with minimum digits and grouping separators.
+func FormatBigInt(n *big.Int, minDigits int, groupingSizes []int, repeatGrouping bool, df DecimalFormat) string {
+	s := n.String()
+	if minDigits == 0 && s == "0" {
+		s = ""
+	}
+	// Pad to minDigits
+	if padding := minDigits - len(s); padding > 0 {
+		s = strings.Repeat("0", padding) + s
+	}
+
+	if len(groupingSizes) == 0 || len(s) == 0 {
+		return localizeDigits(s, df.ZeroDigit)
+	}
+
+	// Insert grouping separators from right
+	// groupingSizes[0] is the primary (rightmost) group size.
+	var result []rune
+
+	runes := []rune(s)
+	groupIdx := 0
+	count := 0
+	groupSize := groupingSizes[0]
+
+	for _, v := range slices.Backward(runes) {
+		if groupSize > 0 && count > 0 && count == groupSize {
+			result = append(result, df.GroupingSeparator)
+			count = 0
+
+			if groupIdx+1 < len(groupingSizes) {
+				groupIdx++
+				groupSize = groupingSizes[groupIdx]
+			} else if !repeatGrouping {
+				groupSize = 0
+			}
+		}
+
+		result = append(result, v)
+		count++
+	}
+
+	// Reverse
+	for i, j := 0, len(result)-1; i < j; i, j = i+1, j-1 {
+		result[i], result[j] = result[j], result[i]
+	}
+
+	return localizeDigits(string(result), df.ZeroDigit)
+}
+
+// FormatFrac formats the fractional part of a float64.
+func FormatFrac(frac float64, minDigits, maxDigits int, df DecimalFormat) string {
+	if maxDigits == 0 {
+		return ""
+	}
+
+	var digits []byte
+
+	remaining := frac
+	for range maxDigits {
+		remaining *= 10
+		d := int(remaining)
+		digits = append(digits, byte('0'+d))
+		remaining -= float64(d)
+	}
+
+	// Trim trailing zeros beyond minDigits
+	end := len(digits)
+	for end > minDigits && digits[end-1] == '0' {
+		end--
+	}
+
+	return localizeDigits(string(digits[:end]), df.ZeroDigit)
+}
+
+// FormatRatFrac formats the fractional part of a *big.Rat.
+func FormatRatFrac(frac *big.Rat, minDigits, maxDigits int, df DecimalFormat) string {
+	if maxDigits == 0 {
+		return ""
+	}
+
+	var digits []byte
+
+	// Long division keeps the denominator fixed. Rebuilding and reducing a
+	// rational for each digit needlessly allocates big integers and runs GCD.
+	// The private remainder also preserves the caller's reusable fraction.
+	ten := big.NewInt(10)
+
+	var rem, digit big.Int
+	rem.Set(frac.Num())
+
+	for range maxDigits {
+		rem.Mul(&rem, ten)
+		digit.QuoRem(&rem, frac.Denom(), &rem)
+		digits = append(digits, byte('0'+digit.Int64()))
+	}
+
+	end := len(digits)
+	for end > minDigits && digits[end-1] == '0' {
+		end--
+	}
+
+	return localizeDigits(string(digits[:end]), df.ZeroDigit)
+}
+
+// RatRoundHalfToEven rounds a *big.Rat to the given precision using
+// half-to-even rounding.
+func RatRoundHalfToEven(r *big.Rat, precision int) *big.Rat {
+	if precision < 0 {
+		// Guard against absurdly large negative precision
+		if -precision > 1000 {
+			return new(big.Rat) // rounds to zero
+		}
+		// Round to 10^(-precision) — convert to integer, round, convert back
+		scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-precision)), nil)
+		scaleRat := new(big.Rat).SetInt(scale)
+		divided := new(big.Rat).Quo(r, scaleRat)
+		rounded := RatRoundHalfToEvenInt(divided)
+
+		return new(big.Rat).Mul(new(big.Rat).SetInt(rounded), scaleRat)
+	}
+	// If precision is very large and already exceeds the denominator's decimal
+	// digits, the value is already exact — return as-is. This avoids computing
+	// astronomically large powers of 10 (e.g. 10^4294967296).
+	if precision > 1000 || RatDecimalDigits(r) <= precision {
+		return new(big.Rat).Set(r)
+	}
+	// Multiply by 10^precision, round to integer, divide back
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(precision)), nil)
+	scaleRat := new(big.Rat).SetInt(scale)
+	shifted := new(big.Rat).Mul(r, scaleRat)
+	rounded := RatRoundHalfToEvenInt(shifted)
+
+	return new(big.Rat).SetFrac(rounded, new(big.Int).Set(scale))
+}
+
+// RatDecimalDigits returns the number of decimal digits needed to represent
+// the fractional part of r exactly. Returns 0 for integers.
+func RatDecimalDigits(r *big.Rat) int {
+	if r.IsInt() {
+		return 0
+	}
+	// Factor out 2s and 5s from denominator; count max
+	d := new(big.Int).Set(r.Denom())
+	twos, fives := 0, 0
+
+	for d.Bit(0) == 0 {
+		d.Rsh(d, 1)
+
+		twos++
+	}
+
+	five := big.NewInt(5)
+
+	mod := new(big.Int)
+	for {
+		d.QuoRem(d, five, mod)
+
+		if mod.Sign() != 0 {
+			break
+		}
+
+		fives++
+	}
+	// If d != 1 after removing all 2s and 5s, the decimal is non-terminating
+	if d.Cmp(big.NewInt(1)) != 0 {
+		return math.MaxInt
+	}
+
+	if twos > fives {
+		return twos
+	}
+
+	return fives
+}
+
+// RatRoundHalfToEvenInt rounds a *big.Rat to the nearest integer using
+// half-to-even rounding.
+func RatRoundHalfToEvenInt(r *big.Rat) *big.Int {
+	if r.IsInt() {
+		return new(big.Int).Set(r.Num())
+	}
+
+	intPart := new(big.Int).Quo(r.Num(), r.Denom())
+	// Fractional remainder
+	rem := new(big.Rat).Sub(r, new(big.Rat).SetInt(intPart))
+	rem.Abs(rem)
+
+	half := new(big.Rat).SetFrac64(1, 2)
+	cmp := rem.Cmp(half)
+
+	if cmp < 0 {
+		// Closer to floor
+		return intPart
+	}
+
+	if cmp > 0 {
+		// Closer to ceil
+		if r.Sign() > 0 {
+			return intPart.Add(intPart, big.NewInt(1))
+		}
+
+		return intPart.Sub(intPart, big.NewInt(1))
+	}
+	// Exactly half — round to even
+	if new(big.Int).And(intPart, big.NewInt(1)).Sign() == 0 {
+		return intPart // already even
+	}
+
+	if r.Sign() > 0 {
+		return intPart.Add(intPart, big.NewInt(1))
+	}
+
+	return intPart.Sub(intPart, big.NewInt(1))
+}
+
 func isMandatoryDigit(r, zeroDigit rune) bool {
 	return r >= zeroDigit && r <= zeroDigit+9
 }
@@ -422,74 +815,6 @@ func validateIntegerPictureOrder(integer []rune, df DecimalFormat) error {
 	return nil
 }
 
-// FormatNumber formats a numeric value according to the given picture string
-// and decimal format. The caller provides pre-extracted numeric properties:
-//   - f: the float64 value
-//   - isNaN, isPosInf, isNegInf: special value flags
-//   - negative: true if the value is negative (or negative zero)
-//   - precise: if non-nil, use precise decimal formatting via *big.Rat
-//   - picture: the format picture string
-//   - df: the decimal format specification
-func FormatNumber(f float64, isNaN, isPosInf, isNegInf, negative bool, precise *big.Rat, picture string, df DecimalFormat) (string, error) {
-	parts := strings.Split(picture, string(df.PatternSeparator))
-	if len(parts) > 2 {
-		return "", fmt.Errorf("picture %q contains more than one pattern separator", picture)
-	}
-
-	positive, negativePicture := parts[0], ""
-	if len(parts) > 1 {
-		negativePicture = parts[1]
-	}
-
-	if isNaN {
-		return df.NaN, nil
-	}
-
-	if isPosInf {
-		return formatInfinityPicture(positive, false, df)
-	}
-
-	if isNegInf {
-		if negativePicture != "" {
-			return formatInfinityPicture(negativePicture, false, df)
-		}
-
-		return formatInfinityPicture(positive, true, df)
-	}
-
-	if negative {
-		f = math.Abs(f)
-	}
-
-	selected := positive
-	if negative && negativePicture != "" {
-		selected = negativePicture
-	}
-
-	pp, err := ParsePicture(selected, df)
-	if err != nil {
-		return "", err
-	}
-
-	if pp.IsPercent {
-		f *= 100
-	} else if pp.IsPerMille {
-		f *= 1000
-	}
-
-	prefix := pp.Prefix
-	if negative && negativePicture == "" {
-		prefix = string(df.MinusSign) + prefix
-	}
-
-	// Multiplier overflow takes priority even when a precise value is supplied.
-	if math.IsInf(f, 0) {
-		return prefix + df.Infinity + pp.Suffix, nil
-	}
-
-	return prefix + formatParsedNumber(f, precise, pp, df) + pp.Suffix, nil
-}
-
 func formatInfinityPicture(picture string, minus bool, df DecimalFormat) (string, error) {
 	pp, err := ParsePicture(picture, df)
 	if err != nil {
@@ -712,333 +1037,8 @@ func formatExponentDigits(exp, minDigits int, df DecimalFormat) string {
 	return s.String()
 }
 
-// FormatFloat formats a float64 value using the parsed picture and decimal format.
-func FormatFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
-	// Round to maxFracDigits. Only scale when both the power-of-ten scale and the
-	// scaled product stay finite: a huge MaxFracDigits overflows math.Pow to +Inf
-	// (which would turn a finite f into NaN), and a large f overflows f*scale to
-	// +Inf (which would yield a non-finite result). In either case rounding is a
-	// no-op for the representable value, so leaving f unchanged is correct and
-	// keeps big.Float.SetFloat64 from ever seeing NaN/Inf.
-	if pp.MaxFracDigits >= 0 {
-		scale := math.Pow(10, float64(pp.MaxFracDigits))
-		if scaled := f * scale; isFinite(scale) && isFinite(scaled) {
-			f = math.Round(scaled) / scale
-		}
-	}
-
-	// Split into integer and fractional parts.
-	// Use math.Trunc to avoid int64 overflow for large floats.
-	trunc := math.Trunc(f)
-
-	frac := f - trunc
-	if frac < 0 {
-		frac = -frac
-	}
-
-	// Format integer part
-	bigTrunc, _ := new(big.Float).SetFloat64(trunc).Int(nil)
-	intStr := FormatBigInt(bigTrunc, pp.MinIntDigits, pp.GroupingSizes, pp.RepeatGrouping, df)
-
-	if !pp.HasDecimalPoint && pp.MaxFracDigits == 0 {
-		if intStr == "" {
-			intStr = "0"
-		}
-
-		return intStr
-	}
-
-	// Format fractional part
-	fracStr := FormatFrac(frac, pp.MinFracDigits, pp.MaxFracDigits, df)
-
-	// XPath F&O: when both integer and fractional parts are empty (value rounds
-	// to zero with MinIntDigits=0 and MinFracDigits=0), show at least one digit.
-	if intStr == "" && fracStr == "" {
-		if pp.MaxFracDigits > 0 {
-			fracStr = "0"
-		} else {
-			intStr = "0"
-		}
-	}
-
-	if fracStr == "" {
-		return intStr
-	}
-
-	fracStr = applyFractionGrouping(fracStr, pp.FracGroupSizes, df)
-
-	return intStr + string(df.DecimalSeparator) + fracStr
-}
-
 func isFinite(f float64) bool {
 	return !math.IsNaN(f) && !math.IsInf(f, 0)
-}
-
-// FormatDecimalPrecise formats a *big.Rat value with exact decimal arithmetic.
-// The rat value should already have its sign removed (absolute value).
-func FormatDecimalPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) string {
-	r = new(big.Rat).Set(r)
-
-	if pp.IsPercent {
-		r.Mul(r, new(big.Rat).SetInt64(100))
-	} else if pp.IsPerMille {
-		r.Mul(r, new(big.Rat).SetInt64(1000))
-	}
-
-	if r.Sign() < 0 {
-		r.Neg(r)
-	}
-
-	// Round to maxFracDigits
-	rounded := RatRoundHalfToEven(r, pp.MaxFracDigits)
-
-	intPart := new(big.Int).Quo(rounded.Num(), rounded.Denom())
-	fracRat := new(big.Rat).Sub(rounded, new(big.Rat).SetInt(intPart))
-
-	intStr := FormatBigInt(intPart, pp.MinIntDigits, pp.GroupingSizes, pp.RepeatGrouping, df)
-
-	if !pp.HasDecimalPoint && pp.MaxFracDigits == 0 {
-		if intStr == "" {
-			intStr = "0"
-		}
-
-		return intStr
-	}
-
-	fracStr := FormatRatFrac(fracRat, pp.MinFracDigits, pp.MaxFracDigits, df)
-
-	// XPath F&O: when both integer and fractional parts are empty (value rounds
-	// to zero with MinIntDigits=0 and MinFracDigits=0), show at least one digit.
-	if intStr == "" && fracStr == "" {
-		if pp.MaxFracDigits > 0 {
-			fracStr = "0"
-		} else {
-			intStr = "0"
-		}
-	}
-
-	if fracStr == "" {
-		return intStr
-	}
-
-	fracStr = applyFractionGrouping(fracStr, pp.FracGroupSizes, df)
-
-	return intStr + string(df.DecimalSeparator) + fracStr
-}
-
-// FormatBigInt formats an integer with minimum digits and grouping separators.
-func FormatBigInt(n *big.Int, minDigits int, groupingSizes []int, repeatGrouping bool, df DecimalFormat) string {
-	s := n.String()
-	if minDigits == 0 && s == "0" {
-		s = ""
-	}
-	// Pad to minDigits
-	if padding := minDigits - len(s); padding > 0 {
-		s = strings.Repeat("0", padding) + s
-	}
-
-	if len(groupingSizes) == 0 || len(s) == 0 {
-		return localizeDigits(s, df.ZeroDigit)
-	}
-
-	// Insert grouping separators from right
-	// groupingSizes[0] is the primary (rightmost) group size.
-	var result []rune
-
-	runes := []rune(s)
-	groupIdx := 0
-	count := 0
-	groupSize := groupingSizes[0]
-
-	for _, v := range slices.Backward(runes) {
-		if groupSize > 0 && count > 0 && count == groupSize {
-			result = append(result, df.GroupingSeparator)
-			count = 0
-
-			if groupIdx+1 < len(groupingSizes) {
-				groupIdx++
-				groupSize = groupingSizes[groupIdx]
-			} else if !repeatGrouping {
-				groupSize = 0
-			}
-		}
-
-		result = append(result, v)
-		count++
-	}
-
-	// Reverse
-	for i, j := 0, len(result)-1; i < j; i, j = i+1, j-1 {
-		result[i], result[j] = result[j], result[i]
-	}
-
-	return localizeDigits(string(result), df.ZeroDigit)
-}
-
-// FormatFrac formats the fractional part of a float64.
-func FormatFrac(frac float64, minDigits, maxDigits int, df DecimalFormat) string {
-	if maxDigits == 0 {
-		return ""
-	}
-
-	var digits []byte
-
-	remaining := frac
-	for range maxDigits {
-		remaining *= 10
-		d := int(remaining)
-		digits = append(digits, byte('0'+d))
-		remaining -= float64(d)
-	}
-
-	// Trim trailing zeros beyond minDigits
-	end := len(digits)
-	for end > minDigits && digits[end-1] == '0' {
-		end--
-	}
-
-	return localizeDigits(string(digits[:end]), df.ZeroDigit)
-}
-
-// FormatRatFrac formats the fractional part of a *big.Rat.
-func FormatRatFrac(frac *big.Rat, minDigits, maxDigits int, df DecimalFormat) string {
-	if maxDigits == 0 {
-		return ""
-	}
-
-	var digits []byte
-
-	// Long division keeps the denominator fixed. Rebuilding and reducing a
-	// rational for each digit needlessly allocates big integers and runs GCD.
-	// The private remainder also preserves the caller's reusable fraction.
-	ten := big.NewInt(10)
-
-	var rem, digit big.Int
-	rem.Set(frac.Num())
-
-	for range maxDigits {
-		rem.Mul(&rem, ten)
-		digit.QuoRem(&rem, frac.Denom(), &rem)
-		digits = append(digits, byte('0'+digit.Int64()))
-	}
-
-	end := len(digits)
-	for end > minDigits && digits[end-1] == '0' {
-		end--
-	}
-
-	return localizeDigits(string(digits[:end]), df.ZeroDigit)
-}
-
-// RatRoundHalfToEven rounds a *big.Rat to the given precision using
-// half-to-even rounding.
-func RatRoundHalfToEven(r *big.Rat, precision int) *big.Rat {
-	if precision < 0 {
-		// Guard against absurdly large negative precision
-		if -precision > 1000 {
-			return new(big.Rat) // rounds to zero
-		}
-		// Round to 10^(-precision) — convert to integer, round, convert back
-		scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-precision)), nil)
-		scaleRat := new(big.Rat).SetInt(scale)
-		divided := new(big.Rat).Quo(r, scaleRat)
-		rounded := RatRoundHalfToEvenInt(divided)
-
-		return new(big.Rat).Mul(new(big.Rat).SetInt(rounded), scaleRat)
-	}
-	// If precision is very large and already exceeds the denominator's decimal
-	// digits, the value is already exact — return as-is. This avoids computing
-	// astronomically large powers of 10 (e.g. 10^4294967296).
-	if precision > 1000 || RatDecimalDigits(r) <= precision {
-		return new(big.Rat).Set(r)
-	}
-	// Multiply by 10^precision, round to integer, divide back
-	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(precision)), nil)
-	scaleRat := new(big.Rat).SetInt(scale)
-	shifted := new(big.Rat).Mul(r, scaleRat)
-	rounded := RatRoundHalfToEvenInt(shifted)
-
-	return new(big.Rat).SetFrac(rounded, new(big.Int).Set(scale))
-}
-
-// RatDecimalDigits returns the number of decimal digits needed to represent
-// the fractional part of r exactly. Returns 0 for integers.
-func RatDecimalDigits(r *big.Rat) int {
-	if r.IsInt() {
-		return 0
-	}
-	// Factor out 2s and 5s from denominator; count max
-	d := new(big.Int).Set(r.Denom())
-	twos, fives := 0, 0
-
-	for d.Bit(0) == 0 {
-		d.Rsh(d, 1)
-
-		twos++
-	}
-
-	five := big.NewInt(5)
-
-	mod := new(big.Int)
-	for {
-		d.QuoRem(d, five, mod)
-
-		if mod.Sign() != 0 {
-			break
-		}
-
-		fives++
-	}
-	// If d != 1 after removing all 2s and 5s, the decimal is non-terminating
-	if d.Cmp(big.NewInt(1)) != 0 {
-		return math.MaxInt
-	}
-
-	if twos > fives {
-		return twos
-	}
-
-	return fives
-}
-
-// RatRoundHalfToEvenInt rounds a *big.Rat to the nearest integer using
-// half-to-even rounding.
-func RatRoundHalfToEvenInt(r *big.Rat) *big.Int {
-	if r.IsInt() {
-		return new(big.Int).Set(r.Num())
-	}
-
-	intPart := new(big.Int).Quo(r.Num(), r.Denom())
-	// Fractional remainder
-	rem := new(big.Rat).Sub(r, new(big.Rat).SetInt(intPart))
-	rem.Abs(rem)
-
-	half := new(big.Rat).SetFrac64(1, 2)
-	cmp := rem.Cmp(half)
-
-	if cmp < 0 {
-		// Closer to floor
-		return intPart
-	}
-
-	if cmp > 0 {
-		// Closer to ceil
-		if r.Sign() > 0 {
-			return intPart.Add(intPart, big.NewInt(1))
-		}
-
-		return intPart.Sub(intPart, big.NewInt(1))
-	}
-	// Exactly half — round to even
-	if new(big.Int).And(intPart, big.NewInt(1)).Sign() == 0 {
-		return intPart // already even
-	}
-
-	if r.Sign() > 0 {
-		return intPart.Add(intPart, big.NewInt(1))
-	}
-
-	return intPart.Sub(intPart, big.NewInt(1))
 }
 
 func localizeDigits(s string, zeroDigit rune) string {

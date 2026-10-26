@@ -19,6 +19,8 @@ const variableURI = "uri"
 
 const transformSerializedQuery = `transform(map{'stylesheet-text': $stylesheet, 'initial-template': QName('', 'start'), 'delivery-format': 'serialized'})?output`
 
+const preprocessingInputs = `let $make-tree := function($body) {transform(map{'stylesheet-text':concat('<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xml:base="https://example.test/sources/main.xsl" version="3.0"><xsl:template name="start">',$body,'</xsl:template></xsl:stylesheet>'),'stylesheet-base-uri':'https://example.test/sources/main.xsl','base-output-uri':'https://example.test/sources/main.xsl','initial-template':QName('', 'start'),'delivery-format':'raw'})('https://example.test/sources/main.xsl')}, $orphan := $make-tree('<r><xsl:text> </xsl:text><a/><xsl:text> </xsl:text></r>'), $computed := $make-tree('<xsl:element name="r"><xsl:text> </xsl:text><a/><xsl:text> </xsl:text></xsl:element>'), $a := parse-xml('<r xmlns:p="urn:p" id="a"> <a/> </r>'), $b := parse-xml('<r xmlns:p="urn:p" id="b"> <a/> <keep xml:space="preserve"> </keep> </r>'), $namespace := function($doc) { transform(map{'stylesheet-text':'<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:template match="/"><xsl:sequence select="*/namespace::p"/></xsl:template></xsl:stylesheet>','source-node':$doc,'delivery-format':'raw'})?output } `
+
 func TestXSLTResultDelivery(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, test := range []struct {
@@ -4981,8 +4983,6 @@ func inputPreprocessingCases() []inputPreprocessingCase {
 func inputPreprocessingSource(test inputPreprocessingCase) string {
 	return sheet(version30, `<xsl:strip-space elements="*"/><xsl:preserve-space elements="keep"/>`+test.globals+`<xsl:template name="start" match="."><xsl:value-of select="`+test.template+`"/></xsl:template>`)
 }
-
-const preprocessingInputs = `let $make-tree := function($body) {transform(map{'stylesheet-text':concat('<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xml:base="https://example.test/sources/main.xsl" version="3.0"><xsl:template name="start">',$body,'</xsl:template></xsl:stylesheet>'),'stylesheet-base-uri':'https://example.test/sources/main.xsl','base-output-uri':'https://example.test/sources/main.xsl','initial-template':QName('', 'start'),'delivery-format':'raw'})('https://example.test/sources/main.xsl')}, $orphan := $make-tree('<r><xsl:text> </xsl:text><a/><xsl:text> </xsl:text></r>'), $computed := $make-tree('<xsl:element name="r"><xsl:text> </xsl:text><a/><xsl:text> </xsl:text></xsl:element>'), $a := parse-xml('<r xmlns:p="urn:p" id="a"> <a/> </r>'), $b := parse-xml('<r xmlns:p="urn:p" id="b"> <a/> <keep xml:space="preserve"> </keep> </r>'), $namespace := function($doc) { transform(map{'stylesheet-text':'<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:template match="/"><xsl:sequence select="*/namespace::p"/></xsl:template></xsl:stylesheet>','source-node':$doc,'delivery-format':'raw'})?output } `
 
 func inputPreprocessingExpression(test inputPreprocessingCase) string {
 	entry := `,'initial-template':QName('', 'start')`

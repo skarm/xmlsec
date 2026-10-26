@@ -23,7 +23,9 @@ type keyFunction struct {
 }
 
 func (f *keyFunction) MinArity() int { return 2 }
+
 func (f *keyFunction) MaxArity() int { return 3 }
+
 func (f *keyFunction) FuncParamTypesForArity(arity int) []xdm.SequenceType {
 	return xsltFunctionTypes()[functionTypeKey{nameKey2, arity}].params
 }
@@ -111,6 +113,125 @@ func (ec *execContext) fnKey(ctx context.Context, args []xdm.Sequence) (xdm.Sequ
 	return seq, nil
 }
 
+func (ec *execContext) keyArgumentRoot(ctx context.Context, args []xdm.Sequence) (xdm.Node, error) {
+	var root xdm.Node
+
+	if len(args) == 3 {
+		if xdm.SequenceLen(args[2]) != 1 {
+			return nil, dynamicError(lexicon.ErrXPTY0004, "key() third argument must be one node")
+		}
+
+		node, ok := args[2].Get(0).(xdm.NodeItem)
+		if !ok {
+			return nil, dynamicError(lexicon.ErrXPTY0004, "key() third argument must be a node")
+		}
+
+		root = normalizeNode(node.Node)
+	} else {
+		root = xpath.FnContextNode(ctx)
+	}
+
+	if root == nil {
+		return nil, dynamicError(errCodeXTDE1270, "key() requires a context node")
+	}
+
+	for ancestor := root; ancestor != nil; ancestor = ancestor.Parent() {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return nil, err
+		}
+
+		if ancestor.Parent() == nil && ancestor.Type() != xdm.DocumentNode {
+			return nil, dynamicError(errCodeXTDE1270, "key() requires a document-rooted tree")
+		}
+	}
+
+	if len(args) == 2 {
+		root = documentRoot(root)
+	}
+
+	return root, nil
+}
+
+// system-property(name) returns XSLT system properties.
+func (ec *execContext) fnSystemProperty(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return introspectionSystemProperty(ctx, args, ec.stylesheet.processorLanguage(), ec.stylesheet.dynamicEvaluationDisabled)
+}
+
+// available-system-properties() returns a sequence of QNames for all
+// available system properties in the XSLT namespace.
+// fnStreamAvailable implements fn:stream-available — returns true when the
+// URI identifies a resource that can be streamed.
+func (ec *execContext) fnStreamAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	if xdm.SequenceLen(args[0]) == 0 {
+		return xdm.SingleBoolean(false), nil
+	}
+
+	atom, err := xpath.AtomizeItem(args[0].Get(0))
+	if err != nil {
+		return nil, err
+	}
+
+	uri, err := xpath.AtomicToString(atom)
+	if err != nil {
+		return nil, err
+	}
+
+	resolved, err := xpath.ResolveDocumentURI(ctx, uri)
+	if err != nil {
+		if detail, ok := errors.AsType[*xdm.Error](err); ok && detail.Code == "FODC0005" {
+			return nil, err
+		}
+
+		return xdm.SingleBoolean(false), nil
+	}
+
+	if err := ec.CheckRead(ctx, resolved); err != nil {
+		return nil, err
+	}
+
+	if doc, found := ec.docCache[ec.docCacheKey(resolved)]; found {
+		_, err := ec.existingDocumentRead(ctx, doc)
+		return xdm.SingleBoolean(err == nil), err
+	}
+
+	reader, err := ec.retrieveDocumentReader(ctx, resolved)
+	if err != nil {
+		if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+			return nil, err
+		}
+
+		return xdm.SingleBoolean(false), nil
+	}
+
+	options := ec.inputParseOptions().WithByteLimit(ec.resourceLimit())
+	err = options.CheckXMLProlog(ctx, reader)
+	err = errors.Join(err, reader.Close())
+
+	return xdm.SingleBoolean(err == nil), nil
+}
+
+// fnCurrentOutputURI implements current-output-uri() — returns the URI
+// of the current output destination.
+// Temporary local variables retain the URI; non-contextual calls and global
+// initialization clear it independently of the output construction state.
+func (ec *execContext) fnCurrentOutputURI(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
+	if xpath.IsDynamicCall(ctx) || ec.inPatternMatch || ec.inSortKeyEval || ec.currentOutputURI == "" {
+		return xdm.EmptySequence(), nil
+	}
+
+	return xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: ec.currentOutputURI}}, nil
+}
+
+// unparsed-entity-uri(name [, doc]) returns the URI of an unparsed entity.
+func (ec *execContext) fnUnparsedEntityURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return ec.unparsedEntity(ctx, args, "unparsed-entity-uri", errCodeXTDE1370)
+}
+
+// unparsed-entity-public-id(name) returns the public identifier of an unparsed entity.
+func (ec *execContext) fnUnparsedEntityPublicID(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return ec.unparsedEntity(ctx, args, "unparsed-entity-public-id", errCodeXTDE1380)
+}
+
 func documentRoot(node xdm.Node) xdm.Node {
 	for parent := node.Parent(); parent != nil; parent = node.Parent() {
 		node = parent
@@ -159,50 +280,6 @@ func keyArgumentName(ctx context.Context, arg xdm.Sequence, processor int) (stri
 	}
 
 	return xdm.ClarkName(resolved.URI, resolved.Local), nil
-}
-
-func (ec *execContext) keyArgumentRoot(ctx context.Context, args []xdm.Sequence) (xdm.Node, error) {
-	var root xdm.Node
-
-	if len(args) == 3 {
-		if xdm.SequenceLen(args[2]) != 1 {
-			return nil, dynamicError(lexicon.ErrXPTY0004, "key() third argument must be one node")
-		}
-
-		node, ok := args[2].Get(0).(xdm.NodeItem)
-		if !ok {
-			return nil, dynamicError(lexicon.ErrXPTY0004, "key() third argument must be a node")
-		}
-
-		root = normalizeNode(node.Node)
-	} else {
-		root = xpath.FnContextNode(ctx)
-	}
-
-	if root == nil {
-		return nil, dynamicError(errCodeXTDE1270, "key() requires a context node")
-	}
-
-	for ancestor := root; ancestor != nil; ancestor = ancestor.Parent() {
-		if err := xpath.Charge(ctx, 1); err != nil {
-			return nil, err
-		}
-
-		if ancestor.Parent() == nil && ancestor.Type() != xdm.DocumentNode {
-			return nil, dynamicError(errCodeXTDE1270, "key() requires a document-rooted tree")
-		}
-	}
-
-	if len(args) == 2 {
-		root = documentRoot(root)
-	}
-
-	return root, nil
-}
-
-// system-property(name) returns XSLT system properties.
-func (ec *execContext) fnSystemProperty(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return introspectionSystemProperty(ctx, args, ec.stylesheet.processorLanguage(), ec.stylesheet.dynamicEvaluationDisabled)
 }
 
 func introspectionSystemProperty(ctx context.Context, args []xdm.Sequence, processor int, disabled bool) (xdm.Sequence, error) {
@@ -275,71 +352,6 @@ func systemPropertyValue(ctx context.Context, local string, processor int) xdm.S
 	}
 }
 
-// available-system-properties() returns a sequence of QNames for all
-// available system properties in the XSLT namespace.
-// fnStreamAvailable implements fn:stream-available — returns true when the
-// URI identifies a resource that can be streamed.
-func (ec *execContext) fnStreamAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if xdm.SequenceLen(args[0]) == 0 {
-		return xdm.SingleBoolean(false), nil
-	}
-
-	atom, err := xpath.AtomizeItem(args[0].Get(0))
-	if err != nil {
-		return nil, err
-	}
-
-	uri, err := xpath.AtomicToString(atom)
-	if err != nil {
-		return nil, err
-	}
-
-	resolved, err := xpath.ResolveDocumentURI(ctx, uri)
-	if err != nil {
-		if detail, ok := errors.AsType[*xdm.Error](err); ok && detail.Code == "FODC0005" {
-			return nil, err
-		}
-
-		return xdm.SingleBoolean(false), nil
-	}
-
-	if err := ec.CheckRead(ctx, resolved); err != nil {
-		return nil, err
-	}
-
-	if doc, found := ec.docCache[ec.docCacheKey(resolved)]; found {
-		_, err := ec.existingDocumentRead(ctx, doc)
-		return xdm.SingleBoolean(err == nil), err
-	}
-
-	reader, err := ec.retrieveDocumentReader(ctx, resolved)
-	if err != nil {
-		if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
-			return nil, err
-		}
-
-		return xdm.SingleBoolean(false), nil
-	}
-
-	options := ec.inputParseOptions().WithByteLimit(ec.resourceLimit())
-	err = options.CheckXMLProlog(ctx, reader)
-	err = errors.Join(err, reader.Close())
-
-	return xdm.SingleBoolean(err == nil), nil
-}
-
-// fnCurrentOutputURI implements current-output-uri() — returns the URI
-// of the current output destination.
-// Temporary local variables retain the URI; non-contextual calls and global
-// initialization clear it independently of the output construction state.
-func (ec *execContext) fnCurrentOutputURI(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
-	if xpath.IsDynamicCall(ctx) || ec.inPatternMatch || ec.inSortKeyEval || ec.currentOutputURI == "" {
-		return xdm.EmptySequence(), nil
-	}
-
-	return xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: ec.currentOutputURI}}, nil
-}
-
 func fnAvailableSystemProperties(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 	props := []string{
 		lexicon.SerializationVersion, "vendor", "vendor-url", nameProductName, "product-version",
@@ -358,16 +370,6 @@ func fnAvailableSystemProperties(_ context.Context, _ []xdm.Sequence) (xdm.Seque
 	}
 
 	return seq, nil
-}
-
-// unparsed-entity-uri(name [, doc]) returns the URI of an unparsed entity.
-func (ec *execContext) fnUnparsedEntityURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return ec.unparsedEntity(ctx, args, "unparsed-entity-uri", errCodeXTDE1370)
-}
-
-// unparsed-entity-public-id(name) returns the public identifier of an unparsed entity.
-func (ec *execContext) fnUnparsedEntityPublicID(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return ec.unparsedEntity(ctx, args, "unparsed-entity-public-id", errCodeXTDE1380)
 }
 
 // xslMultiArityFunc wraps multiple xsl:function overloads (same QName,

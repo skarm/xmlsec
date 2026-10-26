@@ -425,50 +425,6 @@ func (w *canonicalWriter) visitElement(n *Node, frame canonicalFrame, visible bo
 	return w.err
 }
 
-func copyBindings(dst, src map[string]string) map[string]string {
-	if dst == nil {
-		dst = make(map[string]string, len(src))
-	} else {
-		clear(dst)
-	}
-
-	maps.Copy(dst, src)
-
-	return dst
-}
-
-func nextCanonicalFrame(frame canonicalFrame, selected map[string]string, utilized map[string]struct{}, toRender map[string]string, visible bool, scratch *canonicalFrame) canonicalFrame {
-	if !visible {
-		return frame
-	}
-
-	next := canonicalFrame{selected: selected, utilized: frame.utilized, rendered: frame.rendered}
-	copied := false
-
-	for prefix := range utilized {
-		uri := selected[prefix]
-		if previous, ok := next.utilized[prefix]; ok && previous == uri {
-			continue
-		}
-
-		if !copied {
-			scratch.utilized = copyBindings(scratch.utilized, frame.utilized)
-			next.utilized = scratch.utilized
-			copied = true
-		}
-
-		next.utilized[prefix] = uri
-	}
-
-	if len(toRender) != 0 {
-		scratch.rendered = copyBindings(scratch.rendered, frame.rendered)
-		next.rendered = scratch.rendered
-		maps.Copy(next.rendered, toRender)
-	}
-
-	return next
-}
-
 func (w *canonicalWriter) selectedNamespaces(n *Node, selected map[string]string) map[string]string {
 	if selected == nil {
 		selected = make(map[string]string)
@@ -608,6 +564,50 @@ func (w *canonicalWriter) writeElementStart(n *Node, visible bool, toRender map[
 	}
 
 	return w.err
+}
+
+func copyBindings(dst, src map[string]string) map[string]string {
+	if dst == nil {
+		dst = make(map[string]string, len(src))
+	} else {
+		clear(dst)
+	}
+
+	maps.Copy(dst, src)
+
+	return dst
+}
+
+func nextCanonicalFrame(frame canonicalFrame, selected map[string]string, utilized map[string]struct{}, toRender map[string]string, visible bool, scratch *canonicalFrame) canonicalFrame {
+	if !visible {
+		return frame
+	}
+
+	next := canonicalFrame{selected: selected, utilized: frame.utilized, rendered: frame.rendered}
+	copied := false
+
+	for prefix := range utilized {
+		uri := selected[prefix]
+		if previous, ok := next.utilized[prefix]; ok && previous == uri {
+			continue
+		}
+
+		if !copied {
+			scratch.utilized = copyBindings(scratch.utilized, frame.utilized)
+			next.utilized = scratch.utilized
+			copied = true
+		}
+
+		next.utilized[prefix] = uri
+	}
+
+	if len(toRender) != 0 {
+		scratch.rendered = copyBindings(scratch.rendered, frame.rendered)
+		next.rendered = scratch.rendered
+		maps.Copy(next.rendered, toRender)
+	}
+
+	return next
 }
 
 func canonicalAttributes(attrs []Attribute, n *Node, visible bool, sel canonicalSelection, algorithm string) ([]Attribute, error) {

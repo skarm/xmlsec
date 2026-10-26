@@ -54,6 +54,17 @@ type VerifiedEvidence struct {
 	authenticated      bool
 }
 
+func newCRLEvidence(list *parsedCRL, target, issuer, signer *x509.Certificate, at time.Time) *VerifiedEvidence {
+	if len(list.sources) == 0 && list.ownedRaw == nil {
+		list.ownedRaw = bytes.Clone(list.raw)
+	}
+
+	scopeData := append([]byte(list.issuerKey), list.scope.raw...)
+	scope := sha256.Sum256(scopeData)
+
+	return &VerifiedEvidence{authenticated: true, signatureOID: list.algorithm.Algorithm.String(), scopeReasons: list.scope.reasons, sources: append([]*evidence.Observation(nil), list.sources...), kind: EvidenceCRL, raw: list.ownedRaw, fingerprint: sha256.Sum256(list.raw), target: sha256.Sum256(target.Raw), issuer: sha256.Sum256(issuer.RawSubjectPublicKeyInfo), signer: sha256.Sum256(signer.Raw), issued: list.this, this: list.this, next: list.next, validation: at, status: "not-listed", scope: hex.EncodeToString(scope[:])}
+}
+
 // Kind returns the original evidence encoding.
 func (e *VerifiedEvidence) Kind() EvidenceKind {
 	if e == nil {
@@ -184,79 +195,6 @@ func (e *VerifiedEvidence) Dependencies() []string {
 	return append([]string(nil), e.dependencies...)
 }
 
-// Evidence returns immutable authenticated assertions used by the successful
-// configured policy. The returned slice can be modified without affecting r.
-func (r *Result) Evidence() []*VerifiedEvidence {
-	if r == nil {
-		return nil
-	}
-
-	return append([]*VerifiedEvidence(nil), r.evidence...)
-}
-
-// Evidence returns authenticated diagnostics, including stale assertions. It
-// does not turn a failed verification report into a successful Result.
-func (r Report) Evidence() []*VerifiedEvidence {
-	return append([]*VerifiedEvidence(nil), r.evidence...)
-}
-
-func newCRLEvidence(list *parsedCRL, target, issuer, signer *x509.Certificate, at time.Time) *VerifiedEvidence {
-	if len(list.sources) == 0 && list.ownedRaw == nil {
-		list.ownedRaw = bytes.Clone(list.raw)
-	}
-
-	scopeData := append([]byte(list.issuerKey), list.scope.raw...)
-	scope := sha256.Sum256(scopeData)
-
-	return &VerifiedEvidence{authenticated: true, signatureOID: list.algorithm.Algorithm.String(), scopeReasons: list.scope.reasons, sources: append([]*evidence.Observation(nil), list.sources...), kind: EvidenceCRL, raw: list.ownedRaw, fingerprint: sha256.Sum256(list.raw), target: sha256.Sum256(target.Raw), issuer: sha256.Sum256(issuer.RawSubjectPublicKeyInfo), signer: sha256.Sum256(signer.Raw), issued: list.this, this: list.this, next: list.next, validation: at, status: "not-listed", scope: hex.EncodeToString(scope[:])}
-}
-
-func canonicalEvidence(items []*VerifiedEvidence) []*VerifiedEvidence {
-	byBinding := make(map[string]*VerifiedEvidence, len(items))
-
-	keys := make([]string, 0, len(items))
-	for _, item := range items {
-		if item == nil || !item.authenticated {
-			continue
-		}
-
-		key := item.FingerprintSHA256() + "/" + item.TargetCertificateSHA256() + "/" + item.IssuerScopeBinding() + "/" + item.SignerCertificateSHA256() + "/" + item.IssuerSPKISHA256() + "/" + item.validation.UTC().Format(time.RFC3339Nano)
-		if previous := byBinding[key]; previous == nil {
-			keys = append(keys, key)
-			byBinding[key] = item
-		} else {
-			merged := *previous
-			merged.coverage |= item.coverage
-
-			dependencies := make(map[string]struct{}, len(previous.dependencies)+len(item.dependencies))
-			for _, dependency := range previous.dependencies {
-				dependencies[dependency] = struct{}{}
-			}
-
-			for _, dependency := range item.dependencies {
-				dependencies[dependency] = struct{}{}
-			}
-
-			merged.dependencies = make([]string, 0, len(dependencies))
-			for dependency := range dependencies {
-				merged.dependencies = append(merged.dependencies, dependency)
-			}
-
-			sort.Strings(merged.dependencies)
-			byBinding[key] = &merged
-		}
-	}
-
-	sort.Strings(keys)
-
-	out := make([]*VerifiedEvidence, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, byBinding[key])
-	}
-
-	return out
-}
-
 // Sources returns owned observations as immutable pointers. Their transport
 // provenance remains untrusted and is never proof of existence or authority.
 func (e *VerifiedEvidence) Sources() []*evidence.Observation {
@@ -324,4 +262,66 @@ func (e *VerifiedEvidence) CoveredReasons() uint16 {
 	}
 
 	return uint16(e.coverage)
+}
+
+// Evidence returns immutable authenticated assertions used by the successful
+// configured policy. The returned slice can be modified without affecting r.
+func (r *Result) Evidence() []*VerifiedEvidence {
+	if r == nil {
+		return nil
+	}
+
+	return append([]*VerifiedEvidence(nil), r.evidence...)
+}
+
+// Evidence returns authenticated diagnostics, including stale assertions. It
+// does not turn a failed verification report into a successful Result.
+func (r Report) Evidence() []*VerifiedEvidence {
+	return append([]*VerifiedEvidence(nil), r.evidence...)
+}
+
+func canonicalEvidence(items []*VerifiedEvidence) []*VerifiedEvidence {
+	byBinding := make(map[string]*VerifiedEvidence, len(items))
+
+	keys := make([]string, 0, len(items))
+	for _, item := range items {
+		if item == nil || !item.authenticated {
+			continue
+		}
+
+		key := item.FingerprintSHA256() + "/" + item.TargetCertificateSHA256() + "/" + item.IssuerScopeBinding() + "/" + item.SignerCertificateSHA256() + "/" + item.IssuerSPKISHA256() + "/" + item.validation.UTC().Format(time.RFC3339Nano)
+		if previous := byBinding[key]; previous == nil {
+			keys = append(keys, key)
+			byBinding[key] = item
+		} else {
+			merged := *previous
+			merged.coverage |= item.coverage
+
+			dependencies := make(map[string]struct{}, len(previous.dependencies)+len(item.dependencies))
+			for _, dependency := range previous.dependencies {
+				dependencies[dependency] = struct{}{}
+			}
+
+			for _, dependency := range item.dependencies {
+				dependencies[dependency] = struct{}{}
+			}
+
+			merged.dependencies = make([]string, 0, len(dependencies))
+			for dependency := range dependencies {
+				merged.dependencies = append(merged.dependencies, dependency)
+			}
+
+			sort.Strings(merged.dependencies)
+			byBinding[key] = &merged
+		}
+	}
+
+	sort.Strings(keys)
+
+	out := make([]*VerifiedEvidence, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, byBinding[key])
+	}
+
+	return out
 }

@@ -33,10 +33,6 @@ func CheckTypeLanguage(st xdm.SequenceType, version int) error {
 	})
 }
 
-func profileError(code, feature string, version int) error {
-	return &xdm.Error{Code: code, Message: feature + " is unavailable in XPath " + map[int]string{10: lexicon.XMLVersion10, 20: "2.0", 30: "3.0", 31: "3.1"}[version]}
-}
-
 // ValidNCName checks a prefix-free XML name used by the public API.
 func ValidNCName(name string) bool { return xmlchar.IsValidNCName(name) }
 
@@ -73,6 +69,10 @@ func CheckStandaloneFunctions(expr *Expression, namespaces map[string]string, ex
 
 		return checkStandaloneCall(expr.version, prefix, name, arity, namespaces, extensions)
 	})
+}
+
+func profileError(code, feature string, version int) error {
+	return &xdm.Error{Code: code, Message: feature + " is unavailable in XPath " + map[int]string{10: lexicon.XMLVersion10, 20: "2.0", 30: "3.0", 31: "3.1"}[version]}
 }
 
 func checkStandaloneCall(version int, prefix, name string, arity int, namespaces map[string]string, extensions []map[string]Function) error {
@@ -152,6 +152,13 @@ func (c Compiler) HostFunctions(available func(uri, name string, arity int) bool
 	cfg.hostFunction = available
 
 	return Compiler{cfg: &cfg}
+}
+
+// BuiltinFunctionAvailable reports the selected language's standard function
+// library, including version-specific arities, for host introspection.
+func BuiltinFunctionAvailable(version int, uri, name string, arity int) bool {
+	return functionVisible(version, uri, name, arity) && IsBuiltinFunctionNS(uri, name) &&
+		(arity < 0 || BuiltinFunctionAcceptsArity(uri, name, arity))
 }
 
 func validateVersionTokens(tokens []Token, version int) error {
@@ -323,13 +330,6 @@ func xsConstructorVisible(version int, name string) bool {
 	}
 
 	return version != 20 || !isBuiltinListLocalName(name) && name != lexicon.TypeError
-}
-
-// BuiltinFunctionAvailable reports the selected language's standard function
-// library, including version-specific arities, for host introspection.
-func BuiltinFunctionAvailable(version int, uri, name string, arity int) bool {
-	return functionVisible(version, uri, name, arity) && IsBuiltinFunctionNS(uri, name) &&
-		(arity < 0 || BuiltinFunctionAcceptsArity(uri, name, arity))
 }
 
 func checkVersionRegex(ctx context.Context, pattern, flags string) error {

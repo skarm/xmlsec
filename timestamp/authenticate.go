@@ -25,6 +25,63 @@ type AuthenticatedToken struct {
 	valid       bool
 }
 
+// Valid reports cryptographic authentication ONLY, never trust or existence.
+func (a *AuthenticatedToken) Valid() bool { return a != nil && a.valid && a.token != nil }
+
+// Token returns the immutable cryptographically authenticated token.
+func (a *AuthenticatedToken) Token() *Token {
+	if !a.Valid() {
+		return nil
+	}
+
+	return a.token
+}
+
+// Info returns authenticated TSA claims whose trust is still to be established.
+func (a *AuthenticatedToken) Info() Info {
+	if !a.Valid() {
+		return Info{}
+	}
+
+	return a.token.info
+}
+
+// CertificateDER returns an owned copy of the ESS-bound TSA certificate.
+func (a *AuthenticatedToken) CertificateDER() []byte {
+	if !a.Valid() {
+		return nil
+	}
+
+	return bytes.Clone(a.certificate)
+}
+
+// TokenSHA256 identifies the exact token encoding, without changing its DER.
+func (a *AuthenticatedToken) TokenSHA256() [32]byte {
+	if !a.Valid() {
+		return [32]byte{}
+	}
+
+	return a.digest
+}
+
+// SignatureHash returns the authenticated CMS hash algorithm.
+func (a *AuthenticatedToken) SignatureHash() crypto.Hash {
+	if !a.Valid() {
+		return 0
+	}
+
+	return a.hash
+}
+
+// SignatureAlgorithmOID returns the normalized authenticated CMS signature OID.
+func (a *AuthenticatedToken) SignatureAlgorithmOID() string {
+	if !a.Valid() {
+		return ""
+	}
+
+	return a.algorithm
+}
+
 // Authenticate checks format, exact imprint/nonce/policy bindings, TSA name,
 // critical timeStamping-only EKU, certificate validity at GenTime and the CMS
 // signature. at is the explicit current time used for configured age/future
@@ -82,63 +139,6 @@ func (v *Verifier) Authenticate(ctx context.Context, token *Token, want Expectat
 		digest:      fingerprint,
 		valid:       true,
 	}, nil
-}
-
-// Valid reports cryptographic authentication ONLY, never trust or existence.
-func (a *AuthenticatedToken) Valid() bool { return a != nil && a.valid && a.token != nil }
-
-// Token returns the immutable cryptographically authenticated token.
-func (a *AuthenticatedToken) Token() *Token {
-	if !a.Valid() {
-		return nil
-	}
-
-	return a.token
-}
-
-// Info returns authenticated TSA claims whose trust is still to be established.
-func (a *AuthenticatedToken) Info() Info {
-	if !a.Valid() {
-		return Info{}
-	}
-
-	return a.token.info
-}
-
-// CertificateDER returns an owned copy of the ESS-bound TSA certificate.
-func (a *AuthenticatedToken) CertificateDER() []byte {
-	if !a.Valid() {
-		return nil
-	}
-
-	return bytes.Clone(a.certificate)
-}
-
-// TokenSHA256 identifies the exact token encoding, without changing its DER.
-func (a *AuthenticatedToken) TokenSHA256() [32]byte {
-	if !a.Valid() {
-		return [32]byte{}
-	}
-
-	return a.digest
-}
-
-// SignatureHash returns the authenticated CMS hash algorithm.
-func (a *AuthenticatedToken) SignatureHash() crypto.Hash {
-	if !a.Valid() {
-		return 0
-	}
-
-	return a.hash
-}
-
-// SignatureAlgorithmOID returns the normalized authenticated CMS signature OID.
-func (a *AuthenticatedToken) SignatureAlgorithmOID() string {
-	if !a.Valid() {
-		return ""
-	}
-
-	return a.algorithm
 }
 
 // NewHistoricalSession creates a separate operation using this verifier's exact

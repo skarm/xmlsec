@@ -120,71 +120,6 @@ func (ec *execContext) prepareHostFunction(name string, function *xsltFunc) {
 	}
 }
 
-// Preserve the XSLT 2.0 error vocabulary while reusing F&O conversion and
-// formatting. A 3.0 processor uses the F&O codes even for a 2.0 declaration.
-type legacyFormatFunction struct {
-	xpath.TypedFunctionByArity
-	name string
-}
-
-func newLegacyFormatFunction(version int, name string) xpath.Function {
-	return &legacyFormatFunction{TypedFunctionByArity: xpath.HostBuiltin(version, name), name: name}
-}
-
-func (f *legacyFormatFunction) AcceptsArity(arity int) bool {
-	return xpath.BuiltinFunctionAcceptsArity(xpath.NSFn, f.name, arity)
-}
-
-func (f *legacyFormatFunction) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if f.name == lexicon.FnFormatNumber && len(args) == 3 {
-		name, err := xpath.XPath10String(args[2])
-		if err != nil {
-			return nil, err
-		}
-
-		if !xmlchar.IsValidQName(name) {
-			return nil, dynamicError("XTDE1280", "invalid decimal format QName %q", name)
-		}
-	}
-
-	value, err := f.TypedFunctionByArity.Call(ctx, args)
-	if failure := preserveControlFailure(ctx, err); failure != nil {
-		return nil, failure
-	}
-
-	if detail, ok := errors.AsType[*xdm.Error](err); ok && detail.CodeQName().URI == lexicon.NamespaceErr {
-		code := ""
-
-		switch detail.Code {
-		case "FODF1280":
-			code = "XTDE1280"
-		case "FODF1310":
-			code = "XTDE1310"
-		case "FOFD1340":
-			code = "XTDE1340"
-		case "FOFD1350":
-			code = "XTDE1350"
-		}
-
-		if code != "" {
-			return nil, dynamicErrorCause(code, err, "%s: %s", f.name, detail.Message)
-		}
-	}
-
-	return value, err
-}
-
-func xslt30Function(name string) bool {
-	switch name {
-	case nameAccumulatorBefore, nameAccumulatorAfter, fnNameCopyOf, funcSnapshot,
-		fnNameTransform, funcAvailableSystemProperties, nameStreamAvailable,
-		fnNameCurrentOutputURI, nameCurrentMergeGroup, nameCurrentMergeKey:
-		return true
-	default:
-		return false
-	}
-}
-
 // current() returns the current item (node or atomic value being processed).
 func (ec *execContext) fnCurrent(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 	// For-each over atomic values: return the current atomic item
@@ -480,27 +415,6 @@ func (ec *execContext) loadDocument(ctx context.Context, uri string, baseDir str
 	return doc, nil
 }
 
-type documentSnapshotError struct {
-	err     error
-	parsing bool
-}
-
-func (e *documentSnapshotError) Error() string { return e.err.Error() }
-
-func (e *documentSnapshotError) Unwrap() error { return e.err }
-
-func documentSnapshotFailure(ctx context.Context, err error, parsing bool) error {
-	if failure := preserveControlFailure(ctx, err); failure != nil {
-		return &xdm.ResourceAccessError{Cause: failure}
-	}
-
-	if errors.Is(err, tree.ErrLimit) {
-		return &xdm.ResourceAccessError{Cause: err}
-	}
-
-	return &documentSnapshotError{err: err, parsing: parsing}
-}
-
 func (ec *execContext) loadDocumentResource(ctx context.Context, uri, resolved, cacheKey string) (*xdm.Document, error) {
 	doc, err := xpath.DocumentLoadSnapshot(ctx, ec, cacheKey, func() (*xdm.Document, error) {
 		return ec.retrieveDocumentSnapshot(ctx, resolved)
@@ -558,43 +472,6 @@ func (ec *execContext) stylesheetDocument(ctx context.Context, uri, resolved str
 	return nil, nil
 }
 
-func loadDocumentEffectiveAccumulators(ctx context.Context, ec *execContext, doc *xdm.Document) error {
-	if len(ec.effectiveAccumulators()) > 0 {
-		names := append([]string(nil), ec.effectiveStylesheet().accumulatorOrder...)
-		if err := ec.computeAccumulatorStates(ctx, doc, names); err != nil {
-			return err
-		}
-
-		if ec.accumulatorComputedDocs == nil {
-			ec.accumulatorComputedDocs = make(map[xdm.Node]struct{})
-		}
-
-		ec.accumulatorComputedDocs[documentRoot(doc)] = struct{}{}
-	}
-
-	return nil
-}
-
-func documentParsingError(uri string, err error) error {
-	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
-		return err
-	}
-
-	return dynamicErrorCause(lexicon.ErrFODC0002, err, "cannot parse document %q: %v", uri, err)
-}
-
-func documentRetrievalError(uri string, err error) error {
-	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
-		return err
-	}
-
-	if strings.ContainsRune(uri, '#') {
-		return dynamicErrorCause(errCodeXTDE1160, err, "cannot load document %q with fragment identifier: %v", uri, err)
-	}
-
-	return dynamicErrorCause(lexicon.ErrFODC0002, err, "cannot load document %q: %v", uri, err)
-}
-
 func (ec *execContext) existingDocumentRead(ctx context.Context, doc *xdm.Document) (*xdm.Document, error) {
 	if doc != nil {
 		prepared, err := ec.prepareInputNode(ctx, doc)
@@ -649,23 +526,6 @@ func (ec *execContext) retrieveDocumentReader(ctx context.Context, uri string) (
 	}
 
 	return reader, nil
-}
-
-// resourceURIResolver leaves the XPath/static IRI context intact and applies
-// XSLT resource escaping only when the application is asked to fetch a resource.
-type resourceURIResolver struct{ xpath.URIResolver }
-
-func (r resourceURIResolver) Resolve(ctx context.Context, reference string) (io.ReadCloser, error) {
-	return r.URIResolver.Resolve(ctx, uripath.EscapeResourceReference(reference))
-}
-
-func openDocumentVia(ctx context.Context, uri string, resolver xpath.URIResolver) (io.ReadCloser, error) {
-	uri = uripath.EscapeResourceReference(uri)
-	if resolver == nil {
-		return nil, fmt.Errorf("no URIResolver configured for %q", uri)
-	}
-
-	return resolver.Resolve(ctx, uri)
 }
 
 // resourceLimit returns the per-resource read cap for runtime resolver
@@ -739,6 +599,146 @@ func (ec *execContext) resolveDocumentURI(uri string, baseDir string) string {
 	}
 
 	return cleanURI
+}
+
+// Preserve the XSLT 2.0 error vocabulary while reusing F&O conversion and
+// formatting. A 3.0 processor uses the F&O codes even for a 2.0 declaration.
+type legacyFormatFunction struct {
+	xpath.TypedFunctionByArity
+	name string
+}
+
+func (f *legacyFormatFunction) AcceptsArity(arity int) bool {
+	return xpath.BuiltinFunctionAcceptsArity(xpath.NSFn, f.name, arity)
+}
+
+func (f *legacyFormatFunction) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	if f.name == lexicon.FnFormatNumber && len(args) == 3 {
+		name, err := xpath.XPath10String(args[2])
+		if err != nil {
+			return nil, err
+		}
+
+		if !xmlchar.IsValidQName(name) {
+			return nil, dynamicError("XTDE1280", "invalid decimal format QName %q", name)
+		}
+	}
+
+	value, err := f.TypedFunctionByArity.Call(ctx, args)
+	if failure := preserveControlFailure(ctx, err); failure != nil {
+		return nil, failure
+	}
+
+	if detail, ok := errors.AsType[*xdm.Error](err); ok && detail.CodeQName().URI == lexicon.NamespaceErr {
+		code := ""
+
+		switch detail.Code {
+		case "FODF1280":
+			code = "XTDE1280"
+		case "FODF1310":
+			code = "XTDE1310"
+		case "FOFD1340":
+			code = "XTDE1340"
+		case "FOFD1350":
+			code = "XTDE1350"
+		}
+
+		if code != "" {
+			return nil, dynamicErrorCause(code, err, "%s: %s", f.name, detail.Message)
+		}
+	}
+
+	return value, err
+}
+
+func newLegacyFormatFunction(version int, name string) xpath.Function {
+	return &legacyFormatFunction{TypedFunctionByArity: xpath.HostBuiltin(version, name), name: name}
+}
+
+func xslt30Function(name string) bool {
+	switch name {
+	case nameAccumulatorBefore, nameAccumulatorAfter, fnNameCopyOf, funcSnapshot,
+		fnNameTransform, funcAvailableSystemProperties, nameStreamAvailable,
+		fnNameCurrentOutputURI, nameCurrentMergeGroup, nameCurrentMergeKey:
+		return true
+	default:
+		return false
+	}
+}
+
+type documentSnapshotError struct {
+	err     error
+	parsing bool
+}
+
+func (e *documentSnapshotError) Error() string { return e.err.Error() }
+
+func (e *documentSnapshotError) Unwrap() error { return e.err }
+
+func documentSnapshotFailure(ctx context.Context, err error, parsing bool) error {
+	if failure := preserveControlFailure(ctx, err); failure != nil {
+		return &xdm.ResourceAccessError{Cause: failure}
+	}
+
+	if errors.Is(err, tree.ErrLimit) {
+		return &xdm.ResourceAccessError{Cause: err}
+	}
+
+	return &documentSnapshotError{err: err, parsing: parsing}
+}
+
+func loadDocumentEffectiveAccumulators(ctx context.Context, ec *execContext, doc *xdm.Document) error {
+	if len(ec.effectiveAccumulators()) > 0 {
+		names := append([]string(nil), ec.effectiveStylesheet().accumulatorOrder...)
+		if err := ec.computeAccumulatorStates(ctx, doc, names); err != nil {
+			return err
+		}
+
+		if ec.accumulatorComputedDocs == nil {
+			ec.accumulatorComputedDocs = make(map[xdm.Node]struct{})
+		}
+
+		ec.accumulatorComputedDocs[documentRoot(doc)] = struct{}{}
+	}
+
+	return nil
+}
+
+func documentParsingError(uri string, err error) error {
+	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+		return err
+	}
+
+	return dynamicErrorCause(lexicon.ErrFODC0002, err, "cannot parse document %q: %v", uri, err)
+}
+
+func documentRetrievalError(uri string, err error) error {
+	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
+		return err
+	}
+
+	if strings.ContainsRune(uri, '#') {
+		return dynamicErrorCause(errCodeXTDE1160, err, "cannot load document %q with fragment identifier: %v", uri, err)
+	}
+
+	return dynamicErrorCause(lexicon.ErrFODC0002, err, "cannot load document %q: %v", uri, err)
+}
+
+// resourceURIResolver leaves the XPath/static IRI context intact and applies
+// XSLT resource escaping only when the application is asked to fetch a resource.
+type resourceURIResolver struct{ xpath.URIResolver }
+
+func (r resourceURIResolver) Resolve(ctx context.Context, reference string) (io.ReadCloser, error) {
+	return r.URIResolver.Resolve(ctx, uripath.EscapeResourceReference(reference))
+}
+
+func openDocumentVia(ctx context.Context, uri string, resolver xpath.URIResolver) (io.ReadCloser, error) {
+	uri = uripath.EscapeResourceReference(uri)
+	if resolver == nil {
+		return nil, fmt.Errorf("no URIResolver configured for %q", uri)
+	}
+
+	return resolver.Resolve(ctx, uri)
 }
 
 // documentBaseDir derives the base passed to resolveDocumentURI /
@@ -849,11 +849,33 @@ func (f *xsltFunc) FuncReturnTypeForArity(arity int) *xdm.SequenceType {
 	return xsltFunctionTypes()[functionTypeKey{f.name, arity}].result
 }
 
+func (f *xsltFunc) MinArity() int { return f.min }
+
+func (f *xsltFunc) MaxArity() int { return f.max }
+
+func (f *xsltFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return f.fn(ctx, args)
+}
+
+// NoDynamicRef returns true if this function should not be available
+// for named function references (e.g. current-group#0).
+func (f *xsltFunc) NoDynamicRef() bool { return f.noDynRef }
+
+// DynRefErrorCode returns the error code to raise when this function
+// is called via dynamic reference.
+func (f *xsltFunc) DynRefErrorCode() string { return f.dynRefError }
+
 type introspectionFunc struct {
 	*xsltFunc
 	params []xdm.SequenceType
 	result xdm.SequenceType
 }
+
+func (f *introspectionFunc) FuncParamTypesForArity(arity int) []xdm.SequenceType {
+	return f.params[:arity]
+}
+
+func (f *introspectionFunc) FuncReturnTypeForArity(_ int) *xdm.SequenceType { return &f.result }
 
 func newIntrospectionFunc(name string, call func(context.Context, []xdm.Sequence) (xdm.Sequence, error)) xpath.Function {
 	atomic := func(local string) xdm.SequenceType {
@@ -872,28 +894,6 @@ func newIntrospectionFunc(name string, call func(context.Context, []xdm.Sequence
 
 	return &introspectionFunc{xsltFunc: &xsltFunc{min: 1, max: len(params), fn: call}, params: params, result: result}
 }
-
-func (f *introspectionFunc) FuncParamTypesForArity(arity int) []xdm.SequenceType {
-	return f.params[:arity]
-}
-
-func (f *introspectionFunc) FuncReturnTypeForArity(_ int) *xdm.SequenceType { return &f.result }
-
-func (f *xsltFunc) MinArity() int { return f.min }
-
-func (f *xsltFunc) MaxArity() int { return f.max }
-
-func (f *xsltFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return f.fn(ctx, args)
-}
-
-// NoDynamicRef returns true if this function should not be available
-// for named function references (e.g. current-group#0).
-func (f *xsltFunc) NoDynamicRef() bool { return f.noDynRef }
-
-// DynRefErrorCode returns the error code to raise when this function
-// is called via dynamic reference.
-func (f *xsltFunc) DynRefErrorCode() string { return f.dynRefError }
 
 // regexGroupFunc implements xpath.Function and DynamicRefSnapshotProvider
 // for regex-group(). Dynamic references clear the captured-substring context.

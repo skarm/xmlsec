@@ -18,9 +18,27 @@ import (
 	"github.com/skarm/xmlsec/transform"
 )
 
+const (
+	textLatinMediaType = "text/plain; charset=iso-8859-1"
+	textUTF8Encoding   = "utf-8"
+	textEncodingError  = "FOUT1190"
+)
+
 type collectionResolverFixture struct {
 	collection func(context.Context, string) (transform.Sequence, error)
 	uris       func(context.Context, string) ([]string, error)
+}
+
+func (f collectionResolverFixture) ResolveCollection(ctx context.Context, uri string) (transform.Sequence, error) {
+	return f.collection(ctx, uri)
+}
+
+func (f collectionResolverFixture) ResolveURICollection(ctx context.Context, uri string) ([]string, error) {
+	if f.uris == nil {
+		return nil, transform.ErrResource
+	}
+
+	return f.uris(ctx, uri)
 }
 
 func TestPackageExposureContracts(t *testing.T) {
@@ -963,18 +981,6 @@ func TestPackageTemplateBindingVisibility(t *testing.T) {
 			}
 		}
 	}
-}
-
-func (f collectionResolverFixture) ResolveCollection(ctx context.Context, uri string) (transform.Sequence, error) {
-	return f.collection(ctx, uri)
-}
-
-func (f collectionResolverFixture) ResolveURICollection(ctx context.Context, uri string) ([]string, error) {
-	if f.uris == nil {
-		return nil, transform.ErrResource
-	}
-
-	return f.uris(ctx, uri)
 }
 
 func TestErrorSourceLinesInModules(t *testing.T) {
@@ -2043,12 +2049,6 @@ func TestDocumentResourceURIValidation(t *testing.T) {
 		t.Fatal("invalid or unresolved URI reached the resolver", calls)
 	}
 }
-
-const (
-	textLatinMediaType = "text/plain; charset=iso-8859-1"
-	textUTF8Encoding   = "utf-8"
-	textEncodingError  = "FOUT1190"
-)
 
 func TestTextResourceMediaType(t *testing.T) {
 	for _, tc := range []struct {
@@ -3981,6 +3981,7 @@ func (r *dtdFailureReader) Read(p []byte) (int, error) {
 	}
 	return n, err
 }
+
 func (r *dtdFailureReader) Close() error { r.closed = true; return r.closeError }
 
 func TestLanguageDTDFailures(t *testing.T) {

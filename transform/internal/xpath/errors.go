@@ -54,19 +54,6 @@ const (
 	errCodeXPTY0020 = "XPTY0020"
 )
 
-// UndefinedVariableError preserves the lookup category and the language code.
-func UndefinedVariableError(name string, version int) error {
-	return languageError(fmt.Errorf("%w: $%s", ErrUndefinedVariable, name), lexicon.ErrXPST0008, version)
-}
-
-func languageError(cause error, code string, version int) error {
-	if version == 10 {
-		return cause
-	}
-
-	return &xdm.Error{Code: code, Message: cause.Error(), Cause: cause}
-}
-
 // Error message constants reused across the package.
 const (
 	errMsgContextItemAbsent = "context item is absent"
@@ -100,6 +87,19 @@ var (
 	// Aliased from transform/internal/xpath so errors.Is works end-to-end.
 	ErrNodeSetLimit = xdm.ErrNodeSetLimit
 )
+
+// UndefinedVariableError preserves the lookup category and the language code.
+func UndefinedVariableError(name string, version int) error {
+	return languageError(fmt.Errorf("%w: $%s", ErrUndefinedVariable, name), lexicon.ErrXPST0008, version)
+}
+
+func languageError(cause error, code string, version int) error {
+	if version == 10 {
+		return cause
+	}
+
+	return &xdm.Error{Code: code, Message: cause.Error(), Cause: cause}
+}
 
 // syntaxError preserves parser sentinels and adds the standard error code for
 // XPath 2.0 and later. XPath 1.0 has no standard error-code vocabulary.

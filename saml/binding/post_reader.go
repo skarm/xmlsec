@@ -68,7 +68,7 @@ func DecodePOSTReader(ctx context.Context, src io.Reader, expected Parameter, li
 			continue
 		}
 
-		decoded := base64.NewDecoder(base64.StdEncoding.Strict(), value)
+		decoded := streamio.NewBase64Decoder(base64.StdEncoding.Strict(), value)
 		bounded := &streamio.Reader{Context: ctx, Source: decoded, Limit: int64(l.MaxXMLBytes), LimitError: ErrBinding}
 
 		message.doc, err = document.ParseReader(ctx, bounded, l.XMLLimits)

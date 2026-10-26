@@ -141,14 +141,6 @@ func (v Value) Type() Name {
 	return Name{Local: local}
 }
 
-func stringsCutXS(s string) (string, bool) {
-	if len(s) > 3 && s[:3] == "xs:" {
-		return s[3:], true
-	}
-
-	return s, false
-}
-
 // Text returns the canonical lexical form of an atomic item or a node's string value.
 func (v Value) Text() (string, error) {
 	a, err := xpath.AtomizeItem(v.item)
@@ -157,15 +149,6 @@ func (v Value) Text() (string, error) {
 	}
 
 	return lexical(a)
-}
-
-func lexical(value xdm.AtomicValue) (string, error) {
-	converted, err := xpath.CastAtomic(value, xdm.TypeString)
-	if err != nil {
-		return "", wrap("lexical value", err)
-	}
-
-	return converted.StringVal(), nil
 }
 
 // Boolean returns an xs:boolean; it never silently converts another type.
@@ -288,6 +271,23 @@ func (v Value) Keys() ([]Value, error) {
 	}
 
 	return values, nil
+}
+
+func stringsCutXS(s string) (string, bool) {
+	if len(s) > 3 && s[:3] == "xs:" {
+		return s[3:], true
+	}
+
+	return s, false
+}
+
+func lexical(value xdm.AtomicValue) (string, error) {
+	converted, err := xpath.CastAtomic(value, xdm.TypeString)
+	if err != nil {
+		return "", wrap("lexical value", err)
+	}
+
+	return converted.StringVal(), nil
 }
 
 // Sequence retains an immutable XDM sequence. Its zero value is empty.

@@ -26,16 +26,6 @@ type referenceSource struct {
 	rawManifest     []byte
 }
 
-func manifestOutputWriter(dst io.Writer, capture bool) (io.Writer, *bytes.Buffer) {
-	if !capture {
-		return dst, nil
-	}
-
-	output := new(bytes.Buffer)
-
-	return io.MultiWriter(dst, output), output
-}
-
 func (s *referenceSource) write(ctx context.Context, dst io.Writer, ts []reference.Transform, opt reference.Options, remaining, resources *int) (*reference.Report, error) {
 	return s.writeOutputs(ctx, dst, nil, reference.Transform{}, ts, opt, remaining, resources)
 }
@@ -120,4 +110,14 @@ func (s *referenceSource) writeOutputs(ctx context.Context, dst, canonical io.Wr
 	*remaining -= out.ProducedBytes()
 
 	return out, nil
+}
+
+func manifestOutputWriter(dst io.Writer, capture bool) (io.Writer, *bytes.Buffer) {
+	if !capture {
+		return dst, nil
+	}
+
+	output := new(bytes.Buffer)
+
+	return io.MultiWriter(dst, output), output
 }

@@ -625,22 +625,6 @@ func (w *xmlStream) closeEmptyElement(name Name) bool {
 	return true
 }
 
-func nodeChildren(n *Node, pretty bool, w *xmlStream, cdata bool) {
-	doe := false
-
-	for _, c := range n.Children {
-		if pretty {
-			w.newline()
-		}
-
-		w.sibling(c, &doe, cdata)
-
-		if w.err != nil {
-			break
-		}
-	}
-}
-
 func (w *xmlStream) sibling(n *Node, doe *bool, cdata bool) {
 	if w.options.DOEMarkers && n.Kind == PINode && n.Name.Space == "" {
 		switch n.Name.Local {
@@ -659,6 +643,22 @@ func (w *xmlStream) sibling(n *Node, doe *bool, cdata bool) {
 		w.cdata(n.Data)
 	} else {
 		w.node(n)
+	}
+}
+
+func nodeChildren(n *Node, pretty bool, w *xmlStream, cdata bool) {
+	doe := false
+
+	for _, c := range n.Children {
+		if pretty {
+			w.newline()
+		}
+
+		w.sibling(c, &doe, cdata)
+
+		if w.err != nil {
+			break
+		}
 	}
 }
 

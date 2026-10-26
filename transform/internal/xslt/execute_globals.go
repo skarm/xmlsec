@@ -160,33 +160,6 @@ func (ec *execContext) validateGlobalContextItem(ctx context.Context, source *xd
 	return nil
 }
 
-func validateUsedPackageGlobalContextItem(ss *Stylesheet, seen map[*Stylesheet]struct{}) error {
-	if ss == nil {
-		return nil
-	}
-
-	for _, pkg := range ss.usedPackages {
-		if pkg == nil {
-			continue
-		}
-
-		if _, ok := seen[pkg]; ok {
-			continue
-		}
-
-		seen[pkg] = struct{}{}
-		if pkg.globalContextItem != nil && pkg.globalContextItem.Use == ctxItemRequired {
-			return dynamicError(errCodeXTTE0590, "library package declares xsl:global-context-item use=\"required\"")
-		}
-
-		if err := validateUsedPackageGlobalContextItem(pkg, seen); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 // evaluateAllGlobals eagerly evaluates every pending global variable and
 // parameter.  Errors raised here (e.g. FOAR0001 from division by zero in a
 // global variable initializer) are returned to the caller so they become
@@ -839,6 +812,138 @@ func (ec *execContext) evaluateBodyAsDocument(ctx context.Context, body []instru
 	return xdm.ItemSlice{xdm.NodeItem{Node: tmpDoc, ResultTreeFragment: ec.stylesheet.processorLanguage() == 10}}, nil
 }
 
+// resolveSequencePlaceholders replaces the xsl:sequence placeholder PIs in the
+// document tree (created by execXSLSequence in document-constructor mode) with
+// the nodes/text produced by their buffered items, in document order. Atomic
+// items are converted to text and consecutive atomics — whether from the same
+// or adjacent xsl:sequence outputs — are separated by a single space, while any
+// intervening node from a literal result element resets that adjacency.
+func (ec *execContext) resolveSequencePlaceholders(tmpDoc *xdm.Document, placeholders map[xdm.Node]xdm.ItemSlice) error {
+	run := documentAtomicRun{doc: tmpDoc}
+
+	for child := tmpDoc.FirstChild(); child != nil; {
+		next := child.NextSibling()
+
+		items, isPlaceholder := placeholders[child]
+		if !isPlaceholder {
+			// A literal result node breaks the atomic adjacency run.
+			run.prevAtomic = false
+			child = next
+
+			continue
+		}
+
+		replacement, err := run.placeholderItems(items)
+		if err != nil {
+			return err
+		}
+
+		// If this placeholder ends an atomic run and the following sibling is
+		// not another placeholder, the run is complete: flush the text now so
+		// it is spliced in at this position.
+		if _, nextIsPlaceholder := placeholders[next]; !nextIsPlaceholder {
+			if t := run.flush(); t != nil {
+				replacement = append(replacement, t)
+			}
+
+			run.prevAtomic = false
+		}
+
+		if len(replacement) == 0 {
+			xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert
+			child = next
+
+			continue
+		}
+
+		if err := child.(xdm.MutableNode).Replace(replacement...); err != nil { //nolint:forcetypeassert
+			return err
+		}
+
+		child = next
+	}
+
+	// XSLT result-tree construction merges adjacent text nodes into one. The
+	// Replace splices above do not merge text across the splice boundary
+	// (e.g. xsl:sequence text next to xsl:text output), so coalesce adjacent
+	// text-node siblings now.
+	return mergeDocumentText(tmpDoc)
+}
+
+// evaluateBodyAsSequence executes instructions and captures the result as a
+// flat sequence of items. Unlike evaluateBody, this keeps each produced node
+// (text, element, attribute, comment, PI) as a separate item without DOM
+// merging. This is needed for variables/params with an "as" attribute, where
+// the body is a sequence constructor per the XSLT spec.
+func (ec *execContext) evaluateBodyAsSequence(ctx context.Context, body []instruction) (xdm.Sequence, error) {
+	tmpDoc := xdm.NewDefaultDocument()
+	// Set the document URL to the static base URI so that element nodes
+	// with xml:base can resolve against it (even when orphaned).
+	if baseURI := ec.effectiveStaticBaseURI(); baseURI != "" {
+		tmpDoc.SetURL(baseURI)
+	}
+
+	tmpRoot, err := tmpDoc.CreateElement("_tmp")
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tmpDoc.AddChild(tmpRoot); err != nil {
+		return nil, err
+	}
+
+	// Use sequenceMode to capture all nodes as separate items
+	frame := &outputFrame{doc: tmpDoc, current: tmpRoot, captureItems: true, sequenceMode: true}
+	ec.outputStack = append(ec.outputStack, frame)
+
+	// Temporarily set resultDoc to the temp document so that nodes
+	// created by copy-of belong to the correct document tree.
+	savedResultDoc := ec.resultDoc
+
+	ec.resultDoc = tmpDoc
+	defer func() {
+		ec.resultDoc = savedResultDoc
+		ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
+	}()
+
+	if err := ec.executeSequenceConstructor(ctx, body); err != nil {
+		return nil, err
+	}
+
+	if len(frame.pendingItems) > 0 {
+		return frame.pendingItems, nil
+	}
+
+	return xdm.EmptySequence(), nil
+}
+
+func validateUsedPackageGlobalContextItem(ss *Stylesheet, seen map[*Stylesheet]struct{}) error {
+	if ss == nil {
+		return nil
+	}
+
+	for _, pkg := range ss.usedPackages {
+		if pkg == nil {
+			continue
+		}
+
+		if _, ok := seen[pkg]; ok {
+			continue
+		}
+
+		seen[pkg] = struct{}{}
+		if pkg.globalContextItem != nil && pkg.globalContextItem.Use == ctxItemRequired {
+			return dynamicError(errCodeXTTE0590, "library package declares xsl:global-context-item use=\"required\"")
+		}
+
+		if err := validateUsedPackageGlobalContextItem(pkg, seen); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func capturedInternalDocument(items xdm.ItemSlice) (xdm.Sequence, bool) {
 	if len(items) != 1 {
 		return nil, false
@@ -905,64 +1010,6 @@ func removeEmptyDocumentText(tmpDoc *xdm.Document) {
 	}
 }
 
-// resolveSequencePlaceholders replaces the xsl:sequence placeholder PIs in the
-// document tree (created by execXSLSequence in document-constructor mode) with
-// the nodes/text produced by their buffered items, in document order. Atomic
-// items are converted to text and consecutive atomics — whether from the same
-// or adjacent xsl:sequence outputs — are separated by a single space, while any
-// intervening node from a literal result element resets that adjacency.
-func (ec *execContext) resolveSequencePlaceholders(tmpDoc *xdm.Document, placeholders map[xdm.Node]xdm.ItemSlice) error {
-	run := documentAtomicRun{doc: tmpDoc}
-
-	for child := tmpDoc.FirstChild(); child != nil; {
-		next := child.NextSibling()
-
-		items, isPlaceholder := placeholders[child]
-		if !isPlaceholder {
-			// A literal result node breaks the atomic adjacency run.
-			run.prevAtomic = false
-			child = next
-
-			continue
-		}
-
-		replacement, err := run.placeholderItems(items)
-		if err != nil {
-			return err
-		}
-
-		// If this placeholder ends an atomic run and the following sibling is
-		// not another placeholder, the run is complete: flush the text now so
-		// it is spliced in at this position.
-		if _, nextIsPlaceholder := placeholders[next]; !nextIsPlaceholder {
-			if t := run.flush(); t != nil {
-				replacement = append(replacement, t)
-			}
-
-			run.prevAtomic = false
-		}
-
-		if len(replacement) == 0 {
-			xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert
-			child = next
-
-			continue
-		}
-
-		if err := child.(xdm.MutableNode).Replace(replacement...); err != nil { //nolint:forcetypeassert
-			return err
-		}
-
-		child = next
-	}
-
-	// XSLT result-tree construction merges adjacent text nodes into one. The
-	// Replace splices above do not merge text across the splice boundary
-	// (e.g. xsl:sequence text next to xsl:text output), so coalesce adjacent
-	// text-node siblings now.
-	return mergeDocumentText(tmpDoc)
-}
-
 func mergeDocumentText(tmpDoc *xdm.Document) error {
 	for child := tmpDoc.FirstChild(); child != nil; {
 		next := child.NextSibling()
@@ -980,53 +1027,6 @@ func mergeDocumentText(tmpDoc *xdm.Document) error {
 	}
 
 	return nil
-}
-
-// evaluateBodyAsSequence executes instructions and captures the result as a
-// flat sequence of items. Unlike evaluateBody, this keeps each produced node
-// (text, element, attribute, comment, PI) as a separate item without DOM
-// merging. This is needed for variables/params with an "as" attribute, where
-// the body is a sequence constructor per the XSLT spec.
-func (ec *execContext) evaluateBodyAsSequence(ctx context.Context, body []instruction) (xdm.Sequence, error) {
-	tmpDoc := xdm.NewDefaultDocument()
-	// Set the document URL to the static base URI so that element nodes
-	// with xml:base can resolve against it (even when orphaned).
-	if baseURI := ec.effectiveStaticBaseURI(); baseURI != "" {
-		tmpDoc.SetURL(baseURI)
-	}
-
-	tmpRoot, err := tmpDoc.CreateElement("_tmp")
-	if err != nil {
-		return nil, err
-	}
-
-	if err := tmpDoc.AddChild(tmpRoot); err != nil {
-		return nil, err
-	}
-
-	// Use sequenceMode to capture all nodes as separate items
-	frame := &outputFrame{doc: tmpDoc, current: tmpRoot, captureItems: true, sequenceMode: true}
-	ec.outputStack = append(ec.outputStack, frame)
-
-	// Temporarily set resultDoc to the temp document so that nodes
-	// created by copy-of belong to the correct document tree.
-	savedResultDoc := ec.resultDoc
-
-	ec.resultDoc = tmpDoc
-	defer func() {
-		ec.resultDoc = savedResultDoc
-		ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
-	}()
-
-	if err := ec.executeSequenceConstructor(ctx, body); err != nil {
-		return nil, err
-	}
-
-	if len(frame.pendingItems) > 0 {
-		return frame.pendingItems, nil
-	}
-
-	return xdm.EmptySequence(), nil
 }
 
 // ensureFileURI converts an absolute file system path to a file:// URI.

@@ -335,40 +335,6 @@ func (opts serializeOptions) validate() error {
 	return nil
 }
 
-// isSupportedSerializeNormForm reports the implemented Unicode forms. Other
-// valid NMTOKEN values, including fully-normalized, raise SESU0011.
-func isSupportedSerializeNormForm(form string) bool {
-	switch form {
-	case nameNFC, nameNFD, nameNFKC, nameNFKD:
-		return true
-	}
-
-	return false
-}
-
-// serializeNormalizationActive reports whether the normalization-form parameter
-// requests an actual Unicode normalization (anything other than none/"").
-func serializeNormalizationActive(form string) bool {
-	return form != "" && form != nameNone
-}
-
-// isSupportedXMLOutputVersion reports whether v selects XML 1.0 or XML 1.1 output.
-// Parameter validation reports other values as unsupported versions.
-func isSupportedXMLOutputVersion(v string) bool {
-	return v == lexicon.XMLVersion10 || v == lexicon.XMLVersion11
-}
-
-// isBuiltinSerializeMethod reports whether v names a supported built-in
-// output method.
-func isBuiltinSerializeMethod(v string) bool {
-	switch v {
-	case lexicon.MethodXML, lexicon.MethodHTML, lexicon.MethodXHTML, lexicon.MethodText, lexicon.MethodJSON, lexicon.MethodAdaptive:
-		return true
-	}
-
-	return false
-}
-
 // methodAppliesNormalization reports whether the output method applies the
 // normalization-form parameter. Per Serialization 3.1 it is a parameter of the
 // xml/xhtml/html/text, json, AND adaptive (§9.1.9) output methods and the
@@ -432,6 +398,40 @@ func (opts *serializeOptions) stringParam(name string) *string {
 	default:
 		return nil
 	}
+}
+
+// isSupportedSerializeNormForm reports the implemented Unicode forms. Other
+// valid NMTOKEN values, including fully-normalized, raise SESU0011.
+func isSupportedSerializeNormForm(form string) bool {
+	switch form {
+	case nameNFC, nameNFD, nameNFKC, nameNFKD:
+		return true
+	}
+
+	return false
+}
+
+// serializeNormalizationActive reports whether the normalization-form parameter
+// requests an actual Unicode normalization (anything other than none/"").
+func serializeNormalizationActive(form string) bool {
+	return form != "" && form != nameNone
+}
+
+// isSupportedXMLOutputVersion reports whether v selects XML 1.0 or XML 1.1 output.
+// Parameter validation reports other values as unsupported versions.
+func isSupportedXMLOutputVersion(v string) bool {
+	return v == lexicon.XMLVersion10 || v == lexicon.XMLVersion11
+}
+
+// isBuiltinSerializeMethod reports whether v names a supported built-in
+// output method.
+func isBuiltinSerializeMethod(v string) bool {
+	switch v {
+	case lexicon.MethodXML, lexicon.MethodHTML, lexicon.MethodXHTML, lexicon.MethodText, lexicon.MethodJSON, lexicon.MethodAdaptive:
+		return true
+	}
+
+	return false
 }
 
 func parseSerializeOptions(ctx context.Context, args []xdm.Sequence) (serializeOptions, error) {
@@ -1000,6 +1000,33 @@ func ReadSerializationParameters(ctx context.Context, root *xdm.Element, edition
 	}
 
 	return result, nil
+}
+
+// SerializeNodeForJSON returns the inner node serialization before JSON string
+// escaping. XPath and XSLT share the node-kind checks and XML/HTML/text rules.
+func SerializeNodeForJSON(ctx context.Context, v xdm.NodeItem, method string) (string, error) {
+	if method == "" {
+		method = lexicon.MethodXML
+	}
+	// SER31 §9 supplies only the node output method and omit-xml-declaration.
+	// JSON character maps and normalization apply to the resulting JSON string.
+	nodeOpts := serializeOptions{
+		ctx:    ctx,
+		method: method, omitXMLDeclaration: true,
+		standalone: lexicon.ValueOmit, includeContentType: true, escapeURIAttributes: true,
+	}
+	if err := nodeOpts.validate(); err != nil {
+		return "", err
+	}
+
+	switch method {
+	case lexicon.MethodText:
+		return serializeTextSequence(xdm.ItemSlice{v}, nodeOpts)
+	case lexicon.MethodHTML:
+		return serializeHTMLSequence(xdm.ItemSlice{v}, nodeOpts)
+	default:
+		return serializeXMLSequence(xdm.ItemSlice{v}, nodeOpts)
+	}
 }
 
 func readSerializeOptionsRoot(n xdm.Node, edition int) (*xdm.Element, error) {
@@ -2356,33 +2383,6 @@ func serializeJSONNode(v xdm.NodeItem, opts serializeOptions) (string, error) {
 	return buf.String(), nil
 }
 
-// SerializeNodeForJSON returns the inner node serialization before JSON string
-// escaping. XPath and XSLT share the node-kind checks and XML/HTML/text rules.
-func SerializeNodeForJSON(ctx context.Context, v xdm.NodeItem, method string) (string, error) {
-	if method == "" {
-		method = lexicon.MethodXML
-	}
-	// SER31 §9 supplies only the node output method and omit-xml-declaration.
-	// JSON character maps and normalization apply to the resulting JSON string.
-	nodeOpts := serializeOptions{
-		ctx:    ctx,
-		method: method, omitXMLDeclaration: true,
-		standalone: lexicon.ValueOmit, includeContentType: true, escapeURIAttributes: true,
-	}
-	if err := nodeOpts.validate(); err != nil {
-		return "", err
-	}
-
-	switch method {
-	case lexicon.MethodText:
-		return serializeTextSequence(xdm.ItemSlice{v}, nodeOpts)
-	case lexicon.MethodHTML:
-		return serializeHTMLSequence(xdm.ItemSlice{v}, nodeOpts)
-	default:
-		return serializeXMLSequence(xdm.ItemSlice{v}, nodeOpts)
-	}
-}
-
 func serializeJSONAtomic(v xdm.AtomicValue, opts serializeOptions) (string, error) {
 	switch {
 	case v.TypeName == xdm.TypeBoolean:
@@ -2700,6 +2700,16 @@ func (p *htmlSerializationProlog) before(item xdm.XMLItem) error {
 	}
 
 	return nil
+}
+
+// ValidateHTMLItem checks the actual normalized item before HTML serialization.
+// It is shared with XSLT's streaming writer, which need not have a result DOM.
+func ValidateHTMLItem(ctx context.Context, item xdm.XMLItem, html5 bool) error {
+	if item.Node == nil {
+		return checkHTMLCharacters(ctx, item.Text, html5)
+	}
+
+	return validateHTMLNode(ctx, item.Node, html5, 0)
 }
 
 func serializeHTMLWriter(opts serializeOptions) html.Writer {
@@ -3031,16 +3041,6 @@ func utf16SurrogatePair(r rune) (uint16, uint16) {
 	lo := uint16(0xDC00 + (cp & 0x3FF))
 
 	return hi, lo
-}
-
-// ValidateHTMLItem checks the actual normalized item before HTML serialization.
-// It is shared with XSLT's streaming writer, which need not have a result DOM.
-func ValidateHTMLItem(ctx context.Context, item xdm.XMLItem, html5 bool) error {
-	if item.Node == nil {
-		return checkHTMLCharacters(ctx, item.Text, html5)
-	}
-
-	return validateHTMLNode(ctx, item.Node, html5, 0)
 }
 
 func validateHTMLNode(ctx context.Context, node xdm.Node, html5 bool, depth int) error {

@@ -101,26 +101,6 @@ func (c *compiler) compileGlobalContextItem(ctx context.Context, elem *xdm.Eleme
 	return nil
 }
 
-// canonicalSequenceTypeKey returns a namespace-resolved canonical string for an
-// @as sequence type. It reuses the xpath sequence-type parseOptions AST and the single
-// resolveSequenceTypeQName resolver so that the XTSE3087 cross-module agreement
-// check compares the meaning of two types, and never their lexical form: two
-// declarations agree iff their canonical keys are equal. On a parse failure (the
-// type was already rejected upstream) it falls back to whitespace-normalized text.
-func canonicalSequenceTypeKey(as string, resolve nsResolver, defaultElemNS string, hasDefaultElemNS bool) string {
-	st, err := xpath.ParseSequenceType(strings.TrimSpace(as))
-	if err != nil {
-		return strings.Join(strings.Fields(as), "")
-	}
-
-	var b strings.Builder
-
-	writer := canonicalTypeWriter{b: &b, resolve: resolve, defaultElemNS: defaultElemNS, hasDefaultElemNS: hasDefaultElemNS}
-	writer.sequenceType(st)
-
-	return b.String()
-}
-
 // declarationTypeKey captures type identity in the declaration's static scope.
 func (c *compiler) declarationTypeKey(elem *xdm.Element, as string) string {
 	if strings.TrimSpace(as) == "" {
@@ -153,37 +133,6 @@ func (c *compiler) declarationDefaultNamespace(elem *xdm.Element) (string, bool)
 	}
 
 	return defaultNS, hasDefault
-}
-
-// inScopeNamespaces returns the in-scope namespace bindings (prefix→URI) for
-// elem by walking the DOM tree from the element up through its ancestors.
-// Nearer declarations take precedence over more distant ones, matching XML
-// namespace scoping. This reflects the namespaces actually written on the
-// element and its ancestors, independent of any mutable compiler state.
-func inScopeNamespaces(elem *xdm.Element) map[string]string {
-	bindings := make(map[string]string)
-
-	for cur := xdm.Node(elem); cur != nil; cur = cur.Parent() {
-		ce, ok := cur.(*xdm.Element)
-		if !ok {
-			continue
-		}
-		// Closer declarations win: only record a prefix not already seen on a
-		// nearer (already-visited) element.
-		for _, ns := range ce.Namespaces() {
-			if _, seen := bindings[ns.Prefix()]; !seen {
-				bindings[ns.Prefix()] = ns.URI()
-			}
-		}
-	}
-	// The xml prefix is implicitly in scope on every element (XML Namespaces
-	// spec), so it must resolve even without an explicit xmlns:xml declaration.
-	// An explicit declaration recorded above takes precedence over this default.
-	if _, seen := bindings[lexicon.PrefixXML]; !seen {
-		bindings[lexicon.PrefixXML] = lexicon.NamespaceXML
-	}
-
-	return bindings
 }
 
 func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error {
@@ -315,60 +264,6 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 	return nil
 }
 
-func validateFunctionOptions(elem *xdm.Element) error {
-	// XTSE0020: validate override-extension-function (boolean)
-	if oef, has := elem.GetAttribute("override-extension-function"); has {
-		if err := validateBooleanAttr("xsl:function", "override-extension-function", oef); err != nil {
-			return err
-		}
-	}
-	// XTSE0020: validate override (boolean)
-	if ov, hasOv := elem.GetAttribute(xslElemOverride); hasOv {
-		if err := validateBooleanAttr("xsl:function", xslElemOverride, ov); err != nil {
-			return err
-		}
-		// Having both @override and @override-extension-function is only an error
-		// when they disagree (XTSE0020 per spec function-0117).
-		if oef, hasOEF := elem.GetAttribute("override-extension-function"); hasOEF {
-			ovBool, _ := parseXSDBool(ov)
-
-			oefBool, _ := parseXSDBool(oef)
-			if ovBool != oefBool {
-				return staticError(errCodeXTSE0020,
-					"xsl:function has conflicting @override=%q and @override-extension-function=%q", ov, oef)
-			}
-		}
-	}
-	// XTSE0020: validate new-each-time (yes|no|maybe)
-	if net := getAttr(elem, "new-each-time"); net != "" {
-		switch net {
-		case lexicon.ValueYes, lexicon.ValueNo, nameMaybe:
-			// valid
-		default:
-			return staticError(errCodeXTSE0020,
-				"%q is not a valid value for xsl:function/@new-each-time", net)
-		}
-	}
-
-	return nil
-}
-
-func compileFunctionChildren(childElem *xdm.Element) error {
-	for ch := range xdm.Children(childElem) {
-		if ch.Type() == xdm.ElementNode {
-			return staticError(errCodeXTSE0760,
-				"xsl:param %q in xsl:function must not have content", getAttr(childElem, xslAttrName))
-		}
-
-		if ch.Type() == xdm.TextNode && xdm.CharacterData(ch) != "" {
-			return staticError(errCodeXTSE0760,
-				"xsl:param %q in xsl:function must not have content", getAttr(childElem, xslAttrName))
-		}
-	}
-
-	return nil
-}
-
 func (c *compiler) validateFunctionParameter(childElem *xdm.Element) error {
 	if childElem.URI() != lexicon.NamespaceXSLT || childElem.LocalName() != lexicon.XSLTElementParam {
 		return nil
@@ -451,6 +346,219 @@ func (c *compiler) modeDefinition(ctx context.Context, elem *xdm.Element) (*mode
 	md.Typed = getAttr(elem, nameTyped)
 
 	return md, streamableStr, nil
+}
+
+func (c *compiler) mergeModeDefinition(md *modeDef, streamableStr string) {
+	name := md.Name
+
+	if c.stylesheet.modeDefs == nil {
+		c.stylesheet.modeDefs = make(map[string]*modeDef)
+	}
+
+	// Check for conflicting declarations at the same import precedence
+	if existing, ok := c.stylesheet.modeDefs[name]; ok {
+		if existing.ImportPrec == c.importPrec {
+			mergeSamePrecedenceMode(existing, md, streamableStr != "")
+
+			return
+		}
+		// Different precedence: higher precedence wins, but inherit
+		// unspecified attributes from the lower-precedence declaration.
+		c.mergeModeImportPrecedence(existing, md, streamableStr, name)
+
+		return
+	}
+
+	c.stylesheet.modeDefs[name] = md
+}
+
+func (c *compiler) modeDeclarationName(_ context.Context, elem *xdm.Element) (string, error) {
+	raw, present := elem.GetAttribute(xslAttrName)
+	if !present {
+		return modeDefault, nil
+	}
+
+	return modeQName(strings.Trim(raw, " \t\r\n"), elem, errCodeXTSE0020)
+}
+
+func (c *compiler) modeAccumulatorNames(elem *xdm.Element) *string {
+	// Resolve accumulator QNames to expanded names for proper comparison
+	// across modules with different namespace prefixes.
+	rawUA := getAttr(elem, nameUseAccumulators)
+	_, hasUseAccumulators := elem.GetAttribute(nameUseAccumulators)
+
+	var useAccumulators *string
+
+	if hasUseAccumulators {
+		var resolvedParts []string
+
+		for tok := range strings.FieldsSeq(rawUA) {
+			if tok == "#all" {
+				resolvedParts = append(resolvedParts, tok)
+			} else {
+				resolvedParts = append(resolvedParts, resolveQName(tok, c.nsBindings))
+			}
+		}
+
+		s := strings.Join(resolvedParts, " ")
+		useAccumulators = &s
+	}
+
+	return useAccumulators
+}
+
+// mergeModeImportPrecedence inherits unspecified mode attributes while retaining
+// the declaration with the higher import precedence.
+func (c *compiler) mergeModeImportPrecedence(existing, md *modeDef, streamableStr, name string) {
+	if c.importPrec > existing.ImportPrec {
+		// Preserve conflict flags from the lower-precedence entry,
+		// but clear them for attributes the higher-prec explicitly specifies.
+		md.conflictStreamable = existing.conflictStreamable && streamableStr == ""
+		md.conflictOnNoMatch = existing.conflictOnNoMatch && md.OnNoMatch == ""
+		md.conflictVisibility = existing.conflictVisibility && md.Visibility == ""
+		md.conflictOnMultiple = existing.conflictOnMultiple && md.OnMultipleMatch == ""
+		md.conflictAccumulator = existing.conflictAccumulator && md.UseAccumulators == nil
+		// Inherit attributes not explicitly set in higher-precedence decl
+		if md.OnNoMatch == "" {
+			md.OnNoMatch = existing.OnNoMatch
+		}
+
+		if md.OnMultipleMatch == "" {
+			md.OnMultipleMatch = existing.OnMultipleMatch
+		}
+
+		if md.UseAccumulators == nil {
+			md.UseAccumulators = existing.UseAccumulators
+		}
+
+		if md.Visibility == "" {
+			md.Visibility = existing.Visibility
+		}
+
+		c.stylesheet.modeDefs[name] = md
+	} else {
+		// Lower precedence than existing: merge unspecified attrs into existing.
+		if existing.OnNoMatch == "" && md.OnNoMatch != "" {
+			existing.OnNoMatch = md.OnNoMatch
+		}
+
+		if existing.OnMultipleMatch == "" && md.OnMultipleMatch != "" {
+			existing.OnMultipleMatch = md.OnMultipleMatch
+		}
+
+		if existing.UseAccumulators == nil && md.UseAccumulators != nil {
+			existing.UseAccumulators = md.UseAccumulators
+		}
+
+		if existing.Visibility == "" && md.Visibility != "" {
+			existing.Visibility = md.Visibility
+		}
+	}
+}
+
+// canonicalSequenceTypeKey returns a namespace-resolved canonical string for an
+// @as sequence type. It reuses the xpath sequence-type parseOptions AST and the single
+// resolveSequenceTypeQName resolver so that the XTSE3087 cross-module agreement
+// check compares the meaning of two types, and never their lexical form: two
+// declarations agree iff their canonical keys are equal. On a parse failure (the
+// type was already rejected upstream) it falls back to whitespace-normalized text.
+func canonicalSequenceTypeKey(as string, resolve nsResolver, defaultElemNS string, hasDefaultElemNS bool) string {
+	st, err := xpath.ParseSequenceType(strings.TrimSpace(as))
+	if err != nil {
+		return strings.Join(strings.Fields(as), "")
+	}
+
+	var b strings.Builder
+
+	writer := canonicalTypeWriter{b: &b, resolve: resolve, defaultElemNS: defaultElemNS, hasDefaultElemNS: hasDefaultElemNS}
+	writer.sequenceType(st)
+
+	return b.String()
+}
+
+// inScopeNamespaces returns the in-scope namespace bindings (prefix→URI) for
+// elem by walking the DOM tree from the element up through its ancestors.
+// Nearer declarations take precedence over more distant ones, matching XML
+// namespace scoping. This reflects the namespaces actually written on the
+// element and its ancestors, independent of any mutable compiler state.
+func inScopeNamespaces(elem *xdm.Element) map[string]string {
+	bindings := make(map[string]string)
+
+	for cur := xdm.Node(elem); cur != nil; cur = cur.Parent() {
+		ce, ok := cur.(*xdm.Element)
+		if !ok {
+			continue
+		}
+		// Closer declarations win: only record a prefix not already seen on a
+		// nearer (already-visited) element.
+		for _, ns := range ce.Namespaces() {
+			if _, seen := bindings[ns.Prefix()]; !seen {
+				bindings[ns.Prefix()] = ns.URI()
+			}
+		}
+	}
+	// The xml prefix is implicitly in scope on every element (XML Namespaces
+	// spec), so it must resolve even without an explicit xmlns:xml declaration.
+	// An explicit declaration recorded above takes precedence over this default.
+	if _, seen := bindings[lexicon.PrefixXML]; !seen {
+		bindings[lexicon.PrefixXML] = lexicon.NamespaceXML
+	}
+
+	return bindings
+}
+
+func validateFunctionOptions(elem *xdm.Element) error {
+	// XTSE0020: validate override-extension-function (boolean)
+	if oef, has := elem.GetAttribute("override-extension-function"); has {
+		if err := validateBooleanAttr("xsl:function", "override-extension-function", oef); err != nil {
+			return err
+		}
+	}
+	// XTSE0020: validate override (boolean)
+	if ov, hasOv := elem.GetAttribute(xslElemOverride); hasOv {
+		if err := validateBooleanAttr("xsl:function", xslElemOverride, ov); err != nil {
+			return err
+		}
+		// Having both @override and @override-extension-function is only an error
+		// when they disagree (XTSE0020 per spec function-0117).
+		if oef, hasOEF := elem.GetAttribute("override-extension-function"); hasOEF {
+			ovBool, _ := parseXSDBool(ov)
+
+			oefBool, _ := parseXSDBool(oef)
+			if ovBool != oefBool {
+				return staticError(errCodeXTSE0020,
+					"xsl:function has conflicting @override=%q and @override-extension-function=%q", ov, oef)
+			}
+		}
+	}
+	// XTSE0020: validate new-each-time (yes|no|maybe)
+	if net := getAttr(elem, "new-each-time"); net != "" {
+		switch net {
+		case lexicon.ValueYes, lexicon.ValueNo, nameMaybe:
+			// valid
+		default:
+			return staticError(errCodeXTSE0020,
+				"%q is not a valid value for xsl:function/@new-each-time", net)
+		}
+	}
+
+	return nil
+}
+
+func compileFunctionChildren(childElem *xdm.Element) error {
+	for ch := range xdm.Children(childElem) {
+		if ch.Type() == xdm.ElementNode {
+			return staticError(errCodeXTSE0760,
+				"xsl:param %q in xsl:function must not have content", getAttr(childElem, xslAttrName))
+		}
+
+		if ch.Type() == xdm.TextNode && xdm.CharacterData(ch) != "" {
+			return staticError(errCodeXTSE0760,
+				"xsl:param %q in xsl:function must not have content", getAttr(childElem, xslAttrName))
+		}
+	}
+
+	return nil
 }
 
 func parseModeStreamable(elem *xdm.Element) (bool, string, error) {
@@ -543,30 +651,6 @@ func validateModeFlags(elem *xdm.Element) error {
 	return nil
 }
 
-func (c *compiler) mergeModeDefinition(md *modeDef, streamableStr string) {
-	name := md.Name
-
-	if c.stylesheet.modeDefs == nil {
-		c.stylesheet.modeDefs = make(map[string]*modeDef)
-	}
-
-	// Check for conflicting declarations at the same import precedence
-	if existing, ok := c.stylesheet.modeDefs[name]; ok {
-		if existing.ImportPrec == c.importPrec {
-			mergeSamePrecedenceMode(existing, md, streamableStr != "")
-
-			return
-		}
-		// Different precedence: higher precedence wins, but inherit
-		// unspecified attributes from the lower-precedence declaration.
-		c.mergeModeImportPrecedence(existing, md, streamableStr, name)
-
-		return
-	}
-
-	c.stylesheet.modeDefs[name] = md
-}
-
 func mergeSamePrecedenceMode(existing, md *modeDef, hasStreamable bool) {
 	// Same precedence: check for conflicting attribute values (XTSE0545).
 	// Instead of erroring immediately, defer the conflict — a higher-
@@ -636,90 +720,6 @@ func sameAccumulatorSet(a, b string) bool {
 	}
 
 	return true
-}
-
-func (c *compiler) modeDeclarationName(_ context.Context, elem *xdm.Element) (string, error) {
-	raw, present := elem.GetAttribute(xslAttrName)
-	if !present {
-		return modeDefault, nil
-	}
-
-	return modeQName(strings.Trim(raw, " \t\r\n"), elem, errCodeXTSE0020)
-}
-
-func (c *compiler) modeAccumulatorNames(elem *xdm.Element) *string {
-	// Resolve accumulator QNames to expanded names for proper comparison
-	// across modules with different namespace prefixes.
-	rawUA := getAttr(elem, nameUseAccumulators)
-	_, hasUseAccumulators := elem.GetAttribute(nameUseAccumulators)
-
-	var useAccumulators *string
-
-	if hasUseAccumulators {
-		var resolvedParts []string
-
-		for tok := range strings.FieldsSeq(rawUA) {
-			if tok == "#all" {
-				resolvedParts = append(resolvedParts, tok)
-			} else {
-				resolvedParts = append(resolvedParts, resolveQName(tok, c.nsBindings))
-			}
-		}
-
-		s := strings.Join(resolvedParts, " ")
-		useAccumulators = &s
-	}
-
-	return useAccumulators
-}
-
-// mergeModeImportPrecedence inherits unspecified mode attributes while retaining
-// the declaration with the higher import precedence.
-func (c *compiler) mergeModeImportPrecedence(existing, md *modeDef, streamableStr, name string) {
-	if c.importPrec > existing.ImportPrec {
-		// Preserve conflict flags from the lower-precedence entry,
-		// but clear them for attributes the higher-prec explicitly specifies.
-		md.conflictStreamable = existing.conflictStreamable && streamableStr == ""
-		md.conflictOnNoMatch = existing.conflictOnNoMatch && md.OnNoMatch == ""
-		md.conflictVisibility = existing.conflictVisibility && md.Visibility == ""
-		md.conflictOnMultiple = existing.conflictOnMultiple && md.OnMultipleMatch == ""
-		md.conflictAccumulator = existing.conflictAccumulator && md.UseAccumulators == nil
-		// Inherit attributes not explicitly set in higher-precedence decl
-		if md.OnNoMatch == "" {
-			md.OnNoMatch = existing.OnNoMatch
-		}
-
-		if md.OnMultipleMatch == "" {
-			md.OnMultipleMatch = existing.OnMultipleMatch
-		}
-
-		if md.UseAccumulators == nil {
-			md.UseAccumulators = existing.UseAccumulators
-		}
-
-		if md.Visibility == "" {
-			md.Visibility = existing.Visibility
-		}
-
-		c.stylesheet.modeDefs[name] = md
-	} else {
-		// Lower precedence than existing: merge unspecified attrs into existing.
-		if existing.OnNoMatch == "" && md.OnNoMatch != "" {
-			existing.OnNoMatch = md.OnNoMatch
-		}
-
-		if existing.OnMultipleMatch == "" && md.OnMultipleMatch != "" {
-			existing.OnMultipleMatch = md.OnMultipleMatch
-		}
-
-		if existing.UseAccumulators == nil && md.UseAccumulators != nil {
-			existing.UseAccumulators = md.UseAccumulators
-		}
-
-		if existing.Visibility == "" && md.Visibility != "" {
-			existing.Visibility = md.Visibility
-		}
-	}
 }
 
 // functionName resolves a function's prefixed QName or EQName in its static context.

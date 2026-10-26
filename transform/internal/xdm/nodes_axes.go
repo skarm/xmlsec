@@ -58,41 +58,6 @@ func (a AxisType) String() string {
 	return "unknown-axis"
 }
 
-func lookupAxisName(key AxisType) (string, bool) {
-	switch key {
-	case AxisChild:
-		return "child", true
-	case AxisDescendant:
-		return "descendant", true
-	case AxisParent:
-		return "parent", true
-	case AxisAncestor:
-		return "ancestor", true
-	case AxisFollowingSibling:
-		return "following-sibling", true
-	case AxisPrecedingSibling:
-		return "preceding-sibling", true
-	case AxisFollowing:
-		return "following", true
-	case AxisPreceding:
-		return "preceding", true
-	case AxisAttribute:
-		return "attribute", true
-	case AxisNamespace:
-		return "namespace", true
-	case AxisSelf:
-		return "self", true
-	case AxisDescendantOrSelf:
-		return "descendant-or-self", true
-	case AxisAncestorOrSelf:
-		return "ancestor-or-self", true
-	}
-
-	var zero string
-
-	return zero, false
-}
-
 // IsNilNode reports whether n is nil or a nil pointer wrapped in a non-nil
 // interface.
 func IsNilNode(n Node) bool {
@@ -150,6 +115,260 @@ func TraverseAxis(ctx context.Context, axis AxisType, node Node, maxNodes int) (
 	}
 
 	return TraverseAxisSimple(ctx, axis, node)
+}
+
+// AppendAxis appends the nodes along axis from node to dst, in the order
+// defined by the XPath spec, and returns the grown slice. It lets a caller
+// accumulate several traversals in one buffer instead of allocating a fresh
+// slice per traversal.
+//
+// maxNodes limits how many nodes THIS traversal may append; nodes already in
+// dst do not count against it, so the limit means the same thing it does in
+// TraverseAxis. ctx is checked inside the unbounded descendant walks so a
+// cancelled context aborts the traversal promptly. On error dst is discarded
+// and the returned slice is nil, as in TraverseAxis.
+func AppendAxis(ctx context.Context, dst []Node, axis AxisType, node Node, maxNodes int) ([]Node, error) {
+	if IsNilNode(node) {
+		return dst, nil
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	switch axis {
+	case AxisDescendant, AxisDescendantOrSelf:
+		limit := maxNodes
+		if n := len(dst); n > 0 {
+			limit = maxNodes + n
+			if limit < n { // overflow: maxNodes was near maxInt
+				limit = maxInt
+			}
+		}
+
+		if axis == AxisDescendantOrSelf {
+			if err := appendAxisNode(&dst, node, limit); err != nil {
+				return nil, err
+			}
+		}
+
+		if err := collectDescendants(ctx, node, &dst, limit); err != nil {
+			return nil, err
+		}
+
+		return dst, nil
+	}
+
+	nodes, err := TraverseAxis(ctx, axis, node, maxNodes)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(dst, nodes...), nil
+}
+
+// TraverseAxisSimple handles axes whose result size is bounded by the tree
+// shape (children, attributes, siblings, ancestors, namespaces).  Although
+// these axes never hit the node-set limit, their enumeration loops still
+// consult ctx so a cancelled context aborts a wide traversal promptly rather
+// than materializing the whole node-set.
+func TraverseAxisSimple(ctx context.Context, axis AxisType, node Node) ([]Node, error) {
+	if IsNilNode(node) {
+		return nil, nil
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	switch axis {
+	case AxisChild:
+		return axisChild(ctx, node)
+	case AxisParent:
+		return axisParent(node), nil
+	case AxisAncestor:
+		return axisAncestor(ctx, node)
+	case AxisAncestorOrSelf:
+		return axisAncestorOrSelf(ctx, node)
+	case AxisFollowingSibling:
+		return axisFollowingSibling(ctx, node)
+	case AxisPrecedingSibling:
+		return axisPrecedingSibling(ctx, node)
+	case AxisSelf:
+		return []Node{node}, nil
+	case AxisAttribute:
+		return axisAttribute(ctx, node)
+	case AxisNamespace:
+		return axisNamespace(ctx, node)
+	}
+
+	return nil, nil
+}
+
+// IsXDMChild returns true if the node is a valid child in the XPath Data
+// Model.  DTD, entity declarations, notation nodes, and other non-XDM
+// node types that may appear in the DOM tree are excluded.
+func IsXDMChild(n Node) bool {
+	switch n.Type() {
+	case ElementNode,
+		TextNode,
+		CDATASectionNode,
+		CommentNode,
+		ProcessingInstructionNode:
+		return true
+	}
+
+	return false
+}
+
+// PushXDMChildren appends the XDM children of n to stack in reverse document
+// order, so the first child is the next one popped. It enumerates the owned
+// children (Children) and checks ctx before each one; on error it
+// returns a nil stack. n must not be an attribute: the XDM gives attributes
+// no children, and the caller handles that case.
+func PushXDMChildren(ctx context.Context, stack []Node, n Node) ([]Node, error) {
+	start := len(stack)
+
+	for c := range Children(n) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		if IsXDMChild(c) {
+			stack = append(stack, c)
+		}
+	}
+
+	slices.Reverse(stack[start:])
+
+	return stack, nil
+}
+
+// NamespacePrefixesInScope returns the set of active prefixes (non-empty URI)
+// by walking ancestors from outermost to innermost so inner declarations win.
+// An empty URI removes an inherited binding from the set.
+// It checks ctx for cancellation in both its outer and inner loops so a long
+// namespace::* traversal can be aborted promptly.
+func NamespacePrefixesInScope(ctx context.Context, ancestors []Node) (map[string]struct{}, error) {
+	inScope := map[string]struct{}{}
+
+	for _, v := range slices.Backward(ancestors) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		ns, ok := v.(NamespaceContainer)
+		if !ok {
+			continue
+		}
+
+		for _, n := range ns.Namespaces() {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+
+			if n.URI() != "" {
+				inScope[n.Prefix()] = struct{}{}
+			} else {
+				delete(inScope, n.Prefix())
+			}
+		}
+	}
+
+	return inScope, nil
+}
+
+// CollectNamespaceNodes builds the namespace node list for an element, adding
+// the xml prefix first and then ancestor-declared prefixes in document order.
+// For each prefix, the innermost (closest ancestor) declaration provides the
+// URI, but the output order follows document order (outermost first).
+// It checks ctx for cancellation in both passes (outer and inner loops) so a
+// long namespace::* traversal can be aborted promptly.
+func CollectNamespaceNodes(ctx context.Context, ancestors []Node, inScope map[string]struct{}, elem *Element) ([]Node, error) {
+	// First pass: find the correct namespace for each prefix (innermost wins).
+	// ancestors[0] is the element itself (innermost), ancestors[len-1] outermost.
+	winner := map[string]*Namespace{}
+
+	if err := collectNamespaceNodesAncestors(ctx, ancestors, winner, inScope); err != nil {
+		return nil, err
+	}
+
+	var result []Node
+
+	xmlNS := NewNamespace("xml", lexicon.NamespaceXML)
+	result = append(result, NewNamespaceNodeWrapper(xmlNS, elem))
+
+	// Second pass: output in document order (outermost to innermost), but
+	// use the innermost URI for each prefix.
+	emitted := map[string]struct{}{"xml": {}}
+
+	for _, v := range slices.Backward(ancestors) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		ns, ok := v.(NamespaceContainer)
+		if !ok {
+			continue
+		}
+
+		for _, n := range ns.Namespaces() {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+
+			prefix := n.Prefix()
+			if _, done := emitted[prefix]; done {
+				continue
+			}
+
+			w := winner[prefix]
+			if w == nil {
+				continue
+			}
+
+			emitted[prefix] = struct{}{}
+
+			result = append(result, NewNamespaceNodeWrapper(w, elem))
+		}
+	}
+
+	return result, nil
+}
+
+func lookupAxisName(key AxisType) (string, bool) {
+	switch key {
+	case AxisChild:
+		return "child", true
+	case AxisDescendant:
+		return "descendant", true
+	case AxisParent:
+		return "parent", true
+	case AxisAncestor:
+		return "ancestor", true
+	case AxisFollowingSibling:
+		return "following-sibling", true
+	case AxisPrecedingSibling:
+		return "preceding-sibling", true
+	case AxisFollowing:
+		return "following", true
+	case AxisPreceding:
+		return "preceding", true
+	case AxisAttribute:
+		return "attribute", true
+	case AxisNamespace:
+		return "namespace", true
+	case AxisSelf:
+		return "self", true
+	case AxisDescendantOrSelf:
+		return "descendant-or-self", true
+	case AxisAncestorOrSelf:
+		return "ancestor-or-self", true
+	}
+
+	var zero string
+
+	return zero, false
 }
 
 func axisFollowing(ctx context.Context, node Node, maxNodes int) ([]Node, error) {
@@ -302,94 +521,6 @@ func axisPrecedingEntries(ctx context.Context, node Node, maxNodes int) ([]Node,
 	}
 
 	return axisPreceding(ctx, parent, maxNodes)
-}
-
-// AppendAxis appends the nodes along axis from node to dst, in the order
-// defined by the XPath spec, and returns the grown slice. It lets a caller
-// accumulate several traversals in one buffer instead of allocating a fresh
-// slice per traversal.
-//
-// maxNodes limits how many nodes THIS traversal may append; nodes already in
-// dst do not count against it, so the limit means the same thing it does in
-// TraverseAxis. ctx is checked inside the unbounded descendant walks so a
-// cancelled context aborts the traversal promptly. On error dst is discarded
-// and the returned slice is nil, as in TraverseAxis.
-func AppendAxis(ctx context.Context, dst []Node, axis AxisType, node Node, maxNodes int) ([]Node, error) {
-	if IsNilNode(node) {
-		return dst, nil
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	switch axis {
-	case AxisDescendant, AxisDescendantOrSelf:
-		limit := maxNodes
-		if n := len(dst); n > 0 {
-			limit = maxNodes + n
-			if limit < n { // overflow: maxNodes was near maxInt
-				limit = maxInt
-			}
-		}
-
-		if axis == AxisDescendantOrSelf {
-			if err := appendAxisNode(&dst, node, limit); err != nil {
-				return nil, err
-			}
-		}
-
-		if err := collectDescendants(ctx, node, &dst, limit); err != nil {
-			return nil, err
-		}
-
-		return dst, nil
-	}
-
-	nodes, err := TraverseAxis(ctx, axis, node, maxNodes)
-	if err != nil {
-		return nil, err
-	}
-
-	return append(dst, nodes...), nil
-}
-
-// TraverseAxisSimple handles axes whose result size is bounded by the tree
-// shape (children, attributes, siblings, ancestors, namespaces).  Although
-// these axes never hit the node-set limit, their enumeration loops still
-// consult ctx so a cancelled context aborts a wide traversal promptly rather
-// than materializing the whole node-set.
-func TraverseAxisSimple(ctx context.Context, axis AxisType, node Node) ([]Node, error) {
-	if IsNilNode(node) {
-		return nil, nil
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	switch axis {
-	case AxisChild:
-		return axisChild(ctx, node)
-	case AxisParent:
-		return axisParent(node), nil
-	case AxisAncestor:
-		return axisAncestor(ctx, node)
-	case AxisAncestorOrSelf:
-		return axisAncestorOrSelf(ctx, node)
-	case AxisFollowingSibling:
-		return axisFollowingSibling(ctx, node)
-	case AxisPrecedingSibling:
-		return axisPrecedingSibling(ctx, node)
-	case AxisSelf:
-		return []Node{node}, nil
-	case AxisAttribute:
-		return axisAttribute(ctx, node)
-	case AxisNamespace:
-		return axisNamespace(ctx, node)
-	}
-
-	return nil, nil
 }
 
 func axisChild(ctx context.Context, node Node) ([]Node, error) {
@@ -550,137 +681,6 @@ func axisNamespace(ctx context.Context, node Node) ([]Node, error) {
 	}
 
 	return CollectNamespaceNodes(ctx, ancestors, inScope, elem)
-}
-
-// IsXDMChild returns true if the node is a valid child in the XPath Data
-// Model.  DTD, entity declarations, notation nodes, and other non-XDM
-// node types that may appear in the DOM tree are excluded.
-func IsXDMChild(n Node) bool {
-	switch n.Type() {
-	case ElementNode,
-		TextNode,
-		CDATASectionNode,
-		CommentNode,
-		ProcessingInstructionNode:
-		return true
-	}
-
-	return false
-}
-
-// PushXDMChildren appends the XDM children of n to stack in reverse document
-// order, so the first child is the next one popped. It enumerates the owned
-// children (Children) and checks ctx before each one; on error it
-// returns a nil stack. n must not be an attribute: the XDM gives attributes
-// no children, and the caller handles that case.
-func PushXDMChildren(ctx context.Context, stack []Node, n Node) ([]Node, error) {
-	start := len(stack)
-
-	for c := range Children(n) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		if IsXDMChild(c) {
-			stack = append(stack, c)
-		}
-	}
-
-	slices.Reverse(stack[start:])
-
-	return stack, nil
-}
-
-// NamespacePrefixesInScope returns the set of active prefixes (non-empty URI)
-// by walking ancestors from outermost to innermost so inner declarations win.
-// An empty URI removes an inherited binding from the set.
-// It checks ctx for cancellation in both its outer and inner loops so a long
-// namespace::* traversal can be aborted promptly.
-func NamespacePrefixesInScope(ctx context.Context, ancestors []Node) (map[string]struct{}, error) {
-	inScope := map[string]struct{}{}
-
-	for _, v := range slices.Backward(ancestors) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		ns, ok := v.(NamespaceContainer)
-		if !ok {
-			continue
-		}
-
-		for _, n := range ns.Namespaces() {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-
-			if n.URI() != "" {
-				inScope[n.Prefix()] = struct{}{}
-			} else {
-				delete(inScope, n.Prefix())
-			}
-		}
-	}
-
-	return inScope, nil
-}
-
-// CollectNamespaceNodes builds the namespace node list for an element, adding
-// the xml prefix first and then ancestor-declared prefixes in document order.
-// For each prefix, the innermost (closest ancestor) declaration provides the
-// URI, but the output order follows document order (outermost first).
-// It checks ctx for cancellation in both passes (outer and inner loops) so a
-// long namespace::* traversal can be aborted promptly.
-func CollectNamespaceNodes(ctx context.Context, ancestors []Node, inScope map[string]struct{}, elem *Element) ([]Node, error) {
-	// First pass: find the correct namespace for each prefix (innermost wins).
-	// ancestors[0] is the element itself (innermost), ancestors[len-1] outermost.
-	winner := map[string]*Namespace{}
-
-	if err := collectNamespaceNodesAncestors(ctx, ancestors, winner, inScope); err != nil {
-		return nil, err
-	}
-
-	var result []Node
-
-	xmlNS := NewNamespace("xml", lexicon.NamespaceXML)
-	result = append(result, NewNamespaceNodeWrapper(xmlNS, elem))
-
-	// Second pass: output in document order (outermost to innermost), but
-	// use the innermost URI for each prefix.
-	emitted := map[string]struct{}{"xml": {}}
-
-	for _, v := range slices.Backward(ancestors) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		ns, ok := v.(NamespaceContainer)
-		if !ok {
-			continue
-		}
-
-		for _, n := range ns.Namespaces() {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-
-			prefix := n.Prefix()
-			if _, done := emitted[prefix]; done {
-				continue
-			}
-
-			w := winner[prefix]
-			if w == nil {
-				continue
-			}
-
-			emitted[prefix] = struct{}{}
-
-			result = append(result, NewNamespaceNodeWrapper(w, elem))
-		}
-	}
-
-	return result, nil
 }
 
 func collectNamespaceNodesAncestors(ctx context.Context, ancestors []Node, winner map[string]*Namespace, inScope map[string]struct{}) error {

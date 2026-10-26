@@ -188,78 +188,6 @@ func NewVerifier(c Config) (*Verifier, error) {
 	return v, nil
 }
 
-// normalizeVerifierPolicy validates policy fields in their public error order,
-// filling defaults only in the caller's local configuration snapshot.
-func normalizeVerifierPolicy(c *Config) error {
-	if len(c.Roots) < 1 || len(c.Roots) > 64 || len(c.Intermediates) > 64 {
-		return fmt.Errorf("%w: explicit bounded root/intermediate sets required", ErrPolicy)
-	}
-
-	if c.Revocation != NoRevocation && c.Revocation != RequireCRL && c.Revocation != RequireOCSP {
-		return fmt.Errorf("%w: revocation mode", ErrPolicy)
-	}
-
-	if c.RequiredKeyUsage == 0 {
-		c.RequiredKeyUsage = x509.KeyUsageDigitalSignature
-	}
-
-	if c.RequiredKeyUsage < 0 || c.RequiredKeyUsage & ^x509.KeyUsage(511) != 0 {
-		return fmt.Errorf("%w: key usage", ErrPolicy)
-	}
-
-	if c.MaxChainDepth == 0 {
-		c.MaxChainDepth = 10
-	}
-
-	if c.MaxEvidenceBytes == 0 {
-		c.MaxEvidenceBytes = 8 << 20
-	}
-
-	if c.MaxCRLs == 0 {
-		c.MaxCRLs = 32
-	}
-
-	if c.MaxChainDepth < 2 || c.MaxChainDepth > 32 || c.MaxEvidenceBytes < 1 || c.MaxEvidenceBytes > 64<<20 || c.MaxCRLs < 1 || c.MaxCRLs > 256 {
-		return fmt.Errorf("%w: limits", ErrPolicy)
-	}
-
-	if c.MaxOCSPResponses == 0 {
-		c.MaxOCSPResponses = 32
-	}
-
-	if c.MaxOCSPResponses < 1 || c.MaxOCSPResponses > 256 {
-		return ErrPolicy
-	}
-
-	if len(c.OCSPAuthorities) > 8 {
-		return ErrPolicy
-	}
-
-	configuredBytes := 0
-
-	for _, group := range [][][]byte{c.Roots, c.Intermediates} {
-		for _, raw := range group {
-			if len(raw) > c.MaxEvidenceBytes-configuredBytes {
-				return ErrPolicy
-			}
-
-			configuredBytes += len(raw)
-		}
-	}
-
-	for _, authority := range c.OCSPAuthorities {
-		for _, raw := range [][]byte{authority.ResponderCertificateDER, authority.IssuerCertificateDER} {
-			if len(raw) > c.MaxEvidenceBytes-configuredBytes {
-				return ErrPolicy
-			}
-
-			configuredBytes += len(raw)
-		}
-	}
-
-	return nil
-}
-
 // Verify requires an explicit time. A caller-chosen past time alone is NOT a
 // proof that a signature existed then. Certificates are snapshotted; revocation
 // evidence is borrowed during the call and must not be modified concurrently.
@@ -587,6 +515,105 @@ func (v *Verifier) validateChainPolicy(chain []*x509.Certificate) error {
 	return nil
 }
 
+func (v *Verifier) certificateOriginals(leaf *x509.Certificate) map[[32]byte]*x509.Certificate {
+	originals := make(map[[32]byte]*x509.Certificate, len(v.originalCertificates)+1)
+	maps.Copy(originals, v.originalCertificates)
+
+	originals[sha256.Sum256(leaf.Raw)] = leaf
+
+	return originals
+}
+
+func (v *Verifier) crlEvidence(ctx context.Context, e Evidence, sources map[evidenceBinding][]*evidence.Observation) ([]*parsedCRL, error) {
+	if v.revocation != RequireCRL {
+		return nil, nil
+	}
+
+	lists, err := parseCRLs(ctx, e.CRLs)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, list := range lists {
+		list.candidates = append(append([][]byte(nil), v.issuerCertificates...), e.Intermediates...)
+		list.sources = sources[evidenceBinding{kind: evidence.CRL, hash: sha256.Sum256(list.raw)}]
+	}
+
+	return lists, nil
+}
+
+// normalizeVerifierPolicy validates policy fields in their public error order,
+// filling defaults only in the caller's local configuration snapshot.
+func normalizeVerifierPolicy(c *Config) error {
+	if len(c.Roots) < 1 || len(c.Roots) > 64 || len(c.Intermediates) > 64 {
+		return fmt.Errorf("%w: explicit bounded root/intermediate sets required", ErrPolicy)
+	}
+
+	if c.Revocation != NoRevocation && c.Revocation != RequireCRL && c.Revocation != RequireOCSP {
+		return fmt.Errorf("%w: revocation mode", ErrPolicy)
+	}
+
+	if c.RequiredKeyUsage == 0 {
+		c.RequiredKeyUsage = x509.KeyUsageDigitalSignature
+	}
+
+	if c.RequiredKeyUsage < 0 || c.RequiredKeyUsage & ^x509.KeyUsage(511) != 0 {
+		return fmt.Errorf("%w: key usage", ErrPolicy)
+	}
+
+	if c.MaxChainDepth == 0 {
+		c.MaxChainDepth = 10
+	}
+
+	if c.MaxEvidenceBytes == 0 {
+		c.MaxEvidenceBytes = 8 << 20
+	}
+
+	if c.MaxCRLs == 0 {
+		c.MaxCRLs = 32
+	}
+
+	if c.MaxChainDepth < 2 || c.MaxChainDepth > 32 || c.MaxEvidenceBytes < 1 || c.MaxEvidenceBytes > 64<<20 || c.MaxCRLs < 1 || c.MaxCRLs > 256 {
+		return fmt.Errorf("%w: limits", ErrPolicy)
+	}
+
+	if c.MaxOCSPResponses == 0 {
+		c.MaxOCSPResponses = 32
+	}
+
+	if c.MaxOCSPResponses < 1 || c.MaxOCSPResponses > 256 {
+		return ErrPolicy
+	}
+
+	if len(c.OCSPAuthorities) > 8 {
+		return ErrPolicy
+	}
+
+	configuredBytes := 0
+
+	for _, group := range [][][]byte{c.Roots, c.Intermediates} {
+		for _, raw := range group {
+			if len(raw) > c.MaxEvidenceBytes-configuredBytes {
+				return ErrPolicy
+			}
+
+			configuredBytes += len(raw)
+		}
+	}
+
+	for _, authority := range c.OCSPAuthorities {
+		for _, raw := range [][]byte{authority.ResponderCertificateDER, authority.IssuerCertificateDER} {
+			if len(raw) > c.MaxEvidenceBytes-configuredBytes {
+				return ErrPolicy
+			}
+
+			configuredBytes += len(raw)
+		}
+	}
+
+	return nil
+}
+
 func parseCertificate(der []byte) (*x509.Certificate, error) {
 	if len(der) < 1 || len(der) > 1<<20 {
 		return nil, fmt.Errorf("%w: certificate size", ErrCertificate)
@@ -733,31 +760,4 @@ func parseBorrowedCertificate(der []byte) (*x509.Certificate, error) {
 	}
 
 	return c, nil
-}
-
-func (v *Verifier) certificateOriginals(leaf *x509.Certificate) map[[32]byte]*x509.Certificate {
-	originals := make(map[[32]byte]*x509.Certificate, len(v.originalCertificates)+1)
-	maps.Copy(originals, v.originalCertificates)
-
-	originals[sha256.Sum256(leaf.Raw)] = leaf
-
-	return originals
-}
-
-func (v *Verifier) crlEvidence(ctx context.Context, e Evidence, sources map[evidenceBinding][]*evidence.Observation) ([]*parsedCRL, error) {
-	if v.revocation != RequireCRL {
-		return nil, nil
-	}
-
-	lists, err := parseCRLs(ctx, e.CRLs)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, list := range lists {
-		list.candidates = append(append([][]byte(nil), v.issuerCertificates...), e.Intermediates...)
-		list.sources = sources[evidenceBinding{kind: evidence.CRL, hash: sha256.Sum256(list.raw)}]
-	}
-
-	return lists, nil
 }

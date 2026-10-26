@@ -127,6 +127,38 @@ func Build(ctx context.Context, s EntityDescriptor, at time.Time, o Options) (*d
 	return d, nil
 }
 
+// Sign creates a root signature before the first metadata child. Unlike
+// Verify, signing an aggregate that already contains signatures is not supported.
+func Sign(ctx context.Context, d *document.Document, key crypto.Signer, certificateDER []byte, method string, at time.Time, o Options) (*document.Document, error) {
+	if d == nil || len(xmldsig.Signatures(d)) != 0 {
+		return nil, ErrMetadata
+	}
+
+	signed, e := xmlsig.Sign(ctx, d, d.Root(), xmlsig.SigningKey{Key: key, CertificateDER: certificateDER, Method: method, Policy: o.Policy}, false)
+	if e != nil {
+		return nil, e
+	}
+
+	v, e := NewVerifier(Config{TrustedKeys: []crypto.PublicKey{key.Public()}, Options: o})
+	if e != nil {
+		return nil, e
+	}
+
+	if _, e := signed.WriteXML(ctx, io.Discard, v.o.MaxBytes); e != nil {
+		if errors.Is(e, document.ErrLimit) {
+			return nil, errors.Join(ErrMetadata, e)
+		}
+
+		return nil, e
+	}
+
+	if _, e := v.verifyDocument(ctx, signed, at); e != nil {
+		return nil, e
+	}
+
+	return signed, nil
+}
+
 func md(local string) *tree.Node { return xmlutil.Node("md", Namespace, local) }
 
 func buildOrder(order []string, r *struct {
@@ -269,36 +301,4 @@ func buildEntries(ctx context.Context, s *EntityDescriptor, root *tree.Node, max
 	}
 
 	return returned1ValueValue, matchedBranchBranch
-}
-
-// Sign creates a root signature before the first metadata child. Unlike
-// Verify, signing an aggregate that already contains signatures is not supported.
-func Sign(ctx context.Context, d *document.Document, key crypto.Signer, certificateDER []byte, method string, at time.Time, o Options) (*document.Document, error) {
-	if d == nil || len(xmldsig.Signatures(d)) != 0 {
-		return nil, ErrMetadata
-	}
-
-	signed, e := xmlsig.Sign(ctx, d, d.Root(), xmlsig.SigningKey{Key: key, CertificateDER: certificateDER, Method: method, Policy: o.Policy}, false)
-	if e != nil {
-		return nil, e
-	}
-
-	v, e := NewVerifier(Config{TrustedKeys: []crypto.PublicKey{key.Public()}, Options: o})
-	if e != nil {
-		return nil, e
-	}
-
-	if _, e := signed.WriteXML(ctx, io.Discard, v.o.MaxBytes); e != nil {
-		if errors.Is(e, document.ErrLimit) {
-			return nil, errors.Join(ErrMetadata, e)
-		}
-
-		return nil, e
-	}
-
-	if _, e := v.verifyDocument(ctx, signed, at); e != nil {
-		return nil, e
-	}
-
-	return signed, nil
 }

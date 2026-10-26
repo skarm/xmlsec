@@ -48,6 +48,42 @@ func TestCipherReferenceProfiles(t *testing.T) {
 	}
 }
 
+func TestCipherReferenceRejectsConcatenatedBase64Values(t *testing.T) {
+	ctx := t.Context()
+	secret := make([]byte, 32)
+	const uri = "urn:example:base64-padding"
+	encrypted, err := xmlenc.EncryptBytesWithKey(ctx, []byte("protected"), secret, xmlenc.SymmetricOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	external, _, body, err := xmlenc.ExternalizeCiphertext(ctx, encrypted, encrypted.Root(), uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := external.XML(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := `<xenc:CipherReference URI="` + uri + `"></xenc:CipherReference>`
+	transformed := `<xenc:CipherReference URI="` + uri + `"><xenc:Transforms><ds:Transform Algorithm="` + xmlenc.SignatureNamespace + `base64"/></xenc:Transforms></xenc:CipherReference>`
+	if !bytes.Contains(wire, []byte(ref)) {
+		t.Fatal("missing reference")
+	}
+	external = parse(t, bytes.Replace(wire, []byte(ref), []byte(transformed), 1))
+	options := xmlenc.SymmetricOptions{Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{
+		URI: uri,
+		Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+			return io.NopCloser(io.MultiReader(
+				strings.NewReader(base64.StdEncoding.EncodeToString(body[:1])),
+				strings.NewReader(base64.StdEncoding.EncodeToString(body[1:])),
+			)), nil
+		}),
+	}}}
+	if out, err := xmlenc.DecryptBytesWithKey(ctx, external, secret, options); out != nil || err == nil {
+		t.Fatalf("invalid Base64 framing accepted: plaintext=%q err=%v", out, err)
+	}
+}
+
 func checkCipherReferenceProfile(t *testing.T, ctx context.Context, profile cipherReferenceProfile, uri string, xml bool) {
 	t.Helper()
 

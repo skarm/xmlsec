@@ -22,6 +22,56 @@ type baselineUTC struct {
 	fraction string
 }
 
+func (value *baselineUTC) monthDays() int {
+	switch value.month {
+	case 4, 6, 9, 11:
+		return 30
+	case 2:
+		var mod big.Int
+		if mod.Mod(&value.year, big.NewInt(400)).Sign() == 0 || mod.Mod(&value.year, big.NewInt(100)).Sign() != 0 && mod.Mod(&value.year, big.NewInt(4)).Sign() == 0 {
+			return 29
+		}
+
+		return 28
+	default:
+		return 31
+	}
+}
+
+func (value *baselineUTC) convenienceTime() time.Time {
+	if !value.year.IsInt64() || value.year.Int64() < 1 || value.year.Int64() > 9999 || len(value.fraction) > 9 {
+		return time.Time{}
+	}
+
+	fraction := value.fraction + strings.Repeat("0", 9-len(value.fraction))
+	nanos, _ := strconv.Atoi(fraction)
+
+	return time.Date(int(value.year.Int64()), time.Month(value.month), value.day, value.hour, value.minute, value.second, nanos, time.UTC)
+}
+
+func (value *baselineUTC) normalizeMidnight() error {
+	if value.hour == 24 {
+		if value.minute != 0 || value.second != 0 || value.fraction != "" {
+			return ErrProfile
+		}
+
+		value.hour = 0
+
+		value.day++
+		if value.day > value.monthDays() {
+			value.day = 1
+
+			value.month++
+			if value.month == 13 {
+				value.month = 1
+				value.year.Add(&value.year, big.NewInt(1))
+			}
+		}
+	}
+
+	return nil
+}
+
 func parseBaselineTime(element document.Element) (string, time.Time, error) {
 	value, err := simple(element)
 	if err != nil {
@@ -104,33 +154,6 @@ func baselineDigits(value string) bool {
 	}
 
 	return true
-}
-
-func (value *baselineUTC) monthDays() int {
-	switch value.month {
-	case 4, 6, 9, 11:
-		return 30
-	case 2:
-		var mod big.Int
-		if mod.Mod(&value.year, big.NewInt(400)).Sign() == 0 || mod.Mod(&value.year, big.NewInt(100)).Sign() != 0 && mod.Mod(&value.year, big.NewInt(4)).Sign() == 0 {
-			return 29
-		}
-
-		return 28
-	default:
-		return 31
-	}
-}
-
-func (value *baselineUTC) convenienceTime() time.Time {
-	if !value.year.IsInt64() || value.year.Int64() < 1 || value.year.Int64() > 9999 || len(value.fraction) > 9 {
-		return time.Time{}
-	}
-
-	fraction := value.fraction + strings.Repeat("0", 9-len(value.fraction))
-	nanos, _ := strconv.Atoi(fraction)
-
-	return time.Date(int(value.year.Int64()), time.Month(value.month), value.day, value.hour, value.minute, value.second, nanos, time.UTC)
 }
 
 // SigningTimeLexical returns the complete authenticated UTC xs:dateTime claim,
@@ -235,27 +258,4 @@ func baselineTimeYear(value string, yearValue *big.Int) (int, error) {
 	}
 
 	return yearEnd, nil
-}
-
-func (value *baselineUTC) normalizeMidnight() error {
-	if value.hour == 24 {
-		if value.minute != 0 || value.second != 0 || value.fraction != "" {
-			return ErrProfile
-		}
-
-		value.hour = 0
-
-		value.day++
-		if value.day > value.monthDays() {
-			value.day = 1
-
-			value.month++
-			if value.month == 13 {
-				value.month = 1
-				value.year.Add(&value.year, big.NewInt(1))
-			}
-		}
-	}
-
-	return nil
 }

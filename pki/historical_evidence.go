@@ -31,6 +31,14 @@ type historicalClaim struct {
 	dependency        bool
 }
 
+func (c historicalClaim) retainsStatus(expired time.Time) bool {
+	if c.crl != nil {
+		return !c.crl.retainedFrom.IsZero() && !expired.Before(c.crl.retainedFrom)
+	}
+
+	return c.ocsp != nil && !c.ocsp.archiveCutoff.IsZero() && !expired.Before(c.ocsp.archiveCutoff)
+}
+
 func (s *HistoricalSession) prepareHistoricalSources(ctx context.Context) error {
 	if s.sourcesReady {
 		return nil
@@ -440,6 +448,40 @@ func (e *VerifiedEvidence) SignerAuthority() string {
 	return e.signerAuthority
 }
 
+// InspectOCSPCertificates returns owned copies of certificates actually embedded
+// in one bounded OCSP response. They are untrusted input, not authenticated
+// signer paths or proof of existence. It shares the response syntax decoder and
+// its eight-certificate/64-status limits; the input cannot exceed64MiB.
+func InspectOCSPCertificates(ctx context.Context, raw []byte) ([][]byte, error) {
+	if ctx == nil {
+		return nil, ErrPolicy
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(raw) > 64<<20 {
+		return nil, fmt.Errorf("%w: %w: OCSP inspection bytes", ErrPolicy, ErrLimit)
+	}
+
+	parsed, err := parseOCSP(raw, 64<<20)
+	if err != nil {
+		return nil, err
+	}
+
+	certificates := make([][]byte, len(parsed.certs))
+	for index, certificate := range parsed.certs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		certificates[index] = bytes.Clone(certificate.Raw)
+	}
+
+	return certificates, ctx.Err()
+}
+
 func historicalAlgorithm(algorithm pkix.AlgorithmIdentifier) x509.SignatureAlgorithm {
 	hash, mode, err := signature.Details(algorithm)
 	if err != nil {
@@ -481,46 +523,4 @@ func historicalAlgorithm(algorithm pkix.AlgorithmIdentifier) x509.SignatureAlgor
 	}
 
 	return x509.UnknownSignatureAlgorithm
-}
-
-func (c historicalClaim) retainsStatus(expired time.Time) bool {
-	if c.crl != nil {
-		return !c.crl.retainedFrom.IsZero() && !expired.Before(c.crl.retainedFrom)
-	}
-
-	return c.ocsp != nil && !c.ocsp.archiveCutoff.IsZero() && !expired.Before(c.ocsp.archiveCutoff)
-}
-
-// InspectOCSPCertificates returns owned copies of certificates actually embedded
-// in one bounded OCSP response. They are untrusted input, not authenticated
-// signer paths or proof of existence. It shares the response syntax decoder and
-// its eight-certificate/64-status limits; the input cannot exceed64MiB.
-func InspectOCSPCertificates(ctx context.Context, raw []byte) ([][]byte, error) {
-	if ctx == nil {
-		return nil, ErrPolicy
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	if len(raw) > 64<<20 {
-		return nil, fmt.Errorf("%w: %w: OCSP inspection bytes", ErrPolicy, ErrLimit)
-	}
-
-	parsed, err := parseOCSP(raw, 64<<20)
-	if err != nil {
-		return nil, err
-	}
-
-	certificates := make([][]byte, len(parsed.certs))
-	for index, certificate := range parsed.certs {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		certificates[index] = bytes.Clone(certificate.Raw)
-	}
-
-	return certificates, ctx.Err()
 }

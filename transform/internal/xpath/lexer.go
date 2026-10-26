@@ -38,11 +38,6 @@ func newVersionLexer(input string, version int) (*lexer, error) {
 	return newVersionLexerSpans(input, version, nil)
 }
 
-type sourceSpan struct {
-	start int
-	end   int
-}
-
 func newVersionLexerSpans(input string, version int, spans *[]sourceSpan) (*lexer, error) {
 	l := &lexer{
 		input:   input,
@@ -54,133 +49,6 @@ func newVersionLexerSpans(input string, version int, spans *[]sourceSpan) (*lexe
 	}
 
 	return l, nil
-}
-
-// SplitUnion returns the outer union operands, using XPath's lexical rules.
-// Parentheses enclosing an entire union are stripped, as required by XSLT's
-// default-priority rules. Other expressions retain their original source.
-func SplitUnion(input string, version int) ([]string, error) {
-	return splitUnion(input, version, false)
-}
-
-// SplitPatternUnion retains the narrower XSLT 1.0/2.0 pattern grammar:
-// only a top-level pipe separates alternatives, and grouping parentheses
-// and explicit non-pattern axes remain forbidden outside predicates.
-func SplitPatternUnion(input string, version int) ([]string, error) {
-	return splitUnion(input, version, version == 10 || version == 20)
-}
-
-func splitUnion(input string, version int, legacyPattern bool) ([]string, error) {
-	if !legacyPattern && !strings.Contains(input, "|") && !strings.Contains(input, "union") {
-		return []string{input}, nil
-	}
-
-	var spans []sourceSpan
-
-	l, err := newVersionLexerSpans(input, version, &spans)
-	if err != nil {
-		return nil, err
-	}
-
-	lo, hi := 0, len(l.tokens)
-	if legacyPattern {
-		if err := validateLegacyPatternTokens(l.tokens); err != nil {
-			return nil, err
-		}
-	} else {
-		lo, hi = unionTokenBounds(l.tokens)
-	}
-
-	if lo == hi {
-		return []string{input}, nil
-	}
-
-	var parts []string
-
-	depth, start := 0, spans[lo].start
-	for i := lo; i < hi; i++ {
-		switch l.tokens[i].Type {
-		case TokenLParen, TokenLBracket, TokenLBrace:
-			depth++
-		case TokenRParen, TokenRBracket, TokenRBrace:
-			depth--
-		case TokenPipe, TokenUnion:
-			if depth == 0 && (!legacyPattern || l.tokens[i].Type == TokenPipe) {
-				if parts == nil {
-					parts = make([]string, 0, 2)
-				}
-
-				parts = append(parts, input[start:spans[i].start])
-				start = spans[i].end
-			}
-		}
-	}
-
-	if len(parts) == 0 {
-		return []string{input}, nil
-	}
-
-	return append(parts, input[start:spans[hi-1].end]), nil
-}
-
-func validateLegacyPatternTokens(tokens []Token) error {
-	brackets := 0
-
-	for i, token := range tokens {
-		switch token.Type {
-		case TokenLBracket:
-			brackets++
-		case TokenRBracket:
-			brackets--
-		case TokenLParen:
-			if brackets == 0 && (i == 0 || tokens[i-1].Type != TokenName) {
-				return fmt.Errorf("grouping parentheses require XSLT 3.0 patterns")
-			}
-		case TokenColonColon:
-			if brackets == 0 && (i == 0 || tokens[i-1].Value != "child" && tokens[i-1].Value != "attribute") {
-				return fmt.Errorf("axis is unavailable in XSLT 1.0/2.0 patterns")
-			}
-		}
-	}
-
-	return nil
-}
-
-func unionTokenBounds(tokens []Token) (int, int) {
-	lo, hi := 0, len(tokens)
-	if hi == 0 || tokens[0].Type != TokenLParen {
-		return lo, hi
-	}
-	// Build pairs once: repeatedly scanning nested parentheses is quadratic.
-	closing := make([]int, hi)
-
-	var opening []int
-	for i, token := range tokens {
-		if token.Type == TokenLParen {
-			opening = append(opening, i)
-		} else if token.Type == TokenRParen && len(opening) > 0 {
-			last := len(opening) - 1
-			closing[opening[last]] = i + 1
-			opening = opening[:last]
-		}
-	}
-
-	for lo < hi && tokens[lo].Type == TokenLParen && closing[lo] == hi {
-		lo++
-		hi--
-	}
-
-	return lo, hi
-}
-
-func estimateTokenCapacity(input string) int {
-	if len(input) < 8 {
-		return 8
-	}
-
-	// Comments and whitespace can dominate the source without producing tokens.
-	// Grow for actual tokens rather than reserving a source-sized token array.
-	return min(len(input)/2+1, 256)
 }
 
 // Next returns the next token and advances the cursor.
@@ -304,37 +172,6 @@ func (l *lexer) scanToken() error {
 	}
 
 	return nil
-}
-
-func singleRuneToken(r rune) (TokenType, bool) {
-	switch r {
-	case ')':
-		return TokenRParen, true
-	case '[':
-		return TokenLBracket, true
-	case ']':
-		return TokenRBracket, true
-	case '{':
-		return TokenLBrace, true
-	case '}':
-		return TokenRBrace, true
-	case '@':
-		return TokenAt, true
-	case ',':
-		return TokenComma, true
-	case '+':
-		return TokenPlus, true
-	case '#':
-		return TokenHash, true
-	case '?':
-		return TokenQMark, true
-	case '-':
-		return TokenMinus, true
-	case '*':
-		return TokenStar, true
-	default:
-		return TokenEOF, false
-	}
 }
 
 func (l *lexer) scanParenthesisOrComment() error {
@@ -681,6 +518,226 @@ func (l *lexer) scanURIQualifiedName(wildcard bool) (string, error) {
 	return "Q{" + uri + "}" + local, nil
 }
 
+// isNameTestContext returns true if the previous token indicates that the
+// next name should be treated as a name test, and never a keyword.
+// This occurs after '/', '//', '@', and '::'.
+func (l *lexer) isNameTestContext() bool {
+	if len(l.tokens) == 0 {
+		return false
+	}
+
+	prev := l.tokens[len(l.tokens)-1]
+
+	return prev.Type == TokenSlash || prev.Type == TokenSlashSlash ||
+		prev.Type == TokenAt || prev.Type == TokenColonColon
+}
+
+// isOperatorContext returns true if an operator keyword is expected at
+// this point. Per the XPath spec disambiguation rules, an operator is
+// expected when the preceding token is a value-producing token.
+func (l *lexer) isOperatorContext() bool {
+	if len(l.tokens) == 0 {
+		return false
+	}
+
+	prev := l.tokens[len(l.tokens)-1]
+	switch prev.Type {
+	// Value-producing tokens: an operator is expected after these.
+	// Note: TokenQMark is NOT here — after '?' we expect a lookup key (NCName),
+	// so keywords like 'or', 'and' must be treated as names, not operators.
+	case TokenName, TokenNumber, TokenString, TokenRParen, TokenRBracket,
+		TokenDot, TokenDotDot, TokenStar, TokenVariableRef, TokenRBrace:
+		return true
+	case TokenQMark:
+		// '?' is value-producing when it follows a type name (occurrence indicator
+		// in "cast as xs:double ?", "instance of xs:integer ?"), but NOT when it
+		// starts a unary lookup expression ("?key"). Check second-to-last token:
+		// if it's a name, this '?' is an occurrence indicator.
+		if len(l.tokens) >= 2 {
+			prev2 := l.tokens[len(l.tokens)-2]
+			if prev2.Type == TokenName {
+				return true
+			}
+		}
+
+		return false
+	// Multi-token keyword pairs: "instance of", "cast as", "castable as",
+	// "treat as" — the secondary keyword follows the primary keyword.
+	case TokenInstanceOf, TokenCastAs, TokenCastableAs, TokenTreatAs:
+		return true
+	// "for $x in", "let $x := ... return", "where ... order by",
+	// "some/every $x in ... satisfies", "if (...) then ... else"
+	// — these keywords precede other keywords in their clauses.
+	case TokenFor, TokenLet, TokenSome, TokenEvery:
+		return true
+	}
+
+	return false
+}
+
+type sourceSpan struct {
+	start int
+	end   int
+}
+
+// SplitUnion returns the outer union operands, using XPath's lexical rules.
+// Parentheses enclosing an entire union are stripped, as required by XSLT's
+// default-priority rules. Other expressions retain their original source.
+func SplitUnion(input string, version int) ([]string, error) {
+	return splitUnion(input, version, false)
+}
+
+// SplitPatternUnion retains the narrower XSLT 1.0/2.0 pattern grammar:
+// only a top-level pipe separates alternatives, and grouping parentheses
+// and explicit non-pattern axes remain forbidden outside predicates.
+func SplitPatternUnion(input string, version int) ([]string, error) {
+	return splitUnion(input, version, version == 10 || version == 20)
+}
+
+func splitUnion(input string, version int, legacyPattern bool) ([]string, error) {
+	if !legacyPattern && !strings.Contains(input, "|") && !strings.Contains(input, "union") {
+		return []string{input}, nil
+	}
+
+	var spans []sourceSpan
+
+	l, err := newVersionLexerSpans(input, version, &spans)
+	if err != nil {
+		return nil, err
+	}
+
+	lo, hi := 0, len(l.tokens)
+	if legacyPattern {
+		if err := validateLegacyPatternTokens(l.tokens); err != nil {
+			return nil, err
+		}
+	} else {
+		lo, hi = unionTokenBounds(l.tokens)
+	}
+
+	if lo == hi {
+		return []string{input}, nil
+	}
+
+	var parts []string
+
+	depth, start := 0, spans[lo].start
+	for i := lo; i < hi; i++ {
+		switch l.tokens[i].Type {
+		case TokenLParen, TokenLBracket, TokenLBrace:
+			depth++
+		case TokenRParen, TokenRBracket, TokenRBrace:
+			depth--
+		case TokenPipe, TokenUnion:
+			if depth == 0 && (!legacyPattern || l.tokens[i].Type == TokenPipe) {
+				if parts == nil {
+					parts = make([]string, 0, 2)
+				}
+
+				parts = append(parts, input[start:spans[i].start])
+				start = spans[i].end
+			}
+		}
+	}
+
+	if len(parts) == 0 {
+		return []string{input}, nil
+	}
+
+	return append(parts, input[start:spans[hi-1].end]), nil
+}
+
+func validateLegacyPatternTokens(tokens []Token) error {
+	brackets := 0
+
+	for i, token := range tokens {
+		switch token.Type {
+		case TokenLBracket:
+			brackets++
+		case TokenRBracket:
+			brackets--
+		case TokenLParen:
+			if brackets == 0 && (i == 0 || tokens[i-1].Type != TokenName) {
+				return fmt.Errorf("grouping parentheses require XSLT 3.0 patterns")
+			}
+		case TokenColonColon:
+			if brackets == 0 && (i == 0 || tokens[i-1].Value != "child" && tokens[i-1].Value != "attribute") {
+				return fmt.Errorf("axis is unavailable in XSLT 1.0/2.0 patterns")
+			}
+		}
+	}
+
+	return nil
+}
+
+func unionTokenBounds(tokens []Token) (int, int) {
+	lo, hi := 0, len(tokens)
+	if hi == 0 || tokens[0].Type != TokenLParen {
+		return lo, hi
+	}
+	// Build pairs once: repeatedly scanning nested parentheses is quadratic.
+	closing := make([]int, hi)
+
+	var opening []int
+	for i, token := range tokens {
+		if token.Type == TokenLParen {
+			opening = append(opening, i)
+		} else if token.Type == TokenRParen && len(opening) > 0 {
+			last := len(opening) - 1
+			closing[opening[last]] = i + 1
+			opening = opening[:last]
+		}
+	}
+
+	for lo < hi && tokens[lo].Type == TokenLParen && closing[lo] == hi {
+		lo++
+		hi--
+	}
+
+	return lo, hi
+}
+
+func estimateTokenCapacity(input string) int {
+	if len(input) < 8 {
+		return 8
+	}
+
+	// Comments and whitespace can dominate the source without producing tokens.
+	// Grow for actual tokens rather than reserving a source-sized token array.
+	return min(len(input)/2+1, 256)
+}
+
+func singleRuneToken(r rune) (TokenType, bool) {
+	switch r {
+	case ')':
+		return TokenRParen, true
+	case '[':
+		return TokenLBracket, true
+	case ']':
+		return TokenRBracket, true
+	case '{':
+		return TokenLBrace, true
+	case '}':
+		return TokenRBrace, true
+	case '@':
+		return TokenAt, true
+	case ',':
+		return TokenComma, true
+	case '+':
+		return TokenPlus, true
+	case '#':
+		return TokenHash, true
+	case '?':
+		return TokenQMark, true
+	case '-':
+		return TokenMinus, true
+	case '*':
+		return TokenStar, true
+	default:
+		return TokenEOF, false
+	}
+}
+
 // lookupOperatorKeyword recognizes keywords only after a value-producing token.
 // The groups follow XPath comparison, type, clause and arithmetic/set operators.
 func lookupOperatorKeyword(name string) (TokenType, bool) {
@@ -815,61 +872,4 @@ func lookupAlwaysKeyword(key string) (TokenType, bool) {
 	default:
 		return TokenEOF, false
 	}
-}
-
-// isNameTestContext returns true if the previous token indicates that the
-// next name should be treated as a name test, and never a keyword.
-// This occurs after '/', '//', '@', and '::'.
-func (l *lexer) isNameTestContext() bool {
-	if len(l.tokens) == 0 {
-		return false
-	}
-
-	prev := l.tokens[len(l.tokens)-1]
-
-	return prev.Type == TokenSlash || prev.Type == TokenSlashSlash ||
-		prev.Type == TokenAt || prev.Type == TokenColonColon
-}
-
-// isOperatorContext returns true if an operator keyword is expected at
-// this point. Per the XPath spec disambiguation rules, an operator is
-// expected when the preceding token is a value-producing token.
-func (l *lexer) isOperatorContext() bool {
-	if len(l.tokens) == 0 {
-		return false
-	}
-
-	prev := l.tokens[len(l.tokens)-1]
-	switch prev.Type {
-	// Value-producing tokens: an operator is expected after these.
-	// Note: TokenQMark is NOT here — after '?' we expect a lookup key (NCName),
-	// so keywords like 'or', 'and' must be treated as names, not operators.
-	case TokenName, TokenNumber, TokenString, TokenRParen, TokenRBracket,
-		TokenDot, TokenDotDot, TokenStar, TokenVariableRef, TokenRBrace:
-		return true
-	case TokenQMark:
-		// '?' is value-producing when it follows a type name (occurrence indicator
-		// in "cast as xs:double ?", "instance of xs:integer ?"), but NOT when it
-		// starts a unary lookup expression ("?key"). Check second-to-last token:
-		// if it's a name, this '?' is an occurrence indicator.
-		if len(l.tokens) >= 2 {
-			prev2 := l.tokens[len(l.tokens)-2]
-			if prev2.Type == TokenName {
-				return true
-			}
-		}
-
-		return false
-	// Multi-token keyword pairs: "instance of", "cast as", "castable as",
-	// "treat as" — the secondary keyword follows the primary keyword.
-	case TokenInstanceOf, TokenCastAs, TokenCastableAs, TokenTreatAs:
-		return true
-	// "for $x in", "let $x := ... return", "where ... order by",
-	// "some/every $x in ... satisfies", "if (...) then ... else"
-	// — these keywords precede other keywords in their clauses.
-	case TokenFor, TokenLet, TokenSome, TokenEvery:
-		return true
-	}
-
-	return false
 }

@@ -219,35 +219,6 @@ func (e *Engine) Export(ctx context.Context, d *Document) (*document.Document, e
 	return d.native.Snapshot(), nil
 }
 
-// Node values can cross engine boundaries, so the consuming policy must be
-// checked even when the producing engine already parsed the snapshot. Cache
-// one successful policy on frozen snapshots to keep repeated evaluations cheap.
-// Different consuming engines must not grow a per-document policy cache.
-func checkInputDocument(ctx context.Context, native *xdm.Document, limits Limits) error {
-	native.Freeze()
-
-	policy := document.DefaultLimits()
-	policy.MaxBytes = limits.MaxInputBytes
-	policy.MaxNodes = limits.MaxNodes
-	policy.MaxDepth = limits.MaxDepth
-	snapshot := native.Snapshot()
-
-	key := inputLimitsKey{}
-	if value, ok := tree.LoadView(snapshot, key); ok {
-		if checked, ok := value.(document.Limits); ok && policy.MaxBytes >= checked.MaxBytes && policy.MaxNodes >= checked.MaxNodes && policy.MaxDepth >= checked.MaxDepth {
-			return ctx.Err()
-		}
-	}
-
-	if err := tree.CheckSnapshotLimits(ctx, snapshot, policy); err != nil {
-		return err
-	}
-
-	tree.StoreView(snapshot, key, policy)
-
-	return ctx.Err()
-}
-
 // ImportNode returns an XPath value for an original immutable document handle.
 // Attributes and namespaces retain their owner-bound identities.
 func (e *Engine) ImportNode(ctx context.Context, n document.Node) (Value, error) {
@@ -282,4 +253,33 @@ func (e *Engine) parse(ctx context.Context, xml []byte, baseURI string) (*Docume
 	}
 
 	return &Document{native: d}, nil
+}
+
+// Node values can cross engine boundaries, so the consuming policy must be
+// checked even when the producing engine already parsed the snapshot. Cache
+// one successful policy on frozen snapshots to keep repeated evaluations cheap.
+// Different consuming engines must not grow a per-document policy cache.
+func checkInputDocument(ctx context.Context, native *xdm.Document, limits Limits) error {
+	native.Freeze()
+
+	policy := document.DefaultLimits()
+	policy.MaxBytes = limits.MaxInputBytes
+	policy.MaxNodes = limits.MaxNodes
+	policy.MaxDepth = limits.MaxDepth
+	snapshot := native.Snapshot()
+
+	key := inputLimitsKey{}
+	if value, ok := tree.LoadView(snapshot, key); ok {
+		if checked, ok := value.(document.Limits); ok && policy.MaxBytes >= checked.MaxBytes && policy.MaxNodes >= checked.MaxNodes && policy.MaxDepth >= checked.MaxDepth {
+			return ctx.Err()
+		}
+	}
+
+	if err := tree.CheckSnapshotLimits(ctx, snapshot, policy); err != nil {
+		return err
+	}
+
+	tree.StoreView(snapshot, key, policy)
+
+	return ctx.Err()
 }

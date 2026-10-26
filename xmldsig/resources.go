@@ -115,28 +115,6 @@ func newResourceSession(opt *ExternalReferences) (*resourceSession, error) {
 	return s, nil
 }
 
-func resourceBaseURI(value string) (*url.URL, error) {
-	base, err := uriref.Base(value)
-	if err != nil {
-		return nil, fmt.Errorf("%w: BaseURI: %w", ErrPolicy, err)
-	}
-
-	return base, nil
-}
-
-// Program fingerprints exclude runtime expression handles. Even identical
-// approved programs can make different execution decisions for two References;
-// their results cannot be shared across references or signing/self-check passes.
-func cacheableExternalTransforms(transforms []reference.Transform) bool {
-	for _, tr := range transforms {
-		if reference.IsExtension(tr.Algorithm) {
-			return false
-		}
-	}
-
-	return true
-}
-
 func (s *resourceSession) permits(uri string) error {
 	if s != nil {
 		if _, allowed := s.allowed[uri]; allowed {
@@ -243,6 +221,28 @@ func (s *resourceSession) process(ctx context.Context, b *coreBudget, ref coreRe
 	}
 
 	return result, nil
+}
+
+func resourceBaseURI(value string) (*url.URL, error) {
+	base, err := uriref.Base(value)
+	if err != nil {
+		return nil, fmt.Errorf("%w: BaseURI: %w", ErrPolicy, err)
+	}
+
+	return base, nil
+}
+
+// Program fingerprints exclude runtime expression handles. Even identical
+// approved programs can make different execution decisions for two References;
+// their results cannot be shared across references or signing/self-check passes.
+func cacheableExternalTransforms(transforms []reference.Transform) bool {
+	for _, tr := range transforms {
+		if reference.IsExtension(tr.Algorithm) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // Keep only a fixed-size cache key, without Base64/JSON copies of stylesheets.

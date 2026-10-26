@@ -37,6 +37,69 @@ func NumericSize(value xdm.AtomicValue) (int, bool) {
 	return 0, false
 }
 
+// ChargeNumber counts an evaluated numeric occurrence or an arithmetic
+// temporary against the same cumulative bytes as strings and constructed trees.
+func ChargeNumber(ctx context.Context, value xdm.AtomicValue) error {
+	n, numeric := NumericSize(value)
+	if !numeric {
+		return ctx.Err()
+	}
+
+	if err := Charge(ctx, max(1, n/8)); err != nil {
+		return err
+	}
+
+	return ChargeString(ctx, n)
+}
+
+// CastAtomicContext applies invocation limits before exact numeric conversion.
+// CastAtomic remains available for public value constructors outside an engine.
+func CastAtomicContext(ctx context.Context, value xdm.AtomicValue, target string) (xdm.AtomicValue, error) {
+	if err := ctx.Err(); err != nil {
+		return xdm.AtomicValue{}, err
+	}
+
+	if target == xdm.TypeDecimal || xdm.IsIntegerDerived(target) {
+		source := normalizeCastSource(value)
+
+		var err error
+
+		switch {
+		case source.TypeName == xdm.TypeUntypedAtomic || xdm.IsStringDerived(source.TypeName):
+			err = preflightNumericLexical(ctx, source.StringVal(), target)
+		case source.TypeName == xdm.TypeFloat || source.TypeName == xdm.TypeDouble:
+			f := source.ToFloat64()
+			if !math.IsNaN(f) && !math.IsInf(f, 0) {
+				_, exponent := math.Frexp(f)
+				if target == xdm.TypeDecimal {
+					err = preflightNumeric(ctx, max(0, exponent)+53, max(1, 54-exponent))
+				} else {
+					err = preflightNumeric(ctx, max(0, exponent))
+				}
+			}
+		default:
+			if n, numeric := NumericSize(source); numeric {
+				err = preflightNumeric(ctx, n*8)
+			}
+		}
+
+		if err != nil {
+			return xdm.AtomicValue{}, err
+		}
+	}
+
+	if err := validateVersionedCast(ctx, value, target); err != nil {
+		return xdm.AtomicValue{}, err
+	}
+
+	result, err := CastAtomic(value, target)
+	if err == nil {
+		err = ChargeNumber(ctx, result)
+	}
+
+	return result, err
+}
+
 func int64Bits(n int64) int {
 	u := uint64(n)
 	if n < 0 {
@@ -54,21 +117,6 @@ func boolInt(b bool) int {
 	}
 
 	return 0
-}
-
-// ChargeNumber counts an evaluated numeric occurrence or an arithmetic
-// temporary against the same cumulative bytes as strings and constructed trees.
-func ChargeNumber(ctx context.Context, value xdm.AtomicValue) error {
-	n, numeric := NumericSize(value)
-	if !numeric {
-		return ctx.Err()
-	}
-
-	if err := Charge(ctx, max(1, n/8)); err != nil {
-		return err
-	}
-
-	return ChargeString(ctx, n)
 }
 
 // preflightNumeric bounds component sizes and a conservative quadratic work
@@ -210,52 +258,4 @@ func preflightNumericLexical(ctx context.Context, source, target string) error {
 	}
 
 	return preflightNumeric(ctx, numerator)
-}
-
-// CastAtomicContext applies invocation limits before exact numeric conversion.
-// CastAtomic remains available for public value constructors outside an engine.
-func CastAtomicContext(ctx context.Context, value xdm.AtomicValue, target string) (xdm.AtomicValue, error) {
-	if err := ctx.Err(); err != nil {
-		return xdm.AtomicValue{}, err
-	}
-
-	if target == xdm.TypeDecimal || xdm.IsIntegerDerived(target) {
-		source := normalizeCastSource(value)
-
-		var err error
-
-		switch {
-		case source.TypeName == xdm.TypeUntypedAtomic || xdm.IsStringDerived(source.TypeName):
-			err = preflightNumericLexical(ctx, source.StringVal(), target)
-		case source.TypeName == xdm.TypeFloat || source.TypeName == xdm.TypeDouble:
-			f := source.ToFloat64()
-			if !math.IsNaN(f) && !math.IsInf(f, 0) {
-				_, exponent := math.Frexp(f)
-				if target == xdm.TypeDecimal {
-					err = preflightNumeric(ctx, max(0, exponent)+53, max(1, 54-exponent))
-				} else {
-					err = preflightNumeric(ctx, max(0, exponent))
-				}
-			}
-		default:
-			if n, numeric := NumericSize(source); numeric {
-				err = preflightNumeric(ctx, n*8)
-			}
-		}
-
-		if err != nil {
-			return xdm.AtomicValue{}, err
-		}
-	}
-
-	if err := validateVersionedCast(ctx, value, target); err != nil {
-		return xdm.AtomicValue{}, err
-	}
-
-	result, err := CastAtomic(value, target)
-	if err == nil {
-		err = ChargeNumber(ctx, result)
-	}
-
-	return result, err
 }

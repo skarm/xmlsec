@@ -17,20 +17,6 @@ import (
 	"github.com/skarm/xmlsec/transform"
 )
 
-// publishedProofVector records the fixture's literal reference value, rather
-// than the implementation's observed output, for the executable proof ledger.
-func publishedProofVector(t *testing.T, want string) {
-	t.Helper()
-	if os.Getenv("XMLSEC_PROOF_CAPTURE") != "1" {
-		return
-	}
-	raw, err := json.Marshal(want)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log("P3_VECTOR " + string(raw))
-}
-
 const (
 	calendarDateExpression       = "xs:date('2026-01-01')"
 	calendarTimeExpression       = "xs:time('12:00:00')"
@@ -69,6 +55,30 @@ const (
 	errCodeXPST0017      = "XPST0017"
 	nameMatchesAbcAbC    = "matches('abc','(?:ab)c')"
 )
+
+const xpathLexicalXML = `<r xmlns:p="urn:test">2<p:local/><p:function/><p:map/><other/></r>`
+
+const untypedNodeTypeXML = `<r xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true" a="1"><c/></r>`
+
+const processingInstructionTypeXML = "<r><?p first?><?if keyword?><?é unicode?></r>"
+
+const namespaceNodeTypeXML = `<p:r xmlns:p="urn:node" a="1" p:a="2"/>`
+
+const basicAccessorXML = `<r xmlns="urn:default" xmlns:p="urn:p"><n xml:id="a"/><n xml:id="b"/><n/></r>`
+
+// publishedProofVector records the fixture's literal reference value, rather
+// than the implementation's observed output, for the executable proof ledger.
+func publishedProofVector(t *testing.T, want string) {
+	t.Helper()
+	if os.Getenv("XMLSEC_PROOF_CAPTURE") != "1" {
+		return
+	}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log("P3_VECTOR " + string(raw))
+}
 
 func TestXPathCalendarOverflowCodes(t *testing.T) {
 	e := engine(t, transform.Config{})
@@ -640,8 +650,6 @@ func TestXPathSyntaxErrorCodes(t *testing.T) {
 		}
 	}
 }
-
-const xpathLexicalXML = `<r xmlns:p="urn:test">2<p:local/><p:function/><p:map/><other/></r>`
 
 func xpathLexicalCases(version transform.XPathVersion) map[string]string {
 	cases := map[string]string{
@@ -3358,8 +3366,6 @@ func TestXPathExactFloatCasts(t *testing.T) {
 	}
 }
 
-const untypedNodeTypeXML = `<r xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true" a="1"><c/></r>`
-
 func untypedNodeTypeCases() map[string]string {
 	return map[string]string{
 		`/* instance of element()`:                           nameTrue,
@@ -3402,10 +3408,6 @@ func TestXPathUntypedNodeTypeMatching(t *testing.T) {
 		}
 	}
 }
-
-const processingInstructionTypeXML = "<r><?p first?><?if keyword?><?é unicode?></r>"
-
-const namespaceNodeTypeXML = `<p:r xmlns:p="urn:node" a="1" p:a="2"/>`
 
 func namespaceNodeTypeCases() map[string]string {
 	return map[string]string{
@@ -3732,8 +3734,6 @@ func TestXPathMathFunctionContracts(t *testing.T) {
 		}
 	}
 }
-
-const basicAccessorXML = `<r xmlns="urn:default" xmlns:p="urn:p"><n xml:id="a"/><n xml:id="b"/><n/></r>`
 
 func basicNodeAccessorCases() map[string]string {
 	return map[string]string{

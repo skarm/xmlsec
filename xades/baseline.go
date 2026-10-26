@@ -20,6 +20,8 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const countersignedSignatureType = "http://uri.etsi.org/01903#CountersignedSignature"
+
 type baselineLayout struct {
 	qualifying document.Element
 	signed     document.Element
@@ -429,8 +431,6 @@ func cloneDERValues(values [][]byte) [][]byte {
 
 	return out
 }
-
-const countersignedSignatureType = "http://uri.etsi.org/01903#CountersignedSignature"
 
 func baselineReferenceID(signatureID string, index int) string {
 	return signatureID + "-data-reference-" + strconv.Itoa(index+1)

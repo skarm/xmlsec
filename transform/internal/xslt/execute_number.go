@@ -91,6 +91,450 @@ func (ec *execContext) execNumber(ctx context.Context, inst *numberInst) error {
 	return ec.addNode(ec.resultDoc.CreateText(formatted))
 }
 
+func (ec *execContext) resolveNumberNode(ctx context.Context, inst *numberInst) (xdm.Node, error) {
+	node := ec.contextNode
+	if inst.Select != nil && inst.Value == nil {
+		result, err := ec.evalXPath(ctx, inst.Select, node)
+		if err != nil {
+			return nil, err
+		}
+
+		seq := result.Sequence()
+		if xdm.SequenceLen(seq) == 0 {
+			return nil, dynamicError(errCodeXTTE1000,
+				"xsl:number select expression returned empty sequence")
+		}
+
+		if xdm.SequenceLen(seq) > 1 {
+			return nil, dynamicError(errCodeXTTE1000,
+				"xsl:number select expression returned more than one item")
+		}
+
+		selected, ok := seq.Get(0).(xdm.NodeItem)
+		if !ok {
+			return nil, dynamicError(errCodeXTTE1000,
+				"xsl:number select expression did not return a node")
+		}
+
+		node = selected.Node
+	}
+
+	// Select is evaluated first so numbering works inside an xsl:function.
+	if inst.Value == nil && node == nil {
+		return nil, dynamicError(errCodeXTTE0990,
+			"xsl:number requires a node context when value is not specified")
+	}
+
+	return node, nil
+}
+
+func (ec *execContext) evaluateNumberValues(ctx context.Context, inst *numberInst, node xdm.Node) ([]*big.Int, bool, error) {
+	result, err := ec.evalXPath(ctx, inst.Value, node)
+	if err != nil {
+		return nil, false, err
+	}
+
+	seq := result.Sequence()
+	if ec.isCompatExpr(inst.Value) {
+		number, err := compatNumberValue(seq)
+		if err != nil {
+			return nil, false, err
+		}
+
+		if number == nil {
+			return nil, true, nil
+		}
+
+		return []*big.Int{number}, false, nil
+	}
+
+	atoms, err := xpath.AtomizeSequence(seq)
+	if err != nil {
+		return nil, false, err
+	}
+
+	numbers := make([]*big.Int, 0, len(atoms))
+	for _, atom := range atoms {
+		number, err := atomicToBigInt(atom)
+		if err != nil {
+			return nil, false, err
+		}
+
+		numbers = append(numbers, number)
+	}
+
+	return numbers, false, nil
+}
+
+func (ec *execContext) numberNodeValues(ctx context.Context, inst *numberInst, node xdm.Node) []int {
+	switch inst.Level {
+	case "multiple":
+		return ec.numberMultiple(ctx, inst, node)
+	case "any":
+		return ec.numberAny(ctx, inst, node)
+	default:
+		return ec.numberSingle(ctx, inst, node)
+	}
+}
+
+func (ec *execContext) evaluateNumberFormatOptions(ctx context.Context, inst *numberInst) (numberFormatOptions, error) {
+	options := numberFormatOptions{}
+
+	var err error
+
+	options.picture, err = ec.evaluateNumberAVT(ctx, inst.Format, "1")
+	if err != nil {
+		return numberFormatOptions{}, err
+	}
+
+	if inst.GroupingSeparator != nil && inst.GroupingSize != nil {
+		options.groupingSeparator, err = ec.evaluateNumberAVT(ctx, inst.GroupingSeparator, "")
+		if err != nil {
+			return numberFormatOptions{}, err
+		}
+
+		groupSize, err := ec.evaluateNumberAVT(ctx, inst.GroupingSize, "")
+		if err != nil {
+			return numberFormatOptions{}, err
+		}
+
+		groupSize = strings.Trim(groupSize, " \t\r\n")
+		if !validNumberOption(nameGroupingSize, groupSize) {
+			return numberFormatOptions{}, dynamicError(errCodeXTDE0030, "invalid xsl:number grouping-size %q", groupSize)
+		}
+
+		// A size beyond the native integer range is larger than any bounded
+		// output supported here and therefore cannot insert a separator.
+		if decimalIntegerLexical(groupSize, true) {
+			if size, err := strconv.Atoi(groupSize); err == nil && size > 0 {
+				options.groupingSize = size
+			}
+		}
+	}
+
+	options.lang, err = ec.evaluateNumberAVT(ctx, inst.Lang, "")
+	if err != nil {
+		return numberFormatOptions{}, err
+	}
+
+	options.lang = strings.Trim(options.lang, " \t\r\n")
+	if !validNumberOption(lexicon.AttrLang, options.lang) {
+		return numberFormatOptions{}, dynamicError(errCodeXTDE0030,
+			"xsl:number lang attribute is not a valid language code: %q", options.lang)
+	}
+
+	if inst.LetterValue != nil {
+		letterValue, err := ec.evaluateNumberAVT(ctx, inst.LetterValue, "")
+		if err != nil {
+			return numberFormatOptions{}, err
+		}
+
+		if !validNumberOption(nameLetterValue, letterValue) {
+			return numberFormatOptions{}, dynamicError(errCodeXTDE0030, "invalid xsl:number letter-value %q", letterValue)
+		}
+	}
+
+	options.ordinal, err = ec.evaluateNumberAVT(ctx, inst.Ordinal, "")
+	if err != nil {
+		return numberFormatOptions{}, err
+	}
+
+	if ec.stylesheet.processorLanguage() >= 30 {
+		switch strings.Trim(options.ordinal, " \t\r\n") {
+		case lexicon.ValueNo, lexicon.ValueFalse, "0":
+			options.ordinal = ""
+		}
+	}
+
+	return options, nil
+}
+
+func (ec *execContext) evaluateNumberAVT(ctx context.Context, value *avt, fallback string) (string, error) {
+	if value == nil {
+		return fallback, nil
+	}
+
+	return value.evaluate(ctx, ec.contextNode)
+}
+
+// numberNodeMatches tests if a node matches the count pattern.
+// If no count pattern, matches nodes with the same type and name as the context node.
+func (ec *execContext) numberNodeMatches(ctx context.Context, inst *numberInst, target xdm.Node, contextNode xdm.Node) bool {
+	if inst.Count != nil {
+		// Special case: count="." matches any non-document node
+		if inst.Count.source == "." && target.Type() != xdm.DocumentNode {
+			return true
+		}
+		// Per XSLT 3.0 section 13.4.1, current() within a count pattern
+		// refers to the node being tested against the pattern (the candidate),
+		// so that predicates like [@bar = current()/@bar] evaluate relative
+		// to each candidate node during the numbering walk.
+		savedCurrent := ec.currentNode
+		ec.currentNode = target
+		result := inst.Count.matchPattern(ctx, ec, target)
+		ec.currentNode = savedCurrent
+
+		return result
+	}
+	// Default: same node type and expanded name
+	if contextNode == nil {
+		return false
+	}
+
+	if target.Type() != contextNode.Type() {
+		return false
+	}
+
+	if target.Type() == xdm.ElementNode {
+		te, _ := xdm.AsNode[*xdm.Element](target)
+		ce, _ := xdm.AsNode[*xdm.Element](contextNode)
+
+		return te.LocalName() == ce.LocalName() && te.URI() == ce.URI()
+	}
+
+	return target.Name() == contextNode.Name()
+}
+
+// numberFromMatches tests if a node matches the from pattern.
+func (ec *execContext) numberFromMatches(ctx context.Context, inst *numberInst, node xdm.Node) bool {
+	if inst.From == nil {
+		return false
+	}
+	// Same current() semantics as numberNodeMatches: current() refers to
+	// the candidate node being tested, not the xsl:number context node.
+	savedCurrent := ec.currentNode
+	ec.currentNode = node
+	result := inst.From.matchPattern(ctx, ec, node)
+	ec.currentNode = savedCurrent
+
+	return result
+}
+
+// numberSingle implements level="single": find the first ancestor-or-self that
+// matches the count pattern, then count preceding siblings that match. The
+// result is empty when no ancestor-or-self matches count, or when that node
+// lies outside the from subtree (see numberWithinFrom).
+func (ec *execContext) numberSingle(ctx context.Context, inst *numberInst, node xdm.Node) []int {
+	target := ec.numberFindAncestorOrSelf(ctx, inst, node)
+	if target == nil {
+		return nil
+	}
+
+	if inst.From != nil && !ec.numberWithinFrom(ctx, inst, node, target) {
+		return nil
+	}
+
+	// Count preceding siblings that match count pattern, stopping at the
+	// sibling the previous evaluation counted.
+	memoNode, memoCount := ec.numberMemoFor(inst, node)
+	count := 1
+
+	for sib := numberPrevSibling(target); sib != nil; sib = numberPrevSibling(sib) {
+		if sib == memoNode {
+			count += memoCount
+			break
+		}
+
+		if ec.numberNodeMatches(ctx, inst, sib, node) {
+			count++
+		}
+	}
+
+	ec.storeNumberMemo(inst, node, target, count)
+
+	return []int{count}
+}
+
+// numberWithinFrom reports whether target, an ancestor-or-self of node, lies
+// in the subtree rooted at the innermost ancestor-or-self of node that matches
+// the from pattern (XSLT 3.0 §12.3, level="single"). The root of a tree
+// always matches from, and target is never above the root, so target is
+// outside only when a from match lies strictly between node and target:
+// walking up from node, a from match met before target excludes it.
+func (ec *execContext) numberWithinFrom(ctx context.Context, inst *numberInst, node, target xdm.Node) bool {
+	for n := node; n != nil && n != target; n = n.Parent() {
+		if ec.numberFromMatches(ctx, inst, n) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// numberMultiple implements level="multiple": find all ancestors-or-self that match
+// count (stopping at from), and for each count preceding siblings.
+func (ec *execContext) numberMultiple(ctx context.Context, inst *numberInst, node xdm.Node) []int {
+	var ancestors []xdm.Node
+
+	for n := node; n != nil; n = n.Parent() {
+		if ec.numberFromMatches(ctx, inst, n) {
+			// Include the from node itself if it matches count
+			if ec.numberNodeMatches(ctx, inst, n, node) {
+				ancestors = append(ancestors, n)
+			}
+
+			break
+		}
+
+		if ec.numberNodeMatches(ctx, inst, n, node) {
+			ancestors = append(ancestors, n)
+		}
+
+		if n.Type() == xdm.DocumentNode {
+			break
+		}
+	}
+
+	// Reverse to get document order (outermost first)
+	for i, j := 0, len(ancestors)-1; i < j; i, j = i+1, j-1 {
+		ancestors[i], ancestors[j] = ancestors[j], ancestors[i]
+	}
+
+	nums := make([]int, len(ancestors))
+	for i, anc := range ancestors {
+		count := 1
+
+		for sib := numberPrevSibling(anc); sib != nil; sib = numberPrevSibling(sib) {
+			if ec.numberNodeMatches(ctx, inst, sib, node) {
+				count++
+			}
+		}
+
+		nums[i] = count
+	}
+
+	return nums
+}
+
+// numberAny implements level="any": count all matching nodes in document order
+// that precede (or are) the context node, going back to the nearest from match.
+// The from node itself is included in the count if it matches count.
+func (ec *execContext) numberAny(ctx context.Context, inst *numberInst, node xdm.Node) []int {
+	memoNode, memoCount := ec.numberMemoFor(inst, node)
+	count := 0
+
+	cur := node
+	for cur != nil {
+		// Reaching the node the previous evaluation started from means no
+		// from match lies between the two, so its count carries over.
+		if cur == memoNode {
+			count += memoCount
+			break
+		}
+
+		if ec.numberNodeMatches(ctx, inst, cur, node) {
+			count++
+		}
+
+		if ec.numberFromMatches(ctx, inst, cur) {
+			break
+		}
+
+		cur = ec.prevInDocOrder(cur)
+	}
+
+	ec.storeNumberMemo(inst, node, node, count)
+
+	if count == 0 {
+		return nil
+	}
+
+	return []int{count}
+}
+
+// numberMemoFor returns the node and count of inst's previous evaluation when
+// they apply to numbering selected, and a nil node otherwise.
+func (ec *execContext) numberMemoFor(inst *numberInst, selected xdm.Node) (xdm.Node, int) {
+	if !inst.memoizable {
+		return nil, 0
+	}
+
+	memo, ok := ec.numberMemos[inst]
+	if !ok {
+		return nil, 0
+	}
+
+	if inst.Count == nil {
+		kind, local, uri := numberDefaultKey(selected)
+		if memo.kind != kind || memo.local != local || memo.uri != uri {
+			return nil, 0
+		}
+	}
+
+	return memo.node, memo.count
+}
+
+// storeNumberMemo records that the walk for selected, starting at node,
+// produced count.
+func (ec *execContext) storeNumberMemo(inst *numberInst, selected, node xdm.Node, count int) {
+	if !inst.memoizable {
+		return
+	}
+
+	memo := numberMemo{node: node, count: count}
+	if inst.Count == nil {
+		memo.kind, memo.local, memo.uri = numberDefaultKey(selected)
+	}
+
+	if ec.numberMemos == nil {
+		ec.numberMemos = make(map[*numberInst]numberMemo)
+	}
+
+	ec.numberMemos[inst] = memo
+}
+
+// prevInDocOrder returns the previous node in document order, skipping
+// attribute and namespace nodes as XPath's preceding axis does: from an
+// attribute or namespace node the walk goes straight to its parent element.
+func (ec *execContext) prevInDocOrder(node xdm.Node) xdm.Node {
+	// Previous sibling's deepest last descendant
+	if prev := numberPrevSibling(node); prev != nil {
+		return ec.lastDescendant(prev)
+	}
+	// Otherwise, parent (including document node)
+	parent := node.Parent()
+	if parent == nil {
+		return nil
+	}
+
+	return parent
+}
+
+// lastDescendant returns the deepest last XDM descendant of node (or node
+// itself if it has no XDM children). An entity reference or an XInclude
+// marker among an element's children is not an XDM node, so the walk takes
+// the last child that is.
+func (ec *execContext) lastDescendant(node xdm.Node) xdm.Node {
+	for node.Type() == xdm.ElementNode {
+		last := node.LastChild()
+		for last != nil && !xdm.IsXDMChild(last) {
+			last = last.PrevSibling()
+		}
+
+		if last == nil {
+			return node
+		}
+
+		node = last
+	}
+
+	return node
+}
+
+func (ec *execContext) numberFindAncestorOrSelf(ctx context.Context, inst *numberInst, node xdm.Node) xdm.Node {
+	for n := node; n != nil; n = n.Parent() {
+		if ec.numberNodeMatches(ctx, inst, n, node) {
+			return n
+		}
+		// Stop at document node to avoid walking above the tree
+		if n.Type() == xdm.DocumentNode {
+			return nil
+		}
+	}
+
+	return nil
+}
+
 func parseStartAt(value string) ([]*big.Int, bool) {
 	parts := strings.FieldsFunc(strings.Trim(value, " \t\r\n"), func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' })
 	if len(parts) == 0 {
@@ -815,81 +1259,6 @@ func execNumberStartAt(ctx context.Context, inst *numberInst, ec *execContext, b
 	return nil
 }
 
-func (ec *execContext) resolveNumberNode(ctx context.Context, inst *numberInst) (xdm.Node, error) {
-	node := ec.contextNode
-	if inst.Select != nil && inst.Value == nil {
-		result, err := ec.evalXPath(ctx, inst.Select, node)
-		if err != nil {
-			return nil, err
-		}
-
-		seq := result.Sequence()
-		if xdm.SequenceLen(seq) == 0 {
-			return nil, dynamicError(errCodeXTTE1000,
-				"xsl:number select expression returned empty sequence")
-		}
-
-		if xdm.SequenceLen(seq) > 1 {
-			return nil, dynamicError(errCodeXTTE1000,
-				"xsl:number select expression returned more than one item")
-		}
-
-		selected, ok := seq.Get(0).(xdm.NodeItem)
-		if !ok {
-			return nil, dynamicError(errCodeXTTE1000,
-				"xsl:number select expression did not return a node")
-		}
-
-		node = selected.Node
-	}
-
-	// Select is evaluated first so numbering works inside an xsl:function.
-	if inst.Value == nil && node == nil {
-		return nil, dynamicError(errCodeXTTE0990,
-			"xsl:number requires a node context when value is not specified")
-	}
-
-	return node, nil
-}
-
-func (ec *execContext) evaluateNumberValues(ctx context.Context, inst *numberInst, node xdm.Node) ([]*big.Int, bool, error) {
-	result, err := ec.evalXPath(ctx, inst.Value, node)
-	if err != nil {
-		return nil, false, err
-	}
-
-	seq := result.Sequence()
-	if ec.isCompatExpr(inst.Value) {
-		number, err := compatNumberValue(seq)
-		if err != nil {
-			return nil, false, err
-		}
-
-		if number == nil {
-			return nil, true, nil
-		}
-
-		return []*big.Int{number}, false, nil
-	}
-
-	atoms, err := xpath.AtomizeSequence(seq)
-	if err != nil {
-		return nil, false, err
-	}
-
-	numbers := make([]*big.Int, 0, len(atoms))
-	for _, atom := range atoms {
-		number, err := atomicToBigInt(atom)
-		if err != nil {
-			return nil, false, err
-		}
-
-		numbers = append(numbers, number)
-	}
-
-	return numbers, false, nil
-}
-
 func compatNumberValue(seq xdm.Sequence) (*big.Int, error) {
 	// XSLT 1.0 uses only the first atomized item. An empty or invalid
 	// numeric value outputs NaN before evaluating any formatting AVTs.
@@ -933,375 +1302,6 @@ func atomicToBigInt(value xdm.AtomicValue) (*big.Int, error) {
 	}
 
 	return integer.BigInt(), nil
-}
-
-func (ec *execContext) numberNodeValues(ctx context.Context, inst *numberInst, node xdm.Node) []int {
-	switch inst.Level {
-	case "multiple":
-		return ec.numberMultiple(ctx, inst, node)
-	case "any":
-		return ec.numberAny(ctx, inst, node)
-	default:
-		return ec.numberSingle(ctx, inst, node)
-	}
-}
-
-func (ec *execContext) evaluateNumberFormatOptions(ctx context.Context, inst *numberInst) (numberFormatOptions, error) {
-	options := numberFormatOptions{}
-
-	var err error
-
-	options.picture, err = ec.evaluateNumberAVT(ctx, inst.Format, "1")
-	if err != nil {
-		return numberFormatOptions{}, err
-	}
-
-	if inst.GroupingSeparator != nil && inst.GroupingSize != nil {
-		options.groupingSeparator, err = ec.evaluateNumberAVT(ctx, inst.GroupingSeparator, "")
-		if err != nil {
-			return numberFormatOptions{}, err
-		}
-
-		groupSize, err := ec.evaluateNumberAVT(ctx, inst.GroupingSize, "")
-		if err != nil {
-			return numberFormatOptions{}, err
-		}
-
-		groupSize = strings.Trim(groupSize, " \t\r\n")
-		if !validNumberOption(nameGroupingSize, groupSize) {
-			return numberFormatOptions{}, dynamicError(errCodeXTDE0030, "invalid xsl:number grouping-size %q", groupSize)
-		}
-
-		// A size beyond the native integer range is larger than any bounded
-		// output supported here and therefore cannot insert a separator.
-		if decimalIntegerLexical(groupSize, true) {
-			if size, err := strconv.Atoi(groupSize); err == nil && size > 0 {
-				options.groupingSize = size
-			}
-		}
-	}
-
-	options.lang, err = ec.evaluateNumberAVT(ctx, inst.Lang, "")
-	if err != nil {
-		return numberFormatOptions{}, err
-	}
-
-	options.lang = strings.Trim(options.lang, " \t\r\n")
-	if !validNumberOption(lexicon.AttrLang, options.lang) {
-		return numberFormatOptions{}, dynamicError(errCodeXTDE0030,
-			"xsl:number lang attribute is not a valid language code: %q", options.lang)
-	}
-
-	if inst.LetterValue != nil {
-		letterValue, err := ec.evaluateNumberAVT(ctx, inst.LetterValue, "")
-		if err != nil {
-			return numberFormatOptions{}, err
-		}
-
-		if !validNumberOption(nameLetterValue, letterValue) {
-			return numberFormatOptions{}, dynamicError(errCodeXTDE0030, "invalid xsl:number letter-value %q", letterValue)
-		}
-	}
-
-	options.ordinal, err = ec.evaluateNumberAVT(ctx, inst.Ordinal, "")
-	if err != nil {
-		return numberFormatOptions{}, err
-	}
-
-	if ec.stylesheet.processorLanguage() >= 30 {
-		switch strings.Trim(options.ordinal, " \t\r\n") {
-		case lexicon.ValueNo, lexicon.ValueFalse, "0":
-			options.ordinal = ""
-		}
-	}
-
-	return options, nil
-}
-
-func (ec *execContext) evaluateNumberAVT(ctx context.Context, value *avt, fallback string) (string, error) {
-	if value == nil {
-		return fallback, nil
-	}
-
-	return value.evaluate(ctx, ec.contextNode)
-}
-
-// numberNodeMatches tests if a node matches the count pattern.
-// If no count pattern, matches nodes with the same type and name as the context node.
-func (ec *execContext) numberNodeMatches(ctx context.Context, inst *numberInst, target xdm.Node, contextNode xdm.Node) bool {
-	if inst.Count != nil {
-		// Special case: count="." matches any non-document node
-		if inst.Count.source == "." && target.Type() != xdm.DocumentNode {
-			return true
-		}
-		// Per XSLT 3.0 section 13.4.1, current() within a count pattern
-		// refers to the node being tested against the pattern (the candidate),
-		// so that predicates like [@bar = current()/@bar] evaluate relative
-		// to each candidate node during the numbering walk.
-		savedCurrent := ec.currentNode
-		ec.currentNode = target
-		result := inst.Count.matchPattern(ctx, ec, target)
-		ec.currentNode = savedCurrent
-
-		return result
-	}
-	// Default: same node type and expanded name
-	if contextNode == nil {
-		return false
-	}
-
-	if target.Type() != contextNode.Type() {
-		return false
-	}
-
-	if target.Type() == xdm.ElementNode {
-		te, _ := xdm.AsNode[*xdm.Element](target)
-		ce, _ := xdm.AsNode[*xdm.Element](contextNode)
-
-		return te.LocalName() == ce.LocalName() && te.URI() == ce.URI()
-	}
-
-	return target.Name() == contextNode.Name()
-}
-
-// numberFromMatches tests if a node matches the from pattern.
-func (ec *execContext) numberFromMatches(ctx context.Context, inst *numberInst, node xdm.Node) bool {
-	if inst.From == nil {
-		return false
-	}
-	// Same current() semantics as numberNodeMatches: current() refers to
-	// the candidate node being tested, not the xsl:number context node.
-	savedCurrent := ec.currentNode
-	ec.currentNode = node
-	result := inst.From.matchPattern(ctx, ec, node)
-	ec.currentNode = savedCurrent
-
-	return result
-}
-
-// numberSingle implements level="single": find the first ancestor-or-self that
-// matches the count pattern, then count preceding siblings that match. The
-// result is empty when no ancestor-or-self matches count, or when that node
-// lies outside the from subtree (see numberWithinFrom).
-func (ec *execContext) numberSingle(ctx context.Context, inst *numberInst, node xdm.Node) []int {
-	target := ec.numberFindAncestorOrSelf(ctx, inst, node)
-	if target == nil {
-		return nil
-	}
-
-	if inst.From != nil && !ec.numberWithinFrom(ctx, inst, node, target) {
-		return nil
-	}
-
-	// Count preceding siblings that match count pattern, stopping at the
-	// sibling the previous evaluation counted.
-	memoNode, memoCount := ec.numberMemoFor(inst, node)
-	count := 1
-
-	for sib := numberPrevSibling(target); sib != nil; sib = numberPrevSibling(sib) {
-		if sib == memoNode {
-			count += memoCount
-			break
-		}
-
-		if ec.numberNodeMatches(ctx, inst, sib, node) {
-			count++
-		}
-	}
-
-	ec.storeNumberMemo(inst, node, target, count)
-
-	return []int{count}
-}
-
-// numberWithinFrom reports whether target, an ancestor-or-self of node, lies
-// in the subtree rooted at the innermost ancestor-or-self of node that matches
-// the from pattern (XSLT 3.0 §12.3, level="single"). The root of a tree
-// always matches from, and target is never above the root, so target is
-// outside only when a from match lies strictly between node and target:
-// walking up from node, a from match met before target excludes it.
-func (ec *execContext) numberWithinFrom(ctx context.Context, inst *numberInst, node, target xdm.Node) bool {
-	for n := node; n != nil && n != target; n = n.Parent() {
-		if ec.numberFromMatches(ctx, inst, n) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// numberMultiple implements level="multiple": find all ancestors-or-self that match
-// count (stopping at from), and for each count preceding siblings.
-func (ec *execContext) numberMultiple(ctx context.Context, inst *numberInst, node xdm.Node) []int {
-	var ancestors []xdm.Node
-
-	for n := node; n != nil; n = n.Parent() {
-		if ec.numberFromMatches(ctx, inst, n) {
-			// Include the from node itself if it matches count
-			if ec.numberNodeMatches(ctx, inst, n, node) {
-				ancestors = append(ancestors, n)
-			}
-
-			break
-		}
-
-		if ec.numberNodeMatches(ctx, inst, n, node) {
-			ancestors = append(ancestors, n)
-		}
-
-		if n.Type() == xdm.DocumentNode {
-			break
-		}
-	}
-
-	// Reverse to get document order (outermost first)
-	for i, j := 0, len(ancestors)-1; i < j; i, j = i+1, j-1 {
-		ancestors[i], ancestors[j] = ancestors[j], ancestors[i]
-	}
-
-	nums := make([]int, len(ancestors))
-	for i, anc := range ancestors {
-		count := 1
-
-		for sib := numberPrevSibling(anc); sib != nil; sib = numberPrevSibling(sib) {
-			if ec.numberNodeMatches(ctx, inst, sib, node) {
-				count++
-			}
-		}
-
-		nums[i] = count
-	}
-
-	return nums
-}
-
-// numberAny implements level="any": count all matching nodes in document order
-// that precede (or are) the context node, going back to the nearest from match.
-// The from node itself is included in the count if it matches count.
-func (ec *execContext) numberAny(ctx context.Context, inst *numberInst, node xdm.Node) []int {
-	memoNode, memoCount := ec.numberMemoFor(inst, node)
-	count := 0
-
-	cur := node
-	for cur != nil {
-		// Reaching the node the previous evaluation started from means no
-		// from match lies between the two, so its count carries over.
-		if cur == memoNode {
-			count += memoCount
-			break
-		}
-
-		if ec.numberNodeMatches(ctx, inst, cur, node) {
-			count++
-		}
-
-		if ec.numberFromMatches(ctx, inst, cur) {
-			break
-		}
-
-		cur = ec.prevInDocOrder(cur)
-	}
-
-	ec.storeNumberMemo(inst, node, node, count)
-
-	if count == 0 {
-		return nil
-	}
-
-	return []int{count}
-}
-
-// numberMemoFor returns the node and count of inst's previous evaluation when
-// they apply to numbering selected, and a nil node otherwise.
-func (ec *execContext) numberMemoFor(inst *numberInst, selected xdm.Node) (xdm.Node, int) {
-	if !inst.memoizable {
-		return nil, 0
-	}
-
-	memo, ok := ec.numberMemos[inst]
-	if !ok {
-		return nil, 0
-	}
-
-	if inst.Count == nil {
-		kind, local, uri := numberDefaultKey(selected)
-		if memo.kind != kind || memo.local != local || memo.uri != uri {
-			return nil, 0
-		}
-	}
-
-	return memo.node, memo.count
-}
-
-// storeNumberMemo records that the walk for selected, starting at node,
-// produced count.
-func (ec *execContext) storeNumberMemo(inst *numberInst, selected, node xdm.Node, count int) {
-	if !inst.memoizable {
-		return
-	}
-
-	memo := numberMemo{node: node, count: count}
-	if inst.Count == nil {
-		memo.kind, memo.local, memo.uri = numberDefaultKey(selected)
-	}
-
-	if ec.numberMemos == nil {
-		ec.numberMemos = make(map[*numberInst]numberMemo)
-	}
-
-	ec.numberMemos[inst] = memo
-}
-
-// prevInDocOrder returns the previous node in document order, skipping
-// attribute and namespace nodes as XPath's preceding axis does: from an
-// attribute or namespace node the walk goes straight to its parent element.
-func (ec *execContext) prevInDocOrder(node xdm.Node) xdm.Node {
-	// Previous sibling's deepest last descendant
-	if prev := numberPrevSibling(node); prev != nil {
-		return ec.lastDescendant(prev)
-	}
-	// Otherwise, parent (including document node)
-	parent := node.Parent()
-	if parent == nil {
-		return nil
-	}
-
-	return parent
-}
-
-// lastDescendant returns the deepest last XDM descendant of node (or node
-// itself if it has no XDM children). An entity reference or an XInclude
-// marker among an element's children is not an XDM node, so the walk takes
-// the last child that is.
-func (ec *execContext) lastDescendant(node xdm.Node) xdm.Node {
-	for node.Type() == xdm.ElementNode {
-		last := node.LastChild()
-		for last != nil && !xdm.IsXDMChild(last) {
-			last = last.PrevSibling()
-		}
-
-		if last == nil {
-			return node
-		}
-
-		node = last
-	}
-
-	return node
-}
-
-func (ec *execContext) numberFindAncestorOrSelf(ctx context.Context, inst *numberInst, node xdm.Node) xdm.Node {
-	for n := node; n != nil; n = n.Parent() {
-		if ec.numberNodeMatches(ctx, inst, n, node) {
-			return n
-		}
-		// Stop at document node to avoid walking above the tree
-		if n.Type() == xdm.DocumentNode {
-			return nil
-		}
-	}
-
-	return nil
 }
 
 // numberDefaultKey returns the kind and name the default count pattern

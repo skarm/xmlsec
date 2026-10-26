@@ -33,6 +33,8 @@ const (
 	nameWrap      = "wrap"
 )
 
+const ecdhKeyData = "ec,key-value,key-name,enc-key,agreement-method,aes,concatkdf"
+
 func TestXMLSecEncryption(t *testing.T) {
 	fixture := newInteropFixture(t)
 	selected(t, "xmlsec")
@@ -435,6 +437,115 @@ func (suite *encryptionSuite) checkCipherReference(t *testing.T, scenario *encry
 	suite.resources++
 }
 
+func (suite *encryptionSuite) checkZeroCBCPadding(t *testing.T, scenario *encryptionCase) {
+	t.Helper()
+	blockBytes, algorithm := 16, "aes-"+strconv.Itoa(scenario.recipe.bits)+"-cbc"
+	if scenario.recipe.data == enc+"tripledes-cbc" {
+		blockBytes, algorithm = 8, "des-ede3-cbc"
+	}
+	plain := bytes.Repeat([]byte{'A'}, blockBytes)
+	plain[len(plain)-1] = 0
+	input := filepath.Join(suite.dir, "padding-input")
+	output := filepath.Join(suite.dir, "padding-ciphertext")
+	wire := read(t, scenario.theirs)
+	cv := legacyDataCipherValue(t, xmlDoc(t, wire))
+	for _, length := range []byte{0, 1} {
+		plain[len(plain)-1] = length
+		write(t, input, plain)
+		command(t, suite.fixture, true, nil, "openssl", "enc", "-"+algorithm, "-nopad", "-K", hex.EncodeToString(read(t, scenario.keyfile)), "-iv", strings.Repeat("0", 2*blockBytes), "-in", input, "-out", output)
+		ciphertext := append(make([]byte, blockBytes), read(t, output)...)
+		modified := bytes.Replace(wire, []byte(text(cv)), []byte(base64String(ciphertext)), 1)
+		path := write(t, filepath.Join(suite.dir, "padding-envelope.xml"), modified)
+		check := copyTask(scenario.task)
+		check[nameInput] = path
+		if length == 0 {
+			probe(t, suite.fixture, "nextprobe", check, false)
+			native(t, suite.fixture, true, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, path)
+			comparePlain(t, suite.fixture, read(t, scenario.output), plain, false)
+			t.Log("DIAGNOSTIC xmlsec1 accepts a zero XMLENC CBC padding length; one-octet correction to1 restores valid Go/native agreement. Zero-length acceptance is excluded from agreement.")
+		} else {
+			comparePlain(t, suite.fixture, probeData(t, suite.fixture, "nextprobe", check), plain[:len(plain)-1], false)
+			native(t, suite.fixture, true, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, path)
+			comparePlain(t, suite.fixture, read(t, scenario.output), plain[:len(plain)-1], false)
+		}
+	}
+}
+
+func (suite *encryptionSuite) exchangeTripleDESWrap(t *testing.T, scenario *encryptionCase) {
+	t.Helper()
+	raw := probeData(t, suite.fixture, "nextprobe", scenario.task)
+	write(t, scenario.ours, raw)
+	native(t, suite.fixture, true, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, scenario.ours)
+	comparePlain(t, suite.fixture, read(t, scenario.output), scenario.plain, false)
+	pattern := write(t, filepath.Join(suite.dir, "template.xml"), clearCipherValues(t, raw))
+	native(t, suite.fixture, true, "encrypt", scenario.encryptArg, scenario.keyfile, "--session-key", "des-192", "--binary-data", scenario.source, "--output", scenario.theirs, pattern)
+	foreign := xmlDoc(t, read(t, scenario.theirs))
+	ek := one(t, tree.Root(foreign), enc, "EncryptedKey")
+	cv := one(t, ek, enc, "CipherValue")
+	wrapped := write(t, filepath.Join(suite.dir, "foreign-wrapped"), decode64(t, text(cv)))
+	cekPath := filepath.Join(suite.dir, "foreign-cek")
+	command(t, suite.fixture, true, nil, "openssl", "enc", "-d", "-id-smime-alg-CMS3DESwrap", "-K", hex.EncodeToString(read(t, scenario.keyfile)), "-in", wrapped, "-out", cekPath)
+	cek := read(t, cekPath)
+	odd := len(cek) == 24
+	for _, b := range cek {
+		if bits.OnesCount8(b)%2 != 1 {
+			odd = false
+		}
+	}
+	check := copyTask(scenario.task)
+	check[nameMode] = "decrypt-wrap"
+	check[nameKey] = scenario.decryptKey
+	check[nameInput] = scenario.theirs
+	if !odd {
+		probe(t, suite.fixture, "nextprobe", check, false)
+		// Parity bits do not change the effective DES key. Rewrapping the
+		// same key with corrected parity changes only the wrapped key value;
+		// the native CBC ciphertext remains byte-for-byte unchanged.
+		for i, b := range cek {
+			cek[i] = b & 0xfe
+			if bits.OnesCount8(cek[i])%2 == 0 {
+				cek[i] |= 1
+			}
+		}
+		corrected := write(t, filepath.Join(suite.dir, "corrected-cek"), cek)
+		correctedWrap := filepath.Join(suite.dir, "corrected-wrap")
+		command(t, suite.fixture, true, nil, "openssl", "enc", "-id-smime-alg-CMS3DESwrap", "-K", hex.EncodeToString(read(t, scenario.keyfile)), "-in", corrected, "-out", correctedWrap)
+		correctedWire := bytes.Replace(read(t, scenario.theirs), []byte(text(cv)), []byte(base64String(read(t, correctedWrap))), 1)
+		correctedEnvelope := write(t, filepath.Join(suite.dir, "corrected.xml"), correctedWire)
+		check[nameInput] = correctedEnvelope
+		comparePlain(t, suite.fixture, probeData(t, suite.fixture, "nextprobe", check), scenario.plain, false)
+		t.Log("DIAGNOSTIC xmlsec1 session-key generator emitted non-odd-parity CEK; RFC3217 3.2step8 requires rejection. Excluded from reverse agreement.")
+	} else {
+		comparePlain(t, suite.fixture, probeData(t, suite.fixture, "nextprobe", check), scenario.plain, false)
+	}
+	// Independent reverse primitive composition: OpenSSL performs both
+	// CBC encryption and CMS3DESwrap using an explicitly selected RFC3217
+	// odd-parity CEK. The original generated Go XML supplies only wire syntax.
+	cek, _ = hex.DecodeString("2923bf85e06dd6ae529149f1f1bae9eab3a7da3d860d3e98")
+	cekPath = write(t, filepath.Join(suite.dir, "odd-cek"), cek)
+	pad := 8 - len(scenario.plain)%8
+	padded := append(bytes.Clone(scenario.plain), make([]byte, pad)...)
+	padded[len(padded)-1] = byte(pad)
+	input := write(t, filepath.Join(suite.dir, "padded"), padded)
+	cipherPath := filepath.Join(suite.dir, "cbc.bin")
+	command(t, suite.fixture, true, nil, "openssl", "enc", "-des-ede3-cbc", "-nopad", "-K", hex.EncodeToString(cek), "-iv", "0000000000000000", "-in", input, "-out", cipherPath)
+	wrappedPath := filepath.Join(suite.dir, "wrapped.bin")
+	command(t, suite.fixture, true, nil, "openssl", "enc", "-id-smime-alg-CMS3DESwrap", "-K", hex.EncodeToString(read(t, scenario.keyfile)), "-in", cekPath, "-out", wrappedPath)
+	ours := xmlDoc(t, raw)
+	keyNode := one(t, tree.Root(ours), enc, "EncryptedKey")
+	keyValue := one(t, keyNode, enc, "CipherValue")
+	dataValue := legacyDataCipherValue(t, ours)
+	external := bytes.Replace(raw, []byte(text(keyValue)), []byte(base64String(read(t, wrappedPath))), 1)
+	ciphertext := append(make([]byte, 8), read(t, cipherPath)...)
+	external = bytes.Replace(external, []byte(text(dataValue)), []byte(base64String(ciphertext)), 1)
+	write(t, scenario.theirs, external)
+	scenario.task[nameMode] = "decrypt-wrap"
+	scenario.task[nameKey] = scenario.decryptKey
+	scenario.task[nameInput] = scenario.theirs
+	comparePlain(t, suite.fixture, probeData(t, suite.fixture, "nextprobe", scenario.task), scenario.plain, false)
+	suite.count++
+}
+
 func comparePlain(t *testing.T, fixture *interopFixture, actual, expected []byte, xml bool) {
 	t.Helper()
 
@@ -659,40 +770,6 @@ func TestXMLSecLegacyEncryption(t *testing.T) {
 	}
 }
 
-func (suite *encryptionSuite) checkZeroCBCPadding(t *testing.T, scenario *encryptionCase) {
-	t.Helper()
-	blockBytes, algorithm := 16, "aes-"+strconv.Itoa(scenario.recipe.bits)+"-cbc"
-	if scenario.recipe.data == enc+"tripledes-cbc" {
-		blockBytes, algorithm = 8, "des-ede3-cbc"
-	}
-	plain := bytes.Repeat([]byte{'A'}, blockBytes)
-	plain[len(plain)-1] = 0
-	input := filepath.Join(suite.dir, "padding-input")
-	output := filepath.Join(suite.dir, "padding-ciphertext")
-	wire := read(t, scenario.theirs)
-	cv := legacyDataCipherValue(t, xmlDoc(t, wire))
-	for _, length := range []byte{0, 1} {
-		plain[len(plain)-1] = length
-		write(t, input, plain)
-		command(t, suite.fixture, true, nil, "openssl", "enc", "-"+algorithm, "-nopad", "-K", hex.EncodeToString(read(t, scenario.keyfile)), "-iv", strings.Repeat("0", 2*blockBytes), "-in", input, "-out", output)
-		ciphertext := append(make([]byte, blockBytes), read(t, output)...)
-		modified := bytes.Replace(wire, []byte(text(cv)), []byte(base64String(ciphertext)), 1)
-		path := write(t, filepath.Join(suite.dir, "padding-envelope.xml"), modified)
-		check := copyTask(scenario.task)
-		check[nameInput] = path
-		if length == 0 {
-			probe(t, suite.fixture, "nextprobe", check, false)
-			native(t, suite.fixture, true, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, path)
-			comparePlain(t, suite.fixture, read(t, scenario.output), plain, false)
-			t.Log("DIAGNOSTIC xmlsec1 accepts a zero XMLENC CBC padding length; one-octet correction to1 restores valid Go/native agreement. Zero-length acceptance is excluded from agreement.")
-		} else {
-			comparePlain(t, suite.fixture, probeData(t, suite.fixture, "nextprobe", check), plain[:len(plain)-1], false)
-			native(t, suite.fixture, true, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, path)
-			comparePlain(t, suite.fixture, read(t, scenario.output), plain[:len(plain)-1], false)
-		}
-	}
-}
-
 func TestXMLSecEncryptionMethodKeySize(t *testing.T) {
 	fixture := newInteropFixture(t)
 	selected(t, "xmlsec")
@@ -745,83 +822,6 @@ func legacyDataCipherValue(t *testing.T, doc *tree.Document) *tree.Node {
 	t.Fatal("missing data CipherValue")
 	return nil
 }
-
-func (suite *encryptionSuite) exchangeTripleDESWrap(t *testing.T, scenario *encryptionCase) {
-	t.Helper()
-	raw := probeData(t, suite.fixture, "nextprobe", scenario.task)
-	write(t, scenario.ours, raw)
-	native(t, suite.fixture, true, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, scenario.ours)
-	comparePlain(t, suite.fixture, read(t, scenario.output), scenario.plain, false)
-	pattern := write(t, filepath.Join(suite.dir, "template.xml"), clearCipherValues(t, raw))
-	native(t, suite.fixture, true, "encrypt", scenario.encryptArg, scenario.keyfile, "--session-key", "des-192", "--binary-data", scenario.source, "--output", scenario.theirs, pattern)
-	foreign := xmlDoc(t, read(t, scenario.theirs))
-	ek := one(t, tree.Root(foreign), enc, "EncryptedKey")
-	cv := one(t, ek, enc, "CipherValue")
-	wrapped := write(t, filepath.Join(suite.dir, "foreign-wrapped"), decode64(t, text(cv)))
-	cekPath := filepath.Join(suite.dir, "foreign-cek")
-	command(t, suite.fixture, true, nil, "openssl", "enc", "-d", "-id-smime-alg-CMS3DESwrap", "-K", hex.EncodeToString(read(t, scenario.keyfile)), "-in", wrapped, "-out", cekPath)
-	cek := read(t, cekPath)
-	odd := len(cek) == 24
-	for _, b := range cek {
-		if bits.OnesCount8(b)%2 != 1 {
-			odd = false
-		}
-	}
-	check := copyTask(scenario.task)
-	check[nameMode] = "decrypt-wrap"
-	check[nameKey] = scenario.decryptKey
-	check[nameInput] = scenario.theirs
-	if !odd {
-		probe(t, suite.fixture, "nextprobe", check, false)
-		// Parity bits do not change the effective DES key. Rewrapping the
-		// same key with corrected parity changes only the wrapped key value;
-		// the native CBC ciphertext remains byte-for-byte unchanged.
-		for i, b := range cek {
-			cek[i] = b & 0xfe
-			if bits.OnesCount8(cek[i])%2 == 0 {
-				cek[i] |= 1
-			}
-		}
-		corrected := write(t, filepath.Join(suite.dir, "corrected-cek"), cek)
-		correctedWrap := filepath.Join(suite.dir, "corrected-wrap")
-		command(t, suite.fixture, true, nil, "openssl", "enc", "-id-smime-alg-CMS3DESwrap", "-K", hex.EncodeToString(read(t, scenario.keyfile)), "-in", corrected, "-out", correctedWrap)
-		correctedWire := bytes.Replace(read(t, scenario.theirs), []byte(text(cv)), []byte(base64String(read(t, correctedWrap))), 1)
-		correctedEnvelope := write(t, filepath.Join(suite.dir, "corrected.xml"), correctedWire)
-		check[nameInput] = correctedEnvelope
-		comparePlain(t, suite.fixture, probeData(t, suite.fixture, "nextprobe", check), scenario.plain, false)
-		t.Log("DIAGNOSTIC xmlsec1 session-key generator emitted non-odd-parity CEK; RFC3217 3.2step8 requires rejection. Excluded from reverse agreement.")
-	} else {
-		comparePlain(t, suite.fixture, probeData(t, suite.fixture, "nextprobe", check), scenario.plain, false)
-	}
-	// Independent reverse primitive composition: OpenSSL performs both
-	// CBC encryption and CMS3DESwrap using an explicitly selected RFC3217
-	// odd-parity CEK. The original generated Go XML supplies only wire syntax.
-	cek, _ = hex.DecodeString("2923bf85e06dd6ae529149f1f1bae9eab3a7da3d860d3e98")
-	cekPath = write(t, filepath.Join(suite.dir, "odd-cek"), cek)
-	pad := 8 - len(scenario.plain)%8
-	padded := append(bytes.Clone(scenario.plain), make([]byte, pad)...)
-	padded[len(padded)-1] = byte(pad)
-	input := write(t, filepath.Join(suite.dir, "padded"), padded)
-	cipherPath := filepath.Join(suite.dir, "cbc.bin")
-	command(t, suite.fixture, true, nil, "openssl", "enc", "-des-ede3-cbc", "-nopad", "-K", hex.EncodeToString(cek), "-iv", "0000000000000000", "-in", input, "-out", cipherPath)
-	wrappedPath := filepath.Join(suite.dir, "wrapped.bin")
-	command(t, suite.fixture, true, nil, "openssl", "enc", "-id-smime-alg-CMS3DESwrap", "-K", hex.EncodeToString(read(t, scenario.keyfile)), "-in", cekPath, "-out", wrappedPath)
-	ours := xmlDoc(t, raw)
-	keyNode := one(t, tree.Root(ours), enc, "EncryptedKey")
-	keyValue := one(t, keyNode, enc, "CipherValue")
-	dataValue := legacyDataCipherValue(t, ours)
-	external := bytes.Replace(raw, []byte(text(keyValue)), []byte(base64String(read(t, wrappedPath))), 1)
-	ciphertext := append(make([]byte, 8), read(t, cipherPath)...)
-	external = bytes.Replace(external, []byte(text(dataValue)), []byte(base64String(ciphertext)), 1)
-	write(t, scenario.theirs, external)
-	scenario.task[nameMode] = "decrypt-wrap"
-	scenario.task[nameKey] = scenario.decryptKey
-	scenario.task[nameInput] = scenario.theirs
-	comparePlain(t, suite.fixture, probeData(t, suite.fixture, "nextprobe", scenario.task), scenario.plain, false)
-	suite.count++
-}
-
-const ecdhKeyData = "ec,key-value,key-name,enc-key,agreement-method,aes,concatkdf"
 
 func TestXMLSecECDHAgreement(t *testing.T) {
 	fixture := newInteropFixture(t)

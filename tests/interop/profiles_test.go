@@ -954,6 +954,103 @@ type dssReports struct {
 	} `json:"DetailedReport"`
 }
 
+func (r *dssReports) check(at time.Time, want dssExpectation, anchorID string) error {
+	if want.BestSignatureTime.IsZero() || !r.DiagnosticData.ValidationDate.Equal(at) || !r.SimpleReport.ValidationTime.Equal(at) {
+		return errors.New("missing/mismatched explicit validation or best-signature time")
+	}
+
+	if r.SimpleReport.Count != 1 || len(r.SimpleReport.Tokens) != 1 || len(r.DiagnosticData.Signatures) != 1 || r.DetailedReport == nil || len(r.DetailedReport.Tokens) != 1 {
+		return errors.New("expected one signature in all three reports")
+	}
+
+	summary := r.SimpleReport.Tokens[0].Signature
+	diagnostic := r.DiagnosticData.Signatures[0]
+	if summary == nil || summary.ID == "" || summary.ID != diagnostic.ID || summary.Indication != want.Indication || summary.SubIndication != want.SubIndication || !summary.BestSignatureTime.Equal(want.BestSignatureTime) {
+		return errors.New("signature identity, exact indication/reason or best-signature-time mismatch")
+	}
+	detailed := r.DetailedReport.Tokens[0].Signature
+	if detailed == nil || detailed.ID != summary.ID || !r.DetailedReport.ValidationTime.Equal(at) {
+		return errors.New("detailed report belongs to a different signature or validation time")
+	}
+	trustedAnchor := false
+	for _, certificate := range summary.CertificateChain.Certificates {
+		if certificate.ID == anchorID && dssTrue(certificate.Trusted) {
+			trustedAnchor = true
+		}
+	}
+	if !trustedAnchor {
+		return errors.New("DSS report does not bind the configured trust-anchor certificate")
+	}
+
+	wantValid := 0
+	if want.Indication == "TOTAL_PASSED" {
+		wantValid = 1
+	}
+
+	if r.SimpleReport.ValidCount != wantValid || !dssTrue(diagnostic.StructuralValidation.Valid) || !dssTrue(diagnostic.BasicSignature.Intact) || !dssTrue(diagnostic.BasicSignature.Valid) || len(diagnostic.DigestMatchers) < 2 {
+		return errors.New("pair does not retain an intact, structurally valid XAdES signature")
+	}
+
+	for _, matcher := range diagnostic.DigestMatchers {
+		if !dssTrue(matcher.Found) || !dssTrue(matcher.Intact) {
+			return errors.New("missing or damaged signed Reference in historical pair")
+		}
+	}
+
+	return nil
+}
+
+// These pairs exercise archive recovery after both basic and LT processing
+// remain indeterminate. A currently valid signature is a different control.
+func (r *dssReports) checkArchiveRecovery(success bool) error {
+	if r.DetailedReport == nil || len(r.DetailedReport.Tokens) != 1 || r.DetailedReport.Tokens[0].Signature == nil {
+		return errors.New("missing detailed signature recovery report")
+	}
+	detail := r.DetailedReport.Tokens[0].Signature
+	if detail.Basic.Conclusion.Indication != "INDETERMINATE" || detail.LongTerm.Conclusion.Indication != "INDETERMINATE" {
+		return errors.New("fixture did not require historical archive recovery")
+	}
+	archive := detail.Archival.Conclusion.Indication
+	if success && archive != "PASSED" || !success && archive != "INDETERMINATE" {
+		return errors.New("unexpected archive validation process result")
+	}
+
+	var signatureTime, archiveTime bool
+	for _, stamp := range r.DiagnosticData.Timestamps {
+		signatureTime = signatureTime || stamp.Type == "SIGNATURE_TIMESTAMP"
+		archiveTime = archiveTime || stamp.Type == "ARCHIVE_TIMESTAMP"
+		if !dssTrue(stamp.BasicSignature.Intact) || !dssTrue(stamp.BasicSignature.Valid) || len(stamp.DigestMatchers) == 0 {
+			return errors.New("invalid timestamp cryptographic diagnostic")
+		}
+		for _, match := range stamp.DigestMatchers {
+			if !dssTrue(match.Found) || !dssTrue(match.Intact) {
+				return errors.New("timestamp imprint does not match its covered objects")
+			}
+		}
+	}
+	if !signatureTime || success && !archiveTime {
+		return errors.New("required historical timestamps are absent")
+	}
+	if success {
+		accepted := make(map[string]struct{}, len(detail.Timestamps))
+		for _, stamp := range detail.Timestamps {
+			if _, exists := accepted[stamp.ID]; stamp.ID == "" || exists || stamp.Conclusion.Indication != "PASSED" {
+				return errors.New("an old timestamp was ignored instead of historically validated")
+			}
+			accepted[stamp.ID] = struct{}{}
+		}
+		if len(accepted) != len(r.DiagnosticData.Timestamps) {
+			return errors.New("missing detailed timestamp trust results")
+		}
+		for _, stamp := range r.DiagnosticData.Timestamps {
+			if _, exists := accepted[stamp.ID]; !exists {
+				return errors.New("detailed timestamp result has a different token identity")
+			}
+		}
+	}
+	return nil
+}
+
 func TestDSSHistoricalValidation(t *testing.T) {
 	selected(t, "portable")
 
@@ -1227,104 +1324,7 @@ func dssCheckSameSignature(t *testing.T, left, right []byte) {
 	}
 }
 
-func (r *dssReports) check(at time.Time, want dssExpectation, anchorID string) error {
-	if want.BestSignatureTime.IsZero() || !r.DiagnosticData.ValidationDate.Equal(at) || !r.SimpleReport.ValidationTime.Equal(at) {
-		return errors.New("missing/mismatched explicit validation or best-signature time")
-	}
-
-	if r.SimpleReport.Count != 1 || len(r.SimpleReport.Tokens) != 1 || len(r.DiagnosticData.Signatures) != 1 || r.DetailedReport == nil || len(r.DetailedReport.Tokens) != 1 {
-		return errors.New("expected one signature in all three reports")
-	}
-
-	summary := r.SimpleReport.Tokens[0].Signature
-	diagnostic := r.DiagnosticData.Signatures[0]
-	if summary == nil || summary.ID == "" || summary.ID != diagnostic.ID || summary.Indication != want.Indication || summary.SubIndication != want.SubIndication || !summary.BestSignatureTime.Equal(want.BestSignatureTime) {
-		return errors.New("signature identity, exact indication/reason or best-signature-time mismatch")
-	}
-	detailed := r.DetailedReport.Tokens[0].Signature
-	if detailed == nil || detailed.ID != summary.ID || !r.DetailedReport.ValidationTime.Equal(at) {
-		return errors.New("detailed report belongs to a different signature or validation time")
-	}
-	trustedAnchor := false
-	for _, certificate := range summary.CertificateChain.Certificates {
-		if certificate.ID == anchorID && dssTrue(certificate.Trusted) {
-			trustedAnchor = true
-		}
-	}
-	if !trustedAnchor {
-		return errors.New("DSS report does not bind the configured trust-anchor certificate")
-	}
-
-	wantValid := 0
-	if want.Indication == "TOTAL_PASSED" {
-		wantValid = 1
-	}
-
-	if r.SimpleReport.ValidCount != wantValid || !dssTrue(diagnostic.StructuralValidation.Valid) || !dssTrue(diagnostic.BasicSignature.Intact) || !dssTrue(diagnostic.BasicSignature.Valid) || len(diagnostic.DigestMatchers) < 2 {
-		return errors.New("pair does not retain an intact, structurally valid XAdES signature")
-	}
-
-	for _, matcher := range diagnostic.DigestMatchers {
-		if !dssTrue(matcher.Found) || !dssTrue(matcher.Intact) {
-			return errors.New("missing or damaged signed Reference in historical pair")
-		}
-	}
-
-	return nil
-}
-
 func dssTrue(value *bool) bool { return value != nil && *value }
-
-// These pairs exercise archive recovery after both basic and LT processing
-// remain indeterminate. A currently valid signature is a different control.
-func (r *dssReports) checkArchiveRecovery(success bool) error {
-	if r.DetailedReport == nil || len(r.DetailedReport.Tokens) != 1 || r.DetailedReport.Tokens[0].Signature == nil {
-		return errors.New("missing detailed signature recovery report")
-	}
-	detail := r.DetailedReport.Tokens[0].Signature
-	if detail.Basic.Conclusion.Indication != "INDETERMINATE" || detail.LongTerm.Conclusion.Indication != "INDETERMINATE" {
-		return errors.New("fixture did not require historical archive recovery")
-	}
-	archive := detail.Archival.Conclusion.Indication
-	if success && archive != "PASSED" || !success && archive != "INDETERMINATE" {
-		return errors.New("unexpected archive validation process result")
-	}
-
-	var signatureTime, archiveTime bool
-	for _, stamp := range r.DiagnosticData.Timestamps {
-		signatureTime = signatureTime || stamp.Type == "SIGNATURE_TIMESTAMP"
-		archiveTime = archiveTime || stamp.Type == "ARCHIVE_TIMESTAMP"
-		if !dssTrue(stamp.BasicSignature.Intact) || !dssTrue(stamp.BasicSignature.Valid) || len(stamp.DigestMatchers) == 0 {
-			return errors.New("invalid timestamp cryptographic diagnostic")
-		}
-		for _, match := range stamp.DigestMatchers {
-			if !dssTrue(match.Found) || !dssTrue(match.Intact) {
-				return errors.New("timestamp imprint does not match its covered objects")
-			}
-		}
-	}
-	if !signatureTime || success && !archiveTime {
-		return errors.New("required historical timestamps are absent")
-	}
-	if success {
-		accepted := make(map[string]struct{}, len(detail.Timestamps))
-		for _, stamp := range detail.Timestamps {
-			if _, exists := accepted[stamp.ID]; stamp.ID == "" || exists || stamp.Conclusion.Indication != "PASSED" {
-				return errors.New("an old timestamp was ignored instead of historically validated")
-			}
-			accepted[stamp.ID] = struct{}{}
-		}
-		if len(accepted) != len(r.DiagnosticData.Timestamps) {
-			return errors.New("missing detailed timestamp trust results")
-		}
-		for _, stamp := range r.DiagnosticData.Timestamps {
-			if _, exists := accepted[stamp.ID]; !exists {
-				return errors.New("detailed timestamp result has a different token identity")
-			}
-		}
-	}
-	return nil
-}
 
 func TestDSSHistoricalReportContracts(t *testing.T) {
 	at := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)

@@ -227,15 +227,6 @@ func (p *parseOptions) tryParseDirectLocationPath() (Expr, bool, error) {
 	}
 }
 
-func looksLikeDirectStepStart(tok Token) bool {
-	switch tok.Type {
-	case TokenDot, TokenDotDot, TokenAt, TokenStar:
-		return true
-	default:
-		return isNameLikeToken(tok.Type)
-	}
-}
-
 func (p *parseOptions) tryParseDirectStep() (vmLocationStep, bool, error) {
 	tok := p.lexer.Peek()
 
@@ -370,51 +361,6 @@ func (p *parseOptions) tryParseDirectNodeTest(axis AxisType) (xdm.NodeTest, bool
 	return xdm.NameTest{Local: tok.Value}, true, nil
 }
 
-func tryParseDirectNodeTestType(p *parseOptions, tok *Token) (returned0 xdm.NodeTest, returned1 bool, matchedBranch bool) {
-	if p.lexer.PeekAt(1).Type == TokenLParen {
-		// Node kind tests: node(), text(), comment(), processing-instruction(), etc.
-		switch tok.Value {
-		case lexicon.KindNode:
-			p.lexer.Next() // name
-			p.lexer.Next() // (
-
-			if p.lexer.Peek().Type != TokenRParen {
-				return nil, false, true
-			}
-
-			p.lexer.Next() // )
-
-			return xdm.TypeTest{Kind: xdm.NodeKindNode}, true, true
-		case lexicon.KindText:
-			p.lexer.Next()
-			p.lexer.Next()
-
-			if p.lexer.Peek().Type != TokenRParen {
-				return nil, false, true
-			}
-
-			p.lexer.Next()
-
-			return xdm.TypeTest{Kind: xdm.NodeKindText}, true, true
-		case lexicon.KindComment:
-			p.lexer.Next()
-			p.lexer.Next()
-
-			if p.lexer.Peek().Type != TokenRParen {
-				return nil, false, true
-			}
-
-			p.lexer.Next()
-
-			return xdm.TypeTest{Kind: xdm.NodeKindComment}, true, true
-		}
-
-		return nil, false, true
-	}
-
-	return
-}
-
 func (p *parseOptions) parseDirectPredicates() ([]Expr, error) {
 	var predicates []Expr
 	if p.lexer.Peek().Type == TokenLBracket {
@@ -487,10 +433,6 @@ func (p *parseOptions) tryParseDirectPredicateExpr() (Expr, bool, error) {
 	return BinaryExpr{Op: op, Left: left, Right: right}, true, nil
 }
 
-func isDirectPredicateOp(t TokenType) bool {
-	return isGeneralComp(t) || isValueComp(t)
-}
-
 func (p *parseOptions) tryParseDirectPredicateOperand() (Expr, bool, error) {
 	tok := p.lexer.Peek()
 	switch tok.Type {
@@ -512,4 +454,62 @@ func (p *parseOptions) tryParseDirectPredicateOperand() (Expr, bool, error) {
 	}
 
 	return p.tryParseDirectLocationPath()
+}
+
+func looksLikeDirectStepStart(tok Token) bool {
+	switch tok.Type {
+	case TokenDot, TokenDotDot, TokenAt, TokenStar:
+		return true
+	default:
+		return isNameLikeToken(tok.Type)
+	}
+}
+
+func tryParseDirectNodeTestType(p *parseOptions, tok *Token) (returned0 xdm.NodeTest, returned1 bool, matchedBranch bool) {
+	if p.lexer.PeekAt(1).Type == TokenLParen {
+		// Node kind tests: node(), text(), comment(), processing-instruction(), etc.
+		switch tok.Value {
+		case lexicon.KindNode:
+			p.lexer.Next() // name
+			p.lexer.Next() // (
+
+			if p.lexer.Peek().Type != TokenRParen {
+				return nil, false, true
+			}
+
+			p.lexer.Next() // )
+
+			return xdm.TypeTest{Kind: xdm.NodeKindNode}, true, true
+		case lexicon.KindText:
+			p.lexer.Next()
+			p.lexer.Next()
+
+			if p.lexer.Peek().Type != TokenRParen {
+				return nil, false, true
+			}
+
+			p.lexer.Next()
+
+			return xdm.TypeTest{Kind: xdm.NodeKindText}, true, true
+		case lexicon.KindComment:
+			p.lexer.Next()
+			p.lexer.Next()
+
+			if p.lexer.Peek().Type != TokenRParen {
+				return nil, false, true
+			}
+
+			p.lexer.Next()
+
+			return xdm.TypeTest{Kind: xdm.NodeKindComment}, true, true
+		}
+
+		return nil, false, true
+	}
+
+	return
+}
+
+func isDirectPredicateOp(t TokenType) bool {
+	return isGeneralComp(t) || isValueComp(t)
 }

@@ -125,87 +125,6 @@ func (c *compiler) compileIterate(ctx context.Context, elem *xdm.Element) (instr
 	return inst, nil
 }
 
-func validateIterateParamDefaults(params []*iterateParam) error {
-	for _, param := range params {
-		if param.Select == nil && len(param.Body) == 0 && !allowsEmptySequence(param.As) {
-			return staticError(errCodeXTSE3520, "xsl:iterate parameter %q with type %q requires a select attribute or default value", param.Name, param.As)
-		}
-	}
-
-	return nil
-}
-
-// validateNextIterationParams walks the instruction tree checking that any
-// nextIterationInst only references declared iterate parameter names.
-func validateNextIterationParams(body []instruction, paramNames map[string]struct{}) error {
-	for _, inst := range body {
-		if ni, ok := inst.(*nextIterationInst); ok {
-			for _, wp := range ni.Params {
-				if _, exists := paramNames[wp.Name]; !exists {
-					return staticError(errCodeXTSE3130, "xsl:next-iteration references undeclared parameter %q", wp.Name)
-				}
-			}
-		}
-		// Recurse into sub-instructions.
-		for _, child := range instructionChildren(inst) {
-			if err := validateNextIterationParams(child, paramNames); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-// instructionChildren returns the sub-instruction slices of an instruction
-// for recursive walking.
-func instructionChildren(inst instruction) [][]instruction {
-	switch v := inst.(type) {
-	case *ifInst:
-		return [][]instruction{v.Body}
-	case *chooseInst:
-		var result [][]instruction
-		for _, w := range v.When {
-			result = append(result, w.Body)
-		}
-
-		if v.Otherwise != nil {
-			result = append(result, v.Otherwise)
-		}
-
-		return result
-	case *forEachInst:
-		return [][]instruction{v.Body}
-	case *tryCatchInst:
-		result := [][]instruction{v.Try}
-		for _, c := range v.Catches {
-			result = append(result, c.Body)
-		}
-
-		return result
-	case *sequenceInst:
-		return [][]instruction{v.Body}
-	case *variableInst:
-		return [][]instruction{v.Body}
-	case *literalResultElement:
-		return [][]instruction{v.Body}
-	case *elementInst:
-		return [][]instruction{v.Body}
-	case *copyInst:
-		return [][]instruction{v.Body}
-	case *copyOfInst:
-		return nil
-	case *collationScopeInst:
-		if v.Inner != nil {
-			return [][]instruction{{v.Inner}}
-		}
-
-		return nil
-	default:
-		return nil
-	}
-}
-
 func (c *compiler) collectIterateChild(ctx context.Context, child xdm.Node, inst *iterateInst, state *iterateCompileState) error {
 	elem, ok := child.(*xdm.Element)
 	if !ok {
@@ -340,18 +259,6 @@ func (c *compiler) compileIterateBody(ctx context.Context, inst *iterateInst, ch
 	}
 
 	return nil
-}
-
-func lastIterateBodyChild(children []iterateBodyChild) int {
-	for i, child := range slices.Backward(children) {
-		if child.elem != nil && child.elem.URI() == lexicon.NamespaceXSLT && child.elem.LocalName() == lexicon.XSLTElementFallback {
-			continue
-		}
-
-		return i
-	}
-
-	return -1
 }
 
 // compileIterateParam compiles an xsl:param inside xsl:iterate.
@@ -789,92 +696,6 @@ func (c *compiler) compileMerge(ctx context.Context, elem *xdm.Element) (instruc
 	return inst, nil
 }
 
-func validateMergeComponents(inst *mergeInst) error {
-	if len(inst.Sources) == 0 {
-		return staticError(errCodeXTSE0010, "xsl:merge requires at least one xsl:merge-source child")
-	}
-
-	// XTSE2200: all merge-sources must have the same number of merge-keys.
-	if len(inst.Sources) > 1 {
-		keyCount := len(inst.Sources[0].Keys)
-		for i := 1; i < len(inst.Sources); i++ {
-			if len(inst.Sources[i].Keys) != keyCount {
-				return staticError(errCodeXTSE2200, "all xsl:merge-source children must have the same number of xsl:merge-key children")
-			}
-		}
-	}
-
-	// XTSE0020: merge-source name must be a valid xs:QName.
-	for _, src := range inst.Sources {
-		if src.Name != "" && !xmlchar.IsValidQName(src.Name) {
-			return staticError(errCodeXTSE0020, "xsl:merge-source @name %q is not a valid xs:QName", src.Name)
-		}
-	}
-
-	// XTSE3190: duplicate xsl:merge-source names.
-	seenNames := make(map[string]struct{})
-
-	for _, src := range inst.Sources {
-		name := src.Name
-		if name == "" {
-			// Implicit name is the position, so no duplicate check needed for unnamed
-			continue
-		}
-
-		if _, ok := seenNames[name]; ok {
-			return staticError(errCodeXTSE3190, "duplicate xsl:merge-source name %q", name)
-		}
-
-		seenNames[name] = struct{}{}
-	}
-
-	// Streamability checks when any merge-source has streamable="yes".
-	if err := mergeStreamCheck(inst); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func mergeStreamCheck(inst *mergeInst) error {
-	hasStreamable := false
-
-	for _, src := range inst.Sources {
-		if src.StreamableAttr {
-			hasStreamable = true
-			break
-		}
-	}
-
-	if !hasStreamable {
-		return nil
-	}
-	// XTSE3470: merge-key order/data-type must not be AVTs within
-	// a streamable merge-source.
-	for _, src := range inst.Sources {
-		if !src.StreamableAttr {
-			continue
-		}
-
-		for _, mk := range src.Keys {
-			if mk.OrderAVT != nil && avtIsDynamic(mk.OrderAVT) {
-				return staticError(errCodeXTSE3470, "xsl:merge-key @order must not be an AVT when xsl:merge-source is streamable")
-			}
-
-			if mk.DataTypeAVT != nil && avtIsDynamic(mk.DataTypeAVT) {
-				return staticError(errCodeXTSE3470, "xsl:merge-key @data-type must not be an AVT when xsl:merge-source is streamable")
-			}
-		}
-	}
-
-	return nil
-}
-
-func avtIsDynamic(value *avt) bool {
-	_, static := value.staticValue()
-	return !static
-}
-
 func (c *compiler) compileMergeSource(ctx context.Context, elem *xdm.Element) (*mergeSource, error) {
 	defer c.pushElementVersion(elem)()
 
@@ -1048,24 +869,6 @@ func (c *compiler) compileMergeKey(ctx context.Context, elem *xdm.Element) (*mer
 	return mk, nil
 }
 
-func validateMergeKeyAttrs(elem *xdm.Element) error {
-	// XTSE0090: validate permitted attributes on xsl:merge-key.
-	for _, attr := range elem.Attributes() {
-		if attr.URI() != "" {
-			continue // namespace-qualified attributes are allowed
-		}
-
-		switch attr.LocalName() {
-		case xslAttrSelect, nameOrder, nameCollation, nameDataType, lexicon.AttrLang, nameCaseOrder:
-			// permitted
-		default:
-			return staticError(errCodeXTSE0090, "attribute %q is not permitted on xsl:merge-key", attr.LocalName())
-		}
-	}
-
-	return nil
-}
-
 func (c *compiler) compileMergeKeyCollation(elem *xdm.Element, key *mergeKey) error {
 	for _, option := range []struct {
 		name   string
@@ -1120,6 +923,203 @@ func (c *compiler) compileMergeKeyOption(elem *xdm.Element, key *mergeKey, name 
 
 	key.specified |= flag
 	*target = compiled
+
+	return nil
+}
+
+func validateIterateParamDefaults(params []*iterateParam) error {
+	for _, param := range params {
+		if param.Select == nil && len(param.Body) == 0 && !allowsEmptySequence(param.As) {
+			return staticError(errCodeXTSE3520, "xsl:iterate parameter %q with type %q requires a select attribute or default value", param.Name, param.As)
+		}
+	}
+
+	return nil
+}
+
+// validateNextIterationParams walks the instruction tree checking that any
+// nextIterationInst only references declared iterate parameter names.
+func validateNextIterationParams(body []instruction, paramNames map[string]struct{}) error {
+	for _, inst := range body {
+		if ni, ok := inst.(*nextIterationInst); ok {
+			for _, wp := range ni.Params {
+				if _, exists := paramNames[wp.Name]; !exists {
+					return staticError(errCodeXTSE3130, "xsl:next-iteration references undeclared parameter %q", wp.Name)
+				}
+			}
+		}
+		// Recurse into sub-instructions.
+		for _, child := range instructionChildren(inst) {
+			if err := validateNextIterationParams(child, paramNames); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// instructionChildren returns the sub-instruction slices of an instruction
+// for recursive walking.
+func instructionChildren(inst instruction) [][]instruction {
+	switch v := inst.(type) {
+	case *ifInst:
+		return [][]instruction{v.Body}
+	case *chooseInst:
+		var result [][]instruction
+		for _, w := range v.When {
+			result = append(result, w.Body)
+		}
+
+		if v.Otherwise != nil {
+			result = append(result, v.Otherwise)
+		}
+
+		return result
+	case *forEachInst:
+		return [][]instruction{v.Body}
+	case *tryCatchInst:
+		result := [][]instruction{v.Try}
+		for _, c := range v.Catches {
+			result = append(result, c.Body)
+		}
+
+		return result
+	case *sequenceInst:
+		return [][]instruction{v.Body}
+	case *variableInst:
+		return [][]instruction{v.Body}
+	case *literalResultElement:
+		return [][]instruction{v.Body}
+	case *elementInst:
+		return [][]instruction{v.Body}
+	case *copyInst:
+		return [][]instruction{v.Body}
+	case *copyOfInst:
+		return nil
+	case *collationScopeInst:
+		if v.Inner != nil {
+			return [][]instruction{{v.Inner}}
+		}
+
+		return nil
+	default:
+		return nil
+	}
+}
+
+func lastIterateBodyChild(children []iterateBodyChild) int {
+	for i, child := range slices.Backward(children) {
+		if child.elem != nil && child.elem.URI() == lexicon.NamespaceXSLT && child.elem.LocalName() == lexicon.XSLTElementFallback {
+			continue
+		}
+
+		return i
+	}
+
+	return -1
+}
+
+func validateMergeComponents(inst *mergeInst) error {
+	if len(inst.Sources) == 0 {
+		return staticError(errCodeXTSE0010, "xsl:merge requires at least one xsl:merge-source child")
+	}
+
+	// XTSE2200: all merge-sources must have the same number of merge-keys.
+	if len(inst.Sources) > 1 {
+		keyCount := len(inst.Sources[0].Keys)
+		for i := 1; i < len(inst.Sources); i++ {
+			if len(inst.Sources[i].Keys) != keyCount {
+				return staticError(errCodeXTSE2200, "all xsl:merge-source children must have the same number of xsl:merge-key children")
+			}
+		}
+	}
+
+	// XTSE0020: merge-source name must be a valid xs:QName.
+	for _, src := range inst.Sources {
+		if src.Name != "" && !xmlchar.IsValidQName(src.Name) {
+			return staticError(errCodeXTSE0020, "xsl:merge-source @name %q is not a valid xs:QName", src.Name)
+		}
+	}
+
+	// XTSE3190: duplicate xsl:merge-source names.
+	seenNames := make(map[string]struct{})
+
+	for _, src := range inst.Sources {
+		name := src.Name
+		if name == "" {
+			// Implicit name is the position, so no duplicate check needed for unnamed
+			continue
+		}
+
+		if _, ok := seenNames[name]; ok {
+			return staticError(errCodeXTSE3190, "duplicate xsl:merge-source name %q", name)
+		}
+
+		seenNames[name] = struct{}{}
+	}
+
+	// Streamability checks when any merge-source has streamable="yes".
+	if err := mergeStreamCheck(inst); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func mergeStreamCheck(inst *mergeInst) error {
+	hasStreamable := false
+
+	for _, src := range inst.Sources {
+		if src.StreamableAttr {
+			hasStreamable = true
+			break
+		}
+	}
+
+	if !hasStreamable {
+		return nil
+	}
+	// XTSE3470: merge-key order/data-type must not be AVTs within
+	// a streamable merge-source.
+	for _, src := range inst.Sources {
+		if !src.StreamableAttr {
+			continue
+		}
+
+		for _, mk := range src.Keys {
+			if mk.OrderAVT != nil && avtIsDynamic(mk.OrderAVT) {
+				return staticError(errCodeXTSE3470, "xsl:merge-key @order must not be an AVT when xsl:merge-source is streamable")
+			}
+
+			if mk.DataTypeAVT != nil && avtIsDynamic(mk.DataTypeAVT) {
+				return staticError(errCodeXTSE3470, "xsl:merge-key @data-type must not be an AVT when xsl:merge-source is streamable")
+			}
+		}
+	}
+
+	return nil
+}
+
+func avtIsDynamic(value *avt) bool {
+	_, static := value.staticValue()
+	return !static
+}
+
+func validateMergeKeyAttrs(elem *xdm.Element) error {
+	// XTSE0090: validate permitted attributes on xsl:merge-key.
+	for _, attr := range elem.Attributes() {
+		if attr.URI() != "" {
+			continue // namespace-qualified attributes are allowed
+		}
+
+		switch attr.LocalName() {
+		case xslAttrSelect, nameOrder, nameCollation, nameDataType, lexicon.AttrLang, nameCaseOrder:
+			// permitted
+		default:
+			return staticError(errCodeXTSE0090, "attribute %q is not permitted on xsl:merge-key", attr.LocalName())
+		}
+	}
 
 	return nil
 }

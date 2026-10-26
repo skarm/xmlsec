@@ -30,6 +30,12 @@ func ParseFragmentText(ctx context.Context, text string, limits Limits) (*Docume
 	return parseFragmentText(ctx, text, limits, false)
 }
 
+// ParseFragmentReader constructs a fragment without copying a complete source
+// into a synthetic XML wrapper. The source remains caller-owned.
+func ParseFragmentReader(ctx context.Context, src io.Reader, limits Limits) (*Document, error) {
+	return parseFragmentReader(ctx, src, limits, false)
+}
+
 func parseFragmentText(ctx context.Context, text string, limits Limits, relativeNamespaces bool) (*Document, error) {
 	if ctx == nil {
 		return nil, ErrMalformed
@@ -90,12 +96,6 @@ func stripTextDeclaration(text string) (string, error) {
 	}
 
 	return text[end+2:], nil
-}
-
-// ParseFragmentReader constructs a fragment without copying a complete source
-// into a synthetic XML wrapper. The source remains caller-owned.
-func ParseFragmentReader(ctx context.Context, src io.Reader, limits Limits) (*Document, error) {
-	return parseFragmentReader(ctx, src, limits, false)
 }
 
 func parseFragmentReader(ctx context.Context, src io.Reader, limits Limits, relativeNamespaces bool) (*Document, error) {

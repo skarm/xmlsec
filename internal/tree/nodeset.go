@@ -410,6 +410,16 @@ func (e Element) NamespaceNodes() []NodeRef {
 	return out
 }
 
+// Subtree selects this element, descendants and axes with cancellation and the
+// snapshot node-set budget.
+func (e Element) Subtree(ctx context.Context) (NodeSet, error) {
+	if !e.Valid() {
+		return NodeSet{}, fmt.Errorf("%w: invalid subtree", ErrMalformed)
+	}
+
+	return collectNodes(ctx, e.doc, e.node)
+}
+
 func namespaceScope(n *Node) map[string]string {
 	scope := map[string]string{lexicon.PrefixXML: XMLNamespace}
 
@@ -422,16 +432,6 @@ func namespaceScope(n *Node) map[string]string {
 	}
 
 	return scope
-}
-
-// Subtree selects this element, descendants and axes with cancellation and the
-// snapshot node-set budget.
-func (e Element) Subtree(ctx context.Context) (NodeSet, error) {
-	if !e.Valid() {
-		return NodeSet{}, fmt.Errorf("%w: invalid subtree", ErrMalformed)
-	}
-
-	return collectNodes(ctx, e.doc, e.node)
 }
 
 // String names the node kind, not XML markup or its potentially sensitive data.

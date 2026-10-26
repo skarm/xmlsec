@@ -53,6 +53,11 @@ func (s *HistoricalSession) CheckCurrentPolicy(ctx context.Context, result *Resu
 	return historicalNoChainPoE, ErrCertificate
 }
 
+func (s *HistoricalSession) checkCurrentPathPolicy(ctx context.Context, path *HistoricalPath) (string, error) {
+	evaluator := currentPolicyEvaluation{session: s, active: make(map[[32]byte]struct{})}
+	return evaluator.check(ctx, path, false, false)
+}
+
 func historicalResultPath(result *Result, path *HistoricalPath) bool {
 	if len(result.chain) != len(path.chain) {
 		return false
@@ -70,11 +75,6 @@ func historicalResultPath(result *Result, path *HistoricalPath) bool {
 type currentPolicyEvaluation struct {
 	session *HistoricalSession
 	active  map[[32]byte]struct{}
-}
-
-func (s *HistoricalSession) checkCurrentPathPolicy(ctx context.Context, path *HistoricalPath) (string, error) {
-	evaluator := currentPolicyEvaluation{session: s, active: make(map[[32]byte]struct{})}
-	return evaluator.check(ctx, path, false, false)
 }
 
 func (e *currentPolicyEvaluation) check(ctx context.Context, path *HistoricalPath, source, skipLeaf bool) (string, error) {

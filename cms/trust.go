@@ -151,10 +151,6 @@ func (r *Result) TrustChecked() bool {
 	return true
 }
 
-// Trust returns the successfully checked caller-selected PKIX/revocation result,
-// or nil for a signer authenticated only by ordinary CMS Verify/VerifyReader.
-func (r SignerResult) Trust() *pki.Result { return r.trust }
-
 // Evidence returns immutable authenticated revocation assertions retained by the
 // successful signer trust checks. Ordinary Verify results return nil. Assertions
 // retain certificate/scope bindings; they do not establish trust at other times.
@@ -195,6 +191,10 @@ func (r *Result) Evidence() []*pki.VerifiedEvidence {
 
 	return out
 }
+
+// Trust returns the successfully checked caller-selected PKIX/revocation result,
+// or nil for a signer authenticated only by ordinary CMS Verify/VerifyReader.
+func (r SignerResult) Trust() *pki.Result { return r.trust }
 
 // The crypto-only API binds the first certificate. A trusted result cannot
 // silently ignore signed restrictions on the rest of the certification path.

@@ -293,13 +293,6 @@ func (c *compiler) processExpose(ctx context.Context, root *xdm.Element) error {
 	return nil
 }
 
-type exposedComponent struct {
-	kind     string
-	name     string
-	declared string
-	set      func(string, bool)
-}
-
 func (c *compiler) initializeImplicitExposedModes() {
 	if c.stylesheet.declaredModes {
 		return
@@ -322,64 +315,6 @@ func (c *compiler) initializeImplicitExposedModes() {
 			}
 		}
 	}
-}
-
-func (component exposedComponent) matches(rule acceptRule) bool {
-	return (rule.component == xslWildcard || rule.component == component.kind) && componentNameMatches(component.name, rule.names)
-}
-
-func (component exposedComponent) exposedVisibility(ctx context.Context, rules []acceptRule) (string, bool, error) {
-	visibility := component.declared
-
-	priority := -1
-	if visibility != "" {
-		priority = 2
-	} else {
-		visibility = visPrivate
-	}
-
-	explicit, exposed := false, false
-
-	for _, rule := range rules {
-		if err := xpath.Charge(ctx, 1); err != nil {
-			return "", false, err
-		}
-
-		if !component.matches(rule) {
-			continue
-		}
-
-		exposed = true
-
-		candidate := componentRulePriority(rule.names)
-		if candidate >= priority {
-			priority, visibility = candidate, rule.visibility
-			explicit = candidate == 3
-		}
-	}
-
-	if explicit {
-		code, message := checkExposeVisibility(component.name, visibility, component.declared)
-		if code != "" {
-			return "", false, staticError(code, "%s", message)
-		}
-	} else if visibility == visAbstract && component.declared != visAbstract {
-		return "", false, staticError(errCodeXTSE3025, "xsl:expose cannot make %q abstract", component.name)
-	}
-
-	return visibility, exposed, nil
-}
-
-func componentRulePriority(name string) int {
-	if name == xslWildcard {
-		return 0
-	}
-
-	if isWildcard(name) {
-		return 1
-	}
-
-	return 3
 }
 
 func (c *compiler) localExposedComponents() []exposedComponent {
@@ -559,6 +494,71 @@ func (c *compiler) collectOverrideNames(_ context.Context, usePackageElem *xdm.E
 	}
 
 	return names
+}
+
+type exposedComponent struct {
+	kind     string
+	name     string
+	declared string
+	set      func(string, bool)
+}
+
+func (component exposedComponent) matches(rule acceptRule) bool {
+	return (rule.component == xslWildcard || rule.component == component.kind) && componentNameMatches(component.name, rule.names)
+}
+
+func (component exposedComponent) exposedVisibility(ctx context.Context, rules []acceptRule) (string, bool, error) {
+	visibility := component.declared
+
+	priority := -1
+	if visibility != "" {
+		priority = 2
+	} else {
+		visibility = visPrivate
+	}
+
+	explicit, exposed := false, false
+
+	for _, rule := range rules {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return "", false, err
+		}
+
+		if !component.matches(rule) {
+			continue
+		}
+
+		exposed = true
+
+		candidate := componentRulePriority(rule.names)
+		if candidate >= priority {
+			priority, visibility = candidate, rule.visibility
+			explicit = candidate == 3
+		}
+	}
+
+	if explicit {
+		code, message := checkExposeVisibility(component.name, visibility, component.declared)
+		if code != "" {
+			return "", false, staticError(code, "%s", message)
+		}
+	} else if visibility == visAbstract && component.declared != visAbstract {
+		return "", false, staticError(errCodeXTSE3025, "xsl:expose cannot make %q abstract", component.name)
+	}
+
+	return visibility, exposed, nil
+}
+
+func componentRulePriority(name string) int {
+	if name == xslWildcard {
+		return 0
+	}
+
+	if isWildcard(name) {
+		return 1
+	}
+
+	return 3
 }
 
 func collectOverrideBlockNames(block *xdm.Element, bindings map[string]string, excluded map[*xdm.Element]struct{}, names map[string]struct{}) {

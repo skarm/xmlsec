@@ -92,20 +92,6 @@ func (a *avt) evaluate(ctx context.Context, node xdm.Node) (string, error) {
 	return sb.String(), nil
 }
 
-func stringifyItem(item xdm.Item) string {
-	av, err := xpath.AtomizeItem(item)
-	if err != nil {
-		return ""
-	}
-
-	s, err := xpath.AtomicToString(av)
-	if err != nil {
-		return ""
-	}
-
-	return s
-}
-
 func (a *avt) evaluateStatic(ctx context.Context, eval xpath.Evaluator, node xdm.Node) (string, error) {
 	if a == nil {
 		return "", nil
@@ -136,6 +122,20 @@ func (a *avt) evaluateStatic(ctx context.Context, eval xpath.Evaluator, node xdm
 	}
 
 	return sb.String(), nil
+}
+
+func stringifyItem(item xdm.Item) string {
+	av, err := xpath.AtomizeItem(item)
+	if err != nil {
+		return ""
+	}
+
+	s, err := xpath.AtomicToString(av)
+	if err != nil {
+		return ""
+	}
+
+	return s
 }
 
 // stringifyResult converts an xpath.Result to its string representation.

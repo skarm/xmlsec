@@ -26,6 +26,16 @@ import (
 	"github.com/skarm/xmlsec/pki"
 )
 
+const (
+	xadesNS   = "http://uri.etsi.org/01903/v1.3.2#"
+	archiveNS = "http://uri.etsi.org/01903/v1.4.1#"
+)
+
+const (
+	flagData = "-data"
+	nameCms  = "cms"
+)
+
 func TestCMSBEROpenSSL(t *testing.T) {
 	fixture := newInteropFixture(t)
 	selected(t, "portable")
@@ -96,16 +106,6 @@ func checkCMSBEROpenSSL(t *testing.T, fixture *interopFixture, name string) {
 	badFile := write(t, filepath.Join(dir, "changed.ber"), bad)
 	command(t, fixture, false, nil, "openssl", "cms", "-verify", "-binary", "-inform", "DER", "-in", badFile, "-noverify", "-out", filepath.Join(dir, "unverified"))
 }
-
-const (
-	xadesNS   = "http://uri.etsi.org/01903/v1.3.2#"
-	archiveNS = "http://uri.etsi.org/01903/v1.4.1#"
-)
-
-const (
-	flagData = "-data"
-	nameCms  = "cms"
-)
 
 func TestEvidenceExchange(t *testing.T) {
 	fixture := newInteropFixture(t)

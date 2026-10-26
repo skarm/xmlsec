@@ -251,21 +251,6 @@ func (e *signedDataEncoder) addSigner(ctx context.Context, s Signer, c *x509.Cer
 	return nil
 }
 
-func signerIdentifier(s Signer, c *x509.Certificate) ([]byte, int, error) {
-	serial, _ := asn1.Marshal(c.SerialNumber)
-
-	sid := der.Seq(c.RawIssuer, serial)
-	if !s.SubjectKeyIdentifier {
-		return sid, 1, nil
-	}
-
-	if len(c.SubjectKeyId) < 1 || len(c.SubjectKeyId) > 128 {
-		return nil, 0, ErrCertificate
-	}
-
-	return der.Wrap(2, 0, false, c.SubjectKeyId), 3, nil
-}
-
 func (e *signedDataEncoder) signerCertificate(s Signer) (*x509.Certificate, error) {
 	if nilcheck.IsNil(s.Key) || len(s.CertificateDER) > 1<<20 || len(s.Attributes) > e.limits.MaxAttributes {
 		return nil, ErrPolicy
@@ -403,27 +388,6 @@ func (e *signedDataEncoder) encodeTo(dst io.Writer, o SignOptions) error {
 	return nil
 }
 
-func derSize(length int) int { return len(der.Header(0, length)) + length }
-
-func writeDERPart(dst io.Writer, value []byte) error {
-	for len(value) > 0 {
-		chunk := value[:min(len(value), 32<<10)]
-
-		n, err := dst.Write(chunk)
-		if err != nil {
-			return err
-		}
-
-		if n != len(chunk) {
-			return io.ErrShortWrite
-		}
-
-		value = value[n:]
-	}
-
-	return nil
-}
-
 func (e *signedDataEncoder) prepareSigners(ctx context.Context, signers []Signer) ([]*x509.Certificate, []crypto.Hash, error) {
 	hashes := make([]crypto.Hash, 0, len(signers))
 
@@ -483,4 +447,40 @@ func (e *signedDataEncoder) metadataSizes(omitCertificates bool) (int, int, erro
 	}
 
 	return certificateLength, infosLength, nil
+}
+
+func signerIdentifier(s Signer, c *x509.Certificate) ([]byte, int, error) {
+	serial, _ := asn1.Marshal(c.SerialNumber)
+
+	sid := der.Seq(c.RawIssuer, serial)
+	if !s.SubjectKeyIdentifier {
+		return sid, 1, nil
+	}
+
+	if len(c.SubjectKeyId) < 1 || len(c.SubjectKeyId) > 128 {
+		return nil, 0, ErrCertificate
+	}
+
+	return der.Wrap(2, 0, false, c.SubjectKeyId), 3, nil
+}
+
+func derSize(length int) int { return len(der.Header(0, length)) + length }
+
+func writeDERPart(dst io.Writer, value []byte) error {
+	for len(value) > 0 {
+		chunk := value[:min(len(value), 32<<10)]
+
+		n, err := dst.Write(chunk)
+		if err != nil {
+			return err
+		}
+
+		if n != len(chunk) {
+			return io.ErrShortWrite
+		}
+
+		value = value[n:]
+	}
+
+	return nil
 }

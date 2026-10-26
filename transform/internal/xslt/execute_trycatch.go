@@ -81,20 +81,6 @@ func (ec *execContext) execMessageWithDefaults(ctx context.Context, inst *messag
 	return nil
 }
 
-// Cancellation and exhausted budgets must terminate execution rather than
-// being converted into recoverable content or type errors.
-func preserveControlFailure(ctx context.Context, err error) error {
-	if failure := xpath.ControlFailure(ctx, err); failure != nil {
-		return failure
-	}
-
-	if errors.Is(err, ErrResourceTooLarge) {
-		return err
-	}
-
-	return nil
-}
-
 func (ec *execContext) messageErrorCode(ctx context.Context, inst *messageInst, fallback string) (xdm.QNameValue, error) {
 	defaultName := xdm.QNameValue{Prefix: lexicon.PrefixErr, URI: lexicon.NamespaceErr, Local: fallback}
 	if inst.ErrorCode == nil {
@@ -168,45 +154,6 @@ func (ec *execContext) messageDocument(ctx context.Context, inst *messageInst) (
 	normalized, err = normalizeValue(ctx, ValueResult{Items: xdm.SingleString(err.Error())}, nil, "")
 
 	return normalized, err
-}
-
-// Boolean synonyms are introduced by the XSLT 3.0 processor. XML whitespace
-// stripping must not silently admit NBSP or other non-XML separators.
-func parseMessageTerminate(value string, modern bool) (bool, bool) {
-	value = strings.Trim(value, " \t\r\n")
-	switch value {
-	case lexicon.ValueYes:
-		return true, true
-	case lexicon.ValueNo:
-		return false, true
-	case lexicon.ValueTrue, "1":
-		return true, modern
-	case lexicon.ValueFalse, "0":
-		return false, modern
-	default:
-		return false, false
-	}
-}
-
-type messageWriter struct {
-	strings.Builder
-	ctx context.Context
-}
-
-func (w *messageWriter) Write(p []byte) (int, error) {
-	if err := xpath.ChargeString(w.ctx, len(p)); err != nil {
-		return 0, err
-	}
-
-	return w.Builder.Write(p)
-}
-
-func (w *messageWriter) WriteString(value string) (int, error) {
-	if err := xpath.ChargeString(w.ctx, len(value)); err != nil {
-		return 0, err
-	}
-
-	return w.Builder.WriteString(value)
 }
 
 func (ec *execContext) execTryCatch(ctx context.Context, inst *tryCatchInst) error {
@@ -415,6 +362,59 @@ func (ec *execContext) caughtTryValue(tryErr error) xdm.Sequence {
 	}
 
 	return value
+}
+
+// Cancellation and exhausted budgets must terminate execution rather than
+// being converted into recoverable content or type errors.
+func preserveControlFailure(ctx context.Context, err error) error {
+	if failure := xpath.ControlFailure(ctx, err); failure != nil {
+		return failure
+	}
+
+	if errors.Is(err, ErrResourceTooLarge) {
+		return err
+	}
+
+	return nil
+}
+
+// Boolean synonyms are introduced by the XSLT 3.0 processor. XML whitespace
+// stripping must not silently admit NBSP or other non-XML separators.
+func parseMessageTerminate(value string, modern bool) (bool, bool) {
+	value = strings.Trim(value, " \t\r\n")
+	switch value {
+	case lexicon.ValueYes:
+		return true, true
+	case lexicon.ValueNo:
+		return false, true
+	case lexicon.ValueTrue, "1":
+		return true, modern
+	case lexicon.ValueFalse, "0":
+		return false, modern
+	default:
+		return false, false
+	}
+}
+
+type messageWriter struct {
+	strings.Builder
+	ctx context.Context
+}
+
+func (w *messageWriter) Write(p []byte) (int, error) {
+	if err := xpath.ChargeString(w.ctx, len(p)); err != nil {
+		return 0, err
+	}
+
+	return w.Builder.Write(p)
+}
+
+func (w *messageWriter) WriteString(value string) (int, error) {
+	if err := xpath.ChargeString(w.ctx, len(value)); err != nil {
+		return 0, err
+	}
+
+	return w.Builder.WriteString(value)
 }
 
 func matchingCatchClause(clauses []*catchClause, code string) *catchClause {

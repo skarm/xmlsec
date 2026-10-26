@@ -227,15 +227,6 @@ func IsValidEncName(s string) bool {
 	return true
 }
 
-func isEncNameStart(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-}
-
-func isEncNameChar(c byte) bool {
-	return isEncNameStart(c) || (c >= '0' && c <= '9') ||
-		c == '.' || c == '_' || c == '-'
-}
-
 // IsHexDigit reports whether b is an ASCII hexadecimal digit ([0-9a-fA-F]).
 func IsHexDigit(b byte) bool {
 	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
@@ -320,4 +311,13 @@ func IsValidNCName(s string) bool {
 	}
 
 	return true
+}
+
+func isEncNameStart(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isEncNameChar(c byte) bool {
+	return isEncNameStart(c) || (c >= '0' && c <= '9') ||
+		c == '.' || c == '_' || c == '-'
 }

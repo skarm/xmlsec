@@ -195,6 +195,25 @@ func TestBase64(t *testing.T) {
 	})
 }
 
+func TestBase64PaddingAcrossReaderBoundaries(t *testing.T) {
+	for _, tail := range []string{"AAAA", "!!!!AAAA", strings.Repeat("!", 4096) + "AAAA", "="} {
+		t.Run(fmt.Sprintf("tail-%d-%q", len(tail), tail[:min(8, len(tail))]), func(t *testing.T) {
+			var out bytes.Buffer
+			source := io.MultiReader(strings.NewReader("TQ=="), strings.NewReader(tail))
+			report, err := reference.WriteReader(t.Context(), &out, source, []reference.Transform{{Algorithm: reference.Base64}}, reference.Options{})
+			if report != nil || !errors.Is(err, reference.ErrInput) {
+				t.Fatalf("data after padding accepted: output=%q report=%v err=%v", out.String(), report, err)
+			}
+		})
+	}
+
+	var out bytes.Buffer
+	source := io.MultiReader(strings.NewReader("TQ=="), strings.NewReader("! \n"))
+	if _, err := reference.WriteReader(t.Context(), &out, source, []reference.Transform{{Algorithm: reference.Base64}}, reference.Options{}); err != nil || out.String() != "M" {
+		t.Fatalf("RFC2045 nonalphabet suffix: output=%q err=%v", out.String(), err)
+	}
+}
+
 func TestEnvelopedIdentity(t *testing.T) {
 	const xml = `<r xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:Signature ID="one"><x>1</x></ds:Signature><ds:Signature ID="two"><x>2</x></ds:Signature><data>ok</data></r>`
 

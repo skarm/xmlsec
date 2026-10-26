@@ -44,20 +44,6 @@ func NewStore(directory string, maximum int64) (*Store, error) {
 	return &Store{directory: root, maximum: maximum}, nil
 }
 
-// Record identifies exact untrusted bytes retained by a Store. Its immutable
-// metadata remains available after closure. Closing the record releases its file
-// and storage reservation; repeated Close calls are safe. Open fails after the
-// record or its store has closed.
-type Record struct {
-	store      *Store
-	path       string
-	size       int
-	kind       Kind
-	digest     [32]byte
-	provenance Provenance
-	closed     bool // protected by store.mutex
-}
-
 // PutReader copies and hashes a bounded input into a private file. maximum must
 // be 1..64 MiB and is reserved until EOF, then reduced to the actual size. A
 // concurrent write may therefore fail its reservation before the disk is full.
@@ -147,6 +133,39 @@ func (s *Store) PutReader(ctx context.Context, kind Kind, src io.Reader, provena
 	return record, nil
 }
 
+// Close removes all files and prevents further writes and opens. Existing open
+// readers must still be closed by their owners. It is safe to call repeatedly.
+func (s *Store) Close() error {
+	if s == nil {
+		return nil
+	}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	s.closed = true
+
+	if err := os.RemoveAll(s.directory); err != nil {
+		return errors.Join(ErrResource, err)
+	}
+
+	return nil
+}
+
+// Record identifies exact untrusted bytes retained by a Store. Its immutable
+// metadata remains available after closure. Closing the record releases its file
+// and storage reservation; repeated Close calls are safe. Open fails after the
+// record or its store has closed.
+type Record struct {
+	store      *Store
+	path       string
+	size       int
+	kind       Kind
+	digest     [32]byte
+	provenance Provenance
+	closed     bool // protected by store.mutex
+}
+
 // Open returns a new independently positioned reader over the original bytes.
 // The reader checks ctx before and after reads; it remains owned by the caller,
 // including after Record.Close or Store.Close. The private files are not exposed
@@ -181,40 +200,6 @@ func (r *Record) Open(ctx context.Context) (io.ReadCloser, error) {
 	}
 
 	return &recordReader{Closer: file, reader: streamio.Reader{Context: ctx, Source: file, Limit: int64(r.size), LimitError: ErrLimit}}, nil
-}
-
-type recordReader struct {
-	io.Closer
-	reader streamio.Reader
-}
-
-func (r *recordReader) Read(p []byte) (int, error) {
-	n, err := r.reader.Read(p)
-
-	if canceled := r.reader.Context.Err(); canceled != nil {
-		return n, errors.Join(err, canceled)
-	}
-
-	return n, err
-}
-
-// Close removes all files and prevents further writes and opens. Existing open
-// readers must still be closed by their owners. It is safe to call repeatedly.
-func (s *Store) Close() error {
-	if s == nil {
-		return nil
-	}
-
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	s.closed = true
-
-	if err := os.RemoveAll(s.directory); err != nil {
-		return errors.Join(ErrResource, err)
-	}
-
-	return nil
 }
 
 // Close releases a stored record. It does not close already opened readers.
@@ -292,4 +277,19 @@ func (r *Record) Provenance() Provenance {
 	p.Redirects = append([]string(nil), p.Redirects...)
 
 	return p
+}
+
+type recordReader struct {
+	io.Closer
+	reader streamio.Reader
+}
+
+func (r *recordReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+
+	if canceled := r.reader.Context.Err(); canceled != nil {
+		return n, errors.Join(err, canceled)
+	}
+
+	return n, err
 }

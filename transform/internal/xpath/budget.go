@@ -126,6 +126,29 @@ func ChargeTree(ctx context.Context, node xdm.Node) error {
 	return visit(node)
 }
 
+// ChargeString bounds string construction before concatenation/allocation.
+func ChargeString(ctx context.Context, sizes ...int) error {
+	b := getBudget(ctx)
+	if b == nil {
+		return ctx.Err()
+	}
+
+	for _, n := range sizes {
+		if n < 0 || n > b.bytes-b.usedBytes {
+			return ErrBudget
+		}
+
+		b.usedBytes += n
+	}
+
+	return ctx.Err()
+}
+
+// WithEnvironment supplies only the application's explicit environment snapshot.
+func WithEnvironment(ctx context.Context, values map[string]string) context.Context {
+	return context.WithValue(ctx, environmentKey{}, values)
+}
+
 // boundedContentSize preserves Content's string-value accounting without
 // constructing that value or a byte copy merely to measure it.
 func boundedContentSize(ctx context.Context, node xdm.Node, remaining int) (int, error) {
@@ -157,29 +180,6 @@ func boundedContentSize(ctx context.Context, node xdm.Node, remaining int) (int,
 	}
 
 	return size, nil
-}
-
-// ChargeString bounds string construction before concatenation/allocation.
-func ChargeString(ctx context.Context, sizes ...int) error {
-	b := getBudget(ctx)
-	if b == nil {
-		return ctx.Err()
-	}
-
-	for _, n := range sizes {
-		if n < 0 || n > b.bytes-b.usedBytes {
-			return ErrBudget
-		}
-
-		b.usedBytes += n
-	}
-
-	return ctx.Err()
-}
-
-// WithEnvironment supplies only the application's explicit environment snapshot.
-func WithEnvironment(ctx context.Context, values map[string]string) context.Context {
-	return context.WithValue(ctx, environmentKey{}, values)
 }
 
 type (

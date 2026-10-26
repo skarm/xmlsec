@@ -187,40 +187,6 @@ func (c *compiler) validatePackageOverrideConflicts(oset *overrideSet) error {
 	return nil
 }
 
-type acceptedComponent struct {
-	kind       string
-	name       string
-	visibility string
-}
-
-func packageComponents(pkg *Stylesheet) []acceptedComponent {
-	var components []acceptedComponent
-	for name := range pkg.namedTemplates {
-		components = append(components, acceptedComponent{xslElemTemplate, name, getComponentVisibility(pkg, xslElemTemplate, name)})
-	}
-
-	for key := range pkg.functions {
-		name := functionVisKey(key.Name, key.Arity)
-		components = append(components, acceptedComponent{xslElemFunction, name, getComponentVisibility(pkg, xslElemFunction, name)})
-	}
-
-	for _, v := range pkg.globalVars {
-		components = append(components, acceptedComponent{xslElemVariable, v.Name, getComponentVisibility(pkg, xslElemVariable, v.Name)})
-	}
-
-	for name := range pkg.attributeSets {
-		components = append(components, acceptedComponent{xslElemAttributeSet, name, getComponentVisibility(pkg, xslElemAttributeSet, name)})
-	}
-
-	for name := range pkg.modeDefs {
-		if name != "" && name != modeDefault && name != modeUnnamed {
-			components = append(components, acceptedComponent{xslElemMode, name, getComponentVisibility(pkg, xslElemMode, name)})
-		}
-	}
-
-	return components
-}
-
 func (c *compiler) validatePackageAcceptVisibility(ctx context.Context, pkg *Stylesheet, rules []acceptRule) error {
 	components := packageComponents(pkg)
 
@@ -249,20 +215,6 @@ func (c *compiler) validatePackageAcceptVisibility(ctx context.Context, pkg *Sty
 	}
 
 	return nil
-}
-
-// isAcceptVisibilityCompatible implements the table in XSLT 3.0 3.5.3.2.
-func isAcceptVisibilityCompatible(declared, accepted string) bool {
-	switch declared {
-	case visPublic:
-		return accepted == visPublic || accepted == visPrivate || accepted == visFinal || accepted == visHidden
-	case visFinal:
-		return accepted == visPrivate || accepted == visFinal || accepted == visHidden
-	case visAbstract:
-		return accepted == visAbstract || accepted == visHidden
-	default:
-		return false
-	}
 }
 
 func (c *compiler) validatePackageAcceptOverrides(acceptRules []acceptRule, overrideNames map[string]struct{}) error {
@@ -296,15 +248,6 @@ func (c *compiler) validatePackageAcceptOverrides(acceptRules []acceptRule, over
 	}
 
 	return nil
-}
-
-func splitOverrideKey(key string) []string {
-	typ, name, ok := strings.Cut(key, ":")
-	if !ok {
-		return nil
-	}
-
-	return []string{typ, name}
 }
 
 func (c *compiler) mergePackageTemplates(pkg *Stylesheet, acceptRules []acceptRule, overrideNames map[string]struct{}) error {
@@ -672,6 +615,63 @@ func (c *compiler) mergePackageOverrides(ctx context.Context, pkg *Stylesheet, o
 	}
 
 	return nil
+}
+
+type acceptedComponent struct {
+	kind       string
+	name       string
+	visibility string
+}
+
+func packageComponents(pkg *Stylesheet) []acceptedComponent {
+	var components []acceptedComponent
+	for name := range pkg.namedTemplates {
+		components = append(components, acceptedComponent{xslElemTemplate, name, getComponentVisibility(pkg, xslElemTemplate, name)})
+	}
+
+	for key := range pkg.functions {
+		name := functionVisKey(key.Name, key.Arity)
+		components = append(components, acceptedComponent{xslElemFunction, name, getComponentVisibility(pkg, xslElemFunction, name)})
+	}
+
+	for _, v := range pkg.globalVars {
+		components = append(components, acceptedComponent{xslElemVariable, v.Name, getComponentVisibility(pkg, xslElemVariable, v.Name)})
+	}
+
+	for name := range pkg.attributeSets {
+		components = append(components, acceptedComponent{xslElemAttributeSet, name, getComponentVisibility(pkg, xslElemAttributeSet, name)})
+	}
+
+	for name := range pkg.modeDefs {
+		if name != "" && name != modeDefault && name != modeUnnamed {
+			components = append(components, acceptedComponent{xslElemMode, name, getComponentVisibility(pkg, xslElemMode, name)})
+		}
+	}
+
+	return components
+}
+
+// isAcceptVisibilityCompatible implements the table in XSLT 3.0 3.5.3.2.
+func isAcceptVisibilityCompatible(declared, accepted string) bool {
+	switch declared {
+	case visPublic:
+		return accepted == visPublic || accepted == visPrivate || accepted == visFinal || accepted == visHidden
+	case visFinal:
+		return accepted == visPrivate || accepted == visFinal || accepted == visHidden
+	case visAbstract:
+		return accepted == visAbstract || accepted == visHidden
+	default:
+		return false
+	}
+}
+
+func splitOverrideKey(key string) []string {
+	typ, name, ok := strings.Cut(key, ":")
+	if !ok {
+		return nil
+	}
+
+	return []string{typ, name}
 }
 
 // modePackage identifies the rule list bound to a mode, independently of the

@@ -204,29 +204,6 @@ func (g *keyGraph) keyName(node graphNode) (string, bool, error) {
 	return "", false, nil
 }
 
-type graphSources struct {
-	graph     *keyGraph
-	target    graphNode
-	algorithm string
-	size      int
-	depth     int
-	plans     []*graphKeyPlan
-}
-
-func (b *graphSources) add(plan *graphKeyPlan, err error) error {
-	if errors.Is(err, errGraphKeyUnavailable) {
-		return nil
-	}
-
-	if err != nil {
-		return err
-	}
-
-	b.plans = append(b.plans, plan)
-
-	return nil
-}
-
 func (g *keyGraph) consumerKey(node graphNode, info document.Element, algorithm string, size, depth int) (*graphKeyPlan, error) {
 	if depth > g.limits.MaxDepth {
 		return nil, graphLimitError()
@@ -258,107 +235,6 @@ func (g *keyGraph) consumerKey(node graphNode, info document.Element, algorithm 
 	}
 
 	return &graphKeyPlan{sources: b.plans, keyBytes: size}, nil
-}
-
-func (b *graphSources) keyInfo(info document.Element) error {
-	g := b.graph
-	if !info.Valid() {
-		return b.add(g.namedMaterial("", b.algorithm, b.size))
-	}
-
-	if !graphAttributes(info, "Id") || len(info.Children()) == 0 || !graphStructuralText(info) {
-		return ErrFormat
-	}
-
-	for _, child := range info.Children() {
-		switch child.Name() {
-		case elementName(SignatureNamespace, lexicon.DSigElementKeyName):
-			name, err := graphNameText(child)
-			if err != nil {
-				return err
-			}
-
-			if err := b.named(name); err != nil {
-				return err
-			}
-		case elementName(Namespace, "EncryptedKey"), elementName(Namespace11, "DerivedKey"):
-			_, raw := tree.Unwrap(child)
-			if err := b.add(g.keyPlan(graphNode{b.target.document, raw}, b.algorithm, b.size, b.depth+1)); err != nil {
-				return err
-			}
-		case elementName(SignatureNamespace, "RetrievalMethod"):
-			candidate, err := g.retrievedKey(b.target.document, child)
-			if err != nil {
-				return err
-			}
-
-			if err := b.add(g.keyPlan(candidate, b.algorithm, b.size, b.depth+1)); err != nil {
-				return err
-			}
-		default:
-			return ErrFormat
-		}
-	}
-
-	return nil
-}
-
-func (b *graphSources) named(name string) error {
-	g := b.graph
-	if err := b.add(g.namedMaterial(name, b.algorithm, b.size)); err != nil {
-		return err
-	}
-
-	for _, doc := range g.ordered {
-		for _, candidate := range doc.keys {
-			if err := g.charge(1, 0); err != nil {
-				return err
-			}
-
-			carried, present, err := g.keyName(candidate)
-			if err != nil {
-				return err
-			}
-
-			if !present || carried != name {
-				continue
-			}
-
-			if err := b.add(g.keyPlan(candidate, b.algorithm, b.size, b.depth+1)); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-func (b *graphSources) references() error {
-	g := b.graph
-	for _, doc := range g.ordered {
-		for _, candidate := range doc.keys {
-			if err := g.charge(1, 0); err != nil {
-				return err
-			}
-
-			if candidate == b.target {
-				continue
-			}
-
-			matched, err := g.referenceListMatches(candidate, b.target)
-			if err != nil {
-				return err
-			}
-
-			if matched {
-				if err := b.add(g.keyPlan(candidate, b.algorithm, b.size, b.depth+1)); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	return nil
 }
 
 func (g *keyGraph) keyPlan(node graphNode, consumer string, size, depth int) (*graphKeyPlan, error) {
@@ -795,18 +671,6 @@ func (g *keyGraph) runKey(plan *graphKeyPlan) ([]byte, error) {
 	return value, nil
 }
 
-func graphRetrievalType(name document.Name) string {
-	if name == elementName(Namespace, "EncryptedKey") {
-		return Namespace + "EncryptedKey"
-	}
-
-	if name == elementName(Namespace11, "DerivedKey") {
-		return Namespace11 + "DerivedKey"
-	}
-
-	return ""
-}
-
 func (g *keyGraph) retrievedKey(doc *graphDocument, method document.Element) (graphNode, error) {
 	if !graphAttributes(method, "URI", "Type") || len(method.Children()) != 0 || !xmlSpace(method.Text()) {
 		return graphNode{}, ErrFormat
@@ -910,6 +774,142 @@ func (g *keyGraph) referenceMatches(source *graphDocument, element document.Elem
 	candidate, err := g.localTarget(target.document, uri)
 
 	return candidate == target, err
+}
+
+type graphSources struct {
+	graph     *keyGraph
+	target    graphNode
+	algorithm string
+	size      int
+	depth     int
+	plans     []*graphKeyPlan
+}
+
+func (b *graphSources) add(plan *graphKeyPlan, err error) error {
+	if errors.Is(err, errGraphKeyUnavailable) {
+		return nil
+	}
+
+	if err != nil {
+		return err
+	}
+
+	b.plans = append(b.plans, plan)
+
+	return nil
+}
+
+func (b *graphSources) keyInfo(info document.Element) error {
+	g := b.graph
+	if !info.Valid() {
+		return b.add(g.namedMaterial("", b.algorithm, b.size))
+	}
+
+	if !graphAttributes(info, "Id") || len(info.Children()) == 0 || !graphStructuralText(info) {
+		return ErrFormat
+	}
+
+	for _, child := range info.Children() {
+		switch child.Name() {
+		case elementName(SignatureNamespace, lexicon.DSigElementKeyName):
+			name, err := graphNameText(child)
+			if err != nil {
+				return err
+			}
+
+			if err := b.named(name); err != nil {
+				return err
+			}
+		case elementName(Namespace, "EncryptedKey"), elementName(Namespace11, "DerivedKey"):
+			_, raw := tree.Unwrap(child)
+			if err := b.add(g.keyPlan(graphNode{b.target.document, raw}, b.algorithm, b.size, b.depth+1)); err != nil {
+				return err
+			}
+		case elementName(SignatureNamespace, "RetrievalMethod"):
+			candidate, err := g.retrievedKey(b.target.document, child)
+			if err != nil {
+				return err
+			}
+
+			if err := b.add(g.keyPlan(candidate, b.algorithm, b.size, b.depth+1)); err != nil {
+				return err
+			}
+		default:
+			return ErrFormat
+		}
+	}
+
+	return nil
+}
+
+func (b *graphSources) named(name string) error {
+	g := b.graph
+	if err := b.add(g.namedMaterial(name, b.algorithm, b.size)); err != nil {
+		return err
+	}
+
+	for _, doc := range g.ordered {
+		for _, candidate := range doc.keys {
+			if err := g.charge(1, 0); err != nil {
+				return err
+			}
+
+			carried, present, err := g.keyName(candidate)
+			if err != nil {
+				return err
+			}
+
+			if !present || carried != name {
+				continue
+			}
+
+			if err := b.add(g.keyPlan(candidate, b.algorithm, b.size, b.depth+1)); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (b *graphSources) references() error {
+	g := b.graph
+	for _, doc := range g.ordered {
+		for _, candidate := range doc.keys {
+			if err := g.charge(1, 0); err != nil {
+				return err
+			}
+
+			if candidate == b.target {
+				continue
+			}
+
+			matched, err := g.referenceListMatches(candidate, b.target)
+			if err != nil {
+				return err
+			}
+
+			if matched {
+				if err := b.add(g.keyPlan(candidate, b.algorithm, b.size, b.depth+1)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func graphRetrievalType(name document.Name) string {
+	if name == elementName(Namespace, "EncryptedKey") {
+		return Namespace + "EncryptedKey"
+	}
+
+	if name == elementName(Namespace11, "DerivedKey") {
+		return Namespace11 + "DerivedKey"
+	}
+
+	return ""
 }
 
 func graphHasAttribute(element document.Element, name string) bool {

@@ -269,139 +269,6 @@ type template struct {
 	explicitPriority bool
 }
 
-type variable struct {
-	signatureTypeKey  string
-	TypeNamespaces    map[string]string
-	HasXPathDefaultNS bool
-
-	Name           string
-	Select         *xpath.Expression
-	Body           []instruction // used when select is absent
-	As             string        // type declaration (e.g., "element()*")
-	Visibility     string        // "public", "private", "final", "abstract"
-	OwnerPackage   *Stylesheet   // package that defined this variable (nil = main stylesheet)
-	Original       globalBinding // hidden original component bound to $xsl:original
-	Declaration    *variable     // shared declaration identity of accepted copies
-	ImportPrec     int           // import precedence for XTSE0630 duplicate detection
-	StaticValue    xdm.Sequence  // pre-computed value for static="yes" variables
-	XPathDefaultNS string        // xpath-default-namespace in scope at definition site
-	StaticBaseURI  string        // declaration-site static base URI (module base + any xml:base override)
-}
-
-type param struct {
-	StaticValue       xdm.Sequence
-	Original          globalBinding
-	TypeNamespaces    map[string]string
-	OwnerPackage      *Stylesheet
-	Declaration       *param
-	Select            *xpath.Expression
-	signatureTypeKey  string
-	XPathDefaultNS    string
-	Name              string
-	As                string        // type declaration (e.g., "xs:integer")
-	Visibility        string        // "public", "private", "final", "abstract" (for global params)
-	StaticBaseURI     string        // declaration-site static base URI (module base + any xml:base override)
-	Body              []instruction // used when select is absent
-	ImportPrec        int           // import precedence for XTSE0630 duplicate detection
-	HasXPathDefaultNS bool
-	IsStatic          bool // xmlsec: static parameters retain their compile-time values.
-	Required          bool
-	Tunnel            bool
-}
-
-func (p *param) implicitlyMandatory() bool {
-	return p.Select == nil && len(p.Body) == 0 && p.As != "" && !allowsEmptySequence(p.As)
-}
-
-// globalBinding identifies one declaration, independently of its symbolic name
-// and of the accepted copies exposing it in other packages.
-type globalBinding struct {
-	variable *variable
-	param    *param
-}
-
-func (v *variable) binding() globalBinding {
-	if v.Declaration != nil {
-		return globalBinding{variable: v.Declaration}
-	}
-
-	return globalBinding{variable: v}
-}
-
-func (p *param) binding() globalBinding {
-	if p.Declaration != nil {
-		return globalBinding{param: p.Declaration}
-	}
-
-	return globalBinding{param: p}
-}
-
-func (b globalBinding) typeKey() string {
-	if b.variable != nil {
-		return b.variable.signatureTypeKey
-	}
-
-	return b.param.signatureTypeKey
-}
-
-type keyDef struct {
-	StaticBaseURI string
-	Match         *pattern
-	Use           *xpath.Expression
-	Name          string
-	Collation     string        // collation URI (explicit or default; empty = codepoint)
-	Body          []instruction // content constructor (when use attribute is absent)
-	Composite     bool          // composite="yes" on xsl:key
-	Compat        bool          // backwards-compatible processing (effective version < 2.0)
-}
-
-type characterMapDef struct {
-	Name             string          // expanded QName
-	Mappings         map[rune]string // character -> replacement string
-	UseCharacterMaps []string        // other character maps to include
-}
-
-type accumulatorDef struct {
-	Initial           *xpath.Expression
-	Name              string
-	As                string            // type declaration
-	Type              *xdm.SequenceType // type bound in the declaration static context
-	InitialBody       []instruction
-	Rules             []*accumulatorRule
-	ImportPrec        int // import precedence for conflict resolution
-	Streamable        bool
-	FromPackage       bool // true if imported via xsl:use-package
-	conflictDuplicate bool // deferred XTSE3350: same-precedence duplicate
-	CyclicDeps        bool // XTDE3400: cyclic dependency detected
-}
-
-type accumulatorRule struct {
-	Match  *pattern
-	Phase  string // "start" or "end"
-	Select *xpath.Expression
-	Body   []instruction
-	New    bool // new="yes" starts a fresh value
-}
-
-// nameTest is used for xsl:strip-space and xsl:preserve-space element names.
-//
-// The namespace URI for a prefixed or default-namespace name is resolved at
-// compile time using the namespace context in scope at the declaration (the
-// xsl:strip-space / xsl:preserve-space element). This is required because a
-// stylesheet and the modules it imports may bind the same prefix to different
-// URIs; relying on a single flat runtime binding map would mis-resolve such
-// names. ImportPrec records the import precedence of the declaring module so
-// that conflicting strip/preserve rules are resolved by precedence (XTSE0270
-// is only raised for genuine same-precedence conflicts).
-type nameTest struct {
-	Prefix     string
-	Local      string // "*" = wildcard
-	URI        string // resolved namespace URI (set at compile time)
-	HasURI     bool   // true when URI was explicitly resolved (distinguishes "" from unset)
-	ImportPrec int    // import precedence of the declaring module
-	SpaceOrder int    // declaration order for XSLT 2.0 whitespace conflict recovery
-}
-
 // DefaultOutputDef returns the default output definition for the stylesheet
 // as declared at compile time. For the effective output definition that
 // includes runtime overrides from xsl:result-document, use
@@ -470,6 +337,159 @@ func (ss *Stylesheet) defaultItemSeparator() *string {
 	}
 
 	return nil
+}
+
+// processorLanguage also covers internal zero-value stylesheet helpers.
+func (ss *Stylesheet) processorLanguage() int {
+	if ss.processorVersion == 0 {
+		return 30
+	}
+
+	return ss.processorVersion
+}
+
+func (ss *Stylesheet) xpathVersion() int {
+	switch ss.processorLanguage() {
+	case 10:
+		return 10
+	case 20:
+		return 20
+	default:
+		return 31
+	}
+}
+
+type variable struct {
+	signatureTypeKey  string
+	TypeNamespaces    map[string]string
+	HasXPathDefaultNS bool
+
+	Name           string
+	Select         *xpath.Expression
+	Body           []instruction // used when select is absent
+	As             string        // type declaration (e.g., "element()*")
+	Visibility     string        // "public", "private", "final", "abstract"
+	OwnerPackage   *Stylesheet   // package that defined this variable (nil = main stylesheet)
+	Original       globalBinding // hidden original component bound to $xsl:original
+	Declaration    *variable     // shared declaration identity of accepted copies
+	ImportPrec     int           // import precedence for XTSE0630 duplicate detection
+	StaticValue    xdm.Sequence  // pre-computed value for static="yes" variables
+	XPathDefaultNS string        // xpath-default-namespace in scope at definition site
+	StaticBaseURI  string        // declaration-site static base URI (module base + any xml:base override)
+}
+
+func (v *variable) binding() globalBinding {
+	if v.Declaration != nil {
+		return globalBinding{variable: v.Declaration}
+	}
+
+	return globalBinding{variable: v}
+}
+
+type param struct {
+	StaticValue       xdm.Sequence
+	Original          globalBinding
+	TypeNamespaces    map[string]string
+	OwnerPackage      *Stylesheet
+	Declaration       *param
+	Select            *xpath.Expression
+	signatureTypeKey  string
+	XPathDefaultNS    string
+	Name              string
+	As                string        // type declaration (e.g., "xs:integer")
+	Visibility        string        // "public", "private", "final", "abstract" (for global params)
+	StaticBaseURI     string        // declaration-site static base URI (module base + any xml:base override)
+	Body              []instruction // used when select is absent
+	ImportPrec        int           // import precedence for XTSE0630 duplicate detection
+	HasXPathDefaultNS bool
+	IsStatic          bool // xmlsec: static parameters retain their compile-time values.
+	Required          bool
+	Tunnel            bool
+}
+
+func (p *param) implicitlyMandatory() bool {
+	return p.Select == nil && len(p.Body) == 0 && p.As != "" && !allowsEmptySequence(p.As)
+}
+
+func (p *param) binding() globalBinding {
+	if p.Declaration != nil {
+		return globalBinding{param: p.Declaration}
+	}
+
+	return globalBinding{param: p}
+}
+
+// globalBinding identifies one declaration, independently of its symbolic name
+// and of the accepted copies exposing it in other packages.
+type globalBinding struct {
+	variable *variable
+	param    *param
+}
+
+func (b globalBinding) typeKey() string {
+	if b.variable != nil {
+		return b.variable.signatureTypeKey
+	}
+
+	return b.param.signatureTypeKey
+}
+
+type keyDef struct {
+	StaticBaseURI string
+	Match         *pattern
+	Use           *xpath.Expression
+	Name          string
+	Collation     string        // collation URI (explicit or default; empty = codepoint)
+	Body          []instruction // content constructor (when use attribute is absent)
+	Composite     bool          // composite="yes" on xsl:key
+	Compat        bool          // backwards-compatible processing (effective version < 2.0)
+}
+
+type characterMapDef struct {
+	Name             string          // expanded QName
+	Mappings         map[rune]string // character -> replacement string
+	UseCharacterMaps []string        // other character maps to include
+}
+
+type accumulatorDef struct {
+	Initial           *xpath.Expression
+	Name              string
+	As                string            // type declaration
+	Type              *xdm.SequenceType // type bound in the declaration static context
+	InitialBody       []instruction
+	Rules             []*accumulatorRule
+	ImportPrec        int // import precedence for conflict resolution
+	Streamable        bool
+	FromPackage       bool // true if imported via xsl:use-package
+	conflictDuplicate bool // deferred XTSE3350: same-precedence duplicate
+	CyclicDeps        bool // XTDE3400: cyclic dependency detected
+}
+
+type accumulatorRule struct {
+	Match  *pattern
+	Phase  string // "start" or "end"
+	Select *xpath.Expression
+	Body   []instruction
+	New    bool // new="yes" starts a fresh value
+}
+
+// nameTest is used for xsl:strip-space and xsl:preserve-space element names.
+//
+// The namespace URI for a prefixed or default-namespace name is resolved at
+// compile time using the namespace context in scope at the declaration (the
+// xsl:strip-space / xsl:preserve-space element). This is required because a
+// stylesheet and the modules it imports may bind the same prefix to different
+// URIs; relying on a single flat runtime binding map would mis-resolve such
+// names. ImportPrec records the import precedence of the declaring module so
+// that conflicting strip/preserve rules are resolved by precedence (XTSE0270
+// is only raised for genuine same-precedence conflicts).
+type nameTest struct {
+	Prefix     string
+	Local      string // "*" = wildcard
+	URI        string // resolved namespace URI (set at compile time)
+	HasURI     bool   // true when URI was explicitly resolved (distinguishes "" from unset)
+	ImportPrec int    // import precedence of the declaring module
+	SpaceOrder int    // declaration order for XSLT 2.0 whitespace conflict recovery
 }
 
 // OutputDef retains serialization settings for a compiled xsl:output definition. Nil
@@ -560,24 +580,4 @@ func (o *OutputDef) GetUseCharacterMaps() []string {
 	}
 
 	return o.UseCharacterMaps
-}
-
-// processorLanguage also covers internal zero-value stylesheet helpers.
-func (ss *Stylesheet) processorLanguage() int {
-	if ss.processorVersion == 0 {
-		return 30
-	}
-
-	return ss.processorVersion
-}
-
-func (ss *Stylesheet) xpathVersion() int {
-	switch ss.processorLanguage() {
-	case 10:
-		return 10
-	case 20:
-		return 20
-	default:
-		return 31
-	}
 }

@@ -19,51 +19,14 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 )
 
-func validateVersionedCast(ctx context.Context, source xdm.AtomicValue, target string) error {
-	if XMLSchemaVersion(ctx) != 10 {
-		return nil
-	}
-
-	source = normalizeCastSource(source)
-	if source.TypeName != xdm.TypeUntypedAtomic && !xdm.IsStringDerived(source.TypeName) {
-		return nil
-	}
-
-	switch target {
-	case xdm.TypeDouble, xdm.TypeFloat, xdm.TypeDate, xdm.TypeDateTime,
-		xdm.TypeDateTimeStamp, xdm.TypeGYear, xdm.TypeGYearMonth, xdm.TypeAnyURI:
-		text := collapseXMLWhitespace(source.StringVal())
-		if err := lexical.ValidateBuiltin(text, strings.TrimPrefix(target, "xs:"), lexical.Version10); err != nil {
-			return castError(text, target)
-		}
-	}
-
-	return nil
-}
+// msgDateTimeStampTimezone is the FORG0001 message for an xs:dateTimeStamp
+// value that is missing its mandatory timezone.
+const msgDateTimeStampTimezone = "xs:dateTimeStamp requires a timezone"
 
 // CastFromStringContext applies the invocation's datatype edition and budgets.
 func CastFromStringContext(ctx context.Context, source, target string) (xdm.AtomicValue, error) {
 	return CastAtomicContext(ctx, xdm.AtomicValue{TypeName: xdm.TypeString, Value: source}, target)
 }
-
-// castToNumeric preserves an existing union member; strings and booleans
-// choose the first castable member, xs:double (F&O 3.1 §18.4).
-func castToNumeric(ctx context.Context, value xdm.AtomicValue) (xdm.AtomicValue, error) {
-	source := normalizeCastSource(value)
-	if source.IsNumeric() {
-		return value, nil
-	}
-
-	if source.TypeName != xdm.TypeBoolean && source.TypeName != xdm.TypeUntypedAtomic && !xdm.IsStringDerived(source.TypeName) {
-		return xdm.AtomicValue{}, &xdm.Error{Code: errCodeFORG0001, Message: "cannot cast " + value.TypeName + " to " + xdm.TypeNumeric}
-	}
-
-	return CastAtomicContext(ctx, value, xdm.TypeDouble)
-}
-
-// msgDateTimeStampTimezone is the FORG0001 message for an xs:dateTimeStamp
-// value that is missing its mandatory timezone.
-const msgDateTimeStampTimezone = "xs:dateTimeStamp requires a timezone"
 
 // CastAtomic casts an AtomicValue to the target type.
 func CastAtomic(v xdm.AtomicValue, targetType string) (xdm.AtomicValue, error) {
@@ -117,6 +80,104 @@ func CastAtomic(v xdm.AtomicValue, targetType string) (xdm.AtomicValue, error) {
 	}
 
 	return castBuiltinAtomic(v, targetType)
+}
+
+// CastFromString casts a string value to the target atomic type.
+func CastFromString(s string, targetType string) (xdm.AtomicValue, error) {
+	switch targetType {
+	case xdm.TypeString, xdm.TypeUntypedAtomic:
+		return xdm.AtomicValue{TypeName: targetType, Value: s}, nil
+	case xdm.TypeNormalizedString:
+		return castDerivedString(s, targetType)
+	case "xs:anyType", "xs:untyped":
+		return xdm.AtomicValue{TypeName: xdm.TypeUntypedAtomic, Value: s}, nil
+	}
+
+	// XSD whiteSpace applies only to XML S, not all Unicode whitespace.
+	trimmed := strings.Trim(s, " \t\r\n")
+
+	switch targetType {
+	case xdm.TypeInteger, xdm.TypeDecimal, xdm.TypeDouble, xdm.TypeFloat, xdm.TypeBoolean:
+		return castNumericLexical(trimmed, targetType)
+	case xdm.TypeDate, xdm.TypeDateTime, xdm.TypeDateTimeStamp, xdm.TypeTime:
+		return castCalendarLexical(trimmed, targetType)
+	case xdm.TypeDuration, xdm.TypeDayTimeDuration, xdm.TypeYearMonthDuration:
+		return castDurationLexical(trimmed, targetType)
+	case xdm.TypeBase64Binary, xdm.TypeHexBinary:
+		return castBinaryLexical(trimmed, targetType)
+	}
+
+	if isIntegerSubtype(targetType) {
+		return castIntegerLexical(trimmed, targetType)
+	}
+	// Only the remaining string-backed values can retain a trimmed source.
+	if len(trimmed) != len(s) {
+		trimmed = strings.Clone(trimmed)
+	}
+
+	s = trimmed
+
+	switch targetType {
+	case xdm.TypeAnyURI:
+		return xdm.AtomicValue{TypeName: targetType, Value: collapseWhitespace(s)}, nil
+	case xdm.TypeGDay:
+		return castGregorianLexical(s, targetType, reGDay)
+	case xdm.TypeGMonth:
+		return castGregorianLexical(s, targetType, reGMonth)
+	case xdm.TypeGMonthDay:
+		return castGregorianLexical(s, targetType, reGMonthDay)
+	case xdm.TypeGYear:
+		return castGregorianLexical(s, targetType, reGYear)
+	case xdm.TypeGYearMonth:
+		return castGregorianLexical(s, targetType, reGYearMonth)
+	case xdm.TypeNormalizedString, xdm.TypeToken, xdm.TypeLanguage, xdm.TypeName, xdm.TypeNCName,
+		xdm.TypeNMTOKEN, xdm.TypeNMTOKENS, xdm.TypeENTITY, xdm.TypeID, xdm.TypeIDREF, xdm.TypeIDREFS:
+		return castDerivedString(s, targetType)
+	case xdm.TypeNOTATION:
+		return xdm.AtomicValue{TypeName: targetType, Value: s}, nil
+	}
+
+	return xdm.AtomicValue{}, &xdm.Error{
+		Code:    lexicon.ErrXPTY0004,
+		Message: "cannot cast string to " + targetType,
+	}
+}
+
+func validateVersionedCast(ctx context.Context, source xdm.AtomicValue, target string) error {
+	if XMLSchemaVersion(ctx) != 10 {
+		return nil
+	}
+
+	source = normalizeCastSource(source)
+	if source.TypeName != xdm.TypeUntypedAtomic && !xdm.IsStringDerived(source.TypeName) {
+		return nil
+	}
+
+	switch target {
+	case xdm.TypeDouble, xdm.TypeFloat, xdm.TypeDate, xdm.TypeDateTime,
+		xdm.TypeDateTimeStamp, xdm.TypeGYear, xdm.TypeGYearMonth, xdm.TypeAnyURI:
+		text := collapseXMLWhitespace(source.StringVal())
+		if err := lexical.ValidateBuiltin(text, strings.TrimPrefix(target, "xs:"), lexical.Version10); err != nil {
+			return castError(text, target)
+		}
+	}
+
+	return nil
+}
+
+// castToNumeric preserves an existing union member; strings and booleans
+// choose the first castable member, xs:double (F&O 3.1 §18.4).
+func castToNumeric(ctx context.Context, value xdm.AtomicValue) (xdm.AtomicValue, error) {
+	source := normalizeCastSource(value)
+	if source.IsNumeric() {
+		return value, nil
+	}
+
+	if source.TypeName != xdm.TypeBoolean && source.TypeName != xdm.TypeUntypedAtomic && !xdm.IsStringDerived(source.TypeName) {
+		return xdm.AtomicValue{}, &xdm.Error{Code: errCodeFORG0001, Message: "cannot cast " + value.TypeName + " to " + xdm.TypeNumeric}
+	}
+
+	return CastAtomicContext(ctx, value, xdm.TypeDouble)
 }
 
 func isAbstractCastTarget(typeName string) bool {
@@ -371,67 +432,6 @@ func checkBigIntRange(n, minVal, maxVal *big.Int, typeName string) error {
 	}
 
 	return nil
-}
-
-// CastFromString casts a string value to the target atomic type.
-func CastFromString(s string, targetType string) (xdm.AtomicValue, error) {
-	switch targetType {
-	case xdm.TypeString, xdm.TypeUntypedAtomic:
-		return xdm.AtomicValue{TypeName: targetType, Value: s}, nil
-	case xdm.TypeNormalizedString:
-		return castDerivedString(s, targetType)
-	case "xs:anyType", "xs:untyped":
-		return xdm.AtomicValue{TypeName: xdm.TypeUntypedAtomic, Value: s}, nil
-	}
-
-	// XSD whiteSpace applies only to XML S, not all Unicode whitespace.
-	trimmed := strings.Trim(s, " \t\r\n")
-
-	switch targetType {
-	case xdm.TypeInteger, xdm.TypeDecimal, xdm.TypeDouble, xdm.TypeFloat, xdm.TypeBoolean:
-		return castNumericLexical(trimmed, targetType)
-	case xdm.TypeDate, xdm.TypeDateTime, xdm.TypeDateTimeStamp, xdm.TypeTime:
-		return castCalendarLexical(trimmed, targetType)
-	case xdm.TypeDuration, xdm.TypeDayTimeDuration, xdm.TypeYearMonthDuration:
-		return castDurationLexical(trimmed, targetType)
-	case xdm.TypeBase64Binary, xdm.TypeHexBinary:
-		return castBinaryLexical(trimmed, targetType)
-	}
-
-	if isIntegerSubtype(targetType) {
-		return castIntegerLexical(trimmed, targetType)
-	}
-	// Only the remaining string-backed values can retain a trimmed source.
-	if len(trimmed) != len(s) {
-		trimmed = strings.Clone(trimmed)
-	}
-
-	s = trimmed
-
-	switch targetType {
-	case xdm.TypeAnyURI:
-		return xdm.AtomicValue{TypeName: targetType, Value: collapseWhitespace(s)}, nil
-	case xdm.TypeGDay:
-		return castGregorianLexical(s, targetType, reGDay)
-	case xdm.TypeGMonth:
-		return castGregorianLexical(s, targetType, reGMonth)
-	case xdm.TypeGMonthDay:
-		return castGregorianLexical(s, targetType, reGMonthDay)
-	case xdm.TypeGYear:
-		return castGregorianLexical(s, targetType, reGYear)
-	case xdm.TypeGYearMonth:
-		return castGregorianLexical(s, targetType, reGYearMonth)
-	case xdm.TypeNormalizedString, xdm.TypeToken, xdm.TypeLanguage, xdm.TypeName, xdm.TypeNCName,
-		xdm.TypeNMTOKEN, xdm.TypeNMTOKENS, xdm.TypeENTITY, xdm.TypeID, xdm.TypeIDREF, xdm.TypeIDREFS:
-		return castDerivedString(s, targetType)
-	case xdm.TypeNOTATION:
-		return xdm.AtomicValue{TypeName: targetType, Value: s}, nil
-	}
-
-	return xdm.AtomicValue{}, &xdm.Error{
-		Code:    lexicon.ErrXPTY0004,
-		Message: "cannot cast string to " + targetType,
-	}
 }
 
 func castNumericLexical(s, targetType string) (xdm.AtomicValue, error) {

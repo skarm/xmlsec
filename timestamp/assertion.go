@@ -34,21 +34,6 @@ type VerifiedAssertion struct {
 	ordering         bool
 }
 
-func verifiedAssertion(ctx context.Context, token *Token, info Info, tsa []byte, trust *pki.Result) (*VerifiedAssertion, error) {
-	if token == nil || trust == nil {
-		return nil, ErrTrust
-	}
-
-	digest := sha256.New()
-	if _, err := token.WriterTo(ctx).WriteTo(digest); err != nil {
-		return nil, err
-	}
-
-	signer := sha256.Sum256(tsa)
-
-	return &VerifiedAssertion{authenticated: true, accuracy: info.accuracy, hasAccuracy: info.hasAccuracy, ordering: info.ordering, tokenFingerprint: hex.EncodeToString(digest.Sum(nil)), tsaFingerprint: hex.EncodeToString(signer[:]), imprint: Imprint{Hash: info.imprint.Hash, Digest: bytes.Clone(info.imprint.Digest)}, generation: info.at, validation: trust.VerificationTime(), policy: append(asn1.ObjectIdentifier(nil), info.policy...), trust: trust}, nil
-}
-
 // Valid reports whether this value came from a complete configured-policy check.
 func (a *VerifiedAssertion) Valid() bool { return a != nil && a.authenticated && a.trust != nil }
 
@@ -115,25 +100,6 @@ func (a *VerifiedAssertion) Trust() *pki.Result {
 	return a.trust
 }
 
-// Assertion returns the immutable authenticated TSA assertion of this result.
-func (r *Result) Assertion() *VerifiedAssertion {
-	if r == nil {
-		return nil
-	}
-
-	return r.assertion
-}
-
-// Evidence returns the distinct authenticated chain/revocation records used by
-// this result. These records are separate from the token's time/imprint assertion.
-func (r *Result) Evidence() []*pki.VerifiedEvidence {
-	if r == nil || r.trust == nil {
-		return nil
-	}
-
-	return r.trust.Evidence()
-}
-
 // Accuracy returns the authenticated uncertainty around GenTime when supplied.
 // Its absence does not assert zero uncertainty; TSA policy may define accuracy.
 func (a *VerifiedAssertion) Accuracy() (time.Duration, bool) {
@@ -156,6 +122,40 @@ func (a *VerifiedAssertion) Sources() []*evidence.Observation {
 	}
 
 	return append([]*evidence.Observation(nil), a.sources...)
+}
+
+func verifiedAssertion(ctx context.Context, token *Token, info Info, tsa []byte, trust *pki.Result) (*VerifiedAssertion, error) {
+	if token == nil || trust == nil {
+		return nil, ErrTrust
+	}
+
+	digest := sha256.New()
+	if _, err := token.WriterTo(ctx).WriteTo(digest); err != nil {
+		return nil, err
+	}
+
+	signer := sha256.Sum256(tsa)
+
+	return &VerifiedAssertion{authenticated: true, accuracy: info.accuracy, hasAccuracy: info.hasAccuracy, ordering: info.ordering, tokenFingerprint: hex.EncodeToString(digest.Sum(nil)), tsaFingerprint: hex.EncodeToString(signer[:]), imprint: Imprint{Hash: info.imprint.Hash, Digest: bytes.Clone(info.imprint.Digest)}, generation: info.at, validation: trust.VerificationTime(), policy: append(asn1.ObjectIdentifier(nil), info.policy...), trust: trust}, nil
+}
+
+// Assertion returns the immutable authenticated TSA assertion of this result.
+func (r *Result) Assertion() *VerifiedAssertion {
+	if r == nil {
+		return nil
+	}
+
+	return r.assertion
+}
+
+// Evidence returns the distinct authenticated chain/revocation records used by
+// this result. These records are separate from the token's time/imprint assertion.
+func (r *Result) Evidence() []*pki.VerifiedEvidence {
+	if r == nil || r.trust == nil {
+		return nil
+	}
+
+	return r.trust.Evidence()
 }
 
 func (v *Verifier) timestampSources(ctx context.Context, token *Token, response []byte, input pki.Evidence) (pki.Evidence, []*evidence.Observation, error) {

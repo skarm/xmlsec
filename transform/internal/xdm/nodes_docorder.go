@@ -592,6 +592,53 @@ func CompareNodeOrder(a, b Node) int {
 	return 0
 }
 
+// MergeNodeSets merges two node slices, deduplicates, and sorts by document order.
+func MergeNodeSets(a, b []Node, cache *DocOrderCache, maxNodes int) ([]Node, error) {
+	// Resolve every input node's sort key up front, under a single lock, and
+	// index any document the cache does not describe yet. Document
+	// registration order follows first appearance across a then b, which is the
+	// order the deduplicated result would have produced.
+	keys := cache.indexSortKeys(a, b)
+	return mergeNodeSetsWithKeys(a, b, keys, maxNodes)
+}
+
+// DocumentRoot returns the owning Document or the topmost ancestor.
+// Namespace node wrappers may not have OwnerDocument set, so we
+// resolve via Parent first for those.
+func DocumentRoot(n Node) Node {
+	// Namespace node wrappers are created fresh and may lack
+	// OwnerDocument; start from the parent element instead.
+	if n.Type() == NamespaceNode {
+		if p := n.Parent(); p != nil {
+			n = p
+		}
+	}
+	// Walk up the parent chain to find the root. If the topmost node is
+	// a document node, return it. Otherwise return the topmost element
+	// (parentless node — e.g. elements created in sequence mode).
+	// We avoid returning OwnerDocument() directly because parentless
+	// elements may be owned by a temporary document they are not rooted in.
+	top := n
+	for top.Parent() != nil {
+		top = top.Parent()
+	}
+
+	if top.Type() == DocumentNode {
+		return top
+	}
+	// If the topmost ancestor is not a document and OwnerDocument exists,
+	// check if the topmost node is actually a child of that document.
+	if doc := n.OwnerDocument(); doc != nil {
+		for c := doc.FirstChild(); c != nil; c = c.NextSibling() {
+			if c == top {
+				return doc
+			}
+		}
+	}
+
+	return top
+}
+
 func compareOwnedEntryOrder(a, b, owner Node) int {
 	// Namespace nodes come before attribute nodes.
 	if a.Type() == NamespaceNode && b.Type() == AttributeNode {
@@ -710,16 +757,6 @@ func nodeDepth(n Node) int {
 	return depth
 }
 
-// MergeNodeSets merges two node slices, deduplicates, and sorts by document order.
-func MergeNodeSets(a, b []Node, cache *DocOrderCache, maxNodes int) ([]Node, error) {
-	// Resolve every input node's sort key up front, under a single lock, and
-	// index any document the cache does not describe yet. Document
-	// registration order follows first appearance across a then b, which is the
-	// order the deduplicated result would have produced.
-	keys := cache.indexSortKeys(a, b)
-	return mergeNodeSetsWithKeys(a, b, keys, maxNodes)
-}
-
 // mergeNodeSetsWithKeys is MergeNodeSets over the sort keys of a followed by
 // those of b, already resolved by indexSortKeys.
 func mergeNodeSetsWithKeys(a, b []Node, keys []sortKey, maxNodes int) ([]Node, error) {
@@ -780,43 +817,6 @@ func mergeNodeSetsWithKeys(a, b []Node, keys []sortKey, maxNodes int) ([]Node, e
 	sortByPrecomputedKeys(result, resultKeys)
 
 	return result, nil
-}
-
-// DocumentRoot returns the owning Document or the topmost ancestor.
-// Namespace node wrappers may not have OwnerDocument set, so we
-// resolve via Parent first for those.
-func DocumentRoot(n Node) Node {
-	// Namespace node wrappers are created fresh and may lack
-	// OwnerDocument; start from the parent element instead.
-	if n.Type() == NamespaceNode {
-		if p := n.Parent(); p != nil {
-			n = p
-		}
-	}
-	// Walk up the parent chain to find the root. If the topmost node is
-	// a document node, return it. Otherwise return the topmost element
-	// (parentless node — e.g. elements created in sequence mode).
-	// We avoid returning OwnerDocument() directly because parentless
-	// elements may be owned by a temporary document they are not rooted in.
-	top := n
-	for top.Parent() != nil {
-		top = top.Parent()
-	}
-
-	if top.Type() == DocumentNode {
-		return top
-	}
-	// If the topmost ancestor is not a document and OwnerDocument exists,
-	// check if the topmost node is actually a child of that document.
-	if doc := n.OwnerDocument(); doc != nil {
-		for c := doc.FirstChild(); c != nil; c = c.NextSibling() {
-			if c == top {
-				return doc
-			}
-		}
-	}
-
-	return top
 }
 
 // sortKey holds precomputed sort information for a node, avoiding

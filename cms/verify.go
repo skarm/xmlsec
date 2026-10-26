@@ -181,34 +181,6 @@ func (s *SignedData) VerifyReader(ctx context.Context, src io.Reader, expected [
 	return s.verifyDigests(ctx, certs, opt, digests, size)
 }
 
-func parseVerificationCertificates(ctx context.Context, expected [][]byte) ([]*x509.Certificate, error) {
-	certs := make([]*x509.Certificate, 0, len(expected))
-	seen := certificateSet{}
-
-	for _, raw := range expected {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		if len(raw) > 1<<20 || !seen.add(raw) {
-			return nil, ErrCertificate
-		}
-
-		certificate, err := x509cert.ParseDefault(bytes.Clone(raw))
-		if err != nil {
-			return nil, ErrCertificate
-		}
-
-		if err := signature.Key(certificate.PublicKey); err != nil {
-			return nil, err
-		}
-
-		certs = append(certs, certificate)
-	}
-
-	return certs, nil
-}
-
 func (s *SignedData) verifyDigests(ctx context.Context, certs []*x509.Certificate, opt VerifyOptions, digests map[crypto.Hash][]byte, size int64) (*Result, error) {
 	signers, err := s.verifySigners(ctx, certs, opt, digests)
 	if err != nil {
@@ -265,33 +237,6 @@ func (s *SignedData) verifySigners(ctx context.Context, certs []*x509.Certificat
 	}
 
 	return signers, nil
-}
-
-func signerCertificateIndex(ctx context.Context, p parsedSigner, certs []*x509.Certificate) (int, error) {
-	index := -1
-
-	for i, certificate := range certs {
-		matched, err := certificateMatch(ctx, p, certificate)
-		if err != nil {
-			return -1, err
-		}
-
-		if !matched {
-			continue
-		}
-
-		if index != -1 {
-			return -1, ErrCertificate
-		}
-
-		index = i
-	}
-
-	if index < 0 {
-		return -1, ErrCertificate
-	}
-
-	return index, nil
 }
 
 func (s *SignedData) verifySigner(ctx context.Context, p parsedSigner, cert *x509.Certificate, digests map[crypto.Hash][]byte, opt VerifyOptions) (SignerResult, error) {
@@ -351,6 +296,61 @@ func (s *SignedData) verifySigner(ctx context.Context, p parsedSigner, cert *x50
 	}
 
 	return SignerResult{certificate: cert.Raw, signed: p.signed, bound: bound, hash: h, algorithm: algorithm.Algorithm.String()}, nil
+}
+
+func parseVerificationCertificates(ctx context.Context, expected [][]byte) ([]*x509.Certificate, error) {
+	certs := make([]*x509.Certificate, 0, len(expected))
+	seen := certificateSet{}
+
+	for _, raw := range expected {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		if len(raw) > 1<<20 || !seen.add(raw) {
+			return nil, ErrCertificate
+		}
+
+		certificate, err := x509cert.ParseDefault(bytes.Clone(raw))
+		if err != nil {
+			return nil, ErrCertificate
+		}
+
+		if err := signature.Key(certificate.PublicKey); err != nil {
+			return nil, err
+		}
+
+		certs = append(certs, certificate)
+	}
+
+	return certs, nil
+}
+
+func signerCertificateIndex(ctx context.Context, p parsedSigner, certs []*x509.Certificate) (int, error) {
+	index := -1
+
+	for i, certificate := range certs {
+		matched, err := certificateMatch(ctx, p, certificate)
+		if err != nil {
+			return -1, err
+		}
+
+		if !matched {
+			continue
+		}
+
+		if index != -1 {
+			return -1, ErrCertificate
+		}
+
+		index = i
+	}
+
+	if index < 0 {
+		return -1, ErrCertificate
+	}
+
+	return index, nil
 }
 
 func normalizeSignature(aid pkix.AlgorithmIdentifier, h crypto.Hash) (pkix.AlgorithmIdentifier, error) {

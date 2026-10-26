@@ -307,20 +307,6 @@ func (ec *execContext) sortSequenceValue(ctx context.Context, seq xdm.Sequence, 
 	return textSortValue(seq, strVal, seqLen == 1, dtMode, implicitTZ), nil
 }
 
-func numericSortValue10(seq xdm.Sequence) (sortValue, error) {
-	number, err := xpath.XPath10Number(seq)
-	if err != nil {
-		return sortValue{}, err
-	}
-
-	value := number.ToFloat64()
-	if math.IsNaN(value) {
-		return sortValue{kind: sortValueNaN}, nil
-	}
-
-	return sortValue{kind: sortValueNumber, num: value}, nil
-}
-
 // evaluateSortExpression reuses an evaluation state only for expressions that
 // do not require XPath 1.0 compatibility, whose context is set by evalXPath.
 func (ec *execContext) evaluateSortExpression(ctx context.Context, expr *xpath.Expression, node xdm.Node, evalState *xpath.EvalState) (xpath.Result, error) {
@@ -356,16 +342,6 @@ func (ec *execContext) bodySortValue(ctx context.Context, sk *sortKey, node xdm.
 	}
 
 	return ec.sortSequenceValue(ctx, val, sk.backwards, dtMode)
-}
-
-// autoNumericSortValue promotes an atomized singleton while retaining its type
-// for the XTDE1030 gate, including schema-typed date and duration node values.
-func autoNumericSortValue(value sortValue, seq xdm.Sequence, implicitTZ *time.Location) sortValue {
-	if seq != nil && xdm.SequenceLen(seq) == 1 {
-		return applyNumberAutoSingleton(value, seq.Get(0), implicitTZ)
-	}
-
-	return value
 }
 
 func (ec *execContext) evaluateSortBody(ctx context.Context, body []instruction, node xdm.Node) (xdm.Sequence, error) {
@@ -430,6 +406,62 @@ func (ec *execContext) execPerformSort(ctx context.Context, inst *performSortIns
 	}
 
 	return ec.outputSortedAtomicItems(seq)
+}
+
+func (ec *execContext) outputSortedNodes(ctx context.Context, nodes []xdm.Node, keys []*sortKey) error {
+	if len(keys) > 0 {
+		var err error
+
+		nodes, err = sortNodes(ctx, ec, nodes, keys)
+		if err != nil {
+			return err
+		}
+	}
+
+	savedCurrent := ec.currentNode
+	savedContext := ec.contextNode
+	savedPos := ec.position
+	savedSize := ec.size
+
+	ec.size = len(nodes)
+	defer func() {
+		ec.currentNode = savedCurrent
+		ec.contextNode = savedContext
+		ec.position = savedPos
+		ec.size = savedSize
+	}()
+
+	for _, node := range nodes {
+		if err := ec.copyNodeToOutput(node); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func numericSortValue10(seq xdm.Sequence) (sortValue, error) {
+	number, err := xpath.XPath10Number(seq)
+	if err != nil {
+		return sortValue{}, err
+	}
+
+	value := number.ToFloat64()
+	if math.IsNaN(value) {
+		return sortValue{kind: sortValueNaN}, nil
+	}
+
+	return sortValue{kind: sortValueNumber, num: value}, nil
+}
+
+// autoNumericSortValue promotes an atomized singleton while retaining its type
+// for the XTDE1030 gate, including schema-typed date and duration node values.
+func autoNumericSortValue(value sortValue, seq xdm.Sequence, implicitTZ *time.Location) sortValue {
+	if seq != nil && xdm.SequenceLen(seq) == 1 {
+		return applyNumberAutoSingleton(value, seq.Get(0), implicitTZ)
+	}
+
+	return value
 }
 
 func sortItems(ctx context.Context, ec *execContext, items xdm.Sequence, sortKeys []*sortKey) (xdm.Sequence, error) {
@@ -584,38 +616,6 @@ func sortItemsN(ctx context.Context, ec *execContext, items xdm.Sequence, sortKe
 	}
 
 	return result, nil
-}
-
-func (ec *execContext) outputSortedNodes(ctx context.Context, nodes []xdm.Node, keys []*sortKey) error {
-	if len(keys) > 0 {
-		var err error
-
-		nodes, err = sortNodes(ctx, ec, nodes, keys)
-		if err != nil {
-			return err
-		}
-	}
-
-	savedCurrent := ec.currentNode
-	savedContext := ec.contextNode
-	savedPos := ec.position
-	savedSize := ec.size
-
-	ec.size = len(nodes)
-	defer func() {
-		ec.currentNode = savedCurrent
-		ec.contextNode = savedContext
-		ec.position = savedPos
-		ec.size = savedSize
-	}()
-
-	for _, node := range nodes {
-		if err := ec.copyNodeToOutput(node); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 // --- Public dispatch ---

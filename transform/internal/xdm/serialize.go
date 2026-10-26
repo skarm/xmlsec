@@ -60,10 +60,6 @@ func (w XMLSerialization) WriteTo(dst io.Writer, n Node) error {
 	})
 }
 
-func writeDoctype(dst io.Writer, d *Doctype) error {
-	return xmloutput.WriteDoctype(dst, d.Name, d.PublicID, d.SystemID)
-}
-
 func (w XMLSerialization) declaration(dst io.Writer, d *Document) error {
 	if w.OmitDeclaration || d.standalone == StandaloneNoXMLDecl {
 		return nil
@@ -98,4 +94,8 @@ func (w XMLSerialization) declaration(dst io.Writer, d *Document) error {
 	}
 
 	return nil
+}
+
+func writeDoctype(dst io.Writer, d *Doctype) error {
+	return xmloutput.WriteDoctype(dst, d.Name, d.PublicID, d.SystemID)
 }

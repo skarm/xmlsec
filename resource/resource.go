@@ -172,6 +172,7 @@ func NewHTTPResolver(config HTTPConfig) (*HTTPResolver, error) {
 	}
 
 	client := *config.Client
+	client.Transport = &httpTransport{base: client.Transport}
 	redirect := client.CheckRedirect
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if !r.allowed(req.URL) {
@@ -245,6 +246,34 @@ func (r *HTTPResolver) allowed(u *url.URL) bool {
 	_, allowed := r.origins[u.Scheme+"://"+u.Host]
 
 	return allowed
+}
+
+// Client.Do discards a response returned alongside a transport error. Close its
+// body before ownership is lost, retaining cleanup failures in the result.
+type httpTransport struct {
+	base http.RoundTripper
+}
+
+func (t *httpTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+
+	response, err := base.RoundTrip(req)
+	if response != nil && response.Body != nil && nilcheck.IsNil(response.Body) {
+		return nil, errors.Join(ErrResource, err)
+	}
+
+	if err != nil && response != nil {
+		if !nilcheck.IsNil(response.Body) {
+			err = errors.Join(err, response.Body.Close())
+		}
+
+		return nil, err
+	}
+
+	return response, err
 }
 
 func parseURI(value string) (*url.URL, error) {

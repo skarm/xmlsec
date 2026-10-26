@@ -568,72 +568,6 @@ func (c *compiler) loadExternalStylesheet(ctx context.Context, baseURI, href str
 	return c.compileExternalModule(ctx, doc, importedRoot, uri, isImport)
 }
 
-// expandSimplifiedModule applies the equivalence in XSLT section 3.8. The
-// original source remains available to document(""); only a private module tree
-// receives the implicit stylesheet/template wrappers.
-func expandSimplifiedModule(ctx context.Context, doc *xdm.Document, root *xdm.Element) (*xdm.Document, error) {
-	version := root.GetAttributeNodeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
-	if version == nil {
-		return nil, staticError(errCodeXTSE0150, "simplified stylesheet requires xsl:version")
-	}
-
-	_, raw := tree.UnwrapNode(root.Reference())
-
-	cloned, err := tree.Clone(ctx, tree.FromNodes([]*tree.Node{tree.ExtractSubtree(raw)}, tree.DefaultLimits()))
-	if err != nil {
-		return nil, err
-	}
-
-	literal := tree.Root(cloned)
-
-	wrapper := &tree.Node{
-		Kind: tree.ElementNode, Name: tree.Name{Space: lexicon.NamespaceXSLT, Local: nameStylesheet}, Prefix: version.Prefix(), SourceLine: literal.SourceLine,
-		NS: []tree.Namespace{{Prefix: version.Prefix(), URI: lexicon.NamespaceXSLT}}, Attrs: []tree.Attribute{{Name: tree.Name{Local: lexicon.SerializationVersion}, Value: version.Value()}},
-	}
-	// Extraction loses ancestor xml:space. Keep it on the synthetic wrapper so
-	// re-normalization preserves the same text without adding an LRE attribute.
-	if space := inheritedStylesheetXMLSpace(root.Parent()); space != "" {
-		wrapper.Attrs = append(wrapper.Attrs, tree.Attribute{Name: tree.Name{Space: lexicon.NamespaceXML, Local: lexicon.AttrSpace}, Prefix: lexicon.PrefixXML, Value: space})
-	}
-
-	if base := xpath.NodeBaseURI(root.Parent()); base != "" && base != doc.URL() {
-		wrapper.Attrs = append(wrapper.Attrs, tree.Attribute{Name: tree.Name{Space: lexicon.NamespaceXML, Local: "base"}, Prefix: "xml", Value: base})
-	}
-
-	tmpl := &tree.Node{
-		Kind: tree.ElementNode, Name: tree.Name{Space: lexicon.NamespaceXSLT, Local: nameTemplate}, Prefix: version.Prefix(), SourceLine: literal.SourceLine, Parent: wrapper,
-		Attrs: []tree.Attribute{{Name: tree.Name{Local: lexicon.AttrMatch}, Value: "/"}}, Children: []*tree.Node{literal},
-	}
-	literal.Parent = tmpl
-	wrapper.Children = []*tree.Node{tmpl}
-
-	private := tree.FromNodes([]*tree.Node{wrapper}, tree.DefaultLimits())
-	if err := normalizeStylesheetDocument(ctx, private); err != nil {
-		return nil, err
-	}
-
-	prepared, err := xdm.WrapDocument(ctx, private)
-	if err != nil {
-		return nil, err
-	}
-
-	prepared.SetURL(doc.URL())
-
-	return prepared, nil
-}
-
-func inheritedStylesheetXMLSpace(node xdm.Node) string {
-	for ; node != nil; node = node.Parent() {
-		if elem, ok := node.(*xdm.Element); ok {
-			if space, present := elem.GetAttributeNS("space", lexicon.NamespaceXML); present {
-				return space
-			}
-		}
-	}
-
-	return ""
-}
-
 func (c *compiler) compileExternalModule(ctx context.Context, doc *xdm.Document, importedRoot *xdm.Element, uri string, isImport bool) error {
 	// Fold the module root's xml:base chain into the effective static base URI so
 	// this module's globals and templates resolve relative references against the
@@ -745,6 +679,104 @@ func (c *compiler) compileExternalModule(ctx context.Context, doc *xdm.Document,
 	}
 
 	return nil
+}
+
+func (c *compiler) enterModule(uri string, imported bool) (func(), error) {
+	if position, found := c.importStack[uri]; found {
+		hasImport := imported
+
+		cycle := make([]string, 0, len(c.modulePath)-position+1)
+		for index, frame := range c.modulePath[position:] {
+			if index > 0 {
+				hasImport = hasImport || frame.Import
+			}
+
+			cycle = append(cycle, frame.URI)
+		}
+
+		cycle = append(cycle, uri)
+
+		code := errCodeXTSE0180
+		if hasImport {
+			code = errCodeXTSE0210
+		}
+
+		return nil, staticError(code, "circular import/include: %s", strings.Join(cycle, " -> "))
+	}
+
+	c.importStack[uri] = len(c.modulePath)
+	c.modulePath = append(c.modulePath, moduleLoad{URI: uri, Import: imported})
+
+	return func() {
+		c.modulePath = c.modulePath[:len(c.modulePath)-1]
+		delete(c.importStack, uri)
+	}, nil
+}
+
+// expandSimplifiedModule applies the equivalence in XSLT section 3.8. The
+// original source remains available to document(""); only a private module tree
+// receives the implicit stylesheet/template wrappers.
+func expandSimplifiedModule(ctx context.Context, doc *xdm.Document, root *xdm.Element) (*xdm.Document, error) {
+	version := root.GetAttributeNodeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
+	if version == nil {
+		return nil, staticError(errCodeXTSE0150, "simplified stylesheet requires xsl:version")
+	}
+
+	_, raw := tree.UnwrapNode(root.Reference())
+
+	cloned, err := tree.Clone(ctx, tree.FromNodes([]*tree.Node{tree.ExtractSubtree(raw)}, tree.DefaultLimits()))
+	if err != nil {
+		return nil, err
+	}
+
+	literal := tree.Root(cloned)
+
+	wrapper := &tree.Node{
+		Kind: tree.ElementNode, Name: tree.Name{Space: lexicon.NamespaceXSLT, Local: nameStylesheet}, Prefix: version.Prefix(), SourceLine: literal.SourceLine,
+		NS: []tree.Namespace{{Prefix: version.Prefix(), URI: lexicon.NamespaceXSLT}}, Attrs: []tree.Attribute{{Name: tree.Name{Local: lexicon.SerializationVersion}, Value: version.Value()}},
+	}
+	// Extraction loses ancestor xml:space. Keep it on the synthetic wrapper so
+	// re-normalization preserves the same text without adding an LRE attribute.
+	if space := inheritedStylesheetXMLSpace(root.Parent()); space != "" {
+		wrapper.Attrs = append(wrapper.Attrs, tree.Attribute{Name: tree.Name{Space: lexicon.NamespaceXML, Local: lexicon.AttrSpace}, Prefix: lexicon.PrefixXML, Value: space})
+	}
+
+	if base := xpath.NodeBaseURI(root.Parent()); base != "" && base != doc.URL() {
+		wrapper.Attrs = append(wrapper.Attrs, tree.Attribute{Name: tree.Name{Space: lexicon.NamespaceXML, Local: "base"}, Prefix: "xml", Value: base})
+	}
+
+	tmpl := &tree.Node{
+		Kind: tree.ElementNode, Name: tree.Name{Space: lexicon.NamespaceXSLT, Local: nameTemplate}, Prefix: version.Prefix(), SourceLine: literal.SourceLine, Parent: wrapper,
+		Attrs: []tree.Attribute{{Name: tree.Name{Local: lexicon.AttrMatch}, Value: "/"}}, Children: []*tree.Node{literal},
+	}
+	literal.Parent = tmpl
+	wrapper.Children = []*tree.Node{tmpl}
+
+	private := tree.FromNodes([]*tree.Node{wrapper}, tree.DefaultLimits())
+	if err := normalizeStylesheetDocument(ctx, private); err != nil {
+		return nil, err
+	}
+
+	prepared, err := xdm.WrapDocument(ctx, private)
+	if err != nil {
+		return nil, err
+	}
+
+	prepared.SetURL(doc.URL())
+
+	return prepared, nil
+}
+
+func inheritedStylesheetXMLSpace(node xdm.Node) string {
+	for ; node != nil; node = node.Parent() {
+		if elem, ok := node.(*xdm.Element); ok {
+			if space, present := elem.GetAttributeNS("space", lexicon.NamespaceXML); present {
+				return space
+			}
+		}
+	}
+
+	return ""
 }
 
 // resolveModuleURI resolves an xsl:include / xsl:import href (with any fragment
@@ -1033,36 +1065,4 @@ func findElementByID(doc *xdm.Document, id string) *xdm.Element {
 type moduleLoad struct {
 	URI    string
 	Import bool
-}
-
-func (c *compiler) enterModule(uri string, imported bool) (func(), error) {
-	if position, found := c.importStack[uri]; found {
-		hasImport := imported
-
-		cycle := make([]string, 0, len(c.modulePath)-position+1)
-		for index, frame := range c.modulePath[position:] {
-			if index > 0 {
-				hasImport = hasImport || frame.Import
-			}
-
-			cycle = append(cycle, frame.URI)
-		}
-
-		cycle = append(cycle, uri)
-
-		code := errCodeXTSE0180
-		if hasImport {
-			code = errCodeXTSE0210
-		}
-
-		return nil, staticError(code, "circular import/include: %s", strings.Join(cycle, " -> "))
-	}
-
-	c.importStack[uri] = len(c.modulePath)
-	c.modulePath = append(c.modulePath, moduleLoad{URI: uri, Import: imported})
-
-	return func() {
-		c.modulePath = c.modulePath[:len(c.modulePath)-1]
-		delete(c.importStack, uri)
-	}, nil
 }

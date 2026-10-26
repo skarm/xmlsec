@@ -54,6 +54,11 @@ func OrderStepResult(out, inputs []Node, axis AxisType, cache *DocOrderCache, ma
 	return DeduplicateNodes(out, cache, maxNodes)
 }
 
+// OrderedFrom reports whether axis traversal from n preserves document order.
+func OrderedFrom(n Node) bool {
+	return allOrderedContexts([]Node{n})
+}
+
 // clampStepResult applies the node-set limit and returns out with its
 // capacity clamped, so the result never shares spare capacity with the
 // caller's buffer.
@@ -106,11 +111,6 @@ func sameDepth(nodes []Node) bool {
 	}
 
 	return true
-}
-
-// OrderedFrom reports whether axis traversal from n preserves document order.
-func OrderedFrom(n Node) bool {
-	return allOrderedContexts([]Node{n})
 }
 
 // allOrderedContexts reports whether every node of nodes is a kind whose axis

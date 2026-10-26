@@ -186,123 +186,6 @@ func (ec *execContext) executeComputedElementContent(ctx context.Context, elem *
 	return nil
 }
 
-// collectInScopeNamespaces collects all in-scope namespace declarations for
-// an element, walking up the ancestor chain.  Declarations closer to the
-// element take precedence (first-seen prefix wins).
-func collectInScopeNamespaces(elem *xdm.Element) []*xdm.Namespace {
-	seen := make(map[string]struct{})
-
-	var result []*xdm.Namespace
-
-	for cur := elem; cur != nil; {
-		for _, ns := range cur.Namespaces() {
-			if _, ok := seen[ns.Prefix()]; !ok {
-				seen[ns.Prefix()] = struct{}{}
-				result = append(result, ns)
-			}
-		}
-
-		p := cur.Parent()
-		if p == nil {
-			break
-		}
-
-		pe, ok := p.(*xdm.Element)
-		if !ok {
-			break
-		}
-
-		cur = pe
-	}
-
-	return result
-}
-
-// undeclareInheritedNamespaces adds namespace undeclarations (xmlns:p="") on
-// each direct child element for every in-scope namespace visible from parent
-// that the child does not itself declare.  This implements the XSLT 3.0
-// inherit-namespaces="no" semantics: children must not inherit ANY namespace
-// reachable through the parent in the DOM tree.
-func undeclareInheritedNamespaces(parent *xdm.Element) {
-	inScope := make(map[string]string)
-	for _, ns := range collectInScopeNamespaces(parent) {
-		inScope[ns.Prefix()] = ns.URI()
-	}
-
-	if len(inScope) == 0 {
-		return
-	}
-
-	// Sort once for deterministic declaration order on each direct child.
-	prefixes := make([]string, 0, len(inScope))
-	for prefix := range inScope {
-		prefixes = append(prefixes, prefix)
-	}
-
-	sort.Strings(prefixes)
-
-	for child := range xdm.Children(parent) {
-		elem, ok := child.(*xdm.Element)
-		if !ok {
-			continue
-		}
-
-		for _, prefix := range prefixes {
-			undeclareChildNamespace(elem, prefix, inScope[prefix])
-		}
-
-		// Inner inherit-namespaces="no" declarations may now be redundant.
-		removeRedundantDescendantUndecls(elem)
-	}
-}
-
-func undeclareChildNamespace(elem *xdm.Element, prefix, parentURI string) {
-	for _, ns := range elem.Namespaces() {
-		if ns.Prefix() != prefix {
-			continue
-		}
-
-		// Existing namespace nodes are retained, even if they match the parent.
-		return
-	}
-
-	// An inherited undeclaration already blocks this prefix.
-	if parentURI == "" {
-		return
-	}
-
-	// Retain the child's own namespace, blocking all other inherited bindings.
-	if elem.Prefix() == prefix && elem.URI() != "" {
-		_ = elem.DeclareNamespace(prefix, elem.URI())
-		return
-	}
-
-	_ = elem.DeclareNamespace(prefix, "")
-}
-
-// removeRedundantDescendantUndecls removes namespace undeclarations from
-// descendant elements that are redundant because the same prefix is already
-// undeclared (or bound to the same URI) on an ancestor in the serialized output.
-func removeRedundantDescendantUndecls(elem *xdm.Element) {
-	bindings := make(map[string]string)
-	for _, ns := range elem.Namespaces() {
-		bindings[ns.Prefix()] = ns.URI()
-	}
-
-	for child := range xdm.Children(elem) {
-		childElem, ok := child.(*xdm.Element)
-		if !ok {
-			continue
-		}
-
-		for _, cns := range childElem.Namespaces() {
-			if parentURI, ok := bindings[cns.Prefix()]; ok && cns.URI() == parentURI {
-				childElem.RemoveNamespaceByPrefix(cns.Prefix())
-			}
-		}
-	}
-}
-
 func (ec *execContext) validateComputedElementType(ctx context.Context, elem *xdm.Element, typeName string) error {
 	if err := ec.validateAndNormalizeElementContent(ctx, elem, typeName); err != nil {
 		// xsl:element reports declared-type content failures as XTTE1540.
@@ -358,39 +241,6 @@ func (ec *execContext) validateAndNormalizeElementContent(_ context.Context, ele
 
 	// Content is valid — original text is preserved in the DOM.
 	return nil
-}
-
-// elementTextContent returns the concatenation of all descendant text nodes,
-// skipping comments and processing instructions (XPath string-value semantics).
-func elementTextContent(elem *xdm.Element) string {
-	var buf strings.Builder
-	collectTextContent(elem.FirstChild(), &buf)
-
-	return buf.String()
-}
-
-func collectTextContent(node xdm.Node, buf *strings.Builder) {
-	for ; node != nil; node = node.NextSibling() {
-		switch node.Type() {
-		case xdm.TextNode, xdm.CDATASectionNode:
-			buf.WriteString(xdm.CharacterData(node))
-		case xdm.ElementNode:
-			if elem, ok := node.(*xdm.Element); ok {
-				collectTextContent(elem.FirstChild(), buf)
-			}
-		}
-	}
-}
-
-// elementHasChildElements returns true if elem has any direct child elements.
-func elementHasChildElements(elem *xdm.Element) bool {
-	for child := elem.FirstChild(); child != nil; child = child.NextSibling() {
-		if child.Type() == xdm.ElementNode {
-			return true
-		}
-	}
-
-	return false
 }
 
 // validateConstructedElement validates a constructed element node against the
@@ -575,45 +425,6 @@ func (ec *execContext) execAttribute(ctx context.Context, inst *attributeInst) e
 	return nil
 }
 
-// validateComputedAttributeName performs the name-validity checks for a
-// computed xsl:attribute name that are independent of the output target:
-// XTDE0855 (the name must not be "xmlns" when no namespace attribute is given)
-// and XTDE0850 (the name must be a lexically valid QName/EQName). It is invoked
-// before the element-output, sequence-mode, and item-capture branches so every
-// path enforces the same rules.
-func validateComputedAttributeName(name string, inst *attributeInst) error {
-	// XTDE0855: when no namespace attribute, name must not be "xmlns"
-	if inst.Namespace == nil && name == lexicon.PrefixXMLNS {
-		return dynamicError(errCodeXTDE0855,
-			"xsl:attribute name must not be %q when no namespace attribute is specified", name)
-	}
-
-	// XTDE0850: name must be a valid QName
-	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
-		return dynamicError(errCodeXTDE0850,
-			"xsl:attribute name %q is not a valid QName", name)
-	}
-
-	return nil
-}
-
-func canonicalAttributeValue(value, typeName string) (string, error) {
-	if typeName == "" {
-		return value, nil
-	}
-
-	av, err := xpath.CastFromString(value, typeName)
-	if err != nil {
-		return "", dynamicError(errCodeXTTE1515, "attribute value %q does not match type %s", value, typeName)
-	}
-
-	if canonical, err := xpath.AtomicToString(av); err == nil {
-		return canonical, nil
-	}
-
-	return value, nil
-}
-
 func (ec *execContext) evaluateComputedAttributeValue(ctx context.Context, inst *attributeInst) (string, error) {
 	if inst.Select == nil && len(inst.Body) == 0 {
 		return "", nil
@@ -712,13 +523,6 @@ func (ec *execContext) captureSequenceAttribute(ctx context.Context, out *output
 	return nil
 }
 
-// newStandaloneAttribute builds a parentless attribute with a literal value.
-// Attribute values are stored directly in XDM, without text child nodes or a
-// second entity-expansion pass.
-func newStandaloneAttribute(doc *xdm.Document, localName, value string, ns *xdm.Namespace) (*xdm.Attribute, error) {
-	return doc.CreateAttribute(localName, value, ns)
-}
-
 func (ec *execContext) outputNonElementAttribute(out *outputFrame, lexicalName string, name resolvedAttrName, value string) error {
 	if _, isDoc := out.current.(*xdm.Document); isDoc && !ec.isItemOutputMethod() {
 		return dynamicError(errCodeXTDE0420,
@@ -783,18 +587,6 @@ func (ec *execContext) attachComputedAttribute(elem *xdm.Element, name resolvedA
 	return nil
 }
 
-// hasNSDecl checks if an element already has a namespace declaration for
-// the given prefix and URI.
-func hasNSDecl(elem *xdm.Element, prefix, uri string) bool {
-	for _, ns := range elem.Namespaces() {
-		if ns.Prefix() == prefix && ns.URI() == uri {
-			return true
-		}
-	}
-
-	return false
-}
-
 // withV2TempOutput runs fn, treating its output as temporary output state
 // (XTDE1480) when the stylesheet declares an XSLT version below 3.0. XSLT 3.0
 // relaxes this restriction, so the depth is left untouched there.
@@ -855,38 +647,6 @@ func (ec *execContext) commentOrPIContent(ctx context.Context, selectExpr *xpath
 	}
 
 	return stringifySimpleContent(ctx, value, " ")
-}
-
-// sanitizeComment replaces "--" sequences with "- -" and ensures the
-// value does not end with "-", per XSLT comment construction rules.
-func sanitizeComment(s string) string {
-	var sb strings.Builder
-	sb.Grow(len(s))
-
-	prevDash := false
-
-	for i := range len(s) {
-		if s[i] == '-' {
-			if prevDash {
-				sb.WriteByte(' ')
-			}
-
-			sb.WriteByte('-')
-
-			prevDash = true
-		} else {
-			sb.WriteByte(s[i])
-
-			prevDash = false
-		}
-	}
-
-	result := sb.String()
-	if len(result) > 0 && result[len(result)-1] == '-' {
-		result += " "
-	}
-
-	return result
 }
 
 func (ec *execContext) execPI(ctx context.Context, inst *piInst) error {
@@ -966,54 +726,6 @@ func (ec *execContext) execNamespace(ctx context.Context, inst *namespaceInst) e
 	return nil
 }
 
-func validateComputedNamespace(ctx context.Context, name, value string) error {
-	if name == lexicon.PrefixXMLNS {
-		return dynamicError(errCodeXTDE0920,
-			"cannot create namespace node with prefix %q", name)
-	}
-
-	if name != "" && !xmlchar.IsValidNCName(name) {
-		return dynamicError(errCodeXTDE0920,
-			"xsl:namespace name %q is not a valid NCName", name)
-	}
-
-	if name == lexicon.PrefixXML && value != lexicon.NamespaceXML {
-		return dynamicError(errCodeXTDE0925,
-			"namespace prefix %q must be bound to %q, got %q",
-			name, lexicon.NamespaceXML, value)
-	}
-
-	if value == lexicon.NamespaceXML && name != lexicon.PrefixXML {
-		return dynamicError(errCodeXTDE0925,
-			"namespace URI %q can only be bound to prefix %q, got %q",
-			value, lexicon.PrefixXML, name)
-	}
-
-	if value == lexicon.NamespaceXMLNS {
-		return dynamicError(errCodeXTDE0905,
-			"namespace URI %q is reserved and cannot be used", value)
-	}
-
-	if !validComputedNamespaceURI(ctx, value) {
-		return dynamicError(errCodeXTDE0905, "invalid namespace URI %q", value)
-	}
-
-	if value == "" {
-		return dynamicError(errCodeXTDE0930,
-			"namespace prefix %q requires a non-empty URI", name)
-	}
-
-	return nil
-}
-
-func validComputedNamespaceURI(ctx context.Context, value string) bool {
-	if xpath.XMLSchemaVersion(ctx) != 10 {
-		return true
-	}
-
-	return lexical.ValidateBuiltin(lexical.Normalize(value, lexicon.TypeAnyURI), lexicon.TypeAnyURI, lexical.Version10) == nil
-}
-
 func (ec *execContext) computedNamespaceValue(ctx context.Context, inst *namespaceInst) (string, error) {
 	if inst.Select != nil {
 		result, err := ec.evalXPath(ctx, inst.Select, ec.contextNode)
@@ -1065,6 +777,294 @@ func (ec *execContext) addComputedNamespace(elem *xdm.Element, name, value strin
 	}
 
 	return elem.DeclareNamespace(name, value)
+}
+
+// collectInScopeNamespaces collects all in-scope namespace declarations for
+// an element, walking up the ancestor chain.  Declarations closer to the
+// element take precedence (first-seen prefix wins).
+func collectInScopeNamespaces(elem *xdm.Element) []*xdm.Namespace {
+	seen := make(map[string]struct{})
+
+	var result []*xdm.Namespace
+
+	for cur := elem; cur != nil; {
+		for _, ns := range cur.Namespaces() {
+			if _, ok := seen[ns.Prefix()]; !ok {
+				seen[ns.Prefix()] = struct{}{}
+				result = append(result, ns)
+			}
+		}
+
+		p := cur.Parent()
+		if p == nil {
+			break
+		}
+
+		pe, ok := p.(*xdm.Element)
+		if !ok {
+			break
+		}
+
+		cur = pe
+	}
+
+	return result
+}
+
+// undeclareInheritedNamespaces adds namespace undeclarations (xmlns:p="") on
+// each direct child element for every in-scope namespace visible from parent
+// that the child does not itself declare.  This implements the XSLT 3.0
+// inherit-namespaces="no" semantics: children must not inherit ANY namespace
+// reachable through the parent in the DOM tree.
+func undeclareInheritedNamespaces(parent *xdm.Element) {
+	inScope := make(map[string]string)
+	for _, ns := range collectInScopeNamespaces(parent) {
+		inScope[ns.Prefix()] = ns.URI()
+	}
+
+	if len(inScope) == 0 {
+		return
+	}
+
+	// Sort once for deterministic declaration order on each direct child.
+	prefixes := make([]string, 0, len(inScope))
+	for prefix := range inScope {
+		prefixes = append(prefixes, prefix)
+	}
+
+	sort.Strings(prefixes)
+
+	for child := range xdm.Children(parent) {
+		elem, ok := child.(*xdm.Element)
+		if !ok {
+			continue
+		}
+
+		for _, prefix := range prefixes {
+			undeclareChildNamespace(elem, prefix, inScope[prefix])
+		}
+
+		// Inner inherit-namespaces="no" declarations may now be redundant.
+		removeRedundantDescendantUndecls(elem)
+	}
+}
+
+func undeclareChildNamespace(elem *xdm.Element, prefix, parentURI string) {
+	for _, ns := range elem.Namespaces() {
+		if ns.Prefix() != prefix {
+			continue
+		}
+
+		// Existing namespace nodes are retained, even if they match the parent.
+		return
+	}
+
+	// An inherited undeclaration already blocks this prefix.
+	if parentURI == "" {
+		return
+	}
+
+	// Retain the child's own namespace, blocking all other inherited bindings.
+	if elem.Prefix() == prefix && elem.URI() != "" {
+		_ = elem.DeclareNamespace(prefix, elem.URI())
+		return
+	}
+
+	_ = elem.DeclareNamespace(prefix, "")
+}
+
+// removeRedundantDescendantUndecls removes namespace undeclarations from
+// descendant elements that are redundant because the same prefix is already
+// undeclared (or bound to the same URI) on an ancestor in the serialized output.
+func removeRedundantDescendantUndecls(elem *xdm.Element) {
+	bindings := make(map[string]string)
+	for _, ns := range elem.Namespaces() {
+		bindings[ns.Prefix()] = ns.URI()
+	}
+
+	for child := range xdm.Children(elem) {
+		childElem, ok := child.(*xdm.Element)
+		if !ok {
+			continue
+		}
+
+		for _, cns := range childElem.Namespaces() {
+			if parentURI, ok := bindings[cns.Prefix()]; ok && cns.URI() == parentURI {
+				childElem.RemoveNamespaceByPrefix(cns.Prefix())
+			}
+		}
+	}
+}
+
+// elementTextContent returns the concatenation of all descendant text nodes,
+// skipping comments and processing instructions (XPath string-value semantics).
+func elementTextContent(elem *xdm.Element) string {
+	var buf strings.Builder
+	collectTextContent(elem.FirstChild(), &buf)
+
+	return buf.String()
+}
+
+func collectTextContent(node xdm.Node, buf *strings.Builder) {
+	for ; node != nil; node = node.NextSibling() {
+		switch node.Type() {
+		case xdm.TextNode, xdm.CDATASectionNode:
+			buf.WriteString(xdm.CharacterData(node))
+		case xdm.ElementNode:
+			if elem, ok := node.(*xdm.Element); ok {
+				collectTextContent(elem.FirstChild(), buf)
+			}
+		}
+	}
+}
+
+// elementHasChildElements returns true if elem has any direct child elements.
+func elementHasChildElements(elem *xdm.Element) bool {
+	for child := elem.FirstChild(); child != nil; child = child.NextSibling() {
+		if child.Type() == xdm.ElementNode {
+			return true
+		}
+	}
+
+	return false
+}
+
+// validateComputedAttributeName performs the name-validity checks for a
+// computed xsl:attribute name that are independent of the output target:
+// XTDE0855 (the name must not be "xmlns" when no namespace attribute is given)
+// and XTDE0850 (the name must be a lexically valid QName/EQName). It is invoked
+// before the element-output, sequence-mode, and item-capture branches so every
+// path enforces the same rules.
+func validateComputedAttributeName(name string, inst *attributeInst) error {
+	// XTDE0855: when no namespace attribute, name must not be "xmlns"
+	if inst.Namespace == nil && name == lexicon.PrefixXMLNS {
+		return dynamicError(errCodeXTDE0855,
+			"xsl:attribute name must not be %q when no namespace attribute is specified", name)
+	}
+
+	// XTDE0850: name must be a valid QName
+	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
+		return dynamicError(errCodeXTDE0850,
+			"xsl:attribute name %q is not a valid QName", name)
+	}
+
+	return nil
+}
+
+func canonicalAttributeValue(value, typeName string) (string, error) {
+	if typeName == "" {
+		return value, nil
+	}
+
+	av, err := xpath.CastFromString(value, typeName)
+	if err != nil {
+		return "", dynamicError(errCodeXTTE1515, "attribute value %q does not match type %s", value, typeName)
+	}
+
+	if canonical, err := xpath.AtomicToString(av); err == nil {
+		return canonical, nil
+	}
+
+	return value, nil
+}
+
+// newStandaloneAttribute builds a parentless attribute with a literal value.
+// Attribute values are stored directly in XDM, without text child nodes or a
+// second entity-expansion pass.
+func newStandaloneAttribute(doc *xdm.Document, localName, value string, ns *xdm.Namespace) (*xdm.Attribute, error) {
+	return doc.CreateAttribute(localName, value, ns)
+}
+
+// hasNSDecl checks if an element already has a namespace declaration for
+// the given prefix and URI.
+func hasNSDecl(elem *xdm.Element, prefix, uri string) bool {
+	for _, ns := range elem.Namespaces() {
+		if ns.Prefix() == prefix && ns.URI() == uri {
+			return true
+		}
+	}
+
+	return false
+}
+
+// sanitizeComment replaces "--" sequences with "- -" and ensures the
+// value does not end with "-", per XSLT comment construction rules.
+func sanitizeComment(s string) string {
+	var sb strings.Builder
+	sb.Grow(len(s))
+
+	prevDash := false
+
+	for i := range len(s) {
+		if s[i] == '-' {
+			if prevDash {
+				sb.WriteByte(' ')
+			}
+
+			sb.WriteByte('-')
+
+			prevDash = true
+		} else {
+			sb.WriteByte(s[i])
+
+			prevDash = false
+		}
+	}
+
+	result := sb.String()
+	if len(result) > 0 && result[len(result)-1] == '-' {
+		result += " "
+	}
+
+	return result
+}
+
+func validateComputedNamespace(ctx context.Context, name, value string) error {
+	if name == lexicon.PrefixXMLNS {
+		return dynamicError(errCodeXTDE0920,
+			"cannot create namespace node with prefix %q", name)
+	}
+
+	if name != "" && !xmlchar.IsValidNCName(name) {
+		return dynamicError(errCodeXTDE0920,
+			"xsl:namespace name %q is not a valid NCName", name)
+	}
+
+	if name == lexicon.PrefixXML && value != lexicon.NamespaceXML {
+		return dynamicError(errCodeXTDE0925,
+			"namespace prefix %q must be bound to %q, got %q",
+			name, lexicon.NamespaceXML, value)
+	}
+
+	if value == lexicon.NamespaceXML && name != lexicon.PrefixXML {
+		return dynamicError(errCodeXTDE0925,
+			"namespace URI %q can only be bound to prefix %q, got %q",
+			value, lexicon.PrefixXML, name)
+	}
+
+	if value == lexicon.NamespaceXMLNS {
+		return dynamicError(errCodeXTDE0905,
+			"namespace URI %q is reserved and cannot be used", value)
+	}
+
+	if !validComputedNamespaceURI(ctx, value) {
+		return dynamicError(errCodeXTDE0905, "invalid namespace URI %q", value)
+	}
+
+	if value == "" {
+		return dynamicError(errCodeXTDE0930,
+			"namespace prefix %q requires a non-empty URI", name)
+	}
+
+	return nil
+}
+
+func validComputedNamespaceURI(ctx context.Context, value string) bool {
+	if xpath.XMLSchemaVersion(ctx) != 10 {
+		return true
+	}
+
+	return lexical.ValidateBuiltin(lexical.Normalize(value, lexicon.TypeAnyURI), lexicon.TypeAnyURI, lexical.Version10) == nil
 }
 
 func checkComputedNamespaceConflict(elem *xdm.Element, name, value string, fixupOK bool) error {

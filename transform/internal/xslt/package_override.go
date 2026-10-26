@@ -407,43 +407,6 @@ func (c *compiler) compileOverrideFunction(ctx context.Context, elem *xdm.Elemen
 	return fn, qn, nil
 }
 
-func defaultContextItemType(as string) string {
-	if as == "" {
-		return lexicon.NodeTestItem
-	}
-
-	return as
-}
-
-func checkOverrideFunctionSignature(override, base *xslFunction) error {
-	if override.signatureTypeKey != base.signatureTypeKey {
-		return staticError(errCodeXTSE3070, "override function %s has a different return type", override.Name.Name)
-	}
-
-	for i, p := range override.Params {
-		if p.signatureTypeKey != base.Params[i].signatureTypeKey {
-			return staticError(errCodeXTSE3070, "override function %s parameter %d has a different required type", override.Name.Name, i+1)
-		}
-	}
-
-	net := func(value string) string {
-		if value == "" {
-			return lexicon.ValueYes
-		}
-
-		return value
-	}
-	if net(override.NewEachTime) != net(base.NewEachTime) {
-		return staticError(errCodeXTSE3070, "override function %s has a different new-each-time value", override.Name.Name)
-	}
-
-	if base.Streamability != "" && base.Streamability != lexicon.StreamUnclassified && override.Streamability != base.Streamability {
-		return staticError(errCodeXTSE3070, "override function %s has incompatible streamability", override.Name.Name)
-	}
-
-	return nil
-}
-
 func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Element, pkg *Stylesheet) (*template, error) {
 	if err := c.validateXSLTAttrs(ctx, elem, templateAllowedAttrs); err != nil {
 		return nil, err
@@ -559,6 +522,229 @@ func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Elemen
 	}
 
 	return tmpl, nil
+}
+
+func (c *compiler) compileOverrideVariable(ctx context.Context, elem *xdm.Element, pkg *Stylesheet) (*variable, error) {
+	if err := c.validateXSLTAttrs(ctx, elem, variableAllowedAttrs); err != nil {
+		return nil, err
+	}
+	// A static="yes" variable is a version-independent compile-time value (forced
+	// non-compat even in a < 2.0 module); otherwise honor its version attribute.
+	if xsdBoolTrue(getAttr(elem, nameStatic)) {
+		defer c.pushStaticVersion()()
+	} else {
+		defer c.pushElementVersion(elem)()
+	}
+
+	name := getAttr(elem, xslAttrName)
+	if name == "" {
+		return nil, staticError(errCodeXTSE0110, "xsl:variable in xsl:override requires name attribute")
+	}
+
+	resolvedName := resolveQName(name, c.nsBindings)
+
+	base := lookupOverrideGlobal(pkg, resolvedName)
+	if base == (globalBinding{}) {
+		return nil, staticError(errCodeXTSE3058,
+			"xsl:override variable %q not found in used package", name)
+	}
+
+	effectiveVis := getComponentVisibility(pkg, xslElemVariable, resolvedName)
+	if err := checkOverrideVariableVisibility(name, effectiveVis); err != nil {
+		return nil, err
+	}
+
+	savedOriginal := c.originalVariableVisibility
+
+	c.originalVariableVisibility = effectiveVis
+	defer func() { c.originalVariableVisibility = savedOriginal }()
+
+	v := &variable{Name: resolvedName, As: getAttr(elem, "as"), Visibility: getAttr(elem, xslAttrVisibility), OwnerPackage: c.stylesheet}
+	if err := c.validateAsSequenceType(ctx, elem, v.As, "overriding variable"); err != nil {
+		return nil, err
+	}
+
+	v.signatureTypeKey = c.declarationTypeKey(elem, v.As)
+
+	if err := checkOverrideGlobalType(base, v.signatureTypeKey, resolvedName); err != nil {
+		return nil, err
+	}
+
+	v.Original = base
+	v.StaticBaseURI = stylesheetBaseURI(elem, c.baseURI, c.moduleRoot)
+	v.XPathDefaultNS = c.xpathDefaultNS
+	v.TypeNamespaces = inScopeNamespaces(elem)
+	v.XPathDefaultNS, v.HasXPathDefaultNS = c.declarationDefaultNamespace(elem)
+
+	selectAttr := getAttr(elem, xslAttrSelect)
+	if selectAttr != "" {
+		expr, err := c.compileXPath(selectAttr, c.nsBindings)
+		if err != nil {
+			return nil, err
+		}
+
+		v.Select = expr
+	} else {
+		body, err := c.compileChildren(ctx, elem)
+		if err != nil {
+			return nil, err
+		}
+
+		v.Body = body
+	}
+
+	c.recordGlobalBindingSource(elem, v.binding())
+
+	return v, nil
+}
+
+func (c *compiler) compileOverrideParam(ctx context.Context, elem *xdm.Element, pkg *Stylesheet) (*param, error) {
+	name := resolveQName(getAttr(elem, xslAttrName), c.nsBindings)
+
+	base := lookupOverrideGlobal(pkg, name)
+	if base == (globalBinding{}) {
+		return nil, staticError(errCodeXTSE3058, "xsl:override param %q not found in used package", name)
+	}
+
+	if err := checkOverrideVariableVisibility(name, getComponentVisibility(pkg, xslElemVariable, name)); err != nil {
+		return nil, err
+	}
+
+	savedOriginal := c.originalVariableVisibility
+
+	c.originalVariableVisibility = getComponentVisibility(pkg, xslElemVariable, name)
+	defer func() { c.originalVariableVisibility = savedOriginal }()
+
+	p, err := c.compileParamDef(ctx, elem)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := checkOverrideGlobalType(base, p.signatureTypeKey, p.Name); err != nil {
+		return nil, err
+	}
+
+	p.OwnerPackage, p.Original, p.Visibility = c.stylesheet, base, visPublic
+	p.TypeNamespaces = inScopeNamespaces(elem)
+	p.XPathDefaultNS, p.HasXPathDefaultNS = c.declarationDefaultNamespace(elem)
+	c.recordGlobalBindingSource(elem, p.binding())
+
+	return p, nil
+}
+
+func (c *compiler) compileOverrideAttributeSet(ctx context.Context, elem *xdm.Element, pkg *Stylesheet) (*attributeSetDef, error) {
+	defer c.pushElementVersion(elem)()
+
+	name := getAttr(elem, xslAttrName)
+	if name == "" {
+		return nil, staticError(errCodeXTSE0110, "xsl:attribute-set in xsl:override requires name attribute")
+	}
+
+	resolvedName := resolveQName(name, c.nsBindings)
+
+	if pkg.attributeSets == nil {
+		return nil, staticError(errCodeXTSE3058,
+			"xsl:override attribute-set %q not found in used package", name)
+	}
+
+	pkgAS, exists := pkg.attributeSets[resolvedName]
+	if !exists {
+		return nil, staticError(errCodeXTSE3058,
+			"xsl:override attribute-set %q not found in used package", name)
+	}
+
+	// Check visibility: cannot override final/private/hidden attribute-set.
+	// Effective visibility comes from xsl:expose (attrSetVisibility map) or
+	// the declared visibility attribute on the xsl:attribute-set element.
+	effectiveVis := ""
+	if pkgAS != nil {
+		effectiveVis = pkgAS.Visibility
+	}
+
+	if v, ok := pkg.attrSetVisibility[resolvedName]; ok {
+		effectiveVis = v
+	}
+
+	switch effectiveVis {
+	case visFinal:
+		return nil, staticError(errCodeXTSE3060,
+			"cannot override final attribute-set %q", name)
+	case visPrivate, visHidden:
+		return nil, staticError(errCodeXTSE3060,
+			"cannot override %s attribute-set %q", effectiveVis, name)
+	}
+
+	asd := &attributeSetDef{Name: resolvedName, OwnerPackage: c.stylesheet, Visibility: getAttr(elem, xslAttrVisibility)}
+
+	var useAttrSets []string
+
+	if uas := getAttr(elem, nameUseAttributeSets); uas != "" {
+		for n := range strings.FieldsSeq(uas) {
+			resolved := resolveQName(n, c.nsBindings)
+			asd.UseAttrSets = append(asd.UseAttrSets, resolved)
+			useAttrSets = append(useAttrSets, resolved)
+		}
+	}
+
+	var attrs []instruction
+
+	for child := range xdm.Children(elem) {
+		childElem, ok := child.(*xdm.Element)
+		if !ok {
+			continue
+		}
+
+		if childElem.URI() == lexicon.NamespaceXSLT && childElem.LocalName() == lexicon.XSLTElementAttribute {
+			inst, err := c.compileAttribute(ctx, childElem)
+			if err != nil {
+				return nil, err
+			}
+
+			asd.Attrs = append(asd.Attrs, inst)
+			attrs = append(attrs, inst)
+		}
+	}
+
+	asd.Parts = []attributeSetPart{{UseAttrSets: useAttrSets, Attrs: attrs}}
+
+	return asd, nil
+}
+
+func defaultContextItemType(as string) string {
+	if as == "" {
+		return lexicon.NodeTestItem
+	}
+
+	return as
+}
+
+func checkOverrideFunctionSignature(override, base *xslFunction) error {
+	if override.signatureTypeKey != base.signatureTypeKey {
+		return staticError(errCodeXTSE3070, "override function %s has a different return type", override.Name.Name)
+	}
+
+	for i, p := range override.Params {
+		if p.signatureTypeKey != base.Params[i].signatureTypeKey {
+			return staticError(errCodeXTSE3070, "override function %s parameter %d has a different required type", override.Name.Name, i+1)
+		}
+	}
+
+	net := func(value string) string {
+		if value == "" {
+			return lexicon.ValueYes
+		}
+
+		return value
+	}
+	if net(override.NewEachTime) != net(base.NewEachTime) {
+		return staticError(errCodeXTSE3070, "override function %s has a different new-each-time value", override.Name.Name)
+	}
+
+	if base.Streamability != "" && base.Streamability != lexicon.StreamUnclassified && override.Streamability != base.Streamability {
+		return staticError(errCodeXTSE3070, "override function %s has incompatible streamability", override.Name.Name)
+	}
+
+	return nil
 }
 
 // checkOverrideTemplateCompat applies the signature rules in XSLT 3.0 3.5.3.3.
@@ -694,80 +880,6 @@ func compileOverrideTemplateMatch(tmpl *template, pkg *Stylesheet) error {
 	return nil
 }
 
-func (c *compiler) compileOverrideVariable(ctx context.Context, elem *xdm.Element, pkg *Stylesheet) (*variable, error) {
-	if err := c.validateXSLTAttrs(ctx, elem, variableAllowedAttrs); err != nil {
-		return nil, err
-	}
-	// A static="yes" variable is a version-independent compile-time value (forced
-	// non-compat even in a < 2.0 module); otherwise honor its version attribute.
-	if xsdBoolTrue(getAttr(elem, nameStatic)) {
-		defer c.pushStaticVersion()()
-	} else {
-		defer c.pushElementVersion(elem)()
-	}
-
-	name := getAttr(elem, xslAttrName)
-	if name == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:variable in xsl:override requires name attribute")
-	}
-
-	resolvedName := resolveQName(name, c.nsBindings)
-
-	base := lookupOverrideGlobal(pkg, resolvedName)
-	if base == (globalBinding{}) {
-		return nil, staticError(errCodeXTSE3058,
-			"xsl:override variable %q not found in used package", name)
-	}
-
-	effectiveVis := getComponentVisibility(pkg, xslElemVariable, resolvedName)
-	if err := checkOverrideVariableVisibility(name, effectiveVis); err != nil {
-		return nil, err
-	}
-
-	savedOriginal := c.originalVariableVisibility
-
-	c.originalVariableVisibility = effectiveVis
-	defer func() { c.originalVariableVisibility = savedOriginal }()
-
-	v := &variable{Name: resolvedName, As: getAttr(elem, "as"), Visibility: getAttr(elem, xslAttrVisibility), OwnerPackage: c.stylesheet}
-	if err := c.validateAsSequenceType(ctx, elem, v.As, "overriding variable"); err != nil {
-		return nil, err
-	}
-
-	v.signatureTypeKey = c.declarationTypeKey(elem, v.As)
-
-	if err := checkOverrideGlobalType(base, v.signatureTypeKey, resolvedName); err != nil {
-		return nil, err
-	}
-
-	v.Original = base
-	v.StaticBaseURI = stylesheetBaseURI(elem, c.baseURI, c.moduleRoot)
-	v.XPathDefaultNS = c.xpathDefaultNS
-	v.TypeNamespaces = inScopeNamespaces(elem)
-	v.XPathDefaultNS, v.HasXPathDefaultNS = c.declarationDefaultNamespace(elem)
-
-	selectAttr := getAttr(elem, xslAttrSelect)
-	if selectAttr != "" {
-		expr, err := c.compileXPath(selectAttr, c.nsBindings)
-		if err != nil {
-			return nil, err
-		}
-
-		v.Select = expr
-	} else {
-		body, err := c.compileChildren(ctx, elem)
-		if err != nil {
-			return nil, err
-		}
-
-		v.Body = body
-	}
-
-	c.recordGlobalBindingSource(elem, v.binding())
-
-	return v, nil
-}
-
 func lookupOverrideGlobal(pkg *Stylesheet, name string) globalBinding {
 	for _, v := range pkg.globalVars {
 		if v.Name == name {
@@ -795,118 +907,6 @@ func checkOverrideVariableVisibility(name, effectiveVis string) error {
 	}
 
 	return nil
-}
-
-func (c *compiler) compileOverrideParam(ctx context.Context, elem *xdm.Element, pkg *Stylesheet) (*param, error) {
-	name := resolveQName(getAttr(elem, xslAttrName), c.nsBindings)
-
-	base := lookupOverrideGlobal(pkg, name)
-	if base == (globalBinding{}) {
-		return nil, staticError(errCodeXTSE3058, "xsl:override param %q not found in used package", name)
-	}
-
-	if err := checkOverrideVariableVisibility(name, getComponentVisibility(pkg, xslElemVariable, name)); err != nil {
-		return nil, err
-	}
-
-	savedOriginal := c.originalVariableVisibility
-
-	c.originalVariableVisibility = getComponentVisibility(pkg, xslElemVariable, name)
-	defer func() { c.originalVariableVisibility = savedOriginal }()
-
-	p, err := c.compileParamDef(ctx, elem)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := checkOverrideGlobalType(base, p.signatureTypeKey, p.Name); err != nil {
-		return nil, err
-	}
-
-	p.OwnerPackage, p.Original, p.Visibility = c.stylesheet, base, visPublic
-	p.TypeNamespaces = inScopeNamespaces(elem)
-	p.XPathDefaultNS, p.HasXPathDefaultNS = c.declarationDefaultNamespace(elem)
-	c.recordGlobalBindingSource(elem, p.binding())
-
-	return p, nil
-}
-
-func (c *compiler) compileOverrideAttributeSet(ctx context.Context, elem *xdm.Element, pkg *Stylesheet) (*attributeSetDef, error) {
-	defer c.pushElementVersion(elem)()
-
-	name := getAttr(elem, xslAttrName)
-	if name == "" {
-		return nil, staticError(errCodeXTSE0110, "xsl:attribute-set in xsl:override requires name attribute")
-	}
-
-	resolvedName := resolveQName(name, c.nsBindings)
-
-	if pkg.attributeSets == nil {
-		return nil, staticError(errCodeXTSE3058,
-			"xsl:override attribute-set %q not found in used package", name)
-	}
-
-	pkgAS, exists := pkg.attributeSets[resolvedName]
-	if !exists {
-		return nil, staticError(errCodeXTSE3058,
-			"xsl:override attribute-set %q not found in used package", name)
-	}
-
-	// Check visibility: cannot override final/private/hidden attribute-set.
-	// Effective visibility comes from xsl:expose (attrSetVisibility map) or
-	// the declared visibility attribute on the xsl:attribute-set element.
-	effectiveVis := ""
-	if pkgAS != nil {
-		effectiveVis = pkgAS.Visibility
-	}
-
-	if v, ok := pkg.attrSetVisibility[resolvedName]; ok {
-		effectiveVis = v
-	}
-
-	switch effectiveVis {
-	case visFinal:
-		return nil, staticError(errCodeXTSE3060,
-			"cannot override final attribute-set %q", name)
-	case visPrivate, visHidden:
-		return nil, staticError(errCodeXTSE3060,
-			"cannot override %s attribute-set %q", effectiveVis, name)
-	}
-
-	asd := &attributeSetDef{Name: resolvedName, OwnerPackage: c.stylesheet, Visibility: getAttr(elem, xslAttrVisibility)}
-
-	var useAttrSets []string
-
-	if uas := getAttr(elem, nameUseAttributeSets); uas != "" {
-		for n := range strings.FieldsSeq(uas) {
-			resolved := resolveQName(n, c.nsBindings)
-			asd.UseAttrSets = append(asd.UseAttrSets, resolved)
-			useAttrSets = append(useAttrSets, resolved)
-		}
-	}
-
-	var attrs []instruction
-
-	for child := range xdm.Children(elem) {
-		childElem, ok := child.(*xdm.Element)
-		if !ok {
-			continue
-		}
-
-		if childElem.URI() == lexicon.NamespaceXSLT && childElem.LocalName() == lexicon.XSLTElementAttribute {
-			inst, err := c.compileAttribute(ctx, childElem)
-			if err != nil {
-				return nil, err
-			}
-
-			asd.Attrs = append(asd.Attrs, inst)
-			attrs = append(attrs, inst)
-		}
-	}
-
-	asd.Parts = []attributeSetPart{{UseAttrSets: useAttrSets, Attrs: attrs}}
-
-	return asd, nil
 }
 
 // Schema-defined type identity belongs to the separate schema-aware profile.

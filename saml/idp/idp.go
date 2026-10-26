@@ -233,30 +233,6 @@ func (i *IdentityProvider) Issue(ctx context.Context, request *Request, a Authen
 	return &Issued{doc: d, destination: r.ACS(), relay: request.relay, relayPresent: request.relayPresent, limits: i.c.POSTLimits}, nil
 }
 
-func keyAllowed(key crypto.PublicKey, role *metadata.Role) bool {
-	b, e := x509.MarshalPKIXPublicKey(key)
-	if e != nil {
-		return false
-	}
-
-	for _, candidate := range role.SigningKeys() {
-		v, e := x509.MarshalPKIXPublicKey(candidate)
-		if e == nil && bytes.Equal(b, v) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func contains(a []string, s string) bool {
-	return slices.Contains(a, s)
-}
-
-func authenticationAllowed(a Authentication, at time.Time, skew time.Duration, r *protocol.VerifiedRequest) bool {
-	return !(a.AuthnInstant.IsZero() || a.AuthnInstant.After(at.Add(skew)) || !profile.URI(a.AuthnContext) || r.ForceAuthn() && (!a.FreshAuthentication || a.AuthnInstant.Before(r.IssueInstant().Add(-skew))) || r.IsPassive() && a.InteractionUsed || !r.AllowCreateNameID() && a.CreatedNameID)
-}
-
 func (i *IdentityProvider) roles(ctx context.Context, sp string, at time.Time) (*metadata.Role, *metadata.Role, error) {
 	own, e := i.c.Metadata.Lookup(ctx, i.c.EntityID, at)
 	if e != nil {
@@ -319,6 +295,30 @@ func (i *IdentityProvider) wrap(r *protocol.VerifiedRequest, relay string, prese
 
 func (i *IdentityProvider) acceptsIssueRequest(ctx context.Context, request *Request, at time.Time) bool {
 	return !(i == nil || ctx == nil || request == nil || request.owner != i || request.verified == nil || at.IsZero() || !at.Before(request.expires))
+}
+
+func keyAllowed(key crypto.PublicKey, role *metadata.Role) bool {
+	b, e := x509.MarshalPKIXPublicKey(key)
+	if e != nil {
+		return false
+	}
+
+	for _, candidate := range role.SigningKeys() {
+		v, e := x509.MarshalPKIXPublicKey(candidate)
+		if e == nil && bytes.Equal(b, v) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func contains(a []string, s string) bool {
+	return slices.Contains(a, s)
+}
+
+func authenticationAllowed(a Authentication, at time.Time, skew time.Duration, r *protocol.VerifiedRequest) bool {
+	return !(a.AuthnInstant.IsZero() || a.AuthnInstant.After(at.Add(skew)) || !profile.URI(a.AuthnContext) || r.ForceAuthn() && (!a.FreshAuthentication || a.AuthnInstant.Before(r.IssueInstant().Add(-skew))) || r.IsPassive() && a.InteractionUsed || !r.AllowCreateNameID() && a.CreatedNameID)
 }
 
 // Request retains an authenticated request bound to the IdentityProvider that accepted
@@ -462,14 +462,6 @@ func (r *Issued) WritePOSTForm(ctx context.Context, dst io.Writer) (int64, error
 	return binding.WritePOSTForm(ctx, dst, r.destination, r.doc, binding.Response, r.relayState(), r.limits)
 }
 
-func (r *Issued) relayState() *string {
-	if !r.relayPresent {
-		return nil
-	}
-
-	return &r.relay
-}
-
 // Destination returns the validated destination endpoint.
 func (r *Issued) Destination() string {
 	if r == nil {
@@ -477,4 +469,12 @@ func (r *Issued) Destination() string {
 	}
 
 	return r.destination
+}
+
+func (r *Issued) relayState() *string {
+	if !r.relayPresent {
+		return nil
+	}
+
+	return &r.relay
 }

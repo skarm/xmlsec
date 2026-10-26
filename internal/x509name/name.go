@@ -15,6 +15,13 @@ import (
 	"github.com/skarm/xmlsec/internal/der"
 )
 
+const (
+	maxNameBytes = 64 << 10
+	maxRDNs      = 256
+	maxAVAs      = 1024
+	maxKeyBytes  = 1 << 20
+)
+
 var (
 	// ErrInvalid reports malformed DER or a prohibited stored string.
 	ErrInvalid = errors.New("invalid distinguished name")
@@ -22,13 +29,6 @@ var (
 	ErrUnsupported = errors.New("unsupported distinguished name encoding")
 	// ErrLimit reports the fixed byte, RDN, AVA or prepared-key budget.
 	ErrLimit = errors.New("distinguished name resource limit exceeded")
-)
-
-const (
-	maxNameBytes = 64 << 10
-	maxRDNs      = 256
-	maxAVAs      = 1024
-	maxKeyBytes  = 1 << 20
 )
 
 // Key returns an unambiguous comparison key under RFC5280 section7.1.

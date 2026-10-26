@@ -127,6 +127,204 @@ func (p *pattern) matchPatternProbe(ctx context.Context, ec *execContext, node x
 	return false
 }
 
+// matchPatternItem tests whether an arbitrary item (node or atomic value)
+// matches the pattern. For node items it delegates to matchPattern; for atomic
+// values it evaluates the pattern expression with the item as context and
+// checks whether it produces a non-empty result. This is needed for
+// group-starting-with / group-ending-with over non-node sequences (XSLT 3.0).
+func (p *pattern) matchPatternItem(ctx context.Context, ec *execContext, item xdm.Item) bool {
+	if ni, ok := item.(xdm.NodeItem); ok {
+		// A positional predicate over the context item, e.g. ".[position()=3]",
+		// must see the focus of the population being grouped (position/size set
+		// by the caller in ec.position/ec.size), not the document-order focus
+		// that matchPattern re-establishes for the node. This mirrors the atomic
+		// branch below (ENG-005): evaluate each predicate directly with the node
+		// as context item and the population focus already in scope.
+		if p.matchNodeContextItemPositional(ctx, ec, ni.Node) {
+			return true
+		}
+
+		return p.matchPattern(ctx, ec, ni.Node)
+	}
+
+	// Atomic item: evaluate each alternative's expression with the item as
+	// context. A FilterExpr like .[pred] returns the item when pred is true.
+	saved := ec.xpathDefaultNS
+	savedHas := ec.hasXPathDefaultNS
+	savedGroups := ec.regexGroups
+	savedItem := ec.contextItem
+	savedInPattern := ec.inPatternMatch
+	savedPatternNS := ec.patternNamespaces
+	savedPatternCompat := ec.patternCompat
+	savedPatternPreds := ec.patternPredicates
+	ec.xpathDefaultNS = p.xpathDefaultNS
+	ec.hasXPathDefaultNS = p.hasXPathDefaultNS
+	ec.regexGroups = nil
+	ec.contextItem = item
+	ec.inPatternMatch = true
+	ec.patternNamespaces = p.nsBindings
+	ec.patternCompat = p.compat
+
+	ec.patternPredicates = p.predicates
+	defer func() {
+		ec.xpathDefaultNS = saved
+		ec.hasXPathDefaultNS = savedHas
+		ec.regexGroups = savedGroups
+		ec.contextItem = savedItem
+		ec.inPatternMatch = savedInPattern
+		ec.patternNamespaces = savedPatternNS
+		ec.patternCompat = savedPatternCompat
+		ec.patternPredicates = savedPatternPreds
+	}()
+
+	for _, alt := range p.Alternatives {
+		// variable reference patterns (e.g., match="$var") only match nodes,
+		// never atomic items. Per XSLT 3.0 §5.5.3, the semantics require
+		// root(N)//(V) which is undefined for non-node items.
+		if _, isVar := alt.expr.(xpath.VariableExpr); isVar {
+			continue
+		}
+
+		// A positional predicate over the context item, e.g. ".[position()=3]",
+		// must see the focus of the population sequence (position/size set by
+		// the caller in ec.position/ec.size), not a re-based filter focus.
+		// Evaluating the whole FilterExpr would re-bind position() to 1 because
+		// "." is a singleton; instead evaluate each predicate directly with the
+		// item as context item and the population focus already in scope.
+		if fe, ok := alt.expr.(xpath.FilterExpr); ok {
+			if _, isCtxItem := fe.Expr.(xpath.ContextItemExpr); isCtxItem {
+				if ec.matchContextItemPredicates(ctx, fe.Predicates) {
+					return true
+				}
+
+				continue
+			}
+		}
+
+		compiled, compErr := xpath.NewCompiler().CompileExpr(alt.expr)
+		if compErr != nil {
+			continue
+		}
+
+		result, err := ec.evalPatternExpr(ctx, compiled, nil)
+		if err != nil {
+			continue
+		}
+
+		seq := result.Sequence()
+		if seq != nil && xdm.SequenceLen(seq) > 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// matchNodeContextItemPositional handles ".[pred]" pattern alternatives for a
+// node item during for-each-group boundary evaluation. It evaluates each such
+// alternative's predicates with the node as the context item and the population
+// focus (ec.position/ec.size) already in scope, so that positional predicates
+// like position()=3 are tested against the node's position within the population
+// being grouped, and never its document-order position. It returns true only
+// when a ".[pred]" alternative matches; non-".[pred]" alternatives are left for
+// the caller to handle via matchPattern.
+func (p *pattern) matchNodeContextItemPositional(ctx context.Context, ec *execContext, node xdm.Node) bool {
+	var ctxAlts []xpath.FilterExpr
+
+	for _, alt := range p.Alternatives {
+		fe, ok := alt.expr.(xpath.FilterExpr)
+		if !ok {
+			continue
+		}
+
+		if _, isCtxItem := fe.Expr.(xpath.ContextItemExpr); !isCtxItem {
+			continue
+		}
+
+		ctxAlts = append(ctxAlts, fe)
+	}
+
+	if len(ctxAlts) == 0 {
+		return false
+	}
+
+	saved := ec.xpathDefaultNS
+	savedHas := ec.hasXPathDefaultNS
+	savedGroups := ec.regexGroups
+	savedContext := ec.contextNode
+	savedCurrent := ec.currentNode
+	savedItem := ec.contextItem
+	savedInPattern := ec.inPatternMatch
+	savedPatternNS := ec.patternNamespaces
+	savedPatternCompat := ec.patternCompat
+	savedPatternPreds := ec.patternPredicates
+	ec.xpathDefaultNS = p.xpathDefaultNS
+	ec.hasXPathDefaultNS = p.hasXPathDefaultNS
+	ec.regexGroups = nil
+	ec.contextNode = node
+	ec.currentNode = node
+	ec.contextItem = xdm.NodeItem{Node: node}
+	ec.inPatternMatch = true
+	ec.patternNamespaces = p.nsBindings
+	ec.patternCompat = p.compat
+
+	ec.patternPredicates = p.predicates
+	defer func() {
+		ec.xpathDefaultNS = saved
+		ec.hasXPathDefaultNS = savedHas
+		ec.regexGroups = savedGroups
+		ec.contextNode = savedContext
+		ec.currentNode = savedCurrent
+		ec.contextItem = savedItem
+		ec.inPatternMatch = savedInPattern
+		ec.patternNamespaces = savedPatternNS
+		ec.patternCompat = savedPatternCompat
+		ec.patternPredicates = savedPatternPreds
+	}()
+
+	for _, fe := range ctxAlts {
+		if ec.matchContextItemPredicates(ctx, fe.Predicates) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// matchesAttributes returns true if the pattern source could potentially match
+// attribute nodes. This is a conservative heuristic used by key table building
+// to decide whether to visit attribute nodes during the document walk.
+func (p *pattern) matchesAttributes() bool {
+	return strings.Contains(p.source, "@") || strings.Contains(p.source, "attribute")
+}
+
+// matchesNamespaceNodes reports whether the pattern could match a namespace
+// node. A namespace node is only ever selected structurally by a step on the
+// namespace axis (nodeMatchesStep rejects it on every other axis), so a pattern
+// whose alternatives are all paths ending on another axis can never match one.
+// Every other alternative form — "." and ".[p]", a variable or function-call
+// pattern matched by evaluating the expression — is treated as though it could.
+// Key table building uses this to decide whether to enumerate in-scope
+// namespace nodes during the document walk.
+func (p *pattern) matchesNamespaceNodes() bool {
+	for _, alt := range p.Alternatives {
+		// Skipping a neverMatches alternative cannot lose a namespace node:
+		// matchPatternAlt returns false for every node under that same flag,
+		// and key table building matches only through that path. An
+		// alternative skipped here therefore selects nothing anywhere, so this
+		// skip is exactly the matcher's.
+		if alt.neverMatches {
+			continue
+		}
+
+		if exprMatchesNamespaceNodes(alt.expr) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // matchPatternAlt tests whether a node matches a single pattern alternative.
 // XSLT patterns evaluate by checking if the node would be selected by the
 // equivalent XPath expression when evaluated in the right context.
@@ -1324,204 +1522,6 @@ func sequenceHasNode(seq xdm.Sequence, node xdm.Node, isNS bool) bool {
 	return false
 }
 
-// matchPatternItem tests whether an arbitrary item (node or atomic value)
-// matches the pattern. For node items it delegates to matchPattern; for atomic
-// values it evaluates the pattern expression with the item as context and
-// checks whether it produces a non-empty result. This is needed for
-// group-starting-with / group-ending-with over non-node sequences (XSLT 3.0).
-func (p *pattern) matchPatternItem(ctx context.Context, ec *execContext, item xdm.Item) bool {
-	if ni, ok := item.(xdm.NodeItem); ok {
-		// A positional predicate over the context item, e.g. ".[position()=3]",
-		// must see the focus of the population being grouped (position/size set
-		// by the caller in ec.position/ec.size), not the document-order focus
-		// that matchPattern re-establishes for the node. This mirrors the atomic
-		// branch below (ENG-005): evaluate each predicate directly with the node
-		// as context item and the population focus already in scope.
-		if p.matchNodeContextItemPositional(ctx, ec, ni.Node) {
-			return true
-		}
-
-		return p.matchPattern(ctx, ec, ni.Node)
-	}
-
-	// Atomic item: evaluate each alternative's expression with the item as
-	// context. A FilterExpr like .[pred] returns the item when pred is true.
-	saved := ec.xpathDefaultNS
-	savedHas := ec.hasXPathDefaultNS
-	savedGroups := ec.regexGroups
-	savedItem := ec.contextItem
-	savedInPattern := ec.inPatternMatch
-	savedPatternNS := ec.patternNamespaces
-	savedPatternCompat := ec.patternCompat
-	savedPatternPreds := ec.patternPredicates
-	ec.xpathDefaultNS = p.xpathDefaultNS
-	ec.hasXPathDefaultNS = p.hasXPathDefaultNS
-	ec.regexGroups = nil
-	ec.contextItem = item
-	ec.inPatternMatch = true
-	ec.patternNamespaces = p.nsBindings
-	ec.patternCompat = p.compat
-
-	ec.patternPredicates = p.predicates
-	defer func() {
-		ec.xpathDefaultNS = saved
-		ec.hasXPathDefaultNS = savedHas
-		ec.regexGroups = savedGroups
-		ec.contextItem = savedItem
-		ec.inPatternMatch = savedInPattern
-		ec.patternNamespaces = savedPatternNS
-		ec.patternCompat = savedPatternCompat
-		ec.patternPredicates = savedPatternPreds
-	}()
-
-	for _, alt := range p.Alternatives {
-		// variable reference patterns (e.g., match="$var") only match nodes,
-		// never atomic items. Per XSLT 3.0 §5.5.3, the semantics require
-		// root(N)//(V) which is undefined for non-node items.
-		if _, isVar := alt.expr.(xpath.VariableExpr); isVar {
-			continue
-		}
-
-		// A positional predicate over the context item, e.g. ".[position()=3]",
-		// must see the focus of the population sequence (position/size set by
-		// the caller in ec.position/ec.size), not a re-based filter focus.
-		// Evaluating the whole FilterExpr would re-bind position() to 1 because
-		// "." is a singleton; instead evaluate each predicate directly with the
-		// item as context item and the population focus already in scope.
-		if fe, ok := alt.expr.(xpath.FilterExpr); ok {
-			if _, isCtxItem := fe.Expr.(xpath.ContextItemExpr); isCtxItem {
-				if ec.matchContextItemPredicates(ctx, fe.Predicates) {
-					return true
-				}
-
-				continue
-			}
-		}
-
-		compiled, compErr := xpath.NewCompiler().CompileExpr(alt.expr)
-		if compErr != nil {
-			continue
-		}
-
-		result, err := ec.evalPatternExpr(ctx, compiled, nil)
-		if err != nil {
-			continue
-		}
-
-		seq := result.Sequence()
-		if seq != nil && xdm.SequenceLen(seq) > 0 {
-			return true
-		}
-	}
-
-	return false
-}
-
-// matchNodeContextItemPositional handles ".[pred]" pattern alternatives for a
-// node item during for-each-group boundary evaluation. It evaluates each such
-// alternative's predicates with the node as the context item and the population
-// focus (ec.position/ec.size) already in scope, so that positional predicates
-// like position()=3 are tested against the node's position within the population
-// being grouped, and never its document-order position. It returns true only
-// when a ".[pred]" alternative matches; non-".[pred]" alternatives are left for
-// the caller to handle via matchPattern.
-func (p *pattern) matchNodeContextItemPositional(ctx context.Context, ec *execContext, node xdm.Node) bool {
-	var ctxAlts []xpath.FilterExpr
-
-	for _, alt := range p.Alternatives {
-		fe, ok := alt.expr.(xpath.FilterExpr)
-		if !ok {
-			continue
-		}
-
-		if _, isCtxItem := fe.Expr.(xpath.ContextItemExpr); !isCtxItem {
-			continue
-		}
-
-		ctxAlts = append(ctxAlts, fe)
-	}
-
-	if len(ctxAlts) == 0 {
-		return false
-	}
-
-	saved := ec.xpathDefaultNS
-	savedHas := ec.hasXPathDefaultNS
-	savedGroups := ec.regexGroups
-	savedContext := ec.contextNode
-	savedCurrent := ec.currentNode
-	savedItem := ec.contextItem
-	savedInPattern := ec.inPatternMatch
-	savedPatternNS := ec.patternNamespaces
-	savedPatternCompat := ec.patternCompat
-	savedPatternPreds := ec.patternPredicates
-	ec.xpathDefaultNS = p.xpathDefaultNS
-	ec.hasXPathDefaultNS = p.hasXPathDefaultNS
-	ec.regexGroups = nil
-	ec.contextNode = node
-	ec.currentNode = node
-	ec.contextItem = xdm.NodeItem{Node: node}
-	ec.inPatternMatch = true
-	ec.patternNamespaces = p.nsBindings
-	ec.patternCompat = p.compat
-
-	ec.patternPredicates = p.predicates
-	defer func() {
-		ec.xpathDefaultNS = saved
-		ec.hasXPathDefaultNS = savedHas
-		ec.regexGroups = savedGroups
-		ec.contextNode = savedContext
-		ec.currentNode = savedCurrent
-		ec.contextItem = savedItem
-		ec.inPatternMatch = savedInPattern
-		ec.patternNamespaces = savedPatternNS
-		ec.patternCompat = savedPatternCompat
-		ec.patternPredicates = savedPatternPreds
-	}()
-
-	for _, fe := range ctxAlts {
-		if ec.matchContextItemPredicates(ctx, fe.Predicates) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// matchesAttributes returns true if the pattern source could potentially match
-// attribute nodes. This is a conservative heuristic used by key table building
-// to decide whether to visit attribute nodes during the document walk.
-func (p *pattern) matchesAttributes() bool {
-	return strings.Contains(p.source, "@") || strings.Contains(p.source, "attribute")
-}
-
-// matchesNamespaceNodes reports whether the pattern could match a namespace
-// node. A namespace node is only ever selected structurally by a step on the
-// namespace axis (nodeMatchesStep rejects it on every other axis), so a pattern
-// whose alternatives are all paths ending on another axis can never match one.
-// Every other alternative form — "." and ".[p]", a variable or function-call
-// pattern matched by evaluating the expression — is treated as though it could.
-// Key table building uses this to decide whether to enumerate in-scope
-// namespace nodes during the document walk.
-func (p *pattern) matchesNamespaceNodes() bool {
-	for _, alt := range p.Alternatives {
-		// Skipping a neverMatches alternative cannot lose a namespace node:
-		// matchPatternAlt returns false for every node under that same flag,
-		// and key table building matches only through that path. An
-		// alternative skipped here therefore selects nothing anywhere, so this
-		// skip is exactly the matcher's.
-		if alt.neverMatches {
-			continue
-		}
-
-		if exprMatchesNamespaceNodes(alt.expr) {
-			return true
-		}
-	}
-
-	return false
-}
-
 // exprMatchesNamespaceNodes is the structural half of matchesNamespaceNodes.
 // It must stay in sync with nodeMatchesStep's namespace-axis check: see the
 // comment there.
@@ -1746,6 +1746,108 @@ func (c *compiler) compilePattern(s string, elem *xdm.Element, xpathDefaultNS st
 	}
 
 	return p, nil
+}
+
+// internPatternNamespaces returns the compiler's shared map with the same
+// bindings as ns, registering ns as that map when none exists yet. Every
+// pattern keeps its map for the life of the stylesheet, and the runtime caches
+// one base XPath evaluator per distinct map (baseEvalKey), so sharing the map
+// lets patterns with the same in-scope namespaces share that evaluator. The
+// returned map is never modified.
+func (c *compiler) internPatternNamespaces(ns map[string]string) map[string]string {
+	prefixes := slices.Sorted(maps.Keys(ns))
+
+	var b strings.Builder
+	for _, prefix := range prefixes {
+		b.WriteString(prefix)
+		b.WriteByte(0)
+		b.WriteString(ns[prefix])
+		b.WriteByte(0)
+	}
+
+	key := b.String()
+	if shared, ok := c.patternNamespaceMaps[key]; ok {
+		return shared
+	}
+
+	if c.patternNamespaceMaps == nil {
+		c.patternNamespaceMaps = make(map[string]map[string]string)
+	}
+
+	c.patternNamespaceMaps[key] = ns
+
+	return ns
+}
+
+// validatePatternFunctions checks that all function calls in a pattern
+// reference known functions (built-in XPath or declared xsl:function).
+// Unknown functions like f:special() raise XPST0017 at compile time.
+func (c *compiler) validatePatternFunctions(ctx context.Context, p *pattern, source string) error {
+	for _, alt := range p.Alternatives {
+		var walkErr error
+
+		xpath.WalkExpr(alt.expr, func(e xpath.Expr) bool {
+			if walkErr != nil {
+				return false
+			}
+
+			fc, ok := e.(xpath.FunctionCall)
+			if !ok {
+				return true
+			}
+			// An unprefixed function call names the XPath functions namespace,
+			// the same as the prefixed path. Resolve identity (URI + local)
+			// explicitly so it gets the identical existence/arity validation
+			// below — a nonexistent no-such-function() or a wrong-arity key()
+			// must be rejected, not silently allowed. patternFunctionIdentity
+			// also normalizes the EQName spelling Q{uri}local so it is matched
+			// against the same registries as the lexical form.
+			nsURI, local := patternFunctionIdentity(fc, p.nsBindings)
+
+			displayName := local
+			if fc.Prefix != "" {
+				displayName = fc.Prefix + ":" + local
+			}
+			// Resolving the prefix to a known function namespace is not enough:
+			// the function must actually exist with an acceptable arity. Confirm
+			// against xpath's built-in registry (covers fn:, math:, map:, array:,
+			// err: and the xs: constructor functions). An invalid call such as
+			// math:no-such-function() falls through to the declared-function
+			// lookup below and is rejected as XPST0017.
+			if xpath.BuiltinFunctionAcceptsArity(nsURI, local, len(fc.Args)) {
+				return true
+			}
+			// XSLT defines additional functions in the fn: namespace (key,
+			// current, document, generate-id, ...). These are not XPath
+			// built-ins, so consult the XSLT function registry before
+			// rejecting. Functions forbidden in patterns (current-group,
+			// current-merge-key, ...) are caught separately by
+			// checkPatternForbiddenFunctions.
+			if nsURI == lexicon.NamespaceFn && xsltFunctionAcceptsVersionArity(c.stylesheet.processorLanguage(), local, len(fc.Args)) {
+				return true
+			}
+
+			qn := xpath.QualifiedName{Name: local, URI: nsURI}
+			if fn := xpath.FunctionsFromContext(ctx)[qn]; fn != nil && len(fc.Args) >= fn.MinArity() && len(fc.Args) <= fn.MaxArity() {
+				return true
+			}
+
+			if c.stylesheet.functions[funcKey{Name: qn, Arity: len(fc.Args)}] != nil {
+				return true
+			}
+
+			walkErr = staticError(lexicon.ErrXPST0017,
+				"unknown function %s() in match pattern %q", displayName, source)
+
+			return false
+		})
+
+		if walkErr != nil {
+			return walkErr
+		}
+	}
+
+	return nil
 }
 
 func patternCompilationError(ctx context.Context, source string, cause error) error {
@@ -2375,108 +2477,6 @@ func stepPriority(step xpath.Step) float64 {
 	default:
 		return 0.5
 	}
-}
-
-// internPatternNamespaces returns the compiler's shared map with the same
-// bindings as ns, registering ns as that map when none exists yet. Every
-// pattern keeps its map for the life of the stylesheet, and the runtime caches
-// one base XPath evaluator per distinct map (baseEvalKey), so sharing the map
-// lets patterns with the same in-scope namespaces share that evaluator. The
-// returned map is never modified.
-func (c *compiler) internPatternNamespaces(ns map[string]string) map[string]string {
-	prefixes := slices.Sorted(maps.Keys(ns))
-
-	var b strings.Builder
-	for _, prefix := range prefixes {
-		b.WriteString(prefix)
-		b.WriteByte(0)
-		b.WriteString(ns[prefix])
-		b.WriteByte(0)
-	}
-
-	key := b.String()
-	if shared, ok := c.patternNamespaceMaps[key]; ok {
-		return shared
-	}
-
-	if c.patternNamespaceMaps == nil {
-		c.patternNamespaceMaps = make(map[string]map[string]string)
-	}
-
-	c.patternNamespaceMaps[key] = ns
-
-	return ns
-}
-
-// validatePatternFunctions checks that all function calls in a pattern
-// reference known functions (built-in XPath or declared xsl:function).
-// Unknown functions like f:special() raise XPST0017 at compile time.
-func (c *compiler) validatePatternFunctions(ctx context.Context, p *pattern, source string) error {
-	for _, alt := range p.Alternatives {
-		var walkErr error
-
-		xpath.WalkExpr(alt.expr, func(e xpath.Expr) bool {
-			if walkErr != nil {
-				return false
-			}
-
-			fc, ok := e.(xpath.FunctionCall)
-			if !ok {
-				return true
-			}
-			// An unprefixed function call names the XPath functions namespace,
-			// the same as the prefixed path. Resolve identity (URI + local)
-			// explicitly so it gets the identical existence/arity validation
-			// below — a nonexistent no-such-function() or a wrong-arity key()
-			// must be rejected, not silently allowed. patternFunctionIdentity
-			// also normalizes the EQName spelling Q{uri}local so it is matched
-			// against the same registries as the lexical form.
-			nsURI, local := patternFunctionIdentity(fc, p.nsBindings)
-
-			displayName := local
-			if fc.Prefix != "" {
-				displayName = fc.Prefix + ":" + local
-			}
-			// Resolving the prefix to a known function namespace is not enough:
-			// the function must actually exist with an acceptable arity. Confirm
-			// against xpath's built-in registry (covers fn:, math:, map:, array:,
-			// err: and the xs: constructor functions). An invalid call such as
-			// math:no-such-function() falls through to the declared-function
-			// lookup below and is rejected as XPST0017.
-			if xpath.BuiltinFunctionAcceptsArity(nsURI, local, len(fc.Args)) {
-				return true
-			}
-			// XSLT defines additional functions in the fn: namespace (key,
-			// current, document, generate-id, ...). These are not XPath
-			// built-ins, so consult the XSLT function registry before
-			// rejecting. Functions forbidden in patterns (current-group,
-			// current-merge-key, ...) are caught separately by
-			// checkPatternForbiddenFunctions.
-			if nsURI == lexicon.NamespaceFn && xsltFunctionAcceptsVersionArity(c.stylesheet.processorLanguage(), local, len(fc.Args)) {
-				return true
-			}
-
-			qn := xpath.QualifiedName{Name: local, URI: nsURI}
-			if fn := xpath.FunctionsFromContext(ctx)[qn]; fn != nil && len(fc.Args) >= fn.MinArity() && len(fc.Args) <= fn.MaxArity() {
-				return true
-			}
-
-			if c.stylesheet.functions[funcKey{Name: qn, Arity: len(fc.Args)}] != nil {
-				return true
-			}
-
-			walkErr = staticError(lexicon.ErrXPST0017,
-				"unknown function %s() in match pattern %q", displayName, source)
-
-			return false
-		})
-
-		if walkErr != nil {
-			return walkErr
-		}
-	}
-
-	return nil
 }
 
 func resolvePatternFunctionNamespace(prefix string, nsBindings map[string]string) string {

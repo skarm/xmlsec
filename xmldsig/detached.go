@@ -176,6 +176,34 @@ func VerifyDetached(ctx context.Context, doc *document.Document, key crypto.Publ
 	return result, nil
 }
 
+// SignatureMethod returns the authenticated signature algorithm URI.
+func (r *DetachedResult) SignatureMethod() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.algorithm
+}
+
+// KeyFingerprintSHA256 returns the hexadecimal SHA-256 fingerprint of the externally
+// trusted verification key.
+func (r *DetachedResult) KeyFingerprintSHA256() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.fingerprint
+}
+
+// References returns an owned slice of immutable validated reference results.
+func (r *DetachedResult) References() []ReferenceResult {
+	if r == nil {
+		return nil
+	}
+
+	return append([]ReferenceResult(nil), r.references...)
+}
+
 func prepareDetachedVerification(ctx context.Context, doc *document.Document, key crypto.PublicKey, opt DetachedVerifyOptions) (*detachedVerificationPlan, error) {
 	p, err := normalizePolicy(opt.Policy)
 	if err != nil {
@@ -264,34 +292,6 @@ func validateExpectedDetachedURIs(uris []string, expected map[string]struct{}) e
 	}
 
 	return nil
-}
-
-// SignatureMethod returns the authenticated signature algorithm URI.
-func (r *DetachedResult) SignatureMethod() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.algorithm
-}
-
-// KeyFingerprintSHA256 returns the hexadecimal SHA-256 fingerprint of the externally
-// trusted verification key.
-func (r *DetachedResult) KeyFingerprintSHA256() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.fingerprint
-}
-
-// References returns an owned slice of immutable validated reference results.
-func (r *DetachedResult) References() []ReferenceResult {
-	if r == nil {
-		return nil
-	}
-
-	return append([]ReferenceResult(nil), r.references...)
 }
 
 type detachedSigningPlan struct {

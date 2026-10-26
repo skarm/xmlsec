@@ -529,14 +529,6 @@ type languageProofRun struct {
 	index          map[string]languageProofStatus
 }
 
-type languageProofStatus struct {
-	passed      bool
-	invalid     string
-	oracles     map[string]struct{}
-	diagnostics map[string]struct{}
-	vectors     map[string]struct{}
-}
-
 func (r *languageProofRun) passed(check conformanceTest) error {
 	if r.index == nil {
 		r.index = make(map[string]languageProofStatus)
@@ -587,6 +579,38 @@ func (r *languageProofRun) passed(check conformanceTest) error {
 	return nil
 }
 
+func (r *languageProofRun) independent(proof normativeProof) error {
+	if err := r.passed(proof.Check); err != nil {
+		return err
+	}
+	key := filepath.ToSlash(filepath.Dir(proof.Check.File)) + "\x00" + proof.Check.Name + "/" + proof.Check.Case
+	state := r.index[key]
+	if proof.Oracle == "published-vector" || proof.Oracle == "published-inventory" {
+		if proof.Expected == nil {
+			return fmt.Errorf("%s/%s has no published fixture value", proof.Check.Name, proof.Check.Case)
+		}
+		if _, exists := state.vectors[*proof.Expected]; !exists {
+			return fmt.Errorf("%s/%s does not verify published fixture value %q", proof.Check.Name, proof.Check.Case, *proof.Expected)
+		}
+		return nil
+	}
+	if _, exists := state.oracles[proof.Oracle]; !exists {
+		return fmt.Errorf("%s/%s has no exact %s agreement; diagnostics cannot close independent evidence", proof.Check.Name, proof.Check.Case, proof.Oracle)
+	}
+	if _, exists := state.diagnostics[proof.Oracle]; exists {
+		return fmt.Errorf("%s/%s has no exact %s agreement; diagnostics cannot close independent evidence", proof.Check.Name, proof.Check.Case, proof.Oracle)
+	}
+	return nil
+}
+
+type languageProofStatus struct {
+	passed      bool
+	invalid     string
+	oracles     map[string]struct{}
+	diagnostics map[string]struct{}
+	vectors     map[string]struct{}
+}
+
 func (s *languageProofStatus) recordOutput(output string) {
 	for _, marker := range []string{"P3_ORACLE ", "P3_DIAGNOSTIC ", "P3_VECTOR "} {
 		_, tail, found := strings.Cut(output, marker)
@@ -619,30 +643,6 @@ func (s *languageProofStatus) recordOutput(output string) {
 			s.diagnostics[fields[0]] = struct{}{}
 		}
 	}
-}
-
-func (r *languageProofRun) independent(proof normativeProof) error {
-	if err := r.passed(proof.Check); err != nil {
-		return err
-	}
-	key := filepath.ToSlash(filepath.Dir(proof.Check.File)) + "\x00" + proof.Check.Name + "/" + proof.Check.Case
-	state := r.index[key]
-	if proof.Oracle == "published-vector" || proof.Oracle == "published-inventory" {
-		if proof.Expected == nil {
-			return fmt.Errorf("%s/%s has no published fixture value", proof.Check.Name, proof.Check.Case)
-		}
-		if _, exists := state.vectors[*proof.Expected]; !exists {
-			return fmt.Errorf("%s/%s does not verify published fixture value %q", proof.Check.Name, proof.Check.Case, *proof.Expected)
-		}
-		return nil
-	}
-	if _, exists := state.oracles[proof.Oracle]; !exists {
-		return fmt.Errorf("%s/%s has no exact %s agreement; diagnostics cannot close independent evidence", proof.Check.Name, proof.Check.Case, proof.Oracle)
-	}
-	if _, exists := state.diagnostics[proof.Oracle]; exists {
-		return fmt.Errorf("%s/%s has no exact %s agreement; diagnostics cannot close independent evidence", proof.Check.Name, proof.Check.Case, proof.Oracle)
-	}
-	return nil
 }
 
 func languageProofPassed(events []languageProofEvent, check conformanceTest) error {

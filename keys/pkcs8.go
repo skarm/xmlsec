@@ -122,6 +122,39 @@ func ParseEncryptedPrivateWithOptions(ctx context.Context, data, password []byte
 	return decryptPrivateInfo(state, decoded.der)
 }
 
+// MarshalEncryptedPrivate encodes an exportable private key as DER encrypted
+// PKCS#8. It uses fresh salt/IV and explicit SHA-2/AES PBES2 parameters; zero
+// options select AES-256/SHA-256 with 600000 PBKDF2 iterations. Password must be
+// nonempty. Opaque signers cannot be exported. The result may be PEM encoded by
+// the application with label ENCRYPTED PRIVATE KEY. RSA exports obey the
+// supplied component and prime-count limits and do not modify caller CRT state.
+// Invalid key components are rejected before KDF work. It performs no I/O.
+func MarshalEncryptedPrivate(ctx context.Context, key crypto.Signer, password []byte, options EncryptionOptions, limits Limits) ([]byte, error) {
+	parts, err := prepareEncryptedPrivate(ctx, key, password, options, limits)
+	if err != nil {
+		return nil, err
+	}
+
+	return parts.bytes(ctx)
+}
+
+// WriteEncryptedPrivate writes encrypted PKCS#8 DER to dst. Encryption retains
+// bounded key/plaintext and ciphertext storage; nested DER is emitted separately.
+// Limits and KDF work are checked before output. It leaves dst open and may
+// return a byte count with partial output after a write or cancellation error.
+func WriteEncryptedPrivate(ctx context.Context, dst io.Writer, key crypto.Signer, password []byte, options EncryptionOptions, limits Limits) (int64, error) {
+	if nilcheck.IsNil(dst) {
+		return 0, ErrPolicy
+	}
+
+	parts, err := prepareEncryptedPrivate(ctx, key, password, options, limits)
+	if err != nil {
+		return 0, err
+	}
+
+	return parts.write(ctx, dst)
+}
+
 // Framing is shared with strict DER import. Only an explicit BER option defers
 // the structural scan to the schema-specific bounded wrapper normalizer.
 func privateMaterial(ctx context.Context, data []byte, maximum int, limits Limits, allowBER bool) (decodedMaterial, error) {
@@ -218,39 +251,6 @@ func parseDecryptedPrivate(state *passwordState, plain []byte) (crypto.Signer, e
 	}
 
 	return key, nil
-}
-
-// MarshalEncryptedPrivate encodes an exportable private key as DER encrypted
-// PKCS#8. It uses fresh salt/IV and explicit SHA-2/AES PBES2 parameters; zero
-// options select AES-256/SHA-256 with 600000 PBKDF2 iterations. Password must be
-// nonempty. Opaque signers cannot be exported. The result may be PEM encoded by
-// the application with label ENCRYPTED PRIVATE KEY. RSA exports obey the
-// supplied component and prime-count limits and do not modify caller CRT state.
-// Invalid key components are rejected before KDF work. It performs no I/O.
-func MarshalEncryptedPrivate(ctx context.Context, key crypto.Signer, password []byte, options EncryptionOptions, limits Limits) ([]byte, error) {
-	parts, err := prepareEncryptedPrivate(ctx, key, password, options, limits)
-	if err != nil {
-		return nil, err
-	}
-
-	return parts.bytes(ctx)
-}
-
-// WriteEncryptedPrivate writes encrypted PKCS#8 DER to dst. Encryption retains
-// bounded key/plaintext and ciphertext storage; nested DER is emitted separately.
-// Limits and KDF work are checked before output. It leaves dst open and may
-// return a byte count with partial output after a write or cancellation error.
-func WriteEncryptedPrivate(ctx context.Context, dst io.Writer, key crypto.Signer, password []byte, options EncryptionOptions, limits Limits) (int64, error) {
-	if nilcheck.IsNil(dst) {
-		return 0, ErrPolicy
-	}
-
-	parts, err := prepareEncryptedPrivate(ctx, key, password, options, limits)
-	if err != nil {
-		return 0, err
-	}
-
-	return parts.write(ctx, dst)
 }
 
 func privateEncoding(key crypto.Signer, limits Limits) ([]byte, crypto.Signer, error) {

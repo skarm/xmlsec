@@ -54,6 +54,27 @@ func SerializeValue(ctx context.Context, w io.Writer, result ValueResult) error 
 	return serializeResult(ctx, w, doc, definition)
 }
 
+// NormalizeExecution applies stylesheet-directed or forced final tree
+// construction to raw values without serializing or modifying their nodes.
+func NormalizeExecution(ctx context.Context, execution *Execution, forceTree *bool, baseURI string) (*Execution, error) {
+	primary, err := normalizeValue(ctx, execution.Primary, forceTree, baseURI)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &Execution{Primary: primary, Secondary: make(map[string]ValueResult, len(execution.Secondary))}
+	for uri, value := range execution.Secondary {
+		normalized, err := normalizeValue(ctx, value, forceTree, uri)
+		if err != nil {
+			return nil, err
+		}
+
+		result.Secondary[uri] = normalized
+	}
+
+	return result, ctx.Err()
+}
+
 // streamValue reports handled=false only before writing anything. This is an
 // internal implementation choice, not a restriction on writer-based public APIs.
 func streamValue(ctx context.Context, w io.Writer, result ValueResult, definition *OutputDef) (bool, error) {
@@ -88,27 +109,6 @@ func streamValue(ctx context.Context, w io.Writer, result ValueResult, definitio
 	}
 
 	return true, closeOutput()
-}
-
-// NormalizeExecution applies stylesheet-directed or forced final tree
-// construction to raw values without serializing or modifying their nodes.
-func NormalizeExecution(ctx context.Context, execution *Execution, forceTree *bool, baseURI string) (*Execution, error) {
-	primary, err := normalizeValue(ctx, execution.Primary, forceTree, baseURI)
-	if err != nil {
-		return nil, err
-	}
-
-	result := &Execution{Primary: primary, Secondary: make(map[string]ValueResult, len(execution.Secondary))}
-	for uri, value := range execution.Secondary {
-		normalized, err := normalizeValue(ctx, value, forceTree, uri)
-		if err != nil {
-			return nil, err
-		}
-
-		result.Secondary[uri] = normalized
-	}
-
-	return result, ctx.Err()
 }
 
 func normalizeValue(ctx context.Context, value ValueResult, forceTree *bool, baseURI string) (ValueResult, error) {

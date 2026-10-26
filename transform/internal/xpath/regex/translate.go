@@ -42,743 +42,6 @@ const (
 	xpathRegexNameCharRangeNeg = `\x{0}-\x{2C}\x{2F}\x{3B}-\x{40}\x{5B}-\x{5E}\x{60}\x{7B}-\x{B6}\x{B8}-\x{BF}\x{D7}\x{F7}\x{346}\x{37E}\x{2000}-\x{200B}\x{200E}-\x{203E}\x{2041}-\x{206F}\x{2190}-\x{2BFF}\x{2FF0}-\x{3000}\x{D800}-\x{F8FF}\x{FDD0}-\x{FDEF}\x{FFFE}-\x{FFFF}\x{F0000}-\x{10FFFF}`
 )
 
-// Translate converts an XPath/XQuery regex pattern (fn:matches/tokenize/replace)
-// into the shared Go pattern grammar. In this flavor '^' and '$' are anchors and the pattern
-// is not implicitly anchored.
-func Translate(pattern string, dotAll, ignoreCase bool) (string, error) {
-	return translateXPathRegex(pattern, dotAll, ignoreCase)
-}
-
-// ValidateXSD10 rejects the interior literal hyphens permitted by XSD 1.1
-// but excluded from XML Schema 1.0 character groups. Existing validation
-// independently checks escapes, endpoints and subtraction structure.
-func ValidateXSD10(pattern string) error {
-	var classes []xsd10Class
-
-	for i := 0; i < len(pattern); {
-		ch, width := utf8.DecodeRuneInString(pattern[i:])
-
-		i += width
-		if ch == '\\' {
-			next, single := xsd10Escape(pattern, i)
-			i = next
-
-			if len(classes) > 0 {
-				if err := classes[len(classes)-1].escaped(single); err != nil {
-					return err
-				}
-			}
-
-			continue
-		}
-
-		switch ch {
-		case '[':
-			classes = append(classes, xsd10Class{first: true})
-		case ']':
-			if len(classes) > 0 {
-				classes = classes[:len(classes)-1]
-			}
-		default:
-			if len(classes) == 0 {
-				continue
-			}
-
-			next := byte(0)
-			if i < len(pattern) {
-				next = pattern[i]
-			}
-
-			if err := classes[len(classes)-1].character(ch, next); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-type xsd10Class struct {
-	first    bool
-	negated  bool
-	single   bool
-	endpoint bool
-}
-
-func xsd10Escape(pattern string, at int) (int, bool) {
-	if at >= len(pattern) {
-		return at, false
-	}
-
-	escaped, size := utf8.DecodeRuneInString(pattern[at:])
-	at += size
-
-	single := !strings.ContainsRune("pPdDsSwWiIcC", escaped)
-	if (escaped == 'p' || escaped == 'P') && at < len(pattern) && pattern[at] == '{' {
-		if end := strings.IndexByte(pattern[at:], '}'); end >= 0 {
-			at += end + 1
-		}
-	}
-
-	return at, single
-}
-
-func (c *xsd10Class) escaped(single bool) error {
-	if c.endpoint && !single {
-		return invalidXSD10Hyphen()
-	}
-
-	c.first = false
-	c.single, c.endpoint = single && !c.endpoint, false
-
-	return nil
-}
-
-func (c *xsd10Class) character(ch rune, next byte) error {
-	if ch == '^' && c.first && !c.negated {
-		c.negated = true
-		return nil
-	}
-
-	if ch == '-' {
-		if !c.first && next != 0 && next != ']' && next != '[' {
-			if !c.single {
-				return invalidXSD10Hyphen()
-			}
-
-			c.single, c.endpoint = false, true
-
-			return nil
-		}
-
-		c.first, c.single, c.endpoint = false, false, false
-
-		return nil
-	}
-
-	c.first = false
-	c.single, c.endpoint = !c.endpoint, false
-
-	return nil
-}
-
-func invalidXSD10Hyphen() error {
-	return &regexError{Code: lexicon.ErrFORX0002, Message: "interior literal hyphen is unavailable in XML Schema 1.0"}
-}
-
-// translateXPathRegex translates an XPath/XML Schema regex pattern into a
-// pattern with explicit XML Schema character semantics. Handles:
-//   - \p{IsBlockName} / \P{IsBlockName} → (negated) Unicode block character range
-//   - \p{Category} → Go-compatible \p{Category} (pass-through)
-//   - \i / \I → XML NameStartChar / negated
-//   - \c / \C → XML NameChar / negated
-//   - \d \D \w \W \s \S → XSD-semantics equivalents
-//   - '.' → [^\n\r] (or [\s\S] when dotAll)
-//
-// It does NOT expand character class subtraction ([a-z-[aeiou]]); that is passed
-// through to the shared engine, which handles subtraction directly. It also does NOT reject
-// Perl-specific constructs or validate back-references — call RejectPerlSpecific
-// and Validate separately for those checks.
-func translateXPathRegex(pattern string, dotAll, ignoreCase bool) (string, error) {
-	var b strings.Builder
-
-	runes := []rune(pattern)
-	for i := 0; i < len(runes); {
-		r := runes[i]
-		if r == '\\' && i+1 < len(runes) {
-			replacement, consumed, err := translateRegexEscape(runes, i, ignoreCase)
-			if err != nil {
-				return "", err
-			}
-
-			b.WriteString(replacement)
-
-			i += consumed
-
-			continue
-		}
-
-		if r == '[' {
-			class, consumed, err := translateCharClass(runes, i)
-			if err != nil {
-				return "", err
-			}
-
-			b.WriteString(class)
-
-			i += consumed
-
-			continue
-		}
-
-		if r == '.' {
-			// XPath's dot excludes both CR and LF unless dotAll is set.
-			if dotAll {
-				b.WriteString(`[\s\S]`)
-			} else {
-				b.WriteString(`[^\n\r]`)
-			}
-		} else {
-			b.WriteRune(r)
-		}
-
-		i++
-	}
-
-	return b.String(), nil
-}
-
-func translateRegexEscape(runes []rune, start int, ignoreCase bool) (string, int, error) {
-	next := runes[start+1]
-	if (next == 'p' || next == 'P') && start+2 < len(runes) && runes[start+2] == '{' {
-		end := findClosingBrace(runes, start+3)
-		if end < 0 {
-			return "", 0, fmt.Errorf("unterminated \\%c{ at position %d", next, start)
-		}
-
-		replacement, err := translateUnicodeProperty(string(runes[start+3:end]), next == 'P')
-		if err != nil {
-			return "", 0, err
-		}
-
-		if ignoreCase {
-			replacement = "(?-i:" + replacement + ")"
-		}
-
-		return replacement, end - start + 1, nil
-	}
-
-	switch next {
-	case 'i':
-		return xmlNameStartCharClass, 2, nil
-	case 'I':
-		return xmlNameStartCharClassNeg, 2, nil
-	case 'c':
-		return xpathRegexNameCharClass, 2, nil
-	case 'C':
-		return xpathRegexNameCharClassNeg, 2, nil
-	case 'd':
-		return `\p{Nd}`, 2, nil
-	case 'D':
-		return `[^\p{Nd}]`, 2, nil
-	case 'w':
-		return `[^\p{P}\p{Z}\p{C}]`, 2, nil
-	case 'W':
-		return `[\p{P}\p{Z}\p{C}]`, 2, nil
-	case 's':
-		return `[\t\n\r ]`, 2, nil
-	case 'S':
-		return `[^\t\n\r ]`, 2, nil
-	default:
-		return string(runes[start : start+2]), 2, nil
-	}
-}
-
-// translateCharClass translates a character class, handling subtraction.
-// Returns the translated class and the number of runes consumed.
-func translateCharClass(runes []rune, start int) (string, int, error) {
-	// Find the matching close bracket, handling nesting
-	depth := 0
-
-	i := start
-	for i < len(runes) {
-		switch runes[i] {
-		case '[':
-			depth++
-		case ']':
-			depth--
-			if depth == 0 {
-				// We have the full character class from start to i (inclusive)
-				content := runes[start : i+1]
-
-				result, err := processCharClass(content)
-				if err != nil {
-					return "", 0, err
-				}
-
-				return result, i + 1 - start, nil
-			}
-		case '\\':
-			i++ // skip next character
-		}
-
-		i++
-	}
-	// No closing bracket found — pass through as-is
-	return string(runes[start : start+1]), 1, nil
-}
-
-// processCharClass processes a character class, expanding subtraction and
-// translating embedded \p{} and \i/\c escapes.
-func processCharClass(runes []rune) (string, error) {
-	s := string(runes)
-	if err := validateXPathCharClassStructure(s); err != nil {
-		return "", err
-	}
-
-	if err := validateXPathCharClassSubtraction(s); err != nil {
-		return "", err
-	}
-	// Preserve character class subtraction for the shared engine.
-	// Class structure is preserved through translation and parsed by the engine.
-	result, err := translateClassContent(s)
-	if err != nil {
-		return "", err
-	}
-
-	return result, nil
-}
-
-func validateXPathCharClassStructure(class string) error {
-	runes := []rune(class)
-	if len(runes) < 2 || runes[0] != '[' || runes[len(runes)-1] != ']' {
-		return nil
-	}
-
-	first := 1
-	if first < len(runes)-1 && runes[first] == '^' {
-		first++
-	}
-
-	if first >= len(runes)-1 {
-		return &regexError{
-			Code:    lexicon.ErrFORX0002,
-			Message: fmt.Sprintf("invalid character class: %s", class),
-		}
-	}
-
-	prevRaw := rune(0)
-
-	for i := first; i < len(runes)-1; {
-		if runes[i] == '\\' {
-			if i+1 >= len(runes)-1 {
-				return &regexError{
-					Code:    lexicon.ErrFORX0002,
-					Message: fmt.Sprintf("invalid character class: %s", class),
-				}
-			}
-
-			i += 2
-
-			continue
-		}
-
-		if i == first && (runes[i] == ']' || runes[i] == '[') {
-			return &regexError{
-				Code:    lexicon.ErrFORX0002,
-				Message: fmt.Sprintf("invalid character class: %s", class),
-			}
-		}
-
-		if runes[i] == '[' && prevRaw != '-' {
-			return &regexError{
-				Code:    lexicon.ErrFORX0002,
-				Message: fmt.Sprintf("invalid character class: %s", class),
-			}
-		}
-		// An interior raw '-' denotes a range operator whose endpoints must be
-		// single characters, never another '-'. A '-' is literal (not a range
-		// operator) at the start of the class (i == first) or immediately
-		// before the closing ']' (runes[i+1] == ']'); a '-' immediately before
-		// '[' is the operator of a '-[' character-class subtraction (validated
-		// separately by validateXPathCharClassSubtraction), not a range. An
-		// interior, non-subtraction '-' whose immediately-preceding or
-		// immediately-following raw char is itself a literal '-' uses a '-' as
-		// a range endpoint, which the XSD/XPath regex grammar forbids — except
-		// when that adjacent '-' is itself the operator of a '-[' subtraction
-		// (its own following char is '['), which is a literal dash abutting the
-		// subtraction operator (e.g. the valid base group of '[a--[b]]'), not a
-		// range endpoint.
-		if runes[i] == '-' && i != first && runes[i+1] != ']' && runes[i+1] != '[' {
-			precededByHyphen := prevRaw == '-'
-
-			followedByHyphen := runes[i+1] == '-' && (i+2 >= len(runes) || runes[i+2] != '[')
-			if precededByHyphen || followedByHyphen {
-				return &regexError{
-					Code:    lexicon.ErrFORX0002,
-					Message: fmt.Sprintf("invalid character class: %s", class),
-				}
-			}
-		}
-
-		prevRaw = runes[i]
-		i++
-	}
-
-	return nil
-}
-
-func validateXPathCharClassSubtraction(class string) error {
-	if !strings.Contains(class, "-[") {
-		return nil
-	}
-
-	runes := []rune(class)
-	if len(runes) < 4 || runes[0] != '[' || runes[len(runes)-1] != ']' {
-		return nil
-	}
-
-	for i := 1; i < len(runes)-2; i++ {
-		if runes[i] == '\\' {
-			i++
-			continue
-		}
-
-		if runes[i] == '-' && runes[i+1] == '[' {
-			if i == 1 || (i == 2 && runes[1] == '^') {
-				return &regexError{
-					Code:    lexicon.ErrFORX0002,
-					Message: fmt.Sprintf("invalid character class subtraction: %s", class),
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
-// translateClassContent translates \p{}, \i, \c escapes inside a character class.
-func translateClassContent(s string) (string, error) {
-	var b strings.Builder
-
-	runes := []rune(s)
-	for i := 0; i < len(runes); i++ {
-		if runes[i] == '\\' && i+1 < len(runes) {
-			replacement, consumed, err := translateClassEscape(runes, i)
-			if err != nil {
-				return "", err
-			}
-
-			if consumed > 0 {
-				b.WriteString(replacement)
-
-				i += consumed - 1
-
-				continue
-			}
-		}
-
-		b.WriteRune(runes[i])
-	}
-
-	return b.String(), nil
-}
-
-func translateClassEscape(runes []rune, start int) (string, int, error) {
-	next := runes[start+1]
-	if (next == 'p' || next == 'P') && start+2 < len(runes) && runes[start+2] == '{' {
-		if end := findClosingBrace(runes, start+3); end >= 0 {
-			replacement, err := translateUnicodeProperty(string(runes[start+3:end]), next == 'P')
-			return replacement, end - start + 1, err
-		}
-	}
-
-	switch next {
-	case 'i':
-		return xmlNameStartCharRange, 2, nil
-	case 'I':
-		return xmlNameStartCharRangeNeg, 2, nil
-	case 'c':
-		return xpathRegexNameCharRange, 2, nil
-	case 'C':
-		return xpathRegexNameCharRangeNeg, 2, nil
-	case 'd':
-		return `\p{Nd}`, 2, nil
-	case 'D':
-		return `\P{Nd}`, 2, nil
-	case 'w':
-		return `\p{L}\p{M}\p{N}\p{S}`, 2, nil
-	case 'W':
-		return `\p{P}\p{Z}\p{C}`, 2, nil
-	default:
-		return "", 0, nil
-	}
-}
-
-// Validate enforces the XPath/XSD pattern grammar before compilation.
-func Validate(pattern string, allowBackrefs bool) error {
-	return validateXPathRegex(pattern, allowBackrefs)
-}
-
-func validateXPathRegex(pattern string, allowBackrefs bool) error {
-	state := regexValidation{runes: []rune(pattern), allowBackrefs: allowBackrefs}
-	for i := 0; i < len(state.runes); i++ {
-		r := state.runes[i]
-		if r == '\\' && i+1 < len(state.runes) {
-			end, err := state.validateEscape(i)
-			if err != nil {
-				return err
-			}
-
-			i = end
-
-			continue
-		}
-
-		switch r {
-		case '[':
-			state.inCharClass++
-			continue
-		case ']':
-			if state.inCharClass == 0 {
-				return &regexError{
-					Code:    lexicon.ErrFORX0002,
-					Message: "unescaped ']' outside character class is not allowed in XPath regex",
-				}
-			}
-
-			state.inCharClass--
-
-			continue
-		}
-
-		if state.inCharClass == 0 {
-			if err := state.validateOutsideClass(i); err != nil {
-				return err
-			}
-		}
-	}
-
-	if state.inCharClass > 0 {
-		return &regexError{Code: lexicon.ErrFORX0002, Message: "unterminated character class in XPath regex"}
-	}
-
-	return nil
-}
-
-// HasBackrefs reports whether the pattern contains a back-reference.
-func HasBackrefs(pattern string) bool { return hasXPathBackrefs(pattern) }
-
-func hasXPathBackrefs(pattern string) bool {
-	runes := []rune(pattern)
-	inCharClass := 0
-
-	for i := 0; i < len(runes)-1; i++ {
-		switch runes[i] {
-		case '[':
-			inCharClass++
-		case ']':
-			if inCharClass > 0 {
-				inCharClass--
-			}
-		case '\\':
-			if inCharClass == 0 && runes[i+1] >= '1' && runes[i+1] <= '9' {
-				return true
-			}
-
-			i++
-		}
-	}
-
-	return false
-}
-
-// RejectPerlSpecific rejects Perl-only constructs not allowed in XPath regex.
-func RejectPerlSpecific(pattern string) error { return rejectPerlSpecific(pattern) }
-
-func rejectPerlSpecific(pattern string) error {
-	runes := []rune(pattern)
-	for i := 0; i < len(runes); i++ {
-		if runes[i] == '\\' && i+1 < len(runes) {
-			switch runes[i+1] {
-			case 'b', 'B', 'A', 'Z', 'z', 'x', 'u', 'U':
-				return &regexError{
-					Code:    lexicon.ErrFORX0002,
-					Message: fmt.Sprintf("Perl-specific escape \\%c is not allowed in XPath regex", runes[i+1]),
-				}
-			}
-
-			i++ // skip escaped character
-
-			continue
-		}
-		// Reject inline flags (?...) — XPath uses flags parameter instead
-		if runes[i] == '(' && i+1 < len(runes) && runes[i+1] == '?' {
-			// Allow (?:...) for non-capturing groups
-			if i+2 < len(runes) && runes[i+2] == ':' {
-				continue
-			}
-
-			return &regexError{
-				Code:    lexicon.ErrFORX0002,
-				Message: "inline flag groups (?...) are not allowed in XPath regex",
-			}
-		}
-	}
-
-	return nil
-}
-
-type classRange struct {
-	low  int64
-	high int64
-}
-
-// ResolveProperty preserves Unicode block escapes as predicates, so the i flag
-// cannot accidentally case-fold them after expansion into character ranges.
-func ResolveProperty(name string) *unicode.RangeTable {
-	if !strings.HasPrefix(name, "Is") {
-		return nil
-	}
-
-	spec, ok := lookupUnicodeBlockRange(name[2:])
-	if !ok {
-		return nil
-	}
-
-	ranges, err := parseClassRanges(spec)
-	if err != nil {
-		return nil
-	}
-
-	table := &unicode.RangeTable{}
-
-	for _, r := range ranges {
-		if r.low <= 0xFFFF {
-			table.R16 = append(table.R16, unicode.Range16{Lo: uint16(r.low), Hi: uint16(min(r.high, 0xFFFF)), Stride: 1})
-		}
-
-		if r.high > 0xFFFF {
-			table.R32 = append(table.R32, unicode.Range32{Lo: uint32(max(r.low, 0x10000)), Hi: uint32(r.high), Stride: 1})
-		}
-	}
-
-	return table
-}
-
-func parseClassRanges(spec string) ([]classRange, error) {
-	runes := []rune(spec)
-
-	var ranges []classRange
-
-	for i := 0; i < len(runes); {
-		low, next, err := parseClassRune(runes, i)
-		if err != nil {
-			return nil, err
-		}
-
-		i = next
-
-		high := low
-		if i < len(runes)-1 && runes[i] == '-' {
-			high, i, err = parseClassRune(runes, i+1)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		ranges = append(ranges, classRange{low: low, high: high})
-	}
-
-	return ranges, nil
-}
-
-func parseClassRune(runes []rune, start int) (int64, int, error) {
-	if start >= len(runes) {
-		return 0, start, fmt.Errorf("unexpected end of character class range")
-	}
-
-	if runes[start] != '\\' {
-		return int64(runes[start]), start + 1, nil
-	}
-
-	if start+1 >= len(runes) {
-		return 0, start, fmt.Errorf("dangling escape in character class range")
-	}
-
-	if runes[start+1] != 'x' {
-		return int64(runes[start+1]), start + 2, nil
-	}
-
-	if start+2 >= len(runes) || runes[start+2] != '{' {
-		return 0, start, fmt.Errorf("invalid hex escape in character class range")
-	}
-
-	end := -1
-
-	for i := start + 3; i < len(runes); i++ {
-		if runes[i] == '}' {
-			end = i
-			break
-		}
-	}
-
-	if end < 0 {
-		return 0, start, fmt.Errorf("unterminated hex escape in character class range")
-	}
-
-	value, err := strconv.ParseInt(string(runes[start+3:end]), 16, 64)
-	if err != nil {
-		return 0, start, err
-	}
-
-	return value, end + 1, nil
-}
-
-// regexError keeps this package layering-neutral (no xpath dependency).
-// Callers map it back to their own error type; xpath wraps it as XPathError.
-type regexError struct {
-	Code    string
-	Message string
-	Cause   error
-}
-
-func (e *regexError) Error() string { return e.Message }
-
-func (e *regexError) Unwrap() error { return e.Cause }
-
-func findClosingBrace(runes []rune, start int) int {
-	for i := start; i < len(runes); i++ {
-		if runes[i] == '}' {
-			return i
-		}
-	}
-
-	return -1
-}
-
-func translateUnicodeProperty(name string, neg bool) (string, error) {
-	prefix := `\p`
-	if neg {
-		prefix = `\P`
-	}
-
-	if strings.HasPrefix(name, "Is") {
-		blockName := name[2:]
-		if _, ok := lookupUnicodeBlockRange(blockName); ok {
-			return prefix + "{" + name + "}", nil
-		}
-
-		return "", &regexError{Code: lexicon.ErrFORX0002, Message: fmt.Sprintf("unknown Unicode block: Is%s", blockName)}
-	}
-
-	if isGoSupportedProperty(name) {
-		return prefix + "{" + name + "}", nil
-	}
-
-	return "", &regexError{Code: lexicon.ErrFORX0002, Message: fmt.Sprintf("unknown Unicode property: %s", name)}
-}
-
-func lookupUnicodeBlockRange(name string) (string, bool) {
-	if name == "" {
-		return "", false
-	}
-
-	return lookupUnicodeBlock(name)
-}
-
-// XML Schema category escapes use general categories, not Unicode scripts.
-func isGoSupportedProperty(name string) bool {
-	switch name {
-	case "L", "Lu", "Ll", "Lt", "Lm", "Lo", "M", "Mn", "Mc", "Me",
-		"N", "Nd", "Nl", "No", "P", "Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po",
-		"Z", "Zs", "Zl", "Zp", "S", "Sm", "Sc", "Sk", "So", "C", "Cc", "Cf", "Co", "Cn":
-		return true
-	default:
-		return false
-	}
-}
-
 // Unicode 17.0.0 block ranges from the Unicode Character Database:
 // https://www.unicode.org/Public/17.0.0/ucd/Blocks.txt
 // Copyright © 2025 Unicode, Inc. See licenses/Unicode-3.0.txt.
@@ -1138,6 +401,743 @@ var unicodeBlocks = map[string]string{
 	"ZnamennyMusicalNotation":      `\x{1CF00}-\x{1CFCF}`,
 }
 
+// Translate converts an XPath/XQuery regex pattern (fn:matches/tokenize/replace)
+// into the shared Go pattern grammar. In this flavor '^' and '$' are anchors and the pattern
+// is not implicitly anchored.
+func Translate(pattern string, dotAll, ignoreCase bool) (string, error) {
+	return translateXPathRegex(pattern, dotAll, ignoreCase)
+}
+
+// ValidateXSD10 rejects the interior literal hyphens permitted by XSD 1.1
+// but excluded from XML Schema 1.0 character groups. Existing validation
+// independently checks escapes, endpoints and subtraction structure.
+func ValidateXSD10(pattern string) error {
+	var classes []xsd10Class
+
+	for i := 0; i < len(pattern); {
+		ch, width := utf8.DecodeRuneInString(pattern[i:])
+
+		i += width
+		if ch == '\\' {
+			next, single := xsd10Escape(pattern, i)
+			i = next
+
+			if len(classes) > 0 {
+				if err := classes[len(classes)-1].escaped(single); err != nil {
+					return err
+				}
+			}
+
+			continue
+		}
+
+		switch ch {
+		case '[':
+			classes = append(classes, xsd10Class{first: true})
+		case ']':
+			if len(classes) > 0 {
+				classes = classes[:len(classes)-1]
+			}
+		default:
+			if len(classes) == 0 {
+				continue
+			}
+
+			next := byte(0)
+			if i < len(pattern) {
+				next = pattern[i]
+			}
+
+			if err := classes[len(classes)-1].character(ch, next); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+type xsd10Class struct {
+	first    bool
+	negated  bool
+	single   bool
+	endpoint bool
+}
+
+func (c *xsd10Class) escaped(single bool) error {
+	if c.endpoint && !single {
+		return invalidXSD10Hyphen()
+	}
+
+	c.first = false
+	c.single, c.endpoint = single && !c.endpoint, false
+
+	return nil
+}
+
+func (c *xsd10Class) character(ch rune, next byte) error {
+	if ch == '^' && c.first && !c.negated {
+		c.negated = true
+		return nil
+	}
+
+	if ch == '-' {
+		if !c.first && next != 0 && next != ']' && next != '[' {
+			if !c.single {
+				return invalidXSD10Hyphen()
+			}
+
+			c.single, c.endpoint = false, true
+
+			return nil
+		}
+
+		c.first, c.single, c.endpoint = false, false, false
+
+		return nil
+	}
+
+	c.first = false
+	c.single, c.endpoint = !c.endpoint, false
+
+	return nil
+}
+
+// Validate enforces the XPath/XSD pattern grammar before compilation.
+func Validate(pattern string, allowBackrefs bool) error {
+	return validateXPathRegex(pattern, allowBackrefs)
+}
+
+// HasBackrefs reports whether the pattern contains a back-reference.
+func HasBackrefs(pattern string) bool { return hasXPathBackrefs(pattern) }
+
+// RejectPerlSpecific rejects Perl-only constructs not allowed in XPath regex.
+func RejectPerlSpecific(pattern string) error { return rejectPerlSpecific(pattern) }
+
+func xsd10Escape(pattern string, at int) (int, bool) {
+	if at >= len(pattern) {
+		return at, false
+	}
+
+	escaped, size := utf8.DecodeRuneInString(pattern[at:])
+	at += size
+
+	single := !strings.ContainsRune("pPdDsSwWiIcC", escaped)
+	if (escaped == 'p' || escaped == 'P') && at < len(pattern) && pattern[at] == '{' {
+		if end := strings.IndexByte(pattern[at:], '}'); end >= 0 {
+			at += end + 1
+		}
+	}
+
+	return at, single
+}
+
+func invalidXSD10Hyphen() error {
+	return &regexError{Code: lexicon.ErrFORX0002, Message: "interior literal hyphen is unavailable in XML Schema 1.0"}
+}
+
+// translateXPathRegex translates an XPath/XML Schema regex pattern into a
+// pattern with explicit XML Schema character semantics. Handles:
+//   - \p{IsBlockName} / \P{IsBlockName} → (negated) Unicode block character range
+//   - \p{Category} → Go-compatible \p{Category} (pass-through)
+//   - \i / \I → XML NameStartChar / negated
+//   - \c / \C → XML NameChar / negated
+//   - \d \D \w \W \s \S → XSD-semantics equivalents
+//   - '.' → [^\n\r] (or [\s\S] when dotAll)
+//
+// It does NOT expand character class subtraction ([a-z-[aeiou]]); that is passed
+// through to the shared engine, which handles subtraction directly. It also does NOT reject
+// Perl-specific constructs or validate back-references — call RejectPerlSpecific
+// and Validate separately for those checks.
+func translateXPathRegex(pattern string, dotAll, ignoreCase bool) (string, error) {
+	var b strings.Builder
+
+	runes := []rune(pattern)
+	for i := 0; i < len(runes); {
+		r := runes[i]
+		if r == '\\' && i+1 < len(runes) {
+			replacement, consumed, err := translateRegexEscape(runes, i, ignoreCase)
+			if err != nil {
+				return "", err
+			}
+
+			b.WriteString(replacement)
+
+			i += consumed
+
+			continue
+		}
+
+		if r == '[' {
+			class, consumed, err := translateCharClass(runes, i)
+			if err != nil {
+				return "", err
+			}
+
+			b.WriteString(class)
+
+			i += consumed
+
+			continue
+		}
+
+		if r == '.' {
+			// XPath's dot excludes both CR and LF unless dotAll is set.
+			if dotAll {
+				b.WriteString(`[\s\S]`)
+			} else {
+				b.WriteString(`[^\n\r]`)
+			}
+		} else {
+			b.WriteRune(r)
+		}
+
+		i++
+	}
+
+	return b.String(), nil
+}
+
+func translateRegexEscape(runes []rune, start int, ignoreCase bool) (string, int, error) {
+	next := runes[start+1]
+	if (next == 'p' || next == 'P') && start+2 < len(runes) && runes[start+2] == '{' {
+		end := findClosingBrace(runes, start+3)
+		if end < 0 {
+			return "", 0, fmt.Errorf("unterminated \\%c{ at position %d", next, start)
+		}
+
+		replacement, err := translateUnicodeProperty(string(runes[start+3:end]), next == 'P')
+		if err != nil {
+			return "", 0, err
+		}
+
+		if ignoreCase {
+			replacement = "(?-i:" + replacement + ")"
+		}
+
+		return replacement, end - start + 1, nil
+	}
+
+	switch next {
+	case 'i':
+		return xmlNameStartCharClass, 2, nil
+	case 'I':
+		return xmlNameStartCharClassNeg, 2, nil
+	case 'c':
+		return xpathRegexNameCharClass, 2, nil
+	case 'C':
+		return xpathRegexNameCharClassNeg, 2, nil
+	case 'd':
+		return `\p{Nd}`, 2, nil
+	case 'D':
+		return `[^\p{Nd}]`, 2, nil
+	case 'w':
+		return `[^\p{P}\p{Z}\p{C}]`, 2, nil
+	case 'W':
+		return `[\p{P}\p{Z}\p{C}]`, 2, nil
+	case 's':
+		return `[\t\n\r ]`, 2, nil
+	case 'S':
+		return `[^\t\n\r ]`, 2, nil
+	default:
+		return string(runes[start : start+2]), 2, nil
+	}
+}
+
+// translateCharClass translates a character class, handling subtraction.
+// Returns the translated class and the number of runes consumed.
+func translateCharClass(runes []rune, start int) (string, int, error) {
+	// Find the matching close bracket, handling nesting
+	depth := 0
+
+	i := start
+	for i < len(runes) {
+		switch runes[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				// We have the full character class from start to i (inclusive)
+				content := runes[start : i+1]
+
+				result, err := processCharClass(content)
+				if err != nil {
+					return "", 0, err
+				}
+
+				return result, i + 1 - start, nil
+			}
+		case '\\':
+			i++ // skip next character
+		}
+
+		i++
+	}
+	// No closing bracket found — pass through as-is
+	return string(runes[start : start+1]), 1, nil
+}
+
+// processCharClass processes a character class, expanding subtraction and
+// translating embedded \p{} and \i/\c escapes.
+func processCharClass(runes []rune) (string, error) {
+	s := string(runes)
+	if err := validateXPathCharClassStructure(s); err != nil {
+		return "", err
+	}
+
+	if err := validateXPathCharClassSubtraction(s); err != nil {
+		return "", err
+	}
+	// Preserve character class subtraction for the shared engine.
+	// Class structure is preserved through translation and parsed by the engine.
+	result, err := translateClassContent(s)
+	if err != nil {
+		return "", err
+	}
+
+	return result, nil
+}
+
+func validateXPathCharClassStructure(class string) error {
+	runes := []rune(class)
+	if len(runes) < 2 || runes[0] != '[' || runes[len(runes)-1] != ']' {
+		return nil
+	}
+
+	first := 1
+	if first < len(runes)-1 && runes[first] == '^' {
+		first++
+	}
+
+	if first >= len(runes)-1 {
+		return &regexError{
+			Code:    lexicon.ErrFORX0002,
+			Message: fmt.Sprintf("invalid character class: %s", class),
+		}
+	}
+
+	prevRaw := rune(0)
+
+	for i := first; i < len(runes)-1; {
+		if runes[i] == '\\' {
+			if i+1 >= len(runes)-1 {
+				return &regexError{
+					Code:    lexicon.ErrFORX0002,
+					Message: fmt.Sprintf("invalid character class: %s", class),
+				}
+			}
+
+			i += 2
+
+			continue
+		}
+
+		if i == first && (runes[i] == ']' || runes[i] == '[') {
+			return &regexError{
+				Code:    lexicon.ErrFORX0002,
+				Message: fmt.Sprintf("invalid character class: %s", class),
+			}
+		}
+
+		if runes[i] == '[' && prevRaw != '-' {
+			return &regexError{
+				Code:    lexicon.ErrFORX0002,
+				Message: fmt.Sprintf("invalid character class: %s", class),
+			}
+		}
+		// An interior raw '-' denotes a range operator whose endpoints must be
+		// single characters, never another '-'. A '-' is literal (not a range
+		// operator) at the start of the class (i == first) or immediately
+		// before the closing ']' (runes[i+1] == ']'); a '-' immediately before
+		// '[' is the operator of a '-[' character-class subtraction (validated
+		// separately by validateXPathCharClassSubtraction), not a range. An
+		// interior, non-subtraction '-' whose immediately-preceding or
+		// immediately-following raw char is itself a literal '-' uses a '-' as
+		// a range endpoint, which the XSD/XPath regex grammar forbids — except
+		// when that adjacent '-' is itself the operator of a '-[' subtraction
+		// (its own following char is '['), which is a literal dash abutting the
+		// subtraction operator (e.g. the valid base group of '[a--[b]]'), not a
+		// range endpoint.
+		if runes[i] == '-' && i != first && runes[i+1] != ']' && runes[i+1] != '[' {
+			precededByHyphen := prevRaw == '-'
+
+			followedByHyphen := runes[i+1] == '-' && (i+2 >= len(runes) || runes[i+2] != '[')
+			if precededByHyphen || followedByHyphen {
+				return &regexError{
+					Code:    lexicon.ErrFORX0002,
+					Message: fmt.Sprintf("invalid character class: %s", class),
+				}
+			}
+		}
+
+		prevRaw = runes[i]
+		i++
+	}
+
+	return nil
+}
+
+func validateXPathCharClassSubtraction(class string) error {
+	if !strings.Contains(class, "-[") {
+		return nil
+	}
+
+	runes := []rune(class)
+	if len(runes) < 4 || runes[0] != '[' || runes[len(runes)-1] != ']' {
+		return nil
+	}
+
+	for i := 1; i < len(runes)-2; i++ {
+		if runes[i] == '\\' {
+			i++
+			continue
+		}
+
+		if runes[i] == '-' && runes[i+1] == '[' {
+			if i == 1 || (i == 2 && runes[1] == '^') {
+				return &regexError{
+					Code:    lexicon.ErrFORX0002,
+					Message: fmt.Sprintf("invalid character class subtraction: %s", class),
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// translateClassContent translates \p{}, \i, \c escapes inside a character class.
+func translateClassContent(s string) (string, error) {
+	var b strings.Builder
+
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		if runes[i] == '\\' && i+1 < len(runes) {
+			replacement, consumed, err := translateClassEscape(runes, i)
+			if err != nil {
+				return "", err
+			}
+
+			if consumed > 0 {
+				b.WriteString(replacement)
+
+				i += consumed - 1
+
+				continue
+			}
+		}
+
+		b.WriteRune(runes[i])
+	}
+
+	return b.String(), nil
+}
+
+func translateClassEscape(runes []rune, start int) (string, int, error) {
+	next := runes[start+1]
+	if (next == 'p' || next == 'P') && start+2 < len(runes) && runes[start+2] == '{' {
+		if end := findClosingBrace(runes, start+3); end >= 0 {
+			replacement, err := translateUnicodeProperty(string(runes[start+3:end]), next == 'P')
+			return replacement, end - start + 1, err
+		}
+	}
+
+	switch next {
+	case 'i':
+		return xmlNameStartCharRange, 2, nil
+	case 'I':
+		return xmlNameStartCharRangeNeg, 2, nil
+	case 'c':
+		return xpathRegexNameCharRange, 2, nil
+	case 'C':
+		return xpathRegexNameCharRangeNeg, 2, nil
+	case 'd':
+		return `\p{Nd}`, 2, nil
+	case 'D':
+		return `\P{Nd}`, 2, nil
+	case 'w':
+		return `\p{L}\p{M}\p{N}\p{S}`, 2, nil
+	case 'W':
+		return `\p{P}\p{Z}\p{C}`, 2, nil
+	default:
+		return "", 0, nil
+	}
+}
+
+func validateXPathRegex(pattern string, allowBackrefs bool) error {
+	state := regexValidation{runes: []rune(pattern), allowBackrefs: allowBackrefs}
+	for i := 0; i < len(state.runes); i++ {
+		r := state.runes[i]
+		if r == '\\' && i+1 < len(state.runes) {
+			end, err := state.validateEscape(i)
+			if err != nil {
+				return err
+			}
+
+			i = end
+
+			continue
+		}
+
+		switch r {
+		case '[':
+			state.inCharClass++
+			continue
+		case ']':
+			if state.inCharClass == 0 {
+				return &regexError{
+					Code:    lexicon.ErrFORX0002,
+					Message: "unescaped ']' outside character class is not allowed in XPath regex",
+				}
+			}
+
+			state.inCharClass--
+
+			continue
+		}
+
+		if state.inCharClass == 0 {
+			if err := state.validateOutsideClass(i); err != nil {
+				return err
+			}
+		}
+	}
+
+	if state.inCharClass > 0 {
+		return &regexError{Code: lexicon.ErrFORX0002, Message: "unterminated character class in XPath regex"}
+	}
+
+	return nil
+}
+
+func hasXPathBackrefs(pattern string) bool {
+	runes := []rune(pattern)
+	inCharClass := 0
+
+	for i := 0; i < len(runes)-1; i++ {
+		switch runes[i] {
+		case '[':
+			inCharClass++
+		case ']':
+			if inCharClass > 0 {
+				inCharClass--
+			}
+		case '\\':
+			if inCharClass == 0 && runes[i+1] >= '1' && runes[i+1] <= '9' {
+				return true
+			}
+
+			i++
+		}
+	}
+
+	return false
+}
+
+func rejectPerlSpecific(pattern string) error {
+	runes := []rune(pattern)
+	for i := 0; i < len(runes); i++ {
+		if runes[i] == '\\' && i+1 < len(runes) {
+			switch runes[i+1] {
+			case 'b', 'B', 'A', 'Z', 'z', 'x', 'u', 'U':
+				return &regexError{
+					Code:    lexicon.ErrFORX0002,
+					Message: fmt.Sprintf("Perl-specific escape \\%c is not allowed in XPath regex", runes[i+1]),
+				}
+			}
+
+			i++ // skip escaped character
+
+			continue
+		}
+		// Reject inline flags (?...) — XPath uses flags parameter instead
+		if runes[i] == '(' && i+1 < len(runes) && runes[i+1] == '?' {
+			// Allow (?:...) for non-capturing groups
+			if i+2 < len(runes) && runes[i+2] == ':' {
+				continue
+			}
+
+			return &regexError{
+				Code:    lexicon.ErrFORX0002,
+				Message: "inline flag groups (?...) are not allowed in XPath regex",
+			}
+		}
+	}
+
+	return nil
+}
+
+type classRange struct {
+	low  int64
+	high int64
+}
+
+// ResolveProperty preserves Unicode block escapes as predicates, so the i flag
+// cannot accidentally case-fold them after expansion into character ranges.
+func ResolveProperty(name string) *unicode.RangeTable {
+	if !strings.HasPrefix(name, "Is") {
+		return nil
+	}
+
+	spec, ok := lookupUnicodeBlockRange(name[2:])
+	if !ok {
+		return nil
+	}
+
+	ranges, err := parseClassRanges(spec)
+	if err != nil {
+		return nil
+	}
+
+	table := &unicode.RangeTable{}
+
+	for _, r := range ranges {
+		if r.low <= 0xFFFF {
+			table.R16 = append(table.R16, unicode.Range16{Lo: uint16(r.low), Hi: uint16(min(r.high, 0xFFFF)), Stride: 1})
+		}
+
+		if r.high > 0xFFFF {
+			table.R32 = append(table.R32, unicode.Range32{Lo: uint32(max(r.low, 0x10000)), Hi: uint32(r.high), Stride: 1})
+		}
+	}
+
+	return table
+}
+
+func parseClassRanges(spec string) ([]classRange, error) {
+	runes := []rune(spec)
+
+	var ranges []classRange
+
+	for i := 0; i < len(runes); {
+		low, next, err := parseClassRune(runes, i)
+		if err != nil {
+			return nil, err
+		}
+
+		i = next
+
+		high := low
+		if i < len(runes)-1 && runes[i] == '-' {
+			high, i, err = parseClassRune(runes, i+1)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		ranges = append(ranges, classRange{low: low, high: high})
+	}
+
+	return ranges, nil
+}
+
+func parseClassRune(runes []rune, start int) (int64, int, error) {
+	if start >= len(runes) {
+		return 0, start, fmt.Errorf("unexpected end of character class range")
+	}
+
+	if runes[start] != '\\' {
+		return int64(runes[start]), start + 1, nil
+	}
+
+	if start+1 >= len(runes) {
+		return 0, start, fmt.Errorf("dangling escape in character class range")
+	}
+
+	if runes[start+1] != 'x' {
+		return int64(runes[start+1]), start + 2, nil
+	}
+
+	if start+2 >= len(runes) || runes[start+2] != '{' {
+		return 0, start, fmt.Errorf("invalid hex escape in character class range")
+	}
+
+	end := -1
+
+	for i := start + 3; i < len(runes); i++ {
+		if runes[i] == '}' {
+			end = i
+			break
+		}
+	}
+
+	if end < 0 {
+		return 0, start, fmt.Errorf("unterminated hex escape in character class range")
+	}
+
+	value, err := strconv.ParseInt(string(runes[start+3:end]), 16, 64)
+	if err != nil {
+		return 0, start, err
+	}
+
+	return value, end + 1, nil
+}
+
+// regexError keeps this package layering-neutral (no xpath dependency).
+// Callers map it back to their own error type; xpath wraps it as XPathError.
+type regexError struct {
+	Code    string
+	Message string
+	Cause   error
+}
+
+func (e *regexError) Error() string { return e.Message }
+
+func (e *regexError) Unwrap() error { return e.Cause }
+
+func findClosingBrace(runes []rune, start int) int {
+	for i := start; i < len(runes); i++ {
+		if runes[i] == '}' {
+			return i
+		}
+	}
+
+	return -1
+}
+
+func translateUnicodeProperty(name string, neg bool) (string, error) {
+	prefix := `\p`
+	if neg {
+		prefix = `\P`
+	}
+
+	if strings.HasPrefix(name, "Is") {
+		blockName := name[2:]
+		if _, ok := lookupUnicodeBlockRange(blockName); ok {
+			return prefix + "{" + name + "}", nil
+		}
+
+		return "", &regexError{Code: lexicon.ErrFORX0002, Message: fmt.Sprintf("unknown Unicode block: Is%s", blockName)}
+	}
+
+	if isGoSupportedProperty(name) {
+		return prefix + "{" + name + "}", nil
+	}
+
+	return "", &regexError{Code: lexicon.ErrFORX0002, Message: fmt.Sprintf("unknown Unicode property: %s", name)}
+}
+
+func lookupUnicodeBlockRange(name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+
+	return lookupUnicodeBlock(name)
+}
+
+// XML Schema category escapes use general categories, not Unicode scripts.
+func isGoSupportedProperty(name string) bool {
+	switch name {
+	case "L", "Lu", "Ll", "Lt", "Lm", "Lo", "M", "Mn", "Mc", "Me",
+		"N", "Nd", "Nl", "No", "P", "Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po",
+		"Z", "Zs", "Zl", "Zp", "S", "Sm", "Sc", "Sk", "So", "C", "Cc", "Cf", "Co", "Cn":
+		return true
+	default:
+		return false
+	}
+}
+
 func lookupUnicodeBlock(name string) (string, bool) {
 	ranges, ok := unicodeBlocks[name]
 	return ranges, ok
@@ -1202,6 +1202,43 @@ func (v *regexValidation) validateBackreference(start int) (int, error) {
 	return end - 1, nil
 }
 
+func (v *regexValidation) validateOutsideClass(index int) error {
+	switch v.runes[index] {
+	case '(':
+		if index+2 < len(v.runes) && v.runes[index+1] == '?' && v.runes[index+2] == ':' {
+			v.groupStack = append(v.groupStack, 0)
+			return nil
+		}
+
+		v.captureCount++
+		v.groupStack = append(v.groupStack, v.captureCount)
+	case ')':
+		if len(v.groupStack) > 0 {
+			v.groupStack = v.groupStack[:len(v.groupStack)-1]
+		}
+	case '{':
+		if !isValidQuantifierBrace(v.runes, index) {
+			return &regexError{
+				Code:    lexicon.ErrFORX0002,
+				Message: "unescaped '{' outside quantifier is not allowed in XPath regex",
+			}
+		}
+
+		v.inQuantifier = true
+	case '}':
+		if !v.inQuantifier {
+			return &regexError{
+				Code:    lexicon.ErrFORX0002,
+				Message: "unescaped '}' outside quantifier is not allowed in XPath regex",
+			}
+		}
+
+		v.inQuantifier = false
+	}
+
+	return nil
+}
+
 func isOpenCaptureGroup(groupStack []int, ref int) bool {
 	return slices.Contains(groupStack, ref)
 }
@@ -1245,43 +1282,6 @@ func resolveXPathBackref(runes []rune, start, captureCount int, groupStack []int
 	}
 
 	return ref, validEnd, end, false
-}
-
-func (v *regexValidation) validateOutsideClass(index int) error {
-	switch v.runes[index] {
-	case '(':
-		if index+2 < len(v.runes) && v.runes[index+1] == '?' && v.runes[index+2] == ':' {
-			v.groupStack = append(v.groupStack, 0)
-			return nil
-		}
-
-		v.captureCount++
-		v.groupStack = append(v.groupStack, v.captureCount)
-	case ')':
-		if len(v.groupStack) > 0 {
-			v.groupStack = v.groupStack[:len(v.groupStack)-1]
-		}
-	case '{':
-		if !isValidQuantifierBrace(v.runes, index) {
-			return &regexError{
-				Code:    lexicon.ErrFORX0002,
-				Message: "unescaped '{' outside quantifier is not allowed in XPath regex",
-			}
-		}
-
-		v.inQuantifier = true
-	case '}':
-		if !v.inQuantifier {
-			return &regexError{
-				Code:    lexicon.ErrFORX0002,
-				Message: "unescaped '}' outside quantifier is not allowed in XPath regex",
-			}
-		}
-
-		v.inQuantifier = false
-	}
-
-	return nil
 }
 
 // validQuantifierContent recognizes digits [ "," [ digits ] ].

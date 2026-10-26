@@ -338,30 +338,6 @@ func (ec *execContext) stylesheetFunctionDefined(qn xpath.QualifiedName, arity i
 	return false
 }
 
-func dynamicDeclaration(scope *Stylesheet, def *xslFunction) *xslFunction {
-	if def == nil {
-		return nil
-	}
-
-	if def.AcceptedFrom != nil {
-		if def.Visibility == visAbstract {
-			return nil
-		}
-
-		return def
-	}
-
-	for def.OriginalFunc != nil && def.OwnerPackage != scope {
-		def = def.OriginalFunc
-	}
-
-	if def.Visibility == visAbstract || def.AcceptedFrom != nil || def.OwnerPackage != nil && def.OwnerPackage != scope {
-		return nil
-	}
-
-	return def
-}
-
 func (ec *execContext) dynamicStylesheetFunction(qn xpath.QualifiedName, arity int) *xslFunction {
 	scope := ec.effectiveStylesheet()
 	if arity >= 0 {
@@ -425,6 +401,30 @@ func (ec *execContext) fnTransform(ctx context.Context, args []xdm.Sequence) (xd
 	}
 
 	return cfg.run(ctx, args)
+}
+
+func dynamicDeclaration(scope *Stylesheet, def *xslFunction) *xslFunction {
+	if def == nil {
+		return nil
+	}
+
+	if def.AcceptedFrom != nil {
+		if def.Visibility == visAbstract {
+			return nil
+		}
+
+		return def
+	}
+
+	for def.OriginalFunc != nil && def.OwnerPackage != scope {
+		def = def.OriginalFunc
+	}
+
+	if def.Visibility == visAbstract || def.AcceptedFrom != nil || def.OwnerPackage != nil && def.OwnerPackage != scope {
+		return nil
+	}
+
+	return def
 }
 
 // newNestedCompiler inherits stylesheet and package resolvers, resource limits and XML
@@ -553,6 +553,194 @@ func (cfg *transformFnConfig) run(ctx context.Context, args []xdm.Sequence) (xdm
 	}
 
 	return xdm.ItemSlice{result}, nil
+}
+
+func (cfg *transformFnConfig) compileTransformStylesheet(ctx context.Context, compiler Compiler, request transformRequest) (*Stylesheet, error) {
+	if request.stylesheetLoc != "" {
+		return cfg.compileTransformLocation(ctx, compiler, request.stylesheetLoc)
+	}
+
+	if request.packageName != "" {
+		return cfg.compileTransformPackage(ctx, compiler, request.packageName, request.packageVersion)
+	}
+
+	if text := transformStringOption(request.options, "stylesheet-text"); text != "" {
+		return cfg.compileTransformText(ctx, compiler, text, request.stylesheetBaseURI)
+	}
+
+	return cfg.compileTransformNode(ctx, compiler, transformMapSeq(request.options, "stylesheet-node"), request.stylesheetBaseURI)
+}
+
+func (cfg *transformFnConfig) programLimit(ctx context.Context) int64 {
+	return dynamicProgramLimit(ctx, cfg.maxResourceBytes)
+}
+
+func (cfg *transformFnConfig) compileTransformLocation(ctx context.Context, nestedCompiler Compiler, stylesheetLoc string) (*Stylesheet, error) {
+	// Resolve relative to the current stylesheet base URI.
+	loc := resolveStylesheetLocation(cfg.baseURI, stylesheetLoc)
+
+	baseURI := loc
+
+	if cfg.stylesheetResolver == nil {
+		return nil, dynamicError(errCodeFOXT0002, "fn:transform: cannot read stylesheet %q: no URIResolver configured (filesystem access is opt-in)", stylesheetLoc)
+	}
+
+	rc, resolveErr := cfg.stylesheetResolver.Resolve(ctx, loc)
+	if resolveErr != nil {
+		// The supplied stylesheet-location cannot identify a usable source, before
+		// invoking the compiler. Report the invalid option rather than a failure
+		// of an already invoked transformation (F&O fn:transform error conditions).
+		return nil, transformFailureCode(ctx, resolveErr, errCodeFOXT0002, "fn:transform: cannot resolve stylesheet %q: %v", stylesheetLoc, resolveErr)
+	}
+
+	doc, parseErr := parseXMLResource(ctx, cfg.parseOptions, rc, baseURI, cfg.programLimit(ctx))
+	if parseErr != nil {
+		return nil, transformFailure(ctx, parseErr, "fn:transform: cannot parse stylesheet %q: %v", stylesheetLoc, parseErr)
+	}
+
+	ss, compileErr := nestedCompiler.BaseURI(baseURI).Compile(ctx, doc)
+	if compileErr != nil {
+		return nil, transformFailure(ctx, compileErr, "fn:transform: cannot compile stylesheet %q: %v", stylesheetLoc, compileErr)
+	}
+
+	return ss, nil
+}
+
+func (cfg *transformFnConfig) compileTransformPackage(ctx context.Context, nestedCompiler Compiler, packageName, packageVersion string) (*Stylesheet, error) {
+	if !ParseVersionConstraint(packageVersion).Valid() {
+		return nil, dynamicError(errCodeFOXT0002, "invalid package version range %q", packageVersion)
+	}
+	// Resolve via package-name / package-version using the PackageResolver
+	// stored on the compiled stylesheet (set at compile time).
+	resolver := cfg.packageResolver
+	if resolver == nil {
+		return nil, dynamicError(errCodeFOXT0002, "fn:transform: package-name specified but no PackageResolver available")
+	}
+
+	rc, location, resolveErr := resolver.ResolvePackage(ctx, packageName, packageVersion)
+	if resolveErr != nil {
+		return nil, transformFailure(ctx, resolveErr, "fn:transform: cannot resolve package %q (version %q): %v", packageName, packageVersion, resolveErr)
+	}
+
+	doc, parseErr := parseXMLResource(ctx, cfg.parseOptions, rc, location, cfg.programLimit(ctx))
+	if parseErr != nil {
+		return nil, transformFailure(ctx, parseErr, "fn:transform: cannot parse package %q: %v", packageName, parseErr)
+	}
+
+	if err := checkResolvedPackage(doc, packageName, packageVersion); err != nil {
+		return nil, err
+	}
+
+	compiler := nestedCompiler
+	if location != "" {
+		compiler = compiler.BaseURI(location)
+	}
+
+	ss, compileErr := compiler.Compile(ctx, doc)
+	if compileErr != nil {
+		return nil, transformFailure(ctx, compileErr, "fn:transform: cannot compile package %q: %v", packageName, compileErr)
+	}
+
+	if err := checkCompiledPackage(ss, packageName, packageVersion); err != nil {
+		return nil, err
+	}
+
+	return ss, nil
+}
+
+func (cfg *transformFnConfig) compileTransformText(ctx context.Context, nestedCompiler Compiler, stylesheetText, stylesheetBaseURI string) (*Stylesheet, error) {
+	// stylesheet-text: the stylesheet source is supplied inline as a string.
+	// Parse it and compile. The base URI comes from the stylesheet-base-uri
+	// option when supplied (a relative value resolved against the call's
+	// static base URI). Without that option the text has no base URI.
+	baseURI := ""
+	if stylesheetBaseURI != "" {
+		baseURI = resolveStylesheetLocation(cfg.baseURI, stylesheetBaseURI)
+	}
+
+	parseOptions := xdm.ParseOptions{}
+	if cfg.parseOptions != nil {
+		parseOptions = *cfg.parseOptions
+	}
+
+	parseOptions.BaseURI = baseURI
+
+	doc, parseErr := parseOptions.WithByteLimit(cfg.programLimit(ctx)).ParseText(ctx, stylesheetText)
+	if parseErr != nil {
+		return nil, transformFailure(ctx, parseErr, "fn:transform: cannot parse stylesheet-text: %v", parseErr)
+	}
+
+	compiler := nestedCompiler.BaseURI(baseURI)
+
+	ss, compileErr := compiler.Compile(ctx, doc)
+	if compileErr != nil {
+		return nil, transformFailure(ctx, compileErr, "fn:transform: cannot compile stylesheet-text: %v", compileErr)
+	}
+
+	return ss, nil
+}
+
+func (cfg *transformFnConfig) compileTransformNode(ctx context.Context, compiler Compiler, nodes xdm.Sequence, stylesheetBaseURI string) (*Stylesheet, error) {
+	if !transformOptionPresent(nodes) {
+		return nil, dynamicError(errCodeFOXT0002, "fn:transform: no stylesheet specified (stylesheet-location, stylesheet-node, stylesheet-text, or package-name required)")
+	}
+
+	node, ok := nodes.Get(0).(xdm.NodeItem)
+	if !ok {
+		return nil, dynamicError(errCodeFOXT0002, "fn:transform: no stylesheet specified (stylesheet-location, stylesheet-node, stylesheet-text, or package-name required)")
+	}
+
+	if node.Node.Type() != xdm.DocumentNode && node.Node.Type() != xdm.ElementNode {
+		return nil, dynamicError(errCodeFOXT0002, "fn:transform: stylesheet-node must be a document or element node")
+	}
+
+	owner := owningDocument(node.Node)
+
+	// Compilation applies the root's own xml:base once. Include inherited and
+	// construction bases here, without pre-applying that same attribute.
+	baseURI := xdm.NodeGetBaseBeforeXMLBase(node.Node.OwnerDocument(), node.Node)
+	if stylesheetBaseURI != "" {
+		baseURI = resolveStylesheetLocation(cfg.baseURI, stylesheetBaseURI)
+	}
+
+	compileDoc, err := stylesheetNodeCompileDocument(ctx, node.Node, owner)
+	if err != nil {
+		return nil, transformFailure(ctx, err, "fn:transform: cannot prepare stylesheet node: %v", err)
+	}
+
+	sourceDoc := compileDoc
+
+	if limit := cfg.programLimit(ctx); limit > 0 {
+		counter := &transformProgramCounter{ctx: ctx, remaining: limit}
+		if err := (xdm.XMLSerialization{OmitDeclaration: true}).WriteTo(counter, sourceDoc); err != nil {
+			return nil, transformFailure(ctx, err, "fn:transform: stylesheet-node exceeds its program budget: %v", err)
+		}
+	}
+
+	compileDoc, err = stylesheetNodeXMLSpace(ctx, node.Node, compileDoc)
+	if err != nil {
+		return nil, transformFailure(ctx, err, "fn:transform: cannot preserve stylesheet whitespace context: %v", err)
+	}
+
+	if baseURI != "" {
+		compiler = compiler.BaseURI(baseURI)
+	}
+
+	stylesheet, err := compiler.Compile(ctx, compileDoc)
+	if err != nil {
+		return nil, transformFailure(ctx, err, "fn:transform: cannot compile stylesheet: %v", err)
+	}
+
+	if compileDoc != sourceDoc {
+		stylesheet.sourceDoc = sourceDoc
+		for uri, module := range stylesheet.moduleDocs {
+			if module == compileDoc {
+				stylesheet.moduleDocs[uri] = sourceDoc
+			}
+		}
+	}
+
+	return stylesheet, nil
 }
 
 func transformStaticParameters(nestedCompiler Compiler, staticParamsSeq xdm.Sequence) (Compiler, map[string]xdm.Sequence) {
@@ -872,26 +1060,6 @@ func checkTransformCapabilities(ctx context.Context, seq xdm.Sequence) error {
 	return nil
 }
 
-func (cfg *transformFnConfig) compileTransformStylesheet(ctx context.Context, compiler Compiler, request transformRequest) (*Stylesheet, error) {
-	if request.stylesheetLoc != "" {
-		return cfg.compileTransformLocation(ctx, compiler, request.stylesheetLoc)
-	}
-
-	if request.packageName != "" {
-		return cfg.compileTransformPackage(ctx, compiler, request.packageName, request.packageVersion)
-	}
-
-	if text := transformStringOption(request.options, "stylesheet-text"); text != "" {
-		return cfg.compileTransformText(ctx, compiler, text, request.stylesheetBaseURI)
-	}
-
-	return cfg.compileTransformNode(ctx, compiler, transformMapSeq(request.options, "stylesheet-node"), request.stylesheetBaseURI)
-}
-
-func (cfg *transformFnConfig) programLimit(ctx context.Context) int64 {
-	return dynamicProgramLimit(ctx, cfg.maxResourceBytes)
-}
-
 func dynamicProgramLimit(ctx context.Context, resourceBytes int64) int64 {
 	limit := resolveResourceLimit(resourceBytes)
 	if bound, ok := ctx.Value(transformProgramLimitKey{}).(int); ok && bound > 0 && (limit <= 0 || int64(bound) < limit) {
@@ -943,174 +1111,6 @@ func (w *transformProgramCounter) Write(data []byte) (int, error) {
 	w.remaining -= int64(len(data))
 
 	return len(data), nil
-}
-
-func (cfg *transformFnConfig) compileTransformLocation(ctx context.Context, nestedCompiler Compiler, stylesheetLoc string) (*Stylesheet, error) {
-	// Resolve relative to the current stylesheet base URI.
-	loc := resolveStylesheetLocation(cfg.baseURI, stylesheetLoc)
-
-	baseURI := loc
-
-	if cfg.stylesheetResolver == nil {
-		return nil, dynamicError(errCodeFOXT0002, "fn:transform: cannot read stylesheet %q: no URIResolver configured (filesystem access is opt-in)", stylesheetLoc)
-	}
-
-	rc, resolveErr := cfg.stylesheetResolver.Resolve(ctx, loc)
-	if resolveErr != nil {
-		// The supplied stylesheet-location cannot identify a usable source, before
-		// invoking the compiler. Report the invalid option rather than a failure
-		// of an already invoked transformation (F&O fn:transform error conditions).
-		return nil, transformFailureCode(ctx, resolveErr, errCodeFOXT0002, "fn:transform: cannot resolve stylesheet %q: %v", stylesheetLoc, resolveErr)
-	}
-
-	doc, parseErr := parseXMLResource(ctx, cfg.parseOptions, rc, baseURI, cfg.programLimit(ctx))
-	if parseErr != nil {
-		return nil, transformFailure(ctx, parseErr, "fn:transform: cannot parse stylesheet %q: %v", stylesheetLoc, parseErr)
-	}
-
-	ss, compileErr := nestedCompiler.BaseURI(baseURI).Compile(ctx, doc)
-	if compileErr != nil {
-		return nil, transformFailure(ctx, compileErr, "fn:transform: cannot compile stylesheet %q: %v", stylesheetLoc, compileErr)
-	}
-
-	return ss, nil
-}
-
-func (cfg *transformFnConfig) compileTransformPackage(ctx context.Context, nestedCompiler Compiler, packageName, packageVersion string) (*Stylesheet, error) {
-	if !ParseVersionConstraint(packageVersion).Valid() {
-		return nil, dynamicError(errCodeFOXT0002, "invalid package version range %q", packageVersion)
-	}
-	// Resolve via package-name / package-version using the PackageResolver
-	// stored on the compiled stylesheet (set at compile time).
-	resolver := cfg.packageResolver
-	if resolver == nil {
-		return nil, dynamicError(errCodeFOXT0002, "fn:transform: package-name specified but no PackageResolver available")
-	}
-
-	rc, location, resolveErr := resolver.ResolvePackage(ctx, packageName, packageVersion)
-	if resolveErr != nil {
-		return nil, transformFailure(ctx, resolveErr, "fn:transform: cannot resolve package %q (version %q): %v", packageName, packageVersion, resolveErr)
-	}
-
-	doc, parseErr := parseXMLResource(ctx, cfg.parseOptions, rc, location, cfg.programLimit(ctx))
-	if parseErr != nil {
-		return nil, transformFailure(ctx, parseErr, "fn:transform: cannot parse package %q: %v", packageName, parseErr)
-	}
-
-	if err := checkResolvedPackage(doc, packageName, packageVersion); err != nil {
-		return nil, err
-	}
-
-	compiler := nestedCompiler
-	if location != "" {
-		compiler = compiler.BaseURI(location)
-	}
-
-	ss, compileErr := compiler.Compile(ctx, doc)
-	if compileErr != nil {
-		return nil, transformFailure(ctx, compileErr, "fn:transform: cannot compile package %q: %v", packageName, compileErr)
-	}
-
-	if err := checkCompiledPackage(ss, packageName, packageVersion); err != nil {
-		return nil, err
-	}
-
-	return ss, nil
-}
-
-func (cfg *transformFnConfig) compileTransformText(ctx context.Context, nestedCompiler Compiler, stylesheetText, stylesheetBaseURI string) (*Stylesheet, error) {
-	// stylesheet-text: the stylesheet source is supplied inline as a string.
-	// Parse it and compile. The base URI comes from the stylesheet-base-uri
-	// option when supplied (a relative value resolved against the call's
-	// static base URI). Without that option the text has no base URI.
-	baseURI := ""
-	if stylesheetBaseURI != "" {
-		baseURI = resolveStylesheetLocation(cfg.baseURI, stylesheetBaseURI)
-	}
-
-	parseOptions := xdm.ParseOptions{}
-	if cfg.parseOptions != nil {
-		parseOptions = *cfg.parseOptions
-	}
-
-	parseOptions.BaseURI = baseURI
-
-	doc, parseErr := parseOptions.WithByteLimit(cfg.programLimit(ctx)).ParseText(ctx, stylesheetText)
-	if parseErr != nil {
-		return nil, transformFailure(ctx, parseErr, "fn:transform: cannot parse stylesheet-text: %v", parseErr)
-	}
-
-	compiler := nestedCompiler.BaseURI(baseURI)
-
-	ss, compileErr := compiler.Compile(ctx, doc)
-	if compileErr != nil {
-		return nil, transformFailure(ctx, compileErr, "fn:transform: cannot compile stylesheet-text: %v", compileErr)
-	}
-
-	return ss, nil
-}
-
-func (cfg *transformFnConfig) compileTransformNode(ctx context.Context, compiler Compiler, nodes xdm.Sequence, stylesheetBaseURI string) (*Stylesheet, error) {
-	if !transformOptionPresent(nodes) {
-		return nil, dynamicError(errCodeFOXT0002, "fn:transform: no stylesheet specified (stylesheet-location, stylesheet-node, stylesheet-text, or package-name required)")
-	}
-
-	node, ok := nodes.Get(0).(xdm.NodeItem)
-	if !ok {
-		return nil, dynamicError(errCodeFOXT0002, "fn:transform: no stylesheet specified (stylesheet-location, stylesheet-node, stylesheet-text, or package-name required)")
-	}
-
-	if node.Node.Type() != xdm.DocumentNode && node.Node.Type() != xdm.ElementNode {
-		return nil, dynamicError(errCodeFOXT0002, "fn:transform: stylesheet-node must be a document or element node")
-	}
-
-	owner := owningDocument(node.Node)
-
-	// Compilation applies the root's own xml:base once. Include inherited and
-	// construction bases here, without pre-applying that same attribute.
-	baseURI := xdm.NodeGetBaseBeforeXMLBase(node.Node.OwnerDocument(), node.Node)
-	if stylesheetBaseURI != "" {
-		baseURI = resolveStylesheetLocation(cfg.baseURI, stylesheetBaseURI)
-	}
-
-	compileDoc, err := stylesheetNodeCompileDocument(ctx, node.Node, owner)
-	if err != nil {
-		return nil, transformFailure(ctx, err, "fn:transform: cannot prepare stylesheet node: %v", err)
-	}
-
-	sourceDoc := compileDoc
-
-	if limit := cfg.programLimit(ctx); limit > 0 {
-		counter := &transformProgramCounter{ctx: ctx, remaining: limit}
-		if err := (xdm.XMLSerialization{OmitDeclaration: true}).WriteTo(counter, sourceDoc); err != nil {
-			return nil, transformFailure(ctx, err, "fn:transform: stylesheet-node exceeds its program budget: %v", err)
-		}
-	}
-
-	compileDoc, err = stylesheetNodeXMLSpace(ctx, node.Node, compileDoc)
-	if err != nil {
-		return nil, transformFailure(ctx, err, "fn:transform: cannot preserve stylesheet whitespace context: %v", err)
-	}
-
-	if baseURI != "" {
-		compiler = compiler.BaseURI(baseURI)
-	}
-
-	stylesheet, err := compiler.Compile(ctx, compileDoc)
-	if err != nil {
-		return nil, transformFailure(ctx, err, "fn:transform: cannot compile stylesheet: %v", err)
-	}
-
-	if compileDoc != sourceDoc {
-		stylesheet.sourceDoc = sourceDoc
-		for uri, module := range stylesheet.moduleDocs {
-			if module == compileDoc {
-				stylesheet.moduleDocs[uri] = sourceDoc
-			}
-		}
-	}
-
-	return stylesheet, nil
 }
 
 // stylesheetNodeXMLSpace keeps inherited XML whitespace policy private to the
@@ -1257,35 +1257,6 @@ func newTransformRequest(options xdm.MapItem, baseURI string) transformRequest {
 	}
 
 	return request
-}
-
-func transformQNameOption(options xdm.MapItem, key string) string {
-	seq := transformMapSeq(options, key)
-	if !transformOptionPresent(seq) {
-		return ""
-	}
-
-	value, err := xpath.AtomizeItem(seq.Get(0))
-	if err != nil {
-		return ""
-	}
-
-	if value.TypeName == xdm.TypeQName {
-		if name, ok := value.Value.(xdm.QNameValue); ok {
-			if name.URI != "" {
-				return xdm.ClarkName(name.URI, name.Local)
-			}
-
-			return name.Local
-		}
-	}
-
-	text, err := xpath.AtomicToString(value)
-	if err != nil {
-		return ""
-	}
-
-	return text
 }
 
 func (request transformRequest) newInvocation(ctx context.Context, cfg *transformFnConfig, staticParamValues map[string]xdm.Sequence) *transformConfig {
@@ -1487,6 +1458,35 @@ func (request transformRequest) deliverSerialized(ctx context.Context, doc *xdm.
 	}
 
 	return result, nil
+}
+
+func transformQNameOption(options xdm.MapItem, key string) string {
+	seq := transformMapSeq(options, key)
+	if !transformOptionPresent(seq) {
+		return ""
+	}
+
+	value, err := xpath.AtomizeItem(seq.Get(0))
+	if err != nil {
+		return ""
+	}
+
+	if value.TypeName == xdm.TypeQName {
+		if name, ok := value.Value.(xdm.QNameValue); ok {
+			if name.URI != "" {
+				return xdm.ClarkName(name.URI, name.Local)
+			}
+
+			return name.Local
+		}
+	}
+
+	text, err := xpath.AtomicToString(value)
+	if err != nil {
+		return ""
+	}
+
+	return text
 }
 
 func serializeDeliveredValue(ctx context.Context, value ValueResult) (string, error) {

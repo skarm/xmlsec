@@ -101,16 +101,6 @@ func (c *compiler) compileTopLevel(ctx context.Context, root *xdm.Element) error
 	return c.compileTopLevelDeclarations(ctx, root)
 }
 
-func validateTopLevelText(root *xdm.Element) error {
-	for child := range xdm.Children(root) {
-		if child.Type() == xdm.TextNode && xdm.CharacterData(child) != "" {
-			return staticError(errCodeXTSE0120, "non-whitespace text node in xsl:stylesheet")
-		}
-	}
-
-	return nil
-}
-
 func (c *compiler) collectTopLevelNamespaceAliases(_ context.Context, root *xdm.Element) error {
 	for child := range xdm.Children(root) {
 		elem, ok := child.(*xdm.Element)
@@ -523,27 +513,6 @@ func (c *compiler) validateModuleImportOrder(ctx context.Context, root *xdm.Elem
 	return nil
 }
 
-// A module already ordered structurally needs no additional use-when evaluation.
-func hasLateModuleImport(ctx context.Context, root *xdm.Element) (bool, error) {
-	seenOther := false
-
-	for elem := range xdm.ChildElements(root) {
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
-
-		if elem.URI() == lexicon.NamespaceXSLT && elem.LocalName() == nameImport {
-			if seenOther {
-				return true, nil
-			}
-		} else {
-			seenOther = true
-		}
-	}
-
-	return false, nil
-}
-
 func (c *compiler) compileTopLevelDeclarations(ctx context.Context, root *xdm.Element) error {
 	for child := range xdm.Children(root) {
 		elem, ok := child.(*xdm.Element)
@@ -886,6 +855,37 @@ func (c *compiler) sortTemplates(_ context.Context) {
 			c.stylesheet.modeIndex[mode] = idx
 		}
 	}
+}
+
+func validateTopLevelText(root *xdm.Element) error {
+	for child := range xdm.Children(root) {
+		if child.Type() == xdm.TextNode && xdm.CharacterData(child) != "" {
+			return staticError(errCodeXTSE0120, "non-whitespace text node in xsl:stylesheet")
+		}
+	}
+
+	return nil
+}
+
+// A module already ordered structurally needs no additional use-when evaluation.
+func hasLateModuleImport(ctx context.Context, root *xdm.Element) (bool, error) {
+	seenOther := false
+
+	for elem := range xdm.ChildElements(root) {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+
+		if elem.URI() == lexicon.NamespaceXSLT && elem.LocalName() == nameImport {
+			if seenOther {
+				return true, nil
+			}
+		} else {
+			seenOther = true
+		}
+	}
+
+	return false, nil
 }
 
 func isStaticTopLevelDeclaration(elem *xdm.Element) bool {

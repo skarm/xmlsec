@@ -100,55 +100,6 @@ func (ec *execContext) evaluateValueOfSelect(ctx context.Context, inst *valueOfI
 	return value, emptySequence, nil
 }
 
-// checkAtomizable returns FOTY0013 if the sequence contains any map or
-// function items, which cannot be atomized.
-func checkAtomizable(seq xdm.Sequence) error {
-	for i, size := 0, xdm.SequenceLen(seq); i < size; i++ {
-		item := seq.Get(i)
-		switch item.(type) {
-		case xdm.MapItem:
-			return dynamicError(lexicon.ErrFOTY0013, "cannot atomize a map item")
-		case xdm.FunctionItem:
-			return dynamicError(lexicon.ErrFOTY0013, "cannot atomize a function item")
-		}
-	}
-
-	return nil
-}
-
-// filterZeroLengthTextNodes removes zero-length text nodes from a sequence.
-// Per XSLT spec §11.3, these are discarded during xsl:value-of processing.
-func filterZeroLengthTextNodes(seq xdm.Sequence) xdm.Sequence {
-	// Most value-of results contain no empty text nodes. Delay allocating an
-	// output until a removal is needed, retaining the original owned sequence.
-	size := xdm.SequenceLen(seq)
-
-	first := 0
-	for ; first < size; first++ {
-		if ni, ok := seq.Get(first).(xdm.NodeItem); ok && ni.Node.Type() == xdm.TextNode && xdm.CharacterData(ni.Node) == "" {
-			break
-		}
-	}
-
-	if first == size {
-		return seq
-	}
-
-	result := make(xdm.ItemSlice, 0, xdm.SequenceLen(seq))
-	for i := range size {
-		item := seq.Get(i)
-		if ni, ok := item.(xdm.NodeItem); ok {
-			if ni.Node.Type() == xdm.TextNode && len(xdm.CharacterData(ni.Node)) == 0 {
-				continue
-			}
-		}
-
-		result = append(result, item)
-	}
-
-	return result
-}
-
 func (ec *execContext) evaluateValueOfBody(ctx context.Context, inst *valueOfInst) (string, error) {
 	// Default separator for body content is "" (zero-length string)
 	separator := ""
@@ -517,6 +468,55 @@ func (ec *execContext) writeOutputSequenceAtomic(out *outputFrame, atomic xdm.At
 	}
 
 	return ec.writeAtomicText(value)
+}
+
+// checkAtomizable returns FOTY0013 if the sequence contains any map or
+// function items, which cannot be atomized.
+func checkAtomizable(seq xdm.Sequence) error {
+	for i, size := 0, xdm.SequenceLen(seq); i < size; i++ {
+		item := seq.Get(i)
+		switch item.(type) {
+		case xdm.MapItem:
+			return dynamicError(lexicon.ErrFOTY0013, "cannot atomize a map item")
+		case xdm.FunctionItem:
+			return dynamicError(lexicon.ErrFOTY0013, "cannot atomize a function item")
+		}
+	}
+
+	return nil
+}
+
+// filterZeroLengthTextNodes removes zero-length text nodes from a sequence.
+// Per XSLT spec §11.3, these are discarded during xsl:value-of processing.
+func filterZeroLengthTextNodes(seq xdm.Sequence) xdm.Sequence {
+	// Most value-of results contain no empty text nodes. Delay allocating an
+	// output until a removal is needed, retaining the original owned sequence.
+	size := xdm.SequenceLen(seq)
+
+	first := 0
+	for ; first < size; first++ {
+		if ni, ok := seq.Get(first).(xdm.NodeItem); ok && ni.Node.Type() == xdm.TextNode && xdm.CharacterData(ni.Node) == "" {
+			break
+		}
+	}
+
+	if first == size {
+		return seq
+	}
+
+	result := make(xdm.ItemSlice, 0, xdm.SequenceLen(seq))
+	for i := range size {
+		item := seq.Get(i)
+		if ni, ok := item.(xdm.NodeItem); ok {
+			if ni.Node.Type() == xdm.TextNode && len(xdm.CharacterData(ni.Node)) == 0 {
+				continue
+			}
+		}
+
+		result = append(result, item)
+	}
+
+	return result
 }
 
 // mergeAdjacentTextNodes merges consecutive text node items in a sequence

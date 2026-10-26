@@ -351,6 +351,42 @@ func TestHTTPStatusFailureClosesBodyAndPreservesCloseError(t *testing.T) {
 	}
 }
 
+func TestHTTPResolverClosesResponseReturnedWithTransportError(t *testing.T) {
+	transportErr, closeErr := errors.New("transport failed"), errors.New("close failed")
+	file := &testFile{closeErr: closeErr}
+	resolver, err := resource.NewHTTPResolver(resource.HTTPConfig{
+		AllowedOrigins: []string{"https://resource.test"},
+		Client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return evidenceResponse(req, http.StatusOK, file), transportErr
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream, err := resolver.Resolve(t.Context(), "https://resource.test/value")
+	if stream != nil || !errors.Is(err, resource.ErrResource) || !errors.Is(err, transportErr) || !errors.Is(err, closeErr) || file.closes != 1 {
+		t.Fatal(stream, err, file.closes)
+	}
+}
+
+func TestHTTPResolverRejectsTypedNilResponseBody(t *testing.T) {
+	var body *testFile
+	resolver, err := resource.NewHTTPResolver(resource.HTTPConfig{
+		AllowedOrigins: []string{"https://resource.test"},
+		Client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return evidenceResponse(req, http.StatusOK, body), nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := resolver.Resolve(t.Context(), "https://resource.test/value")
+	if stream != nil || !errors.Is(err, resource.ErrResource) {
+		t.Fatal("unusable body accepted", stream, err)
+	}
+}
+
 func TestFSResolverRejectsTypedNilFilesystem(t *testing.T) {
 	var filesystem openFunc
 	if resolver, err := resource.NewFSResolver(resource.FSConfig{BaseURI: fsBaseURI, FS: filesystem}); resolver != nil || !errors.Is(err, resource.ErrInput) {

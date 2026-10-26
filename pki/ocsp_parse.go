@@ -65,8 +65,6 @@ func (s *singleResponse) parseRevokedInfo(v asn1.RawValue) error {
 	return nil
 }
 
-func validReason(r int) bool { return r >= 0 && r <= 10 && r != 7 }
-
 func (s *singleResponse) parseOptionalFields(fields []asn1.RawValue) error {
 	i := 0
 	if i < len(fields) && der.Is(fields[i], 2, 0, true) {
@@ -127,6 +125,8 @@ func (s *singleResponse) parseOptionalFields(fields []asn1.RawValue) error {
 
 	return nil
 }
+
+func validReason(r int) bool { return r >= 0 && r <= 10 && r != 7 }
 
 func generalized(v asn1.RawValue) (time.Time, error) {
 	var t time.Time
@@ -219,6 +219,22 @@ func (p *parsedOCSP) parseEntries(v asn1.RawValue) error {
 	return nil
 }
 
+func (p *parsedOCSP) parseResponseExtensions(v asn1.RawValue) error {
+	x, err := der.Explicit(v, 1)
+	if err != nil {
+		return ErrEvidence
+	}
+
+	ext, err := extensions(x)
+	if err != nil {
+		return err
+	}
+
+	p.nonce, err = nonceFrom(ext, true)
+
+	return err
+}
+
 func parseSingle(v asn1.RawValue) (singleResponse, error) {
 	fields, err := der.Sequence(v, 3, 5)
 	if err != nil {
@@ -245,22 +261,6 @@ func parseSingle(v asn1.RawValue) (singleResponse, error) {
 	}
 
 	return s, nil
-}
-
-func (p *parsedOCSP) parseResponseExtensions(v asn1.RawValue) error {
-	x, err := der.Explicit(v, 1)
-	if err != nil {
-		return ErrEvidence
-	}
-
-	ext, err := extensions(x)
-	if err != nil {
-		return err
-	}
-
-	p.nonce, err = nonceFrom(ext, true)
-
-	return err
 }
 
 func parseOCSP(b []byte, maximum int) (parsedOCSP, error) {

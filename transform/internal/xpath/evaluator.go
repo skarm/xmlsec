@@ -13,6 +13,9 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// DefaultEvaluatorOptions is the zero value — all setters clone by default.
+const DefaultEvaluatorOptions EvaluatorOption = 0
+
 // EvaluatorOption controls Evaluator construction behavior.
 type EvaluatorOption uint32
 
@@ -22,9 +25,6 @@ const (
 	// derived evaluators, contexts, and eval states.
 	EvalBorrowing EvaluatorOption = 1 << iota
 )
-
-// DefaultEvaluatorOptions is the zero value — all setters clone by default.
-const DefaultEvaluatorOptions EvaluatorOption = 0
 
 // Evaluator configures evaluation of compiled XPath expressions. Fluent methods return
 // updated copies. Each Evaluate call creates its own mutable evaluation context.
@@ -165,21 +165,6 @@ func (e Evaluator) Variables(vars map[string]xdm.Sequence) Evaluator {
 	out.cfg.varScope = newVariableScope(out.cfg.variables)
 
 	return out
-}
-
-// cloneVariableMap deep-copies a variable binding map, copying each Sequence
-// value (preserving the previous Variables.Clone semantics).
-func cloneVariableMap(vars map[string]xdm.Sequence) map[string]xdm.Sequence {
-	if vars == nil {
-		return nil
-	}
-
-	cp := make(map[string]xdm.Sequence, len(vars))
-	for name, seq := range vars {
-		cp[name] = xdm.CloneSequence(seq)
-	}
-
-	return cp
 }
 
 // Functions sets the user-defined functions for the evaluation: byLocal is
@@ -776,4 +761,19 @@ func (e Evaluator) newEvalCtx(node xdm.Node) *evalContext {
 	ec.traceWriter = cfg.traceWriter
 
 	return ec
+}
+
+// cloneVariableMap deep-copies a variable binding map, copying each Sequence
+// value (preserving the previous Variables.Clone semantics).
+func cloneVariableMap(vars map[string]xdm.Sequence) map[string]xdm.Sequence {
+	if vars == nil {
+		return nil
+	}
+
+	cp := make(map[string]xdm.Sequence, len(vars))
+	for name, seq := range vars {
+		cp[name] = xdm.CloneSequence(seq)
+	}
+
+	return cp
 }

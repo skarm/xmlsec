@@ -52,6 +52,7 @@ type authenticatedCRL struct {
 	list   *parsedCRL
 	signer *x509.Certificate
 }
+
 type completeCRLView struct {
 	base  *authenticatedCRL
 	delta *authenticatedCRL
@@ -138,37 +139,6 @@ type crlAuthentication struct {
 	key           crlAuthenticationKey
 	at            time.Time
 	maximumDepth  int
-}
-
-func crlCandidates(chain []*x509.Certificate, lists []*parsedCRL) ([]*x509.Certificate, error) {
-	candidates := append([]*x509.Certificate(nil), chain...)
-
-	seen := make(map[[32]byte]struct{})
-	for _, cert := range candidates {
-		seen[sha256.Sum256(cert.Raw)] = struct{}{}
-	}
-
-	for _, list := range lists {
-		for _, raw := range list.candidates {
-			digest := sha256.Sum256(raw)
-			if _, exists := seen[digest]; exists {
-				continue
-			}
-
-			cert, err := parseBorrowedCertificate(raw)
-			if err != nil {
-				return nil, err
-			}
-
-			seen[digest] = struct{}{}
-
-			candidates = append(candidates, cert)
-		}
-	}
-
-	sort.Slice(candidates, func(i, j int) bool { return bytes.Compare(candidates[i].Raw, candidates[j].Raw) < 0 })
-
-	return candidates, nil
 }
 
 func newCRLAuthentication(ctx context.Context, chain []*x509.Certificate, lists []*parsedCRL, at time.Time, maximumDepth int) (*crlAuthentication, error) {
@@ -272,6 +242,37 @@ func (a *crlAuthentication) authorizedSigner(ctx context.Context, list *parsedCR
 	})
 
 	return err == nil && validCRLSignerPaths(paths, a.anchor, a.maximumDepth), ctx.Err()
+}
+
+func crlCandidates(chain []*x509.Certificate, lists []*parsedCRL) ([]*x509.Certificate, error) {
+	candidates := append([]*x509.Certificate(nil), chain...)
+
+	seen := make(map[[32]byte]struct{})
+	for _, cert := range candidates {
+		seen[sha256.Sum256(cert.Raw)] = struct{}{}
+	}
+
+	for _, list := range lists {
+		for _, raw := range list.candidates {
+			digest := sha256.Sum256(raw)
+			if _, exists := seen[digest]; exists {
+				continue
+			}
+
+			cert, err := parseBorrowedCertificate(raw)
+			if err != nil {
+				return nil, err
+			}
+
+			seen[digest] = struct{}{}
+
+			candidates = append(candidates, cert)
+		}
+	}
+
+	sort.Slice(candidates, func(i, j int) bool { return bytes.Compare(candidates[i].Raw, candidates[j].Raw) < 0 })
+
+	return candidates, nil
 }
 
 func (l *parsedCRL) signerMatches(ctx context.Context, signer *x509.Certificate) (bool, error) {

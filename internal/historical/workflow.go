@@ -117,58 +117,6 @@ type validationWorkflow struct {
 	material       signedMaterial
 }
 
-func validate(ctx context.Context, c Config, input Input, now time.Time, signerEvidence, tsaEvidence pki.Evidence) (_ *Report, resultError error) {
-	report := &Report{At: now, Best: now}
-
-	defer func() {
-		if resultError != nil {
-			report.Cause = resultError
-		}
-	}()
-
-	workflow := validationWorkflow{
-		ctx: ctx, config: c, input: input, now: now, report: report,
-		signerEvidence: signerEvidence, tsaEvidence: tsaEvidence,
-	}
-	if err := workflow.initialize(); err != nil {
-		return report, err
-	}
-
-	if err := workflow.admitEvidence(); err != nil {
-		return report, err
-	}
-
-	if err := workflow.prepareTimestamps(); err != nil {
-		return report, err
-	}
-
-	if err := workflow.preparePaths(); err != nil {
-		return report, err
-	}
-
-	if err := workflow.prepareGraph(); err != nil {
-		return report, err
-	}
-
-	if err := workflow.processTimestamps(); err != nil {
-		return report, err
-	}
-
-	if err := workflow.verifySigner(); err != nil {
-		return report, err
-	}
-
-	if err := workflow.verifyDelay(); err != nil {
-		return report, err
-	}
-
-	if err := workflow.finish(); err != nil {
-		return report, err
-	}
-
-	return report, nil
-}
-
 func (w *validationWorkflow) initialize() error {
 	if w.ctx == nil || w.now.IsZero() {
 		return ErrInput
@@ -633,6 +581,58 @@ func (w *validationWorkflow) finish() error {
 	w.report.Steps = append(w.report.Steps, Step{Clause: "5.6.3.4(10)", Action: "return-passed", Object: w.input.Signature, Before: w.now, After: w.report.Validation})
 
 	return nil
+}
+
+func validate(ctx context.Context, c Config, input Input, now time.Time, signerEvidence, tsaEvidence pki.Evidence) (_ *Report, resultError error) {
+	report := &Report{At: now, Best: now}
+
+	defer func() {
+		if resultError != nil {
+			report.Cause = resultError
+		}
+	}()
+
+	workflow := validationWorkflow{
+		ctx: ctx, config: c, input: input, now: now, report: report,
+		signerEvidence: signerEvidence, tsaEvidence: tsaEvidence,
+	}
+	if err := workflow.initialize(); err != nil {
+		return report, err
+	}
+
+	if err := workflow.admitEvidence(); err != nil {
+		return report, err
+	}
+
+	if err := workflow.prepareTimestamps(); err != nil {
+		return report, err
+	}
+
+	if err := workflow.preparePaths(); err != nil {
+		return report, err
+	}
+
+	if err := workflow.prepareGraph(); err != nil {
+		return report, err
+	}
+
+	if err := workflow.processTimestamps(); err != nil {
+		return report, err
+	}
+
+	if err := workflow.verifySigner(); err != nil {
+		return report, err
+	}
+
+	if err := workflow.verifyDelay(); err != nil {
+		return report, err
+	}
+
+	if err := workflow.finish(); err != nil {
+		return report, err
+	}
+
+	return report, nil
 }
 
 func validateStamp(ctx context.Context, c Config, stamp preparedStamp, now time.Time, session *pki.HistoricalSession, proofs *historicalproof.Set) (Stamp, error) {

@@ -11,14 +11,6 @@ import (
 	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
-func baseURIFromContext(ctx context.Context) string {
-	if ec := getFnContext(ctx); ec != nil {
-		return ec.baseURI
-	}
-
-	return ""
-}
-
 // ContextBaseURI exposes the calling XPath static base to host functions. The
 // presence flag distinguishes an absent base in an evaluation from no evaluator
 // context, and preserves bases captured by named/lookup/partial function items.
@@ -28,6 +20,14 @@ func ContextBaseURI(ctx context.Context) (string, bool) {
 	}
 
 	return "", false
+}
+
+func baseURIFromContext(ctx context.Context) string {
+	if ec := getFnContext(ctx); ec != nil {
+		return ec.baseURI
+	}
+
+	return ""
 }
 
 func parseURIReference(raw string) (*url.URL, error) {

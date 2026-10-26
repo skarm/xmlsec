@@ -51,6 +51,21 @@ func (e *Expression) StreamInfo() StreamInfo {
 	}
 }
 
+// WalkExpr visits the shared XPath syntax tree, calling fn for each expression.
+// Returning false skips that node's children.
+func WalkExpr(expr Expr, fn func(Expr) bool) {
+	if expr == nil {
+		return
+	}
+	// Dereference pointer types to value types so type switches work uniformly.
+	expr = derefExpr(expr)
+	if !fn(expr) {
+		return
+	}
+
+	walkChildren(expr, fn)
+}
+
 // computeStreamInfo collects navigation and function-use properties in one syntax-tree
 // walk.
 func computeStreamInfo(ast Expr) streamInfo {
@@ -69,21 +84,6 @@ func computeStreamInfo(ast Expr) streamInfo {
 	WalkExpr(ast, si.observe)
 
 	return si
-}
-
-// WalkExpr visits the shared XPath syntax tree, calling fn for each expression.
-// Returning false skips that node's children.
-func WalkExpr(expr Expr, fn func(Expr) bool) {
-	if expr == nil {
-		return
-	}
-	// Dereference pointer types to value types so type switches work uniformly.
-	expr = derefExpr(expr)
-	if !fn(expr) {
-		return
-	}
-
-	walkChildren(expr, fn)
 }
 
 func derefExpr(expr Expr) Expr {
@@ -387,19 +387,19 @@ func (si *streamInfo) observe(e Expr) bool {
 	return true
 }
 
-// streamFnLocalName resolves a FunctionCall to its streamability local name via
-// the lexicalFnLocalName helper, normalizing the EQName
-// (Q{...}local) spelling the parseOptions keeps in FunctionCall.Name.
-func streamFnLocalName(fc FunctionCall) (string, bool) {
-	return lexicalFnLocalName(fc.Name, fc.Prefix)
-}
-
 func (si *streamInfo) observeStep(axis AxisType) {
 	si.axisUsed |= 1 << uint(axis)
 	switch axis {
 	case AxisChild, AxisDescendant, AxisDescendantOrSelf:
 		si.hasDownwardStep = true
 	}
+}
+
+// streamFnLocalName resolves a FunctionCall to its streamability local name via
+// the lexicalFnLocalName helper, normalizing the EQName
+// (Q{...}local) spelling the parseOptions keeps in FunctionCall.Name.
+func streamFnLocalName(fc FunctionCall) (string, bool) {
+	return lexicalFnLocalName(fc.Name, fc.Prefix)
 }
 
 func inspectPredicateMotion(e, pred Expr, step *Step) (bool, bool) {

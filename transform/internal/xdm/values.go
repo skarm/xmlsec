@@ -1020,6 +1020,15 @@ func (b *MapBuilder) Add(key AtomicValue, value Sequence) error {
 	return nil
 }
 
+// Size returns the number of distinct keys accumulated so far.
+func (b *MapBuilder) Size() int { return len(b.entries) }
+
+// Build returns the accumulated MapItem. The builder should not be used
+// after calling Build.
+func (b *MapBuilder) Build() MapItem {
+	return MapItem{entries: b.entries, index: b.index}
+}
+
 func (b *MapBuilder) combineValue(idx int, value Sequence) {
 	items, owned := b.combined[idx]
 	if !owned {
@@ -1041,15 +1050,6 @@ func (b *MapBuilder) combineValue(idx int, value Sequence) {
 
 	b.combined[idx] = items
 	b.entries[idx].Value = items
-}
-
-// Size returns the number of distinct keys accumulated so far.
-func (b *MapBuilder) Size() int { return len(b.entries) }
-
-// Build returns the accumulated MapItem. The builder should not be used
-// after calling Build.
-func (b *MapBuilder) Build() MapItem {
-	return MapItem{entries: b.entries, index: b.index}
 }
 
 // ArrayItem is an immutable indexed sequence of members. Uses 1-based indexing.
@@ -1295,28 +1295,6 @@ func IsSubtypeOf(actualType, targetType string) bool {
 	return actualType == targetType || computeIsSubtypeOf(actualType, targetType)
 }
 
-func computeIsSubtypeOf(actualType, targetType string) bool {
-	// xs:numeric is a union of xs:integer, xs:decimal, xs:float, xs:double
-	if targetType == TypeNumeric {
-		return IsSubtypeOf(actualType, TypeDecimal) ||
-			actualType == TypeFloat || actualType == TypeDouble
-	}
-	// Walk up the type hierarchy
-	cur := actualType
-	for {
-		parent, ok := lookupXSDTypeParent(cur)
-		if !ok {
-			return false
-		}
-
-		if parent == targetType {
-			return true
-		}
-
-		cur = parent
-	}
-}
-
 // IsAtomicSubtypeOf reports whether the atomic value's type is targetType or a
 // subtype of it, honoring both the built-in XSD hierarchy and the value's
 // built-in BaseType (set when TypeName is a user-defined schema type derived by
@@ -1421,6 +1399,28 @@ func SchemaAnnotationParts(name string) (local, ns string, ok bool) {
 	}
 
 	return name, "", true
+}
+
+func computeIsSubtypeOf(actualType, targetType string) bool {
+	// xs:numeric is a union of xs:integer, xs:decimal, xs:float, xs:double
+	if targetType == TypeNumeric {
+		return IsSubtypeOf(actualType, TypeDecimal) ||
+			actualType == TypeFloat || actualType == TypeDouble
+	}
+	// Walk up the type hierarchy
+	cur := actualType
+	for {
+		parent, ok := lookupXSDTypeParent(cur)
+		if !ok {
+			return false
+		}
+
+		if parent == targetType {
+			return true
+		}
+
+		cur = parent
+	}
 }
 
 // deepCloneAtomicValue copies an AtomicValue when its Go payload is pointer- or

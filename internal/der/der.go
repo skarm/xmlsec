@@ -49,234 +49,6 @@ func ReadLimits(b []byte, maximum, maxDepth, maxNodes int) (asn1.RawValue, error
 	return v, nil
 }
 
-func read(b []byte, depth int, count *int, maxDepth, maxNodes int) (asn1.RawValue, []byte, error) {
-	*count++
-	if depth > maxDepth || *count > maxNodes {
-		return asn1.RawValue{}, nil, fmt.Errorf("%w: %w", ErrInvalidDER, ErrLimit)
-	}
-
-	if len(b) < 2 {
-		return asn1.RawValue{}, nil, ErrInvalidDER
-	}
-
-	var v asn1.RawValue
-
-	r, e := asn1.Unmarshal(b, &v)
-	if e != nil {
-		return v, nil, fmt.Errorf("%w: %w", ErrInvalidDER, e)
-	}
-
-	if err := validateUniversalDER(v); err != nil {
-		return v, nil, err
-	}
-
-	if err := validateConstructedDER(v, depth, count, maxDepth, maxNodes); err != nil {
-		return v, nil, err
-	}
-
-	return v, r, nil
-}
-
-func validateConstructedDER(v asn1.RawValue, depth int, count *int, maxDepth, maxNodes int) error {
-	if !v.IsCompound {
-		return nil
-	}
-
-	content := v.Bytes
-
-	var previous asn1.RawValue
-
-	lexicalOrder, tagOrder := true, true
-
-	for len(content) > 0 {
-		child, rest, err := read(content, depth+1, count, maxDepth, maxNodes)
-		if err != nil {
-			return err
-		}
-
-		if v.Class == 0 && v.Tag == asn1.TagSet && previous.FullBytes != nil {
-			lexicalOrder = lexicalOrder && bytes.Compare(previous.FullBytes, child.FullBytes) <= 0
-			tagOrder = tagOrder && (previous.Class < child.Class || previous.Class == child.Class && previous.Tag < child.Tag)
-		}
-
-		previous = child
-		content = rest
-	}
-
-	// SET and SET OF share a tag. Without a schema, either canonical order is
-	// possible (X.690 10.3 / 11.6). Known SET OF fields use SetFields to enforce
-	// their schema's lexical ordering, including implicitly tagged sets.
-	if v.Class == 0 && v.Tag == asn1.TagSet && !lexicalOrder && !tagOrder {
-		return fmt.Errorf("%w: SET order", ErrInvalidDER)
-	}
-
-	return nil
-}
-
-func validateUniversalDER(v asn1.RawValue) error {
-	if v.Class != 0 {
-		return nil
-	}
-
-	switch v.Tag {
-	case asn1.TagSequence, asn1.TagSet:
-		if !v.IsCompound {
-			return ErrInvalidDER
-		}
-	case asn1.TagBoolean:
-		if v.IsCompound || len(v.Bytes) != 1 || (v.Bytes[0] != 0 && v.Bytes[0] != 255) {
-			return ErrInvalidDER
-		}
-	case asn1.TagInteger, asn1.TagEnum:
-		if !validDERInteger(v) {
-			return ErrInvalidDER
-		}
-	case asn1.TagBitString:
-		if !validDERBitString(v) {
-			return ErrInvalidDER
-		}
-	case asn1.TagNull:
-		if v.IsCompound || len(v.Bytes) != 0 {
-			return ErrInvalidDER
-		}
-	case asn1.TagOID:
-		if v.IsCompound || !validDEROID(v.Bytes) {
-			return ErrInvalidDER
-		}
-	case asn1.TagOctetString, asn1.TagUTF8String, asn1.TagPrintableString, asn1.TagT61String, asn1.TagIA5String, asn1.TagUTCTime, asn1.TagGeneralizedTime, asn1.TagGeneralString, asn1.TagBMPString, asn1.TagNumericString:
-		if v.IsCompound || !validDERContent(v.Tag, v.Bytes) {
-			return ErrInvalidDER
-		}
-	default:
-		return fmt.Errorf("%w: universal tag %d", ErrInvalidDER, v.Tag)
-	}
-
-	return nil
-}
-
-// Match encoding/asn1's canonical base-128, signed32-bit subidentifier profile
-// without allocating an OID slice and re-marshaling an already validated header.
-func validDEROID(content []byte) bool {
-	if len(content) == 0 {
-		return false
-	}
-
-	for at := 0; at < len(content); {
-		if content[at] == 128 { // Leading zero base-128 group is nonminimal.
-			return false
-		}
-
-		var value int64
-
-		for {
-			if at == len(content) {
-				return false
-			}
-
-			octet := content[at]
-			at++
-
-			value = value<<7 | int64(octet&127)
-			if value > 1<<31-1 {
-				return false
-			}
-
-			if octet&128 == 0 {
-				break
-			}
-		}
-	}
-
-	return true
-}
-
-func validDERContent(tag int, b []byte) bool {
-	switch tag {
-	case asn1.TagUTF8String:
-		return utf8.Valid(b)
-	case asn1.TagPrintableString, asn1.TagIA5String, asn1.TagNumericString:
-		for _, c := range b {
-			if !validDERCharacter(tag, c) {
-				return false
-			}
-		}
-	case asn1.TagBMPString:
-		if len(b)%2 != 0 {
-			return false
-		}
-
-		for i := 0; i < len(b); i += 2 {
-			c := uint16(b[i])<<8 | uint16(b[i+1])
-			if c >= 0xd800 && c <= 0xdfff || c >= 0xfffe {
-				return false
-			}
-		}
-	case asn1.TagUTCTime, asn1.TagGeneralizedTime:
-		return validDERTime(tag, b)
-	}
-
-	return true
-}
-
-func validDERCharacter(tag int, c byte) bool {
-	switch tag {
-	case asn1.TagIA5String:
-		return c < 128
-	case asn1.TagNumericString:
-		return c == ' ' || c >= '0' && c <= '9'
-	default: // X.680 Table 10, without Go's legacy '*' and '&' exceptions.
-		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || bytes.IndexByte([]byte(" '()+,-./:=?"), c) >= 0
-	}
-}
-
-func validDERTime(tag int, b []byte) bool {
-	width, layout := 12, "060102150405"
-	if tag == asn1.TagGeneralizedTime {
-		width, layout = 14, "20060102150405"
-	}
-
-	if len(b) < width+1 || b[len(b)-1] != 'Z' {
-		return false
-	}
-
-	for _, c := range b[:width] {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-
-	if len(b) != width+1 {
-		if tag != asn1.TagGeneralizedTime || len(b) < width+3 || b[width] != '.' || b[len(b)-2] == '0' {
-			return false
-		}
-
-		// DER allows arbitrary fractional precision; do not round it through time.Time.
-		for _, c := range b[width+1 : len(b)-1] {
-			if c < '0' || c > '9' {
-				return false
-			}
-		}
-	}
-
-	calendar := string(b[:width])
-	if tag == asn1.TagGeneralizedTime && calendar[8:] == "235960" {
-		// GeneralizedTime follows ISO 8601, including the leap-second notation.
-		calendar = calendar[:width-2] + "59"
-	}
-
-	_, err := time.Parse(layout, calendar)
-
-	return err == nil
-}
-
-func validDERInteger(v asn1.RawValue) bool {
-	return !(v.IsCompound || len(v.Bytes) == 0 || len(v.Bytes) > 1 && ((v.Bytes[0] == 0 && v.Bytes[1]&128 == 0) || (v.Bytes[0] == 255 && v.Bytes[1]&128 != 0)))
-}
-
-func validDERBitString(v asn1.RawValue) bool {
-	return !(v.IsCompound || len(v.Bytes) == 0 || v.Bytes[0] > 7 || len(v.Bytes) == 1 && v.Bytes[0] != 0 || len(v.Bytes) > 1 && v.Bytes[len(v.Bytes)-1]&byte((1<<v.Bytes[0])-1) != 0)
-}
-
 // Children decodes the direct components of a constructed DER value.
 func Children(v asn1.RawValue) ([]asn1.RawValue, error) {
 	return ChildrenLimit(v, 100000)
@@ -549,6 +321,234 @@ func Header(tag byte, length int) []byte {
 	result[0], result[1] = tag, 0x80|byte(len(encoded)-used)
 
 	return append(result, encoded[used:]...)
+}
+
+func read(b []byte, depth int, count *int, maxDepth, maxNodes int) (asn1.RawValue, []byte, error) {
+	*count++
+	if depth > maxDepth || *count > maxNodes {
+		return asn1.RawValue{}, nil, fmt.Errorf("%w: %w", ErrInvalidDER, ErrLimit)
+	}
+
+	if len(b) < 2 {
+		return asn1.RawValue{}, nil, ErrInvalidDER
+	}
+
+	var v asn1.RawValue
+
+	r, e := asn1.Unmarshal(b, &v)
+	if e != nil {
+		return v, nil, fmt.Errorf("%w: %w", ErrInvalidDER, e)
+	}
+
+	if err := validateUniversalDER(v); err != nil {
+		return v, nil, err
+	}
+
+	if err := validateConstructedDER(v, depth, count, maxDepth, maxNodes); err != nil {
+		return v, nil, err
+	}
+
+	return v, r, nil
+}
+
+func validateConstructedDER(v asn1.RawValue, depth int, count *int, maxDepth, maxNodes int) error {
+	if !v.IsCompound {
+		return nil
+	}
+
+	content := v.Bytes
+
+	var previous asn1.RawValue
+
+	lexicalOrder, tagOrder := true, true
+
+	for len(content) > 0 {
+		child, rest, err := read(content, depth+1, count, maxDepth, maxNodes)
+		if err != nil {
+			return err
+		}
+
+		if v.Class == 0 && v.Tag == asn1.TagSet && previous.FullBytes != nil {
+			lexicalOrder = lexicalOrder && bytes.Compare(previous.FullBytes, child.FullBytes) <= 0
+			tagOrder = tagOrder && (previous.Class < child.Class || previous.Class == child.Class && previous.Tag < child.Tag)
+		}
+
+		previous = child
+		content = rest
+	}
+
+	// SET and SET OF share a tag. Without a schema, either canonical order is
+	// possible (X.690 10.3 / 11.6). Known SET OF fields use SetFields to enforce
+	// their schema's lexical ordering, including implicitly tagged sets.
+	if v.Class == 0 && v.Tag == asn1.TagSet && !lexicalOrder && !tagOrder {
+		return fmt.Errorf("%w: SET order", ErrInvalidDER)
+	}
+
+	return nil
+}
+
+func validateUniversalDER(v asn1.RawValue) error {
+	if v.Class != 0 {
+		return nil
+	}
+
+	switch v.Tag {
+	case asn1.TagSequence, asn1.TagSet:
+		if !v.IsCompound {
+			return ErrInvalidDER
+		}
+	case asn1.TagBoolean:
+		if v.IsCompound || len(v.Bytes) != 1 || (v.Bytes[0] != 0 && v.Bytes[0] != 255) {
+			return ErrInvalidDER
+		}
+	case asn1.TagInteger, asn1.TagEnum:
+		if !validDERInteger(v) {
+			return ErrInvalidDER
+		}
+	case asn1.TagBitString:
+		if !validDERBitString(v) {
+			return ErrInvalidDER
+		}
+	case asn1.TagNull:
+		if v.IsCompound || len(v.Bytes) != 0 {
+			return ErrInvalidDER
+		}
+	case asn1.TagOID:
+		if v.IsCompound || !validDEROID(v.Bytes) {
+			return ErrInvalidDER
+		}
+	case asn1.TagOctetString, asn1.TagUTF8String, asn1.TagPrintableString, asn1.TagT61String, asn1.TagIA5String, asn1.TagUTCTime, asn1.TagGeneralizedTime, asn1.TagGeneralString, asn1.TagBMPString, asn1.TagNumericString:
+		if v.IsCompound || !validDERContent(v.Tag, v.Bytes) {
+			return ErrInvalidDER
+		}
+	default:
+		return fmt.Errorf("%w: universal tag %d", ErrInvalidDER, v.Tag)
+	}
+
+	return nil
+}
+
+// Match encoding/asn1's canonical base-128, signed32-bit subidentifier profile
+// without allocating an OID slice and re-marshaling an already validated header.
+func validDEROID(content []byte) bool {
+	if len(content) == 0 {
+		return false
+	}
+
+	for at := 0; at < len(content); {
+		if content[at] == 128 { // Leading zero base-128 group is nonminimal.
+			return false
+		}
+
+		var value int64
+
+		for {
+			if at == len(content) {
+				return false
+			}
+
+			octet := content[at]
+			at++
+
+			value = value<<7 | int64(octet&127)
+			if value > 1<<31-1 {
+				return false
+			}
+
+			if octet&128 == 0 {
+				break
+			}
+		}
+	}
+
+	return true
+}
+
+func validDERContent(tag int, b []byte) bool {
+	switch tag {
+	case asn1.TagUTF8String:
+		return utf8.Valid(b)
+	case asn1.TagPrintableString, asn1.TagIA5String, asn1.TagNumericString:
+		for _, c := range b {
+			if !validDERCharacter(tag, c) {
+				return false
+			}
+		}
+	case asn1.TagBMPString:
+		if len(b)%2 != 0 {
+			return false
+		}
+
+		for i := 0; i < len(b); i += 2 {
+			c := uint16(b[i])<<8 | uint16(b[i+1])
+			if c >= 0xd800 && c <= 0xdfff || c >= 0xfffe {
+				return false
+			}
+		}
+	case asn1.TagUTCTime, asn1.TagGeneralizedTime:
+		return validDERTime(tag, b)
+	}
+
+	return true
+}
+
+func validDERCharacter(tag int, c byte) bool {
+	switch tag {
+	case asn1.TagIA5String:
+		return c < 128
+	case asn1.TagNumericString:
+		return c == ' ' || c >= '0' && c <= '9'
+	default: // X.680 Table 10, without Go's legacy '*' and '&' exceptions.
+		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || bytes.IndexByte([]byte(" '()+,-./:=?"), c) >= 0
+	}
+}
+
+func validDERTime(tag int, b []byte) bool {
+	width, layout := 12, "060102150405"
+	if tag == asn1.TagGeneralizedTime {
+		width, layout = 14, "20060102150405"
+	}
+
+	if len(b) < width+1 || b[len(b)-1] != 'Z' {
+		return false
+	}
+
+	for _, c := range b[:width] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+
+	if len(b) != width+1 {
+		if tag != asn1.TagGeneralizedTime || len(b) < width+3 || b[width] != '.' || b[len(b)-2] == '0' {
+			return false
+		}
+
+		// DER allows arbitrary fractional precision; do not round it through time.Time.
+		for _, c := range b[width+1 : len(b)-1] {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+
+	calendar := string(b[:width])
+	if tag == asn1.TagGeneralizedTime && calendar[8:] == "235960" {
+		// GeneralizedTime follows ISO 8601, including the leap-second notation.
+		calendar = calendar[:width-2] + "59"
+	}
+
+	_, err := time.Parse(layout, calendar)
+
+	return err == nil
+}
+
+func validDERInteger(v asn1.RawValue) bool {
+	return !(v.IsCompound || len(v.Bytes) == 0 || len(v.Bytes) > 1 && ((v.Bytes[0] == 0 && v.Bytes[1]&128 == 0) || (v.Bytes[0] == 255 && v.Bytes[1]&128 != 0)))
+}
+
+func validDERBitString(v asn1.RawValue) bool {
+	return !(v.IsCompound || len(v.Bytes) == 0 || v.Bytes[0] > 7 || len(v.Bytes) == 1 && v.Bytes[0] != 0 || len(v.Bytes) > 1 && v.Bytes[len(v.Bytes)-1]&byte((1<<v.Bytes[0])-1) != 0)
 }
 
 // wrapParts copies encoded components directly into the owned final value.

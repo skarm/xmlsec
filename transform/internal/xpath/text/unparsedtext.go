@@ -250,47 +250,6 @@ func ResolveURI(_ context.Context, cfg *Config, href string) (string, error) {
 	return "", &Error{Code: ErrCodeRetrieval, Message: fmt.Sprintf("cannot resolve relative URI without base URI: %s", href)}
 }
 
-func parseURIReference(raw string) (*url.URL, error) {
-	if err := ValidatePercentEncoding(raw); err != nil {
-		return nil, err
-	}
-
-	return url.Parse(raw)
-}
-
-func isWindowsDriveScheme(parsed *url.URL) bool {
-	if len(parsed.Scheme) != 1 {
-		return false
-	}
-
-	b := parsed.Scheme[0]
-
-	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
-}
-
-func isSupportedScheme(scheme string) bool {
-	switch scheme {
-	case "file", "http", "https":
-		return true
-	default:
-		return false
-	}
-}
-
-func resolveReference(base, ref string) (string, error) {
-	baseURL, err := url.Parse(base)
-	if err != nil {
-		return "", err
-	}
-
-	refURL, err := url.Parse(ref)
-	if err != nil {
-		return "", err
-	}
-
-	return baseURL.ResolveReference(refURL).String(), nil
-}
-
 // ReadURI returns the resource as a string without an intermediate byte slice.
 // Decoding and JSON character rules belong to the consuming parser.
 func ReadURI(ctx context.Context, cfg *Config, uri string) (text string, err error) {
@@ -370,132 +329,6 @@ func ReadJSONText(ctx context.Context, cfg *Config, uri string, consume func([]b
 	})
 
 	return compatible, err
-}
-
-func jsonCharacterChunk(cfg *Config, chunk []byte) ([]byte, bool, error) {
-	size := len(chunk)
-	for offset := 0; offset < len(chunk); {
-		value, width := utf8.DecodeRune(chunk[offset:])
-		if !IsValidXMLChar(value) {
-			size += 6 - width
-		}
-
-		offset += width
-	}
-
-	if cfg != nil && cfg.CheckBytes != nil {
-		if err := cfg.CheckBytes(size); err != nil {
-			return nil, false, err
-		}
-	}
-
-	if size == len(chunk) {
-		return chunk, false, nil
-	}
-
-	const hex = "0123456789ABCDEF"
-
-	converted := make([]byte, 0, size)
-
-	for len(chunk) > 0 {
-		value, width := utf8.DecodeRune(chunk)
-		if IsValidXMLChar(value) {
-			converted = append(converted, chunk[:width]...)
-		} else {
-			converted = append(converted, '\\', 'u', hex[value>>12&15], hex[value>>8&15], hex[value>>4&15], hex[value&15])
-		}
-
-		chunk = chunk[width:]
-	}
-
-	return converted, true, nil
-}
-
-func decodedJSONReader(src io.Reader, contentType string) (io.Reader, bool, error) {
-	charset, _, err := textMediaType(contentType)
-	if err != nil {
-		return nil, false, err
-	}
-
-	reader := bufio.NewReaderSize(src, 4096)
-
-	prefix, err := reader.Peek(4)
-	if err != nil && err != io.EOF {
-		return nil, false, err
-	}
-
-	detected, skip := jsonBOMEncoding(prefix)
-
-	effective, compatible := "", false
-	if charset != "" {
-		effective = resolveEncoding(charset, detected)
-		if normalizeEncodingName(charset) == "utf32" && strings.HasPrefix(detected, "utf-32") {
-			effective = detected
-		}
-
-		compatible = !strings.HasPrefix(detected, "utf-32")
-	} else if detected != "" {
-		effective = detected
-		compatible = !strings.HasPrefix(detected, "utf-32")
-	} else {
-		effective = jsonInitialEncoding(prefix)
-		compatible = effective == encodingUTF8
-	}
-
-	if effective == "" {
-		return nil, false, &Error{Code: ErrCodeEncoding, Message: "JSON transport encoding conflicts with byte order mark"}
-	}
-
-	if skip > 0 {
-		if _, err := reader.Discard(skip); err != nil {
-			return nil, false, err
-		}
-	}
-
-	decoded, err := encodingReader(reader, effective)
-
-	return decoded, compatible, err
-}
-
-func jsonBOMEncoding(prefix []byte) (string, int) {
-	if bytes.HasPrefix(prefix, []byte{0, 0, 0xfe, 0xff}) {
-		return "utf-32be", 4
-	}
-
-	if bytes.HasPrefix(prefix, []byte{0xff, 0xfe, 0, 0}) {
-		return "utf-32le", 4
-	}
-
-	encoding, clean := detectBOM(prefix)
-
-	return encoding, len(prefix) - len(clean)
-}
-
-func jsonInitialEncoding(prefix []byte) string {
-	if len(prefix) >= 4 {
-		switch {
-		case prefix[0] == 0 && prefix[1] == 0 && prefix[2] == 0:
-			return "utf-32be"
-		case prefix[1] == 0 && prefix[2] == 0 && prefix[3] == 0:
-			return "utf-32le"
-		case prefix[0] == 0 && prefix[2] == 0:
-			return encodingUTF16BE
-		case prefix[1] == 0 && prefix[3] == 0:
-			return encodingUTF16LE
-		}
-	}
-
-	if len(prefix) == 2 {
-		if prefix[0] == 0 {
-			return encodingUTF16BE
-		}
-
-		if prefix[1] == 0 {
-			return encodingUTF16LE
-		}
-	}
-
-	return encodingUTF8
 }
 
 // DecodeText decodes raw bytes to a string, handling BOM detection,
@@ -631,6 +464,173 @@ func ValidatePercentEncoding(uri string) error {
 func OpenURI(ctx context.Context, cfg *Config, uri string) (io.ReadCloser, error) {
 	reader, _, err := openURI(ctx, cfg, uri)
 	return reader, err
+}
+
+func parseURIReference(raw string) (*url.URL, error) {
+	if err := ValidatePercentEncoding(raw); err != nil {
+		return nil, err
+	}
+
+	return url.Parse(raw)
+}
+
+func isWindowsDriveScheme(parsed *url.URL) bool {
+	if len(parsed.Scheme) != 1 {
+		return false
+	}
+
+	b := parsed.Scheme[0]
+
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
+func isSupportedScheme(scheme string) bool {
+	switch scheme {
+	case "file", "http", "https":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveReference(base, ref string) (string, error) {
+	baseURL, err := url.Parse(base)
+	if err != nil {
+		return "", err
+	}
+
+	refURL, err := url.Parse(ref)
+	if err != nil {
+		return "", err
+	}
+
+	return baseURL.ResolveReference(refURL).String(), nil
+}
+
+func jsonCharacterChunk(cfg *Config, chunk []byte) ([]byte, bool, error) {
+	size := len(chunk)
+	for offset := 0; offset < len(chunk); {
+		value, width := utf8.DecodeRune(chunk[offset:])
+		if !IsValidXMLChar(value) {
+			size += 6 - width
+		}
+
+		offset += width
+	}
+
+	if cfg != nil && cfg.CheckBytes != nil {
+		if err := cfg.CheckBytes(size); err != nil {
+			return nil, false, err
+		}
+	}
+
+	if size == len(chunk) {
+		return chunk, false, nil
+	}
+
+	const hex = "0123456789ABCDEF"
+
+	converted := make([]byte, 0, size)
+
+	for len(chunk) > 0 {
+		value, width := utf8.DecodeRune(chunk)
+		if IsValidXMLChar(value) {
+			converted = append(converted, chunk[:width]...)
+		} else {
+			converted = append(converted, '\\', 'u', hex[value>>12&15], hex[value>>8&15], hex[value>>4&15], hex[value&15])
+		}
+
+		chunk = chunk[width:]
+	}
+
+	return converted, true, nil
+}
+
+func decodedJSONReader(src io.Reader, contentType string) (io.Reader, bool, error) {
+	charset, _, err := textMediaType(contentType)
+	if err != nil {
+		return nil, false, err
+	}
+
+	reader := bufio.NewReaderSize(src, 4096)
+
+	prefix, err := reader.Peek(4)
+	if err != nil && err != io.EOF {
+		return nil, false, err
+	}
+
+	detected, skip := jsonBOMEncoding(prefix)
+
+	effective, compatible := "", false
+	if charset != "" {
+		effective = resolveEncoding(charset, detected)
+		if normalizeEncodingName(charset) == "utf32" && strings.HasPrefix(detected, "utf-32") {
+			effective = detected
+		}
+
+		compatible = !strings.HasPrefix(detected, "utf-32")
+	} else if detected != "" {
+		effective = detected
+		compatible = !strings.HasPrefix(detected, "utf-32")
+	} else {
+		effective = jsonInitialEncoding(prefix)
+		compatible = effective == encodingUTF8
+	}
+
+	if effective == "" {
+		return nil, false, &Error{Code: ErrCodeEncoding, Message: "JSON transport encoding conflicts with byte order mark"}
+	}
+
+	if skip > 0 {
+		if _, err := reader.Discard(skip); err != nil {
+			return nil, false, err
+		}
+	}
+
+	decoded, err := encodingReader(reader, effective)
+
+	return decoded, compatible, err
+}
+
+func jsonBOMEncoding(prefix []byte) (string, int) {
+	if bytes.HasPrefix(prefix, []byte{0, 0, 0xfe, 0xff}) {
+		return "utf-32be", 4
+	}
+
+	if bytes.HasPrefix(prefix, []byte{0xff, 0xfe, 0, 0}) {
+		return "utf-32le", 4
+	}
+
+	encoding, clean := detectBOM(prefix)
+
+	return encoding, len(prefix) - len(clean)
+}
+
+func jsonInitialEncoding(prefix []byte) string {
+	if len(prefix) >= 4 {
+		switch {
+		case prefix[0] == 0 && prefix[1] == 0 && prefix[2] == 0:
+			return "utf-32be"
+		case prefix[1] == 0 && prefix[2] == 0 && prefix[3] == 0:
+			return "utf-32le"
+		case prefix[0] == 0 && prefix[2] == 0:
+			return encodingUTF16BE
+		case prefix[1] == 0 && prefix[3] == 0:
+			return encodingUTF16LE
+		}
+	}
+
+	if len(prefix) == 2 {
+		if prefix[0] == 0 {
+			return encodingUTF16BE
+		}
+
+		if prefix[1] == 0 {
+			return encodingUTF16LE
+		}
+	}
+
+	return encodingUTF8
 }
 
 // effectiveMaxBytes resolves the configured cap to the value actually enforced:

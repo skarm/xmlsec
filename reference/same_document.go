@@ -60,22 +60,6 @@ func NewSameDocumentResolverWithRules(ctx context.Context, doc *document.Documen
 	return r, nil
 }
 
-func validateSameDocumentRules(rules []IDAttributeRule) error {
-	for _, rule := range rules {
-		if !tree.NCName(rule.Attribute.Local) || rule.Attribute.Space == tree.XMLNSNamespace || len(rule.Elements) > 64 {
-			return fmt.Errorf("%w: ID rule", ErrPolicy)
-		}
-
-		for _, name := range rule.Elements {
-			if !tree.NCName(name.Local) || name.Space == tree.XMLNSNamespace {
-				return fmt.Errorf("%w: ID element QName", ErrPolicy)
-			}
-		}
-	}
-
-	return nil
-}
-
 // Target resolves a same-document URI without materializing any NodeSet. The
 // boolean denotes the document node (not the root element). No trust is implied.
 func (r *SameDocumentResolver) Target(ctx context.Context, uri string) (document.Element, bool, error) {
@@ -208,6 +192,22 @@ func (r *SameDocumentResolver) indexIDNodes(ctx context.Context, n *tree.Node, r
 	for _, child := range n.Children {
 		if err := r.indexIDNodes(ctx, child, rules); err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+func validateSameDocumentRules(rules []IDAttributeRule) error {
+	for _, rule := range rules {
+		if !tree.NCName(rule.Attribute.Local) || rule.Attribute.Space == tree.XMLNSNamespace || len(rule.Elements) > 64 {
+			return fmt.Errorf("%w: ID rule", ErrPolicy)
+		}
+
+		for _, name := range rule.Elements {
+			if !tree.NCName(name.Local) || name.Space == tree.XMLNSNamespace {
+				return fmt.Errorf("%w: ID element QName", ErrPolicy)
+			}
 		}
 	}
 

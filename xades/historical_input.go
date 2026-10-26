@@ -146,23 +146,6 @@ func (b *historicalObjects) contained(raw []byte) ([][32]byte, error) {
 	return out, nil
 }
 
-func historicalContainedKind(node document.Element) historicalproof.Kind {
-	switch node.Name() {
-	case ds(historicalSignatureValueElement):
-		return historicalproof.Signature
-	case ds(lexicon.DSigElementX509Certificate), name("EncapsulatedX509Certificate"):
-		return historicalproof.Certificate
-	case name("EncapsulatedCRLValue"):
-		return historicalproof.CRL
-	case name("EncapsulatedOCSPValue"):
-		return historicalproof.OCSP
-	case name("EncapsulatedTimeStamp"):
-		return historicalproof.Timestamp
-	}
-
-	return ""
-}
-
 func (b *historicalObjects) containedNode(node document.Element) ([32]byte, bool, error) {
 	kind := historicalContainedKind(node)
 	if kind == "" {
@@ -227,6 +210,60 @@ func (b *historicalObjects) containedCertificates(kind historicalproof.Kind, val
 	}
 }
 
+// A timestamped serialization also proves an exact deterministic encoding
+// obtainable from those protected bytes alone. Ancestor context is never
+// borrowed from the original XML when checking this relation.
+func (b *historicalObjects) linkCanonicalEncoding(parent, original [32]byte, options c14n.Options) error {
+	if parent == original {
+		return nil
+	}
+
+	protected, ok := b.index[parent]
+	if !ok {
+		return historical.ErrInput
+	}
+
+	target, ok := b.index[original]
+	if !ok {
+		return historical.ErrInput
+	}
+
+	doc, err := document.Parse(b.ctx, b.objects[protected].Bytes, document.DefaultLimits())
+	if err != nil {
+		return b.ctx.Err()
+	}
+
+	var out bytes.Buffer
+
+	writer := &streamio.Writer{Context: b.ctx, Target: &out, Limit: int64(len(b.objects[target].Bytes)) + 1, LimitError: historical.ErrLimit}
+	if err := c14n.WriteElement(b.ctx, writer, doc.Root(), options); err != nil {
+		return b.ctx.Err()
+	}
+
+	if bytes.Equal(out.Bytes(), b.objects[target].Bytes) && !slices.Contains(b.objects[protected].Contains, original) {
+		b.objects[protected].Contains = append(b.objects[protected].Contains, original)
+	}
+
+	return nil
+}
+
+func historicalContainedKind(node document.Element) historicalproof.Kind {
+	switch node.Name() {
+	case ds(historicalSignatureValueElement):
+		return historicalproof.Signature
+	case ds(lexicon.DSigElementX509Certificate), name("EncapsulatedX509Certificate"):
+		return historicalproof.Certificate
+	case name("EncapsulatedCRLValue"):
+		return historicalproof.CRL
+	case name("EncapsulatedOCSPValue"):
+		return historicalproof.OCSP
+	case name("EncapsulatedTimeStamp"):
+		return historicalproof.Timestamp
+	}
+
+	return ""
+}
+
 type historicalInputBuilder struct {
 	ctx      context.Context
 	baseline *BaselineResult
@@ -239,64 +276,6 @@ type historicalInputBuilder struct {
 	value    document.Element
 	unsigned document.Element
 	entries  []document.Element
-}
-
-func historicalInput(ctx context.Context, baseline *BaselineResult, baselineOptions BaselineVerifyOptions, config historical.Config, input ValidationEvidence) (historical.Input, ValidationEvidence, error) {
-	if baseline == nil || baseline.Basic() == nil {
-		return historical.Input{}, input, ErrProfile
-	}
-
-	input.Signer = historicalEvidenceSlices(input.Signer)
-	input.TSA = historicalEvidenceSlices(input.TSA)
-
-	builder := historicalInputBuilder{
-		ctx: ctx, baseline: baseline, options: baselineOptions, config: config, evidence: input,
-		objects: &historicalObjects{ctx: ctx, maximum: config.MaxObjects, remaining: config.MaxBytes, index: make(map[[32]byte]int)},
-		sig:     baseline.Basic().Signature().Signature(),
-	}
-	if err := builder.initializeSignature(); err != nil {
-		return builder.result, builder.evidence, err
-	}
-
-	if err := builder.recordReferences(); err != nil {
-		return builder.result, builder.evidence, err
-	}
-
-	if err := builder.recordSignedInfo(); err != nil {
-		return builder.result, builder.evidence, err
-	}
-
-	if err := builder.recordPolicy(); err != nil {
-		return builder.result, builder.evidence, err
-	}
-
-	if err := builder.prepareUnsigned(); err != nil {
-		return builder.result, builder.evidence, err
-	}
-
-	if err := builder.recordUnsignedMaterial(); err != nil {
-		return builder.result, builder.evidence, err
-	}
-
-	if err := builder.recordCertificateReferences(); err != nil {
-		return builder.result, builder.evidence, err
-	}
-
-	if len(baseline.DataTimestamps()) > config.MaxTimestamps {
-		return builder.result, builder.evidence, historical.ErrLimit
-	}
-
-	if err := appendHistoricalDataTimestamps(ctx, baseline, builder.objects, &builder.result); err != nil {
-		return builder.result, builder.evidence, err
-	}
-
-	if err := builder.recordUnsignedTimestamps(); err != nil {
-		return builder.result, builder.evidence, err
-	}
-
-	builder.result.Objects = builder.objects.objects
-
-	return builder.result, builder.evidence, nil
 }
 
 func (b *historicalInputBuilder) initializeSignature() error {
@@ -560,6 +539,64 @@ func (b *historicalInputBuilder) signatureTimestampInput(method string, hash cry
 	return timestamp.Imprint{Hash: hash, Digest: state.Sum(nil)}, [][32]byte{key}, nil
 }
 
+func historicalInput(ctx context.Context, baseline *BaselineResult, baselineOptions BaselineVerifyOptions, config historical.Config, input ValidationEvidence) (historical.Input, ValidationEvidence, error) {
+	if baseline == nil || baseline.Basic() == nil {
+		return historical.Input{}, input, ErrProfile
+	}
+
+	input.Signer = historicalEvidenceSlices(input.Signer)
+	input.TSA = historicalEvidenceSlices(input.TSA)
+
+	builder := historicalInputBuilder{
+		ctx: ctx, baseline: baseline, options: baselineOptions, config: config, evidence: input,
+		objects: &historicalObjects{ctx: ctx, maximum: config.MaxObjects, remaining: config.MaxBytes, index: make(map[[32]byte]int)},
+		sig:     baseline.Basic().Signature().Signature(),
+	}
+	if err := builder.initializeSignature(); err != nil {
+		return builder.result, builder.evidence, err
+	}
+
+	if err := builder.recordReferences(); err != nil {
+		return builder.result, builder.evidence, err
+	}
+
+	if err := builder.recordSignedInfo(); err != nil {
+		return builder.result, builder.evidence, err
+	}
+
+	if err := builder.recordPolicy(); err != nil {
+		return builder.result, builder.evidence, err
+	}
+
+	if err := builder.prepareUnsigned(); err != nil {
+		return builder.result, builder.evidence, err
+	}
+
+	if err := builder.recordUnsignedMaterial(); err != nil {
+		return builder.result, builder.evidence, err
+	}
+
+	if err := builder.recordCertificateReferences(); err != nil {
+		return builder.result, builder.evidence, err
+	}
+
+	if len(baseline.DataTimestamps()) > config.MaxTimestamps {
+		return builder.result, builder.evidence, historical.ErrLimit
+	}
+
+	if err := appendHistoricalDataTimestamps(ctx, baseline, builder.objects, &builder.result); err != nil {
+		return builder.result, builder.evidence, err
+	}
+
+	if err := builder.recordUnsignedTimestamps(); err != nil {
+		return builder.result, builder.evidence, err
+	}
+
+	builder.result.Objects = builder.objects.objects
+
+	return builder.result, builder.evidence, nil
+}
+
 func historicalSignedInfoOptions(element document.Element, maximum int) (c14n.Options, error) {
 	cm, err := childNamed(element, ds(lexicon.DSigElementCanonicalizationMethod))
 	if err != nil {
@@ -578,43 +615,6 @@ func historicalSignedInfoOptions(element document.Element, maximum int) (c14n.Op
 	return options, nil
 }
 
-// A timestamped serialization also proves an exact deterministic encoding
-// obtainable from those protected bytes alone. Ancestor context is never
-// borrowed from the original XML when checking this relation.
-func (b *historicalObjects) linkCanonicalEncoding(parent, original [32]byte, options c14n.Options) error {
-	if parent == original {
-		return nil
-	}
-
-	protected, ok := b.index[parent]
-	if !ok {
-		return historical.ErrInput
-	}
-
-	target, ok := b.index[original]
-	if !ok {
-		return historical.ErrInput
-	}
-
-	doc, err := document.Parse(b.ctx, b.objects[protected].Bytes, document.DefaultLimits())
-	if err != nil {
-		return b.ctx.Err()
-	}
-
-	var out bytes.Buffer
-
-	writer := &streamio.Writer{Context: b.ctx, Target: &out, Limit: int64(len(b.objects[target].Bytes)) + 1, LimitError: historical.ErrLimit}
-	if err := c14n.WriteElement(b.ctx, writer, doc.Root(), options); err != nil {
-		return b.ctx.Err()
-	}
-
-	if bytes.Equal(out.Bytes(), b.objects[target].Bytes) && !slices.Contains(b.objects[protected].Contains, original) {
-		b.objects[protected].Contains = append(b.objects[protected].Contains, original)
-	}
-
-	return nil
-}
-
 func historicalEvidenceSlices(input pki.Evidence) pki.Evidence {
 	input.Intermediates = slices.Clone(input.Intermediates)
 	input.CRLs = slices.Clone(input.CRLs)
@@ -630,31 +630,6 @@ type historicalArchiveBuilder struct {
 	method   string
 	state    hash.Hash
 	covered  [][32]byte
-}
-
-func historicalArchiveInput(ctx context.Context, objects *historicalObjects, baseline *BaselineResult, unsigned, before document.Element, method string, hash crypto.Hash) (timestamp.Imprint, [][32]byte, error) {
-	if hash == 0 || !hash.Available() {
-		return timestamp.Imprint{}, nil, ErrTimestamp
-	}
-
-	builder := historicalArchiveBuilder{ctx: ctx, objects: objects, baseline: baseline, method: method, state: hash.New()}
-	if err := builder.references(); err != nil {
-		return timestamp.Imprint{}, nil, err
-	}
-
-	if err := builder.signatureElements(); err != nil {
-		return timestamp.Imprint{}, nil, err
-	}
-
-	if err := builder.unsignedProperties(unsigned, before); err != nil {
-		return timestamp.Imprint{}, nil, err
-	}
-
-	if err := builder.otherObjects(); err != nil {
-		return timestamp.Imprint{}, nil, err
-	}
-
-	return timestamp.Imprint{Hash: hash, Digest: builder.state.Sum(nil)}, builder.covered, nil
 }
 
 func (b *historicalArchiveBuilder) references() error {
@@ -753,26 +728,6 @@ func (b *historicalArchiveBuilder) signatureElements() error {
 	return nil
 }
 
-func historicalArchiveElement(signature document.Element, local string) (document.Element, error) {
-	var element document.Element
-
-	for _, child := range signature.Children() {
-		if child.Name() == ds(local) {
-			if element.Valid() {
-				return element, ErrProfile
-			}
-
-			element = child
-		}
-	}
-
-	if !element.Valid() && local != historicalKeyInfoElement {
-		return element, ErrProfile
-	}
-
-	return element, nil
-}
-
 func (b *historicalArchiveBuilder) appendCanonical(element document.Element) error {
 	key, raw, err := b.objects.canonical(element, c14n.Options{Algorithm: b.method, MaxOutputBytes: b.objects.remaining})
 	if err != nil {
@@ -813,6 +768,51 @@ func (b *historicalArchiveBuilder) otherObjects() error {
 	}
 
 	return nil
+}
+
+func historicalArchiveInput(ctx context.Context, objects *historicalObjects, baseline *BaselineResult, unsigned, before document.Element, method string, hash crypto.Hash) (timestamp.Imprint, [][32]byte, error) {
+	if hash == 0 || !hash.Available() {
+		return timestamp.Imprint{}, nil, ErrTimestamp
+	}
+
+	builder := historicalArchiveBuilder{ctx: ctx, objects: objects, baseline: baseline, method: method, state: hash.New()}
+	if err := builder.references(); err != nil {
+		return timestamp.Imprint{}, nil, err
+	}
+
+	if err := builder.signatureElements(); err != nil {
+		return timestamp.Imprint{}, nil, err
+	}
+
+	if err := builder.unsignedProperties(unsigned, before); err != nil {
+		return timestamp.Imprint{}, nil, err
+	}
+
+	if err := builder.otherObjects(); err != nil {
+		return timestamp.Imprint{}, nil, err
+	}
+
+	return timestamp.Imprint{Hash: hash, Digest: builder.state.Sum(nil)}, builder.covered, nil
+}
+
+func historicalArchiveElement(signature document.Element, local string) (document.Element, error) {
+	var element document.Element
+
+	for _, child := range signature.Children() {
+		if child.Name() == ds(local) {
+			if element.Valid() {
+				return element, ErrProfile
+			}
+
+			element = child
+		}
+	}
+
+	if !element.Valid() && local != historicalKeyInfoElement {
+		return element, ErrProfile
+	}
+
+	return element, nil
 }
 
 func historicalObjectHasProperties(object document.Element) bool {

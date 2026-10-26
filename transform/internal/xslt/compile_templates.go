@@ -188,23 +188,6 @@ func (c *compiler) compileTemplateModeAndPriority(ctx context.Context, elem *xdm
 	return nil
 }
 
-// parseTemplatePriority parses xsl:template's priority attribute, which must
-// be a valid xs:decimal (XTSE0530).
-func parseTemplatePriority(prio string) (float64, error) {
-	// XTSE0530: priority must be a valid xs:decimal — no exponent notation.
-	if !isXSDecimal(prio) {
-		return 0, staticError(errCodeXTSE0530, "priority %q is not a valid xs:decimal", prio)
-	}
-	// xs:decimal ignores leading and trailing whitespace; isXSDecimal already
-	// trims it, so ParseFloat must see the trimmed form too.
-	f, err := strconv.ParseFloat(strings.TrimSpace(prio), 64)
-	if err != nil {
-		return 0, staticError(errCodeXTSE0530, "invalid priority %q: %v", prio, err)
-	}
-
-	return f, nil
-}
-
 func (c *compiler) compileScopedTemplateBody(ctx context.Context, elem *xdm.Element) (*contextItemDecl, []instruction, []*param, error) {
 	savedExpandText := c.expandText
 	defer func() {
@@ -252,52 +235,6 @@ func (c *compiler) registerCompiledTemplate(ctx context.Context, tmpl *template)
 	}
 
 	return nil
-}
-
-func nextSplitOriginID() *splitOrigin { return &splitOrigin{} }
-
-// templateRules returns the template rules a match template contributes to
-// its modes. XSLT 3.0 §6.4: a template rule whose pattern is a union P1 | P2
-// and that has no priority attribute is treated as one template rule per
-// alternative, each with that alternative's default priority (§6.5), so the
-// union is split into one template entry per alternative. Any other template
-// is its own single rule. Every caller that registers a template in a mode
-// list (a local template, a used package's template, an xsl:override
-// template) goes through here so all of them split the same way.
-func templateRules(tmpl *template) []*template {
-	if tmpl.explicitPriority || len(tmpl.Match.Alternatives) <= 1 {
-		return []*template{tmpl}
-	}
-	// All split branches of one union rule share a stable origin id so the
-	// on-multiple-match conflict checks can recognize them as a single rule
-	// even when they have an empty body (no &Body[0] identity to compare).
-	// See hasConflictingMatch / hasConflictingAtomicMatch.
-	//
-	// The id must be unique across the entire compilation, not just within
-	// one stylesheet/package: under xsl:use-package, split templates from
-	// different packages are merged into one mode list, and a per-stylesheet
-	// counter (which restarts at 0 per compile) would hand identical ids to
-	// unrelated union rules from different packages, wrongly suppressing a
-	// genuine cross-package XTDE0540 match. The allocation identity of a
-	// nonzero-size object guarantees distinct identities for live union rules.
-	originID := nextSplitOriginID()
-
-	rules := make([]*template, 0, len(tmpl.Match.Alternatives))
-	for _, alt := range tmpl.Match.Alternatives {
-		split := *tmpl // shallow copy shares Body, Params, etc.
-		// Copy the whole pattern so each alternative keeps every compile-site
-		// property (namespace context, xpath-default-namespace,
-		// backwards-compatible processing, compiled predicates); only the
-		// alternative list narrows.
-		altPattern := *tmpl.Match
-		altPattern.Alternatives = []*patternAlt{alt}
-		split.Match = &altPattern
-		split.Priority = alt.priority
-		split.splitOriginID = originID
-		rules = append(rules, &split)
-	}
-
-	return rules
 }
 
 // checkTemplateName validates xsl:template's name attribute and the
@@ -348,53 +285,6 @@ func (c *compiler) checkTemplateName(ctx context.Context, elem *xdm.Element, mat
 	return name, nil
 }
 
-// modeQName expands a mode name in the namespace context of its attribute.
-func modeQName(name string, elem *xdm.Element, code string) (string, error) {
-	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
-		return "", staticError(code, "invalid mode name %q", name)
-	}
-
-	ns := inScopeNamespaces(elem)
-	if !strings.HasPrefix(name, "Q{") {
-		if prefix, _, found := strings.Cut(name, ":"); found && ns[prefix] == "" {
-			return "", staticError(errCodeXTSE0280, "undeclared prefix %q in mode name", prefix)
-		}
-	}
-
-	return resolveQName(name, ns), nil
-}
-
-func defaultModeForElement(ctx context.Context, elem *xdm.Element) (string, error) {
-	for node := xdm.Node(elem); node != nil; node = node.Parent() {
-		if err := xpath.Charge(ctx, 1); err != nil {
-			return "", err
-		}
-
-		ancestor, ok := node.(*xdm.Element)
-		if !ok {
-			continue
-		}
-
-		raw, present := ancestor.GetAttribute(nameDefaultMode)
-		if ancestor.URI() != lexicon.NamespaceXSLT {
-			raw, present = ancestor.GetAttributeNS(nameDefaultMode, lexicon.NamespaceXSLT)
-		}
-
-		if !present {
-			continue
-		}
-
-		name := strings.Trim(raw, " \t\r\n")
-		if name == modeUnnamed {
-			return "", nil
-		}
-
-		return modeQName(name, ancestor, errCodeXTSE0020)
-	}
-
-	return "", nil
-}
-
 func (c *compiler) checkDefaultModeAttribute(ctx context.Context, elem *xdm.Element) error {
 	_, present := elem.GetAttribute(nameDefaultMode)
 	if elem.URI() != lexicon.NamespaceXSLT {
@@ -413,55 +303,6 @@ func (c *compiler) checkDefaultModeAttribute(ctx context.Context, elem *xdm.Elem
 	c.recordModeUsage(ctx, mode)
 
 	return nil
-}
-
-func modeTokens(raw string) []string {
-	return strings.FieldsFunc(raw, func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' })
-}
-
-func compileTemplateModes(ctx context.Context, elem *xdm.Element) (string, error) {
-	raw, present := elem.GetAttribute(lexicon.AttrMode)
-	if !present {
-		return defaultModeForElement(ctx, elem)
-	}
-
-	modes := modeTokens(raw)
-	if len(modes) == 0 {
-		return "", staticError(errCodeXTSE0550, "empty template mode list")
-	}
-
-	seen := make(map[string]struct{}, len(modes))
-	for i, token := range modes {
-		var err error
-
-		switch token {
-		case modeDefault:
-			modes[i], err = defaultModeForElement(ctx, elem)
-		case modeUnnamed:
-			modes[i] = ""
-		case modeAll:
-			if len(modes) != 1 {
-				return "", staticError(errCodeXTSE0550, "#all cannot be combined with other modes")
-			}
-		default:
-			modes[i], err = modeQName(token, elem, errCodeXTSE0550)
-		}
-
-		if err != nil {
-			return "", err
-		}
-
-		if _, duplicate := seen[modes[i]]; duplicate {
-			return "", staticError(errCodeXTSE0550, "duplicate template mode %q", token)
-		}
-
-		seen[modes[i]] = struct{}{}
-		if modes[i] == "" {
-			modes[i] = modeUnnamed
-		}
-	}
-
-	return strings.Join(modes, " "), nil
 }
 
 // registerTemplateInModes adds a template to the appropriate mode template lists.
@@ -530,19 +371,6 @@ func (c *compiler) compileTemplateBodyEx(ctx context.Context, elem *xdm.Element,
 	}
 
 	return body.context, body.body, body.params, nil
-}
-
-func validateUniqueTemplateParams(params []*param) error {
-	seen := make(map[string]struct{}, len(params))
-	for _, param := range params {
-		if _, duplicate := seen[param.Name]; duplicate {
-			return staticError(errCodeXTSE0580, "duplicate parameter name %q", param.Name)
-		}
-
-		seen[param.Name] = struct{}{}
-	}
-
-	return nil
 }
 
 // validateContextItem checks compile-time constraints on xsl:context-item.
@@ -730,35 +558,6 @@ func (c *compiler) compileParamDefault(ctx context.Context, elem *xdm.Element, p
 	return nil
 }
 
-// validateRequiredParamDefault rejects a supplied default before any static
-// parameter checks, preserving declaration validation order.
-func validateRequiredParamDefault(elem *xdm.Element) error {
-	if getAttr(elem, xslAttrSelect) != "" {
-		return staticError(errCodeXTSE0010, "xsl:param with required='yes' must not have a select attribute")
-	}
-
-	if hasParamDefaultContent(elem) {
-		return staticError(errCodeXTSE0010, "xsl:param with required='yes' must not have content")
-	}
-
-	return nil
-}
-
-func hasParamDefaultContent(elem *xdm.Element) bool {
-	for child := range xdm.Children(elem) {
-		switch child.Type() {
-		case xdm.ElementNode:
-			return true
-		case xdm.TextNode, xdm.CDATASectionNode:
-			if xdm.CharacterData(child) != "" {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
 func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element) error {
 	defer c.pushVariableScopeNode(elem)()
 
@@ -877,6 +676,317 @@ func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element)
 	}
 
 	return c.registerGlobalVariable(elem, v)
+}
+
+func (c *compiler) registerGlobalVariable(element *xdm.Element, v *variable) error {
+	v.ImportPrec = c.importPrec
+	c.stylesheet.globalVars = append(c.stylesheet.globalVars, v)
+	c.recordGlobalBindingSource(element, v.binding())
+
+	return nil
+}
+
+func (c *compiler) validateStaticVariable(ctx context.Context, elem *xdm.Element, name string) error {
+	if _, present := elem.GetAttribute(xslAttrSelect); !present {
+		return staticError(errCodeXTSE0010, "static xsl:variable %q requires select", name)
+	}
+
+	if c.hasEffectiveContent(ctx, elem) {
+		return staticError(errCodeXTSE0620, "static xsl:variable %q has both select and content", name)
+	}
+
+	if visibility, present := elem.GetAttribute(xslAttrVisibility); present && visibility != visPrivate {
+		return staticError(errCodeXTSE0020, "static xsl:variable %q must have private visibility", name)
+	}
+
+	return nil
+}
+
+func (c *compiler) compileGlobalParam(ctx context.Context, elem *xdm.Element) error {
+	// A version attribute on the declaration overrides the effective version for
+	// its select/body (XSLT 3.0 §3.10). A static="yes" parameter is exempt: it is
+	// a compile-time static-context value, which is version-independent.
+	if !xsdBoolTrue(getAttr(elem, nameStatic)) {
+		defer c.pushElementVersion(elem)()
+	}
+	// XTSE0020: tunnel="yes" is not allowed on a stylesheet parameter
+	if xsdBoolTrue(getAttr(elem, nameTunnel)) {
+		return staticError(errCodeXTSE0020, "tunnel=\"yes\" is not allowed on a stylesheet parameter")
+	}
+
+	p, err := c.compileParamDef(ctx, elem)
+	if err != nil {
+		return err
+	}
+
+	if c.stylesheet.isPackage {
+		p.OwnerPackage = c.stylesheet
+	}
+
+	p.Visibility = visPublic
+
+	if xsdBoolTrue(getAttr(elem, nameStatic)) {
+		p.IsStatic = true
+		p.Visibility = visPrivate
+		p.StaticValue = xdm.CloneSequence(c.staticVars[p.Name])
+	}
+
+	p.ImportPrec = c.importPrec
+	c.stylesheet.globalParams = append(c.stylesheet.globalParams, p)
+	c.recordGlobalBindingSource(elem, p.binding())
+
+	return nil
+}
+
+// Resolve variables and parameters together after all import precedences are known.
+func (c *compiler) finalizeGlobalDeclarations(ctx context.Context) error {
+	type candidate struct {
+		binding    globalBinding
+		precedence int
+		duplicate  bool
+	}
+
+	selected := make(map[string]candidate)
+
+	record := func(name string, precedence int, binding globalBinding) error {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		current, exists := selected[name]
+		if !exists || precedence > current.precedence {
+			selected[name] = candidate{binding: binding, precedence: precedence}
+		} else if precedence == current.precedence {
+			current.duplicate = true
+			selected[name] = current
+		}
+
+		return nil
+	}
+
+	for _, v := range c.stylesheet.globalVars {
+		if err := record(v.Name, v.ImportPrec, v.binding()); err != nil {
+			return err
+		}
+	}
+
+	for _, p := range c.stylesheet.globalParams {
+		if err := record(p.Name, p.ImportPrec, p.binding()); err != nil {
+			return err
+		}
+	}
+
+	for name, candidate := range selected {
+		if candidate.duplicate {
+			return staticError(errCodeXTSE0630, "duplicate effective global declaration %q", name)
+		}
+	}
+
+	c.stylesheet.globalVars = slices.DeleteFunc(c.stylesheet.globalVars, func(v *variable) bool { return selected[v.Name].binding != v.binding() })
+	c.stylesheet.globalParams = slices.DeleteFunc(c.stylesheet.globalParams, func(p *param) bool { return selected[p.Name].binding != p.binding() })
+
+	return nil
+}
+
+// parseTemplatePriority parses xsl:template's priority attribute, which must
+// be a valid xs:decimal (XTSE0530).
+func parseTemplatePriority(prio string) (float64, error) {
+	// XTSE0530: priority must be a valid xs:decimal — no exponent notation.
+	if !isXSDecimal(prio) {
+		return 0, staticError(errCodeXTSE0530, "priority %q is not a valid xs:decimal", prio)
+	}
+	// xs:decimal ignores leading and trailing whitespace; isXSDecimal already
+	// trims it, so ParseFloat must see the trimmed form too.
+	f, err := strconv.ParseFloat(strings.TrimSpace(prio), 64)
+	if err != nil {
+		return 0, staticError(errCodeXTSE0530, "invalid priority %q: %v", prio, err)
+	}
+
+	return f, nil
+}
+
+func nextSplitOriginID() *splitOrigin { return &splitOrigin{} }
+
+// templateRules returns the template rules a match template contributes to
+// its modes. XSLT 3.0 §6.4: a template rule whose pattern is a union P1 | P2
+// and that has no priority attribute is treated as one template rule per
+// alternative, each with that alternative's default priority (§6.5), so the
+// union is split into one template entry per alternative. Any other template
+// is its own single rule. Every caller that registers a template in a mode
+// list (a local template, a used package's template, an xsl:override
+// template) goes through here so all of them split the same way.
+func templateRules(tmpl *template) []*template {
+	if tmpl.explicitPriority || len(tmpl.Match.Alternatives) <= 1 {
+		return []*template{tmpl}
+	}
+	// All split branches of one union rule share a stable origin id so the
+	// on-multiple-match conflict checks can recognize them as a single rule
+	// even when they have an empty body (no &Body[0] identity to compare).
+	// See hasConflictingMatch / hasConflictingAtomicMatch.
+	//
+	// The id must be unique across the entire compilation, not just within
+	// one stylesheet/package: under xsl:use-package, split templates from
+	// different packages are merged into one mode list, and a per-stylesheet
+	// counter (which restarts at 0 per compile) would hand identical ids to
+	// unrelated union rules from different packages, wrongly suppressing a
+	// genuine cross-package XTDE0540 match. The allocation identity of a
+	// nonzero-size object guarantees distinct identities for live union rules.
+	originID := nextSplitOriginID()
+
+	rules := make([]*template, 0, len(tmpl.Match.Alternatives))
+	for _, alt := range tmpl.Match.Alternatives {
+		split := *tmpl // shallow copy shares Body, Params, etc.
+		// Copy the whole pattern so each alternative keeps every compile-site
+		// property (namespace context, xpath-default-namespace,
+		// backwards-compatible processing, compiled predicates); only the
+		// alternative list narrows.
+		altPattern := *tmpl.Match
+		altPattern.Alternatives = []*patternAlt{alt}
+		split.Match = &altPattern
+		split.Priority = alt.priority
+		split.splitOriginID = originID
+		rules = append(rules, &split)
+	}
+
+	return rules
+}
+
+// modeQName expands a mode name in the namespace context of its attribute.
+func modeQName(name string, elem *xdm.Element, code string) (string, error) {
+	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
+		return "", staticError(code, "invalid mode name %q", name)
+	}
+
+	ns := inScopeNamespaces(elem)
+	if !strings.HasPrefix(name, "Q{") {
+		if prefix, _, found := strings.Cut(name, ":"); found && ns[prefix] == "" {
+			return "", staticError(errCodeXTSE0280, "undeclared prefix %q in mode name", prefix)
+		}
+	}
+
+	return resolveQName(name, ns), nil
+}
+
+func defaultModeForElement(ctx context.Context, elem *xdm.Element) (string, error) {
+	for node := xdm.Node(elem); node != nil; node = node.Parent() {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return "", err
+		}
+
+		ancestor, ok := node.(*xdm.Element)
+		if !ok {
+			continue
+		}
+
+		raw, present := ancestor.GetAttribute(nameDefaultMode)
+		if ancestor.URI() != lexicon.NamespaceXSLT {
+			raw, present = ancestor.GetAttributeNS(nameDefaultMode, lexicon.NamespaceXSLT)
+		}
+
+		if !present {
+			continue
+		}
+
+		name := strings.Trim(raw, " \t\r\n")
+		if name == modeUnnamed {
+			return "", nil
+		}
+
+		return modeQName(name, ancestor, errCodeXTSE0020)
+	}
+
+	return "", nil
+}
+
+func modeTokens(raw string) []string {
+	return strings.FieldsFunc(raw, func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' })
+}
+
+func compileTemplateModes(ctx context.Context, elem *xdm.Element) (string, error) {
+	raw, present := elem.GetAttribute(lexicon.AttrMode)
+	if !present {
+		return defaultModeForElement(ctx, elem)
+	}
+
+	modes := modeTokens(raw)
+	if len(modes) == 0 {
+		return "", staticError(errCodeXTSE0550, "empty template mode list")
+	}
+
+	seen := make(map[string]struct{}, len(modes))
+	for i, token := range modes {
+		var err error
+
+		switch token {
+		case modeDefault:
+			modes[i], err = defaultModeForElement(ctx, elem)
+		case modeUnnamed:
+			modes[i] = ""
+		case modeAll:
+			if len(modes) != 1 {
+				return "", staticError(errCodeXTSE0550, "#all cannot be combined with other modes")
+			}
+		default:
+			modes[i], err = modeQName(token, elem, errCodeXTSE0550)
+		}
+
+		if err != nil {
+			return "", err
+		}
+
+		if _, duplicate := seen[modes[i]]; duplicate {
+			return "", staticError(errCodeXTSE0550, "duplicate template mode %q", token)
+		}
+
+		seen[modes[i]] = struct{}{}
+		if modes[i] == "" {
+			modes[i] = modeUnnamed
+		}
+	}
+
+	return strings.Join(modes, " "), nil
+}
+
+func validateUniqueTemplateParams(params []*param) error {
+	seen := make(map[string]struct{}, len(params))
+	for _, param := range params {
+		if _, duplicate := seen[param.Name]; duplicate {
+			return staticError(errCodeXTSE0580, "duplicate parameter name %q", param.Name)
+		}
+
+		seen[param.Name] = struct{}{}
+	}
+
+	return nil
+}
+
+// validateRequiredParamDefault rejects a supplied default before any static
+// parameter checks, preserving declaration validation order.
+func validateRequiredParamDefault(elem *xdm.Element) error {
+	if getAttr(elem, xslAttrSelect) != "" {
+		return staticError(errCodeXTSE0010, "xsl:param with required='yes' must not have a select attribute")
+	}
+
+	if hasParamDefaultContent(elem) {
+		return staticError(errCodeXTSE0010, "xsl:param with required='yes' must not have content")
+	}
+
+	return nil
+}
+
+func hasParamDefaultContent(elem *xdm.Element) bool {
+	for child := range xdm.Children(elem) {
+		switch child.Type() {
+		case xdm.ElementNode:
+			return true
+		case xdm.TextNode, xdm.CDATASectionNode:
+			if xdm.CharacterData(child) != "" {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // xpathExprReferencesVar walks an XPath AST and returns true if any
@@ -1078,66 +1188,6 @@ func xpathMapConstructorRefsVar(expr xpath.MapConstructorExpr, local, prefix str
 	return false
 }
 
-func (c *compiler) registerGlobalVariable(element *xdm.Element, v *variable) error {
-	v.ImportPrec = c.importPrec
-	c.stylesheet.globalVars = append(c.stylesheet.globalVars, v)
-	c.recordGlobalBindingSource(element, v.binding())
-
-	return nil
-}
-
-func (c *compiler) validateStaticVariable(ctx context.Context, elem *xdm.Element, name string) error {
-	if _, present := elem.GetAttribute(xslAttrSelect); !present {
-		return staticError(errCodeXTSE0010, "static xsl:variable %q requires select", name)
-	}
-
-	if c.hasEffectiveContent(ctx, elem) {
-		return staticError(errCodeXTSE0620, "static xsl:variable %q has both select and content", name)
-	}
-
-	if visibility, present := elem.GetAttribute(xslAttrVisibility); present && visibility != visPrivate {
-		return staticError(errCodeXTSE0020, "static xsl:variable %q must have private visibility", name)
-	}
-
-	return nil
-}
-
-func (c *compiler) compileGlobalParam(ctx context.Context, elem *xdm.Element) error {
-	// A version attribute on the declaration overrides the effective version for
-	// its select/body (XSLT 3.0 §3.10). A static="yes" parameter is exempt: it is
-	// a compile-time static-context value, which is version-independent.
-	if !xsdBoolTrue(getAttr(elem, nameStatic)) {
-		defer c.pushElementVersion(elem)()
-	}
-	// XTSE0020: tunnel="yes" is not allowed on a stylesheet parameter
-	if xsdBoolTrue(getAttr(elem, nameTunnel)) {
-		return staticError(errCodeXTSE0020, "tunnel=\"yes\" is not allowed on a stylesheet parameter")
-	}
-
-	p, err := c.compileParamDef(ctx, elem)
-	if err != nil {
-		return err
-	}
-
-	if c.stylesheet.isPackage {
-		p.OwnerPackage = c.stylesheet
-	}
-
-	p.Visibility = visPublic
-
-	if xsdBoolTrue(getAttr(elem, nameStatic)) {
-		p.IsStatic = true
-		p.Visibility = visPrivate
-		p.StaticValue = xdm.CloneSequence(c.staticVars[p.Name])
-	}
-
-	p.ImportPrec = c.importPrec
-	c.stylesheet.globalParams = append(c.stylesheet.globalParams, p)
-	c.recordGlobalBindingSource(elem, p.binding())
-
-	return nil
-}
-
 // contextItemDecl holds the parsed xsl:context-item declaration from a template body.
 type contextItemDecl struct {
 	typeKey  string
@@ -1299,54 +1349,4 @@ func contextItemAllowedAttrs(key string) bool {
 	}
 
 	return false
-}
-
-// Resolve variables and parameters together after all import precedences are known.
-func (c *compiler) finalizeGlobalDeclarations(ctx context.Context) error {
-	type candidate struct {
-		binding    globalBinding
-		precedence int
-		duplicate  bool
-	}
-
-	selected := make(map[string]candidate)
-
-	record := func(name string, precedence int, binding globalBinding) error {
-		if err := xpath.Charge(ctx, 1); err != nil {
-			return err
-		}
-
-		current, exists := selected[name]
-		if !exists || precedence > current.precedence {
-			selected[name] = candidate{binding: binding, precedence: precedence}
-		} else if precedence == current.precedence {
-			current.duplicate = true
-			selected[name] = current
-		}
-
-		return nil
-	}
-
-	for _, v := range c.stylesheet.globalVars {
-		if err := record(v.Name, v.ImportPrec, v.binding()); err != nil {
-			return err
-		}
-	}
-
-	for _, p := range c.stylesheet.globalParams {
-		if err := record(p.Name, p.ImportPrec, p.binding()); err != nil {
-			return err
-		}
-	}
-
-	for name, candidate := range selected {
-		if candidate.duplicate {
-			return staticError(errCodeXTSE0630, "duplicate effective global declaration %q", name)
-		}
-	}
-
-	c.stylesheet.globalVars = slices.DeleteFunc(c.stylesheet.globalVars, func(v *variable) bool { return selected[v.Name].binding != v.binding() })
-	c.stylesheet.globalParams = slices.DeleteFunc(c.stylesheet.globalParams, func(p *param) bool { return selected[p.Name].binding != p.binding() })
-
-	return nil
 }

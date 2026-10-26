@@ -238,29 +238,6 @@ func (w *Writer) StartDocument(version, enc, standalone string) error {
 	return w.err
 }
 
-// isValidXMLVersion reports whether v is a valid XML declaration VersionNum.
-// VersionNum ::= '1.' [0-9]+ (XML 1.0 §2.8). Restricting to this grammar
-// prevents an untrusted version string from injecting markup into the XML
-// declaration (e.g. `1.0"?><x/>`).
-func isValidXMLVersion(v string) bool {
-	rest, ok := strings.CutPrefix(v, "1.")
-	if !ok {
-		return false
-	}
-
-	if rest == "" {
-		return false
-	}
-
-	for i := range len(rest) {
-		if rest[i] < '0' || rest[i] > '9' {
-			return false
-		}
-	}
-
-	return true
-}
-
 // EndDocument auto-closes any open constructs (PI, CDATA, comment, DTD,
 // elements) and flushes the output.
 func (w *Writer) EndDocument() error {
@@ -300,6 +277,29 @@ func (w *Writer) EndDocument() error {
 	w.state = stateNone
 
 	return w.Flush()
+}
+
+// isValidXMLVersion reports whether v is a valid XML declaration VersionNum.
+// VersionNum ::= '1.' [0-9]+ (XML 1.0 §2.8). Restricting to this grammar
+// prevents an untrusted version string from injecting markup into the XML
+// declaration (e.g. `1.0"?><x/>`).
+func isValidXMLVersion(v string) bool {
+	rest, ok := strings.CutPrefix(v, "1.")
+	if !ok {
+		return false
+	}
+
+	if rest == "" {
+		return false
+	}
+
+	for i := range len(rest) {
+		if rest[i] < '0' || rest[i] > '9' {
+			return false
+		}
+	}
+
+	return true
 }
 
 // --- Elements ---
@@ -903,15 +903,6 @@ func (w *Writer) StartPI(target string) error {
 	return w.err
 }
 
-// isValidPITarget reports whether target is a valid XML processing
-// instruction target. A PI target is an XML Name, which is an NCName
-// optionally containing colons. The reserved "xml" target is rejected by
-// StartPI separately (with a dedicated error) before this is reached, so the
-// shared predicate's "xml" rejection is harmless here.
-func isValidPITarget(target string) bool {
-	return xmlchar.IsValidPITarget(target)
-}
-
 // EndPI closes a processing instruction (?>).
 func (w *Writer) EndPI() error {
 	if w.err != nil {
@@ -963,6 +954,15 @@ func (w *Writer) WritePI(target, content string) error {
 	}
 
 	return w.EndPI()
+}
+
+// isValidPITarget reports whether target is a valid XML processing
+// instruction target. A PI target is an XML Name, which is an NCName
+// optionally containing colons. The reserved "xml" target is rejected by
+// StartPI separately (with a dedicated error) before this is reached, so the
+// shared predicate's "xml" rejection is harmless here.
+func isValidPITarget(target string) bool {
+	return xmlchar.IsValidPITarget(target)
 }
 
 // --- CDATA ---
@@ -1128,13 +1128,6 @@ func (w *Writer) StartDTD(name, pubid, sysid string) error {
 	return w.err
 }
 
-// isPubidChar reports whether r is a valid XML PubidChar (XML 1.0 §2.3):
-//
-//	PubidChar ::= #x20 | #xD | #xA | [a-zA-Z0-9] | [-'()+,./:=?;!*#@$_%]
-func validatePubid(s string) bool { return xmloutput.ValidPublicID(s) }
-
-func validateSystemID(s string) bool { return xmloutput.ValidSystemID(s) }
-
 // EndDTD closes the DOCTYPE declaration.
 func (w *Writer) EndDTD() error {
 	if w.err != nil {
@@ -1165,6 +1158,13 @@ func (w *Writer) WriteDTD(name, pubid, sysid string) error {
 
 	return w.EndDTD()
 }
+
+// isPubidChar reports whether r is a valid XML PubidChar (XML 1.0 §2.3):
+//
+//	PubidChar ::= #x20 | #xD | #xA | [a-zA-Z0-9] | [-'()+,./:=?;!*#@$_%]
+func validatePubid(s string) bool { return xmloutput.ValidPublicID(s) }
+
+func validateSystemID(s string) bool { return xmloutput.ValidSystemID(s) }
 
 // --- Flush ---
 
@@ -1297,22 +1297,6 @@ func (w *Writer) writeEscaped(s string, escape escapeMode) {
 
 	if start < len(s) {
 		w.writeStr(s[start:])
-	}
-}
-
-func writeEscapedXML11(w *Writer, s string, i int, start *int) {
-	if w.xml11 {
-		if b := s[i]; b < 0x20 || b >= 0x7F {
-			if r, width := utf8.DecodeRuneInString(s[i:]); xmlchar.IsXML11SerializeAsCharRef(r) {
-				if (*start) < i {
-					w.writeStr(s[(*start):i])
-				}
-
-				w.writeDecimalCharRef(r)
-
-				*start = i + width
-			}
-		}
 	}
 }
 
@@ -1605,6 +1589,22 @@ func (w *Writer) validateContentChars(kind, s string) error {
 	return nil
 }
 
+func writeEscapedXML11(w *Writer, s string, i int, start *int) {
+	if w.xml11 {
+		if b := s[i]; b < 0x20 || b >= 0x7F {
+			if r, width := utf8.DecodeRuneInString(s[i:]); xmlchar.IsXML11SerializeAsCharRef(r) {
+				if (*start) < i {
+					w.writeStr(s[(*start):i])
+				}
+
+				w.writeDecimalCharRef(r)
+
+				*start = i + width
+			}
+		}
+	}
+}
+
 // isXML11Char implements the XML 1.1 Char production (excluding U+0000):
 // Char ::= [#x1-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF].
 func isXML11Char(r rune) bool {
@@ -1671,10 +1671,6 @@ func (w *Writer) writeQuotedID(s string) {
 	w.writeByte(q)
 }
 
-// dtdQuoteFor returns the appropriate quote character for a DTD identifier.
-// If the value contains the preferred quote, use the other one.
-func dtdQuoteFor(value string, preferred byte) byte { return xmloutput.Quote(value, preferred) }
-
 // popState restores the state saved on stateStack, falling back to the given
 // state when the stack is empty.
 func (w *Writer) popState(fallback writerState) {
@@ -1696,6 +1692,10 @@ func (w *Writer) markParentChild() {
 		w.elemStack[len(w.elemStack)-1].hasChild = true
 	}
 }
+
+// dtdQuoteFor returns the appropriate quote character for a DTD identifier.
+// If the value contains the preferred quote, use the other one.
+func dtdQuoteFor(value string, preferred byte) byte { return xmloutput.Quote(value, preferred) }
 
 // validateNSParts validates the prefix and local name supplied to a
 // namespace-aware method. The local name must be a valid NCName; the prefix,

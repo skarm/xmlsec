@@ -65,26 +65,6 @@ func (p *parser) configureExternal() error {
 	return nil
 }
 
-func validExternalURI(uri string) bool {
-	if len(uri) > 8192 || uriref.Validate(uri) != nil {
-		return false
-	}
-
-	u, e := url.Parse(uri)
-
-	return e == nil && u.IsAbs() && u.User == nil
-}
-
-func validKeyURI(uri string) bool {
-	if len(uri) > 8192 || uriref.Validate(uri) != nil {
-		return false
-	}
-
-	u, err := url.Parse(uri)
-
-	return err == nil && u.User == nil
-}
-
 func (p *parser) resourceURI(s *scope, n *tree.Node, uri string) (string, error) {
 	if len(uri) > 8192 {
 		return "", ErrLimit
@@ -195,15 +175,15 @@ func (p *parser) readCertificate(uri string, decode bool) ([]byte, error) {
 
 	err := p.consumeResource(uri, func(src io.Reader) error {
 		if decode {
-			src = base64.NewDecoder(base64.StdEncoding.Strict(), &streamio.XMLWhitespaceReader{Source: src})
+			src = streamio.NewBase64Decoder(base64.StdEncoding.Strict(), &streamio.XMLWhitespaceReader{Source: src})
 		}
 
 		value, err := der.ReadSequence(p.ctx, src, maximum)
-		if errors.Is(err, der.ErrLimit) {
-			return errors.Join(ErrLimit, err)
-		}
-
 		if err != nil {
+			if errors.Is(err, der.ErrLimit) {
+				return errors.Join(ErrLimit, err)
+			}
+
 			return errors.Join(ErrInput, err)
 		}
 
@@ -344,39 +324,6 @@ func (p *parser) acceptRetrievalTarget(target *tree.Node, scope *scope, typ stri
 	return p.item(scope, target, depth+1)
 }
 
-func retrievalTransform(c []*tree.Node, typ string) (bool, error) {
-	base64Transform := false
-
-	if len(c) > 0 {
-		if len(c) != 1 {
-			return false, ErrInput
-		}
-
-		tc, err := structure(c[0], Namespace, lexicon.DSigElementTransforms)
-		if err != nil {
-			return false, err
-		}
-
-		if len(tc) != 1 {
-			return false, fmt.Errorf("%w: RetrievalMethod transform chain", ErrUnsupported)
-		}
-
-		body, err := structure(tc[0], Namespace, lexicon.DSigElementTransform, "Algorithm")
-		if err != nil {
-			return false, err
-		}
-
-		a, _ := attr(tc[0], "Algorithm")
-		if len(body) != 0 || a != reference.Base64 || typ != RawX509Certificate {
-			return false, fmt.Errorf("%w: only Base64 rawX509Certificate retrieval supported", ErrUnsupported)
-		}
-
-		base64Transform = true
-	}
-
-	return base64Transform, nil
-}
-
 func (p *parser) retrieveRawCertificate(s *scope, n *tree.Node, uri string, depth int, base64Transform bool) error {
 	var err error
 
@@ -419,6 +366,59 @@ func (p *parser) retrieveRawCertificate(s *scope, n *tree.Node, uri string, dept
 	}
 
 	return p.certificate(&origin, n, raw)
+}
+
+func validExternalURI(uri string) bool {
+	if len(uri) > 8192 || uriref.Validate(uri) != nil {
+		return false
+	}
+
+	u, e := url.Parse(uri)
+
+	return e == nil && u.IsAbs() && u.User == nil
+}
+
+func validKeyURI(uri string) bool {
+	if len(uri) > 8192 || uriref.Validate(uri) != nil {
+		return false
+	}
+
+	u, err := url.Parse(uri)
+
+	return err == nil && u.User == nil
+}
+
+func retrievalTransform(c []*tree.Node, typ string) (bool, error) {
+	base64Transform := false
+
+	if len(c) > 0 {
+		if len(c) != 1 {
+			return false, ErrInput
+		}
+
+		tc, err := structure(c[0], Namespace, lexicon.DSigElementTransforms)
+		if err != nil {
+			return false, err
+		}
+
+		if len(tc) != 1 {
+			return false, fmt.Errorf("%w: RetrievalMethod transform chain", ErrUnsupported)
+		}
+
+		body, err := structure(tc[0], Namespace, lexicon.DSigElementTransform, "Algorithm")
+		if err != nil {
+			return false, err
+		}
+
+		a, _ := attr(tc[0], "Algorithm")
+		if len(body) != 0 || a != reference.Base64 || typ != RawX509Certificate {
+			return false, fmt.Errorf("%w: only Base64 rawX509Certificate retrieval supported", ErrUnsupported)
+		}
+
+		base64Transform = true
+	}
+
+	return base64Transform, nil
 }
 
 func externalURI(uri string) bool { return uri != "" && !strings.HasPrefix(uri, "#") }

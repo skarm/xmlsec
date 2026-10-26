@@ -329,6 +329,100 @@ func (b *manifestGraphBuilder) buildReference(ref coreReference, owner *manifest
 	return t, nil
 }
 
+func (b *manifestGraphBuilder) attachManifest(t *coreTask, depth int) error {
+	g := b.graph
+	if depth > g.policy.MaxDepth {
+		return t.wrap("graph", fmt.Errorf("%w: Manifest depth", ErrPolicy))
+	}
+
+	if _, exists := g.active[t.target]; exists {
+		return t.wrap("graph", fmt.Errorf("%w: cyclic Manifest graph", ErrReference))
+	}
+
+	if m, ok := g.byNode[t.target]; ok {
+		if depth+m.height-1 > g.policy.MaxDepth {
+			return t.wrap("graph", fmt.Errorf("%w: shared Manifest depth", ErrPolicy))
+		}
+
+		t.child = m
+
+		return nil
+	}
+
+	children, err := b.registerManifest(t)
+	if err != nil {
+		return t.wrap("graph", err)
+	}
+
+	if err := b.buildManifestReferences(t.child, children, depth); err != nil {
+		return err
+	}
+
+	delete(g.active, t.target)
+
+	return nil
+}
+
+func (b *manifestGraphBuilder) registerManifest(t *coreTask) ([]*tree.Node, error) {
+	g := b.graph
+	if len(g.manifests) >= g.policy.MaxManifests {
+		return nil, fmt.Errorf("%w: Manifest count", ErrPolicy)
+	}
+
+	children, err := structure(t.target, "Manifest", "Id")
+	if err != nil {
+		return nil, err
+	}
+
+	if len(children) == 0 || len(children) > b.plan.policy.MaxReferences {
+		return nil, fmt.Errorf("%w: Manifest Reference count", ErrPolicy)
+	}
+
+	id, _ := getAttr(t.target, document.Name{Local: "Id"})
+	m := &manifestPlan{node: t.target, id: id, index: len(g.manifests), height: 1, scope: t.scope}
+	t.child = m
+	g.byNode[t.target] = m
+	g.active[t.target] = struct{}{}
+	g.manifests = append(g.manifests, m)
+	mr := ManifestReport{Index: m.index, ID: id, ResourceURI: m.scope.uri, Transformed: m.scope.transformed, Status: NotChecked}
+
+	for i, n := range children {
+		uri, _ := getAttr(n, document.Name{Local: "URI"})
+		mr.References = append(mr.References, ReferenceReport{Index: i, URI: uri, Status: NotChecked})
+	}
+
+	b.report.Manifests = append(b.report.Manifests, mr)
+
+	return children, nil
+}
+
+func (b *manifestGraphBuilder) buildManifestReferences(m *manifestPlan, children []*tree.Node, depth int) error {
+	for i, n := range children {
+		r, err := parseCoreReference(b.ctx, n, b.plan.policy, b.plan.processing, b.template)
+		if err != nil {
+			return (&coreTask{ref: r, owner: m, index: i}).wrap("structure", err)
+		}
+
+		if m.scope.uri != "" {
+			if err := reference.PrepareTransforms(b.ctx, r.transforms, b.plan.processing); err != nil {
+				return (&coreTask{ref: r, owner: m, index: i}).wrap("preflight", processingError(err))
+			}
+		}
+
+		child, err := b.buildReference(r, m, i, depth+1)
+		if err != nil {
+			return err
+		}
+
+		m.refs = append(m.refs, child)
+		if child.child != nil && child.child.height+1 > m.height {
+			m.height = child.child.height + 1
+		}
+	}
+
+	return nil
+}
+
 // manifestEdgeTarget validates the edge before any depth or child checks.
 func manifestEdgeTarget(t *coreTask) (bool, error) {
 	if t.external {
@@ -431,100 +525,6 @@ func validateGeneratedManifests(ctx context.Context, doc *document.Document, p *
 	}
 
 	return check.graph.verify(ctx, doc, &check, newCoreBudget(&check), &SignatureResult{doc: doc}, report)
-}
-
-func (b *manifestGraphBuilder) attachManifest(t *coreTask, depth int) error {
-	g := b.graph
-	if depth > g.policy.MaxDepth {
-		return t.wrap("graph", fmt.Errorf("%w: Manifest depth", ErrPolicy))
-	}
-
-	if _, exists := g.active[t.target]; exists {
-		return t.wrap("graph", fmt.Errorf("%w: cyclic Manifest graph", ErrReference))
-	}
-
-	if m, ok := g.byNode[t.target]; ok {
-		if depth+m.height-1 > g.policy.MaxDepth {
-			return t.wrap("graph", fmt.Errorf("%w: shared Manifest depth", ErrPolicy))
-		}
-
-		t.child = m
-
-		return nil
-	}
-
-	children, err := b.registerManifest(t)
-	if err != nil {
-		return t.wrap("graph", err)
-	}
-
-	if err := b.buildManifestReferences(t.child, children, depth); err != nil {
-		return err
-	}
-
-	delete(g.active, t.target)
-
-	return nil
-}
-
-func (b *manifestGraphBuilder) registerManifest(t *coreTask) ([]*tree.Node, error) {
-	g := b.graph
-	if len(g.manifests) >= g.policy.MaxManifests {
-		return nil, fmt.Errorf("%w: Manifest count", ErrPolicy)
-	}
-
-	children, err := structure(t.target, "Manifest", "Id")
-	if err != nil {
-		return nil, err
-	}
-
-	if len(children) == 0 || len(children) > b.plan.policy.MaxReferences {
-		return nil, fmt.Errorf("%w: Manifest Reference count", ErrPolicy)
-	}
-
-	id, _ := getAttr(t.target, document.Name{Local: "Id"})
-	m := &manifestPlan{node: t.target, id: id, index: len(g.manifests), height: 1, scope: t.scope}
-	t.child = m
-	g.byNode[t.target] = m
-	g.active[t.target] = struct{}{}
-	g.manifests = append(g.manifests, m)
-	mr := ManifestReport{Index: m.index, ID: id, ResourceURI: m.scope.uri, Transformed: m.scope.transformed, Status: NotChecked}
-
-	for i, n := range children {
-		uri, _ := getAttr(n, document.Name{Local: "URI"})
-		mr.References = append(mr.References, ReferenceReport{Index: i, URI: uri, Status: NotChecked})
-	}
-
-	b.report.Manifests = append(b.report.Manifests, mr)
-
-	return children, nil
-}
-
-func (b *manifestGraphBuilder) buildManifestReferences(m *manifestPlan, children []*tree.Node, depth int) error {
-	for i, n := range children {
-		r, err := parseCoreReference(b.ctx, n, b.plan.policy, b.plan.processing, b.template)
-		if err != nil {
-			return (&coreTask{ref: r, owner: m, index: i}).wrap("structure", err)
-		}
-
-		if m.scope.uri != "" {
-			if err := reference.PrepareTransforms(b.ctx, r.transforms, b.plan.processing); err != nil {
-				return (&coreTask{ref: r, owner: m, index: i}).wrap("preflight", processingError(err))
-			}
-		}
-
-		child, err := b.buildReference(r, m, i, depth+1)
-		if err != nil {
-			return err
-		}
-
-		m.refs = append(m.refs, child)
-		if child.child != nil && child.child.height+1 > m.height {
-			m.height = child.child.height + 1
-		}
-	}
-
-	return nil
 }
 
 func prepareManifestGraph(ctx context.Context, doc *document.Document, p *corePlan, policy ManifestPolicy, template bool, report *VerificationReport) (*manifestGraph, error) {

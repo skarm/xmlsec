@@ -536,24 +536,6 @@ func (s *maxMinAccumulator) add(ctx context.Context, original xdm.AtomicValue) e
 	return nil
 }
 
-func maxMinTypeFamily(ctx context.Context, value xdm.AtomicValue, fnName string) (string, error) {
-	family := aggregateTypeFamily(value)
-
-	legacyBinary := false
-	if ec := getFnContext(ctx); ec != nil && ec.version != 0 && ec.version < 31 {
-		legacyBinary = family == lexicon.TypeBase64Binary || family == lexicon.TypeHexBinary
-	}
-
-	if family == "" || family == lexicon.TypeDuration || legacyBinary {
-		return "", &xdm.Error{
-			Code:    errCodeFORG0006,
-			Message: fmt.Sprintf("invalid type %s for %s", value.TypeName, fnName),
-		}
-	}
-
-	return family, nil
-}
-
 func (s *maxMinAccumulator) selects(value xdm.AtomicValue) (bool, error) {
 	if s.coll != nil && s.family == lexicon.TypeString {
 		order := s.coll.compare(value.StringVal(), s.best.StringVal())
@@ -593,6 +575,24 @@ func (s *maxMinAccumulator) result() xdm.Sequence {
 	}
 
 	return xdm.SingleAtomic(s.bestOrig)
+}
+
+func maxMinTypeFamily(ctx context.Context, value xdm.AtomicValue, fnName string) (string, error) {
+	family := aggregateTypeFamily(value)
+
+	legacyBinary := false
+	if ec := getFnContext(ctx); ec != nil && ec.version != 0 && ec.version < 31 {
+		legacyBinary = family == lexicon.TypeBase64Binary || family == lexicon.TypeHexBinary
+	}
+
+	if family == "" || family == lexicon.TypeDuration || legacyBinary {
+		return "", &xdm.Error{
+			Code:    errCodeFORG0006,
+			Message: fmt.Sprintf("invalid type %s for %s", value.TypeName, fnName),
+		}
+	}
+
+	return family, nil
 }
 
 // promoteResult promotes the result of fn:max/fn:min to the widest numeric type.
@@ -750,19 +750,6 @@ func (s *aggregateSum) add(ctx context.Context, value xdm.AtomicValue) error {
 	return nil
 }
 
-func checkSumAvgType(a xdm.AtomicValue) error {
-	family := aggregateTypeFamily(a)
-	switch family {
-	case xdm.FamilyNumeric, xdm.FamilyDurationYM, xdm.FamilyDurationDT:
-		return nil
-	}
-
-	return &xdm.Error{
-		Code:    errCodeFORG0006,
-		Message: fmt.Sprintf("invalid type %s for aggregate function", a.TypeName),
-	}
-}
-
 func (s *aggregateSum) addUntyped(ctx context.Context, value xdm.AtomicValue) error {
 	converted, err := CastAtomicContext(ctx, value, xdm.TypeDouble)
 	if err != nil {
@@ -835,6 +822,19 @@ func (s *aggregateSum) numericResult() xdm.Sequence {
 	}
 
 	return xdm.SingleDouble(s.sumFloat)
+}
+
+func checkSumAvgType(a xdm.AtomicValue) error {
+	family := aggregateTypeFamily(a)
+	switch family {
+	case xdm.FamilyNumeric, xdm.FamilyDurationYM, xdm.FamilyDurationDT:
+		return nil
+	}
+
+	return &xdm.Error{
+		Code:    errCodeFORG0006,
+		Message: fmt.Sprintf("invalid type %s for aggregate function", a.TypeName),
+	}
 }
 
 func checkAggregateHomogeneity(family, newFamily string) (string, error) {
@@ -1004,6 +1004,61 @@ func (s *distinctValueAccumulator) add(value xdm.AtomicValue) error {
 	return nil
 }
 
+func (s *distinctValueAccumulator) addFast(value xdm.AtomicValue, group distinctGroup, key string) error {
+	// Collation-equal strings must share their bucket.
+	if s.coll != nil && group == distinctGroupString {
+		key = "s:" + string(s.coll.key(value.StringVal()))
+	}
+
+	if _, exists := s.seenFast[key]; exists {
+		return nil
+	}
+
+	found, err := distinctValueSeenInOtherNumericGroups(
+		value, group, s.coll, s.implicitTZ, s.numericDecInt, s.numericFloat, s.numericDouble,
+	)
+	if err != nil {
+		return err
+	}
+
+	if found {
+		return nil
+	}
+
+	s.seenFast[key] = struct{}{}
+	s.result = append(s.result, value)
+
+	switch group {
+	case distinctGroupDecimalInt:
+		s.numericDecInt = append(s.numericDecInt, value)
+	case distinctGroupFloat:
+		s.numericFloat = append(s.numericFloat, value)
+	case distinctGroupDouble:
+		s.numericDouble = append(s.numericDouble, value)
+	}
+
+	return nil
+}
+
+func (s *distinctValueAccumulator) seenByValue(value xdm.AtomicValue) bool {
+	for _, existing := range s.result {
+		if isAtomicNaN(existing) {
+			continue
+		}
+
+		equal, err := distinctValueEqual(value, existing, s.coll, s.implicitTZ)
+		if err != nil {
+			continue // Incomparable values remain distinct.
+		}
+
+		if equal {
+			return true
+		}
+	}
+
+	return false
+}
+
 func distinctValueFastKey(a xdm.AtomicValue) (distinctGroup, string, bool) {
 	// Classify on the effective built-in type so a schema-derived value (custom
 	// TypeName whose BaseType names the built-in ancestor) shares a fast-key
@@ -1042,42 +1097,6 @@ func distinctValueFastKey(a xdm.AtomicValue) (distinctGroup, string, bool) {
 	default:
 		return distinctGroupUnknown, "", false
 	}
-}
-
-func (s *distinctValueAccumulator) addFast(value xdm.AtomicValue, group distinctGroup, key string) error {
-	// Collation-equal strings must share their bucket.
-	if s.coll != nil && group == distinctGroupString {
-		key = "s:" + string(s.coll.key(value.StringVal()))
-	}
-
-	if _, exists := s.seenFast[key]; exists {
-		return nil
-	}
-
-	found, err := distinctValueSeenInOtherNumericGroups(
-		value, group, s.coll, s.implicitTZ, s.numericDecInt, s.numericFloat, s.numericDouble,
-	)
-	if err != nil {
-		return err
-	}
-
-	if found {
-		return nil
-	}
-
-	s.seenFast[key] = struct{}{}
-	s.result = append(s.result, value)
-
-	switch group {
-	case distinctGroupDecimalInt:
-		s.numericDecInt = append(s.numericDecInt, value)
-	case distinctGroupFloat:
-		s.numericFloat = append(s.numericFloat, value)
-	case distinctGroupDouble:
-		s.numericDouble = append(s.numericDouble, value)
-	}
-
-	return nil
 }
 
 func distinctValueSeenInOtherNumericGroups(
@@ -1121,25 +1140,6 @@ func distinctValueSeenInSet(
 	}
 
 	return false, nil
-}
-
-func (s *distinctValueAccumulator) seenByValue(value xdm.AtomicValue) bool {
-	for _, existing := range s.result {
-		if isAtomicNaN(existing) {
-			continue
-		}
-
-		equal, err := distinctValueEqual(value, existing, s.coll, s.implicitTZ)
-		if err != nil {
-			continue // Incomparable values remain distinct.
-		}
-
-		if equal {
-			return true
-		}
-	}
-
-	return false
 }
 
 // distinctEffectiveType returns the built-in type that governs distinct-values

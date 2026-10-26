@@ -205,22 +205,6 @@ func (p *parseOptions) parseComparisonExpr() (Expr, error) {
 	return left, nil
 }
 
-func isGeneralComp(t TokenType) bool {
-	return t == TokenEquals || t == TokenNotEquals ||
-		t == TokenLess || t == TokenLessEq ||
-		t == TokenGreater || t == TokenGreaterEq
-}
-
-func isValueComp(t TokenType) bool {
-	return t == TokenEq || t == TokenNe ||
-		t == TokenLt || t == TokenLe ||
-		t == TokenGt || t == TokenGe
-}
-
-func isNodeComp(t TokenType) bool {
-	return t == TokenIs || t == TokenNodePre || t == TokenNodeFol
-}
-
 // parseConcatExpr parses → RangeExpr ('||' RangeExpr)*.
 func (p *parseOptions) parseConcatExpr() (Expr, error) {
 	left, err := p.parseRangeExpr()
@@ -893,42 +877,6 @@ func (p *parseOptions) parsePrimaryExpr() (Expr, error) {
 	}
 }
 
-// parseNumberLiteral converts a numeric token value to a LiteralExpr.
-// Per XPath 3.1: no dot and no e/E → xs:integer (*big.Int),
-// dot but no e/E → xs:decimal (*big.Rat),
-// e/E → xs:double (float64).
-func parseNumberLiteral(s string) (LiteralExpr, error) {
-	hasE := strings.ContainsAny(s, "eE")
-
-	hasDot := strings.Contains(s, ".")
-	if !hasDot && !hasE {
-		// Integer literal → *big.Int (arbitrary precision)
-		v, ok := new(big.Int).SetString(s, 10)
-		if !ok {
-			return LiteralExpr{}, fmt.Errorf("%w: invalid integer %q", ErrUnexpectedToken, s)
-		}
-
-		return LiteralExpr{Value: v}, nil
-	}
-
-	if !hasE {
-		// Decimal literal → *big.Rat (exact rational)
-		v, ok := new(big.Rat).SetString(s)
-		if !ok {
-			return LiteralExpr{}, fmt.Errorf("%w: invalid decimal %q", ErrUnexpectedToken, s)
-		}
-
-		return LiteralExpr{Value: v}, nil
-	}
-	// Double literal → float64
-	v, err := parseXPathDouble(s)
-	if err != nil {
-		return LiteralExpr{}, fmt.Errorf("%w: invalid number %q: %w", ErrUnexpectedToken, s, err)
-	}
-
-	return LiteralExpr{Value: v}, nil
-}
-
 // parseNamePrimary handles a Name at the start of a primary expression:
 // function call, named function ref, or error.
 func (p *parseOptions) parseNamePrimary() (Expr, error) {
@@ -1144,29 +1092,6 @@ func (p *parseOptions) parseLookupKey() (Expr, bool, error) {
 
 		return nil, false, fmt.Errorf("%w: lookup key but got %s", ErrExpectedToken, tok)
 	}
-}
-
-// tokenAsNCName returns the NCName string for a token that can be used as an
-// NCName in lookup keys and other non-keyword contexts. Returns "" if the
-// token is not a valid NCName.
-func tokenAsNCName(tok Token) string {
-	switch tok.Type {
-	case TokenName:
-		// Reject URIQualifiedNames (Q{uri}local) — they are not NCNames
-		if strings.HasPrefix(tok.Value, "Q{") {
-			return ""
-		}
-		// Reject prefixed names (prefix:local) — they are QNames, not NCNames
-		if strings.Contains(tok.Value, ":") {
-			return ""
-		}
-
-		return tok.Value
-	case TokenDiv, TokenMod, TokenAnd, TokenOr, TokenReturn, TokenElse, TokenEq, TokenNe, TokenLt, TokenLe, TokenGt, TokenGe, TokenIdiv, TokenIf, TokenThen, TokenFor, TokenLet, TokenIn, TokenSome, TokenEvery, TokenSatisfies, TokenIs, TokenTo, TokenUnion, TokenIntersect, TokenExcept, TokenInstanceOf, TokenTreatAs, TokenCastableAs, TokenCastAs, TokenAs, TokenOf:
-		return tok.Type.String()
-	}
-
-	return ""
 }
 
 // parseRelativeLocationPath parses → Step (('/' | '//') Step)*.
@@ -1457,22 +1382,6 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 	return nil, false, nil
 }
 
-// XPath 2.0 erratum XP.E19 and 3.x kind tests compare normalized PI targets.
-// An explicitly empty or otherwise invalid NCName is XPTY0004, not a syntax
-// error; an absent target continues to match every processing instruction.
-func normalizePITest(test xdm.PITest) (xdm.PITest, error) {
-	if !test.HasTarget {
-		return test, nil
-	}
-
-	test.Target = collapseXMLWhitespace(test.Target)
-	if !xmlchar.IsValidNCName(test.Target) {
-		return test, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "processing-instruction target must be an NCName"}
-	}
-
-	return test, nil
-}
-
 // parseElementOrAttributeTest parses element(name?, type?) or attribute(name?, type?).
 func (p *parseOptions) parseElementOrAttributeTest(isElement bool) (xdm.NodeTest, bool, error) {
 	p.lexer.Next() // consume '('
@@ -1620,6 +1529,97 @@ func (p *parseOptions) parsePredicate() (Expr, error) {
 	p.lexer.Next()
 
 	return expr, nil
+}
+
+func isGeneralComp(t TokenType) bool {
+	return t == TokenEquals || t == TokenNotEquals ||
+		t == TokenLess || t == TokenLessEq ||
+		t == TokenGreater || t == TokenGreaterEq
+}
+
+func isValueComp(t TokenType) bool {
+	return t == TokenEq || t == TokenNe ||
+		t == TokenLt || t == TokenLe ||
+		t == TokenGt || t == TokenGe
+}
+
+func isNodeComp(t TokenType) bool {
+	return t == TokenIs || t == TokenNodePre || t == TokenNodeFol
+}
+
+// parseNumberLiteral converts a numeric token value to a LiteralExpr.
+// Per XPath 3.1: no dot and no e/E → xs:integer (*big.Int),
+// dot but no e/E → xs:decimal (*big.Rat),
+// e/E → xs:double (float64).
+func parseNumberLiteral(s string) (LiteralExpr, error) {
+	hasE := strings.ContainsAny(s, "eE")
+
+	hasDot := strings.Contains(s, ".")
+	if !hasDot && !hasE {
+		// Integer literal → *big.Int (arbitrary precision)
+		v, ok := new(big.Int).SetString(s, 10)
+		if !ok {
+			return LiteralExpr{}, fmt.Errorf("%w: invalid integer %q", ErrUnexpectedToken, s)
+		}
+
+		return LiteralExpr{Value: v}, nil
+	}
+
+	if !hasE {
+		// Decimal literal → *big.Rat (exact rational)
+		v, ok := new(big.Rat).SetString(s)
+		if !ok {
+			return LiteralExpr{}, fmt.Errorf("%w: invalid decimal %q", ErrUnexpectedToken, s)
+		}
+
+		return LiteralExpr{Value: v}, nil
+	}
+	// Double literal → float64
+	v, err := parseXPathDouble(s)
+	if err != nil {
+		return LiteralExpr{}, fmt.Errorf("%w: invalid number %q: %w", ErrUnexpectedToken, s, err)
+	}
+
+	return LiteralExpr{Value: v}, nil
+}
+
+// tokenAsNCName returns the NCName string for a token that can be used as an
+// NCName in lookup keys and other non-keyword contexts. Returns "" if the
+// token is not a valid NCName.
+func tokenAsNCName(tok Token) string {
+	switch tok.Type {
+	case TokenName:
+		// Reject URIQualifiedNames (Q{uri}local) — they are not NCNames
+		if strings.HasPrefix(tok.Value, "Q{") {
+			return ""
+		}
+		// Reject prefixed names (prefix:local) — they are QNames, not NCNames
+		if strings.Contains(tok.Value, ":") {
+			return ""
+		}
+
+		return tok.Value
+	case TokenDiv, TokenMod, TokenAnd, TokenOr, TokenReturn, TokenElse, TokenEq, TokenNe, TokenLt, TokenLe, TokenGt, TokenGe, TokenIdiv, TokenIf, TokenThen, TokenFor, TokenLet, TokenIn, TokenSome, TokenEvery, TokenSatisfies, TokenIs, TokenTo, TokenUnion, TokenIntersect, TokenExcept, TokenInstanceOf, TokenTreatAs, TokenCastableAs, TokenCastAs, TokenAs, TokenOf:
+		return tok.Type.String()
+	}
+
+	return ""
+}
+
+// XPath 2.0 erratum XP.E19 and 3.x kind tests compare normalized PI targets.
+// An explicitly empty or otherwise invalid NCName is XPTY0004, not a syntax
+// error; an absent target continues to match every processing instruction.
+func normalizePITest(test xdm.PITest) (xdm.PITest, error) {
+	if !test.HasTarget {
+		return test, nil
+	}
+
+	test.Target = collapseXMLWhitespace(test.Target)
+	if !xmlchar.IsValidNCName(test.Target) {
+		return test, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "processing-instruction target must be an NCName"}
+	}
+
+	return test, nil
 }
 
 // --- XPath 3.1 Expression Extensions ---
@@ -2536,27 +2536,6 @@ func (p *parseOptions) scanQName() string {
 	return name
 }
 
-// isKeywordToken returns true if the token type is an XPath keyword
-// that can still be used as a local name in a QName (e.g., prefix:map).
-func isKeywordToken(t TokenType) bool {
-	switch t {
-	case TokenMap, TokenArray, TokenFunction,
-		TokenAs, TokenOf, TokenIn,
-		TokenReturn, TokenFor, TokenLet,
-		TokenSome, TokenEvery, TokenIf, TokenThen, TokenElse,
-		TokenInstanceOf, TokenCastAs, TokenCastableAs, TokenTreatAs,
-		TokenAnd, TokenOr, TokenDiv, TokenMod, TokenIdiv,
-		TokenTo, TokenUnion, TokenIntersect, TokenExcept,
-		TokenEq, TokenNe, TokenLt, TokenLe, TokenGt, TokenGe,
-		TokenIs, TokenSatisfies, TokenWhere, TokenBy,
-		TokenAscending, TokenDescending, TokenStable,
-		TokenTry, TokenCatch:
-		return true
-	}
-
-	return false
-}
-
 func (p *parseOptions) expectToken(expected TokenType) error {
 	if p.lexer.Peek().Type != expected {
 		return fmt.Errorf("%w: %s but got %s", ErrExpectedToken, expected, p.lexer.Peek())
@@ -2646,6 +2625,27 @@ func (p *parseOptions) looksLikeStepOffset(offset int) bool {
 func (p *parseOptions) joinedQNameAt(offset int) bool {
 	colon := p.lexer.PeekAt(offset)
 	return colon.Type == TokenColon && !colon.SpaceBefore && !p.lexer.PeekAt(offset+1).SpaceBefore
+}
+
+// isKeywordToken returns true if the token type is an XPath keyword
+// that can still be used as a local name in a QName (e.g., prefix:map).
+func isKeywordToken(t TokenType) bool {
+	switch t {
+	case TokenMap, TokenArray, TokenFunction,
+		TokenAs, TokenOf, TokenIn,
+		TokenReturn, TokenFor, TokenLet,
+		TokenSome, TokenEvery, TokenIf, TokenThen, TokenElse,
+		TokenInstanceOf, TokenCastAs, TokenCastableAs, TokenTreatAs,
+		TokenAnd, TokenOr, TokenDiv, TokenMod, TokenIdiv,
+		TokenTo, TokenUnion, TokenIntersect, TokenExcept,
+		TokenEq, TokenNe, TokenLt, TokenLe, TokenGt, TokenGe,
+		TokenIs, TokenSatisfies, TokenWhere, TokenBy,
+		TokenAscending, TokenDescending, TokenStable,
+		TokenTry, TokenCatch:
+		return true
+	}
+
+	return false
 }
 
 // isNameLikeToken recognizes names wherever the grammar requires an operand

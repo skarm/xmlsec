@@ -24,10 +24,6 @@ type dtdScanner struct {
 	inDeclaration bool
 }
 
-func (d *dtdState) scanner(text, base string, external bool) *dtdScanner {
-	return &dtdScanner{state: d, frames: []dtdFrame{{text: text, base: base, external: external}}}
-}
-
 func (s *dtdScanner) raw() string {
 	for len(s.frames) > 0 {
 		frame := &s.frames[len(s.frames)-1]
@@ -221,58 +217,6 @@ func (s *dtdScanner) close() {
 	}
 
 	s.frames = nil
-}
-
-func (d *dtdState) doctype(text, base string) error {
-	s := d.scanner(text, base, false)
-	defer s.close()
-
-	s.require(dtdDoctypeOpen)
-	s.space(true)
-	s.qualifiedName()
-	s.space(false)
-
-	entity := dtdEntity{base: base}
-
-	if strings.HasPrefix(s.text(), "SYSTEM") || strings.HasPrefix(s.text(), "PUBLIC") {
-		entity.systemID, entity.publicID = s.externalID(false)
-		entity.external = true
-
-		s.space(false)
-	}
-
-	if s.take("[") {
-		if err := s.declarations("]"); err != nil {
-			return err
-		}
-
-		s.require("]")
-		s.space(false)
-	}
-
-	s.require(">")
-
-	if s.raw() != "" {
-		s.fail("trailing DOCTYPE content")
-	}
-
-	if s.err != nil {
-		return s.err
-	}
-
-	if entity.external {
-		text, base, err := d.load(entity)
-		if err != nil {
-			return err
-		}
-
-		external := d.scanner(text, base, true)
-		defer external.close()
-
-		return external.declarations("")
-	}
-
-	return nil
 }
 
 func (s *dtdScanner) externalID(publicOnly bool) (string, string) {
@@ -544,95 +488,6 @@ func (s *dtdScanner) entity() {
 	}
 }
 
-func (d *dtdState) entityValue(text string, external bool) (string, error) {
-	var output dtdOutput
-
-	output.maximum = d.options.Limits.MaxBytes
-	for text != "" {
-		if err := d.ctx.Err(); err != nil {
-			return "", err
-		}
-
-		at := strings.IndexAny(text, "&%")
-		if at < 0 {
-			at = len(text)
-		}
-
-		if err := output.write(text[:at]); err != nil {
-			return "", err
-		}
-
-		text = text[at:]
-		if text == "" {
-			break
-		}
-
-		value, rest, err := d.entityValueReference(text, external)
-		if err != nil {
-			return "", err
-		}
-
-		if err := output.write(value); err != nil {
-			return "", err
-		}
-
-		text = rest
-	}
-
-	return output.String(), nil
-}
-
-func (d *dtdState) entityValueReference(text string, external bool) (string, string, error) {
-	if strings.HasPrefix(text, "&#") {
-		value, n, err := dtdCharacterReference(text)
-		return value, text[n:], err
-	}
-
-	marker := text[0]
-
-	name, rest, err := dtdReference(text[1:])
-	if err != nil {
-		return "", "", err
-	}
-
-	if marker == '&' {
-		return text[:len(text)-len(rest)], rest, nil
-	}
-
-	if !external {
-		return "", "", fmt.Errorf("%w: parameter entity in internal entity value", ErrMalformed)
-	}
-
-	value, err := d.parameterValue(name)
-
-	return value, rest, err
-}
-
-func (d *dtdState) parameterValue(name string) (string, error) {
-	entity, ok := d.parameters[name]
-	if !ok {
-		return "", fmt.Errorf("%w: undeclared parameter entity", ErrMalformed)
-	}
-
-	value := entity.value
-	if entity.external {
-		var err error
-
-		value, _, err = d.load(entity)
-		if err != nil {
-			return "", err
-		}
-	}
-
-	release, err := d.enter("%"+name, len(value))
-	if err != nil {
-		return "", err
-	}
-	defer release()
-
-	return d.entityValue(value, true)
-}
-
 func (s *dtdScanner) attlist() {
 	s.space(true)
 
@@ -866,4 +721,149 @@ func (s *dtdScanner) cp(depth int) {
 	}
 
 	s.quantifier()
+}
+
+func (d *dtdState) scanner(text, base string, external bool) *dtdScanner {
+	return &dtdScanner{state: d, frames: []dtdFrame{{text: text, base: base, external: external}}}
+}
+
+func (d *dtdState) doctype(text, base string) error {
+	s := d.scanner(text, base, false)
+	defer s.close()
+
+	s.require(dtdDoctypeOpen)
+	s.space(true)
+	s.qualifiedName()
+	s.space(false)
+
+	entity := dtdEntity{base: base}
+
+	if strings.HasPrefix(s.text(), "SYSTEM") || strings.HasPrefix(s.text(), "PUBLIC") {
+		entity.systemID, entity.publicID = s.externalID(false)
+		entity.external = true
+
+		s.space(false)
+	}
+
+	if s.take("[") {
+		if err := s.declarations("]"); err != nil {
+			return err
+		}
+
+		s.require("]")
+		s.space(false)
+	}
+
+	s.require(">")
+
+	if s.raw() != "" {
+		s.fail("trailing DOCTYPE content")
+	}
+
+	if s.err != nil {
+		return s.err
+	}
+
+	if entity.external {
+		text, base, err := d.load(entity)
+		if err != nil {
+			return err
+		}
+
+		external := d.scanner(text, base, true)
+		defer external.close()
+
+		return external.declarations("")
+	}
+
+	return nil
+}
+
+func (d *dtdState) entityValue(text string, external bool) (string, error) {
+	var output dtdOutput
+
+	output.maximum = d.options.Limits.MaxBytes
+	for text != "" {
+		if err := d.ctx.Err(); err != nil {
+			return "", err
+		}
+
+		at := strings.IndexAny(text, "&%")
+		if at < 0 {
+			at = len(text)
+		}
+
+		if err := output.write(text[:at]); err != nil {
+			return "", err
+		}
+
+		text = text[at:]
+		if text == "" {
+			break
+		}
+
+		value, rest, err := d.entityValueReference(text, external)
+		if err != nil {
+			return "", err
+		}
+
+		if err := output.write(value); err != nil {
+			return "", err
+		}
+
+		text = rest
+	}
+
+	return output.String(), nil
+}
+
+func (d *dtdState) entityValueReference(text string, external bool) (string, string, error) {
+	if strings.HasPrefix(text, "&#") {
+		value, n, err := dtdCharacterReference(text)
+		return value, text[n:], err
+	}
+
+	marker := text[0]
+
+	name, rest, err := dtdReference(text[1:])
+	if err != nil {
+		return "", "", err
+	}
+
+	if marker == '&' {
+		return text[:len(text)-len(rest)], rest, nil
+	}
+
+	if !external {
+		return "", "", fmt.Errorf("%w: parameter entity in internal entity value", ErrMalformed)
+	}
+
+	value, err := d.parameterValue(name)
+
+	return value, rest, err
+}
+
+func (d *dtdState) parameterValue(name string) (string, error) {
+	entity, ok := d.parameters[name]
+	if !ok {
+		return "", fmt.Errorf("%w: undeclared parameter entity", ErrMalformed)
+	}
+
+	value := entity.value
+	if entity.external {
+		var err error
+
+		value, _, err = d.load(entity)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	release, err := d.enter("%"+name, len(value))
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
+	return d.entityValue(value, true)
 }

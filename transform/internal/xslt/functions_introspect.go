@@ -18,56 +18,6 @@ func (ec *execContext) fnElementAvailable(ctx context.Context, args []xdm.Sequen
 	return introspectionElementAvailable(ctx, args, ec.stylesheet.processorLanguage(), ec.stylesheet.dynamicEvaluationDisabled)
 }
 
-func introspectionElementAvailable(ctx context.Context, args []xdm.Sequence, processor int, disabled bool) (xdm.Sequence, error) {
-	name, err := introspectionArgumentName(ctx, args, xpath.FnDefaultXMLNamespace(ctx), errCodeXTDE1440, processor)
-	if err != nil {
-		return nil, err
-	}
-
-	return xdm.SingleBoolean(elementAvailable(name, processor, disabled)), nil
-}
-
-func introspectionArgumentName(ctx context.Context, args []xdm.Sequence, defaultNS, code string, processor int) (xdm.QNameValue, error) {
-	value, err := xpath.AtomizeItem(args[0].Get(0))
-	if err != nil {
-		return xdm.QNameValue{}, err
-	}
-
-	name, err := xpath.AtomicToString(value)
-	if err != nil {
-		return xdm.QNameValue{}, err
-	}
-
-	if processor < 30 && !xmlchar.IsValidQName(name) {
-		return xdm.QNameValue{}, dynamicError(code, "%q is not a valid QName", name)
-	}
-
-	return resolveIntrospectionName(name, defaultNS, code, func(prefix string) (string, bool) { return xpath.FnNamespace(ctx, prefix) })
-}
-
-func elementAvailable(name xdm.QNameValue, processor int, disabled bool) bool {
-	if name.URI != lexicon.NamespaceXSLT || !isImplementedXSLTElement(name.Local) {
-		return false
-	}
-
-	if name.Local == lexicon.XSLTElementEvaluate && disabled {
-		return false
-	}
-
-	if processor < 30 && !isXSLTInstruction(name.Local) {
-		return false
-	}
-
-	switch minXSLTElementVersion(name.Local) {
-	case "3.0":
-		return processor >= 30
-	case "2.0":
-		return processor >= 20
-	default:
-		return true
-	}
-}
-
 // function-available(name, arity?) returns true if the named function is available.
 func (ec *execContext) fnFunctionAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	name, err := introspectionArgumentName(ctx, args, xpath.NSFn, errCodeXTDE1400, ec.stylesheet.processorLanguage())
@@ -81,34 +31,6 @@ func (ec *execContext) fnFunctionAvailable(ctx context.Context, args []xdm.Seque
 	}
 
 	return xdm.SingleBoolean(ec.functionAvailable(ctx, name, arity)), nil
-}
-
-// functionAvailableArity reserves -1 for an omitted argument. Huge positive
-// integers saturate, preserving variadic availability without an int overflow.
-func functionAvailableArity(args []xdm.Sequence) (int, bool) {
-	if len(args) < 2 {
-		return -1, true
-	}
-
-	value, ok := args[1].Get(0).(xdm.AtomicValue)
-	if !ok {
-		return 0, false
-	}
-
-	arity, fits := value.Int64Val()
-	if !fits {
-		return int(^uint(0) >> 1), value.BigInt().Sign() >= 0
-	}
-
-	if arity < 0 {
-		return 0, false
-	}
-
-	if uint64(arity) > uint64(^uint(0)>>1) {
-		return int(^uint(0) >> 1), true
-	}
-
-	return int(arity), true
 }
 
 func (ec *execContext) functionAvailable(ctx context.Context, name xdm.QNameValue, arity int) bool {
@@ -149,27 +71,6 @@ func (ec *execContext) functionAvailable(ctx context.Context, name xdm.QNameValu
 // type-available(name) returns true if the named type is available.
 func (ec *execContext) fnTypeAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	return introspectionTypeAvailable(ctx, args, ec.stylesheet.processorLanguage())
-}
-
-func introspectionTypeAvailable(ctx context.Context, args []xdm.Sequence, processor int) (xdm.Sequence, error) {
-	name, err := introspectionArgumentName(ctx, args, xpath.FnDefaultXMLNamespace(ctx), errCodeXTDE1428, processor)
-	if err != nil {
-		return nil, err
-	}
-
-	return xdm.SingleBoolean(typeAvailable(name, processor)), nil
-}
-
-func typeAvailable(name xdm.QNameValue, processor int) bool {
-	if name.URI != lexicon.NamespaceXSD || !xdm.IsKnownXSDType("xs:"+name.Local) {
-		return false
-	}
-
-	if name.Local == lexicon.TypeNumeric && processor < 30 {
-		return false
-	}
-
-	return true
 }
 
 // current-group() returns the items in the current group during for-each-group.
@@ -314,26 +215,6 @@ func (ec *execContext) accumulatorLookup(
 	return xdm.EmptySequence(), nil
 }
 
-func accumulatorNodeValue(
-	node xdm.Node,
-	stateKey string,
-	nodeMaps func() (map[xdm.Node]map[string]xdm.Sequence, map[xdm.Node]map[string]error),
-) (xdm.Sequence, bool, error) {
-	values, deferredErrors := nodeMaps()
-	if nodeErrors, found := deferredErrors[node]; found {
-		if deferred, found := nodeErrors[stateKey]; found {
-			return nil, true, deferred
-		}
-	}
-
-	if nodeValues, found := values[node]; found {
-		value, found := nodeValues[stateKey]
-		return value, found, nil
-	}
-
-	return nil, false, nil
-}
-
 func (ec *execContext) accumulatorLookupNode(ctx context.Context, fnName string) (xdm.Node, error) {
 	item, err := xpath.FnContextItem(ctx)
 	if err != nil {
@@ -459,6 +340,129 @@ func (ec *execContext) ensureAccumulatorStates(ctx context.Context, node xdm.Nod
 	return ec.computeAccumulatorStates(ctx, root, names)
 }
 
+func (ec *execContext) builtinFunctionAvailable(uri, local string, arity int) bool {
+	return xpath.BuiltinFunctionAvailable(ec.stylesheet.xpathVersion(), uri, local, arity)
+}
+
+func introspectionElementAvailable(ctx context.Context, args []xdm.Sequence, processor int, disabled bool) (xdm.Sequence, error) {
+	name, err := introspectionArgumentName(ctx, args, xpath.FnDefaultXMLNamespace(ctx), errCodeXTDE1440, processor)
+	if err != nil {
+		return nil, err
+	}
+
+	return xdm.SingleBoolean(elementAvailable(name, processor, disabled)), nil
+}
+
+func introspectionArgumentName(ctx context.Context, args []xdm.Sequence, defaultNS, code string, processor int) (xdm.QNameValue, error) {
+	value, err := xpath.AtomizeItem(args[0].Get(0))
+	if err != nil {
+		return xdm.QNameValue{}, err
+	}
+
+	name, err := xpath.AtomicToString(value)
+	if err != nil {
+		return xdm.QNameValue{}, err
+	}
+
+	if processor < 30 && !xmlchar.IsValidQName(name) {
+		return xdm.QNameValue{}, dynamicError(code, "%q is not a valid QName", name)
+	}
+
+	return resolveIntrospectionName(name, defaultNS, code, func(prefix string) (string, bool) { return xpath.FnNamespace(ctx, prefix) })
+}
+
+func elementAvailable(name xdm.QNameValue, processor int, disabled bool) bool {
+	if name.URI != lexicon.NamespaceXSLT || !isImplementedXSLTElement(name.Local) {
+		return false
+	}
+
+	if name.Local == lexicon.XSLTElementEvaluate && disabled {
+		return false
+	}
+
+	if processor < 30 && !isXSLTInstruction(name.Local) {
+		return false
+	}
+
+	switch minXSLTElementVersion(name.Local) {
+	case "3.0":
+		return processor >= 30
+	case "2.0":
+		return processor >= 20
+	default:
+		return true
+	}
+}
+
+// functionAvailableArity reserves -1 for an omitted argument. Huge positive
+// integers saturate, preserving variadic availability without an int overflow.
+func functionAvailableArity(args []xdm.Sequence) (int, bool) {
+	if len(args) < 2 {
+		return -1, true
+	}
+
+	value, ok := args[1].Get(0).(xdm.AtomicValue)
+	if !ok {
+		return 0, false
+	}
+
+	arity, fits := value.Int64Val()
+	if !fits {
+		return int(^uint(0) >> 1), value.BigInt().Sign() >= 0
+	}
+
+	if arity < 0 {
+		return 0, false
+	}
+
+	if uint64(arity) > uint64(^uint(0)>>1) {
+		return int(^uint(0) >> 1), true
+	}
+
+	return int(arity), true
+}
+
+func introspectionTypeAvailable(ctx context.Context, args []xdm.Sequence, processor int) (xdm.Sequence, error) {
+	name, err := introspectionArgumentName(ctx, args, xpath.FnDefaultXMLNamespace(ctx), errCodeXTDE1428, processor)
+	if err != nil {
+		return nil, err
+	}
+
+	return xdm.SingleBoolean(typeAvailable(name, processor)), nil
+}
+
+func typeAvailable(name xdm.QNameValue, processor int) bool {
+	if name.URI != lexicon.NamespaceXSD || !xdm.IsKnownXSDType("xs:"+name.Local) {
+		return false
+	}
+
+	if name.Local == lexicon.TypeNumeric && processor < 30 {
+		return false
+	}
+
+	return true
+}
+
+func accumulatorNodeValue(
+	node xdm.Node,
+	stateKey string,
+	nodeMaps func() (map[xdm.Node]map[string]xdm.Sequence, map[xdm.Node]map[string]error),
+) (xdm.Sequence, bool, error) {
+	values, deferredErrors := nodeMaps()
+	if nodeErrors, found := deferredErrors[node]; found {
+		if deferred, found := nodeErrors[stateKey]; found {
+			return nil, true, deferred
+		}
+	}
+
+	if nodeValues, found := values[node]; found {
+		value, found := nodeValues[stateKey]
+		return value, found, nil
+	}
+
+	return nil, false, nil
+}
+
 func functionAvailableAtArity(function xpath.Function, arity int) bool {
 	if arity < 0 {
 		return true
@@ -469,10 +473,6 @@ func functionAvailableAtArity(function xpath.Function, arity int) bool {
 	}
 
 	return arity >= function.MinArity() && (function.MaxArity() < 0 || arity <= function.MaxArity())
-}
-
-func (ec *execContext) builtinFunctionAvailable(uri, local string, arity int) bool {
-	return xpath.BuiltinFunctionAvailable(ec.stylesheet.xpathVersion(), uri, local, arity)
 }
 
 // copy-of() returns a deep copy of the context node (zero-argument XSLT 3.0 streaming function).

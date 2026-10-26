@@ -292,40 +292,6 @@ func (v *vm) evalFunctionCall(ctx context.Context, ec *evalContext, e FunctionCa
 	return callResolvedFunction(ctx, ec, r, args, e.Args)
 }
 
-// callNodeListFunction returns the result of the built-in function r applied
-// to the sequence of nodes, and true, when r is one whose result depends only
-// on the length of its argument or its first item. Each of them takes item()*,
-// which every node sequence matches without coercion, in XPath 1.0
-// compatibility mode too.
-func callNodeListFunction(ctx context.Context, ec *evalContext, r resolvedFunction, nodes []xdm.Node) (xdm.Sequence, bool) {
-	if !r.isBuiltin || r.uri != NSFn {
-		return nil, false
-	}
-
-	switch r.name {
-	case fnNameCount:
-		if ec.version == 10 {
-			return xpath10Double(float64(len(nodes))), true
-		}
-
-		return xdm.SingleInteger(int64(len(nodes))), true
-	case fnNameExists, fnNameBoolean:
-		// A sequence that starts with a node has the effective boolean value
-		// true; the empty sequence has false.
-		return xdm.SingleBoolean(len(nodes) > 0), true
-	case fnNameEmpty, fnNameNot:
-		return xdm.SingleBoolean(len(nodes) == 0), true
-	case fnNameHead:
-		if len(nodes) == 0 {
-			return nil, true
-		}
-
-		return xdm.ItemSlice{nodeItemFor(ctx, ec, nodes[0])}, true
-	}
-
-	return nil, false
-}
-
 // callExistsFunction evaluates the one-argument call e when it calls the
 // built-in fn:exists, fn:empty, fn:boolean or fn:not on a location path or a
 // path expression E1/path, which then stops at the first node it selects
@@ -357,59 +323,6 @@ func (v *vm) callExistsFunction(ctx context.Context, ec *evalContext, e Function
 	}
 
 	return xdm.SingleBoolean(found), true, nil
-}
-
-// existsBuiltin returns the local name of the function the one-argument call
-// e calls, and true, when that function is the built-in fn:exists, fn:empty,
-// fn:boolean or fn:not. It returns false when the call names another
-// function or does not resolve.
-func existsBuiltin(ctx context.Context, ec *evalContext, e FunctionCall) (string, bool) {
-	if !isExistsFunctionName(ec, e.Prefix, e.Name) {
-		return "", false
-	}
-
-	r, err := resolveFunctionInfo(ctx, ec, e.Prefix, e.Name, 1)
-	if err != nil {
-		return "", false
-	}
-
-	return r.name, r.isBuiltin && r.uri == NSFn
-}
-
-// isExistsFunctionName reports whether the function name prefix:name is
-// fn:exists, fn:empty, fn:boolean or fn:not, in any of its spellings.
-func isExistsFunctionName(ec *evalContext, prefix, name string) bool {
-	uri := NSFn
-
-	local := name
-	switch {
-	case prefix == "" && strings.HasPrefix(name, "Q{"):
-		idx := strings.Index(name, "}")
-		if idx < 0 {
-			return false
-		}
-
-		uri = name[2:idx]
-		local = name[idx+1:]
-	case prefix != "":
-		resolved, err := resolvePrefix(ec, prefix)
-		if err != nil {
-			return false
-		}
-
-		uri = resolved
-	}
-
-	if uri != NSFn {
-		return false
-	}
-
-	switch local {
-	case fnNameExists, fnNameEmpty, fnNameBoolean, fnNameNot:
-		return true
-	}
-
-	return false
 }
 
 // unionNodes evaluates a union to its node list, as evalUnionExpr does.
@@ -633,6 +546,93 @@ func (v *vm) evalPathStepExpr(ctx context.Context, ec *evalContext, e PathStepEx
 	}
 
 	return pathStepFromNodes(v.evalExpr, ctx, ec, e, nodes)
+}
+
+// callNodeListFunction returns the result of the built-in function r applied
+// to the sequence of nodes, and true, when r is one whose result depends only
+// on the length of its argument or its first item. Each of them takes item()*,
+// which every node sequence matches without coercion, in XPath 1.0
+// compatibility mode too.
+func callNodeListFunction(ctx context.Context, ec *evalContext, r resolvedFunction, nodes []xdm.Node) (xdm.Sequence, bool) {
+	if !r.isBuiltin || r.uri != NSFn {
+		return nil, false
+	}
+
+	switch r.name {
+	case fnNameCount:
+		if ec.version == 10 {
+			return xpath10Double(float64(len(nodes))), true
+		}
+
+		return xdm.SingleInteger(int64(len(nodes))), true
+	case fnNameExists, fnNameBoolean:
+		// A sequence that starts with a node has the effective boolean value
+		// true; the empty sequence has false.
+		return xdm.SingleBoolean(len(nodes) > 0), true
+	case fnNameEmpty, fnNameNot:
+		return xdm.SingleBoolean(len(nodes) == 0), true
+	case fnNameHead:
+		if len(nodes) == 0 {
+			return nil, true
+		}
+
+		return xdm.ItemSlice{nodeItemFor(ctx, ec, nodes[0])}, true
+	}
+
+	return nil, false
+}
+
+// existsBuiltin returns the local name of the function the one-argument call
+// e calls, and true, when that function is the built-in fn:exists, fn:empty,
+// fn:boolean or fn:not. It returns false when the call names another
+// function or does not resolve.
+func existsBuiltin(ctx context.Context, ec *evalContext, e FunctionCall) (string, bool) {
+	if !isExistsFunctionName(ec, e.Prefix, e.Name) {
+		return "", false
+	}
+
+	r, err := resolveFunctionInfo(ctx, ec, e.Prefix, e.Name, 1)
+	if err != nil {
+		return "", false
+	}
+
+	return r.name, r.isBuiltin && r.uri == NSFn
+}
+
+// isExistsFunctionName reports whether the function name prefix:name is
+// fn:exists, fn:empty, fn:boolean or fn:not, in any of its spellings.
+func isExistsFunctionName(ec *evalContext, prefix, name string) bool {
+	uri := NSFn
+
+	local := name
+	switch {
+	case prefix == "" && strings.HasPrefix(name, "Q{"):
+		idx := strings.Index(name, "}")
+		if idx < 0 {
+			return false
+		}
+
+		uri = name[2:idx]
+		local = name[idx+1:]
+	case prefix != "":
+		resolved, err := resolvePrefix(ec, prefix)
+		if err != nil {
+			return false
+		}
+
+		uri = resolved
+	}
+
+	if uri != NSFn {
+		return false
+	}
+
+	switch local {
+	case fnNameExists, fnNameEmpty, fnNameBoolean, fnNameNot:
+		return true
+	}
+
+	return false
 }
 
 // vmOperand is an evaluated operand: the node list of a node-list producer,

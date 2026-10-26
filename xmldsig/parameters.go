@@ -188,15 +188,6 @@ func (s signatureSpec) parameters() SignatureParameters {
 	return copySignatureParameters(SignatureParameters{PSS: s.pss, HMACOutputLength: s.hmacBits})
 }
 
-func copySignatureParameters(p SignatureParameters) SignatureParameters {
-	if p.PSS != nil {
-		cp := *p.PSS
-		p.PSS = &cp
-	}
-
-	return p
-}
-
 func (s signatureSpec) validatePolicy(p Policy) error {
 	if !permits(p.AllowedSignatureMethods, s.algorithm) {
 		return fmt.Errorf("%w: signature algorithm", ErrPolicy)
@@ -282,6 +273,54 @@ func (s signatureSpec) verifyPrepared(key crypto.PublicKey, digest, value []byte
 	}
 
 	return verifyParameterizedPSS(k, digest, value, *s.pss)
+}
+
+func (s signatureSpec) signPrepared(ctx context.Context, signer crypto.Signer, key crypto.PublicKey, digest []byte) ([]byte, error) {
+	if s.pss == nil {
+		return signPreparedValue(ctx, s.algorithm, signer, key, s.hash(), digest)
+	}
+
+	if err := s.validateSigner(signer); err != nil {
+		return nil, err
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var (
+		raw []byte
+		err error
+	)
+	if provider, ok := signer.(ParameterizedPSSSigner); ok {
+		raw, err = provider.SignPSS(ctx, rand.Reader, bytes.Clone(digest), *s.pss)
+	} else {
+		opts := &rsa.PSSOptions{SaltLength: s.pss.SaltLength, Hash: s.pss.Hash}
+		raw, err = signature.SignDigest(ctx, signer, rand.Reader, digest, opts)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("signer: %w", err)
+	}
+
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if err = s.verifyPrepared(key, digest, raw); err != nil {
+		return nil, fmt.Errorf("signer output: %w", err)
+	}
+
+	return append([]byte(nil), raw...), nil
+}
+
+func copySignatureParameters(p SignatureParameters) SignatureParameters {
+	if p.PSS != nil {
+		cp := *p.PSS
+		p.PSS = &cp
+	}
+
+	return p
 }
 
 // verifyParameterizedPSS implements the PUBLIC-key verification portion of
@@ -384,45 +423,6 @@ func verifyParameterizedPSS(k *rsa.PublicKey, digest, signature []byte, p PSSPar
 	}
 
 	return nil
-}
-
-func (s signatureSpec) signPrepared(ctx context.Context, signer crypto.Signer, key crypto.PublicKey, digest []byte) ([]byte, error) {
-	if s.pss == nil {
-		return signPreparedValue(ctx, s.algorithm, signer, key, s.hash(), digest)
-	}
-
-	if err := s.validateSigner(signer); err != nil {
-		return nil, err
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	var (
-		raw []byte
-		err error
-	)
-	if provider, ok := signer.(ParameterizedPSSSigner); ok {
-		raw, err = provider.SignPSS(ctx, rand.Reader, bytes.Clone(digest), *s.pss)
-	} else {
-		opts := &rsa.PSSOptions{SaltLength: s.pss.SaltLength, Hash: s.pss.Hash}
-		raw, err = signature.SignDigest(ctx, signer, rand.Reader, digest, opts)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("signer: %w", err)
-	}
-
-	if err = ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	if err = s.verifyPrepared(key, digest, raw); err != nil {
-		return nil, fmt.Errorf("signer output: %w", err)
-	}
-
-	return append([]byte(nil), raw...), nil
 }
 
 func macHash(method string) (crypto.Hash, bool) {

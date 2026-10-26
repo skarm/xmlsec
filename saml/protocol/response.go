@@ -191,6 +191,145 @@ func VerifyResponse(ctx context.Context, d *document.Document, keys []crypto.Pub
 	return result, nil
 }
 
+// AssertionID returns the authenticated assertion identifier.
+func (r *VerifiedAssertion) AssertionID() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.assertionID
+}
+
+// ResponseID returns the response identifier.
+func (r *VerifiedAssertion) ResponseID() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.responseID
+}
+
+// Issuer returns the authenticated issuer identifier.
+func (r *VerifiedAssertion) Issuer() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.issuer
+}
+
+// Audience returns the accepted audience identifier.
+func (r *VerifiedAssertion) Audience() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.audience
+}
+
+// Recipient returns the accepted subject-confirmation recipient.
+func (r *VerifiedAssertion) Recipient() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.recipient
+}
+
+// InResponseTo returns the correlated request identifier.
+func (r *VerifiedAssertion) InResponseTo() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.requestID
+}
+
+// NameID returns the authenticated subject identifier.
+func (r *VerifiedAssertion) NameID() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.nameID
+}
+
+// NameIDFormat returns the accepted NameID format URI.
+func (r *VerifiedAssertion) NameIDFormat() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.nameIDFormat
+}
+
+// SessionIndex returns the authenticated session identifier.
+func (r *VerifiedAssertion) SessionIndex() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.sessionIndex
+}
+
+// AuthnContext returns the accepted authentication context URI.
+func (r *VerifiedAssertion) AuthnContext() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.contextClass
+}
+
+// IssueInstant returns the message issue instant.
+func (r *VerifiedAssertion) IssueInstant() time.Time {
+	if r == nil {
+		return time.Time{}
+	}
+
+	return r.instant
+}
+
+// AuthnInstant returns the authenticated authentication instant.
+func (r *VerifiedAssertion) AuthnInstant() time.Time {
+	if r == nil {
+		return time.Time{}
+	}
+
+	return r.authnInstant
+}
+
+// NotOnOrAfter returns the exclusive assertion expiration boundary.
+func (r *VerifiedAssertion) NotOnOrAfter() time.Time {
+	if r == nil {
+		return time.Time{}
+	}
+
+	return r.expires
+}
+
+// SessionNotOnOrAfter returns the exclusive session expiration boundary, or zero when
+// absent.
+func (r *VerifiedAssertion) SessionNotOnOrAfter() time.Time {
+	if r == nil {
+		return time.Time{}
+	}
+
+	return r.sessionExpires
+}
+
+// Attributes returns owned copies of the authenticated attribute values.
+func (r *VerifiedAssertion) Attributes() []Attribute {
+	if r == nil {
+		return nil
+	}
+
+	return copyAttributes(r.attributes)
+}
+
+// ResponseAuthenticated returns whether the response envelope itself was authenticated.
+func (r *VerifiedAssertion) ResponseAuthenticated() bool { return r != nil && r.responseSigned }
+
 func validateResponseOptions(ctx context.Context, d *document.Document, o ResponseOptions) error {
 	if ctx == nil || d == nil || o.At.IsZero() || !profile.URI(o.Issuer) || !profile.URI(o.Audience) || !profile.Endpoint(o.Destination, true) || !profile.ID(o.ExpectedRequestID) || len(o.AllowedNameIDFormats) > 16 || len(o.ExpectedAuthnContexts) > 16 || o.ForceAuthn && o.RequestIssueInstant.IsZero() {
 		return ErrProfile
@@ -576,142 +715,6 @@ func parseAttributeValue(x document.Element, l Limits) (string, error) {
 	return s, nil
 }
 
-// AssertionID returns the authenticated assertion identifier.
-func (r *VerifiedAssertion) AssertionID() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.assertionID
-}
-
-// ResponseID returns the response identifier.
-func (r *VerifiedAssertion) ResponseID() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.responseID
-}
-
-// Issuer returns the authenticated issuer identifier.
-func (r *VerifiedAssertion) Issuer() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.issuer
-}
-
-// Audience returns the accepted audience identifier.
-func (r *VerifiedAssertion) Audience() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.audience
-}
-
-// Recipient returns the accepted subject-confirmation recipient.
-func (r *VerifiedAssertion) Recipient() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.recipient
-}
-
-// InResponseTo returns the correlated request identifier.
-func (r *VerifiedAssertion) InResponseTo() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.requestID
-}
-
-// NameID returns the authenticated subject identifier.
-func (r *VerifiedAssertion) NameID() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.nameID
-}
-
-// NameIDFormat returns the accepted NameID format URI.
-func (r *VerifiedAssertion) NameIDFormat() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.nameIDFormat
-}
-
-// SessionIndex returns the authenticated session identifier.
-func (r *VerifiedAssertion) SessionIndex() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.sessionIndex
-}
-
-// AuthnContext returns the accepted authentication context URI.
-func (r *VerifiedAssertion) AuthnContext() string {
-	if r == nil {
-		return ""
-	}
-
-	return r.contextClass
-}
-
-// IssueInstant returns the message issue instant.
-func (r *VerifiedAssertion) IssueInstant() time.Time {
-	if r == nil {
-		return time.Time{}
-	}
-
-	return r.instant
-}
-
-// AuthnInstant returns the authenticated authentication instant.
-func (r *VerifiedAssertion) AuthnInstant() time.Time {
-	if r == nil {
-		return time.Time{}
-	}
-
-	return r.authnInstant
-}
-
-// NotOnOrAfter returns the exclusive assertion expiration boundary.
-func (r *VerifiedAssertion) NotOnOrAfter() time.Time {
-	if r == nil {
-		return time.Time{}
-	}
-
-	return r.expires
-}
-
-// SessionNotOnOrAfter returns the exclusive session expiration boundary, or zero when
-// absent.
-func (r *VerifiedAssertion) SessionNotOnOrAfter() time.Time {
-	if r == nil {
-		return time.Time{}
-	}
-
-	return r.sessionExpires
-}
-
-// Attributes returns owned copies of the authenticated attribute values.
-func (r *VerifiedAssertion) Attributes() []Attribute {
-	if r == nil {
-		return nil
-	}
-
-	return copyAttributes(r.attributes)
-}
-
 func copyAttributes(a []Attribute) []Attribute {
 	out := make([]Attribute, len(a))
 	for i, x := range a {
@@ -721,9 +724,6 @@ func copyAttributes(a []Attribute) []Attribute {
 
 	return out
 }
-
-// ResponseAuthenticated returns whether the response envelope itself was authenticated.
-func (r *VerifiedAssertion) ResponseAuthenticated() bool { return r != nil && r.responseSigned }
 
 // StatusError reports an authenticated non-success response. It does not indicate
 // login success. Remote StatusMessage and StatusDetail are not exposed as trusted

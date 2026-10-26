@@ -80,6 +80,136 @@ func ParseReader(ctx context.Context, src io.Reader, l Limits) (*SignedData, err
 	return parseOwned(ctx, v, l)
 }
 
+// DER returns an owned copy of the definite encoding. ParseBER normalizes its
+// selected BER wrappers/content; it does not retain the original BER encoding.
+func (s *SignedData) DER() []byte {
+	if s == nil {
+		return nil
+	}
+
+	return bytes.Clone(s.raw)
+}
+
+// Size returns the size of the complete definite container in bytes.
+func (s *SignedData) Size() int {
+	if s == nil {
+		return 0
+	}
+
+	return len(s.raw)
+}
+
+// WriterTo returns an io.WriterTo that emits the same encoding as DER without
+// copying the container. It checks ctx and may leave partial output on error.
+func (s *SignedData) WriterTo(ctx context.Context) io.WriterTo {
+	return signedDataWriter{source: s, ctx: ctx}
+}
+
+// Detached returns whether the CMS content is detached.
+func (s *SignedData) Detached() bool { return s != nil && s.detached }
+
+// ContentType returns an owned copy of the content-type object identifier.
+func (s *SignedData) ContentType() asn1.ObjectIdentifier {
+	if s == nil {
+		return nil
+	}
+
+	return append(asn1.ObjectIdentifier(nil), s.contentType...)
+}
+
+// UnverifiedContent returns an owned copy of unauthenticated content; verification is
+// required before accepting it.
+func (s *SignedData) UnverifiedContent() []byte {
+	if s == nil {
+		return nil
+	}
+
+	return bytes.Clone(s.content)
+}
+
+// SignerCount returns the number of parsed CMS signers.
+func (s *SignedData) SignerCount() int {
+	if s == nil {
+		return 0
+	}
+
+	return len(s.signers)
+}
+
+// Certificates returns UNTRUSTED path-building candidates, never trust anchors.
+func (s *SignedData) Certificates() [][]byte {
+	if s == nil {
+		return nil
+	}
+
+	var r [][]byte
+	for _, b := range s.certificates {
+		r = append(r, bytes.Clone(b))
+	}
+
+	return r
+}
+
+// MatchesSigner checks only a SignerIdentifier, not a signature or PKIX trust.
+func (s *SignedData) MatchesSigner(index int, raw []byte) bool {
+	if s == nil || index < 0 || index >= len(s.signers) || len(raw) > 1<<20 {
+		return false
+	}
+
+	c, e := x509cert.ParseDefault(raw)
+	if e != nil {
+		return false
+	}
+
+	match, _ := certificateMatch(context.Background(), s.signers[index], c)
+
+	return match
+}
+
+func (s *SignedData) parseSigners(ctx context.Context, value asn1.RawValue, digests map[crypto.Hash]struct{}, version int) error {
+	si, e := der.SetFields(value, 0, asn1.TagSet, s.limits.MaxSigners)
+	if e != nil || len(si) == 0 {
+		return ErrSyntax
+	}
+
+	wanted := 1
+	if !s.contentType.Equal(oidData()) {
+		wanted = 3
+	}
+
+	for _, rv := range si {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		p, e := parseSigner(rv, s.limits)
+		if e != nil {
+			return e
+		}
+
+		h, e := signature.Hash(p.digest, false)
+		if e != nil {
+			return ErrPolicy
+		}
+
+		if _, exists := digests[h]; !exists {
+			return ErrPolicy
+		}
+
+		if len(p.ski) > 0 {
+			wanted = 3
+		}
+
+		s.signers = append(s.signers, p)
+	}
+
+	if version != wanted {
+		return fmt.Errorf("%w: version", ErrSyntax)
+	}
+
+	return nil
+}
+
 // parseOwned takes a strictly validated DER value backed by private storage.
 func parseOwned(ctx context.Context, v asn1.RawValue, l Limits) (*SignedData, error) {
 	b := v.FullBytes
@@ -218,92 +348,6 @@ func parseCertificateBag(ctx context.Context, value asn1.RawValue, l Limits) ([]
 	return certificates, nil
 }
 
-// DER returns an owned copy of the definite encoding. ParseBER normalizes its
-// selected BER wrappers/content; it does not retain the original BER encoding.
-func (s *SignedData) DER() []byte {
-	if s == nil {
-		return nil
-	}
-
-	return bytes.Clone(s.raw)
-}
-
-// Size returns the size of the complete definite container in bytes.
-func (s *SignedData) Size() int {
-	if s == nil {
-		return 0
-	}
-
-	return len(s.raw)
-}
-
-// WriterTo returns an io.WriterTo that emits the same encoding as DER without
-// copying the container. It checks ctx and may leave partial output on error.
-func (s *SignedData) WriterTo(ctx context.Context) io.WriterTo {
-	return signedDataWriter{source: s, ctx: ctx}
-}
-
-// Detached returns whether the CMS content is detached.
-func (s *SignedData) Detached() bool { return s != nil && s.detached }
-
-// ContentType returns an owned copy of the content-type object identifier.
-func (s *SignedData) ContentType() asn1.ObjectIdentifier {
-	if s == nil {
-		return nil
-	}
-
-	return append(asn1.ObjectIdentifier(nil), s.contentType...)
-}
-
-// UnverifiedContent returns an owned copy of unauthenticated content; verification is
-// required before accepting it.
-func (s *SignedData) UnverifiedContent() []byte {
-	if s == nil {
-		return nil
-	}
-
-	return bytes.Clone(s.content)
-}
-
-// SignerCount returns the number of parsed CMS signers.
-func (s *SignedData) SignerCount() int {
-	if s == nil {
-		return 0
-	}
-
-	return len(s.signers)
-}
-
-// Certificates returns UNTRUSTED path-building candidates, never trust anchors.
-func (s *SignedData) Certificates() [][]byte {
-	if s == nil {
-		return nil
-	}
-
-	var r [][]byte
-	for _, b := range s.certificates {
-		r = append(r, bytes.Clone(b))
-	}
-
-	return r
-}
-
-// MatchesSigner checks only a SignerIdentifier, not a signature or PKIX trust.
-func (s *SignedData) MatchesSigner(index int, raw []byte) bool {
-	if s == nil || index < 0 || index >= len(s.signers) || len(raw) > 1<<20 {
-		return false
-	}
-
-	c, e := x509cert.ParseDefault(raw)
-	if e != nil {
-		return false
-	}
-
-	match, _ := certificateMatch(context.Background(), s.signers[index], c)
-
-	return match
-}
-
 func certificateMatch(ctx context.Context, p parsedSigner, c *x509.Certificate) (bool, error) {
 	if len(p.ski) > 0 {
 		return len(c.SubjectKeyId) > 0 && bytes.Equal(p.ski, c.SubjectKeyId), nil
@@ -319,50 +363,6 @@ func certificateMatch(ctx context.Context, p parsedSigner, c *x509.Certificate) 
 	}
 
 	return match, nil
-}
-
-func (s *SignedData) parseSigners(ctx context.Context, value asn1.RawValue, digests map[crypto.Hash]struct{}, version int) error {
-	si, e := der.SetFields(value, 0, asn1.TagSet, s.limits.MaxSigners)
-	if e != nil || len(si) == 0 {
-		return ErrSyntax
-	}
-
-	wanted := 1
-	if !s.contentType.Equal(oidData()) {
-		wanted = 3
-	}
-
-	for _, rv := range si {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		p, e := parseSigner(rv, s.limits)
-		if e != nil {
-			return e
-		}
-
-		h, e := signature.Hash(p.digest, false)
-		if e != nil {
-			return ErrPolicy
-		}
-
-		if _, exists := digests[h]; !exists {
-			return ErrPolicy
-		}
-
-		if len(p.ski) > 0 {
-			wanted = 3
-		}
-
-		s.signers = append(s.signers, p)
-	}
-
-	if version != wanted {
-		return fmt.Errorf("%w: version", ErrSyntax)
-	}
-
-	return nil
 }
 
 func parseSigner(v asn1.RawValue, l Limits) (parsedSigner, error) {

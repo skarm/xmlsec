@@ -107,6 +107,7 @@ type Constraint struct {
 	// valid distinguishes a parsed constraint from invalid or zero-value state.
 	valid bool
 }
+
 type versionRange struct {
 	// lower is the optional inclusive lower bound.
 	lower *Version
@@ -119,9 +120,6 @@ type versionRange struct {
 	// prefixOnly distinguishes an explicit prefix range from an ordinary bounded range.
 	prefixOnly bool
 }
-
-// Valid reports whether the version-range lexical form is valid.
-func (c Constraint) Valid() bool { return c.valid }
 
 // ParseConstraint reads the XSLT version-range syntax; empty selects any version.
 func ParseConstraint(s string) Constraint {
@@ -148,6 +146,40 @@ func ParseConstraint(s string) Constraint {
 	}
 
 	return result
+}
+
+// Valid reports whether the version-range lexical form is valid.
+func (c Constraint) Valid() bool { return c.valid }
+
+// Matches reports whether a valid version satisfies any alternative range.
+func (c Constraint) Matches(v Version) bool {
+	if !c.valid || !v.valid {
+		return false
+	}
+
+	for _, r := range c.alternatives {
+		if r.wildcard {
+			return true
+		}
+
+		if r.lower != nil && v.Compare(*r.lower) < 0 {
+			continue
+		}
+
+		if r.prefixOnly {
+			if versionPrefix(v, *r.upper) {
+				return true
+			}
+
+			continue
+		}
+
+		if r.upper == nil || v.Compare(*r.upper) <= 0 || r.prefix && versionPrefix(v, *r.upper) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func parseVersionRange(part string) (versionRange, bool) {
@@ -201,37 +233,6 @@ func parseVersionRange(part string) (versionRange, bool) {
 func parseUpperVersion(s string) (Version, bool) {
 	v, prefix := strings.CutSuffix(s, ".*")
 	return Parse(v), prefix
-}
-
-// Matches reports whether a valid version satisfies any alternative range.
-func (c Constraint) Matches(v Version) bool {
-	if !c.valid || !v.valid {
-		return false
-	}
-
-	for _, r := range c.alternatives {
-		if r.wildcard {
-			return true
-		}
-
-		if r.lower != nil && v.Compare(*r.lower) < 0 {
-			continue
-		}
-
-		if r.prefixOnly {
-			if versionPrefix(v, *r.upper) {
-				return true
-			}
-
-			continue
-		}
-
-		if r.upper == nil || v.Compare(*r.upper) <= 0 || r.prefix && versionPrefix(v, *r.upper) {
-			return true
-		}
-	}
-
-	return false
 }
 
 func versionPrefix(v, prefix Version) bool {

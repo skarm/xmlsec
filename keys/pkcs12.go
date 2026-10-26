@@ -28,30 +28,6 @@ type PKCS12Identity struct {
 	ExtraCertificates []*x509.Certificate
 }
 
-// PKCS12ParseOptions enables selected container encodings and identity selection.
-// The zero value requires the strict flat DER profile. Container authentication
-// precedes bag processing for every identity.
-type PKCS12ParseOptions struct {
-	// AllowLegacy permits import-only HMAC-SHA-1 PBKDF2 and traditional SHA-1
-	// container MACs. RFC 9879 PBMAC1 remains SHA-2 only. FIPS rejects SHA-1.
-	AllowLegacy bool
-	// AllowNonDefaultMACKeyLength permits RFC 9879 PBMAC1 keys of 16..64 bytes
-	// whose size differs from the MAC output. Zero requires the MAC output size.
-	// Export always uses the MAC output size; shorter keys remain unsupported.
-	AllowNonDefaultMACKeyLength bool
-	// AllowBER enables indefinite container/ContentInfo/SafeBag wrappers and
-	// constructed OCTET STRING payloads. Keys, algorithms and attributes retain
-	// their strict DER rules. MAC parameters keep primitive/structure checks;
-	// the explicit PBMAC1 outer DEFAULT 1 placeholder in RFC 9879 vectors is
-	// tolerated independently of this option. Original MAC input stays unchanged.
-	AllowBER bool
-	// AllowNestedSafeContents enables bounded recursive safeContentsBag values.
-	AllowNestedSafeContents bool
-	// CertificateSHA256 selects one exact certificate when parsing one identity.
-	// Zero requires exactly one identity. Local names never select a key.
-	CertificateSHA256 [32]byte
-}
-
 // ParsePKCS12 imports exactly one identity from the strict flat DER profile.
 // It authenticates the mandatory password MAC before decryption, enforces
 // aggregate KDF work, and performs no certificate trust processing or I/O.
@@ -83,6 +59,30 @@ func ParsePKCS12WithOptions(ctx context.Context, data, password []byte, options 
 	}
 
 	return nil, ErrFormat
+}
+
+// PKCS12ParseOptions enables selected container encodings and identity selection.
+// The zero value requires the strict flat DER profile. Container authentication
+// precedes bag processing for every identity.
+type PKCS12ParseOptions struct {
+	// AllowLegacy permits import-only HMAC-SHA-1 PBKDF2 and traditional SHA-1
+	// container MACs. RFC 9879 PBMAC1 remains SHA-2 only. FIPS rejects SHA-1.
+	AllowLegacy bool
+	// AllowNonDefaultMACKeyLength permits RFC 9879 PBMAC1 keys of 16..64 bytes
+	// whose size differs from the MAC output. Zero requires the MAC output size.
+	// Export always uses the MAC output size; shorter keys remain unsupported.
+	AllowNonDefaultMACKeyLength bool
+	// AllowBER enables indefinite container/ContentInfo/SafeBag wrappers and
+	// constructed OCTET STRING payloads. Keys, algorithms and attributes retain
+	// their strict DER rules. MAC parameters keep primitive/structure checks;
+	// the explicit PBMAC1 outer DEFAULT 1 placeholder in RFC 9879 vectors is
+	// tolerated independently of this option. Original MAC input stays unchanged.
+	AllowBER bool
+	// AllowNestedSafeContents enables bounded recursive safeContentsBag values.
+	AllowNestedSafeContents bool
+	// CertificateSHA256 selects one exact certificate when parsing one identity.
+	// Zero requires exactly one identity. Local names never select a key.
+	CertificateSHA256 [32]byte
 }
 
 // ParsePKCS12Identities imports every unambiguously bound private-key/certificate
@@ -233,6 +233,16 @@ func decryptSafeContents(state *passwordState, v asn1.RawValue) ([]byte, error) 
 	return decryptPBES2(state, info[1], info[2].Bytes, state.limits.MaxContainerBytes)
 }
 
+type identityParser struct {
+	state   *passwordState
+	options PKCS12ParseOptions
+	keys    []privateBag
+	certs   []*x509.Certificate
+	certIDs [][]byte
+	bags    int
+	depth   int
+}
+
 func (p *identityParser) contentInfos(infos []asn1.RawValue) error {
 	for _, info := range infos {
 		oid, content, err := contentInfo(info)
@@ -267,88 +277,6 @@ func (p *identityParser) contentInfos(infos []asn1.RawValue) error {
 	}
 
 	return nil
-}
-
-// PKCS12Options selects encryption and integrity for one DER PKCS#12 identity.
-// Both integrity modes require a MAC and independently generated salts. Export
-// rejects RC2, 3DES, SHA-1, BER and containers without a MAC. Password bytes must be
-// UTF-8 and nonempty; only import accepts an empty password.
-type PKCS12Options struct {
-	// Encryption selects the private-key encryption parameters. Zero fields select
-	// defaults.
-	Encryption EncryptionOptions
-	// ClassicMAC selects RFC 7292 SHA-2 integrity and requires a BMP-only password.
-	// False selects RFC 9879 PBMAC1 with UTF-8 passwords.
-	ClassicMAC bool
-}
-
-// MarshalPKCS12 exports one private key, its matching certificate and optional
-// additional certificates to a password-authenticated DER PFX. It encrypts both
-// certificate SafeContents and the PKCS#8 key with separate PBES2 salts/IVs;
-// the MAC is mandatory. Zero options use RFC 9879 PBMAC1. ClassicMAC explicitly
-// selects RFC 7292 SHA-2 integrity for older readers. Certificate objects are
-// parsed from their Raw DER, ownership is copied and no trust is inferred.
-// Password must be nonempty UTF-8. It performs no file/network I/O.
-func MarshalPKCS12(ctx context.Context, identity PKCS12Identity, password []byte, options PKCS12Options, limits Limits) ([]byte, error) {
-	parts, err := preparePKCS12(ctx, identity, password, options, limits)
-	if err != nil {
-		return nil, err
-	}
-
-	return parts.bytes(ctx)
-}
-
-// WritePKCS12 exports a password-authenticated PFX directly to dst. It retains
-// certificate snapshots and ciphertext but does not build a complete PFX or
-// repeated nested DER buffers. Limits and KDF work are checked before output.
-// The destination stays open and may contain partial output on error.
-func WritePKCS12(ctx context.Context, dst io.Writer, identity PKCS12Identity, password []byte, options PKCS12Options, limits Limits) (int64, error) {
-	if nilcheck.IsNil(dst) {
-		return 0, ErrPolicy
-	}
-
-	parts, err := preparePKCS12(ctx, identity, password, options, limits)
-	if err != nil {
-		return 0, err
-	}
-
-	return parts.write(ctx, dst)
-}
-
-func oidData() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 1} }
-
-func oidEncryptedData() asn1.ObjectIdentifier {
-	return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 6}
-}
-
-func oidShroudedKeyBag() asn1.ObjectIdentifier {
-	return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 12, 10, 1, 2}
-}
-
-func oidCertBag() asn1.ObjectIdentifier {
-	return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 12, 10, 1, 3}
-}
-
-func oidX509Cert() asn1.ObjectIdentifier {
-	return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 22, 1}
-}
-
-func oidLocalKeyID() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 21} }
-
-type privateBag struct {
-	key    crypto.Signer
-	id     []byte
-	public []byte
-}
-
-type identityParser struct {
-	state   *passwordState
-	options PKCS12ParseOptions
-	keys    []privateBag
-	certs   []*x509.Certificate
-	certIDs [][]byte
-	bags    int
-	depth   int
 }
 
 func (p *identityParser) identities() ([]*PKCS12Identity, error) {
@@ -507,6 +435,78 @@ func (p *identityParser) privateBag(value asn1.RawValue, id []byte, shrouded boo
 	p.keys = append(p.keys, privateBag{key: key, id: id, public: public})
 
 	return nil
+}
+
+// PKCS12Options selects encryption and integrity for one DER PKCS#12 identity.
+// Both integrity modes require a MAC and independently generated salts. Export
+// rejects RC2, 3DES, SHA-1, BER and containers without a MAC. Password bytes must be
+// UTF-8 and nonempty; only import accepts an empty password.
+type PKCS12Options struct {
+	// Encryption selects the private-key encryption parameters. Zero fields select
+	// defaults.
+	Encryption EncryptionOptions
+	// ClassicMAC selects RFC 7292 SHA-2 integrity and requires a BMP-only password.
+	// False selects RFC 9879 PBMAC1 with UTF-8 passwords.
+	ClassicMAC bool
+}
+
+// MarshalPKCS12 exports one private key, its matching certificate and optional
+// additional certificates to a password-authenticated DER PFX. It encrypts both
+// certificate SafeContents and the PKCS#8 key with separate PBES2 salts/IVs;
+// the MAC is mandatory. Zero options use RFC 9879 PBMAC1. ClassicMAC explicitly
+// selects RFC 7292 SHA-2 integrity for older readers. Certificate objects are
+// parsed from their Raw DER, ownership is copied and no trust is inferred.
+// Password must be nonempty UTF-8. It performs no file/network I/O.
+func MarshalPKCS12(ctx context.Context, identity PKCS12Identity, password []byte, options PKCS12Options, limits Limits) ([]byte, error) {
+	parts, err := preparePKCS12(ctx, identity, password, options, limits)
+	if err != nil {
+		return nil, err
+	}
+
+	return parts.bytes(ctx)
+}
+
+// WritePKCS12 exports a password-authenticated PFX directly to dst. It retains
+// certificate snapshots and ciphertext but does not build a complete PFX or
+// repeated nested DER buffers. Limits and KDF work are checked before output.
+// The destination stays open and may contain partial output on error.
+func WritePKCS12(ctx context.Context, dst io.Writer, identity PKCS12Identity, password []byte, options PKCS12Options, limits Limits) (int64, error) {
+	if nilcheck.IsNil(dst) {
+		return 0, ErrPolicy
+	}
+
+	parts, err := preparePKCS12(ctx, identity, password, options, limits)
+	if err != nil {
+		return 0, err
+	}
+
+	return parts.write(ctx, dst)
+}
+
+func oidData() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 1} }
+
+func oidEncryptedData() asn1.ObjectIdentifier {
+	return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 6}
+}
+
+func oidShroudedKeyBag() asn1.ObjectIdentifier {
+	return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 12, 10, 1, 2}
+}
+
+func oidCertBag() asn1.ObjectIdentifier {
+	return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 12, 10, 1, 3}
+}
+
+func oidX509Cert() asn1.ObjectIdentifier {
+	return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 22, 1}
+}
+
+func oidLocalKeyID() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 21} }
+
+type privateBag struct {
+	key    crypto.Signer
+	id     []byte
+	public []byte
 }
 
 func oidKeyBag() asn1.ObjectIdentifier {

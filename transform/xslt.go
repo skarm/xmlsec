@@ -210,14 +210,6 @@ func (s *Stylesheet) prepare(ctx context.Context, d *Document, options XSLTConte
 	return ctx, cancel, invocation, &collector, nil
 }
 
-func traceWriter(w io.Writer) io.Writer {
-	if w == nil {
-		return io.Discard
-	}
-
-	return w
-}
-
 func (s *Stylesheet) initialInvocation(ctx context.Context, source *xdm.Document, options XSLTContext) (xslt.Invocation, error) {
 	invocation := s.native.Transform(source)
 	if options.Template.Local != "" {
@@ -296,6 +288,14 @@ func (s *Stylesheet) initialInvocation(ctx context.Context, source *xdm.Document
 	}
 
 	return invocation, nil
+}
+
+func traceWriter(w io.Writer) io.Writer {
+	if w == nil {
+		return io.Discard
+	}
+
+	return w
 }
 
 // Message retains xsl:message output without publishing it to a global stream.

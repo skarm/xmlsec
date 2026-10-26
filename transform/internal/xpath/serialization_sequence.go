@@ -253,18 +253,6 @@ type serializationBuffer struct {
 	err error
 }
 
-func (w *serializationBuffer) charge(size int) error {
-	if w.err == nil {
-		w.err = ChargeString(w.ctx, size)
-	}
-
-	if w.err == nil {
-		w.err = Charge(w.ctx, 1+size/64)
-	}
-
-	return w.err
-}
-
 // NewSerializationBuffer bounds legacy in-memory serializers before growth.
 // Result preserves the first failure even when an old write site ignores it.
 func NewSerializationBuffer(ctx context.Context) *serializationBuffer {
@@ -314,6 +302,18 @@ func (w *serializationBuffer) WriteRune(value rune) (int, error) {
 	}
 
 	return w.Builder.WriteRune(value)
+}
+
+func (w *serializationBuffer) charge(size int) error {
+	if w.err == nil {
+		w.err = ChargeString(w.ctx, size)
+	}
+
+	if w.err == nil {
+		w.err = Charge(w.ctx, 1+size/64)
+	}
+
+	return w.err
 }
 
 // ValidateSerializationDocument enforces the document shape required when a

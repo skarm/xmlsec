@@ -27,6 +27,15 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
+const (
+	uriSHA256      = "http://www.w3.org/2001/04/xmlenc#sha256"
+	subjectIssuer  = "CN=issuer"
+	subjectBounded = "CN=bounded"
+	nameChanged    = "changed"
+	nameEmpty      = "empty"
+	uriUnknown     = "urn:unknown"
+)
+
 func TestBuildX509DataIndependentFixtures(t *testing.T) {
 	data := make([][]byte, 0, 3)
 
@@ -67,15 +76,6 @@ func TestBuildX509DataIndependentFixtures(t *testing.T) {
 		t.Fatal("independent DER/selector bytes changed")
 	}
 }
-
-const (
-	uriSHA256      = "http://www.w3.org/2001/04/xmlenc#sha256"
-	subjectIssuer  = "CN=issuer"
-	subjectBounded = "CN=bounded"
-	nameChanged    = "changed"
-	nameEmpty      = "empty"
-	uriUnknown     = "urn:unknown"
-)
 
 func TestBuildX509DataGroups(t *testing.T) {
 	chain := testcert.New(t)

@@ -76,25 +76,6 @@ func (p *parser) configureRetrieval() error {
 	return nil
 }
 
-func retrievalType(typ string) (document.Name, error) {
-	switch typ {
-	case "":
-		return document.Name{}, nil
-	case RawX509Certificate, Namespace + nameX509Data:
-		return document.Name{Space: Namespace, Local: nameX509Data}, nil
-	case Namespace + nameRSAKeyValue:
-		return document.Name{Space: Namespace, Local: nameRSAKeyValue}, nil
-	case Namespace + nameDSAKeyValue:
-		return document.Name{Space: Namespace, Local: nameDSAKeyValue}, nil
-	case Namespace11 + nameECKeyValue:
-		return document.Name{Space: Namespace11, Local: nameECKeyValue}, nil
-	case Namespace11 + nameDEREncodedKeyValue:
-		return document.Name{Space: Namespace11, Local: nameDEREncodedKeyValue}, nil
-	default:
-		return document.Name{}, fmt.Errorf("%w: RetrievalMethod Type", ErrUnsupported)
-	}
-}
-
 func (p *parser) prepareRetrieval(s *scope, n *tree.Node) (retrievalPlan, error) {
 	key := visitKey{s.doc, n}
 	if plan, ok := p.retrievalPlans[key]; ok {
@@ -348,6 +329,25 @@ func (p *parser) retrievalScope(data []byte, resource string) (*scope, error) {
 	p.transformedScopes[key] = next
 
 	return next, nil
+}
+
+func retrievalType(typ string) (document.Name, error) {
+	switch typ {
+	case "":
+		return document.Name{}, nil
+	case RawX509Certificate, Namespace + nameX509Data:
+		return document.Name{Space: Namespace, Local: nameX509Data}, nil
+	case Namespace + nameRSAKeyValue:
+		return document.Name{Space: Namespace, Local: nameRSAKeyValue}, nil
+	case Namespace + nameDSAKeyValue:
+		return document.Name{Space: Namespace, Local: nameDSAKeyValue}, nil
+	case Namespace11 + nameECKeyValue:
+		return document.Name{Space: Namespace11, Local: nameECKeyValue}, nil
+	case Namespace11 + nameDEREncodedKeyValue:
+		return document.Name{Space: Namespace11, Local: nameDEREncodedKeyValue}, nil
+	default:
+		return document.Name{}, fmt.Errorf("%w: RetrievalMethod Type", ErrUnsupported)
+	}
 }
 
 func retrievalError(err error) error {

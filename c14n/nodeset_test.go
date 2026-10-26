@@ -14,6 +14,11 @@ import (
 	"github.com/skarm/xmlsec/document"
 )
 
+const (
+	xmlRXmlBaseABCCXml    = "<r xml:base=\"a//b/../c\"><c xml:base=\"..\"></c></r>"
+	xmlRXmlnsUrnRCXmlnsXX = "<r xmlns=\"urn:r\"><c xmlns=\"\"><x></x></c></r>"
+)
+
 func TestNormativeCanonicalVectors(t *testing.T) {
 	raw, err := os.ReadFile("testdata/normative-vectors.json")
 	if err != nil {
@@ -228,11 +233,6 @@ func canonicalVectorNode(t *testing.T, doc *document.Document, path []int) docum
 
 	return node
 }
-
-const (
-	xmlRXmlBaseABCCXml    = "<r xml:base=\"a//b/../c\"><c xml:base=\"..\"></c></r>"
-	xmlRXmlnsUrnRCXmlnsXX = "<r xmlns=\"urn:r\"><c xmlns=\"\"><x></x></c></r>"
-)
 
 func TestCanonicalAlgorithms(t *testing.T) {
 	tests := []struct {

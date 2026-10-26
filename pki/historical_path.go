@@ -103,6 +103,100 @@ func (s *HistoricalSession) historicalTarget(ctx context.Context, raw []byte) (*
 	return certificate, nil
 }
 
+func (s *HistoricalSession) pathsFor(ctx context.Context, target *x509.Certificate) ([]*HistoricalPath, error) {
+	digest := sha256.Sum256(target.Raw)
+	if cached, found := s.paths[digest]; found {
+		return append([]*HistoricalPath(nil), cached...), ctx.Err()
+	}
+
+	certificates := make([]*x509.Certificate, 0, len(s.certificates))
+	for _, certificate := range s.certificates {
+		certificates = append(certificates, certificate)
+	}
+
+	sort.Slice(certificates, func(i, j int) bool { return bytes.Compare(certificates[i].Raw, certificates[j].Raw) < 0 })
+
+	roots := make(map[[32]byte]struct{}, len(s.verifier.anchorCertificates))
+	for _, raw := range s.verifier.anchorCertificates {
+		roots[sha256.Sum256(raw)] = struct{}{}
+	}
+
+	search := historicalPathSearch{session: s, certificates: certificates, roots: roots}
+	if err := search.visit(ctx, []*x509.Certificate{target}, map[[32]byte]struct{}{digest: {}}); err != nil {
+		return nil, err
+	}
+
+	s.paths[digest] = search.paths
+
+	return append([]*HistoricalPath(nil), search.paths...), nil
+}
+
+func (s *HistoricalSession) checkPath(ctx context.Context, path *HistoricalPath) (*HistoricalPathAssessment, error) {
+	return s.checkPathUsages(ctx, path, s.verifier.usages)
+}
+
+func (s *HistoricalSession) checkPathUsages(ctx context.Context, path *HistoricalPath, usages []x509.ExtKeyUsage) (*HistoricalPathAssessment, error) {
+	if err := s.validPath(path); err != nil {
+		return nil, err
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := s.verifier.validateChainPolicy(path.chain); err != nil {
+		return nil, err
+	}
+
+	s.signatureWork += len(path.chain)
+	if s.signatureWork > 4096 {
+		return nil, fmt.Errorf("%w: %w: historical signature work", ErrPolicy, ErrLimit)
+	}
+
+	reference, err := historicalReferenceTime(path.chain, s.options.Model)
+	if err != nil {
+		return nil, err
+	}
+
+	views := make([]*x509.Certificate, len(path.chain))
+	for index, original := range path.chain {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		view, err := normalizedCertificate(ctx, original)
+		if err != nil {
+			return nil, err
+		}
+		// Calendar rules were checked under the selected model above. These private
+		// lookup views adapt crypto/x509's fixed shell calendar without changing the
+		// original signed TBS or any returned certificate metadata.
+		view.NotBefore = reference.Add(-time.Hour)
+		view.NotAfter = reference.Add(time.Hour)
+		views[index] = view
+	}
+
+	roots, intermediates := x509.NewCertPool(), x509.NewCertPool()
+	roots.AddCert(views[len(views)-1])
+
+	for _, view := range historicalIntermediates(views) {
+		intermediates.AddCert(view)
+	}
+
+	chains, err := views[0].Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, CurrentTime: reference, KeyUsages: append([]x509.ExtKeyUsage(nil), usages...), MaxConstraintComparisions: 100000})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrCertificate, err)
+	}
+
+	for _, chain := range chains {
+		if sameHistoricalChain(chain, path.chain) {
+			return &HistoricalPathAssessment{path: path, reference: reference, model: s.options.Model}, ctx.Err()
+		}
+	}
+
+	return nil, fmt.Errorf("%w: selected historical path was not validated", ErrCertificate)
+}
+
 func (v *Verifier) validateHistoricalLeaf(certificate *x509.Certificate) error {
 	if err := allowedPublicKey(certificate.PublicKey); err != nil {
 		return err
@@ -142,34 +236,6 @@ func historicalPathFailure(err error) string {
 	}
 
 	return historicalChainFailure
-}
-
-func (s *HistoricalSession) pathsFor(ctx context.Context, target *x509.Certificate) ([]*HistoricalPath, error) {
-	digest := sha256.Sum256(target.Raw)
-	if cached, found := s.paths[digest]; found {
-		return append([]*HistoricalPath(nil), cached...), ctx.Err()
-	}
-
-	certificates := make([]*x509.Certificate, 0, len(s.certificates))
-	for _, certificate := range s.certificates {
-		certificates = append(certificates, certificate)
-	}
-
-	sort.Slice(certificates, func(i, j int) bool { return bytes.Compare(certificates[i].Raw, certificates[j].Raw) < 0 })
-
-	roots := make(map[[32]byte]struct{}, len(s.verifier.anchorCertificates))
-	for _, raw := range s.verifier.anchorCertificates {
-		roots[sha256.Sum256(raw)] = struct{}{}
-	}
-
-	search := historicalPathSearch{session: s, certificates: certificates, roots: roots}
-	if err := search.visit(ctx, []*x509.Certificate{target}, map[[32]byte]struct{}{digest: {}}); err != nil {
-		return nil, err
-	}
-
-	s.paths[digest] = search.paths
-
-	return append([]*HistoricalPath(nil), search.paths...), nil
 }
 
 type historicalPathSearch struct {
@@ -246,72 +312,6 @@ func (search *historicalPathSearch) visit(ctx context.Context, chain []*x509.Cer
 	}
 
 	return nil
-}
-
-func (s *HistoricalSession) checkPath(ctx context.Context, path *HistoricalPath) (*HistoricalPathAssessment, error) {
-	return s.checkPathUsages(ctx, path, s.verifier.usages)
-}
-
-func (s *HistoricalSession) checkPathUsages(ctx context.Context, path *HistoricalPath, usages []x509.ExtKeyUsage) (*HistoricalPathAssessment, error) {
-	if err := s.validPath(path); err != nil {
-		return nil, err
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	if err := s.verifier.validateChainPolicy(path.chain); err != nil {
-		return nil, err
-	}
-
-	s.signatureWork += len(path.chain)
-	if s.signatureWork > 4096 {
-		return nil, fmt.Errorf("%w: %w: historical signature work", ErrPolicy, ErrLimit)
-	}
-
-	reference, err := historicalReferenceTime(path.chain, s.options.Model)
-	if err != nil {
-		return nil, err
-	}
-
-	views := make([]*x509.Certificate, len(path.chain))
-	for index, original := range path.chain {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		view, err := normalizedCertificate(ctx, original)
-		if err != nil {
-			return nil, err
-		}
-		// Calendar rules were checked under the selected model above. These private
-		// lookup views adapt crypto/x509's fixed shell calendar without changing the
-		// original signed TBS or any returned certificate metadata.
-		view.NotBefore = reference.Add(-time.Hour)
-		view.NotAfter = reference.Add(time.Hour)
-		views[index] = view
-	}
-
-	roots, intermediates := x509.NewCertPool(), x509.NewCertPool()
-	roots.AddCert(views[len(views)-1])
-
-	for _, view := range historicalIntermediates(views) {
-		intermediates.AddCert(view)
-	}
-
-	chains, err := views[0].Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, CurrentTime: reference, KeyUsages: append([]x509.ExtKeyUsage(nil), usages...), MaxConstraintComparisions: 100000})
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrCertificate, err)
-	}
-
-	for _, chain := range chains {
-		if sameHistoricalChain(chain, path.chain) {
-			return &HistoricalPathAssessment{path: path, reference: reference, model: s.options.Model}, ctx.Err()
-		}
-	}
-
-	return nil, fmt.Errorf("%w: selected historical path was not validated", ErrCertificate)
 }
 
 func sameHistoricalChain(a, b []*x509.Certificate) bool {

@@ -11,6 +11,8 @@ import (
 	"github.com/skarm/xmlsec/transform"
 )
 
+const xmlIDInvalidValueExpression = `let $d := parse-xml('<r xml:id=" one &#x9; two "/>') return string($d/r/@xml:id) eq 'one two' and empty(id('one', $d))`
+
 func relativeNamespaceExpressions() map[string]string {
 	return map[string]string{
 		`namespace-uri(parse-xml('<p:r xmlns:p="relative" xml:base="https://example.test/"/>')/*)`:                "relative",
@@ -172,8 +174,6 @@ func TestProjectDOMNavigationAndSerialization(t *testing.T) {
 		}
 	}
 }
-
-const xmlIDInvalidValueExpression = `let $d := parse-xml('<r xml:id=" one &#x9; two "/>') return string($d/r/@xml:id) eq 'one two' and empty(id('one', $d))`
 
 func xmlIDExpressions() map[string]string {
 	return map[string]string{

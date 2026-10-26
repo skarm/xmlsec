@@ -47,16 +47,6 @@ func (e *Engine) registerFunctions(functions []Function) error {
 	return nil
 }
 
-func reservedFunctionNamespace(uri string) bool {
-	switch uri {
-	case "", lexicon.NamespaceXML, lexicon.NamespaceXMLNS, lexicon.NamespaceXSLT,
-		xpath.NSFn, xpath.NSMath, xpath.NSMap, xpath.NSArray, xpath.NSErr, xpath.NSXS, lexicon.NamespaceXSI:
-		return true
-	default:
-		return false
-	}
-}
-
 func (e *Engine) languageContext(ctx context.Context) context.Context {
 	ctx = xpath.WithInvocationScope(ctx)
 	ctx = xpath.WithTextResourceCacheLimit(ctx, e.limits.MaxResourceBytes)
@@ -89,6 +79,16 @@ func (e *Engine) transformFunction(baseURI string) xpath.Function {
 	}
 
 	return xpathTransformFunction{TypedFunctionByArity: xslt.TransformFunction(options...)}
+}
+
+func reservedFunctionNamespace(uri string) bool {
+	switch uri {
+	case "", lexicon.NamespaceXML, lexicon.NamespaceXMLNS, lexicon.NamespaceXSLT,
+		xpath.NSFn, xpath.NSMath, xpath.NSMap, xpath.NSArray, xpath.NSErr, xpath.NSXS, lexicon.NamespaceXSI:
+		return true
+	default:
+		return false
+	}
 }
 
 type xpathTransformFunction struct{ xpath.TypedFunctionByArity }

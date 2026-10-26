@@ -98,26 +98,6 @@ func New(ctx context.Context, now time.Time, facts []Fact) (*Set, error) {
 	return &Set{now: now.UTC(), facts: owned}, nil
 }
 
-func compare(a, b Fact) int {
-	if c := slices.Compare(a.Digest[:], b.Digest[:]); c != 0 {
-		return c
-	}
-
-	if a.Kind < b.Kind {
-		return -1
-	}
-
-	if a.Kind > b.Kind {
-		return 1
-	}
-
-	if c := a.At.Compare(b.At); c != 0 {
-		return c
-	}
-
-	return slices.Compare(a.Source[:], b.Source[:])
-}
-
 // Valid reports whether this set was constructed by a library workflow.
 func (s *Set) Valid() bool { return s != nil && !s.now.IsZero() }
 
@@ -182,4 +162,24 @@ func (s *Set) EarliestKind(digest [32]byte, kind Kind) (time.Time, bool) {
 func (s *Set) HasAtOrBefore(digest [32]byte, at time.Time) bool {
 	earliest, ok := s.Earliest(digest)
 	return ok && !earliest.After(at)
+}
+
+func compare(a, b Fact) int {
+	if c := slices.Compare(a.Digest[:], b.Digest[:]); c != 0 {
+		return c
+	}
+
+	if a.Kind < b.Kind {
+		return -1
+	}
+
+	if a.Kind > b.Kind {
+		return 1
+	}
+
+	if c := a.At.Compare(b.At); c != 0 {
+		return c
+	}
+
+	return slices.Compare(a.Source[:], b.Source[:])
 }

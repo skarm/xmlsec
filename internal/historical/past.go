@@ -52,49 +52,6 @@ type pastSignatureEvaluation struct {
 	certificate *x509.Certificate
 }
 
-// pastSignature applies §5.6.2.4 after current-time validation failed with a
-// recoverable indication. Exact path alternatives are tried independently.
-func pastSignature(ctx context.Context, session *pki.HistoricalSession, material signedMaterial, current string, proofs *historicalproof.Set, options pki.HistoricalOptions) pastOutcome {
-	out := pastOutcome{sub: current, err: ErrValidation}
-	if proofs == nil || !proofs.Valid() || !recoverable(current) {
-		return out
-	}
-
-	best, exists := proofs.Earliest(material.digest)
-	if !exists {
-		return out
-	}
-
-	out.best = best
-
-	certificate, err := x509cert.ParseDefault(material.certificate)
-	if err != nil {
-		out.err = err
-		return out
-	}
-
-	paths, err := session.Paths(ctx, material.certificate)
-	if err != nil {
-		out.err = err
-		return out
-	}
-
-	evaluation := pastSignatureEvaluation{material: material, current: current, proofs: proofs, options: options, certificate: certificate}
-
-	for _, path := range paths {
-		if err := ctx.Err(); err != nil {
-			out.err = err
-			return out
-		}
-
-		if evaluation.evaluatePath(ctx, session, path, &out) {
-			return out
-		}
-	}
-
-	return out
-}
-
 func (e *pastSignatureEvaluation) evaluatePath(ctx context.Context, session *pki.HistoricalSession, path *pki.HistoricalPath, out *pastOutcome) bool {
 	past, report, err := session.ValidatePastPath(ctx, path, e.proofs)
 	appendPastTransitions(out, report)
@@ -130,16 +87,6 @@ func (e *pastSignatureEvaluation) evaluatePath(ctx context.Context, session *pki
 	out.steps = append(out.steps, Step{Clause: "5.6.2.4(7)", Action: "past-signature-validation", Object: e.material.digest, Before: e.proofs.Now(), After: past.ValidationTime()})
 
 	return true
-}
-
-func appendPastTransitions(out *pastOutcome, report *pki.PastCertificateReport) {
-	if report == nil {
-		return
-	}
-
-	for _, transition := range report.Transitions() {
-		out.steps = append(out.steps, Step{Clause: transition.Clause, Action: transition.Reason, Object: decodeDigest(transition.CertificateSHA256), Source: decodeDigest(transition.EvidenceSHA256), Before: transition.Before, After: transition.After, SubIndication: report.SubIndication()})
-	}
 }
 
 func (e *pastSignatureEvaluation) acceptsPast(out *pastOutcome, past *pki.PastCertificateResult, claims []*pki.VerifiedEvidence) (bool, bool) {
@@ -205,6 +152,59 @@ func (e *pastSignatureEvaluation) signatureProofRecovery(out *pastOutcome, claim
 	}
 
 	return false, false
+}
+
+// pastSignature applies §5.6.2.4 after current-time validation failed with a
+// recoverable indication. Exact path alternatives are tried independently.
+func pastSignature(ctx context.Context, session *pki.HistoricalSession, material signedMaterial, current string, proofs *historicalproof.Set, options pki.HistoricalOptions) pastOutcome {
+	out := pastOutcome{sub: current, err: ErrValidation}
+	if proofs == nil || !proofs.Valid() || !recoverable(current) {
+		return out
+	}
+
+	best, exists := proofs.Earliest(material.digest)
+	if !exists {
+		return out
+	}
+
+	out.best = best
+
+	certificate, err := x509cert.ParseDefault(material.certificate)
+	if err != nil {
+		out.err = err
+		return out
+	}
+
+	paths, err := session.Paths(ctx, material.certificate)
+	if err != nil {
+		out.err = err
+		return out
+	}
+
+	evaluation := pastSignatureEvaluation{material: material, current: current, proofs: proofs, options: options, certificate: certificate}
+
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			out.err = err
+			return out
+		}
+
+		if evaluation.evaluatePath(ctx, session, path, &out) {
+			return out
+		}
+	}
+
+	return out
+}
+
+func appendPastTransitions(out *pastOutcome, report *pki.PastCertificateReport) {
+	if report == nil {
+		return
+	}
+
+	for _, transition := range report.Transitions() {
+		out.steps = append(out.steps, Step{Clause: transition.Clause, Action: transition.Reason, Object: decodeDigest(transition.CertificateSHA256), Source: decodeDigest(transition.EvidenceSHA256), Before: transition.Before, After: transition.After, SubIndication: report.SubIndication()})
+	}
 }
 
 func rejectBeforeIssuance(out *pastOutcome, certificate *x509.Certificate) bool {

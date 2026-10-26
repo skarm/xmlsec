@@ -126,57 +126,6 @@ func (ec *execContext) execAnalyzeString(ctx context.Context, inst *analyzeStrin
 	return ec.executeAnalyzeStringSegments(ctx, inst, re, input.text, findLimit, totalSegments)
 }
 
-// countAnalyzeStringSegments streams matches and rejects the first over-budget
-// match before segment output or an input-sized match list can be built.
-func countAnalyzeStringSegments(ctx context.Context, re *xpath.Regex, input string, maxMatches, findLimit int) (int, error) {
-	totalSegments := 0
-	matchCount := 0
-	pos := 0
-
-	var earlyErr error
-
-	countErr := re.EachSubmatchIndex(ctx, input, findLimit, func(m []int) bool {
-		if err := ctx.Err(); err != nil {
-			earlyErr = err
-			return false
-		}
-
-		matchCount++
-		if maxMatches >= 0 && matchCount > maxMatches {
-			earlyErr = fmt.Errorf("xsl:analyze-string produced more than %d matches: %w", maxMatches, ErrResourceTooLarge)
-
-			return false
-		}
-
-		if m[0] > pos {
-			totalSegments++
-		}
-
-		totalSegments++
-		pos = m[1]
-
-		return true
-	})
-
-	if earlyErr != nil {
-		return 0, earlyErr
-	}
-
-	if countErr != nil {
-		if failure := preserveControlFailure(ctx, countErr); failure != nil {
-			return 0, failure
-		}
-
-		return 0, dynamicErrorCause(errCodeXTDE1140, countErr, "xsl:analyze-string regex match error: %v", countErr)
-	}
-
-	if pos < len(input) {
-		totalSegments++
-	}
-
-	return totalSegments, nil
-}
-
 func (ec *execContext) analyzeStringInput(ctx context.Context, inst *analyzeStringInst) (analyzeStringSource, error) {
 	result, err := ec.evalXPath(ctx, inst.Select, ec.contextNode)
 	if err != nil {
@@ -220,28 +169,6 @@ func (ec *execContext) analyzeStringInput(ctx context.Context, inst *analyzeStri
 	}
 
 	return analyzeStringSource{text: input, version2: isV2, present: true}, nil
-}
-
-// analyzeStringSelectTypeOK reports whether an atomized select value is usable as
-// the xs:string input of xsl:analyze-string: xs:string / xs:anyURI /
-// xs:untypedAtomic, or a schema-defined simple type derived from xs:string (whose
-// BaseType is xs:string, so its string-backed value substitutes for xs:string).
-func analyzeStringSelectTypeOK(av xdm.AtomicValue) bool {
-	switch av.TypeName {
-	case xdm.TypeString, xdm.TypeUntypedAtomic, xdm.TypeAnyURI:
-		return true
-	}
-	// A user-defined simple type carries its built-in base in BaseType; accept it
-	// when that base is (or derives from) xs:string.
-	if av.BaseType == xdm.TypeString || av.BaseType == xdm.TypeAnyURI {
-		return true
-	}
-
-	if av.BaseType != "" && xdm.BuiltinIsSubtypeOf(av.BaseType, xdm.TypeString) {
-		return true
-	}
-
-	return false
 }
 
 func (ec *execContext) executeAnalyzeStringSegments(ctx context.Context, inst *analyzeStringInst, re *xpath.Regex, input string, findLimit, totalSegments int) error {
@@ -358,28 +285,6 @@ func (ec *execContext) executeAnalyzeStringSegments(ctx context.Context, inst *a
 	return nil
 }
 
-// analyzeStringPart detaches segments that can escape through xsl:sequence or
-// regex-group(), without copying an unchanged complete input.
-func analyzeStringPart(input string, start, end int) string {
-	if start == 0 && end == len(input) {
-		return input
-	}
-
-	return strings.Clone(input[start:end])
-}
-
-func analyzeStringGroups(input string, matches []int) []string {
-	groups := make([]string, len(matches)/2)
-	for g := range groups {
-		start, end := matches[2*g], matches[2*g+1]
-		if start >= 0 && end >= 0 {
-			groups[g] = analyzeStringPart(input, start, end)
-		}
-	}
-
-	return groups
-}
-
 // execWherePopulated applies section 8.4.1 to each item before the caller
 // constructs complex content. Capturing the raw sequence preserves document,
 // text, attribute and array boundaries until after deemed-empty filtering.
@@ -403,72 +308,6 @@ func (ec *execContext) execWherePopulated(ctx context.Context, inst *wherePopula
 	}
 
 	return ec.outputSequence(populated)
-}
-
-type conditionalEmptiness uint8
-
-const (
-	deemedEmpty conditionalEmptiness = iota
-	vacuousItem
-)
-
-// conditionalItemEmpty keeps the distinct definitions in sections 8.4.1 and
-// 8.4.2 while sharing bounded recursive array flattening and atomic conversion.
-func conditionalItemEmpty(ctx context.Context, item xdm.Item, rule conditionalEmptiness, depth int) (bool, error) {
-	if err := xpath.Charge(ctx, 1); err != nil {
-		return false, err
-	}
-
-	if depth > xpath.DepthLimit(ctx, 128) {
-		return false, xpath.ErrBudget
-	}
-
-	switch value := item.(type) {
-	case xdm.NodeItem:
-		kind := value.Node.Type()
-		if kind == xdm.DocumentNode || (rule == deemedEmpty && kind == xdm.ElementNode) {
-			return value.Node.FirstChild() == nil, nil
-		}
-
-		if rule == deemedEmpty || kind == xdm.TextNode || kind == xdm.CDATASectionNode {
-			return xdm.StringValue(value.Node) == "", nil
-		}
-
-		return false, nil
-	case xdm.AtomicValue:
-		text, err := xpath.AtomicToString(value)
-		return text == "", err
-	case xdm.MapItem:
-		return rule == deemedEmpty && value.Size() == 0, nil
-	case xdm.ArrayItem:
-		return conditionalArrayEmpty(ctx, value, rule, depth)
-	case *xdm.ArrayItem:
-		return conditionalArrayEmpty(ctx, *value, rule, depth)
-	default:
-		return false, nil
-	}
-}
-
-func conditionalArrayEmpty(ctx context.Context, array xdm.ArrayItem, rule conditionalEmptiness, depth int) (bool, error) {
-	for i := 1; i <= array.Size(); i++ {
-		if err := xpath.Charge(ctx, 1); err != nil {
-			return false, err
-		}
-
-		member, err := array.GetView(i)
-		if err != nil {
-			return false, err
-		}
-
-		for item := range xdm.SequenceItems(member) {
-			empty, err := conditionalItemEmpty(ctx, item, rule, depth+1)
-			if err != nil || !empty {
-				return empty, err
-			}
-		}
-	}
-
-	return true, nil
 }
 
 func (ec *execContext) evaluateConditionalInstruction(ctx context.Context, selectExpr *xpath.Expression, body []instruction) (xdm.Sequence, error) {
@@ -602,26 +441,6 @@ func (ec *execContext) execMapEntry(ctx context.Context, inst *mapEntryInst) err
 	}
 
 	return ec.outputSequence(xdm.ItemSlice{xdm.SingleEntryMap(keyValue, value)})
-}
-
-type assertionsKey struct{}
-
-type dynamicEvaluationDisabledKey struct{}
-
-// WithDynamicEvaluationDisabled selects a static feature restriction inherited
-// by nested compilation. It cannot enable evaluation in a disabled outer scope.
-func WithDynamicEvaluationDisabled(ctx context.Context) context.Context {
-	return context.WithValue(ctx, dynamicEvaluationDisabledKey{}, true)
-}
-
-func dynamicEvaluationDisabled(ctx context.Context) bool {
-	disabled, _ := ctx.Value(dynamicEvaluationDisabledKey{}).(bool)
-	return disabled
-}
-
-// WithAssertions selects the invocation's external XSLT assertion policy.
-func WithAssertions(ctx context.Context, enabled bool) context.Context {
-	return context.WithValue(ctx, assertionsKey{}, enabled)
 }
 
 // execAssert implements xsl:assert when externally enabled. False tests and
@@ -879,49 +698,6 @@ func (ec *execContext) evaluateNamespaces(ctx context.Context, inst *evaluateIns
 	return nsBindings, nil
 }
 
-func collectEvaluateNamespaces(ctx context.Context, node xdm.Node, bindings map[string]string) error {
-	for node != nil {
-		if err := xpath.Charge(ctx, 1); err != nil {
-			return err
-		}
-
-		if _, element := node.(*xdm.Element); element {
-			break
-		}
-
-		node = node.Parent()
-	}
-
-	seen := make(map[string]struct{})
-
-	for current := node; current != nil; current = current.Parent() {
-		if err := xpath.Charge(ctx, 1); err != nil {
-			return err
-		}
-
-		element, ok := current.(*xdm.Element)
-		if !ok {
-			continue
-		}
-
-		for _, namespace := range element.Namespaces() {
-			if err := xpath.Charge(ctx, 1); err != nil {
-				return err
-			}
-
-			prefix := namespace.Prefix()
-			if _, exists := seen[prefix]; exists {
-				continue
-			}
-
-			seen[prefix] = struct{}{}
-			bindings[prefix] = namespace.URI()
-		}
-	}
-
-	return nil
-}
-
 func (ec *execContext) checkEvaluateSchemaAwareness(ctx context.Context, inst *evaluateInst) error {
 	if inst.SchemaAwareAVT != nil {
 		saStr, saErr := inst.SchemaAwareAVT.evaluate(ctx, ec.contextNode)
@@ -1082,4 +858,228 @@ func (ec *execContext) configureDynamicCollation(eval xpath.Evaluator) xpath.Eva
 	}
 
 	return eval
+}
+
+// countAnalyzeStringSegments streams matches and rejects the first over-budget
+// match before segment output or an input-sized match list can be built.
+func countAnalyzeStringSegments(ctx context.Context, re *xpath.Regex, input string, maxMatches, findLimit int) (int, error) {
+	totalSegments := 0
+	matchCount := 0
+	pos := 0
+
+	var earlyErr error
+
+	countErr := re.EachSubmatchIndex(ctx, input, findLimit, func(m []int) bool {
+		if err := ctx.Err(); err != nil {
+			earlyErr = err
+			return false
+		}
+
+		matchCount++
+		if maxMatches >= 0 && matchCount > maxMatches {
+			earlyErr = fmt.Errorf("xsl:analyze-string produced more than %d matches: %w", maxMatches, ErrResourceTooLarge)
+
+			return false
+		}
+
+		if m[0] > pos {
+			totalSegments++
+		}
+
+		totalSegments++
+		pos = m[1]
+
+		return true
+	})
+
+	if earlyErr != nil {
+		return 0, earlyErr
+	}
+
+	if countErr != nil {
+		if failure := preserveControlFailure(ctx, countErr); failure != nil {
+			return 0, failure
+		}
+
+		return 0, dynamicErrorCause(errCodeXTDE1140, countErr, "xsl:analyze-string regex match error: %v", countErr)
+	}
+
+	if pos < len(input) {
+		totalSegments++
+	}
+
+	return totalSegments, nil
+}
+
+// analyzeStringSelectTypeOK reports whether an atomized select value is usable as
+// the xs:string input of xsl:analyze-string: xs:string / xs:anyURI /
+// xs:untypedAtomic, or a schema-defined simple type derived from xs:string (whose
+// BaseType is xs:string, so its string-backed value substitutes for xs:string).
+func analyzeStringSelectTypeOK(av xdm.AtomicValue) bool {
+	switch av.TypeName {
+	case xdm.TypeString, xdm.TypeUntypedAtomic, xdm.TypeAnyURI:
+		return true
+	}
+	// A user-defined simple type carries its built-in base in BaseType; accept it
+	// when that base is (or derives from) xs:string.
+	if av.BaseType == xdm.TypeString || av.BaseType == xdm.TypeAnyURI {
+		return true
+	}
+
+	if av.BaseType != "" && xdm.BuiltinIsSubtypeOf(av.BaseType, xdm.TypeString) {
+		return true
+	}
+
+	return false
+}
+
+// analyzeStringPart detaches segments that can escape through xsl:sequence or
+// regex-group(), without copying an unchanged complete input.
+func analyzeStringPart(input string, start, end int) string {
+	if start == 0 && end == len(input) {
+		return input
+	}
+
+	return strings.Clone(input[start:end])
+}
+
+func analyzeStringGroups(input string, matches []int) []string {
+	groups := make([]string, len(matches)/2)
+	for g := range groups {
+		start, end := matches[2*g], matches[2*g+1]
+		if start >= 0 && end >= 0 {
+			groups[g] = analyzeStringPart(input, start, end)
+		}
+	}
+
+	return groups
+}
+
+type conditionalEmptiness uint8
+
+const (
+	deemedEmpty conditionalEmptiness = iota
+	vacuousItem
+)
+
+// conditionalItemEmpty keeps the distinct definitions in sections 8.4.1 and
+// 8.4.2 while sharing bounded recursive array flattening and atomic conversion.
+func conditionalItemEmpty(ctx context.Context, item xdm.Item, rule conditionalEmptiness, depth int) (bool, error) {
+	if err := xpath.Charge(ctx, 1); err != nil {
+		return false, err
+	}
+
+	if depth > xpath.DepthLimit(ctx, 128) {
+		return false, xpath.ErrBudget
+	}
+
+	switch value := item.(type) {
+	case xdm.NodeItem:
+		kind := value.Node.Type()
+		if kind == xdm.DocumentNode || (rule == deemedEmpty && kind == xdm.ElementNode) {
+			return value.Node.FirstChild() == nil, nil
+		}
+
+		if rule == deemedEmpty || kind == xdm.TextNode || kind == xdm.CDATASectionNode {
+			return xdm.StringValue(value.Node) == "", nil
+		}
+
+		return false, nil
+	case xdm.AtomicValue:
+		text, err := xpath.AtomicToString(value)
+		return text == "", err
+	case xdm.MapItem:
+		return rule == deemedEmpty && value.Size() == 0, nil
+	case xdm.ArrayItem:
+		return conditionalArrayEmpty(ctx, value, rule, depth)
+	case *xdm.ArrayItem:
+		return conditionalArrayEmpty(ctx, *value, rule, depth)
+	default:
+		return false, nil
+	}
+}
+
+func conditionalArrayEmpty(ctx context.Context, array xdm.ArrayItem, rule conditionalEmptiness, depth int) (bool, error) {
+	for i := 1; i <= array.Size(); i++ {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return false, err
+		}
+
+		member, err := array.GetView(i)
+		if err != nil {
+			return false, err
+		}
+
+		for item := range xdm.SequenceItems(member) {
+			empty, err := conditionalItemEmpty(ctx, item, rule, depth+1)
+			if err != nil || !empty {
+				return empty, err
+			}
+		}
+	}
+
+	return true, nil
+}
+
+type assertionsKey struct{}
+
+type dynamicEvaluationDisabledKey struct{}
+
+// WithDynamicEvaluationDisabled selects a static feature restriction inherited
+// by nested compilation. It cannot enable evaluation in a disabled outer scope.
+func WithDynamicEvaluationDisabled(ctx context.Context) context.Context {
+	return context.WithValue(ctx, dynamicEvaluationDisabledKey{}, true)
+}
+
+// WithAssertions selects the invocation's external XSLT assertion policy.
+func WithAssertions(ctx context.Context, enabled bool) context.Context {
+	return context.WithValue(ctx, assertionsKey{}, enabled)
+}
+
+func dynamicEvaluationDisabled(ctx context.Context) bool {
+	disabled, _ := ctx.Value(dynamicEvaluationDisabledKey{}).(bool)
+	return disabled
+}
+
+func collectEvaluateNamespaces(ctx context.Context, node xdm.Node, bindings map[string]string) error {
+	for node != nil {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		if _, element := node.(*xdm.Element); element {
+			break
+		}
+
+		node = node.Parent()
+	}
+
+	seen := make(map[string]struct{})
+
+	for current := node; current != nil; current = current.Parent() {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		element, ok := current.(*xdm.Element)
+		if !ok {
+			continue
+		}
+
+		for _, namespace := range element.Namespaces() {
+			if err := xpath.Charge(ctx, 1); err != nil {
+				return err
+			}
+
+			prefix := namespace.Prefix()
+			if _, exists := seen[prefix]; exists {
+				continue
+			}
+
+			seen[prefix] = struct{}{}
+			bindings[prefix] = namespace.URI()
+		}
+	}
+
+	return nil
 }

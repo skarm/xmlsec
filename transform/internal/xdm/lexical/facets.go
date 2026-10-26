@@ -36,17 +36,6 @@ func LengthApplicable(builtinLocal string) bool {
 	return ok
 }
 
-// lengthApplicableTypes lists atomic types with applicable length facets.
-// String lengths count characters; binary lengths count octets.
-func lengthApplicableTypes(key string) bool {
-	switch key {
-	case lexicon.TypeString, lexicon.TypeNormalizedString, lexicon.TypeToken, "language", "Name", "NCName", "ID", lexicon.TypeIDREF, lexicon.TypeIDREFS, "ENTITY", lexicon.TypeENTITIES, "NMTOKEN", lexicon.TypeNMTokens, lexicon.TypeAnyURI, lexicon.TypeQName, lexicon.TypeNotation, lexicon.TypeHexBinary, lexicon.TypeBase64Binary:
-		return true
-	}
-
-	return false
-}
-
 // IsDecimalFamily reports whether builtinLocal is in the xs:decimal family
 // (xs:decimal and its integer derivations). These are the ONLY types on which the
 // digit facets (totalDigits, fractionDigits) are applicable; the facets are
@@ -118,4 +107,15 @@ func CountFractionDigits(value string) int {
 	}
 
 	return len(strings.TrimRight(frac, "0"))
+}
+
+// lengthApplicableTypes lists atomic types with applicable length facets.
+// String lengths count characters; binary lengths count octets.
+func lengthApplicableTypes(key string) bool {
+	switch key {
+	case lexicon.TypeString, lexicon.TypeNormalizedString, lexicon.TypeToken, "language", "Name", "NCName", "ID", lexicon.TypeIDREF, lexicon.TypeIDREFS, "ENTITY", lexicon.TypeENTITIES, "NMTOKEN", lexicon.TypeNMTokens, lexicon.TypeAnyURI, lexicon.TypeQName, lexicon.TypeNotation, lexicon.TypeHexBinary, lexicon.TypeBase64Binary:
+		return true
+	}
+
+	return false
 }

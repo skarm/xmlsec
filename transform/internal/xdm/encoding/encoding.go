@@ -38,6 +38,29 @@ func Load(name string) enc.Encoding {
 	return nil
 }
 
+// IsASCII recognizes the same strict US-ASCII aliases as Load.
+func IsASCII(name string) bool {
+	return asciiEncodingNames(normalizeEncodingName(name))
+}
+
+// Repertoire returns a character probe using a dedicated encoder. The closure
+// reuses its buffers and must not be shared across concurrent serializations.
+func Repertoire(encoder *enc.Encoder) func(rune) bool {
+	var (
+		source      [utf8.UTFMax]byte
+		destination [64]byte
+	)
+
+	return func(r rune) bool {
+		n := utf8.EncodeRune(source[:], r)
+
+		encoder.Reset()
+		_, consumed, err := encoder.Transform(destination[:], source[:n], true)
+
+		return err == nil && consumed == n
+	}
+}
+
 func normalizeEncodingName(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.ToLower(name)
@@ -63,11 +86,6 @@ func asciiEncodingNames(key string) bool {
 	}
 
 	return false
-}
-
-// IsASCII recognizes the same strict US-ASCII aliases as Load.
-func IsASCII(name string) bool {
-	return asciiEncodingNames(normalizeEncodingName(name))
 }
 
 func loadUnicodeEncoding(norm string) enc.Encoding {
@@ -212,22 +230,4 @@ func loadLegacyEncoding(norm string) enc.Encoding {
 	}
 
 	return nil
-}
-
-// Repertoire returns a character probe using a dedicated encoder. The closure
-// reuses its buffers and must not be shared across concurrent serializations.
-func Repertoire(encoder *enc.Encoder) func(rune) bool {
-	var (
-		source      [utf8.UTFMax]byte
-		destination [64]byte
-	)
-
-	return func(r rune) bool {
-		n := utf8.EncodeRune(source[:], r)
-
-		encoder.Reset()
-		_, consumed, err := encoder.Transform(destination[:], source[:n], true)
-
-		return err == nil && consumed == n
-	}
 }

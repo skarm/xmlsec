@@ -71,6 +71,44 @@ func (e *Engine) xpathDecimalFormats(ctx context.Context, evaluator xpath.Evalua
 	return evaluator.NamedDecimalFormats(named), nil
 }
 
+func (e *Engine) dynamicContext(ctx context.Context, options DynamicContext) (context.Context, error) {
+	language := options.DefaultLanguage
+	if language != "" {
+		language = xmlchar.CollapseSpace(language)
+		if !lexicalpkg.ValidLanguage(language) {
+			return nil, ErrInput
+		}
+	}
+
+	now := options.CurrentTime
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	zone := options.ImplicitTimezone
+	if zone == nil {
+		zone = now.Location()
+	}
+
+	_, offset := now.In(zone).Zone()
+	if offset%60 != 0 || offset < -14*60*60 || offset > 14*60*60 {
+		return nil, ErrInput
+	}
+
+	zone = time.FixedZone("", offset)
+	now = now.In(zone)
+
+	return xpath.WithEvaluationContext(ctx, xpath.EvaluationContext{CurrentTime: now, Timezone: zone, Language: language, Trace: checkedTrace{ctx: ctx, writer: traceWriter(options.TraceWriter)}, Collections: e.collectionResolver()}), nil
+}
+
+func (e *Engine) collectionResolver() xpath.CollectionResolver {
+	if e.collections == nil {
+		return nil
+	}
+
+	return collectionAdapter{engine: e}
+}
+
 func xpathDecimalFormat(properties map[string]string) (xpath.DecimalFormat, error) {
 	format := xpath.DefaultDecimalFormat()
 	characters := map[string]*rune{
@@ -155,44 +193,6 @@ type CollectionResolver interface {
 	// ResolveURICollection returns the member URIs of uri-collection(uri).
 	// An empty URI requests the default URI collection.
 	ResolveURICollection(context.Context, string) ([]string, error)
-}
-
-func (e *Engine) dynamicContext(ctx context.Context, options DynamicContext) (context.Context, error) {
-	language := options.DefaultLanguage
-	if language != "" {
-		language = xmlchar.CollapseSpace(language)
-		if !lexicalpkg.ValidLanguage(language) {
-			return nil, ErrInput
-		}
-	}
-
-	now := options.CurrentTime
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-
-	zone := options.ImplicitTimezone
-	if zone == nil {
-		zone = now.Location()
-	}
-
-	_, offset := now.In(zone).Zone()
-	if offset%60 != 0 || offset < -14*60*60 || offset > 14*60*60 {
-		return nil, ErrInput
-	}
-
-	zone = time.FixedZone("", offset)
-	now = now.In(zone)
-
-	return xpath.WithEvaluationContext(ctx, xpath.EvaluationContext{CurrentTime: now, Timezone: zone, Language: language, Trace: checkedTrace{ctx: ctx, writer: traceWriter(options.TraceWriter)}, Collections: e.collectionResolver()}), nil
-}
-
-func (e *Engine) collectionResolver() xpath.CollectionResolver {
-	if e.collections == nil {
-		return nil
-	}
-
-	return collectionAdapter{engine: e}
 }
 
 type checkedTrace struct {

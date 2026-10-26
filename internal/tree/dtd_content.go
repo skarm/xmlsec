@@ -93,6 +93,90 @@ func (d *dtdState) attributeReference(text string) (string, string, error) {
 	return value, rest, err
 }
 
+func (d *dtdState) startTag(text string, output *dtdOutput) (string, bool, error) {
+	name, attributes, empty, err := readDTDStartTag(text, d.options.Limits.MaxAttributesPerElement)
+	if err != nil {
+		return "", false, err
+	}
+
+	if err := output.write("<" + name); err != nil {
+		return "", false, err
+	}
+
+	seen := make(map[string]struct{}, len(attributes))
+
+	count := len(attributes)
+	for _, attribute := range attributes {
+		if _, exists := seen[attribute.name]; exists {
+			return "", false, fmt.Errorf("%w: duplicate attribute", ErrMalformed)
+		}
+
+		seen[attribute.name] = struct{}{}
+
+		value, err := d.attributeValue(attribute.value)
+		if err != nil {
+			return "", false, err
+		}
+
+		if declaration, ok := d.attributes[name][attribute.name]; ok && declaration.kind != dtdCDATA {
+			value = collapseDTDSpace(value)
+		}
+
+		if err := output.attribute(attribute.name, value); err != nil {
+			return "", false, err
+		}
+	}
+
+	for _, declaration := range d.defaults[name] {
+		if _, exists := seen[declaration.name]; exists {
+			continue
+		}
+
+		count++
+		if count > d.options.Limits.MaxAttributesPerElement {
+			return "", false, ErrLimit
+		}
+
+		if err := output.attribute(declaration.name, declaration.value); err != nil {
+			return "", false, err
+		}
+	}
+
+	ending := ">"
+	if empty {
+		ending = "/>"
+	}
+
+	return name, empty, output.write(ending)
+}
+
+func (d *dtdState) content(text, base string, output *dtdOutput, document bool) error {
+	return d.entityContent(text, base, output, document, "")
+}
+
+// Each entity's element stack is independent: replacement text cannot close
+// its parent's element, nor leave a start tag for the containing entity to close.
+func (d *dtdState) entityContent(text, base string, output *dtdOutput, document bool, rootBase string) error {
+	p := dtdContentParser{state: d, text: text, base: base, output: output, document: document, rootBase: rootBase, first: true}
+	for p.text != "" {
+		if err := d.ctx.Err(); err != nil {
+			return err
+		}
+
+		if err := p.step(); err != nil {
+			return err
+		}
+
+		p.first = false
+	}
+
+	if len(p.stack) != 0 {
+		return fmt.Errorf("%w: unclosed entity element", ErrMalformed)
+	}
+
+	return nil
+}
+
 type dtdRawAttribute struct {
 	name  string
 	value string
@@ -179,90 +263,6 @@ func readDTDStartTag(text string, maximum int) (string, []dtdRawAttribute, bool,
 	}
 
 	return "", nil, false, ErrMalformed
-}
-
-func (d *dtdState) startTag(text string, output *dtdOutput) (string, bool, error) {
-	name, attributes, empty, err := readDTDStartTag(text, d.options.Limits.MaxAttributesPerElement)
-	if err != nil {
-		return "", false, err
-	}
-
-	if err := output.write("<" + name); err != nil {
-		return "", false, err
-	}
-
-	seen := make(map[string]struct{}, len(attributes))
-
-	count := len(attributes)
-	for _, attribute := range attributes {
-		if _, exists := seen[attribute.name]; exists {
-			return "", false, fmt.Errorf("%w: duplicate attribute", ErrMalformed)
-		}
-
-		seen[attribute.name] = struct{}{}
-
-		value, err := d.attributeValue(attribute.value)
-		if err != nil {
-			return "", false, err
-		}
-
-		if declaration, ok := d.attributes[name][attribute.name]; ok && declaration.kind != dtdCDATA {
-			value = collapseDTDSpace(value)
-		}
-
-		if err := output.attribute(attribute.name, value); err != nil {
-			return "", false, err
-		}
-	}
-
-	for _, declaration := range d.defaults[name] {
-		if _, exists := seen[declaration.name]; exists {
-			continue
-		}
-
-		count++
-		if count > d.options.Limits.MaxAttributesPerElement {
-			return "", false, ErrLimit
-		}
-
-		if err := output.attribute(declaration.name, declaration.value); err != nil {
-			return "", false, err
-		}
-	}
-
-	ending := ">"
-	if empty {
-		ending = "/>"
-	}
-
-	return name, empty, output.write(ending)
-}
-
-func (d *dtdState) content(text, base string, output *dtdOutput, document bool) error {
-	return d.entityContent(text, base, output, document, "")
-}
-
-// Each entity's element stack is independent: replacement text cannot close
-// its parent's element, nor leave a start tag for the containing entity to close.
-func (d *dtdState) entityContent(text, base string, output *dtdOutput, document bool, rootBase string) error {
-	p := dtdContentParser{state: d, text: text, base: base, output: output, document: document, rootBase: rootBase, first: true}
-	for p.text != "" {
-		if err := d.ctx.Err(); err != nil {
-			return err
-		}
-
-		if err := p.step(); err != nil {
-			return err
-		}
-
-		p.first = false
-	}
-
-	if len(p.stack) != 0 {
-		return fmt.Errorf("%w: unclosed entity element", ErrMalformed)
-	}
-
-	return nil
 }
 
 type dtdContentParser struct {

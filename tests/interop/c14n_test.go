@@ -255,47 +255,6 @@ func newCanonicalSession(t *testing.T, fixture *interopFixture) *canonicalSessio
 	return &canonicalSession{fixture: fixture, goRPC: goRPC, jdk: jdk, nativeProgram: c}
 }
 
-func lines(t *testing.T, fixture *interopFixture, name string, args ...string) *lineProcess {
-	t.Helper()
-
-	// These helpers exit on EOF in Cleanup, after the test context is canceled.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 8*time.Minute)
-	p := &lineProcess{cmd: exec.CommandContext(ctx, name, args...), cancel: cancel}
-	p.cmd.Dir = fixture.root
-	p.cmd.Stderr = &p.stderr
-
-	var err error
-
-	p.input, err = p.cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := p.cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	p.output = bufio.NewReader(out)
-	if err := p.cmd.Start(); err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-
-	t.Cleanup(func() {
-		p.input.Close()
-		err := p.cmd.Wait()
-
-		cancel()
-
-		if err != nil {
-			t.Errorf("helper exited: %v: %s", err, p.stderr.Bytes())
-		}
-	})
-
-	return p
-}
-
 func (session *canonicalSession) request(t *testing.T, r canonicalRequest) canonicalResponse {
 	t.Helper()
 
@@ -344,14 +303,6 @@ func (session *canonicalSession) native(t *testing.T, r canonicalRequest) []byte
 	out, _ := command(t, session.fixture, true, nil, session.nativeProgram, args...)
 
 	return out
-}
-
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-
-	return 0
 }
 
 func (session *canonicalSession) jdkBytes(t *testing.T, r canonicalRequest) []byte {
@@ -595,6 +546,55 @@ func (session *canonicalSession) compare(t *testing.T, r canonicalRequest, withJ
 			session.javaMatches++
 		}
 	}
+}
+
+func lines(t *testing.T, fixture *interopFixture, name string, args ...string) *lineProcess {
+	t.Helper()
+
+	// These helpers exit on EOF in Cleanup, after the test context is canceled.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 8*time.Minute)
+	p := &lineProcess{cmd: exec.CommandContext(ctx, name, args...), cancel: cancel}
+	p.cmd.Dir = fixture.root
+	p.cmd.Stderr = &p.stderr
+
+	var err error
+
+	p.input, err = p.cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := p.cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p.output = bufio.NewReader(out)
+	if err := p.cmd.Start(); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() {
+		p.input.Close()
+		err := p.cmd.Wait()
+
+		cancel()
+
+		if err != nil {
+			t.Errorf("helper exited: %v: %s", err, p.stderr.Bytes())
+		}
+	})
+
+	return p
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+
+	return 0
 }
 
 func xpathLiteral(s string) string {

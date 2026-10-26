@@ -357,6 +357,62 @@ func (ec *evalContext) appendSchemaStringValue(b *strings.Builder, root xdm.Node
 	}
 }
 
+// isElementOnlyContent reports whether n's resolved type annotation is an
+// element-only complex content type.
+func (ec *evalContext) isElementOnlyContent(n xdm.Node, provider ContentTypeKindProvider) bool {
+	ann := ec.typeAnnotations[n]
+	if ann == "" {
+		return false
+	}
+
+	kind, ok := provider.SchemaTypeContentKind(ann)
+
+	return ok && kind == ContentTypeElementOnly
+}
+
+// NodeBaseURI applies the XDM base-uri accessor, including xml:base and
+// construction-time bases. Parentless non-element nodes have no base URI.
+func NodeBaseURI(n xdm.Node) string {
+	if xdm.IsNilNode(n) {
+		return ""
+	}
+	// Namespace nodes have no base URI per the XPath data model.
+	if n.Type() == xdm.NamespaceNode {
+		return ""
+	}
+	// Per XDM: attribute, text, comment, and PI nodes derive their base URI
+	// from their parent element. If they have no parent, their base URI is
+	// the empty sequence.
+	nodeType := n.Type()
+	if nodeType == xdm.AttributeNode || nodeType == xdm.TextNode ||
+		nodeType == xdm.CommentNode || nodeType == xdm.ProcessingInstructionNode {
+		if n.Parent() == nil {
+			return ""
+		}
+	}
+	// Walk up the parent chain to find the actual document the node lives
+	// in. OwnerDocument() may return a different document when nodes are
+	// created in one document and then moved to another (e.g. in XSLT
+	// xsl:result-document).
+	var doc *xdm.Document
+	if d, ok := n.(*xdm.Document); ok {
+		doc = d
+	} else {
+		cur := n
+		for cur.Parent() != nil {
+			cur = cur.Parent()
+		}
+
+		if d, ok := cur.(*xdm.Document); ok {
+			doc = d
+		} else {
+			doc = n.OwnerDocument()
+		}
+	}
+
+	return xdm.NodeGetBase(doc, n)
+}
+
 // isInsignificantWhitespaceText reports whether n is a text or CDATA-section node,
 // or an entity reference expanding to text, whose content is entirely XSD
 // whitespace (space, tab, CR, LF). XSD treats whitespace-only text and CDATA
@@ -371,19 +427,6 @@ func isInsignificantWhitespaceText(n xdm.Node) bool {
 	default:
 		return false
 	}
-}
-
-// isElementOnlyContent reports whether n's resolved type annotation is an
-// element-only complex content type.
-func (ec *evalContext) isElementOnlyContent(n xdm.Node, provider ContentTypeKindProvider) bool {
-	ann := ec.typeAnnotations[n]
-	if ann == "" {
-		return false
-	}
-
-	kind, ok := provider.SchemaTypeContentKind(ann)
-
-	return ok && kind == ContentTypeElementOnly
 }
 
 // checkContentKindItem resolves the typed-value ACTION for one item
@@ -436,49 +479,6 @@ func fnBaseURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	}
 
 	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: base}), nil
-}
-
-// NodeBaseURI applies the XDM base-uri accessor, including xml:base and
-// construction-time bases. Parentless non-element nodes have no base URI.
-func NodeBaseURI(n xdm.Node) string {
-	if xdm.IsNilNode(n) {
-		return ""
-	}
-	// Namespace nodes have no base URI per the XPath data model.
-	if n.Type() == xdm.NamespaceNode {
-		return ""
-	}
-	// Per XDM: attribute, text, comment, and PI nodes derive their base URI
-	// from their parent element. If they have no parent, their base URI is
-	// the empty sequence.
-	nodeType := n.Type()
-	if nodeType == xdm.AttributeNode || nodeType == xdm.TextNode ||
-		nodeType == xdm.CommentNode || nodeType == xdm.ProcessingInstructionNode {
-		if n.Parent() == nil {
-			return ""
-		}
-	}
-	// Walk up the parent chain to find the actual document the node lives
-	// in. OwnerDocument() may return a different document when nodes are
-	// created in one document and then moved to another (e.g. in XSLT
-	// xsl:result-document).
-	var doc *xdm.Document
-	if d, ok := n.(*xdm.Document); ok {
-		doc = d
-	} else {
-		cur := n
-		for cur.Parent() != nil {
-			cur = cur.Parent()
-		}
-
-		if d, ok := cur.(*xdm.Document); ok {
-			doc = d
-		} else {
-			doc = n.OwnerDocument()
-		}
-	}
-
-	return xdm.NodeGetBase(doc, n)
 }
 
 func fnDocumentURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -1467,6 +1467,27 @@ func DocumentLoadSnapshot(ctx context.Context, scope any, key string, load func(
 	return loadDocumentSnapshot(ctx, store, key, load)
 }
 
+// ResolveDocumentURI applies fn:doc's URI rules in the calling static context.
+// Hosts overriding retrieval must retain these rules, including fragment rejection.
+func ResolveDocumentURI(ctx context.Context, uri string) (string, error) {
+	if strings.Contains(uri, "#") {
+		return "", &xdm.Error{Code: errCodeFODC0005, Message: "fn:doc: URI must not contain a fragment identifier"}
+	}
+
+	resolved, err := resolveDocURI(ctx, uri)
+	if err != nil {
+		return "", err
+	}
+	// An empty argument resolves to the base URI verbatim, which may itself
+	// carry a fragment identifier. Re-check the resolved URI so doc("") with a
+	// fragmented base URI is rejected the same as a fragmented argument.
+	if strings.Contains(resolved, "#") {
+		return "", &xdm.Error{Code: errCodeFODC0005, Message: "fn:doc: URI must not contain a fragment identifier"}
+	}
+
+	return resolved, nil
+}
+
 func loadDocumentSnapshot(ctx context.Context, store *documentSnapshotStore, key string, load func() (*xdm.Document, error)) (*xdm.Document, error) {
 	if err := Charge(ctx, 1); err != nil {
 		return nil, err
@@ -1517,27 +1538,6 @@ func loadDoc(ctx context.Context, uri string) (xdm.Node, error) {
 	}
 
 	return loadResolvedDoc(ctx, resolved)
-}
-
-// ResolveDocumentURI applies fn:doc's URI rules in the calling static context.
-// Hosts overriding retrieval must retain these rules, including fragment rejection.
-func ResolveDocumentURI(ctx context.Context, uri string) (string, error) {
-	if strings.Contains(uri, "#") {
-		return "", &xdm.Error{Code: errCodeFODC0005, Message: "fn:doc: URI must not contain a fragment identifier"}
-	}
-
-	resolved, err := resolveDocURI(ctx, uri)
-	if err != nil {
-		return "", err
-	}
-	// An empty argument resolves to the base URI verbatim, which may itself
-	// carry a fragment identifier. Re-check the resolved URI so doc("") with a
-	// fragmented base URI is rejected the same as a fragmented argument.
-	if strings.Contains(resolved, "#") {
-		return "", &xdm.Error{Code: errCodeFODC0005, Message: "fn:doc: URI must not contain a fragment identifier"}
-	}
-
-	return resolved, nil
 }
 
 func loadResolvedDoc(ctx context.Context, resolved string) (xdm.Node, error) {

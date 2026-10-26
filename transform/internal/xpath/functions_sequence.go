@@ -350,6 +350,15 @@ func (opts deepEqualOptions) stringsEqual(a, b string) bool {
 	return a == b
 }
 
+func (opts deepEqualOptions) descend() (deepEqualOptions, error) {
+	opts.depth++
+	if opts.depth > DepthLimit(opts.ctx, 128) {
+		return opts, ErrRecursionLimit
+	}
+
+	return opts, fnCountOp(opts.ctx, opts.ec)
+}
+
 func fnDeepEqual(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	coll, err := getCollation(ctx, args, 2)
 	if err != nil {
@@ -367,15 +376,6 @@ func fnDeepEqual(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 	}
 
 	return xdm.SingleBoolean(eq), nil
-}
-
-func (opts deepEqualOptions) descend() (deepEqualOptions, error) {
-	opts.depth++
-	if opts.depth > DepthLimit(opts.ctx, 128) {
-		return opts, ErrRecursionLimit
-	}
-
-	return opts, fnCountOp(opts.ctx, opts.ec)
 }
 
 func deepEqualSequence(a, b xdm.Sequence, opts deepEqualOptions) (bool, error) {

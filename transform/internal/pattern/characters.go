@@ -300,12 +300,6 @@ func (p *classParser) escapedAtom() (classAtom, error) {
 	return classAtom{ranges: []interval{{r, r}}, singleton: true, value: r}, nil
 }
 
-func xmlWhitespace() *unicode.RangeTable {
-	return &unicode.RangeTable{R16: []unicode.Range16{
-		{Lo: '\t', Hi: '\n', Stride: 1}, {Lo: '\r', Hi: '\r', Stride: 1}, {Lo: ' ', Hi: ' ', Stride: 1},
-	}}
-}
-
 func (p *classParser) hexRune() (rune, error) {
 	if p.pos >= len(p.src) || p.src[p.pos] != '{' {
 		return 0, errors.New("hex escape requires braces")
@@ -362,4 +356,10 @@ func (p *classParser) propertyTable(name string) *unicode.RangeTable {
 	}
 
 	return table
+}
+
+func xmlWhitespace() *unicode.RangeTable {
+	return &unicode.RangeTable{R16: []unicode.Range16{
+		{Lo: '\t', Hi: '\n', Stride: 1}, {Lo: '\r', Hi: '\r', Stride: 1}, {Lo: ' ', Hi: ' ', Stride: 1},
+	}}
 }
