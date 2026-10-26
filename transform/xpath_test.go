@@ -8,6 +8,7 @@ import (
 	"maps"
 	"math"
 	"math/big"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,6 +21,9 @@ import (
 // than the implementation's observed output, for the executable proof ledger.
 func publishedProofVector(t *testing.T, want string) {
 	t.Helper()
+	if os.Getenv("XMLSEC_PROOF_CAPTURE") != "1" {
+		return
+	}
 	raw, err := json.Marshal(want)
 	if err != nil {
 		t.Fatal(err)

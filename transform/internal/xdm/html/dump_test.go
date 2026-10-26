@@ -13,6 +13,8 @@ import (
 )
 
 func TestHTMLSerialization(t *testing.T) {
+	t.Parallel()
+
 	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<html><body><input disabled="disabled"/><br/><script>if (a &lt; b) x &amp;&amp; y;</script><a href="/café">A &amp; B</a></body></html>`))
 	if err != nil {
 		t.Fatal(err)
@@ -37,24 +39,36 @@ func TestHTMLSerialization(t *testing.T) {
 }
 
 func TestHTMLCharacterMapBeforeNormalization(t *testing.T) {
-	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte("<p>e\u0301|</p>"))
+	t.Parallel()
+
+	const attributeSource = "e\u0301|"
+	const textSource = "A\u030A" + attributeSource
+	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte("<p title=\""+attributeSource+"\">"+textSource+"</p>"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var output strings.Builder
 
-	w := html.NewWriter().Format(false).DefaultDTD(false).Normalization("NFC").CharacterMap(map[rune]string{'|': "&marker;"})
+	// Mapping the combining accent must prevent it from composing with e.
+	// The replacement for | remains decomposed; only unmapped A + ring composes.
+	w := html.NewWriter().Format(false).DefaultDTD(false).Normalization("NFC").CharacterMap(map[rune]string{'\u0301': "&accent;", '|': "e\u0301"})
 	if err := w.WriteTo(&output, doc); err != nil {
 		t.Fatal(err)
 	}
 
-	if got, want := output.String(), "<p>é&marker;</p>"; got != want {
+	const mapped = "e&accent;e\u0301"
+	if got, want := output.String(), "<p title=\""+mapped+"\">Å"+mapped+"</p>"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+	if title, _ := doc.DocumentElement().GetAttribute("title"); title != attributeSource || xdm.CharacterData(doc) != textSource {
+		t.Fatal("serialization changed the source character content")
 	}
 }
 
 func TestHTMLLatin1CharacterReferences(t *testing.T) {
+	t.Parallel()
+
 	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<p a="café中😀">café中😀</p>`))
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +99,8 @@ type errorWriter struct{ err error }
 func (w errorWriter) Write([]byte) (int, error) { return 0, w.err }
 
 func TestXMLIslandCharacterErrors(t *testing.T) {
+	t.Parallel()
+
 	for _, cdata := range []bool{false, true} {
 		for _, kind := range []string{"text", "attribute", "comment", "PI", "unencodable PI"} {
 			doc := xdm.NewDefaultDocument()
@@ -148,6 +164,8 @@ func BenchmarkHTMLSequenceWriter(b *testing.B) {
 }
 
 func TestURIAttributeNormalizationAndLateErrors(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct{ name, input, escaped string }{
 		{"empty", "", ""},
 		{"NFC and markup", "/cafe\u0301?x=1&y=\"v\"", "/caf%C3%A9?x=1&amp;y=&quot;v&quot;"},
@@ -156,6 +174,8 @@ func TestURIAttributeNormalizationAndLateErrors(t *testing.T) {
 		{"large URI", strings.Repeat("/café", 2048), strings.Repeat("/caf%C3%A9", 2048)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			doc := xdm.NewDefaultDocument()
 			root, err := doc.CreateElement("a")
 			if err != nil {

@@ -290,13 +290,12 @@ func selectRequestACS(root document.Element, authorized []metadata.Endpoint) (st
 	var index *uint16
 
 	if hasIndex {
-		number, err := strconv.ParseUint(indexString, 10, 16)
+		number, err := profile.Index(indexString)
 		if err != nil {
 			return "", ErrProfile
 		}
 
-		value := uint16(number)
-		index = &value
+		index = &number
 	}
 
 	var candidates []metadata.Endpoint
@@ -322,12 +321,12 @@ func selectRequestACS(root document.Element, authorized []metadata.Endpoint) (st
 func readAuthnRequestFlags(root document.Element, request *VerifiedRequest) error {
 	var err error
 
-	request.force, err = profile.Bool(xmlutil.Attr(root, "ForceAuthn"))
+	request.force, err = xmlutil.BoolAttr(root, "ForceAuthn")
 	if err != nil {
 		return err
 	}
 
-	request.passive, err = profile.Bool(xmlutil.Attr(root, "IsPassive"))
+	request.passive, err = xmlutil.BoolAttr(root, "IsPassive")
 	if err != nil || request.force && request.passive {
 		return ErrProfile
 	}
@@ -379,7 +378,7 @@ func readRequestNameIDPolicy(policy document.Element, expectedIssuer string, req
 
 	var err error
 
-	request.allowCreate, err = profile.Bool(xmlutil.Attr(policy, "AllowCreate"))
+	request.allowCreate, err = xmlutil.BoolAttr(policy, "AllowCreate")
 
 	return err
 }

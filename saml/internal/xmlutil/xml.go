@@ -33,6 +33,17 @@ func Attr(e document.Element, n string) string {
 	return s
 }
 
+// BoolAttr reads an optional xs:boolean attribute, defaulting to false only
+// when absent. An explicitly empty value is outside the boolean lexical space.
+func BoolAttr(e document.Element, n string) (bool, error) {
+	s, present := e.Attribute(document.Name{Local: n})
+	if !present {
+		return false, nil
+	}
+
+	return profile.Bool(s)
+}
+
 // Attrs requires the listed attributes and rejects undeclared attributes.
 func Attrs(e document.Element, required, optional []string) error {
 	seen := make(map[string]struct{})

@@ -1957,6 +1957,7 @@ func qtResidualCases() []struct {
 }
 
 func TestQT3ResidualCauses(t *testing.T) {
+	configureLanguageTest(t, false)
 	directory, err := filepath.EvalSymlinks(residualRequired(t, "XMLSEC_QT3_DIR"))
 	if err != nil {
 		t.Fatal(err)
@@ -2453,6 +2454,7 @@ func evaluateXSLTResidualVariant(t *testing.T, options suiteOptions, item suiteC
 }
 
 func TestXSLTResidualCauses(t *testing.T) {
+	configureLanguageTest(t, false)
 	configured := os.Getenv("XMLSEC_XSLT_DIR")
 	if configured == "" {
 		configured = residualRequired(t, "XMLSEC_XSLT30_DIR")

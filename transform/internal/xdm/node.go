@@ -373,10 +373,11 @@ func (d *Document) SetDocumentElement(e MutableNode) error {
 // CreateElement creates a detached element view after validating its lexical QName
 // components.
 func (d *Document) CreateElement(name string) (*Element, error) {
-	prefix, local := splitName(name)
-	if !tree.NCName(local) || prefix != "" && !tree.NCName(prefix) {
+	if !xmlchar.IsValidQName(name) {
 		return nil, tree.ErrMalformed
 	}
+
+	prefix, local := splitName(name)
 
 	r := &tree.Node{Kind: tree.ElementNode, Name: tree.Name{Local: local}, Prefix: prefix}
 	_ = d.wrap(context.Background(), r, -1)
@@ -398,6 +399,10 @@ func (d *Document) CreateElementNS(local string, ns *Namespace) (*Element, error
 // CreateAttribute creates a detached attribute view with the supplied value and
 // namespace binding.
 func (d *Document) CreateAttribute(name, value string, ns *Namespace) (*Attribute, error) {
+	if ns == nil && !xmlchar.IsValidQName(name) {
+		return nil, tree.ErrMalformed
+	}
+
 	e, _ := d.CreateElement("attribute-owner")
 
 	if ns == nil {
@@ -724,6 +729,10 @@ func (e *Element) RemoveNamespaceByPrefix(prefix string) bool {
 // SetAttribute sets a draft attribute by lexical QName, using the element's in-scope
 // prefix binding when available.
 func (e *Element) SetAttribute(name, value string) error {
+	if !xmlchar.IsValidQName(name) {
+		return tree.ErrMalformed
+	}
+
 	prefix, local := splitName(name)
 	uri := ""
 

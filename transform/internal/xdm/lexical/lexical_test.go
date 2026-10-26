@@ -1,6 +1,7 @@
 package lexical_test
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,7 +11,7 @@ import (
 
 const (
 	textAB                = "a b"
-	builtinTime           = "time"
+	nameTime              = "time"
 	nameBase64Binary      = "base64Binary"
 	nameDate              = "date"
 	nameDateTime          = "dateTime"
@@ -29,6 +30,8 @@ const (
 )
 
 func TestLexicalScanners(t *testing.T) {
+	t.Parallel()
+
 	for _, c := range []struct {
 		kind    string
 		valid   []string
@@ -39,7 +42,7 @@ func TestLexicalScanners(t *testing.T) {
 		{"double", []string{valueInfinity, "+INF", valueNegativeInfinity, valueNaN, "-.2E+3"}, []string{"+NaN", "nan", "1e", "e2", "1e2e3"}},
 		{"language", []string{"en", "en-US", "zh-Hant", "abc-12345678"}, []string{"", "en-", "en_Us", "1en", "123", "abcdefghi", "en-abcdefghi"}},
 		{nameDate, []string{"2024-02-29", "-12345-01-01Z", "0000-01-01", "2024-01-01+14:00"}, []string{"2023-02-29", "2024-13-01", "02024-01-01", "2024-01-01+14:01", "2024-01-01z"}},
-		{builtinTime, []string{"23:59:59.01Z", "24:00:00", "01:02:03-12:30"}, []string{"24:00:01", "01:02:03.", "01:02:03+5:00"}},
+		{nameTime, []string{"23:59:59.01Z", "24:00:00", "01:02:03-12:30"}, []string{"24:00:01", "01:02:03.", "01:02:03+5:00"}},
 		{nameDateTime, []string{"2024-02-29T24:00:00Z"}, []string{"2024-01-01 00:00:00", "2023-02-29T00:00:00"}},
 		{"dateTimeStamp", []string{"2024-01-01T00:00:00Z"}, []string{"2024-01-01T00:00:00"}},
 		{nameGYear, []string{"-12345", "-2024", "2024Z", "2024+14:00"}, []string{"02024", "123", "+2024", "2024+14:01"}},
@@ -57,6 +60,8 @@ func TestLexicalScanners(t *testing.T) {
 		{"NMTOKEN", []string{"1:a-b"}, []string{"", textAB}},
 	} {
 		t.Run(c.kind, func(t *testing.T) {
+			t.Parallel()
+
 			for _, s := range c.valid {
 				if err := lexicalpkg.ValidateBuiltin(s, c.kind, lexicalpkg.Version11); err != nil {
 					t.Errorf("valid %q rejected: %v", s, err)
@@ -82,6 +87,8 @@ func TestLexicalScanners(t *testing.T) {
 }
 
 func TestAnyURIEditionSyntax(t *testing.T) {
+	t.Parallel()
+
 	for _, c := range []struct {
 		valid  bool
 		values []string
@@ -101,6 +108,8 @@ func TestAnyURIEditionSyntax(t *testing.T) {
 }
 
 func TestDecimalFacetsAndStrictComparison(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		value           string
 		total, fraction int
@@ -148,5 +157,28 @@ func BenchmarkDecimalLexicalWork(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func TestXSDWhitespaceNormalizationAndListBoundaries(t *testing.T) {
+	t.Parallel()
+
+	input := " \talpha\r\n  beta\u00a0gamma \t"
+	for _, test := range []struct{ kind, facet, want string }{
+		{"string", "preserve", input},
+		{"normalizedString", "replace", "  alpha    beta\u00a0gamma  "},
+		{"token", "collapse", "alpha beta\u00a0gamma"},
+		{"integer", "collapse", "alpha beta\u00a0gamma"},
+		{"unknown", "collapse", "alpha beta\u00a0gamma"},
+	} {
+		if got := lexicalpkg.WhiteSpace(test.kind); got != test.facet {
+			t.Fatalf("WhiteSpace(%s)=%s; want %s", test.kind, got, test.facet)
+		}
+		if got := lexicalpkg.Normalize(input, test.kind); got != test.want {
+			t.Fatalf("Normalize(%s)=%q; want %q", test.kind, got, test.want)
+		}
+	}
+	if got := lexicalpkg.XSDFields(input); !slices.Equal(got, []string{"alpha", "beta\u00a0gamma"}) {
+		t.Fatal("non-XSD whitespace split a list item", got)
 	}
 }

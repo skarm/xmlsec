@@ -62,14 +62,25 @@ func Endpoint(s string, allowHTTP bool) bool {
 
 // Bool parses an XML Schema boolean.
 func Bool(s string) (bool, error) {
-	switch s {
-	case "", "false", "0":
+	switch strings.Trim(s, " \t\r\n") {
+	case "false", "0":
 		return false, nil
 	case "true", "1":
 		return true, nil
 	}
 
 	return false, ErrSchema
+}
+
+// Index parses the XSD 1.0 xs:unsignedShort endpoint index used by SAML.
+// Its lexical space contains decimal digits with XML whitespace collapsed.
+func Index(s string) (uint16, error) {
+	n, err := strconv.ParseUint(strings.Trim(s, " \t\r\n"), 10, 16)
+	if err != nil {
+		return 0, ErrSchema
+	}
+
+	return uint16(n), nil
 }
 
 // Duration parses positive day/time XML Schema durations up to 365 days, with

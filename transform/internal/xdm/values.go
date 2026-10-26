@@ -587,7 +587,7 @@ func MergeMaps(maps []MapItem, policy MergePolicy) (MapItem, error) {
 					// Combine: concatenate values
 					allEntries[idx] = EntryView{
 						key:   allEntries[idx].key,
-						Value: ItemSlice(append(CloneSequence(allEntries[idx].Value).Materialize(), e.Value.Materialize()...)),
+						Value: ItemSlice(append(Materialize(CloneSequence(allEntries[idx].Value)), Materialize(e.Value)...)),
 					}
 
 					continue
@@ -1175,7 +1175,7 @@ func (a ArrayItem) Flatten() Sequence {
 	var result ItemSlice
 
 	for _, m := range a.members {
-		for item := range m.Items() {
+		for item := range SequenceItems(m) {
 			if nested, ok := item.(ArrayItem); ok {
 				result = append(result, nested.Flatten().Materialize()...)
 			} else {

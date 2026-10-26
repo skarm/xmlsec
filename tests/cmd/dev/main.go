@@ -487,8 +487,16 @@ func writeLanguageProofJSON(dst io.Writer, value any) error {
 const goTestSkipEvent = "skip"
 
 func runLanguageProof(ctx context.Context, root string, args []string, out, stderr io.Writer) error {
+	if len(args) == 1 && args[0] == "configure" {
+		return configureLanguageInputs(ctx, root, out)
+	}
+
+	if len(args) == 1 && args[0] == "prepare" {
+		return prepareLanguageInputs(ctx, root, out, stderr)
+	}
+
 	if len(args) == 0 || args[0] != "capture" && args[0] != "merge" {
-		return errors.New("usage: proof {capture|merge} -out FILE -- {GO_TEST_ARGUMENTS|CAPTURE_FILES}")
+		return errors.New("usage: proof {configure|prepare} or proof {capture|merge} -out FILE -- {GO_TEST_ARGUMENTS|CAPTURE_FILES}")
 	}
 
 	flags := flag.NewFlagSet("proof "+args[0], flag.ContinueOnError)
@@ -567,6 +575,7 @@ func captureLanguageProof(ctx context.Context, root, path string, args []string,
 
 	command := exec.CommandContext(commandCtx, "go", stream.Arguments...) // #nosec G204 -- Explicit developer Go test arguments, without a shell.
 	command.Dir, command.Stderr = root, stderr
+	command.Env = append(command.Environ(), "XMLSEC_PROOF_CAPTURE=1")
 
 	pipe, err := command.StdoutPipe()
 	if err != nil {

@@ -14,6 +14,7 @@ make fuzz FUZZ_ARGS='-time=5s'
 
 Without make, use `go test ./...`, `go test -race ./...` and
 `go run ./tests/cmd/dev docs`. Ordinary tests need no external XML engines.
+FIPS policy tests rerun themselves in a FIPS-only child process when needed.
 
 ## Test layout
 
@@ -78,6 +79,21 @@ Transform comparisons additionally use prepared inputs outside the repository:
 
 Pinned QT3/XSLT catalogs have a separate [runner](language-suites.md).
 A selected passing run is not a complete language-conformance result.
+
+After preparing the inputs described in
+[language evidence](language-suites.md#executable-clause-and-failure-evidence),
+run `go run ./tests/cmd/dev proof configure` once with the six input variables
+and a working Java executable on PATH. This stores their paths in a
+checkout-specific directory under the OS user cache, outside the repository.
+The four language evidence/residual tests then run from an ordinary IDE or
+`go test` invocation. Missing or stale captures and all thirteen catalog reports
+are rebuilt automatically for the current sources and register. The first run
+can take several minutes; subsequent runs reuse the matching snapshot.
+Explicit environment inputs override cached paths. Unconfigured checkouts retain
+optional external tests. `go run ./tests/cmd/dev proof prepare` warms the evidence
+cache without running the final gate.
+Published reference values (`P3_VECTOR`) are logged only during `proof capture`;
+the runner enables `XMLSEC_PROOF_CAPTURE=1` in its child process automatically.
 
 ## xmlsec1 comparisons
 

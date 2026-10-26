@@ -12,6 +12,8 @@ import (
 )
 
 func TestSimpleTextSegmentsAndBudget(t *testing.T) {
+	t.Parallel()
+
 	for _, text := range []string{"<r>ab</r>", "<r>a<!--ignored--><?ignored test?><![CDATA[b]]></r>", "<r>ab<!--ignored--></r>"} {
 		doc, err := document.ParseReader(t.Context(), strings.NewReader(text), document.DefaultLimits())
 		if err != nil {
@@ -28,7 +30,9 @@ func TestSimpleTextSegmentsAndBudget(t *testing.T) {
 	}
 }
 
-func TestSimpleTextAvoidsCopiesBeforeBudget(t *testing.T) {
+func TestSimpleTextRejectsOversizedContentWithoutAllocating(t *testing.T) {
+	// AllocsPerRun temporarily changes process-wide GOMAXPROCS and samples the
+	// process allocation counter, so this measurement must remain serial.
 	for _, fixture := range []string{
 		`<r a="allowed">` + strings.Repeat("x", 1<<20) + `</r>`,
 		`<r a="allowed">` + strings.Repeat("x", 1<<19) + `<!--split-->` + strings.Repeat("x", 1<<19) + `</r>`,
@@ -46,6 +50,10 @@ func TestSimpleTextAvoidsCopiesBeforeBudget(t *testing.T) {
 			t.Fatal("over-budget text allocated", count)
 		}
 	}
+}
+
+func TestSimpleTextAllowsAttributes(t *testing.T) {
+	t.Parallel()
 
 	valid, err := document.ParseReader(t.Context(), strings.NewReader(`<r a="allowed">a<!--split-->b</r>`), document.DefaultLimits())
 	if err != nil {
@@ -55,6 +63,10 @@ func TestSimpleTextAvoidsCopiesBeforeBudget(t *testing.T) {
 	if got, err := xmlutil.SimpleText(valid.Root(), 2); got != "ab" || err != nil {
 		t.Fatal("attributes were not validated separately", got, err)
 	}
+}
+
+func TestEmptyContentRejectsTextAndChildren(t *testing.T) {
+	t.Parallel()
 
 	for _, fixture := range []struct {
 		text string

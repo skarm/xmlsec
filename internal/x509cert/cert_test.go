@@ -15,6 +15,8 @@ import (
 )
 
 func TestParsePreservesOriginalSignedCertificate(t *testing.T) {
+	t.Parallel()
+
 	chain := testcert.New(t)
 	cn := der.Seq(der.OID(asn1.ObjectIdentifier{2, 5, 4, 3}), der.Wrap(0, asn1.TagUTF8String, false, []byte("relative crl")))
 	relative := der.Seq(der.Seq(der.Ctx(0, der.Ctx(1, cn))))
@@ -47,6 +49,8 @@ func TestParsePreservesOriginalSignedCertificate(t *testing.T) {
 }
 
 func TestParseBoundsAndNoAuthentication(t *testing.T) {
+	t.Parallel()
+
 	chain := testcert.New(t)
 	raw := chain.Leaf.Raw
 	for _, tc := range []struct {
@@ -58,6 +62,8 @@ func TestParseBoundsAndNoAuthentication(t *testing.T) {
 		{"nodes", x509cert.Limits{Bytes: len(raw), Depth: 33, Nodes: 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			if got, err := x509cert.Parse(raw, tc.limits); got != nil || !errors.Is(err, der.ErrLimit) {
 				t.Fatal(got, err)
 			}

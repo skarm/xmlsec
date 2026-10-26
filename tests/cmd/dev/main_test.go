@@ -802,13 +802,14 @@ func TestLanguageProofArtifacts(t *testing.T) {
 }
 
 func TestLanguageProofCaptureAndMerge(t *testing.T) {
+	t.Setenv("XMLSEC_PROOF_CAPTURE", "0") // The runner enables vectors only in its child.
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeFixture(t, root, "go.mod", "module example.test/proof\n\ngo 1.27.0\n")
 	writeFixture(t, root, "docs/conformance.json", `{}`)
-	writeFixture(t, root, "proof_test.go", "package proof\nimport (\"testing\"; \"os\")\nfunc TestCaptured(t *testing.T) { t.Log(`P3_VECTOR \"fixture\"`) }\nfunc TestRejected(t *testing.T) { t.Fatal(\"deliberate failure\") }\nfunc TestChangesSource(t *testing.T) { if err := os.WriteFile(\"created.go\", []byte(\"package proof\\n\"), 0600); err != nil {t.Fatal(err)} }\n")
+	writeFixture(t, root, "proof_test.go", "package proof\nimport (\"testing\"; \"os\")\nfunc TestCaptured(t *testing.T) { if os.Getenv(\"XMLSEC_PROOF_CAPTURE\") != \"1\" { t.Fatal(\"proof capture mode is disabled\") }; t.Log(`P3_VECTOR \"fixture\"`) }\nfunc TestRejected(t *testing.T) { t.Fatal(\"deliberate failure\") }\nfunc TestChangesSource(t *testing.T) { if err := os.WriteFile(\"created.go\", []byte(\"package proof\\n\"), 0600); err != nil {t.Fatal(err)} }\n")
 	if output, err := exec.CommandContext(t.Context(), "git", "init", "-q", root).CombinedOutput(); err != nil {
 		t.Fatal(string(output), err)
 	}
@@ -824,6 +825,13 @@ func TestLanguageProofCaptureAndMerge(t *testing.T) {
 	var artifact languageProofArtifact
 	if err := readLanguageProofFile(merged, &artifact); err != nil || len(artifact.Streams) != 1 {
 		t.Fatal(artifact, err)
+	}
+	vectorCaptured := false
+	for _, event := range artifact.Streams[0].Events {
+		vectorCaptured = vectorCaptured || event.Test == "TestCaptured" && event.Action == "output" && strings.Contains(event.Output, `P3_VECTOR "fixture"`)
+	}
+	if !vectorCaptured || os.Getenv("XMLSEC_PROOF_CAPTURE") != "0" {
+		t.Fatal("capture lost its vector or changed the parent environment")
 	}
 	original, err := os.ReadFile(capture)
 	if err != nil {
@@ -986,6 +994,7 @@ func languageProofDirectory(t *testing.T, variable string) string {
 }
 
 func TestLanguageNormativeEvidence(t *testing.T) {
+	configureLanguageTest(t, true)
 	root, register, run := languageEvidenceInputs(t)
 	pinsData, err := os.ReadFile(filepath.Join(root, "build", "w3c-suites.json"))
 	if err != nil {
@@ -1105,6 +1114,7 @@ func loadLanguageEvidenceCases(t *testing.T, directory string, pin suitePin, p c
 // resolve to a passing causal check. A new failure cannot inherit a category
 // merely because its explanatory text resembles an already reviewed case.
 func TestLanguageResidualCoverage(t *testing.T) {
+	configureLanguageTest(t, true)
 	root, register, run := languageEvidenceInputs(t)
 	pinsData, err := os.ReadFile(filepath.Join(root, "build", "w3c-suites.json"))
 	if err != nil {
@@ -1307,7 +1317,9 @@ func TestXPathPublishedHostChoiceInventory(t *testing.T) {
 					if err := checkXPathHostChoiceDocumentation(string(raw), version); err != nil {
 						t.Fatal(err)
 					}
-					t.Log(`P3_VECTOR "documented"`)
+					if os.Getenv("XMLSEC_PROOF_CAPTURE") == "1" {
+						t.Log(`P3_VECTOR "documented"`)
+					}
 				})
 				t.Run("omission", func(t *testing.T) {
 					// Keep every other choice; this item's omission must remain
@@ -1317,7 +1329,9 @@ func TestXPathPublishedHostChoiceInventory(t *testing.T) {
 					if err := checkXPathHostChoiceDocumentation(mutant, version); err == nil || !strings.Contains(err.Error(), choice.name) {
 						t.Fatal("omitted published item accepted", choice.name, err)
 					}
-					t.Log(`P3_VECTOR "omission rejected"`)
+					if os.Getenv("XMLSEC_PROOF_CAPTURE") == "1" {
+						t.Log(`P3_VECTOR "omission rejected"`)
+					}
 				})
 			})
 		}

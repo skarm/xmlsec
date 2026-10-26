@@ -248,8 +248,8 @@ func TestLegacyDSAKeyValidation(t *testing.T) {
 }
 
 func TestLegacyMethodsFIPS(t *testing.T) {
-	if !fips140.Enabled() {
-		t.Skip("run with GODEBUG=fips140=only")
+	if !testutil.RunFIPSTest(t) {
+		return
 	}
 
 	if err := xmldsig.VerifyMessage(t.Context(), nil, nil, nil, xmldsig.DSASHA1, xmldsig.LegacyVerificationPolicy()); !errors.Is(err, xmldsig.ErrPolicy) {

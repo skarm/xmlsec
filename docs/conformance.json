@@ -24285,7 +24285,7 @@
             "name": "TestXPathTransformProgramBudget"
           },
           {
-            "file": "transform/internal/xdm/integration_test.go",
+            "file": "transform/internal/xdm/document_test.go",
             "name": "TestCopyNodePreservesNamespaceContext"
           },
           {
@@ -24351,7 +24351,7 @@
             "name": "TestXPathTransformProgramBudget"
           },
           {
-            "file": "transform/internal/xdm/integration_test.go",
+            "file": "transform/internal/xdm/document_test.go",
             "name": "TestCopyNodePreservesNamespaceContext"
           },
           {
@@ -492106,7 +492106,7 @@
             "name": "TestXPathTransformProgramBudget"
           },
           {
-            "file": "transform/internal/xdm/integration_test.go",
+            "file": "transform/internal/xdm/document_test.go",
             "name": "TestCopyNodePreservesNamespaceContext"
           },
           {
@@ -492248,7 +492248,7 @@
             "name": "TestXPathTransformProgramBudget"
           },
           {
-            "file": "transform/internal/xdm/integration_test.go",
+            "file": "transform/internal/xdm/document_test.go",
             "name": "TestCopyNodePreservesNamespaceContext"
           },
           {
@@ -495336,7 +495336,7 @@
             "name": "TestXPathTransformProgramBudget"
           },
           {
-            "file": "transform/internal/xdm/integration_test.go",
+            "file": "transform/internal/xdm/document_test.go",
             "name": "TestCopyNodePreservesNamespaceContext"
           },
           {
@@ -495446,7 +495446,7 @@
             "name": "TestXPathTransformProgramBudget"
           },
           {
-            "file": "transform/internal/xdm/integration_test.go",
+            "file": "transform/internal/xdm/document_test.go",
             "name": "TestCopyNodePreservesNamespaceContext"
           },
           {
@@ -815985,7 +815985,7 @@
       "statement": "Apply the selected boolean datatype lexical/value constraints to SAML values independently of application policy.",
       "norm": {
         "document": "XSD2",
-        "clause": "3.2.2",
+        "clause": "3.2.2; 4.3.6",
         "level": "normative",
         "source": "https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/#boolean",
         "errata": []
@@ -816005,14 +816005,36 @@
           "saml/sp.ServiceProvider.ConsumePOST"
         ],
         "code": [
-          "saml/sp/sp.go"
+          "saml/sp/sp.go",
+          "saml/internal/profile/values.go",
+          "saml/internal/xmlutil/xml.go",
+          "saml/metadata/metadata.go",
+          "saml/protocol/request.go"
         ]
       },
       "tests": {
-        "status": "pending",
-        "reason": "Obligation-specific positive/negative tests have not yet been mapped; no local coverage is claimed.",
-        "positive": [],
-        "negative": []
+        "status": "partial",
+        "reason": "Exact component tests cover present/absent boolean handling and XML whitespace, or bounded endpoint index lexical forms, including authenticated POST/Redirect requests. Full SP/IdP datatype and schema coverage remains open.",
+        "positive": [
+          {
+            "file": "saml/metadata/boolean_test.go",
+            "name": "TestMetadataBooleanLexicalValues"
+          },
+          {
+            "file": "saml/protocol/datatypes_test.go",
+            "name": "TestAuthnRequestBooleanLexicalValues"
+          }
+        ],
+        "negative": [
+          {
+            "file": "saml/metadata/boolean_test.go",
+            "name": "TestMetadataBooleanLexicalValues"
+          },
+          {
+            "file": "saml/protocol/datatypes_test.go",
+            "name": "TestAuthnRequestBooleanLexicalValues"
+          }
+        ]
       },
       "interop": {
         "status": "pending",
@@ -816030,7 +816052,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "Only the bounded SAML datatype subset is checked; complete legal lexical/value boundaries and independent cases remain open. No full schema validation/PSVI is implemented.",
+      "gap": "The selected boolean lexical space and attribute-presence cases now have component regression coverage. Full role-level schema validation/PSVI and independently captured datatype evidence remain open.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -816409,7 +816431,7 @@
       "statement": "Apply the selected unsignedShort datatype lexical/value constraints to SAML values independently of application policy.",
       "norm": {
         "document": "XSD2",
-        "clause": "3.3.23",
+        "clause": "3.3.23; 4.3.6",
         "level": "normative",
         "source": "https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/#unsignedShort",
         "errata": []
@@ -816429,14 +816451,36 @@
           "saml/sp.ServiceProvider.ConsumePOST"
         ],
         "code": [
-          "saml/sp/sp.go"
+          "saml/sp/sp.go",
+          "saml/internal/profile/values.go",
+          "saml/internal/xmlutil/xml.go",
+          "saml/metadata/metadata.go",
+          "saml/protocol/request.go"
         ]
       },
       "tests": {
-        "status": "pending",
-        "reason": "Obligation-specific positive/negative tests have not yet been mapped; no local coverage is claimed.",
-        "positive": [],
-        "negative": []
+        "status": "partial",
+        "reason": "Exact component tests cover present/absent boolean handling and XML whitespace, or bounded endpoint index lexical forms, including authenticated POST/Redirect requests. Full SP/IdP datatype and schema coverage remains open.",
+        "positive": [
+          {
+            "file": "saml/metadata/index_test.go",
+            "name": "TestMetadataIndexLexicalValues"
+          },
+          {
+            "file": "saml/protocol/datatypes_test.go",
+            "name": "TestAuthnRequestIndexLexicalValues"
+          }
+        ],
+        "negative": [
+          {
+            "file": "saml/metadata/index_test.go",
+            "name": "TestMetadataIndexLexicalValues"
+          },
+          {
+            "file": "saml/protocol/datatypes_test.go",
+            "name": "TestAuthnRequestIndexLexicalValues"
+          }
+        ]
       },
       "interop": {
         "status": "pending",
@@ -816454,7 +816498,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "Only the bounded SAML datatype subset is checked; complete legal lexical/value boundaries and independent cases remain open. No full schema validation/PSVI is implemented.",
+      "gap": "The selected lexical cases now have component regression coverage. Full role-level datatype coverage, schema validation/PSVI and independently captured datatype evidence remain open. Signed forms of unsignedShort require separate edition-specific review.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -839976,7 +840020,7 @@
       "statement": "Apply the selected boolean datatype lexical/value constraints to SAML values independently of application policy.",
       "norm": {
         "document": "XSD2",
-        "clause": "3.2.2",
+        "clause": "3.2.2; 4.3.6",
         "level": "normative",
         "source": "https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/#boolean",
         "errata": []
@@ -839996,14 +840040,36 @@
           "saml/idp.IdentityProvider.Issue"
         ],
         "code": [
-          "saml/idp/idp.go"
+          "saml/idp/idp.go",
+          "saml/internal/profile/values.go",
+          "saml/internal/xmlutil/xml.go",
+          "saml/metadata/metadata.go",
+          "saml/protocol/request.go"
         ]
       },
       "tests": {
-        "status": "pending",
-        "reason": "Obligation-specific positive/negative tests have not yet been mapped; no local coverage is claimed.",
-        "positive": [],
-        "negative": []
+        "status": "partial",
+        "reason": "Exact component tests cover present/absent boolean handling and XML whitespace, or bounded endpoint index lexical forms, including authenticated POST/Redirect requests. Full SP/IdP datatype and schema coverage remains open.",
+        "positive": [
+          {
+            "file": "saml/metadata/boolean_test.go",
+            "name": "TestMetadataBooleanLexicalValues"
+          },
+          {
+            "file": "saml/protocol/datatypes_test.go",
+            "name": "TestAuthnRequestBooleanLexicalValues"
+          }
+        ],
+        "negative": [
+          {
+            "file": "saml/metadata/boolean_test.go",
+            "name": "TestMetadataBooleanLexicalValues"
+          },
+          {
+            "file": "saml/protocol/datatypes_test.go",
+            "name": "TestAuthnRequestBooleanLexicalValues"
+          }
+        ]
       },
       "interop": {
         "status": "pending",
@@ -840021,7 +840087,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "Only the bounded SAML datatype subset is checked; complete legal lexical/value boundaries and independent cases remain open. No full schema validation/PSVI is implemented.",
+      "gap": "The selected boolean lexical space and attribute-presence cases now have component regression coverage. Full role-level schema validation/PSVI and independently captured datatype evidence remain open.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {
@@ -840400,7 +840466,7 @@
       "statement": "Apply the selected unsignedShort datatype lexical/value constraints to SAML values independently of application policy.",
       "norm": {
         "document": "XSD2",
-        "clause": "3.3.23",
+        "clause": "3.3.23; 4.3.6",
         "level": "normative",
         "source": "https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/#unsignedShort",
         "errata": []
@@ -840420,14 +840486,36 @@
           "saml/idp.IdentityProvider.Issue"
         ],
         "code": [
-          "saml/idp/idp.go"
+          "saml/idp/idp.go",
+          "saml/internal/profile/values.go",
+          "saml/internal/xmlutil/xml.go",
+          "saml/metadata/metadata.go",
+          "saml/protocol/request.go"
         ]
       },
       "tests": {
-        "status": "pending",
-        "reason": "Obligation-specific positive/negative tests have not yet been mapped; no local coverage is claimed.",
-        "positive": [],
-        "negative": []
+        "status": "partial",
+        "reason": "Exact component tests cover present/absent boolean handling and XML whitespace, or bounded endpoint index lexical forms, including authenticated POST/Redirect requests. Full SP/IdP datatype and schema coverage remains open.",
+        "positive": [
+          {
+            "file": "saml/metadata/index_test.go",
+            "name": "TestMetadataIndexLexicalValues"
+          },
+          {
+            "file": "saml/protocol/datatypes_test.go",
+            "name": "TestAuthnRequestIndexLexicalValues"
+          }
+        ],
+        "negative": [
+          {
+            "file": "saml/metadata/index_test.go",
+            "name": "TestMetadataIndexLexicalValues"
+          },
+          {
+            "file": "saml/protocol/datatypes_test.go",
+            "name": "TestAuthnRequestIndexLexicalValues"
+          }
+        ]
       },
       "interop": {
         "status": "pending",
@@ -840445,7 +840533,7 @@
           "reason": "No general compatibility switch supplies missing normative behavior."
         }
       },
-      "gap": "Only the bounded SAML datatype subset is checked; complete legal lexical/value boundaries and independent cases remain open. No full schema validation/PSVI is implemented.",
+      "gap": "The selected lexical cases now have component regression coverage. Full role-level datatype coverage, schema validation/PSVI and independently captured datatype evidence remain open. Signed forms of unsignedShort require separate edition-specific review.",
       "closure": "Close the stated implementation/input and evidence boundaries with exact positive/negative cases and independent fixtures or exchanges where applicable, preserving explicit policy, cancellation and work/byte limits."
     },
     {

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"time"
 
@@ -727,17 +726,17 @@ func roleSupportsProtocol(element document.Element) bool {
 func readRoleSigningFlags(element document.Element, role *Role) error {
 	var err error
 
-	role.authnSigned, err = profile.Bool(xmlutil.Attr(element, "AuthnRequestsSigned"))
+	role.authnSigned, err = xmlutil.BoolAttr(element, "AuthnRequestsSigned")
 	if err != nil {
 		return err
 	}
 
-	role.wantAuthnSigned, err = profile.Bool(xmlutil.Attr(element, "WantAuthnRequestsSigned"))
+	role.wantAuthnSigned, err = xmlutil.BoolAttr(element, "WantAuthnRequestsSigned")
 	if err != nil {
 		return err
 	}
 
-	role.wantAssertionsSigned, err = profile.Bool(xmlutil.Attr(element, "WantAssertionsSigned"))
+	role.wantAssertionsSigned, err = xmlutil.BoolAttr(element, "WantAssertionsSigned")
 
 	return err
 }
@@ -837,15 +836,15 @@ func parseEndpoint(c document.Element, o Options) (Endpoint, error) {
 	}
 
 	if indexed {
-		n, err := strconv.ParseUint(xmlutil.Attr(c, "index"), 10, 16)
+		n, err := profile.Index(xmlutil.Attr(c, "index"))
 		if err != nil {
 			return Endpoint{}, ErrMetadata
 		}
 
-		e.Index = uint16(n)
+		e.Index = n
 		_, e.DefaultSet = c.Attribute(document.Name{Local: "isDefault"})
 
-		e.Default, err = profile.Bool(xmlutil.Attr(c, "isDefault"))
+		e.Default, err = xmlutil.BoolAttr(c, "isDefault")
 		if err != nil {
 			return Endpoint{}, err
 		}

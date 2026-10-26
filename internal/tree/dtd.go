@@ -170,7 +170,7 @@ func decodeDTDInput(ctx context.Context, source io.Reader, options ParseOptions,
 
 		r, err := p.input.rune()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if err == io.EOF { //nolint:errorlint // Preserve resource failures joined with EOF.
 				break
 			}
 

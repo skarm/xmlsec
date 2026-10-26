@@ -81,7 +81,7 @@ func checkSequenceType(ctx context.Context, seq xdm.Sequence, st sequenceType, e
 	// atomic items before cardinality and type checks.
 	if isAtomicTargetType(st.ItemType) && seq != nil {
 		atomized, err := xpath.AtomizeSequence(seq)
-		if err == nil && len(atomized) > 0 {
+		if err == nil {
 			items := make(xdm.ItemSlice, len(atomized))
 			for i, av := range atomized {
 				items[i] = av
@@ -144,7 +144,7 @@ func checkSequenceType(ctx context.Context, seq xdm.Sequence, st sequenceType, e
 // isAtomicTargetType returns true when the item type string names an atomic
 // type (e.g. "xs:decimal", "xs:string"), and no node/function/map test.
 func isAtomicTargetType(itemType string) bool {
-	if itemType == "" || itemType == lexicon.NodeTestItem {
+	if itemType == "" || itemType == lexicon.NodeTestItem || itemType == nameEmptySequence {
 		return false
 	}
 	// Node tests, function tests, map/array tests are not atomic.

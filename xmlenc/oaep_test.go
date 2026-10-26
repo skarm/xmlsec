@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/testutil"
 	"github.com/skarm/xmlsec/xmlenc"
 )
 
@@ -234,8 +235,8 @@ func TestOAEPLegacyXMLDefaultsAndPolicy(t *testing.T) {
 }
 
 func TestOAEPLegacyFIPSPolicy(t *testing.T) {
-	if !fips140.Enabled() {
-		t.Skip("run with GODEBUG=fips140=only to check the legacy denial")
+	if !testutil.RunFIPSTest(t) {
+		return
 	}
 
 	k := key(t)

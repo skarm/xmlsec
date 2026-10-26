@@ -5,20 +5,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
 
-	"golang.org/x/text/encoding/charmap"
-	"golang.org/x/text/encoding/ianaindex"
-
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/xmlchar"
+
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/ianaindex"
 )
 
 // ParseReader constructs a snapshot incrementally, without retaining source XML.
@@ -327,7 +326,7 @@ func (r *xmlInput) nextUnit() ([]byte, error) {
 
 		value, e := r.unitRune(markup)
 		if e != nil {
-			if errors.Is(e, io.EOF) {
+			if e == io.EOF { //nolint:errorlint // Only bare EOF completes a lexical unit successfully.
 				break
 			}
 
@@ -456,7 +455,7 @@ func (r *xmlInput) unitComplete(unit []byte, markup bool, quote rune, inReferenc
 
 func (r *xmlInput) unitRune(markup bool) (rune, error) {
 	value, err := r.rune()
-	if markup && errors.Is(err, io.EOF) {
+	if markup && err == io.EOF { //nolint:errorlint // Preserve other errors accompanying EOF.
 		return 0, fmt.Errorf("%w: unterminated XML token", ErrMalformed)
 	}
 

@@ -11,6 +11,7 @@ import (
 )
 
 func TestIdentifiersAndURIs(t *testing.T) {
+	t.Parallel()
 	for _, id := range []string{"_request", "запрос", strings.Repeat("a", 256)} {
 		if !profile.ID(id) {
 			t.Errorf("valid ID rejected: %q", id)
@@ -37,6 +38,7 @@ func TestIdentifiersAndURIs(t *testing.T) {
 }
 
 func TestEndpointPolicy(t *testing.T) {
+	t.Parallel()
 	for _, endpoint := range []string{"https://example.test/acs", "https://example.test:8443/acs?binding=post", "https://example.test/" + strings.Repeat("a", 4075)} {
 		if !profile.Endpoint(endpoint, false) {
 			t.Errorf("valid HTTPS endpoint rejected: %q", endpoint)
@@ -54,15 +56,32 @@ func TestEndpointPolicy(t *testing.T) {
 	}
 }
 
-func TestBooleanValues(t *testing.T) {
-	for _, input := range []string{"", "false", "0", "true", "1"} {
-		got, err := profile.Bool(input)
-		if err != nil || got != (input == "true" || input == "1") {
-			t.Fatalf("Bool(%q) = %v, %v", input, got, err)
-		}
+func TestBoolParsesXMLSchemaLexicalValues(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, input string
+		want        bool
+	}{
+		{"false literal", "false", false},
+		{"zero literal", "0", false},
+		{"true literal", "true", true},
+		{"one literal", "1", true},
+		{"leading XML whitespace", " true", true},
+		{"trailing XML whitespace", "true\t\r\n", true},
+		{"padded false", " false ", false},
+		{"padded zero", "\t0\r\n", false},
+		{"padded one", "\t1\r\n", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := profile.Bool(test.input)
+			if err != nil || got != test.want {
+				t.Fatalf("Bool(%q) = %v, %v; want %v", test.input, got, err, test.want)
+			}
+		})
 	}
 
-	for _, input := range []string{"TRUE", "yes", " true", "false "} {
+	for _, input := range []string{"", " ", "TRUE", "yes", "tr ue", "\u00a0true"} {
 		if _, err := profile.Bool(input); !errors.Is(err, profile.ErrSchema) {
 			t.Errorf("invalid boolean accepted: %q: %v", input, err)
 		}
@@ -70,6 +89,7 @@ func TestBooleanValues(t *testing.T) {
 }
 
 func TestSAMLTimeLexicalForm(t *testing.T) {
+	t.Parallel()
 	for _, s := range []string{
 		"2026-10-18T01:02:03Z",
 		"2026-10-18T01:02:03.1Z",
@@ -77,6 +97,7 @@ func TestSAMLTimeLexicalForm(t *testing.T) {
 		"2026-10-18T01:02:03.100Z",
 	} {
 		t.Run(s, func(t *testing.T) {
+			t.Parallel()
 			got, err := profile.ParseTime(s)
 
 			want, _ := time.Parse(time.RFC3339Nano, s)
@@ -96,6 +117,7 @@ func TestSAMLTimeLexicalForm(t *testing.T) {
 		"0000-10-18T01:02:03Z",
 	} {
 		t.Run(s, func(t *testing.T) {
+			t.Parallel()
 			if got, err := profile.ParseTime(s); !got.IsZero() || !errors.Is(err, profile.ErrSchema) {
 				t.Fatalf("invalid/unsupported dateTime accepted: %v, %v", got, err)
 			}
@@ -104,6 +126,7 @@ func TestSAMLTimeLexicalForm(t *testing.T) {
 }
 
 func TestSAMLMidnight(t *testing.T) {
+	t.Parallel()
 	for _, s := range []string{"2026-12-31T24:00:00Z", "2026-12-31T24:00:00.000Z"} {
 		got, err := profile.ParseTime(s)
 
@@ -121,6 +144,7 @@ func TestSAMLMidnight(t *testing.T) {
 }
 
 func TestSAMLDurationLexicalFormAndPrecision(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		s    string
 		want time.Duration
@@ -133,6 +157,7 @@ func TestSAMLDurationLexicalFormAndPrecision(t *testing.T) {
 		{"P365D", 365 * 24 * time.Hour},
 	} {
 		t.Run(tc.s, func(t *testing.T) {
+			t.Parallel()
 			if got, err := profile.Duration(tc.s); err != nil || got != tc.want {
 				t.Fatalf("got %v, %v; want %v", got, err, tc.want)
 			}
@@ -141,6 +166,7 @@ func TestSAMLDurationLexicalFormAndPrecision(t *testing.T) {
 
 	for _, s := range []string{"PT.5S", "PT1.S", "PT1..5S", "P1.5D", "PT0.0000000001S", "P365DT0.000000001S", "P366D", "PT999999999999999999999999999S", "PT0S", "P1DT", "PT1S1H"} {
 		t.Run(s, func(t *testing.T) {
+			t.Parallel()
 			if got, err := profile.Duration(s); got != 0 || !errors.Is(err, profile.ErrSchema) {
 				t.Fatalf("invalid/unsupported duration accepted: %v, %v", got, err)
 			}

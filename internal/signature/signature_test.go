@@ -15,6 +15,8 @@ import (
 )
 
 func TestSignAndVerify(t *testing.T) {
+	t.Parallel()
+
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -28,6 +30,8 @@ func TestSignAndVerify(t *testing.T) {
 		{"ECDSA", testcert.Key(t), false}, {"RSA", rsaKey, false}, {"RSA-PSS", rsaKey, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			algorithm, err := signature.Select(tc.key.Public(), crypto.SHA256, tc.pss)
 			if err != nil {
 				t.Fatal(err)
@@ -50,6 +54,8 @@ func TestSignAndVerify(t *testing.T) {
 }
 
 func TestSignRejectsProviderOutputAndCancellation(t *testing.T) {
+	t.Parallel()
+
 	provider := &invalidSigner{Signer: testcert.Key(t)}
 
 	algorithm, err := signature.Select(provider.Public(), crypto.SHA256, false)
@@ -70,6 +76,8 @@ func TestSignRejectsProviderOutputAndCancellation(t *testing.T) {
 }
 
 func TestHashRequiresExplicitLegacyPolicy(t *testing.T) {
+	t.Parallel()
+
 	aid, err := signature.DigestAlgorithm(crypto.SHA1)
 	if err != nil {
 		t.Fatal(err)

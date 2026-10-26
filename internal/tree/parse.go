@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -54,7 +53,7 @@ func (p *documentParser) parse(ctx context.Context) (*Document, error) {
 
 		token, err := p.decoder.RawToken()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if err == io.EOF { //nolint:errorlint // Wrapped/joined EOF may also carry a source failure.
 				if err := p.flushText(); err != nil {
 					return nil, err
 				}

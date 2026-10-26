@@ -32,6 +32,8 @@ func testWorkflowConfig(t testing.TB) Config {
 }
 
 func TestNormalizeSnapshotsPolicyAndBounds(t *testing.T) {
+	t.Parallel()
+
 	base := testWorkflowConfig(t)
 	delay, accuracy, freshness := time.Hour, time.Minute, time.Second
 	at := testcert.Now()
@@ -75,6 +77,8 @@ func TestNormalizeSnapshotsPolicyAndBounds(t *testing.T) {
 		{"precision overflow", func(c *Config) { value := 24*time.Hour + 1; c.MissingAccuracy = &value }, ErrInput},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			bad := got
 			tc.mutate(&bad)
 			if _, err := Normalize(bad); !errors.Is(err, tc.want) {
@@ -85,6 +89,8 @@ func TestNormalizeSnapshotsPolicyAndBounds(t *testing.T) {
 }
 
 func TestWorkflowCancellationNeverProducesPassingReport(t *testing.T) {
+	t.Parallel()
+
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	now := testcert.Now()
@@ -96,6 +102,8 @@ func TestWorkflowCancellationNeverProducesPassingReport(t *testing.T) {
 
 // Graph tests start after the workflow's independent authentication stages.
 func TestGraphExactBindingOwnershipAndProofExtraction(t *testing.T) {
+	t.Parallel()
+
 	now := testcert.Now()
 	past := now.Add(-time.Hour)
 	payload := []byte("original application bytes")
@@ -142,7 +150,9 @@ func TestGraphExactBindingOwnershipAndProofExtraction(t *testing.T) {
 	}
 }
 
-func TestGraphRejectsConflictsMissingBindingsAndCycles(t *testing.T) {
+func TestGraphRejectsConflictsMissingBindingsAndCycles(t *testing.T) { //nolint:tparallel // Subtests share the graph config before the parent changes its budgets.
+	t.Parallel()
+
 	a, b := []byte("first"), []byte("second")
 	ak, bk := sha256.Sum256(a), sha256.Sum256(b)
 	config := Config{MaxObjects: 8, MaxEdges: 16, MaxBytes: 4096, MaxTimestamps: 4}
@@ -219,8 +229,12 @@ func containmentChain(depth int) (map[[32]byte]Object, [][32]byte) {
 }
 
 func TestContainmentDepthIncludesCachedSharedTails(t *testing.T) {
+	t.Parallel()
+
 	for _, depth := range []int{64, 65, 66} {
 		t.Run(strconv.Itoa(depth), func(t *testing.T) {
+			t.Parallel()
+
 			objects, keys := containmentChain(depth)
 			for _, cached := range []bool{false, true} {
 				walk := containmentWalk{ctx: t.Context(), objects: objects, states: make(map[[32]byte]uint8, len(objects)), maximum: 8192}

@@ -561,19 +561,7 @@ func CompareNodeOrder(a, b Node) int {
 
 	// If both are attrs/ns of the same element
 	if aElem == bElem && (aIsAttr || aIsNS) && (bIsAttr || bIsNS) {
-		// Namespace nodes come before attribute nodes
-		if aIsNS && bIsAttr {
-			return -1
-		}
-
-		if aIsAttr && bIsNS {
-			return 1
-		}
-		// Both are same-type (attr or ns) on the same element.
-		// Walk forward from each to find the other; the one found
-		// first when walking forward from the other is later in
-		// document order.
-		return compareSiblingOrder(a, b)
+		return compareOwnedEntryOrder(a, b, aElem)
 	}
 
 	// If one is an attr/ns of the other's element
@@ -599,6 +587,40 @@ func CompareNodeOrder(a, b Node) int {
 
 	if bIsAttr || bIsNS {
 		return -1
+	}
+
+	return 0
+}
+
+func compareOwnedEntryOrder(a, b, owner Node) int {
+	// Namespace nodes come before attribute nodes.
+	if a.Type() == NamespaceNode && b.Type() == AttributeNode {
+		return -1
+	}
+
+	if a.Type() == AttributeNode && b.Type() == NamespaceNode {
+		return 1
+	}
+
+	if a.Type() != AttributeNode {
+		return compareSiblingOrder(a, b)
+	}
+
+	element, ok := AsNode[*Element](owner)
+	if !ok {
+		return 0
+	}
+
+	// Attribute order within an element is implementation-defined. Use the
+	// stored order, as DocOrderCache does; attributes have no NextSibling chain.
+	for _, attribute := range element.Attributes() {
+		if attribute == a {
+			return -1
+		}
+
+		if attribute == b {
+			return 1
+		}
 	}
 
 	return 0

@@ -15,6 +15,8 @@ import (
 const rootNamespace = "urn:root"
 
 func TestWriterNamespaceScopesAndCDATAChunks(t *testing.T) {
+	t.Parallel()
+
 	var output strings.Builder
 
 	w := stream.NewWriter(&output)
@@ -73,6 +75,8 @@ func TestWriterNamespaceScopesAndCDATAChunks(t *testing.T) {
 }
 
 func TestWriterRetainsDestinationErrors(t *testing.T) {
+	t.Parallel()
+
 	failure := errors.New("destination failed")
 	for _, err := range []error{nil, failure} {
 		dst := &failingWriter{err: err}
@@ -102,6 +106,8 @@ func TestWriterRetainsDestinationErrors(t *testing.T) {
 }
 
 func TestWriterRejectsCommentDelimiterAcrossChunks(t *testing.T) {
+	t.Parallel()
+
 	var output strings.Builder
 
 	w := stream.NewWriter(&output)
@@ -114,6 +120,8 @@ func TestWriterRejectsCommentDelimiterAcrossChunks(t *testing.T) {
 }
 
 func TestWriterXML11ControlReferences(t *testing.T) {
+	t.Parallel()
+
 	var output strings.Builder
 
 	w := stream.NewWriter(&output).XMLVersion("1.1")
@@ -132,6 +140,8 @@ func TestWriterXML11ControlReferences(t *testing.T) {
 }
 
 func TestWriterRejectsShortStringWrite(t *testing.T) {
+	t.Parallel()
+
 	dst := &shortStringWriter{}
 
 	w := stream.NewWriter(dst)

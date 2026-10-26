@@ -7,6 +7,8 @@ import (
 )
 
 func TestNilNodeTypes(t *testing.T) {
+	t.Parallel()
+
 	for _, node := range []xdm.Node{
 		nil,
 		(*xdm.Document)(nil),
@@ -34,6 +36,8 @@ func TestNilNodeTypes(t *testing.T) {
 }
 
 func TestNonNilNodeTypes(t *testing.T) {
+	t.Parallel()
+
 	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<r a="v">text<!--c--><?p data?></r>`))
 	if err != nil {
 		t.Fatal(err)

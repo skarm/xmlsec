@@ -3,7 +3,6 @@ package tree
 import (
 	"context"
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -89,7 +88,7 @@ func (o ParseOptions) ReadRecords(ctx context.Context, src io.Reader, options Re
 
 		token, err := p.decoder.RawToken()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if err == io.EOF { //nolint:errorlint // A joined source failure must not complete the record stream.
 				break
 			}
 

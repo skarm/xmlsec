@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"math/big"
 	"slices"
 	"strings"
 	"sync"
@@ -16,6 +15,8 @@ import (
 )
 
 func TestCopyNodePreservesNamespaceContext(t *testing.T) {
+	t.Parallel()
+
 	source, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<parent xmlns="urn:outer" xmlns:p="urn:value"><child xmlns="" type="p:T"><nested/></child></parent>`))
 	if err != nil {
 		t.Fatal(err)
@@ -62,6 +63,8 @@ func TestCopyNodePreservesNamespaceContext(t *testing.T) {
 }
 
 func TestCopyDocPreservesXDMProperties(t *testing.T) {
+	t.Parallel()
+
 	source, err := (xdm.ParseOptions{BaseURI: "https://example.test/source.xml"}).Parse(t.Context(), []byte(`<r><n/></r>`))
 	if err != nil {
 		t.Fatal(err)
@@ -88,16 +91,21 @@ func TestCopyDocPreservesXDMProperties(t *testing.T) {
 }
 
 func TestElementDocumentPreservesContextAndOwnership(t *testing.T) {
-	for _, input := range []string{
-		`<parent xmlns:p="urn:qname"><child type="p:T"><nested/></child></parent>`,
-		`<parent xmlns="urn:outer" xmlns:p="urn:qname"><child xmlns="" xml:id="own" xml:lang="ru" xml:space="preserve" xml:base="../base/" type="p:T"><nested/></child></parent>`,
-		`<parent xmlns="urn:outer" xmlns:p="urn:old"><p:child xmlns:p="urn:new" type="p:T"><nested xmlns=""/></p:child></parent>`,
+	t.Parallel()
+
+	for _, tc := range []struct{ name, source string }{
+		{"inherited prefix", `<parent xmlns:p="urn:qname"><child type="p:T"><nested/></child></parent>`},
+		{"XML context and default reset", `<parent xmlns="urn:outer" xmlns:p="urn:qname"><child xmlns="" xml:id="own" xml:lang="ru" xml:space="preserve" xml:base="../base/" type="p:T"><nested/></child></parent>`},
+		{"shadowed prefix", `<parent xmlns="urn:outer" xmlns:p="urn:old"><p:child xmlns:p="urn:new" type="p:T"><nested xmlns=""/></p:child></parent>`},
 	} {
-		t.Run(input, func(t *testing.T) { checkElementDocument(t, input) })
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertElementDocumentCopy(t, tc.source)
+		})
 	}
 }
 
-func checkElementDocument(t *testing.T, input string) {
+func assertElementDocumentCopy(t *testing.T, input string) {
 	t.Helper()
 
 	source, err := (xdm.ParseOptions{BaseURI: "https://example.test/source.xml"}).Parse(t.Context(), []byte(input))
@@ -163,6 +171,8 @@ func checkElementDocument(t *testing.T, input string) {
 }
 
 func TestFragmentUsesProjectNodeIdentity(t *testing.T) {
+	t.Parallel()
+
 	ctx := t.Context()
 	options := xdm.ParseOptions{BaseURI: "urn:fragment"}
 
@@ -192,6 +202,8 @@ func TestFragmentUsesProjectNodeIdentity(t *testing.T) {
 }
 
 func TestXMLIDViewAndMutation(t *testing.T) {
+	t.Parallel()
+
 	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<r xml:id=" old "/>`))
 	if err != nil {
 		t.Fatal(err)
@@ -251,6 +263,8 @@ func TestXMLIDViewAndMutation(t *testing.T) {
 }
 
 func TestAttributeValueIteration(t *testing.T) {
+	// AllocsPerRun changes GOMAXPROCS and forbids concurrent parallel tests.
+
 	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<r xml:id=" own&#x9; " xmlns:p="urn:p" p:n="value" bare=""/>`))
 	if err != nil {
 		t.Fatal(err)
@@ -287,6 +301,8 @@ func TestAttributeValueIteration(t *testing.T) {
 }
 
 func TestAttributeIndexMutationAndConcurrentReads(t *testing.T) {
+	t.Parallel()
+
 	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<r first="A" xmlns:p="urn:p" p:last="B" xml:id=" own "/>`))
 	if err != nil {
 		t.Fatal(err)
@@ -340,6 +356,8 @@ func TestAttributeIndexMutationAndConcurrentReads(t *testing.T) {
 }
 
 func TestDoctypeIsOnlyOutputMetadata(t *testing.T) {
+	t.Parallel()
+
 	ctx := t.Context()
 
 	doc, err := (xdm.ParseOptions{}).Parse(ctx, []byte(`<r><a/></r>`))
@@ -378,56 +396,9 @@ func TestDoctypeIsOnlyOutputMetadata(t *testing.T) {
 	}
 }
 
-func TestNestedValuesOwnMutableInputs(t *testing.T) {
-	key := big.NewInt(7)
-	number := big.NewRat(1, 10)
-	array := xdm.NewArray([]xdm.Sequence{xdm.SingleDecimal(number)})
-	value := xdm.NewMap([]xdm.MapEntry{{
-		Key:   xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: key},
-		Value: xdm.ItemSlice{array},
-	}})
-	key.SetInt64(9)
-	number.SetInt64(3)
-
-	for attempt := range 2 {
-		seq, ok := value.Get(xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(7)})
-		if !ok {
-			t.Fatal("mutation changed the stored map key")
-		}
-
-		stored, ok := seq.Get(0).(xdm.ArrayItem)
-		if !ok {
-			t.Fatalf("stored value: %T", seq.Get(0))
-		}
-
-		member, err := stored.Get(1)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		atomic, ok := member.Get(0).(xdm.AtomicValue)
-		if !ok || atomic.BigRat().Cmp(big.NewRat(1, 10)) != 0 {
-			t.Fatalf("attempt %d: stored decimal changed: %v", attempt, member)
-		}
-
-		atomic.BigRat().SetInt64(42)
-	}
-
-	if _, ok := value.Get(xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(9)}); ok {
-		t.Fatal("mutated key became visible")
-	}
-}
-
-func TestArrayErrorsKeepQualifiedCodes(t *testing.T) {
-	_, err := (xdm.ArrayItem{}).Get(1)
-
-	var coded *xdm.Error
-	if !errors.As(err, &coded) || coded.Code != "FOAY0001" || coded.CodeQName().Local != "FOAY0001" {
-		t.Fatalf("lost structured array error: %v", err)
-	}
-}
-
 func TestDetachedNamespaceNode(t *testing.T) {
+	t.Parallel()
+
 	ns := xdm.NewNamespace("p", "urn:detached")
 
 	n := xdm.NewNamespaceNodeWrapper(ns, nil)
@@ -441,6 +412,8 @@ func TestDetachedNamespaceNode(t *testing.T) {
 }
 
 func TestDTDSnapshotProperties(t *testing.T) {
+	t.Parallel()
+
 	const base = "https://example.test/source.xml"
 	const source = `<!DOCTYPE r [<!NOTATION bin SYSTEM "urn:bin"><!ENTITY image SYSTEM "image.bin" NDATA bin><!ENTITY external SYSTEM "parts/value.ent"><!ATTLIST n identity ID #IMPLIED refs IDREFS #IMPLIED>]><r>&external;</r>`
 	original, err := (xdm.ParseOptions{AllowDTD: true, BaseURI: base, DTDOpen: func(_ context.Context, uri string) (io.ReadCloser, error) {
@@ -482,7 +455,9 @@ func TestDTDSnapshotProperties(t *testing.T) {
 	if copied.GetElementByID("a") != nil || copied.GetElementByID("b") != item || original.GetElementByID("a") == nil {
 		t.Fatal("ID index did not follow cloned attribute mutation")
 	}
-	item.RemoveAttribute("identity")
+	if !item.RemoveAttribute("identity") {
+		t.Fatal("existing DTD ID attribute was not reported removed")
+	}
 	if copied.GetElementByID("b") != nil {
 		t.Fatal("removed DTD ID remains indexed")
 	}

@@ -8,6 +8,7 @@ import (
 const version10 = "1.0"
 
 func TestPackageVersionComparison(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		a    string
 		b    string
@@ -27,6 +28,7 @@ func TestPackageVersionComparison(t *testing.T) {
 }
 
 func TestVersionConstraintMatches(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		constraint string
 		version    string
@@ -55,6 +57,7 @@ func TestVersionConstraintMatches(t *testing.T) {
 }
 
 func TestElementContexts(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		version     string
@@ -67,6 +70,7 @@ func TestElementContexts(t *testing.T) {
 		{"not-an-xslt-element", "", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if minXSLTElementVersion(tc.name) != tc.version || isTopLevelXSLTElement(tc.name) != tc.topLevel || isXSLTInstruction(tc.name) != tc.instruction {
 				t.Fatal("incorrect version or permitted context")
 			}

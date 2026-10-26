@@ -9,6 +9,7 @@ import (
 	"iter"
 	"math"
 	"math/big"
+	"os"
 	"runtime"
 	"slices"
 	"strconv"
@@ -1611,7 +1612,9 @@ func TestSequenceSubtypePublishedTable(t *testing.T) {
 			for _, row := range rows {
 				for column, target := range columns {
 					t.Run(fmt.Sprintf("%d/%s/%s to %s", version, pair.name, row.source, target), func(t *testing.T) {
-						t.Logf("P3_VECTOR %q", strconv.FormatBool(row.cells[column]))
+						if os.Getenv("XMLSEC_PROOF_CAPTURE") == "1" {
+							t.Logf("P3_VECTOR %q", strconv.FormatBool(row.cells[column]))
+						}
 						sourceType, err := ParseSequenceType(row.source)
 						if err != nil {
 							t.Fatal(err)

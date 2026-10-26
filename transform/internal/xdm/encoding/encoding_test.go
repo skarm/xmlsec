@@ -15,6 +15,8 @@ import (
 )
 
 func TestLoadDecodesIncrementally(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name  string
 		input []byte
@@ -32,6 +34,8 @@ func TestLoadDecodesIncrementally(t *testing.T) {
 		{"ibm1141", []byte{0xc1, 0x9f}, "A€"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			codec := encoding.Load(tc.name)
 			if codec == nil {
 				t.Fatal("codec unavailable")
@@ -55,6 +59,8 @@ func TestLoadDecodesIncrementally(t *testing.T) {
 }
 
 func TestLoadRejectsMalformedInput(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name  string
 		input []byte
@@ -70,6 +76,8 @@ func TestLoadRejectsMalformedInput(t *testing.T) {
 		{"ucs4-3412", []byte{0, 0, 0}, encoding.ErrInvalidEncodedChar},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			codec := encoding.Load(tc.name)
 			if codec == nil {
 				t.Fatal("codec unavailable")
