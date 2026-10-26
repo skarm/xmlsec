@@ -445,7 +445,7 @@ func (r *suiteResourceResolver) Resolve(ctx context.Context, uri string) (io.Rea
 			return nil, fmt.Errorf("suite resolver has no explicit mapping for %q", uri)
 		}
 
-		path = filepath.FromSlash(u.Path)
+		path = suiteFileURIPath(u.Path)
 	}
 
 	relative, err := filepath.Rel(r.root, path)
@@ -1326,7 +1326,21 @@ func loadSuiteCollection(ctx context.Context, root, base string, resources *suit
 }
 
 func suiteFileURI(path string) string {
-	return (&url.URL{Scheme: suiteFile, Path: filepath.ToSlash(path)}).String()
+	path = filepath.ToSlash(path)
+	if filepath.VolumeName(path) != "" && !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+
+	return (&url.URL{Scheme: suiteFile, Path: path}).String()
+}
+
+// Local Windows drive paths use a leading slash in a file URI, but not on disk.
+func suiteFileURIPath(path string) string {
+	if filepath.Separator == '\\' && len(path) >= 4 && path[0] == '/' && path[2] == ':' && path[3] == '/' {
+		path = path[1:]
+	}
+
+	return filepath.FromSlash(path)
 }
 
 func suiteNamespaceDeclarations(node *suiteNode, namespaces map[string]string) {

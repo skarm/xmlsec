@@ -820,16 +820,33 @@ func TestSuiteFileBoundaryAndLimits(t *testing.T) {
 	}
 }
 
+func TestSuiteFileURI(t *testing.T) {
+	for _, name := range []string{"valid.xml", "suite files/hash#percent%é.xml"} {
+		path := filepath.Join(t.TempDir(), filepath.FromSlash(name))
+		uri := suiteFileURI(path)
+		parsed, err := url.Parse(uri)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if parsed.Scheme != suiteFile || parsed.Host != "" || parsed.Opaque != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !strings.HasPrefix(parsed.Path, "/") || strings.Contains(parsed.Path, "\\") {
+			t.Fatalf("local path %q produced an invalid file URI: %q", path, uri)
+		}
+		if got := suiteFileURIPath(parsed.Path); got != path {
+			t.Fatalf("file URI %q resolved to %q, want %q", uri, got, path)
+		}
+	}
+}
+
 func TestSuiteResolvedLocalPaths(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"valid.xml", "space name.xml", "hash#name.xml"} {
+	for _, name := range []string{"valid.xml", "space name.xml", "hash#name.xml", "percent%é.xml"} {
 		writeFixture(t, root, name, `<r/>`)
 	}
 	resolver := &suiteResourceResolver{root: root}
-	for _, name := range []string{"valid.xml", "space name.xml", "hash#name.xml"} {
+	for _, name := range []string{"valid.xml", "space name.xml", "hash#name.xml", "percent%é.xml"} {
 		path := filepath.Join(root, name)
 		for _, uri := range []string{path, suiteFileURI(path)} {
 			reader, err := resolver.Resolve(t.Context(), uri)

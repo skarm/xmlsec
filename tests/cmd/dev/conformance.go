@@ -12,6 +12,7 @@ import (
 	"maps"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -571,7 +572,7 @@ func (c *conformanceCheck) proof(r normativeRequirement, proof normativeProof) {
 		c.choice(r.ID, p.XSDVersion, "1.0", "1.1")
 		c.text(r.ID, p.Name, p.File)
 
-		if filepath.IsAbs(p.File) || strings.Contains(p.File, "\\") || filepath.Clean(p.File) != p.File || strings.HasPrefix(p.File, "../") {
+		if path.IsAbs(p.File) || strings.ContainsAny(p.File, "\\:") || path.Clean(p.File) != p.File || strings.HasPrefix(p.File, "../") {
 			c.problem(r.ID, "catalog evidence requires a portable relative file")
 		}
 

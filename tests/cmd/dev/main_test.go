@@ -450,6 +450,40 @@ func TestConformanceCaseEvidence(t *testing.T) {
 	}
 }
 
+func TestConformanceCatalogPaths(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, root, "tests/cmd/dev/main_test.go", "package main\nimport \"testing\"\nfunc TestLanguageNormativeEvidence(t *testing.T) {}\n")
+	for _, tc := range []struct {
+		file  string
+		valid bool
+	}{
+		{"fn/abs.xml", true},
+		{"catalog.xml", true},
+		{"/fn/abs.xml", false},
+		{"../fn/abs.xml", false},
+		{"fn/../abs.xml", false},
+		{"./fn/abs.xml", false},
+		{"fn//abs.xml", false},
+		{`fn\abs.xml`, false},
+		{"C:/fn/abs.xml", false},
+		{"C:abs.xml", false},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			check := &conformanceCheck{root: root, symbols: make(map[string]map[string]struct{})}
+			check.evidenceProof(normativeRequirement{ID: "norm"}, normativeProof{Catalog: &catalogProof{
+				Suite: suiteQT3, File: tc.file, Version: suiteVersion31, XSDVersion: suiteVersion10, Names: []string{"fn-absint1"},
+			}})
+			problem := errors.Join(check.problems...)
+			if tc.valid && problem != nil || !tc.valid && (problem == nil || !strings.Contains(problem.Error(), "portable relative file")) {
+				t.Fatalf("catalog path %q: %v", tc.file, problem)
+			}
+		})
+	}
+}
+
 func conformanceFixture(t *testing.T, root string) []byte {
 	t.Helper()
 	writeFixture(t, root, "fixture/api.go", "package fixture\nfunc Apply() {}\n")

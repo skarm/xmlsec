@@ -459,7 +459,7 @@ func suiteLocalReferencePath(root, base string, node *suiteNode, reference *url.
 		return "", suiteHarness("file reference requires a local catalog base URI")
 	}
 
-	relative, err := filepath.Rel(root, filepath.FromSlash(resolved.Path))
+	relative, err := filepath.Rel(root, suiteFileURIPath(resolved.Path))
 	if err != nil {
 		return "", err
 	}
