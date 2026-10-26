@@ -2,7 +2,6 @@ package keys_test
 
 import (
 	"bytes"
-	"context"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -346,7 +345,7 @@ func BenchmarkParse(b *testing.B) {
 
 func BenchmarkPasswordProtection(b *testing.B) {
 	c := testcert.New(b)
-	ctx := context.Background()
+	ctx := b.Context()
 	password := []byte("public benchmark password")
 	identity := keys.PKCS12Identity{PrivateKey: c.LeafKey, Certificate: c.Leaf, ExtraCertificates: []*x509.Certificate{c.Root}}
 	// Compare a cheap test count and the actual export default. No production

@@ -1,7 +1,6 @@
 package reference_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/skarm/xmlsec/document"
@@ -40,7 +39,7 @@ func all(t testing.TB, d *document.Document) reference.Data {
 func process(t testing.TB, data reference.Data, ts []reference.Transform, opt reference.Options) *reference.Output {
 	t.Helper()
 
-	out, err := reference.Process(context.Background(), data, ts, opt)
+	out, err := reference.Process(t.Context(), data, ts, opt)
 	if err != nil {
 		t.Fatal(err)
 	}

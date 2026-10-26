@@ -2,7 +2,6 @@ package metadata_test
 
 import (
 	"bytes"
-	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"encoding/base64"
@@ -28,12 +27,12 @@ func TestMetadataSignedAndPinnedTrust(t *testing.T) {
 	old := testcert.Issue(t, &expired, c.Root, &c.LeafKey.PublicKey, c.RootKey)
 	spec := metadata.EntityDescriptor{EntityID: "urn:test:idp", ValidUntil: testcert.Now().Add(time.Hour), CacheDuration: 30 * time.Minute, IDP: &metadata.RoleDescriptor{WantAuthnRequestsSigned: true, Keys: []metadata.KeyDescriptor{{Use: nameSigning, CertificateDER: old.Raw}, {Use: nameSigning, CertificateDER: c.TSA.Raw}}, Endpoints: map[string][]metadata.Endpoint{"SingleSignOnService": {{Binding: metadata.HTTPRedirect, Location: "https://idp.example.test/sso"}}}}}
 
-	d, e := metadata.Build(context.Background(), spec, testcert.Now(), metadata.Options{})
+	d, e := metadata.Build(t.Context(), spec, testcert.Now(), metadata.Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	signed, e := metadata.Sign(context.Background(), d, c.RootKey, c.Root.Raw, xmldsig.ECDSASHA256, testcert.Now(), metadata.Options{})
+	signed, e := metadata.Sign(t.Context(), d, c.RootKey, c.Root.Raw, xmldsig.ECDSASHA256, testcert.Now(), metadata.Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -45,7 +44,7 @@ func TestMetadataSignedAndPinnedTrust(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	s, e := v.Verify(context.Background(), raw, testcert.Now())
+	s, e := v.Verify(t.Context(), raw, testcert.Now())
 	if e != nil || !s.AuthenticatedSignature() {
 		t.Fatal(e)
 	}
@@ -83,20 +82,20 @@ func TestMetadataSignedAndPinnedTrust(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if _, e := wrong.Verify(context.Background(), raw, testcert.Now()); e == nil {
+	if _, e := wrong.Verify(t.Context(), raw, testcert.Now()); e == nil {
 		t.Fatal("untrusted signer")
 	}
 
-	if _, e := v.Verify(context.Background(), bytes.ReplaceAll(raw, []byte("https://idp.example.test/sso"), []byte("https://attacker.example.test/sso")), testcert.Now()); e == nil {
+	if _, e := v.Verify(t.Context(), bytes.ReplaceAll(raw, []byte("https://idp.example.test/sso"), []byte("https://attacker.example.test/sso")), testcert.Now()); e == nil {
 		t.Fatal("tamper")
 	}
 
 	unsigned, _ := d.XML(t.Context())
-	if _, e := v.Verify(context.Background(), unsigned, testcert.Now()); e == nil {
+	if _, e := v.Verify(t.Context(), unsigned, testcert.Now()); e == nil {
 		t.Fatal("unsigned")
 	}
 
-	if p, e := metadata.ParseTrusted(context.Background(), unsigned, testcert.Now(), metadata.Options{}); e != nil || p.AuthenticatedSignature() {
+	if p, e := metadata.ParseTrusted(t.Context(), unsigned, testcert.Now(), metadata.Options{}); e != nil || p.AuthenticatedSignature() {
 		t.Fatal(e)
 	}
 }
@@ -105,14 +104,14 @@ func TestAggregateDuplicatesEndpointsAndLimits(t *testing.T) {
 	c := testcert.New(t)
 	spec := metadata.EntityDescriptor{ID: "_sp", EntityID: "https://sp.example.test/", ValidUntil: testcert.Now().Add(time.Hour), SP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{CertificateDER: c.Leaf.Raw}}, Endpoints: map[string][]metadata.Endpoint{"AssertionConsumerService": {{Index: 1, Default: false, DefaultSet: true, Binding: metadata.HTTPPost, Location: "https://sp.example.test/one"}, {Index: 2, Default: true, Binding: metadata.HTTPPost, Location: "https://sp.example.test/two"}}}}}
 
-	d, e := metadata.Build(context.Background(), spec, testcert.Now(), metadata.Options{})
+	d, e := metadata.Build(t.Context(), spec, testcert.Now(), metadata.Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
 
 	raw, _ := d.XML(t.Context())
 
-	s, e := metadata.ParseTrusted(context.Background(), raw, testcert.Now(), metadata.Options{})
+	s, e := metadata.ParseTrusted(t.Context(), raw, testcert.Now(), metadata.Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -138,17 +137,17 @@ func TestAggregateDuplicatesEndpointsAndLimits(t *testing.T) {
 	}
 
 	aggregate := `<md:EntitiesDescriptor xmlns:md="` + metadata.Namespace + `">` + string(raw) + `</md:EntitiesDescriptor>`
-	if _, e := metadata.ParseTrusted(context.Background(), []byte(aggregate), testcert.Now(), metadata.Options{}); e != nil {
+	if _, e := metadata.ParseTrusted(t.Context(), []byte(aggregate), testcert.Now(), metadata.Options{}); e != nil {
 		t.Fatal(e)
 	}
 
 	for _, v := range []string{strings.Replace(aggregate, `</md:EntitiesDescriptor>`, string(raw)+`</md:EntitiesDescriptor>`, 1), strings.ReplaceAll(string(raw), `index="2"`, `index="1"`), strings.ReplaceAll(string(raw), `isDefault="false"`, `isDefault="true"`), strings.ReplaceAll(string(raw), `https://sp.example.test/two`, `http://sp.example.test/two`)} {
-		if _, e := metadata.ParseTrusted(context.Background(), []byte(v), testcert.Now(), metadata.Options{}); e == nil {
+		if _, e := metadata.ParseTrusted(t.Context(), []byte(v), testcert.Now(), metadata.Options{}); e == nil {
 			t.Fatal("accepted", v)
 		}
 	}
 
-	if _, e := metadata.ParseTrusted(context.Background(), raw, testcert.Now(), metadata.Options{MaxBytes: 100}); e == nil {
+	if _, e := metadata.ParseTrusted(t.Context(), raw, testcert.Now(), metadata.Options{MaxBytes: 100}); e == nil {
 		t.Fatal("size")
 	}
 }
@@ -171,14 +170,14 @@ func TestACSDefaultSelectionUsesDocumentOrder(t *testing.T) {
 				endpoints[i].Location = "https://sp.example.test/acs"
 			}
 
-			doc, e := metadata.Build(context.Background(), metadata.EntityDescriptor{EntityID: "urn:test:sp", ValidUntil: testcert.Now().Add(time.Hour), SP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{CertificateDER: c.Leaf.Raw}}, Endpoints: map[string][]metadata.Endpoint{"AssertionConsumerService": endpoints}}}, testcert.Now(), metadata.Options{})
+			doc, e := metadata.Build(t.Context(), metadata.EntityDescriptor{EntityID: "urn:test:sp", ValidUntil: testcert.Now().Add(time.Hour), SP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{CertificateDER: c.Leaf.Raw}}, Endpoints: map[string][]metadata.Endpoint{"AssertionConsumerService": endpoints}}}, testcert.Now(), metadata.Options{})
 			if e != nil {
 				t.Fatal(e)
 			}
 
 			raw, _ := doc.XML(t.Context())
 
-			snapshot, e := metadata.ParseTrusted(context.Background(), raw, testcert.Now(), metadata.Options{})
+			snapshot, e := metadata.ParseTrusted(t.Context(), raw, testcert.Now(), metadata.Options{})
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -208,14 +207,14 @@ func FuzzMetadata(f *testing.F) {
 			t.Skip()
 		}
 
-		_, _ = metadata.ParseTrusted(context.Background(), b, testcert.Now(), metadata.Options{MaxBytes: 1 << 16})
+		_, _ = metadata.ParseTrusted(t.Context(), b, testcert.Now(), metadata.Options{MaxBytes: 1 << 16})
 	})
 }
 
 func BenchmarkVerify(b *testing.B) {
 	c := testcert.New(b)
 	opt := metadata.Options{}
-	ctx := context.Background()
+	ctx := b.Context()
 
 	d, err := metadata.Build(ctx, metadata.EntityDescriptor{EntityID: "urn:idp", ValidUntil: testcert.Now().Add(time.Hour), IDP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{Use: nameSigning, CertificateDER: c.Leaf.Raw}}, Endpoints: map[string][]metadata.Endpoint{"SingleSignOnService": {{Binding: metadata.HTTPRedirect, Location: "https://idp.test/sso"}}}}}, testcert.Now(), opt)
 	if err != nil {

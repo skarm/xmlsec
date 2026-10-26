@@ -1008,7 +1008,7 @@ func TestManifestGraphAndMixedReferences(t *testing.T) {
 }
 
 func testManifestGraphAndMixedReferencesCase(t *testing.T, external *bool) {
-	ctx := context.Background()
+	ctx := t.Context()
 	k := graphKey(t)
 	d, s := makeGraph(t, *external)
 	before, _ := d.XML(ctx)
@@ -1068,7 +1068,7 @@ func testManifestGraphAndMixedReferencesCase(t *testing.T, external *bool) {
 }
 
 func TestManifestDisabledAndBadNestedDigest(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	k := graphKey(t)
 	d, _ := makeGraph(t, false)
 	raw, _ := d.XML(ctx)
@@ -1133,7 +1133,7 @@ func TestManifestPolicyAndCycles(t *testing.T) {
 
 			k := &countSigner{Signer: graphKey(t)}
 
-			out, e := xmldsig.SignTemplate(context.Background(), d, s, k, xmldsig.TemplateSignOptions{Validation: o})
+			out, e := xmldsig.SignTemplate(t.Context(), d, s, k, xmldsig.TemplateSignOptions{Validation: o})
 			if e == nil || out != nil || k.calls != 0 {
 				t.Fatalf("not rejected before signing: %v calls=%d", e, k.calls)
 			}
@@ -1142,7 +1142,7 @@ func TestManifestPolicyAndCycles(t *testing.T) {
 }
 
 func TestMixedAuthBeforeIOAndBudgets(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	k := graphKey(t)
 	d, s := makeGraph(t, true)
 	calls := 0
@@ -1181,7 +1181,7 @@ func TestMixedAuthBeforeIOAndBudgets(t *testing.T) {
 }
 
 func TestBuilderAppendAndDuplicateIDs(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	d := graphDoc(t, `<r ID="r"><data ID="data">v</data></r>`)
 	raw, _ := d.XML(ctx)
 	spec := xmldsig.SignatureTemplate{ID: "s", SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: nameData, Transforms: graphC14N()}}}
@@ -1327,7 +1327,7 @@ func makeGraph(t *testing.T, ext bool) (*document.Document, document.Element) {
 		},
 	}
 
-	d, s, e := xmldsig.BuildTemplate(context.Background(), nil, document.Element{}, spec)
+	d, s, e := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, spec)
 	if e != nil {
 		t.Fatal(e)
 	}

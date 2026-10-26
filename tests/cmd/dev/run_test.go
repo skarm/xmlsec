@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -1341,35 +1342,61 @@ func TestSuiteEncodedInputs(t *testing.T) {
 	}
 }
 
+func TestSuiteCaseDeadlineClassification(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		set, _, err := decodeSuiteNode([]byte(`<test-set><test-case name="ordinary-error"><test>1 idiv 0</test><result><error code="*"/></result></test-case></test-set>`), filepath.Join(root, "deadline.xml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		options := suiteOptions{kind: suiteQT3, directory: root, version: suiteVersion31, timeout: time.Hour}
+		item := suiteCase{base: root, setNode: set, node: set.child("test-case")}
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+
+		if outcome := executeSuiteCase(ctx, options, item, suiteOutcome{}); outcome.Status != suitePassed {
+			t.Fatal("expected language error failed before the deadline", outcome)
+		}
+
+		synctest.Sleep(time.Second)
+		if outcome := executeSuiteCase(ctx, options, item, suiteOutcome{}); outcome.Status != suiteFailed || outcome.Kind != suiteResourceLimit || outcome.FailureCause != "resource-bound" {
+			t.Fatal("expired deadline satisfied an expected language error", outcome)
+		}
+	})
+}
+
 func TestSuiteTimeoutClassification(t *testing.T) {
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeFixture(t, root, suiteCatalog, `<catalog xmlns="`+suiteQTNamespace+`"><test-set name="budget" file="budget.xml"/></catalog>`)
-	writeFixture(t, root, "budget.xml", `<test-set xmlns="`+suiteQTNamespace+`"><test-case name="large-object"><test>error((), 'details', 1 to 100001)</test><result><error code="FOER0000"/></result></test-case><test-case name="ordinary-error"><test>1 idiv 0</test><result><error code="*"/></result></test-case><test-case name="allowed-resource-error"><test>1 to 100001</test><result><error code="XPDY0130"/></result></test-case>
+	synctest.Test(t, func(t *testing.T) {
+		root, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFixture(t, root, suiteCatalog, `<catalog xmlns="`+suiteQTNamespace+`"><test-set name="budget" file="budget.xml"/></catalog>`)
+		writeFixture(t, root, "budget.xml", `<test-set xmlns="`+suiteQTNamespace+`"><test-case name="large-object"><test>error((), 'details', 1 to 100001)</test><result><error code="FOER0000"/></result></test-case><test-case name="ordinary-error"><test>1 idiv 0</test><result><error code="*"/></result></test-case><test-case name="allowed-resource-error"><test>1 to 100001</test><result><error code="XPDY0130"/></result></test-case>
 <test-case name="parameter-budget"><environment><param name="p" select="1 to 100001"/></environment><test>1</test><result><error code="*"/></result></test-case>
 <test-case name="context-budget"><environment><context-item select="1 to 100001"/></environment><test>1</test><result><error code="*"/></result></test-case>
 <test-case name="collection-budget"><environment><collection><query>1 to 100001</query></collection></environment><test>1</test><result><error code="*"/></result></test-case>
 <test-case name="assertion-budget"><test>1</test><result><not><assert>count((1 to 100001) ! string(.)) = 0</assert></not></result></test-case>
 </test-set>`)
-	options := suiteOptions{kind: suiteQT3, directory: root, version: suiteVersion31, limitsProfile: "default", timeout: time.Second, setMatch: regexp.MustCompile(".*"), caseMatch: regexp.MustCompile(".*")}
-	for _, timeout := range []time.Duration{time.Second, time.Nanosecond} {
-		options.timeout = timeout
-		report, err := executeSuite(t.Context(), options, suitePin{Catalog: suiteCatalog, Namespace: suiteQTNamespace})
-		if err != nil || len(report.Cases) != 7 {
-			t.Fatal(report, err)
-		}
-		for _, outcome := range report.Cases {
-			if timeout == time.Second && slices.Contains([]string{"ordinary-error", "allowed-resource-error"}, outcome.Name) {
-				if outcome.Status != suitePassed {
-					t.Fatal(outcome)
+		options := suiteOptions{kind: suiteQT3, directory: root, version: suiteVersion31, limitsProfile: "default", timeout: time.Second, setMatch: regexp.MustCompile(".*"), caseMatch: regexp.MustCompile(".*")}
+		// Virtual time keeps budget checks active; zero expires the case immediately.
+		for _, timeout := range []time.Duration{time.Second, 0} {
+			options.timeout = timeout
+			report, err := executeSuite(t.Context(), options, suitePin{Catalog: suiteCatalog, Namespace: suiteQTNamespace})
+			if err != nil || len(report.Cases) != 7 {
+				t.Fatal(report, err)
+			}
+			for _, outcome := range report.Cases {
+				if timeout == time.Second && slices.Contains([]string{"ordinary-error", "allowed-resource-error"}, outcome.Name) {
+					if outcome.Status != suitePassed {
+						t.Fatal(outcome)
+					}
+				} else if outcome.Status != suiteFailed || outcome.Kind != suiteResourceLimit {
+					t.Fatal("budget/deadline satisfied an expected language error", timeout, outcome)
 				}
-			} else if outcome.Status != suiteFailed || outcome.Kind != suiteResourceLimit {
-				t.Fatal("budget/deadline satisfied an expected language error", timeout, outcome)
 			}
 		}
-	}
+	})
 }
 
 func TestSuiteDTDInput(t *testing.T) {

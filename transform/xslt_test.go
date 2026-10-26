@@ -1161,21 +1161,21 @@ func TestXSLTStandaloneAttributeValues(t *testing.T) {
 func TestXSLT20And30(t *testing.T) {
 	e := engine(t, transform.Config{})
 
-	d, err := e.Parse(context.Background(), []byte(`<r><item category="b">3</item><item category="a">2</item><item category="b">4</item></r>`))
+	d, err := e.Parse(t.Context(), []byte(`<r><item category="b">3</item><item category="a">2</item><item category="b">4</item></r>`))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	style2 := stylesheet(t, e, sheet(version20, `<xsl:param name="offset" as="xs:integer"/><xsl:template match="/"><xsl:for-each-group select="r/item" group-by="@category"><xsl:sort select="current-grouping-key()"/><xsl:value-of select="current-grouping-key()"/><xsl:text>:</xsl:text><xsl:value-of select="sum(current-group())+$offset"/><xsl:text>;</xsl:text></xsl:for-each-group></xsl:template>`))
 
-	out, err := style2.Transform(context.Background(), d, transform.XSLTContext{Parameters: transform.Bindings{{Local: "offset"}: transform.Values(transform.Integer(10))}})
+	out, err := style2.Transform(t.Context(), d, transform.XSLTContext{Parameters: transform.Bindings{{Local: "offset"}: transform.Values(transform.Integer(10))}})
 	if err != nil || string(out.Primary) != "a:12;b:17;" {
 		t.Fatal(out, err)
 	}
 
 	style3 := stylesheet(t, e, sheet(version30, `<xsl:template name="start"><xsl:iterate select="1 to 5"><xsl:param name="sum" select="0"/><xsl:on-completion><xsl:value-of select="$sum"/></xsl:on-completion><xsl:next-iteration><xsl:with-param name="sum" select="$sum + ."/></xsl:next-iteration></xsl:iterate><xsl:message>done</xsl:message><xsl:result-document href="second.txt" method="text"><xsl:value-of select="map{'answer':42}?answer"/></xsl:result-document></xsl:template>`))
 
-	out, err = style3.Transform(context.Background(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, BaseOutputURI: "urn:outputs:"})
+	out, err = style3.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, BaseOutputURI: "urn:outputs:"})
 	if err != nil || string(out.Primary) != "15" || len(out.Secondary) != 1 || len(out.Messages) != 1 || out.Messages[0].Text != "done" {
 		t.Fatal(out, err)
 	}
@@ -1279,13 +1279,13 @@ func TestXSLTVersionBoundaries(t *testing.T) {
 		`<xsl:template match="/" expand-text="yes">{1+1}</xsl:template>`,
 		`<xsl:param name="p" as="array(*)"/>`,
 	} {
-		if _, err := e.CompileXSLT(context.Background(), []byte(sheet(version20, body)), transform.XSLTOptions{}); err == nil {
+		if _, err := e.CompileXSLT(t.Context(), []byte(sheet(version20, body)), transform.XSLTOptions{}); err == nil {
 			t.Error("2.0 accepted", body)
 		}
 	}
 
 	for _, version := range []string{"1e0", namePositiveInfinity, "NaN"} {
-		_, err := e.CompileXSLT(context.Background(), []byte(sheet(version, `<xsl:template match="/"/>`)), transform.XSLTOptions{})
+		_, err := e.CompileXSLT(t.Context(), []byte(sheet(version, `<xsl:template match="/"/>`)), transform.XSLTOptions{})
 
 		var detail *transform.Error
 		if !errors.As(err, &detail) || detail.Code != "XTSE0110" {
@@ -2268,7 +2268,7 @@ func TestXSLTSerializationVersionDoesNotChangeLanguage(t *testing.T) {
 }
 
 func TestStaticParametersAndEnvironment(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	env := map[string]string{"APPLICATION": "visible"}
 	e := engine(t, transform.Config{Environment: env})
 	env["APPLICATION"] = "changed"
@@ -2312,7 +2312,7 @@ func TestStreamingIterateBreakKeepsParameters(t *testing.T) {
 	e := engine(t, transform.Config{})
 	s := stylesheet(t, e, sheet(version30, `<xsl:template name="start"><xsl:iterate select="1 to 5"><xsl:param name="sum" select="0"/><xsl:on-completion><xsl:text>completed</xsl:text></xsl:on-completion><xsl:choose><xsl:when test=". = 3"><xsl:break select="$sum"/></xsl:when><xsl:otherwise><xsl:next-iteration><xsl:with-param name="sum" select="$sum+."/></xsl:next-iteration></xsl:otherwise></xsl:choose></xsl:iterate></xsl:template>`))
 
-	out, err := s.Transform(context.Background(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+	out, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2465,7 +2465,7 @@ func TestStreamingMergeOrderAndGroups(t *testing.T) {
 	e := engine(t, transform.Config{})
 	s := stylesheet(t, e, sheet(version30, `<xsl:template name="start"><xsl:merge><xsl:merge-source name="left" select="(3,1,2)" sort-before-merge="yes"><xsl:merge-key select="." data-type="number"/></xsl:merge-source><xsl:merge-source name="right" select="(2,4)"><xsl:merge-key select="." data-type="number"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="concat(current-merge-key(),':',count(current-merge-group()),':',count(current-merge-group('left')),',')"/></xsl:merge-action></xsl:merge></xsl:template>`))
 
-	out, err := s.Transform(context.Background(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+	out, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2596,7 +2596,7 @@ func TestStreamingRejectsUnsortedMerge(t *testing.T) {
 	e := engine(t, transform.Config{})
 	s := stylesheet(t, e, sheet(version30, `<xsl:template name="start"><xsl:merge><xsl:merge-source select="(2,1)"><xsl:merge-key select="." data-type="number"/></xsl:merge-source><xsl:merge-action><xsl:value-of select="current-merge-key()"/></xsl:merge-action></xsl:merge></xsl:template>`))
 
-	_, err := s.Transform(context.Background(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+	_, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
 	if err == nil || !strings.Contains(err.Error(), "XTDE2220") {
 		t.Fatalf("unsorted merge error = %v", err)
 	}
@@ -2606,7 +2606,7 @@ func TestStreamingNestedMergeRestoresFunctions(t *testing.T) {
 	e := engine(t, transform.Config{})
 	s := stylesheet(t, e, sheet(version30, `<xsl:template name="start"><xsl:merge><xsl:merge-source name="outer" select="(1,2)"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="current-merge-key()"/><xsl:text>[</xsl:text><xsl:merge><xsl:merge-source name="inner" select="(8,9)"><xsl:merge-key select="."/></xsl:merge-source><xsl:merge-action><xsl:value-of select="current-merge-key()"/></xsl:merge-action></xsl:merge><xsl:text>]</xsl:text><xsl:value-of select="current-merge-key()"/><xsl:text>;</xsl:text></xsl:merge-action></xsl:merge></xsl:template>`))
 
-	out, err := s.Transform(context.Background(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+	out, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2635,7 +2635,7 @@ func TestStreamingResultDocumentTransactions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := stylesheet(t, e, sheet(version30, `<xsl:template name="start">`+tc.body+`</xsl:template>`))
 
-			out, err := s.Transform(context.Background(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+			out, err := s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2776,7 +2776,7 @@ func TestXSLTContextualKeywordOperands(t *testing.T) {
 func TestProcessorIdentityDuringCompilationAndExecution(t *testing.T) {
 	e := engine(t, transform.Config{})
 
-	doc, err := e.Parse(context.Background(), []byte(`<r/>`))
+	doc, err := e.Parse(t.Context(), []byte(`<r/>`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2786,7 +2786,7 @@ func TestProcessorIdentityDuringCompilationAndExecution(t *testing.T) {
 select="concat(system-property('xsl:product-name'), '|', system-property('xsl:vendor-url'))"/>
 </xsl:template>`))
 
-	result, err := program.Transform(context.Background(), doc, transform.XSLTContext{})
+	result, err := program.Transform(t.Context(), doc, transform.XSLTContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2800,7 +2800,7 @@ func TestXSLTProfileResults(t *testing.T) {
 	e := engine(t, transform.Config{})
 	source := `<r><n category="b">3</n><n category="a">2</n><n category="b">4</n></r>`
 
-	d, err := e.Parse(context.Background(), []byte(source))
+	d, err := e.Parse(t.Context(), []byte(source))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2818,7 +2818,7 @@ func TestXSLTProfileResults(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.version+"/"+c.name, func(t *testing.T) {
-			result, err := stylesheet(t, e, sheet(c.version, c.body)).Transform(context.Background(), d, transform.XSLTContext{})
+			result, err := stylesheet(t, e, sheet(c.version, c.body)).Transform(t.Context(), d, transform.XSLTContext{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3009,7 +3009,7 @@ func TestTransformRequestedCapabilities(t *testing.T) {
 
 func TestXSLT10ForwardsAttributesAreIgnored(t *testing.T) {
 	e := engine(t, transform.Config{})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := e.Parse(ctx, []byte(`<r/>`))
 	if err != nil {
@@ -3044,7 +3044,7 @@ func TestXSLT10ForwardsAttributesAreIgnored(t *testing.T) {
 func TestXSLT10RequiresSelect(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, instruction := range []string{`<xsl:value-of/>`, `<xsl:value-of>text</xsl:value-of>`, `<xsl:value-of select=""/>`} {
-		if _, err := e.CompileXSLT(context.Background(), []byte(xslt10(`<xsl:template match="/">`+instruction+`</xsl:template>`)), transform.XSLTOptions{}); err == nil {
+		if _, err := e.CompileXSLT(t.Context(), []byte(xslt10(`<xsl:template match="/">`+instruction+`</xsl:template>`)), transform.XSLTOptions{}); err == nil {
 			t.Errorf("accepted XSLT 1.0 value-of without a valid select: %s", instruction)
 		}
 	}
@@ -3053,14 +3053,14 @@ func TestXSLT10RequiresSelect(t *testing.T) {
 func TestXSLTLiteralExpandTextAttribute(t *testing.T) {
 	e := engine(t, transform.Config{})
 
-	d, err := e.Parse(context.Background(), []byte(`<r/>`))
+	d, err := e.Parse(t.Context(), []byte(`<r/>`))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	s := stylesheet(t, e, `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:output omit-xml-declaration="yes"/><xsl:template match="/"><out expand-text="yes">{1+1}</out></xsl:template></xsl:stylesheet>`)
 
-	out, err := s.Transform(context.Background(), d, transform.XSLTContext{})
+	out, err := s.Transform(t.Context(), d, transform.XSLTContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3076,7 +3076,7 @@ func TestXSLT10ForwardsModulesPreserveSource(t *testing.T) {
 	e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader(module)), nil
 	})})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := e.Parse(ctx, []byte(`<r/>`))
 	if err != nil {
@@ -3103,14 +3103,14 @@ func TestXSLT10ForwardsModulesPreserveSource(t *testing.T) {
 func TestXSLTSimplifiedExpandText(t *testing.T) {
 	e := engine(t, transform.Config{})
 
-	d, err := e.Parse(context.Background(), []byte(`<r/>`))
+	d, err := e.Parse(t.Context(), []byte(`<r/>`))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	s := stylesheet(t, e, `<out xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xsl:version="3.0" xsl:expand-text="yes">{1+1}</out>`)
 
-	out, err := s.Transform(context.Background(), d, transform.XSLTContext{})
+	out, err := s.Transform(t.Context(), d, transform.XSLTContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3122,7 +3122,7 @@ func TestXSLTSimplifiedExpandText(t *testing.T) {
 
 func TestXSLT10ForwardsUnknownOptionalValues(t *testing.T) {
 	e := engine(t, transform.Config{})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := e.Parse(ctx, []byte(`<r><n>2</n><n>1</n></r>`))
 	if err != nil {
@@ -3161,7 +3161,7 @@ func TestXSLT10RejectsNonFiniteNestedVersion(t *testing.T) {
 
 	for _, version := range []string{valueNaN, nameInfinity, namePositiveInfinity} {
 		source := xslt10(`<xsl:template match="/"><out xsl:version="` + version + `">text</out></xsl:template>`)
-		if _, err := e.CompileXSLT(context.Background(), []byte(source), transform.XSLTOptions{}); err == nil {
+		if _, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{}); err == nil {
 			t.Errorf("accepted non-finite XSLT version: %s", version)
 		}
 	}
@@ -3169,7 +3169,7 @@ func TestXSLT10RejectsNonFiniteNestedVersion(t *testing.T) {
 
 func TestXSLTForwardsRecoveryKeepsStrictValidation(t *testing.T) {
 	e := engine(t, transform.Config{})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := e.Parse(ctx, []byte(`<r><n>1</n></r>`))
 	if err != nil {

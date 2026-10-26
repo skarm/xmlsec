@@ -65,9 +65,9 @@ func TestExclusive(t *testing.T) {
 
 			var out bytes.Buffer
 			if tt.child {
-				err = c14n.WriteElement(context.Background(), &out, d.Root().Children()[0], tt.opt)
+				err = c14n.WriteElement(t.Context(), &out, d.Root().Children()[0], tt.opt)
 			} else {
-				err = c14n.WriteDocument(context.Background(), &out, d, tt.opt)
+				err = c14n.WriteDocument(t.Context(), &out, d, tt.opt)
 			}
 
 			if err != nil {
@@ -88,26 +88,26 @@ func TestExclusive(t *testing.T) {
 
 func TestCanonicalErrors(t *testing.T) {
 	d, _ := document.Parse(t.Context(), []byte(emptyRootXML), document.DefaultLimits())
-	if err := c14n.WriteDocument(context.Background(), io.Discard, d, c14n.Options{MaxOutputBytes: 1}); !errors.Is(err, document.ErrLimit) {
+	if err := c14n.WriteDocument(t.Context(), io.Discard, d, c14n.Options{MaxOutputBytes: 1}); !errors.Is(err, document.ErrLimit) {
 		t.Fatal(err)
 	}
 
-	if err := c14n.WriteDocument(context.Background(), shortWriter{}, d, c14n.Options{}); !errors.Is(err, io.ErrShortWrite) {
+	if err := c14n.WriteDocument(t.Context(), shortWriter{}, d, c14n.Options{}); !errors.Is(err, io.ErrShortWrite) {
 		t.Fatal(err)
 	}
 
-	if err := c14n.WriteDocument(context.Background(), io.Discard, d, c14n.Options{InclusivePrefixes: []string{"bad:prefix"}}); err == nil {
+	if err := c14n.WriteDocument(t.Context(), io.Discard, d, c14n.Options{InclusivePrefixes: []string{"bad:prefix"}}); err == nil {
 		t.Fatal("invalid prefix accepted")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if err := c14n.WriteDocument(ctx, io.Discard, d, c14n.Options{}); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 
-	if err := c14n.WriteElement(context.Background(), io.Discard, document.Element{}, c14n.Options{}); err == nil {
+	if err := c14n.WriteElement(t.Context(), io.Discard, document.Element{}, c14n.Options{}); err == nil {
 		t.Fatal("zero element accepted")
 	}
 }
@@ -239,7 +239,7 @@ func FuzzIdempotent(f *testing.F) {
 			var first, second bytes.Buffer
 
 			opt := c14n.Options{Algorithm: alg, WithComments: true}
-			if e = c14n.WriteDocument(context.Background(), &first, d, opt); e != nil {
+			if e = c14n.WriteDocument(t.Context(), &first, d, opt); e != nil {
 				continue
 			}
 
@@ -248,7 +248,7 @@ func FuzzIdempotent(f *testing.F) {
 				t.Fatal(err)
 			}
 
-			if err = c14n.WriteDocument(context.Background(), &second, canonical, opt); err != nil {
+			if err = c14n.WriteDocument(t.Context(), &second, canonical, opt); err != nil {
 				t.Fatal(err)
 			}
 
@@ -267,8 +267,8 @@ func BenchmarkExclusive(b *testing.B) {
 
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
-		if err := c14n.WriteDocument(context.Background(), io.Discard, d, c14n.Options{}); err != nil {
+	for b.Loop() {
+		if err := c14n.WriteDocument(b.Context(), io.Discard, d, c14n.Options{}); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -289,8 +289,8 @@ func BenchmarkCanonicalNodeSet(b *testing.B) {
 		b.Run(alg, func(b *testing.B) {
 			b.ReportAllocs()
 
-			for i := 0; i < b.N; i++ {
-				if err := c14n.WriteNodeSet(context.Background(), io.Discard, nodes, c14n.Options{Algorithm: alg}); err != nil {
+			for b.Loop() {
+				if err := c14n.WriteNodeSet(b.Context(), io.Discard, nodes, c14n.Options{Algorithm: alg}); err != nil {
 					b.Fatal(err)
 				}
 			}

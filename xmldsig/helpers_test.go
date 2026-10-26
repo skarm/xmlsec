@@ -2,14 +2,13 @@ package xmldsig_test
 
 import (
 	"bytes"
-	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"io"
-	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/skarm/xmlsec/document"
@@ -74,7 +73,7 @@ func xmlString(t testing.TB, d *document.Document) string {
 func sign(t testing.TB, k crypto.Signer, d *document.Document, opt xmldsig.SignOptions) *document.Document {
 	t.Helper()
 
-	out, e := xmldsig.SignEnveloped(context.Background(), d, k, opt)
+	out, e := xmldsig.SignEnveloped(t.Context(), d, k, opt)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -129,8 +128,9 @@ func findImportElement(t testing.TB, root document.Element, name document.Name) 
 func assertImportedTree(t testing.TB, got, want document.Element) {
 	t.Helper()
 
-	if got.Name() != want.Name() || got.Prefix() != want.Prefix() || got.Text() != want.Text() || !reflect.DeepEqual(got.Attributes(), want.Attributes()) {
-		t.Fatalf("imported %v (%s) attrs %v, want %v (%s) attrs %v", got.Name(), got.Prefix(), got.Attributes(), want.Name(), want.Prefix(), want.Attributes())
+	gotAttributes, wantAttributes := got.Attributes(), want.Attributes()
+	if got.Name() != want.Name() || got.Prefix() != want.Prefix() || got.Text() != want.Text() || (gotAttributes == nil) != (wantAttributes == nil) || !slices.Equal(gotAttributes, wantAttributes) {
+		t.Fatalf("imported %v (%s) attrs %v, want %v (%s) attrs %v", got.Name(), got.Prefix(), gotAttributes, want.Name(), want.Prefix(), wantAttributes)
 	}
 
 	gc, wc := got.Children(), want.Children()

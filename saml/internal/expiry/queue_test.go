@@ -115,14 +115,16 @@ func BenchmarkPushPop(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := range b.N {
+	i := 0
+	for b.Loop() {
 		q.Push(i+1024, base.Add(time.Duration(i+1024)*time.Second))
 
 		key, _, ok := q.Pop()
 		if !ok || key != i {
 			b.Fatal("invalid expiration order")
 		}
+
+		i++
 	}
 }

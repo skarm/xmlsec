@@ -37,7 +37,7 @@ func TestOCSPNextUpdateIsExclusive(t *testing.T) {
 
 	tmpl := ocspTemplate()
 
-	raw, err := pki.CreateOCSPResponse(context.Background(), q, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, c.RootKey, tmpl)
+	raw, err := pki.CreateOCSPResponse(t.Context(), q, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, c.RootKey, tmpl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestOCSPNextUpdateIsExclusive(t *testing.T) {
 		for _, delta := range []time.Duration{-time.Nanosecond, 0, time.Nanosecond} {
 			at := tmpl.NextUpdate.Add(skew + delta)
 
-			result, report, err := pki.VerifyOCSP(context.Background(), raw, c.Leaf.Raw, c.Root.Raw, at, pki.OCSPOptions{ClockSkew: skew})
+			result, report, err := pki.VerifyOCSP(t.Context(), raw, c.Leaf.Raw, c.Root.Raw, at, pki.OCSPOptions{ClockSkew: skew})
 			if report.Signature != pki.Valid {
 				t.Fatal("control must have an authenticated signature", report, err)
 			}
@@ -132,7 +132,7 @@ func TestOCSPResponseStatusEnumeration(t *testing.T) {
 			want = pki.ErrEvidence
 		}
 
-		result, report, err := pki.VerifyOCSP(context.Background(), der.Seq(encoded), c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{})
+		result, report, err := pki.VerifyOCSP(t.Context(), der.Seq(encoded), c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{})
 		if result != nil || !errors.Is(err, want) || report.Signature != pki.NotChecked {
 			t.Fatalf("status %d: result=%v, report=%v, error=%v; want %v", status, result != nil, report, err, want)
 		}
@@ -180,12 +180,12 @@ func TestOCSPResponderAcceptsLegacyNonceLengths(t *testing.T) {
 			t.Fatalf("valid inbound nonce length %d rejected: %v", n, err)
 		}
 
-		response, err := pki.CreateOCSPResponse(context.Background(), raw, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, c.RootKey, ocspTemplate())
+		response, err := pki.CreateOCSPResponse(t.Context(), raw, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, c.RootKey, ocspTemplate())
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		if result, _, err := pki.VerifyOCSP(context.Background(), response, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{ExpectedNonce: nonce}); err != nil || result == nil {
+		if result, _, err := pki.VerifyOCSP(t.Context(), response, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{ExpectedNonce: nonce}); err != nil || result == nil {
 			t.Fatalf("legacy nonce length %d failed response binding: %v", n, err)
 		}
 	}
@@ -227,13 +227,13 @@ func TestCRLNumberConflictsAreOrderIndependent(t *testing.T) {
 		{latest, rollbackNumber},
 		{rollbackNumber, latest},
 	} {
-		result, report, err := v.Verify(context.Background(), c.Leaf.Raw, testcert.Now(), pki.Evidence{CRLs: crls})
+		result, report, err := v.Verify(t.Context(), c.Leaf.Raw, testcert.Now(), pki.Evidence{CRLs: crls})
 		if result != nil || !errors.Is(err, pki.ErrEvidence) || report.Revocation != pki.Indeterminate {
 			t.Fatalf("conflicting authenticated evidence: result=%v report=%v error=%v", result != nil, report, err)
 		}
 	}
 	// Duplicate evidence is harmless, and coherent older evidence is allowed.
-	if result, _, err := v.Verify(context.Background(), c.Leaf.Raw, testcert.Now(), pki.Evidence{CRLs: [][]byte{older, latest, latest}}); result == nil || err != nil {
+	if result, _, err := v.Verify(t.Context(), c.Leaf.Raw, testcert.Now(), pki.Evidence{CRLs: [][]byte{older, latest, latest}}); result == nil || err != nil {
 		t.Fatal(err)
 	}
 }
@@ -271,7 +271,7 @@ func TestCRLRejectsCriticalProfileExtensions(t *testing.T) {
 			raw = criticalCRLReason(t, raw, c)
 		}
 
-		result, _, err := v.Verify(context.Background(), c.Leaf.Raw, testcert.Now(), pki.Evidence{CRLs: [][]byte{raw}})
+		result, _, err := v.Verify(t.Context(), c.Leaf.Raw, testcert.Now(), pki.Evidence{CRLs: [][]byte{raw}})
 		if result != nil || !errors.Is(err, pki.ErrEvidence) {
 			t.Fatalf("critical %s accepted: result=%v error=%v", kind, result != nil, err)
 		}
@@ -323,7 +323,7 @@ func criticalCRLReason(t *testing.T, raw []byte, c testcert.Chain) []byte {
 		t.Fatal(err)
 	}
 
-	sig, err := signature.Sign(context.Background(), c.RootKey, algorithm, data)
+	sig, err := signature.Sign(t.Context(), c.RootKey, algorithm, data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,19 +341,19 @@ func TestOCSPRequiresPKIXTimeEncoding(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	raw, err := pki.CreateOCSPResponse(context.Background(), q, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, c.RootKey, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: testcert.Now(), ThisUpdate: testcert.Now().Add(-time.Minute), NextUpdate: testcert.Now().Add(time.Hour)})
+	raw, err := pki.CreateOCSPResponse(t.Context(), q, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, c.RootKey, pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: testcert.Now(), ThisUpdate: testcert.Now().Add(-time.Minute), NextUpdate: testcert.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	for field := range 4 {
 		if field == 3 {
-			raw, err = pki.CreateOCSPResponse(context.Background(), q, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, c.RootKey, pki.OCSPResponseTemplate{Status: pki.OCSPRevoked, ProducedAt: testcert.Now(), ThisUpdate: testcert.Now().Add(-time.Minute), NextUpdate: testcert.Now().Add(time.Hour), RevokedAt: testcert.Now().Add(-2 * time.Minute)})
+			raw, err = pki.CreateOCSPResponse(t.Context(), q, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, c.RootKey, pki.OCSPResponseTemplate{Status: pki.OCSPRevoked, ProducedAt: testcert.Now(), ThisUpdate: testcert.Now().Add(-time.Minute), NextUpdate: testcert.Now().Add(time.Hour), RevokedAt: testcert.Now().Add(-2 * time.Minute)})
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			if result, report, err := pki.VerifyOCSP(context.Background(), raw, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{}); result != nil || !errors.Is(err, pki.ErrRevoked) || report.Signature != pki.Valid {
+			if result, report, err := pki.VerifyOCSP(t.Context(), raw, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{}); result != nil || !errors.Is(err, pki.ErrRevoked) || report.Signature != pki.Valid {
 				t.Fatal("invalid authenticated revoked control", err)
 			}
 		}
@@ -361,7 +361,7 @@ func TestOCSPRequiresPKIXTimeEncoding(t *testing.T) {
 		for _, text := range []string{"202610081200Z", "20261008120000.1Z", "20261008140000+0200"} {
 			modified := replaceOCSPTime(t, raw, c, field, text)
 
-			result, _, err := pki.VerifyOCSP(context.Background(), modified, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{})
+			result, _, err := pki.VerifyOCSP(t.Context(), modified, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{})
 			if result != nil || !errors.Is(err, pki.ErrEvidence) {
 				t.Fatalf("field=%d time=%q result=%v error=%v", field, text, result != nil, err)
 			}
@@ -462,7 +462,7 @@ func replaceOCSPTime(t *testing.T, raw []byte, c testcert.Chain, field int, text
 		t.Fatal(err)
 	}
 
-	sig, err := signature.Sign(context.Background(), c.RootKey, algorithm, data)
+	sig, err := signature.Sign(t.Context(), c.RootKey, algorithm, data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +475,7 @@ func replaceOCSPTime(t *testing.T, raw []byte, c testcert.Chain, field int, text
 func TestPKIZeroVerifierRejectsBeforePathBuilding(t *testing.T) {
 	c := testcert.New(t)
 
-	result, report, err := new(pki.Verifier).Verify(context.Background(), c.Leaf.Raw, testcert.Now(), pki.Evidence{})
+	result, report, err := new(pki.Verifier).Verify(t.Context(), c.Leaf.Raw, testcert.Now(), pki.Evidence{})
 	if result != nil || !errors.Is(err, pki.ErrPolicy) || report.Chain != pki.NotChecked {
 		t.Fatalf("result=%v report=%v error=%v", result, report, err)
 	}

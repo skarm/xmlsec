@@ -107,7 +107,7 @@ func testTransformXMLDSigCase(t *testing.T, tt *struct {
 	tr   reference.Transform
 },
 ) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	p, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{tt.tr}})
 	if err != nil {
@@ -185,7 +185,7 @@ func TestV1TransformURIsRequireV1Processor(t *testing.T) {
 				}
 			}
 
-			template, selected, err := xmldsig.BuildTemplate(context.Background(), d, d.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: namePayload, Transforms: []reference.Transform{tr}}}})
+			template, selected, err := xmldsig.BuildTemplate(t.Context(), d, d.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: namePayload, Transforms: []reference.Transform{tr}}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -193,7 +193,7 @@ func TestV1TransformURIsRequireV1Processor(t *testing.T) {
 			options := xmldsig.SignatureOptions{ExpectedURIs: []string{namePayload}, Processing: reference.DefaultOptions()}
 			options.Processing.AllowedTransforms = append(options.Processing.AllowedTransforms, algorithm)
 
-			result, err := xmldsig.SignTemplate(context.Background(), template, selected, coreEC(t), xmldsig.TemplateSignOptions{Validation: options})
+			result, err := xmldsig.SignTemplate(t.Context(), template, selected, coreEC(t), xmldsig.TemplateSignOptions{Validation: options})
 			if result != nil || !errors.Is(err, reference.ErrPolicy) {
 				t.Fatal(result, err)
 			}

@@ -1,7 +1,6 @@
 package transform_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -104,12 +103,12 @@ func TestResolveURIBaseValidationAndIRIIdentity(t *testing.T) {
 		{`resolve-uri('g', 'HTTPS://example.test/path/file')`, "", "HTTPS://example.test/path/g", ""},
 	} {
 		t.Run(tc.expr+tc.base, func(t *testing.T) {
-			q, err := e.CompileXPath(context.Background(), tc.expr, transform.XPathOptions{BaseURI: tc.base})
+			q, err := e.CompileXPath(t.Context(), tc.expr, transform.XPathOptions{BaseURI: tc.base})
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			result, err := q.Evaluate(context.Background(), nil, transform.XPathContext{})
+			result, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
 
 			if tc.code != "" {
 				var detail *transform.Error

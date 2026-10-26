@@ -16,7 +16,7 @@ func TestXSLTTemplatesVariablesAndFocus(t *testing.T) {
 	tr := style(`<xsl:output method="text"/><xsl:template match="/"><xsl:variable name="suffix" select="'!'"/><xsl:for-each select="/r/item"><xsl:sort select="."/><xsl:if test="position()=last()"><xsl:call-template name="emit"><xsl:with-param name="value" select="concat(., $suffix)"/></xsl:call-template></xsl:if></xsl:for-each></xsl:template><xsl:template name="emit"><xsl:param name="value"/><xsl:value-of select="$value"/></xsl:template>`)
 	p := newProcessor(t, tr)
 
-	out, err := p.Apply(context.Background(), tr, reference.Octets([]byte(`<r><item>b</item><item>a</item></r>`)), reference.ExtensionContext{})
+	out, err := p.Apply(t.Context(), tr, reference.Octets([]byte(`<r><item>b</item><item>a</item></r>`)), reference.ExtensionContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestXSLTProfilePreflight(t *testing.T) {
 	tr := style(`<xsl:output method="xml" omit-xml-declaration="yes"/><xsl:template match="/"><out value="{{{concat('}', /r/value)}}}"/></xsl:template>`)
 	p := newProcessor(t, tr)
 
-	out, err := p.Apply(context.Background(), tr, reference.Octets([]byte(`<r><value>ok</value></r>`)), reference.ExtensionContext{})
+	out, err := p.Apply(t.Context(), tr, reference.Octets([]byte(`<r><value>ok</value></r>`)), reference.ExtensionContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestXSLTProfilePreflight(t *testing.T) {
 }
 
 func TestXSLTLimitsAndContext(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	text := style(`<xsl:output method="text"/><xsl:template match="/"><xsl:value-of select="/r"/></xsl:template>`)
 	for _, cfg := range []transform.Config{{Limits: transform.Limits{MaxInputBytes: 5}}, {Limits: transform.Limits{MaxNodes: 1}}, {Limits: transform.Limits{MaxOutputBytes: 2}}} {
@@ -124,19 +124,19 @@ func TestXSLTImmutableConcurrentApproval(t *testing.T) {
 		tr.Stylesheet[i] = 'x'
 	}
 
-	if err := p.Validate(context.Background(), approved); err != nil {
+	if err := p.Validate(t.Context(), approved); err != nil {
 		t.Fatal(err)
 	}
 
 	changed := style(`<xsl:output method="text"/><xsl:template match="/"><xsl:text>changed</xsl:text></xsl:template>`)
-	if err := p.Validate(context.Background(), changed); !errors.Is(err, reference.ErrPolicy) {
+	if err := p.Validate(t.Context(), changed); !errors.Is(err, reference.ErrPolicy) {
 		t.Fatal(err)
 	}
 
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
-			out, err := p.Apply(context.Background(), approved, reference.Octets([]byte(`<r>yes</r>`)), reference.ExtensionContext{})
+			out, err := p.Apply(t.Context(), approved, reference.Octets([]byte(`<r>yes</r>`)), reference.ExtensionContext{})
 
 			got, _ := out.Bytes()
 			if err != nil || string(got) != nameYes {
@@ -158,7 +158,7 @@ func TestXSLTExecutionTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := p.Apply(context.Background(), tr, reference.Octets([]byte(`<r/>`)), reference.ExtensionContext{})
+	out, err := p.Apply(t.Context(), tr, reference.Octets([]byte(`<r/>`)), reference.ExtensionContext{})
 	if !errors.Is(err, context.DeadlineExceeded) || out.Kind() != reference.Invalid {
 		t.Fatalf("unbounded execution: %v, %v", out.Kind(), err)
 	}

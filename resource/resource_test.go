@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -103,15 +104,17 @@ func evidenceResponse(req *http.Request, status int, body io.ReadCloser) *http.R
 
 func TestEvidenceCollectorSuccessAndConcurrentCalls(t *testing.T) {
 	request := []byte("OCSP request binding")
-	c := evidenceCollector(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodPost {
+			defer req.Body.Close()
 			data, err := io.ReadAll(req.Body)
 			if err != nil || !bytes.Equal(data, request) || req.Header.Get("Content-Type") != "application/ocsp-request" {
 				t.Error(data, err, req.Header)
 			}
 		}
-		return evidenceResponse(req, http.StatusOK, io.NopCloser(strings.NewReader("opaque"))), nil
-	}), collect.Limits{MaxResources: 1, MaxTotalBytes: 6}, nil)
+		_, _ = io.WriteString(w, "opaque")
+	}))
+	c := evidenceCollector(t, server.Client().Transport, collect.Limits{MaxResources: 1, MaxTotalBytes: 6}, nil)
 	var workers sync.WaitGroup
 	for range 8 {
 		workers.Go(func() {

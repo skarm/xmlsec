@@ -1,204 +1,86 @@
 # Supported profiles and compatibility
 
-## Contents
-
-- [Supported scope](#supported-scope)
-- [Unicode normalization](#unicode-normalization)
-- [Known oracle differences](#known-oracle-differences)
-- [Trust and operations](#trust-and-operations)
-- [Assertion and compatibility controls](#assertion-and-compatibility-controls)
-
-The library implements bounded profiles. Full standards conformance and an
-independent security audit have not been established. The [conformance register](conformance.json)
-separates capabilities from a partial normative clause matrix, tracking implementation,
-policy and applicability independently. Every declared profile has a pinned
-document/role/mode matrix with its assessed obligations and remaining clause
-regions; missing mandatory behavior remains applicable. See [normative traceability](conformance.md)
-for review rules and remaining gaps; [standards](standards.md) lists primary sources.
+The API is experimental. Full standards conformance and an independent security
+audit have not been established. [standards](standards.md) lists primary sources;
+[conformance](conformance.md) explains the development requirement/evidence register.
 
 ## Supported scope
 
-- The `document` security parser supports XML 1.0 Fifth Edition in UTF-8/UTF-16,
-  immutable namespace-aware content and seven XPath node kinds. ID typing is
-  explicit. This parser rejects DTDs and external entities. XML 1.1, UTF-32,
-  schema defaults and XSD validation are unsupported.
-- Exclusive C14N and Canonical XML 1.0/1.1, with or without comments, over full
-  documents, subtrees and explicit node sets. Sparse sets may produce fragments.
-- XMLDSig enveloped/enveloping/detached references, Objects, multiple signatures
-  and bounded Manifest graphs. Typed external Manifest roots require recursive
-  mode, `AllowExternal`, a resolver and exact URI allowlist. Their incoming digest
-  is authenticated before nested discovery. The resolver receives complete
-  allowlisted URIs, including fragments, and supplies the identified subresource
-  as octets; automatic ID selection from a fetched external XML document is not
-  provided. Explicit `ExternalReferences.BaseURI` enables relative URI resolution
-  against the signature document or external Manifest retrieval URI and inherited
-  `xml:base` on permitted containers. The allowlist must then contain resolved
-  absolute URIs. Same-document references keep their own document scope. Existing
-  XMLDSig attribute grammar and the URI character profile still apply; arbitrary
-  LEIRIs and redirect metadata remain outside this profile. `AllowTransformed`
-  separately follows explicitly typed, authenticated transform outputs as bounded
-  standalone Manifest snapshots. Their coverage concerns the derived XML;
-  `Transformed()` and report `transformed` distinguish it from original XML.
-  RSA/ECDSA SHA-2, RSA-PSS, Ed25519/Ed25519ph and
-  separate HMAC profiles are supported. `LegacyVerificationPolicy` additionally
-  permits SHA-1 reference digests and RSA-SHA1/1024-bit DSA-SHA1 verification;
-  legacy public-key signature generation is disabled. `LegacyHMACPolicy`
-  separately opts into HMAC-SHA1 with the existing secret/tag limits. Both
-  compatibility policies are disabled in FIPS mode. DSAKeyValue and DER key
-  descriptions remain untrusted until an application selects a trusted key.
-  Omitted DSA P/Q/G require an explicit 1024/160 application parameter context;
-  they are never inferred from another candidate. Retrieval of rawX509Certificate
-  permits one optional Base64 transform by default. Explicit
-  `keyinfo.Options.RetrievalProcessing` additionally permits allowlisted chains
-  of Base64, C14N, enveloped and approved XPath/Filter2/XSLT. Type is checked after
-  processing, external resources use one immutable source per URI, and shared
-  byte/node/depth limits and cycle detection apply. KeyInfo separately supports
-  exact complete fragment URIs and opt-in `ExternalResources.BaseURI`, using the
-  same URI-valued inherited `xml:base` rules. The resolver supplies the identified
-  octets; automatic external XML fragment selection is unsupported.
-  `Template.X509Data` constructs the same certificate/CRL and selector forms read
-  by the parser, with separate groups and preserved DER/DN spellings. CRLs use the
-  existing v2 parser profile. Selector-only groups are untrusted descriptions and
-  perform no lookup; grouping and selector/chain consistency remain the caller's
-  responsibility. Signing a KeyInfo reference authenticates its metadata without
-  establishing certificate or CRL trust.
-- Selected features of XPath 1.0/2.0/3.0/3.1 and XSLT 1.0/2.0/3.0. Complete
-  Basic XSLT conformance remains open; [validation profiles](language-baseline.md)
-  define the required suite checks. Package/collection resolvers and application
-  functions are explicit. XMLDSig XPath 1.0, Filter2
-  and restricted XSLT 1.0 need approved programs. Schema awareness and normative
-  W3C streaming are unsupported. Streaming annotations use materialized trees;
-  independent-record processing is available separately.
-  XPath 3.0/3.1 resource limits preserve `transform.ErrLimit` and report
-  `XPDY0130` when no more specific standard code applies. Pinned
-  [suite diagnostics](language-suites.md) retain mandatory and harness failures.
-  See [transforms](transforms.md) and [streaming](streaming.md).
-  Explicit `transform.Config.AllowSingleByteEncodings` additionally permits
-  ASCII-compatible IANA single-byte XML encodings under the same raw/decoded
-  input limits. `Engine.Parse`, record input and approved XMLDSig programs
-  remain DTD-free. Language XML input, including `doc`, `parse-xml` and XSLT
-  stylesheets, uses bounded nonvalidating DTD processing. External DTDs and
-  entities require the explicit resolver and invocation resource policy. This
-  does not establish complete XML processor conformance; see
-  [XML input profiles](transforms.md#xml-input-profiles).
-  Language input accepts deprecated Namespaces 1.0 relative namespace names and
-  preserves their literal values. The document security parser requires absolute
-  names; C14N rejects relative names even outside the selected nodes.
-  `XSLTOptions.ProcessorVersion` selects a modern processor independently of lower
-  stylesheet declarations, preserving local backwards-compatible behavior and
-  module semantics. Higher/future declarations enable fallback and deferred-error
-  behavior, including a 3.0 principal declaration with a 2.0 processor. Complete
-  forwards-compatible processing remains open. `Config.XMLSchemaVersion` selects
-  builtin datatype/regex rules (default 1.1), independently of schema awareness.
-  Recurring decimal results use at least twenty fractional places/significant
-  digits; terminating decimals remain exact.
-- PKIX with explicit roots/time and bounded offline v1/v2 complete, scoped,
-  indirect and base/delta CRLs. Issuer authorization, DP/IDP names, reasons,
-  FreshestCRL availability and freshness remain required. UTF8/Printable DN
-  comparisons use RFC 4518; original DER remains the signature/CertID input.
-  OCSP supports exact CertID selection, signature-authorized responders and
-  explicit issuer-scoped local authority. Verified evidence retains object,
-  issuer/signer, time, status, scope and source bindings. URI/retrieval metadata
-  never establishes trust or historical proof. There is no implicit network I/O;
-  the separate `evidence/collect` HTTP adapter requires explicit application policy.
-- CMS SignedData and RFC 3161/5816 timestamps. `VerifyWithTrust` composes every
-  CMS signer with an explicit PKIX/revocation policy; ordinary `Verify` remains
-  cryptographic verification. Optional ESS multi-certificate path restrictions
-  are rejected by trusted operations. Explicit `ParseBER`/`ParseBERReader` accept
-  selected envelope/SignedData/content wrappers and constructed content octets;
-  signed attributes retain their strict original DER. General BER and other CMS
-  content types remain outside scope; timestamp input rules remain explicit.
-- Closed XAdES basic/T/LT/LTA current-time and separate with-time B-T profiles.
-  The latter retains direct-complete signer CRLs; scoped/indirect/delta artifacts
-  require a separate workflow and cannot bypass its no-recovery policy.
-  Separate baseline format APIs support nested enveloped, enveloping, detached
-  and explicit external data, signed properties, content timestamps and
-  countersignature bindings. These format results do not grant trust or a level.
-  `NewHistoricalValidator` adds a bounded EN 319 102-1 V1.4.1 workflow with
-  exact-object PoE, shell/chain path models, revocation/algorithm time constraints
-  and expired-TSA archive recovery. Full EN processing remains incomplete:
-  evidence records, historical countersignature/attribute-authority workflows,
-  wider preservation properties and remaining current-process indication
-  branches are not supplied by this API. Unknown unsigned properties reject.
+- XML 1.0 Fifth Edition, UTF-8/UTF-16, immutable namespace-aware snapshots and
+  explicit ID typing. The security parser rejects DTDs/entities. XML 1.1,
+  UTF-32, schema defaults and XSD validation are unsupported.
+- Exclusive C14N and Canonical XML 1.0/1.1, with/without comments, over documents,
+  subtrees and node sets. Sparse selections can produce fragments.
+- XMLDSig enveloped/enveloping/detached signatures, Objects, multiple signatures
+  and bounded Manifest graphs. External/transformed Manifests require explicit
+  policy; derived-node coverage does not establish original-node coverage.
+  Complete fragment URIs are allowlisted and resolvers supply identified octets.
+  Base-URI resolution is opt-in; arbitrary LEIRI/fragment selection is unsupported.
+- RSA/ECDSA SHA-2, RSA-PSS, Ed25519/Ed25519ph and separate HMAC profiles.
+  Legacy verification/HMAC policies explicitly permit SHA-1; legacy public-key
+  signing remains disabled. Compatibility algorithms are disabled in FIPS mode.
+- KeyInfo candidates, X509Data groups/selectors and explicitly authorized
+  retrieval/processing. KeyInfo has its own resources/base URI. Omitted DSA
+  parameters need an explicit bounded application context. Descriptions and
+  selectors never grant trust or automatic certificate lookup.
+- Selected XPath 1.0/2.0/3.0/3.1 and XSLT 1.0/2.0/3.0 features. Schema awareness
+  and W3C streamable execution are unsupported. Streaming annotations operate on
+  trees; independent-record processing is separate. Complete Basic XSLT remains
+  open; see [validation profiles](language-baseline.md).
+- Language XML supports bounded nonvalidating DTD processing and explicitly
+  enabled single-byte encodings. External entities require configured resources.
+  Language input preserves relative namespace names; the security parser and
+  C14N reject them. See [input profiles](transforms.md#xml-input-profiles).
+- PKIX with explicit roots/time and offline complete/scoped/indirect/base-delta
+  CRLs. OCSP selects an exact CertID and authorized responder. Required missing
+  evidence fails without fetching. Acquisition metadata grants no trust or PoE.
+- CMS SignedData and RFC 3161/5816 timestamps. Trusted CMS operations check all
+  signer policies. Optional ESS multi-certificate path restrictions are rejected.
+  Selected BER envelopes/content are opt-in; signed attributes remain DER.
+  General BER and other CMS content types are unsupported.
+- Closed XAdES current-time basic/T/LT/LTA and separate with-time B-T profiles;
+  the latter uses direct complete signer CRLs without historical recovery.
+  Baseline-format APIs cover additional topologies/properties without granting
+  trust or a validation level. `NewHistoricalValidator` implements a bounded
+  EN 319 102-1 V1.4.1 workflow, not full historical validation. Evidence records,
+  historical countersignature/attribute-authority workflows and remaining
+  indication branches are outside that subset. Unknown unsigned properties fail.
 - Signed SAML metadata, POST/Redirect and solicited WebSSO. SLO, Artifact/ECP,
-  queries, unsolicited SSO and encrypted Assertion/NameID/Attribute profiles are unsupported.
-  SAML and the closed XAdES APIs use UTC, positive four-digit years and at most nine
-  fractional digits; `24:00:00` is normalized. Metadata cache durations use a
-  positive day/time profile, capped at 365 days and nine fractional digits.
-  The separate XAdES baseline API preserves UTC dateTime years and fractions
-  exactly, within a 4096-byte lexical budget; extended values can have no
-  `time.Time` convenience representation. Use `CompareSigningTime` for exact
-  comparisons. Neither representation establishes a trusted signing time.
-- PEM/DER PKCS#8, RSA PKCS#1, EC SEC1, SPKI, X.509 certificates and CRLs.
-  Encrypted PKCS#8 uses PBES2/PBKDF2 with SHA-2 and AES-CBC. DER PKCS#12 requires
-  a SHA-2 classic MAC or PBMAC1, one private key and matching certificate, with
-  optional extra certificates. Explicit import options accept selected BER
-  wrappers/constructed data, ciphertext and certificate OCTET STRINGs, and nested
-  SafeContents. Keys, algorithms and attributes stay DER; the PBMAC1 placeholder
-  tolerance is described below. Collection import
-  returns every unambiguous identity; single import requires one identity or an
-  exact certificate SHA-256 selector. All contents pass before selection. KDF
-  work and collections are bounded. Output remains one DER identity. Legacy
-  RC2/3DES password ciphers and scrypt remain unsupported. Explicit import
-  `AllowLegacy` permits PBKDF2-HMAC-SHA-1 (including the default PRF) and
-  traditional PKCS#12 SHA-1 MACs; FIPS mode rejects SHA-1. Export and RFC 9879
-  PBMAC1 retain SHA-2 policy. Non-default PBMAC1 key sizes require a separate
-  compatibility option and contain 16..64 bytes; default keys match the MAC size.
-  PKCS#8 import options accept selected BER SEQUENCE/OCTET STRING wrappers;
-  embedded key payloads, algorithms and attributes stay strict DER. PBMAC1
-  accepts the explicitly encoded outer iteration DEFAULT1 in the published
-  RFC 9879 vectors; this is a known placeholder tolerance, not general BER MAC
-  parameter support.
-  Private DER versions/components are checked; EC scalar size, curve and optional
-  public key must agree. Schema-dependent DER rules for custom attributes remain
-  the application's responsibility.
-- XML Encryption AES-GCM 128/192/256 with direct keys, independently selected
-  SHA-224/256/384/512 OAEP/MGF1 hashes or AES Key Wrap. The strict entry points
-  require one inline EncryptedKey or a direct application key.
-  Explicit `OAEPParameters.AllowLegacy` permits SHA-1 and `RSAOAEP10` with fixed
-  MGF1-SHA1; the exact application-selected parameters still have to match.
-  Default RSA-OAEP remains SHA-256/MGF1-SHA256. Bytes, root, Element and Content
-  are supported. CipherReference permits one exact absolute URI with raw bytes
-  or one base64 transform. Explicit `Options.AllowLegacy` additionally permits
-  AES-CBC 128/192/256 and TripleDES-CBC, including RFC 3217 TripleDES key wrap
-  for TripleDES data keys. CBC plaintext is unauthenticated; legacy algorithms
-  remain disabled by default and in FIPS mode. CLI opt-in is `-allow-legacy-data`.
-  Optional EncryptionMethod/KeySize is accepted only when it agrees with the
-  selected data key, KEK or RSA modulus. The bounded ConcatKDF API supports
-  XMLENC bitstring parameters and SHA-1/SHA-256; SHA-1 requires explicit legacy
-  permission, and non-octet input is denied in FIPS mode.
-  Explicit ECDH-ES APIs support P-256, P-384 and P-521, ConcatKDF and AES Key
-  Wrap. Agreement does not authenticate the sender. Explicit key-graph APIs
-  resolve bounded nested/retrieved/derived keys, ReferenceList and CarriedKeyName
-  relationships; external key documents require an exact application allowlist.
-  Key labels, recipients and references confer no trust. Cipher-reference
-  transformations are separately selected; base64 and built-in canonicalization
-  are supported by the graph API, including implicit Canonical XML 1.0 conversion.
-  RSA PKCS#1 v1.5, finite-field DH, PBKDF2, EXI and padded AES key wrap remain
-  unsupported optional features.
+  queries, unsolicited SSO and encrypted assertions/names/attributes are unsupported.
+  SAML/closed XAdES use positive four-digit UTC years and up to nine fractional
+  digits. The separate baseline API retains extended dateTime lexical values;
+  use `CompareSigningTime` when `time.Time` cannot represent them.
+- PEM/DER PKCS#8, PKCS#1, SEC1, SPKI, certificates and CRLs. Protected PKCS#8
+  uses PBES2/PBKDF2/SHA-2/AES-CBC. PKCS#12 requires a MAC and matching key/certificate;
+  selected BER/nested/multiple-identity imports require explicit options.
+  All identities are validated before selection; output is one DER identity.
+  Legacy password RC2/3DES and scrypt are unsupported. SHA-1 import needs explicit
+  permission and is disabled in FIPS mode. RFC 9879 vectors' explicit outer
+  iteration DEFAULT1 is a narrow PBMAC1 placeholder tolerance.
+- XML Encryption AES-GCM with direct AES, RSA-OAEP, AES Key Wrap or explicit
+  P-256/P-384/P-521 ECDH-ES/ConcatKDF paths. Bytes, documents, Element and Content
+  replacement are supported. OAEP hashes/label/key hints must match caller policy;
+  SHA-1/RSAOAEP10 require separate permission.
+- CBC/TripleDES data encryption and TripleDES Key Wrap are explicit legacy modes,
+  disabled by default and in FIPS mode. CBC plaintext is unauthenticated.
+  Bounded key graphs can resolve nested/retrieved/derived keys; key-document and
+  ciphertext resources have separate policies. RSA PKCS#1 v1.5, finite-field DH,
+  XMLENC PBKDF2, EXI and padded AES key wrap remain unsupported.
 
-General key-manager persistence, HSM management, XMLDSig decryption transforms,
-CipherReference XPath/XSLT pipelines and arbitrary XPointer are unsupported.
-The bounded URI profile accepts `#xpointer(/)` and `#xpointer(id(...))`.
-
-JSON serialization uses XML as the default output method for node values;
-applications that need node string values can select `json-node-output-method="text"`.
-Use explicit arrays for multiple JSON values. A sequence of multiple items at the
-result, map-value or array-member level raises `SERE0023`. See the shared
-[serialization contract](transforms.md#xslt-results-and-xml-identity).
+General key-manager/HSM management, XMLDSig decryption transforms, arbitrary
+XPointer and CipherReference XPath/XSLT pipelines are unsupported. The URI profile
+accepts `#xpointer(/)` and `#xpointer(id(...))`. See the [API guide](usage.md) for
+trust, coverage and resource configuration.
 
 ## Unicode normalization
 
-NFC/NFD/NFKC/NFKD use Unicode 17.0 tables from `x/text`, with exact ordering and
-composition for long sequences, preserving original CGJ without inserting one.
-XPath, XSLT serialization and XML Encryption NFC checks share the normalizer.
-XML Encryption checks plaintext without rewriting it; ordinary XML output and
-C14N do not normalize Unicode. An unfinished combining sequence may require
-storage proportional to its length; [operation budgets](streaming.md) still apply.
+NFC/NFD/NFKC/NFKD use Unicode 17.0 `x/text` tables, preserving existing CGJ without
+inserting one. XML Encryption checks NFC without rewriting plaintext; ordinary
+XML output and C14N do not normalize Unicode. Unfinished combining sequences may
+retain proportional storage within [operation budgets](streaming.md).
 
 The official [NormalizationTest](https://www.unicode.org/Public/17.0.0/ucd/NormalizationTest.txt)
-is tested locally. Its notice is retained in the fixture and
-[Unicode license](../licenses/Unicode-3.0.txt).
+is tested locally; its fixture retains the [Unicode notice](../licenses/Unicode-3.0.txt).
 
 ## Known oracle differences
 
@@ -252,35 +134,19 @@ are not a general oracle.
 
 ## Trust and operations
 
-Cryptographic validity alone does not establish PKIX trust, SAML acceptance,
-trusted time or historical evidence validity. Configure coverage, trust and
-resource access, then consume verified handles. Transform execution has
-cooperative in-process limits rather than OS isolation. Memory state/replay
-stores coordinate one process. Native libraries are optional test dependencies.
+Cryptographic validity does not establish certificate trust, SAML acceptance,
+trusted time or historical validity. Consume verified handles under configured
+coverage/trust/resource policy. Transform limits are cooperative, not OS isolation.
+Memory state/replay stores coordinate one process. Native libraries are test-only.
 
 ## Assertion and compatibility controls
 
-`Config.EnableXSLTAssertions` selects assertion checking for direct invocations.
-The default disables `xsl:assert`, as XSLT 3.0 requires.
-Nested `fn:transform` calls independently use `enable-assertions`, defaulting to
-false as required by F&O 3.1. Disabled assertions do not evaluate their test/message.
-Application error namespaces survive public error reporting and `xsl:catch`.
+`EnableXSLTAssertions` controls direct `xsl:assert`; nested `fn:transform` uses
+its own `enable-assertions`. Both default off. `DisableXSLTDynamicEvaluation`
+disables `xsl:evaluate`, default false. `XPath10Compatibility` changes conversions
+without changing the modern grammar. See [contexts](transforms.md#contexts-and-values).
 
-`Config.DisableXSLTDynamicEvaluation` selects static disabling of `xsl:evaluate`.
-It defaults to false. The setting applies to direct and nested compilation and
-package loading; availability queries report false/no, and `xsl:fallback` runs.
-An invoked disabled instruction without fallback reports `XTDE3175`.
-
-
-`Execute` defaults to raw XDM values. `XSLTContext.ResultMode` additionally
-offers explicit document normalization or stylesheet-directed `build-tree`.
-`fn:transform` retains mixed item order and raw secondary values, constructs
-normalized documents on request, and includes an empty principal result map
-entry under the published F&O 3.1 contract. Inspect the entry's value to detect
-empty output.
-
-`XPathOptions.XPath10Compatibility` selects the compatibility property without
-changing the modern grammar. Function values retain their originating static
-context across invocations. Native Greek alphabetic numbering consistently uses
-24 letters in XPath and XSLT; the publisher's older lowercase 25-letter choice
-is an implementation-defined difference, retained in suite diagnostics.
+`Execute` defaults to raw XDM values; document/default delivery is explicit.
+`fn:transform` retains the published F&O 3.1 empty principal-result entry.
+Greek alphabetic numbering uses 24 letters; publisher cases assuming 25 retain
+a documented implementation-defined difference.

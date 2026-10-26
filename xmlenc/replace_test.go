@@ -19,7 +19,7 @@ import (
 )
 
 func TestSelectedElementAllSuites(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	recipient := key(t)
 
 	for _, data := range []string{xmlenc.AES128GCM, xmlenc.AES192GCM, xmlenc.AES256GCM} {
@@ -77,7 +77,7 @@ func testSelectedElementAllSuitesCase(t *testing.T, data *string, wrap *string, 
 }
 
 func TestSelectedElementRootAndExactSelection(t *testing.T) {
-	ctx, kek := context.Background(), make([]byte, 32)
+	ctx, kek := t.Context(), make([]byte, 32)
 	source := parse(t, []byte(`<!--before--><?outside ok?><r><secret>one</secret><secret>two</secret></r><!--after-->`))
 
 	root, encryptedRoot, err := xmlenc.EncryptElementWithKeyWrap(ctx, source, source.Root(), kek, xmlenc.KeyWrapOptions{})
@@ -130,7 +130,7 @@ func TestSelectedElementRootAndExactSelection(t *testing.T) {
 }
 
 func TestSelectedElementPreservesEmbeddedSignatures(t *testing.T) {
-	ctx, signer := context.Background(), key(t)
+	ctx, signer := t.Context(), key(t)
 	for _, method := range []string{c14n.Exclusive, c14n.ExclusiveWithComments, c14n.Canonical10, c14n.Canonical10WithComments, c14n.Canonical11, c14n.Canonical11WithComments} {
 		t.Run(method, func(t *testing.T) {
 			source := parse(t, []byte(`<r xmlns="urn:outer" xmlns:p="urn:p" xmlns:u="urn:unused" xml:lang="ru" xml:base="https://example.test/"><box><p:secret ID="payload" xmlns=""><v>protected</v><!--inside--></p:secret></box></r>`))
@@ -175,7 +175,7 @@ func TestSelectedElementPreservesEmbeddedSignatures(t *testing.T) {
 }
 
 func TestSelectedElementSuperEncryption(t *testing.T) {
-	ctx, kek := context.Background(), make([]byte, 32)
+	ctx, kek := t.Context(), make([]byte, 32)
 	source := parse(t, []byte(`<r><secret>protected</secret><tail>visible</tail></r>`))
 
 	inner, innerHandle, err := xmlenc.EncryptElementWithKeyWrap(ctx, source, source.Root().Children()[0], kek, xmlenc.KeyWrapOptions{})
@@ -216,7 +216,7 @@ func TestSelectedElementSuperEncryption(t *testing.T) {
 }
 
 func TestSelectedElementAuthenticatedXMLAndLimits(t *testing.T) {
-	ctx, kek := context.Background(), make([]byte, 32)
+	ctx, kek := t.Context(), make([]byte, 32)
 	parent := `<r xmlns="urn:outer" xmlns:p="urn:p" xmlns:q="urn:q">`
 	valid := authenticatedElement(t, `<p:secret xmlns="" p:flag="é"><bare/>й<q:v>ok</q:v></p:secret>`, parent, document.DefaultLimits())
 
@@ -308,7 +308,7 @@ func TestSelectedElementAuthenticatedXMLAndLimits(t *testing.T) {
 func authenticatedElement(t *testing.T, raw, parent string, limits document.Limits) *document.Document {
 	t.Helper()
 
-	encrypted, err := xmlenc.EncryptBytesWithKeyWrap(context.Background(), []byte(raw), make([]byte, 32), xmlenc.KeyWrapOptions{})
+	encrypted, err := xmlenc.EncryptBytesWithKeyWrap(t.Context(), []byte(raw), make([]byte, 32), xmlenc.KeyWrapOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func authenticatedElement(t *testing.T, raw, parent string, limits document.Limi
 
 	wrapped := io.MultiReader(strings.NewReader(parent), bytes.NewReader(wire), strings.NewReader("</r>"))
 
-	doc, err := document.ParseReader(context.Background(), wrapped, limits)
+	doc, err := document.ParseReader(t.Context(), wrapped, limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func authenticatedElement(t *testing.T, raw, parent string, limits document.Limi
 }
 
 func TestSelectedElementRejectsHandlesTamperingAndCancellation(t *testing.T) {
-	ctx, kek := context.Background(), make([]byte, 32)
+	ctx, kek := t.Context(), make([]byte, 32)
 	source := parse(t, []byte(`<r><secret>private</secret><tail/></r>`))
 
 	foreign := parse(t, []byte(`<r><secret>foreign</secret></r>`))
@@ -403,7 +403,7 @@ func FuzzSelectedElementPlaintext(f *testing.F) {
 			return
 		}
 
-		ctx := context.Background()
+		ctx := t.Context()
 
 		encrypted, err := xmlenc.EncryptBytesWithKeyWrap(ctx, raw, kek, xmlenc.KeyWrapOptions{})
 		if err != nil {
@@ -460,11 +460,11 @@ func sameXML(t testing.TB, before, after *document.Document) {
 		var a, b bytes.Buffer
 
 		options := c14n.Options{Algorithm: method}
-		if err := c14n.WriteDocument(context.Background(), &a, before, options); err != nil {
+		if err := c14n.WriteDocument(t.Context(), &a, before, options); err != nil {
 			t.Fatal(err)
 		}
 
-		if err := c14n.WriteDocument(context.Background(), &b, after, options); err != nil {
+		if err := c14n.WriteDocument(t.Context(), &b, after, options); err != nil {
 			t.Fatal(err)
 		}
 

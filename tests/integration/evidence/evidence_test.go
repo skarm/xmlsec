@@ -2,7 +2,6 @@ package evidence_test
 
 import (
 	"bytes"
-	"context"
 	"crypto"
 	"encoding/asn1"
 	"encoding/hex"
@@ -69,7 +68,7 @@ func testIndependentEvidenceCase(t *testing.T, base string, tc evidenceFixture) 
 		t.Fatal(e)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	switch tc.Group {
 	case "cms":
@@ -113,7 +112,7 @@ func testIndependentEvidenceCase(t *testing.T, base string, tc evidenceFixture) 
 func checkTimedEvidence(t *testing.T, tc evidenceFixture, read func(string) []byte, at time.Time) {
 	t.Helper()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	v, e := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{read("root.der")}, Revocation: pki.RequireCRL}, AllowedPolicies: []asn1.ObjectIdentifier{{1, 2, 3, 4, 1}}, ClockSkew: time.Minute})
 	if e != nil {

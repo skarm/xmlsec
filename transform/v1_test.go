@@ -13,7 +13,7 @@ import (
 )
 
 func TestUnifiedEngineModernAndV1(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := xp(`not(ancestor-or-self::volatile)`)
 	e := newProcessor(t, tr)
 	d := parse(t, `<r><fixed>0.1</fixed><volatile>ignored</volatile></r>`)
@@ -96,7 +96,7 @@ func TestLanguageComparisonUsesSharedStringBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := p.Apply(context.Background(), tr, input(t, d), reference.ExtensionContext{})
+	out, err := p.Apply(t.Context(), tr, input(t, d), reference.ExtensionContext{})
 	if _, ok := out.Nodes(); ok || !errors.Is(err, reference.ErrLimit) {
 		t.Fatalf("unbudgeted language comparison: error=%v", err)
 	}
@@ -117,12 +117,12 @@ func TestIDAndHere(t *testing.T) {
 	}
 
 	tr.XPath[0].Here = parse(t, `<other/>`).Root()
-	if _, e := p.Apply(context.Background(), tr, input(t, d), ec); !errors.Is(e, reference.ErrInput) {
+	if _, e := p.Apply(t.Context(), tr, input(t, d), ec); !errors.Is(e, reference.ErrInput) {
 		t.Fatal("foreign here", e)
 	}
 
 	tr.XPath[0].Here = document.Element{}
-	if _, e := p.Apply(context.Background(), tr, input(t, d), ec); !errors.Is(e, reference.ErrInput) {
+	if _, e := p.Apply(t.Context(), tr, input(t, d), ec); !errors.Is(e, reference.ErrInput) {
 		t.Fatal("missing here", e)
 	}
 
@@ -135,7 +135,7 @@ func TestIDAndHere(t *testing.T) {
 	}
 
 	dup := parse(t, `<r><a ID="a"/><b ID="a"/></r>`)
-	if _, e := p.Apply(context.Background(), tr, input(t, dup), ec); !errors.Is(e, reference.ErrInput) {
+	if _, e := p.Apply(t.Context(), tr, input(t, dup), ec); !errors.Is(e, reference.ErrInput) {
 		t.Fatal("duplicate ID", e)
 	}
 }
@@ -179,7 +179,7 @@ func TestFilter2ExpansionAndOrder(t *testing.T) {
 	}
 
 	nonset := reference.Transform{Algorithm: reference.XPathFilter2, XPath: []reference.XPathExpression{filter("intersect", trueExpression)}}
-	if _, e := newProcessor(t, nonset).Apply(context.Background(), nonset, input(t, d), reference.ExtensionContext{}); !errors.Is(e, reference.ErrInput) {
+	if _, e := newProcessor(t, nonset).Apply(t.Context(), nonset, input(t, d), reference.ExtensionContext{}); !errors.Is(e, reference.ErrInput) {
 		t.Fatal("non-node-set", e)
 	}
 }
@@ -200,12 +200,12 @@ func TestApprovalAndLimits(t *testing.T) {
 	p := newProcessor(t, tr)
 
 	changed := xp(` true()`)
-	if e := p.Validate(context.Background(), changed); !errors.Is(e, reference.ErrPolicy) {
+	if e := p.Validate(t.Context(), changed); !errors.Is(e, reference.ErrPolicy) {
 		t.Fatal("exact program", e)
 	}
 
 	var zero transform.Engine
-	if e := zero.Validate(context.Background(), tr); !errors.Is(e, reference.ErrPolicy) {
+	if e := zero.Validate(t.Context(), tr); !errors.Is(e, reference.ErrPolicy) {
 		t.Fatal(e)
 	}
 
@@ -224,7 +224,7 @@ func TestApprovalAndLimits(t *testing.T) {
 			t.Fatal(e)
 		}
 
-		out, e := p.Apply(context.Background(), tr, in, reference.ExtensionContext{})
+		out, e := p.Apply(t.Context(), tr, in, reference.ExtensionContext{})
 		if !errors.Is(e, reference.ErrLimit) || out.Kind() != reference.Invalid {
 			t.Fatal("bounded execution", c, out.Kind(), e)
 		}
@@ -237,19 +237,19 @@ func TestApprovalAndLimits(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	_, e = p.Apply(context.Background(), value, input(t, parse(t, "<r>"+strings.Repeat("a", 1000)+"</r>")), reference.ExtensionContext{})
+	_, e = p.Apply(t.Context(), value, input(t, parse(t, "<r>"+strings.Repeat("a", 1000)+"</r>")), reference.ExtensionContext{})
 	if !errors.Is(e, reference.ErrLimit) {
 		t.Fatal("string budget", e)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, e := newProcessor(t, tr).Apply(ctx, tr, in, reference.ExtensionContext{}); !errors.Is(e, context.Canceled) {
 		t.Fatal(e)
 	}
 
-	if _, e := newProcessor(t, tr).Apply(context.Background(), tr, reference.Octets([]byte(`<r/>`)), reference.ExtensionContext{}); !errors.Is(e, reference.ErrInput) {
+	if _, e := newProcessor(t, tr).Apply(t.Context(), tr, reference.Octets([]byte(`<r/>`)), reference.ExtensionContext{}); !errors.Is(e, reference.ErrInput) {
 		t.Fatal(e)
 	}
 }
@@ -281,7 +281,7 @@ func TestConcurrentImmutableApproval(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 24 {
 		wg.Go(func() {
-			out, e := p.Apply(context.Background(), owned, in, reference.ExtensionContext{})
+			out, e := p.Apply(t.Context(), owned, in, reference.ExtensionContext{})
 			if e != nil || out.Size() != in.Size() {
 				t.Errorf("concurrent apply: %v", e)
 			}
@@ -296,7 +296,7 @@ func TestIDTokenPreallocationBound(t *testing.T) {
 	p := newProcessor(t, tr)
 	d := parse(t, "<r>"+strings.Repeat("a ", 70000)+"</r>")
 
-	out, e := p.Apply(context.Background(), tr, input(t, d), reference.ExtensionContext{})
+	out, e := p.Apply(t.Context(), tr, input(t, d), reference.ExtensionContext{})
 	if !errors.Is(e, reference.ErrLimit) || out.Kind() != reference.Invalid {
 		t.Fatal("unbounded ID tokens", e)
 	}
@@ -322,7 +322,7 @@ func FuzzApprovedXPath(f *testing.F) {
 
 		in := input(t, d)
 
-		out, e := p.Apply(context.Background(), tr, in, reference.ExtensionContext{})
+		out, e := p.Apply(t.Context(), tr, in, reference.ExtensionContext{})
 		if e != nil {
 			return
 		}
@@ -362,7 +362,7 @@ func FuzzXPathCompilation(f *testing.F) {
 			return
 		}
 
-		out, e := p.Apply(context.Background(), tr, in, reference.ExtensionContext{})
+		out, e := p.Apply(t.Context(), tr, in, reference.ExtensionContext{})
 		if e != nil {
 			if out.Kind() != reference.Invalid {
 				t.Fatal("partial result")
@@ -394,7 +394,7 @@ func BenchmarkXPath(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		if _, err := p.Apply(context.Background(), tr, in, reference.ExtensionContext{}); err != nil {
+		if _, err := p.Apply(b.Context(), tr, in, reference.ExtensionContext{}); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -445,7 +445,7 @@ func newProcessor(t testing.TB, ts ...reference.Transform) *transform.Engine {
 func apply(t testing.TB, p *transform.Engine, tr reference.Transform, in reference.Data, ec reference.ExtensionContext) document.NodeSet {
 	t.Helper()
 
-	out, e := p.Apply(context.Background(), tr, in, ec)
+	out, e := p.Apply(t.Context(), tr, in, ec)
 	if e != nil {
 		t.Fatal(e)
 	}

@@ -11,7 +11,7 @@ import (
 
 // TestXPath10CoreConformance runs the XPath 1.0 core cases against the shared VM.
 func TestXPath10CoreConformance(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	e := engine(t, transform.Config{})
 
 	d, err := e.Parse(ctx, []byte(`<?q before?><r xmlns:p="urn:p" xml:lang="en-US"><a ID="a" n="2">2<b>3</b><!--comment--><?q data?></a><a ID="b" n="4">4</a><p:x>5</p:x></r><?q after?>`))
@@ -140,9 +140,9 @@ func TestXPath10LanguageBoundaries(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, source := range []string{`1e2`, `+1`, `1 eq 1`, `1 idiv 2`, `(1,2)`, `()`, `1 to 3`, `if (true()) then 1 else 2`, `for $x in /r return $x`, `/element()`, `/processing-instruction(q)`, `/r/element()`, `/*:r`, `1 union /r`, `'a''b'`, `(:c:) 1`, `1 +2`, `xs:string(1)`, `fn:string(1)`, `matches('a','a')`, `count('a')`} {
 		t.Run(source, func(t *testing.T) {
-			q, err := e.CompileXPath(context.Background(), source, transform.XPathOptions{Version: transform.XPath10})
+			q, err := e.CompileXPath(t.Context(), source, transform.XPathOptions{Version: transform.XPath10})
 			if err == nil {
-				_, err = q.Evaluate(context.Background(), nil, transform.XPathContext{})
+				_, err = q.Evaluate(t.Context(), nil, transform.XPathContext{})
 			}
 
 			if err == nil {
@@ -153,7 +153,7 @@ func TestXPath10LanguageBoundaries(t *testing.T) {
 }
 
 func TestXPath10LanguageInheritance(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	e := engine(t, transform.Config{})
 
 	d, err := e.Parse(ctx, []byte(`<?p before?><r xml:lang="EN-us" xmlns:p="urn:p"><a v="x">text<!--c--><?p in?></a><b xml:lang=""><c/></b><d xml:lang="fr-CA"><e/></d></r><?p after?>`))
@@ -185,7 +185,7 @@ func TestXPath10LanguageInheritance(t *testing.T) {
 
 func TestXPath10DynamicFocusAndValueKinds(t *testing.T) {
 	e := engine(t, transform.Config{})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := e.Parse(ctx, []byte(`<r/>`))
 	if err != nil {
@@ -220,7 +220,7 @@ func TestXPath10DynamicFocusAndValueKinds(t *testing.T) {
 }
 
 func TestXPath10IDWhitespaceAndIntermediateLimit(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	e := engine(t, transform.Config{})
 
 	d, err := e.Parse(ctx, []byte(`<r><n xml:id="a"/><n xml:id="b"/></r>`))

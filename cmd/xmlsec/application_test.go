@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/skarm/xmlsec/c14n"
@@ -42,7 +43,7 @@ func TestApplicationHelpAndUsage(t *testing.T) {
 			args := append(strings.Fields(c.name), "-h")
 
 			var out, stderr bytes.Buffer
-			if err := run(context.Background(), args, nil, &out, &stderr); err != nil {
+			if err := run(t.Context(), args, nil, &out, &stderr); err != nil {
 				t.Fatal(err)
 			}
 
@@ -55,7 +56,7 @@ func TestApplicationHelpAndUsage(t *testing.T) {
 	for _, args := range [][]string{{nameBogus}, {nameHelp, nameBogus}, {"version", nameExtra}, {"algorithms", nameExtra}, {nameC14n, "-unknown"}, {nameC14n, "-max-input-bytes", "0"}, {nameC14n, "-timeout", "-1s"}} {
 		var out bytes.Buffer
 
-		err := run(context.Background(), args, strings.NewReader(`<r/>`), &out, io.Discard)
+		err := run(t.Context(), args, strings.NewReader(`<r/>`), &out, io.Discard)
 		if err == nil || exitCode(err) != 2 {
 			t.Fatal(args, err, exitCode(err))
 		}
@@ -73,62 +74,71 @@ func TestApplicationHelpAndUsage(t *testing.T) {
 func TestCanceledStreamsAndDeadline(t *testing.T) {
 	for _, deadline := range []bool{false, true} {
 		t.Run(map[bool]string{false: "cancel", true: "deadline"}[deadline], func(t *testing.T) {
-			r, w := io.Pipe()
-			defer w.Close()
+			synctest.Test(t, func(t *testing.T) {
+				r, w := io.Pipe()
+				defer r.Close()
+				defer w.Close()
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
 
-			args := []string{nameC14n}
-			if deadline {
-				args = append(args, "-timeout", "25ms")
-			}
-
-			done := make(chan error, 1)
-			go func() { done <- run(ctx, args, r, io.Discard, io.Discard) }()
-
-			if !deadline {
-				cancel()
-			}
-
-			select {
-			case err := <-done:
-				expected := context.Canceled
+				args := []string{nameC14n}
 				if deadline {
-					expected = context.DeadlineExceeded
+					args = append(args, "-timeout", "25ms")
 				}
 
-				if !errors.Is(err, expected) {
-					t.Fatal(err)
-				}
-			case <-time.After(2 * time.Second):
-				_ = r.Close()
+				done := make(chan error, 1)
+				go func() { done <- run(ctx, args, r, io.Discard, io.Discard) }()
 
-				t.Fatal("canceled pipe read did not return")
-			}
+				synctest.Wait()
+				if deadline {
+					synctest.Sleep(25 * time.Millisecond)
+				} else {
+					cancel()
+					synctest.Wait()
+				}
+
+				select {
+				case err := <-done:
+					expected := context.Canceled
+					if deadline {
+						expected = context.DeadlineExceeded
+					}
+
+					if !errors.Is(err, expected) {
+						t.Fatal(err)
+					}
+				default:
+					t.Fatal("canceled pipe read did not return")
+				}
+			})
 		})
 	}
 
-	r, w := io.Pipe()
-	defer r.Close()
+	synctest.Test(t, func(t *testing.T) {
+		r, w := io.Pipe()
+		defer r.Close()
+		defer w.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
 
-	done := make(chan error, 1)
-	go func() { done <- writeOutputContext(ctx, "-", w, []byte("blocked")) }()
+		done := make(chan error, 1)
+		go func() { done <- writeOutputContext(ctx, "-", w, []byte("blocked")) }()
 
-	cancel()
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
 
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatal(err)
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatal("blocked write did not cancel")
 		}
-	case <-time.After(time.Second):
-		_ = w.Close()
-
-		t.Fatal("blocked write did not cancel")
-	}
+	})
 
 	dir := t.TempDir()
 	out := testutil.WriteFile(t, dir, "keep.xml", []byte("original"))
@@ -146,7 +156,7 @@ func TestStrictConfigurationAndManifestPolicy(t *testing.T) {
 		path := testutil.WriteFile(t, dir, "invalid.json", []byte(raw))
 
 		var c trustConfig
-		if err := readJSONFile(context.Background(), path, &c); err == nil {
+		if err := readJSONFile(t.Context(), path, &c); err == nil {
 			t.Fatal("accepted invalid config", raw)
 		}
 	}
@@ -154,7 +164,7 @@ func TestStrictConfigurationAndManifestPolicy(t *testing.T) {
 	for _, field := range []string{`"type":""`, `"digest_method":"urn:unsupported"`, `"transforms":[]`, `"transforms":null`} {
 		path := testutil.WriteFile(t, dir, "resources.json", []byte(`[{"uri":"urn:data","path":"data",`+field+`}]`))
 
-		entries, _, err := loadResourcesContext(context.Background(), path)
+		entries, _, err := loadResourcesContext(t.Context(), path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -491,7 +501,7 @@ func cli(t *testing.T, input []byte, args ...string) []byte {
 	t.Helper()
 
 	var out, stderr bytes.Buffer
-	if err := run(context.Background(), args, bytes.NewReader(input), &out, &stderr); err != nil {
+	if err := run(t.Context(), args, bytes.NewReader(input), &out, &stderr); err != nil {
 		t.Fatalf("%v: %v\nstderr: %s\nstdout: %s", args, err, stderr.String(), out.String())
 	}
 
@@ -502,7 +512,7 @@ func rejectCLI(t *testing.T, input []byte, args ...string) []byte {
 	t.Helper()
 
 	var out, stderr bytes.Buffer
-	if err := run(context.Background(), args, bytes.NewReader(input), &out, &stderr); err == nil {
+	if err := run(t.Context(), args, bytes.NewReader(input), &out, &stderr); err == nil {
 		t.Fatalf("accepted invalid invocation %v", args)
 	}
 

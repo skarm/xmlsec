@@ -163,7 +163,7 @@ func checkElementDocument(t *testing.T, input string) {
 }
 
 func TestFragmentUsesProjectNodeIdentity(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	options := xdm.ParseOptions{BaseURI: "urn:fragment"}
 
 	doc, err := options.ParseFragment(ctx, `<r xmlns:p="urn:p" p:a="v"/>text<!--c--><?go ok?><s/>`)
@@ -340,7 +340,7 @@ func TestAttributeIndexMutationAndConcurrentReads(t *testing.T) {
 }
 
 func TestDoctypeIsOnlyOutputMetadata(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	doc, err := (xdm.ParseOptions{}).Parse(ctx, []byte(`<r><a/></r>`))
 	if err != nil {

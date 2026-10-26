@@ -243,7 +243,7 @@ func TestNodeSetLimits(t *testing.T) {
 	limits := document.DefaultLimits()
 	limits.MaxNodeSetNodes = 2
 
-	d, err := document.Parse(context.Background(), []byte(`<r><c/></r>`), limits)
+	d, err := document.Parse(t.Context(), []byte(`<r><c/></r>`), limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestNodeSetLimits(t *testing.T) {
 		t.Fatal("failed operation mutated set")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, err := d.AllNodes(ctx); !errors.Is(err, context.Canceled) {
@@ -276,16 +276,16 @@ func TestNodeSetLimits(t *testing.T) {
 	limits = document.DefaultLimits()
 
 	limits.MaxInScopeNamespaces = 2
-	if _, err := document.Parse(context.Background(), []byte(`<r xmlns:p="urn:p"><c xmlns:q="urn:q"/></r>`), limits); !errors.Is(err, document.ErrLimit) {
+	if _, err := document.Parse(t.Context(), []byte(`<r xmlns:p="urn:p"><c xmlns:q="urn:q"/></r>`), limits); !errors.Is(err, document.ErrLimit) {
 		t.Fatal(err)
 	}
 
-	if _, err := document.Parse(context.Background(), []byte(`<r xmlns:p="urn:p"><c xmlns:p="urn:q"/></r>`), limits); err != nil {
+	if _, err := document.Parse(t.Context(), []byte(`<r xmlns:p="urn:p"><c xmlns:p="urn:q"/></r>`), limits); err != nil {
 		t.Fatal("rebindings do not add prefixes", err)
 	}
 
 	limits.MaxInScopeNamespaces = -1
-	if _, err := document.Parse(context.Background(), []byte(`<r/>`), limits); !errors.Is(err, document.ErrLimit) {
+	if _, err := document.Parse(t.Context(), []byte(`<r/>`), limits); !errors.Is(err, document.ErrLimit) {
 		t.Fatal(err)
 	}
 }

@@ -2,7 +2,6 @@ package xmldsig_test
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -81,7 +80,7 @@ func testKeyInfoIndependentPythonFixturesCase(t *testing.T, dir *string, c *stru
 		t.Fatal(e)
 	}
 
-	parsed, e := keyinfo.Parse(context.Background(), info, info.Root(), keyinfo.Options{})
+	parsed, e := keyinfo.Parse(t.Context(), info, info.Root(), keyinfo.Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -104,7 +103,7 @@ func testKeyInfoIndependentPythonFixturesCase(t *testing.T, dir *string, c *stru
 			t.Fatal("signature count")
 		}
 
-		r, e := xmldsig.VerifySignatureWithKeyInfo(context.Background(), d, sigs[0], xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{"#data"}, Policy: xmldsig.ModernPolicy()}, SelectTrustedKey: keySelector(t, key)})
+		r, e := xmldsig.VerifySignatureWithKeyInfo(t.Context(), d, sigs[0], xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{"#data"}, Policy: xmldsig.ModernPolicy()}, SelectTrustedKey: keySelector(t, key)})
 		if test.valid {
 			if e != nil || r == nil {
 				t.Fatal(e)

@@ -1,7 +1,6 @@
 package transform_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/skarm/xmlsec/transform"
@@ -120,7 +119,7 @@ func engine(t testing.TB, config transform.Config) *transform.Engine {
 func query(t testing.TB, e *transform.Engine, source string, v transform.XPathVersion) *transform.XPath {
 	t.Helper()
 
-	q, err := e.CompileXPath(context.Background(), source, transform.XPathOptions{Version: v})
+	q, err := e.CompileXPath(t.Context(), source, transform.XPathOptions{Version: v})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +141,7 @@ func text(t testing.TB, seq transform.Sequence) string {
 func evaluate(t testing.TB, e *transform.Engine, source string, v transform.XPathVersion) transform.Sequence {
 	t.Helper()
 
-	result, err := query(t, e, source, v).Evaluate(context.Background(), nil, transform.XPathContext{})
+	result, err := query(t, e, source, v).Evaluate(t.Context(), nil, transform.XPathContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +152,7 @@ func evaluate(t testing.TB, e *transform.Engine, source string, v transform.XPat
 func stylesheet(t testing.TB, e *transform.Engine, source string) *transform.Stylesheet {
 	t.Helper()
 
-	s, err := e.CompileXSLT(context.Background(), []byte(source), transform.XSLTOptions{})
+	s, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

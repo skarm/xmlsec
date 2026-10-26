@@ -1,7 +1,6 @@
 package testcert
 
 import (
-	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -132,7 +131,7 @@ func CRLV1(t testing.TB, c Chain, revoked ...*x509.Certificate) []byte {
 		t.Fatal(err)
 	}
 
-	signed, err := signature.Sign(context.Background(), c.RootKey, algorithm, raw)
+	signed, err := signature.Sign(t.Context(), c.RootKey, algorithm, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +182,7 @@ func CertificateEncodings(t testing.TB, c Chain) []CertificateEncoding {
 			t.Fatal(err)
 		}
 
-		signed, err := signature.Sign(context.Background(), c.RootKey, algorithm, tbs)
+		signed, err := signature.Sign(t.Context(), c.RootKey, algorithm, tbs)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -44,7 +44,7 @@ func testEndToEndSolicitedLoginCase(t *testing.T, kind *string) {
 	bad := a
 
 	bad.FreshAuthentication = false
-	if r, e := s.idp.Issue(context.Background(), req, bad, testcert.Now().Add(2*time.Second)); r != nil || e == nil {
+	if r, e := s.idp.Issue(t.Context(), req, bad, testcert.Now().Add(2*time.Second)); r != nil || e == nil {
 		t.Fatal("ForceAuthn weakened")
 	}
 
@@ -53,11 +53,11 @@ func testEndToEndSolicitedLoginCase(t *testing.T, kind *string) {
 		t.Fatal(e)
 	}
 
-	if r, e := other.Issue(context.Background(), req, a, testcert.Now().Add(2*time.Second)); r != nil || e == nil {
+	if r, e := other.Issue(t.Context(), req, a, testcert.Now().Add(2*time.Second)); r != nil || e == nil {
 		t.Fatal("request proof from other provider accepted")
 	}
 
-	issued, e := s.idp.Issue(context.Background(), req, a, testcert.Now().Add(2*time.Second))
+	issued, e := s.idp.Issue(t.Context(), req, a, testcert.Now().Add(2*time.Second))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -66,23 +66,23 @@ func testEndToEndSolicitedLoginCase(t *testing.T, kind *string) {
 		t.Fatal("ACS")
 	}
 
-	if r, e := s.idp.Issue(context.Background(), req, a, testcert.Now().Add(2*time.Second)); r != nil || !errors.Is(e, replay.ErrReplay) {
+	if r, e := s.idp.Issue(t.Context(), req, a, testcert.Now().Add(2*time.Second)); r != nil || !errors.Is(e, replay.ErrReplay) {
 		t.Fatal("IdP repeated issuance", e)
 	}
 
 	at := testcert.Now().Add(3 * time.Second)
 
 	wrongBrowser := bytes.Repeat([]byte{1}, 32)
-	if r, e := s.sp.ConsumePOST(context.Background(), postBody(t, issued), sp.ConsumeOptions{At: at, BrowserBinding: wrongBrowser}); r != nil || !errors.Is(e, sp.ErrCorrelation) {
+	if r, e := s.sp.ConsumePOST(t.Context(), postBody(t, issued), sp.ConsumeOptions{At: at, BrowserBinding: wrongBrowser}); r != nil || !errors.Is(e, sp.ErrCorrelation) {
 		t.Fatal("browser not bound", e)
 	}
 
 	changed := bytes.Replace(postBody(t, issued), []byte(out.RelayState()), []byte("different-unregistered-relay-value"), 1)
-	if r, e := s.sp.ConsumePOST(context.Background(), changed, sp.ConsumeOptions{At: at, BrowserBinding: browser}); r != nil || e == nil {
+	if r, e := s.sp.ConsumePOST(t.Context(), changed, sp.ConsumeOptions{At: at, BrowserBinding: browser}); r != nil || e == nil {
 		t.Fatal("unknown request accepted")
 	}
 
-	r, e := s.sp.ConsumePOST(context.Background(), postBody(t, issued), sp.ConsumeOptions{At: at, BrowserBinding: browser})
+	r, e := s.sp.ConsumePOST(t.Context(), postBody(t, issued), sp.ConsumeOptions{At: at, BrowserBinding: browser})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -91,7 +91,7 @@ func testEndToEndSolicitedLoginCase(t *testing.T, kind *string) {
 		t.Fatal("session result")
 	}
 
-	if r, e := s.sp.ConsumePOST(context.Background(), postBody(t, issued), sp.ConsumeOptions{At: at, BrowserBinding: browser}); r != nil || !errors.Is(e, replay.ErrReplay) {
+	if r, e := s.sp.ConsumePOST(t.Context(), postBody(t, issued), sp.ConsumeOptions{At: at, BrowserBinding: browser}); r != nil || !errors.Is(e, replay.ErrReplay) {
 		t.Fatal("SP replay", e)
 	}
 }
@@ -100,7 +100,7 @@ func TestConcurrentSPOneWinner(t *testing.T) {
 	s := setup(t)
 	_, req, browser := begin(t, s, metadata.HTTPPost)
 
-	issued, e := s.idp.Issue(context.Background(), req, auth(), testcert.Now().Add(2*time.Second))
+	issued, e := s.idp.Issue(t.Context(), req, auth(), testcert.Now().Add(2*time.Second))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -113,7 +113,7 @@ func TestConcurrentSPOneWinner(t *testing.T) {
 	)
 	for range 32 {
 		wg.Go(func() {
-			r, e := s.sp.ConsumePOST(context.Background(), form, sp.ConsumeOptions{At: testcert.Now().Add(3 * time.Second), BrowserBinding: browser})
+			r, e := s.sp.ConsumePOST(t.Context(), form, sp.ConsumeOptions{At: testcert.Now().Add(3 * time.Second), BrowserBinding: browser})
 			if e == nil && r != nil {
 				wins.Add(1)
 			} else if !errors.Is(e, replay.ErrReplay) {
@@ -132,7 +132,7 @@ func TestConcurrentSPOneWinner(t *testing.T) {
 func TestSignedArbitraryACSRejected(t *testing.T) {
 	s := setup(t)
 
-	d, e := protocol.SignAuthnRequest(context.Background(), protocol.AuthnRequest{ID: "_wrongacs", Issuer: spID, Destination: ssoPost, ACS: "https://evil.test/receive", IssueInstant: testcert.Now()}, protocol.SigningKey{Key: s.cert.LeafKey, CertificateDER: s.cert.Leaf.Raw})
+	d, e := protocol.SignAuthnRequest(t.Context(), protocol.AuthnRequest{ID: "_wrongacs", Issuer: spID, Destination: ssoPost, ACS: "https://evil.test/receive", IssueInstant: testcert.Now()}, protocol.SigningKey{Key: s.cert.LeafKey, CertificateDER: s.cert.Leaf.Raw})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -144,19 +144,19 @@ func TestSignedArbitraryACSRejected(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if r, e := s.idp.AcceptPOST(context.Background(), body, spID, ssoPost, testcert.Now()); r != nil || e == nil {
+	if r, e := s.idp.AcceptPOST(t.Context(), body, spID, ssoPost, testcert.Now()); r != nil || e == nil {
 		t.Fatal("signed ACS injection")
 	}
 
 	_, req, _ := begin(t, s, metadata.HTTPPost)
-	if r, e := s.idp.Issue(context.Background(), req, auth(), testcert.Now().Add(6*time.Minute)); r != nil || e == nil {
+	if r, e := s.idp.Issue(t.Context(), req, auth(), testcert.Now().Add(6*time.Minute)); r != nil || e == nil {
 		t.Fatal("expired request")
 	}
 }
 
 func TestUnspecifiedNameIDDoesNotRequireLiteralUnspecifiedFormat(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	browser := bytes.Repeat([]byte{9}, 32)
 
 	outbound, e := f.sp.Begin(ctx, sp.BeginOptions{IDP: idpID, BrowserBinding: browser, At: testcert.Now(), NameIDFormat: protocol.NameIDUnspecified, AllowCreateNameID: true})
@@ -202,7 +202,7 @@ type system struct {
 func setup(t testing.TB) system {
 	t.Helper()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	c := testcert.New(t)
 	reg := registry{}
 	specs := []metadata.EntityDescriptor{
@@ -274,19 +274,19 @@ func begin(t testing.TB, s system, kind string) (*sp.Outbound, *idp.Request, []b
 
 	browser := bytes.Repeat([]byte{0xa7}, 32)
 
-	o, e := s.sp.Begin(context.Background(), sp.BeginOptions{IDP: idpID, Binding: kind, BrowserBinding: browser, At: testcert.Now(), NameIDFormat: protocol.NameIDPersistent, RequestedContexts: []string{authClass}, ForceAuthn: true, AllowCreateNameID: true})
+	o, e := s.sp.Begin(t.Context(), sp.BeginOptions{IDP: idpID, Binding: kind, BrowserBinding: browser, At: testcert.Now(), NameIDFormat: protocol.NameIDPersistent, RequestedContexts: []string{authClass}, ForceAuthn: true, AllowCreateNameID: true})
 	if e != nil {
 		t.Fatal(e)
 	}
 
 	var r *idp.Request
 	if kind == metadata.HTTPRedirect {
-		r, e = s.idp.AcceptRedirect(context.Background(), o.RawQuery(), spID, ssoRedirect, testcert.Now())
+		r, e = s.idp.AcceptRedirect(t.Context(), o.RawQuery(), spID, ssoRedirect, testcert.Now())
 		if u, err := o.RedirectURL(); err != nil || u == "" {
 			t.Fatal(err)
 		}
 	} else {
-		r, e = s.idp.AcceptPOST(context.Background(), postBody(t, o), spID, ssoPost, testcert.Now())
+		r, e = s.idp.AcceptPOST(t.Context(), postBody(t, o), spID, ssoPost, testcert.Now())
 	}
 
 	if e != nil {

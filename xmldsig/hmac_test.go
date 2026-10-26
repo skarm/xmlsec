@@ -87,7 +87,7 @@ func TestLegacyHMACSHA1(t *testing.T) {
 }
 
 func TestHMACMessageMethods(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	key := testMACKey()
 	before := bytes.Clone(key)
 	msg := []byte("exact binary\x00\xff")
@@ -177,7 +177,7 @@ func testHMACMessageMethodsCase(t *testing.T, ctx *context.Context, msg *[]byte,
 }
 
 func TestHMACTemplateChecksAllReferences(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	key := testMACKey()
 
 	for _, method := range []string{xmldsig.HMACSHA256, xmldsig.HMACSHA384, xmldsig.HMACSHA512} {
@@ -246,7 +246,7 @@ func TestHMACMalformedAndDisabledParameters(t *testing.T) {
 			p := xmldsig.HMACPolicy()
 			p.AllowHMACTruncation = true
 
-			out, e := xmldsig.SignHMACTemplate(context.Background(), input, input.Root(), testMACKey(), xmldsig.TemplateSignOptions{Validation: xmldsig.SignatureOptions{Policy: p}})
+			out, e := xmldsig.SignHMACTemplate(t.Context(), input, input.Root(), testMACKey(), xmldsig.TemplateSignOptions{Validation: xmldsig.SignatureOptions{Policy: p}})
 			if e == nil || out != nil {
 				t.Fatal("bad XML parameter accepted")
 			}
@@ -256,13 +256,13 @@ func TestHMACMalformedAndDisabledParameters(t *testing.T) {
 	duplicate := strings.Replace(raw, "</ds:SignatureMethod>", "<ds:HMACOutputLength>256</ds:HMACOutputLength></ds:SignatureMethod>", 1)
 
 	input := coreParse(t, duplicate)
-	if _, e := xmldsig.SignHMACTemplate(context.Background(), input, input.Root(), testMACKey(), xmldsig.TemplateSignOptions{Validation: xmldsig.SignatureOptions{Policy: xmldsig.HMACPolicy()}}); e == nil {
+	if _, e := xmldsig.SignHMACTemplate(t.Context(), input, input.Root(), testMACKey(), xmldsig.TemplateSignOptions{Validation: xmldsig.SignatureOptions{Policy: xmldsig.HMACPolicy()}}); e == nil {
 		t.Fatal("duplicate parameter accepted")
 	}
 }
 
 func TestHMACExternalAuthenticationGate(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	key := testMACKey()
 	calls, closed := 0, 0
 	resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
@@ -297,7 +297,7 @@ func TestHMACExternalAuthenticationGate(t *testing.T) {
 }
 
 func TestHMACPreservationAndManifests(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	key := testMACKey()
 	root := coreParse(t, `<root><item ID="data">value</item></root>`)
 	template := xmldsig.SignatureTemplate{SignatureMethod: xmldsig.HMACSHA256, References: []xmldsig.ReferenceTemplate{{URI: nameData, Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}}}
@@ -363,7 +363,7 @@ func TestHMACConcurrentReadOnlyVerification(t *testing.T) {
 	d, s := paramTemplate(t, xmldsig.HMACSHA256, xmldsig.SignatureParameters{})
 	o := xmldsig.SignatureOptions{Policy: xmldsig.HMACPolicy()}
 
-	out, e := xmldsig.SignHMACTemplate(context.Background(), d, s, key, xmldsig.TemplateSignOptions{Validation: o})
+	out, e := xmldsig.SignHMACTemplate(t.Context(), d, s, key, xmldsig.TemplateSignOptions{Validation: o})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -371,7 +371,7 @@ func TestHMACConcurrentReadOnlyVerification(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 16 {
 		wg.Go(func() {
-			if _, e := xmldsig.VerifyHMACSignature(context.Background(), out, out.Root(), key, o); e != nil {
+			if _, e := xmldsig.VerifyHMACSignature(t.Context(), out, out.Root(), key, o); e != nil {
 				t.Error(e)
 			}
 		})
@@ -381,7 +381,7 @@ func TestHMACConcurrentReadOnlyVerification(t *testing.T) {
 }
 
 func TestHMACPreservationRefusesInvalidation(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	key := testMACKey()
 	d := coreParse(t, `<r ID="r">payload</r>`)
 	spec := xmldsig.SignatureTemplate{SignatureMethod: xmldsig.HMACSHA256, References: []xmldsig.ReferenceTemplate{{URI: "#r", Transforms: []reference.Transform{{Algorithm: xmldsig.EnvelopedSignature}, {Algorithm: c14n.Exclusive}}}}}
@@ -428,7 +428,7 @@ func TestHMACPreservationRefusesInvalidation(t *testing.T) {
 }
 
 func TestHMACRequiresExplicitCoverageAndTrustKind(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	key := testMACKey()
 	d, s := paramTemplate(t, xmldsig.HMACSHA256, xmldsig.SignatureParameters{})
 	p := xmldsig.HMACPolicy()
@@ -464,7 +464,7 @@ func TestHMACZeroResultAndTagCapacity(t *testing.T) {
 	p := xmldsig.HMACPolicy()
 	p.AllowHMACTruncation = true
 
-	tag, e := xmldsig.ComputeHMAC(context.Background(), []byte("m"), testMACKey(), xmldsig.HMACSHA512, 256, p)
+	tag, e := xmldsig.ComputeHMAC(t.Context(), []byte("m"), testMACKey(), xmldsig.HMACSHA512, 256, p)
 	if e != nil || len(tag) != 32 || cap(tag) != 32 {
 		t.Fatalf("hidden full tag capacity len=%d cap=%d err=%v", len(tag), cap(tag), e)
 	}

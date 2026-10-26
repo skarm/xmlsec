@@ -37,7 +37,7 @@ func TestResponse(t *testing.T) {
 	c := testcert.New(t)
 	key := protocol.SigningKey{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}
 
-	d, e := protocol.SignResponse(context.Background(), responseSpec(), key)
+	d, e := protocol.SignResponse(t.Context(), responseSpec(), key)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -52,7 +52,7 @@ func TestResponse(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	r, e := protocol.VerifyResponse(context.Background(), d, []crypto.PublicKey{c.LeafKey.Public()}, options())
+	r, e := protocol.VerifyResponse(t.Context(), d, []crypto.PublicKey{c.LeafKey.Public()}, options())
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -85,7 +85,7 @@ func TestResponse(t *testing.T) {
 		return o
 	}(), []crypto.PublicKey{c.LeafKey.Public()}}, {"wrong key", options(), []crypto.PublicKey{c.TSAKey.Public()}}} {
 		t.Run(tc.name, func(t *testing.T) {
-			if r, e := protocol.VerifyResponse(context.Background(), d, tc.keys, tc.opts); r != nil || e == nil {
+			if r, e := protocol.VerifyResponse(t.Context(), d, tc.keys, tc.opts); r != nil || e == nil {
 				t.Fatal("accepted")
 			}
 		})
@@ -96,19 +96,19 @@ func TestResponse(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if r, e := protocol.VerifyResponse(context.Background(), changed, []crypto.PublicKey{c.LeafKey.Public()}, options()); r != nil || e == nil {
+	if r, e := protocol.VerifyResponse(t.Context(), changed, []crypto.PublicKey{c.LeafKey.Public()}, options()); r != nil || e == nil {
 		t.Fatal("tamper accepted")
 	}
 	// Compatibility option never relaxes the signed Assertion requirement.
 	unsigned := removeSignatures(t, d, false)
-	if _, e := protocol.VerifyResponse(context.Background(), unsigned, []crypto.PublicKey{c.LeafKey.Public()}, options()); e == nil {
+	if _, e := protocol.VerifyResponse(t.Context(), unsigned, []crypto.PublicKey{c.LeafKey.Public()}, options()); e == nil {
 		t.Fatal("unsigned envelope accepted by default")
 	}
 
 	o := options()
 
 	o.AllowUnsignedResponse = true
-	if r, e := protocol.VerifyResponse(context.Background(), unsigned, []crypto.PublicKey{c.LeafKey.Public()}, o); e != nil || r == nil || r.ResponseAuthenticated() {
+	if r, e := protocol.VerifyResponse(t.Context(), unsigned, []crypto.PublicKey{c.LeafKey.Public()}, o); e != nil || r == nil || r.ResponseAuthenticated() {
 		t.Fatalf("compatibility %v", e)
 	}
 }
@@ -116,7 +116,7 @@ func TestResponse(t *testing.T) {
 func TestCryptographicallyValidSemanticFailures(t *testing.T) {
 	c := testcert.New(t)
 
-	d, e := protocol.SignResponse(context.Background(), responseSpec(), protocol.SigningKey{Key: c.LeafKey, CertificateDER: c.Leaf.Raw})
+	d, e := protocol.SignResponse(t.Context(), responseSpec(), protocol.SigningKey{Key: c.LeafKey, CertificateDER: c.Leaf.Raw})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -170,12 +170,12 @@ func TestCryptographicallyValidSemanticFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bad := resign(t, d, c, tc.change)
 			for _, s := range xmldsig.Signatures(bad) {
-				if _, e := xmldsig.VerifySignature(context.Background(), bad, s, c.LeafKey.Public(), xmldsig.SignatureOptions{}); e != nil {
+				if _, e := xmldsig.VerifySignature(t.Context(), bad, s, c.LeafKey.Public(), xmldsig.SignatureOptions{}); e != nil {
 					t.Fatal("negative control NOT cryptographically valid", e)
 				}
 			}
 
-			if r, e := protocol.VerifyResponse(context.Background(), bad, []crypto.PublicKey{c.LeafKey.Public()}, options()); r != nil || e == nil {
+			if r, e := protocol.VerifyResponse(t.Context(), bad, []crypto.PublicKey{c.LeafKey.Public()}, options()); r != nil || e == nil {
 				t.Fatal("accepted signed semantic error")
 			}
 		})
@@ -210,12 +210,12 @@ func resign(t *testing.T, d *document.Document, c testcert.Chain, mutate func(*t
 
 	k := xmlsig.SigningKey{Key: c.LeafKey, CertificateDER: c.Leaf.Raw, Method: xmldsig.ECDSASHA256}
 
-	snapshot, e = xmlsig.Sign(context.Background(), snapshot, a, k, true)
+	snapshot, e = xmlsig.Sign(t.Context(), snapshot, a, k, true)
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	snapshot, e = xmlsig.Sign(context.Background(), snapshot, snapshot.Root(), k, true)
+	snapshot, e = xmlsig.Sign(t.Context(), snapshot, snapshot.Root(), k, true)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -253,14 +253,14 @@ func TestAuthnRequest(t *testing.T) {
 	spec := protocol.AuthnRequest{ID: nameRequest, Issuer: sp, Destination: sso, ACS: acs, IssueInstant: testcert.Now(), NameIDFormat: protocol.NameIDPersistent, AllowCreateNameID: true, RequestedContexts: []string{password}}
 	key := protocol.SigningKey{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}
 
-	d, e := protocol.SignAuthnRequest(context.Background(), spec, key)
+	d, e := protocol.SignAuthnRequest(t.Context(), spec, key)
 	if e != nil {
 		t.Fatal(e)
 	}
 
 	o := protocol.RequestOptions{Issuer: sp, Destination: sso, ACS: []metadata.Endpoint{{Binding: metadata.HTTPPost, Location: acs, Index: 0, Indexed: true, Default: true}}, At: testcert.Now()}
 
-	r, e := protocol.VerifyAuthnRequest(context.Background(), d, []crypto.PublicKey{c.TSAKey.Public(), c.LeafKey.Public()}, o)
+	r, e := protocol.VerifyAuthnRequest(t.Context(), d, []crypto.PublicKey{c.TSAKey.Public(), c.LeafKey.Public()}, o)
 	if e != nil || r.ACS() != acs || r.ID() != nameRequest {
 		t.Fatal(e)
 	}
@@ -272,12 +272,12 @@ func TestAuthnRequest(t *testing.T) {
 
 	relay := "opaque"
 
-	query, e := binding.SignRedirect(context.Background(), d, binding.Request, &relay, c.LeafKey, binding.Options{SignatureMethod: xmldsig.ECDSASHA256})
+	query, e := binding.SignRedirect(t.Context(), d, binding.Request, &relay, c.LeafKey, binding.Options{SignatureMethod: xmldsig.ECDSASHA256})
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	rr, e := protocol.VerifyRedirectRequest(context.Background(), query, []crypto.PublicKey{c.LeafKey.Public()}, o, binding.Options{})
+	rr, e := protocol.VerifyRedirectRequest(t.Context(), query, []crypto.PublicKey{c.LeafKey.Public()}, o, binding.Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -286,16 +286,16 @@ func TestAuthnRequest(t *testing.T) {
 		t.Fatal("relay")
 	}
 
-	if _, e = protocol.VerifyRedirectRequest(context.Background(), strings.Replace(query, "RelayState=opaque", "RelayState=evil", 1), []crypto.PublicKey{c.LeafKey.Public()}, o, binding.Options{}); e == nil {
+	if _, e = protocol.VerifyRedirectRequest(t.Context(), strings.Replace(query, "RelayState=opaque", "RelayState=evil", 1), []crypto.PublicKey{c.LeafKey.Public()}, o, binding.Options{}); e == nil {
 		t.Fatal("binding tamper")
 	}
 
 	o.ACS = []metadata.Endpoint{{Binding: metadata.HTTPPost, Location: "https://evil.test/acs", Index: 0}}
-	if _, e = protocol.VerifyAuthnRequest(context.Background(), d, []crypto.PublicKey{c.LeafKey.Public()}, o); e == nil {
+	if _, e = protocol.VerifyAuthnRequest(t.Context(), d, []crypto.PublicKey{c.LeafKey.Public()}, o); e == nil {
 		t.Fatal("unlisted ACS")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, e = protocol.VerifyAuthnRequest(ctx, d, []crypto.PublicKey{c.LeafKey.Public()}, o); !errors.Is(e, context.Canceled) {
@@ -315,12 +315,12 @@ func FuzzVerifyResponse(f *testing.F) {
 	keys := []crypto.PublicKey{cert.PublicKey}
 	options := protocol.ResponseOptions{Issuer: "https://idp.example/metadata", Audience: "https://sp.example/metadata", Destination: "https://sp.example/acs", ExpectedRequestID: nameRequest, At: fixture.At, ExpectedAuthnContexts: []string{password}}
 
-	d, e := document.Parse(context.Background(), b, document.DefaultLimits())
+	d, e := document.Parse(f.Context(), b, document.DefaultLimits())
 	if e != nil {
 		f.Fatal(e)
 	}
 
-	if result, e := protocol.VerifyResponse(context.Background(), d, keys, options); e != nil || result == nil || !result.ResponseAuthenticated() {
+	if result, e := protocol.VerifyResponse(f.Context(), d, keys, options); e != nil || result == nil || !result.ResponseAuthenticated() {
 		f.Fatalf("invalid positive SAML fixture: %v", e)
 	}
 
@@ -335,7 +335,7 @@ func FuzzVerifyResponse(f *testing.F) {
 			return
 		}
 
-		result, e := protocol.VerifyResponse(context.Background(), d, keys, options)
+		result, e := protocol.VerifyResponse(t.Context(), d, keys, options)
 		if e != nil && result != nil || e == nil && (result == nil || !result.ResponseAuthenticated() || result.InResponseTo() != options.ExpectedRequestID) {
 			t.Fatal("inconsistent SAML verification result")
 		}
@@ -343,7 +343,7 @@ func FuzzVerifyResponse(f *testing.F) {
 }
 
 func TestAuthnRequestACSSelection(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	key := testcert.Key(t)
 
 	const (
@@ -427,7 +427,7 @@ func checkACSSelection(t *testing.T, ctx context.Context, d *document.Document, 
 func BenchmarkVerifyResponse(b *testing.B) {
 	c := testcert.New(b)
 
-	d, err := protocol.SignResponse(context.Background(), responseSpec(), protocol.SigningKey{Key: c.LeafKey, CertificateDER: c.Leaf.Raw})
+	d, err := protocol.SignResponse(b.Context(), responseSpec(), protocol.SigningKey{Key: c.LeafKey, CertificateDER: c.Leaf.Raw})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -438,7 +438,7 @@ func BenchmarkVerifyResponse(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		if _, err := protocol.VerifyResponse(context.Background(), d, keys, opt); err != nil {
+		if _, err := protocol.VerifyResponse(b.Context(), d, keys, opt); err != nil {
 			b.Fatal(err)
 		}
 	}

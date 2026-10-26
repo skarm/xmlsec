@@ -35,7 +35,7 @@ func TestStateAtomicExpiryCopies(t *testing.T) {
 	)
 	for range 32 {
 		wg.Go(func() {
-			e := m.Put(context.Background(), p, at)
+			e := m.Put(t.Context(), p, at)
 			if e == nil {
 				wins.Add(1)
 			} else if !errors.Is(e, state.ErrExists) {
@@ -52,35 +52,35 @@ func TestStateAtomicExpiryCopies(t *testing.T) {
 
 	p.RequestedContexts[0] = "urn:changed"
 
-	got, e := m.Get(context.Background(), p.SP, p.RelayState, at)
+	got, e := m.Get(t.Context(), p.SP, p.RelayState, at)
 	if e != nil || got.RequestedContexts[0] != uriUrnTest {
 		t.Fatal("copy", e)
 	}
 
 	got.RequestedContexts[0] = "urn:changed2"
 
-	got, e = m.Get(context.Background(), p.SP, p.RelayState, at)
+	got, e = m.Get(t.Context(), p.SP, p.RelayState, at)
 	if e != nil || got.RequestedContexts[0] != uriUrnTest {
 		t.Fatal("output copy", e)
 	}
 
 	p.RelayState += "other"
-	if e = m.Put(context.Background(), p, at); !errors.Is(e, state.ErrCapacity) {
+	if e = m.Put(t.Context(), p, at); !errors.Is(e, state.ErrCapacity) {
 		t.Fatal("live eviction", e)
 	}
 
-	if _, e = m.Get(context.Background(), got.SP, got.RelayState, at.Add(time.Minute)); !errors.Is(e, state.ErrMissing) {
+	if _, e = m.Get(t.Context(), got.SP, got.RelayState, at.Add(time.Minute)); !errors.Is(e, state.ErrMissing) {
 		t.Fatal("half-open expiry", e)
 	}
 
 	p.IssuedAt = at.Add(time.Minute)
 
 	p.ExpiresAt = at.Add(2 * time.Minute)
-	if e = m.Put(context.Background(), p, at.Add(time.Minute)); e != nil {
+	if e = m.Put(t.Context(), p, at.Add(time.Minute)); e != nil {
 		t.Fatal(e)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, e = m.Get(ctx, p.SP, p.RelayState, at); !errors.Is(e, context.Canceled) {
@@ -143,7 +143,7 @@ func BenchmarkPutAndExpire(b *testing.B) {
 		p.IssuedAt = at
 
 		p.ExpiresAt = at.Add(time.Second)
-		if err := m.Put(context.Background(), p, at); err != nil {
+		if err := m.Put(b.Context(), p, at); err != nil {
 			b.Fatal(err)
 		}
 
@@ -160,7 +160,7 @@ func BenchmarkGetParallel(b *testing.B) {
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	p := state.Pending{SP: "urn:sp", IDP: "urn:idp", RequestID: nameRequest, RelayState: "0123456789abcdef", ACS: uriHTTPSSpTestAcs, IssuedAt: at, ExpiresAt: at.Add(time.Minute), RequestedContexts: []string{"urn:auth:password"}}
-	if err := m.Put(context.Background(), p, at); err != nil {
+	if err := m.Put(b.Context(), p, at); err != nil {
 		b.Fatal(err)
 	}
 
@@ -168,7 +168,7 @@ func BenchmarkGetParallel(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, err := m.Get(context.Background(), p.SP, p.RelayState, at); err != nil {
+			if _, err := m.Get(b.Context(), p.SP, p.RelayState, at); err != nil {
 				b.Error(err)
 			}
 		}

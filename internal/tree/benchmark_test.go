@@ -1,7 +1,6 @@
 package tree_test
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -9,7 +8,7 @@ import (
 )
 
 func BenchmarkClone(b *testing.B) {
-	d, err := treepkg.Parse(context.Background(), []byte(`<r>`+strings.Repeat(`<item a="1">text</item>`, 100)+`</r>`), treepkg.DefaultLimits())
+	d, err := treepkg.Parse(b.Context(), []byte(`<r>`+strings.Repeat(`<item a="1">text</item>`, 100)+`</r>`), treepkg.DefaultLimits())
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -17,14 +16,14 @@ func BenchmarkClone(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		if _, err := treepkg.Clone(context.Background(), d); err != nil {
+		if _, err := treepkg.Clone(b.Context(), d); err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
 func BenchmarkFilterNodeSet(b *testing.B) {
-	d, err := treepkg.Parse(context.Background(), []byte(`<r><drop>`+strings.Repeat(`<item a="1">text</item>`, 100)+`</drop><keep>`+strings.Repeat(`<item a="1">text</item>`, 100)+`</keep></r>`), treepkg.DefaultLimits())
+	d, err := treepkg.Parse(b.Context(), []byte(`<r><drop>`+strings.Repeat(`<item a="1">text</item>`, 100)+`</drop><keep>`+strings.Repeat(`<item a="1">text</item>`, 100)+`</keep></r>`), treepkg.DefaultLimits())
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -46,7 +45,7 @@ func BenchmarkFilterNodeSet(b *testing.B) {
 			b.ReportAllocs()
 
 			for b.Loop() {
-				if _, err := treepkg.FilterNodeSet(context.Background(), set, keep); err != nil {
+				if _, err := treepkg.FilterNodeSet(b.Context(), set, keep); err != nil {
 					b.Fatal(err)
 				}
 			}

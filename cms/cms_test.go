@@ -444,7 +444,7 @@ func testCMSRoundTripCase(t *testing.T, tc *struct {
 ) {
 	m := []byte("exact\x00binary\r\ncontent")
 
-	raw, e := cms.Sign(context.Background(), m, []cms.Signer{{Key: tc.key, CertificateDER: tc.cert, Hash: tc.h, RSAPSS: tc.pss, SubjectKeyIdentifier: tc.ski}}, cms.SignOptions{Detached: *detached, ExtraCertificates: [][]byte{c.Root.Raw}})
+	raw, e := cms.Sign(t.Context(), m, []cms.Signer{{Key: tc.key, CertificateDER: tc.cert, Hash: tc.h, RSAPSS: tc.pss, SubjectKeyIdentifier: tc.ski}}, cms.SignOptions{Detached: *detached, ExtraCertificates: [][]byte{c.Root.Raw}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -459,7 +459,7 @@ func testCMSRoundTripCase(t *testing.T, tc *struct {
 		o.DetachedContent = &m
 	}
 
-	r, e := s.Verify(context.Background(), [][]byte{tc.cert}, o)
+	r, e := s.Verify(t.Context(), [][]byte{tc.cert}, o)
 	if e != nil || r == nil || !bytes.Equal(r.Content(), m) || !r.Signers()[0].CertificateBound() {
 		t.Fatal(e)
 	}
@@ -471,7 +471,7 @@ func testCMSRoundTripCase(t *testing.T, tc *struct {
 		t.Fatal("mutable")
 	}
 
-	if _, e = s.Verify(context.Background(), [][]byte{tc.cert}, o); e != nil {
+	if _, e = s.Verify(t.Context(), [][]byte{tc.cert}, o); e != nil {
 		t.Fatal(e)
 	}
 
@@ -479,12 +479,12 @@ func testCMSRoundTripCase(t *testing.T, tc *struct {
 		wrong := []byte("other")
 
 		o.DetachedContent = &wrong
-		if r, e := s.Verify(context.Background(), [][]byte{tc.cert}, o); r != nil || !errors.Is(e, cms.ErrSignature) {
+		if r, e := s.Verify(t.Context(), [][]byte{tc.cert}, o); r != nil || !errors.Is(e, cms.ErrSignature) {
 			t.Fatal(e)
 		}
 	} else {
 		o.DetachedContent = &m
-		if r, e := s.Verify(context.Background(), [][]byte{tc.cert}, o); r != nil || !errors.Is(e, cms.ErrPolicy) {
+		if r, e := s.Verify(t.Context(), [][]byte{tc.cert}, o); r != nil || !errors.Is(e, cms.ErrPolicy) {
 			t.Fatal(e)
 		}
 	}
@@ -494,7 +494,7 @@ func TestCMSMultiplePolicyAndMutation(t *testing.T) {
 	c := testcert.New(t)
 	signers := []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}, {Key: c.TSAKey, CertificateDER: c.TSA.Raw}}
 
-	raw, e := cms.Sign(context.Background(), []byte("unique payload here"), signers, cms.SignOptions{})
+	raw, e := cms.Sign(t.Context(), []byte("unique payload here"), signers, cms.SignOptions{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -504,12 +504,12 @@ func TestCMSMultiplePolicyAndMutation(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if _, e = s.Verify(context.Background(), [][]byte{c.TSA.Raw, c.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID()}); e != nil {
+	if _, e = s.Verify(t.Context(), [][]byte{c.TSA.Raw, c.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID()}); e != nil {
 		t.Fatal(e)
 	}
 
 	for _, cs := range [][][]byte{{c.Leaf.Raw}, {c.Leaf.Raw, c.Leaf.Raw}, {c.Root.Raw, c.TSA.Raw}} {
-		if r, e := s.Verify(context.Background(), cs, cms.VerifyOptions{ExpectedContentType: cms.DataOID()}); r != nil || e == nil {
+		if r, e := s.Verify(t.Context(), cs, cms.VerifyOptions{ExpectedContentType: cms.DataOID()}); r != nil || e == nil {
 			t.Fatal("partial/wrong signers")
 		}
 	}
@@ -527,7 +527,7 @@ func TestCMSMultiplePolicyAndMutation(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if r, e := s.Verify(context.Background(), [][]byte{c.Leaf.Raw, c.TSA.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID()}); r != nil || !errors.Is(e, cms.ErrSignature) {
+	if r, e := s.Verify(t.Context(), [][]byte{c.Leaf.Raw, c.TSA.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID()}); r != nil || !errors.Is(e, cms.ErrSignature) {
 		t.Fatal("content", e)
 	}
 
@@ -535,7 +535,7 @@ func TestCMSMultiplePolicyAndMutation(t *testing.T) {
 		x := signers[0]
 
 		x.Attributes = []cms.Attribute{{OID: oid, ValuesDER: [][]byte{{5, 0}}}}
-		if _, e = cms.Sign(context.Background(), nil, []cms.Signer{x}, cms.SignOptions{}); !errors.Is(e, cms.ErrPolicy) {
+		if _, e = cms.Sign(t.Context(), nil, []cms.Signer{x}, cms.SignOptions{}); !errors.Is(e, cms.ErrPolicy) {
 			t.Fatal("reserved", e)
 		}
 	}
@@ -543,7 +543,7 @@ func TestCMSMultiplePolicyAndMutation(t *testing.T) {
 	x := signers[0]
 	x.OmitCertificateBinding = true
 
-	raw, e = cms.Sign(context.Background(), nil, []cms.Signer{x}, cms.SignOptions{})
+	raw, e = cms.Sign(t.Context(), nil, []cms.Signer{x}, cms.SignOptions{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -553,11 +553,11 @@ func TestCMSMultiplePolicyAndMutation(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if r, e := s.Verify(context.Background(), [][]byte{c.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true}); r != nil || !errors.Is(e, cms.ErrCertificate) {
+	if r, e := s.Verify(t.Context(), [][]byte{c.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true}); r != nil || !errors.Is(e, cms.ErrCertificate) {
 		t.Fatal("ESS required", e)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, e = s.Verify(ctx, [][]byte{c.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID()}); !errors.Is(e, context.Canceled) {
@@ -571,12 +571,12 @@ func FuzzParse(f *testing.F) {
 	certificate := fixture.Read(f, "cms-ecdsa-256-attached/signer.der")
 	options := cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true}
 
-	seed, e := cms.Parse(context.Background(), raw, cms.DefaultLimits())
+	seed, e := cms.Parse(f.Context(), raw, cms.DefaultLimits())
 	if e != nil {
 		f.Fatal(e)
 	}
 
-	result, e := seed.Verify(context.Background(), [][]byte{certificate}, options)
+	result, e := seed.Verify(f.Context(), [][]byte{certificate}, options)
 	if e != nil || result == nil || !bytes.Equal(result.Content(), fixture.Read(f, "cms-ecdsa-256-attached/content.bin")) {
 		f.Fatalf("invalid positive CMS fixture: %v", e)
 	}
@@ -595,7 +595,7 @@ func FuzzParse(f *testing.F) {
 				continue
 			}
 
-			result, e := s.Verify(context.Background(), [][]byte{certificate}, options)
+			result, e := s.Verify(t.Context(), [][]byte{certificate}, options)
 			if e != nil && result != nil || e == nil && (result == nil || len(result.Signers()) != 1 || !result.Signers()[0].CertificateBound()) {
 				t.Fatal("inconsistent CMS verification result")
 			}
@@ -606,7 +606,7 @@ func FuzzParse(f *testing.F) {
 func BenchmarkCMS(b *testing.B) {
 	c := testcert.New(b)
 
-	raw, err := cms.Sign(context.Background(), make([]byte, 4096), []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}}, cms.SignOptions{})
+	raw, err := cms.Sign(b.Context(), make([]byte, 4096), []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}}, cms.SignOptions{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -629,7 +629,7 @@ func BenchmarkCMS(b *testing.B) {
 		b.ReportAllocs()
 
 		for b.Loop() {
-			if _, err := s.Verify(context.Background(), [][]byte{c.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true}); err != nil {
+			if _, err := s.Verify(b.Context(), [][]byte{c.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true}); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -638,7 +638,7 @@ func BenchmarkCMS(b *testing.B) {
 
 func TestCMSRejectsEmptySignedData(t *testing.T) {
 	for _, s := range []*cms.SignedData{nil, new(cms.SignedData)} {
-		result, err := s.Verify(context.Background(), nil, cms.VerifyOptions{})
+		result, err := s.Verify(t.Context(), nil, cms.VerifyOptions{})
 		if result != nil || !errors.Is(err, cms.ErrPolicy) {
 			t.Fatalf("unsigned zero value: result=%v error=%v", result != nil, err)
 		}
@@ -655,7 +655,7 @@ func TestCMSAlgorithmProtectionPreservesIdentifier(t *testing.T) {
 
 	cert := testcert.Issue(t, &x509.Certificate{SerialNumber: big.NewInt(42), Subject: pkix.Name{CommonName: "RSA signer"}, NotBefore: testcert.Now().Add(-time.Hour), NotAfter: testcert.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}, c.Root, &key.PublicKey, c.RootKey)
 
-	raw, err := cms.Sign(context.Background(), []byte("protected algorithms"), []cms.Signer{{Key: key, CertificateDER: cert.Raw}}, cms.SignOptions{})
+	raw, err := cms.Sign(t.Context(), []byte("protected algorithms"), []cms.Signer{{Key: key, CertificateDER: cert.Raw}}, cms.SignOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +681,7 @@ func TestCMSAlgorithmProtectionPreservesIdentifier(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			result, err := s.Verify(context.Background(), [][]byte{cert.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID()})
+			result, err := s.Verify(t.Context(), [][]byte{cert.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID()})
 			if tc.want == nil && (err != nil || result == nil) || tc.want != nil && (result != nil || !errors.Is(err, tc.want)) {
 				t.Fatalf("result=%v error=%v want=%v", result != nil, err, tc.want)
 			}
@@ -692,7 +692,7 @@ func TestCMSAlgorithmProtectionPreservesIdentifier(t *testing.T) {
 func TestCMSRejectsAttributesInWrongSection(t *testing.T) {
 	c := testcert.New(t)
 
-	raw, err := cms.Sign(context.Background(), []byte("payload"), []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}}, cms.SignOptions{})
+	raw, err := cms.Sign(t.Context(), []byte("payload"), []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}}, cms.SignOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -714,7 +714,7 @@ func TestCMSRejectsAttributesInWrongSection(t *testing.T) {
 		})
 	}
 
-	_, err = cms.Sign(context.Background(), nil, []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw, Attributes: []cms.Attribute{{OID: asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 6}, ValuesDER: [][]byte{der.Seq()}}}}}, cms.SignOptions{})
+	_, err = cms.Sign(t.Context(), nil, []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw, Attributes: []cms.Attribute{{OID: asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 6}, ValuesDER: [][]byte{der.Seq()}}}}}, cms.SignOptions{})
 	if !errors.Is(err, cms.ErrPolicy) {
 		t.Fatalf("signed countersignature: %v", err)
 	}
@@ -740,7 +740,7 @@ func TestCMSSigningTimeSyntax(t *testing.T) {
 		t.Run(tc.text, func(t *testing.T) {
 			a := cms.Attribute{OID: asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 5}, ValuesDER: [][]byte{der.Wrap(0, tc.tag, false, []byte(tc.text))}}
 
-			raw, err := cms.Sign(context.Background(), nil, []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw, Hash: crypto.SHA256, Attributes: []cms.Attribute{a}}}, cms.SignOptions{})
+			raw, err := cms.Sign(t.Context(), nil, []cms.Signer{{Key: c.LeafKey, CertificateDER: c.Leaf.Raw, Hash: crypto.SHA256, Attributes: []cms.Attribute{a}}}, cms.SignOptions{})
 			if tc.valid && (raw == nil || err != nil) || !tc.valid && (raw != nil || !errors.Is(err, cms.ErrPolicy)) {
 				t.Fatalf("valid=%v output=%v error=%v", tc.valid, raw != nil, err)
 			}

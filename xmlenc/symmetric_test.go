@@ -18,7 +18,7 @@ import (
 )
 
 func TestDirectDataKeys(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, algorithm := range gcmAlgorithms() {
 		for _, name := range []string{"", "explicit-key"} {
@@ -81,7 +81,7 @@ func checkDirectDataKey(t *testing.T, ctx context.Context, plain, secret []byte,
 }
 
 func TestDirectKeyElementAndContent(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	secret := bytes.Repeat([]byte{0x42}, 32)
 	opts := xmlenc.SymmetricOptions{KeyName: "expected"}
 
@@ -144,7 +144,7 @@ func TestDirectKeyElementAndContent(t *testing.T) {
 }
 
 func TestDirectKeyPolicyAndNonce(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	secret := make([]byte, 32)
 	for _, bad := range []xmlenc.SymmetricOptions{{Data: xmlenc.Options{DataAlgorithm: xmlenc.AES128GCM}}, {Data: xmlenc.Options{OAEP: &xmlenc.OAEPParameters{}}}, {KeyName: " bad "}, {KeyName: "\x00"}, {KeyName: strings.Repeat("a", 1025)}} {
@@ -202,12 +202,12 @@ func TestDirectKeyPolicyAndNonce(t *testing.T) {
 func FuzzDecryptWithKey(f *testing.F) {
 	secret := bytes.Repeat([]byte{0x57}, 32) // Public test key, never a production secret.
 	for _, plain := range [][]byte{nil, []byte("positive")} {
-		d, err := xmlenc.EncryptBytesWithKey(context.Background(), plain, secret, xmlenc.SymmetricOptions{})
+		d, err := xmlenc.EncryptBytesWithKey(f.Context(), plain, secret, xmlenc.SymmetricOptions{})
 		if err != nil {
 			f.Fatal(err)
 		}
 
-		raw, _ := d.XML(context.Background())
+		raw, _ := d.XML(f.Context())
 		f.Add(raw)
 	}
 
@@ -222,7 +222,7 @@ func FuzzDecryptWithKey(f *testing.F) {
 			return
 		}
 
-		_, _ = xmlenc.DecryptBytesWithKey(context.Background(), d, secret, xmlenc.SymmetricOptions{Data: xmlenc.Options{MaxPlaintextBytes: 1024}})
+		_, _ = xmlenc.DecryptBytesWithKey(t.Context(), d, secret, xmlenc.SymmetricOptions{Data: xmlenc.Options{MaxPlaintextBytes: 1024}})
 	})
 }
 

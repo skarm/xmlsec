@@ -14,7 +14,7 @@ import (
 func TestSameDocumentSemantics(t *testing.T) {
 	d := parse(t, `<!--before--><?p before?><r ID="root"><x ID="foo">text<!--inside--></x></r><!--after--><?p after?>`)
 
-	resolver, err := reference.NewSameDocumentResolver(context.Background(), d, document.Name{})
+	resolver, err := reference.NewSameDocumentResolver(t.Context(), d, document.Name{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestSameDocumentSemantics(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.uri, func(t *testing.T) {
-			resolved, err := resolver.Resolve(context.Background(), tc.uri)
+			resolved, err := resolver.Resolve(t.Context(), tc.uri)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -62,14 +62,14 @@ func TestSameDocumentSemantics(t *testing.T) {
 
 	for _, uri := range []string{"#", "#missing", "#%", "#%FF", "#f%256Fo", "#xpointer(id(foo))", "#xpointer(id('foo bar'))", "#xpointer(id('foo\"))", "#xpointer( / )", "#element(foo)", "file.xml", "https://example.invalid/xml#foo"} {
 		t.Run("reject-"+uri, func(t *testing.T) {
-			resolved, err := resolver.Resolve(context.Background(), uri)
+			resolved, err := resolver.Resolve(t.Context(), uri)
 			if err == nil || resolved.Data().Kind() != reference.Invalid {
 				t.Fatal(resolved, err)
 			}
 		})
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, err := resolver.Resolve(ctx, "#foo"); !errors.Is(err, context.Canceled) {
@@ -83,29 +83,29 @@ func TestSameDocumentSemantics(t *testing.T) {
 
 func TestIDRules(t *testing.T) {
 	for _, input := range []string{`<r ID="x"><c ID="x"/></r>`, `<r ID="1x"/>`, `<r ID=""/>`} {
-		if _, err := reference.NewSameDocumentResolver(context.Background(), parse(t, input), document.Name{}); !errors.Is(err, reference.ErrInput) {
+		if _, err := reference.NewSameDocumentResolver(t.Context(), parse(t, input), document.Name{}); !errors.Is(err, reference.ErrInput) {
 			t.Fatal(input, err)
 		}
 	}
 
 	d := parse(t, `<r xmlns:w="urn:wsu" ID="root" w:Id="r"><c ID="child" w:Id="c"/></r>`)
 
-	resolver, err := reference.NewSameDocumentResolver(context.Background(), d, document.Name{Space: "urn:wsu", Local: "Id"})
+	resolver, err := reference.NewSameDocumentResolver(t.Context(), d, document.Name{Space: "urn:wsu", Local: "Id"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	r, err := resolver.Resolve(context.Background(), "#c")
+	r, err := resolver.Resolve(t.Context(), "#c")
 	if err != nil || !r.Target().Same(d.Root().Children()[0]) {
 		t.Fatal(r, err)
 	}
 
-	if _, err := resolver.Resolve(context.Background(), "#child"); err == nil {
+	if _, err := resolver.Resolve(t.Context(), "#child"); err == nil {
 		t.Fatal("guessed ID attribute")
 	}
 
 	for _, name := range []document.Name{{Local: "a:b"}, {Space: "http://www.w3.org/2000/xmlns/", Local: "ID"}} {
-		if _, err := reference.NewSameDocumentResolver(context.Background(), d, name); !errors.Is(err, reference.ErrPolicy) {
+		if _, err := reference.NewSameDocumentResolver(t.Context(), d, name); !errors.Is(err, reference.ErrPolicy) {
 			t.Fatal(err)
 		}
 	}
@@ -114,18 +114,18 @@ func TestIDRules(t *testing.T) {
 		t.Fatal("nil context")
 	}
 
-	if _, err := reference.NewSameDocumentResolver(context.Background(), nil, document.Name{}); err == nil {
+	if _, err := reference.NewSameDocumentResolver(t.Context(), nil, document.Name{}); err == nil {
 		t.Fatal("nil doc")
 	}
 
 	var zero *reference.SameDocumentResolver
-	if _, err := zero.Resolve(context.Background(), ""); err == nil {
+	if _, err := zero.Resolve(t.Context(), ""); err == nil {
 		t.Fatal("nil resolver")
 	}
 }
 
 func TestScopedIDRules(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	app := reference.IDAttributeRule{Attribute: document.Name{Local: "ID"}}
 	scoped := reference.IDAttributeRule{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: "urn:ds", Local: "Object"}}}
 

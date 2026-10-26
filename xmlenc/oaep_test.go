@@ -267,7 +267,7 @@ func checkOAEPParameterCase(t *testing.T, k *rsa.PrivateKey, hash crypto.Hash, l
 
 	opts := xmlenc.Options{OAEP: &xmlenc.OAEPParameters{Hash: hash, Label: label}}
 
-	d, err := xmlenc.EncryptBytes(context.Background(), []byte("secret"), &k.PublicKey, opts)
+	d, err := xmlenc.EncryptBytes(t.Context(), []byte("secret"), &k.PublicKey, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,19 +284,19 @@ func checkOAEPParameterCase(t *testing.T, k *rsa.PrivateKey, hash crypto.Hash, l
 
 	wire, _ := d.XML(t.Context())
 
-	out, err := xmlenc.DecryptBytes(context.Background(), parse(t, wire), k, opts)
+	out, err := xmlenc.DecryptBytes(t.Context(), parse(t, wire), k, opts)
 	if err != nil || string(out) != "secret" {
 		t.Fatal(err)
 	}
 	checkOAEPParameterOrder(t, k, method, wire, opts)
 
 	wrong := xmlenc.Options{OAEP: &xmlenc.OAEPParameters{Hash: hash, Label: []byte("wrong")}}
-	if out, err := xmlenc.DecryptBytes(context.Background(), d, k, wrong); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+	if out, err := xmlenc.DecryptBytes(t.Context(), d, k, wrong); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 		t.Fatal("unexpected label accepted", err)
 	}
 
 	if hash != crypto.SHA256 || len(label) != 0 {
-		if out, err := xmlenc.DecryptBytes(context.Background(), d, k, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+		if out, err := xmlenc.DecryptBytes(t.Context(), d, k, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 			t.Fatal("default policy broadened", err)
 		}
 	}
@@ -358,7 +358,7 @@ func TestOAEPRejectsMalformedParametersBeforeProvider(t *testing.T) {
 	k := key(t)
 	opts := xmlenc.Options{OAEP: &xmlenc.OAEPParameters{Hash: crypto.SHA384, Label: []byte("expected")}}
 
-	d, err := xmlenc.EncryptBytes(context.Background(), []byte("secret"), &k.PublicKey, opts)
+	d, err := xmlenc.EncryptBytes(t.Context(), []byte("secret"), &k.PublicKey, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestOAEPRejectsMalformedParametersBeforeProvider(t *testing.T) {
 		bad := parse(t, bytes.Replace(wire, []byte(pair[0]), []byte(pair[1]), 1))
 
 		provider := &failingProvider{public: &k.PublicKey, result: bytes.Repeat([]byte{1}, 32)}
-		if out, err := xmlenc.DecryptBytes(context.Background(), bad, provider, opts); out != nil || err == nil {
+		if out, err := xmlenc.DecryptBytes(t.Context(), bad, provider, opts); out != nil || err == nil {
 			t.Fatal("malformed parameters accepted")
 		}
 
@@ -398,7 +398,7 @@ func TestOAEPRejectsMalformedParametersBeforeProvider(t *testing.T) {
 		{Algorithm: xmlenc.RSAOAEP10, MGFHash: crypto.SHA256, AllowLegacy: true},
 		{Label: make([]byte, 1025)},
 	} {
-		if d, err := xmlenc.EncryptBytes(context.Background(), nil, &k.PublicKey, xmlenc.Options{OAEP: parameters}); d != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+		if d, err := xmlenc.EncryptBytes(t.Context(), nil, &k.PublicKey, xmlenc.Options{OAEP: parameters}); d != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 			t.Fatal("invalid OAEP options accepted", err)
 		}
 	}
@@ -406,7 +406,7 @@ func TestOAEPRejectsMalformedParametersBeforeProvider(t *testing.T) {
 
 func TestRSARecipientPolicy(t *testing.T) {
 	k := key(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := xmlenc.EncryptBytes(ctx, []byte("protected"), &k.PublicKey, xmlenc.Options{})
 	if err != nil {

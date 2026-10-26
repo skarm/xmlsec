@@ -3,7 +3,6 @@ package binding_test
 import (
 	"bytes"
 	"compress/flate"
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -26,7 +25,7 @@ import (
 const request = `<p:AuthnRequest xmlns:p="urn:oasis:names:tc:SAML:2.0:protocol" ID="request" Version="2.0" IssueInstant="2026-10-08T00:00:00Z"/>`
 
 func TestRedirectRoundTripAndRawEncoding(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	k := key(t)
 	for _, relay := range []*string{nil, new(string), func() *string { s := "opaque & state+é"; return &s }()} {
@@ -65,7 +64,7 @@ func TestRedirectRoundTripAndRawEncoding(t *testing.T) {
 }
 
 func TestRedirectRejectsAmbiguity(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	k := key(t)
 
 	raw, e := binding.SignRedirect(ctx, doc(t, request), binding.Request, nil, k, options())
@@ -86,7 +85,7 @@ func TestRedirectRejectsAmbiguity(t *testing.T) {
 }
 
 func TestRedirectAuthenticatesBeforeDecodeAndBoundsInflation(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	k := key(t)
 
 	raw := "SAMLRequest=not-base64&SigAlg=" + url.QueryEscape(xmldsig.ECDSASHA256) + "&Signature=" + url.QueryEscape(base64.StdEncoding.EncodeToString(make([]byte, 64)))
@@ -110,7 +109,7 @@ func TestRedirectAuthenticatesBeforeDecodeAndBoundsInflation(t *testing.T) {
 }
 
 func TestRedirectRemovesOnlyProtocolSignature(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	k := key(t)
 	source := `<p:Response xmlns:p="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:Signature/><nested><ds:Signature/></nested></p:Response>`
 	d := doc(t, source)
@@ -158,7 +157,7 @@ func FuzzVerifyRedirect(f *testing.F) {
 	}
 
 	opt := binding.Options{MaxQueryBytes: 4096, MaxMessageBytes: 4096}
-	if _, err = binding.VerifyRedirect(context.Background(), string(seed), key, opt); err != nil {
+	if _, err = binding.VerifyRedirect(f.Context(), string(seed), key, opt); err != nil {
 		f.Fatalf("invalid fixed seed: %v", err)
 	}
 
@@ -169,14 +168,14 @@ func FuzzVerifyRedirect(f *testing.F) {
 			return
 		}
 
-		_, _ = binding.VerifyRedirect(context.Background(), s, key, opt)
+		_, _ = binding.VerifyRedirect(t.Context(), s, key, opt)
 	})
 }
 
 func BenchmarkVerifyRedirect(b *testing.B) {
 	k := key(b)
 
-	raw, err := binding.SignRedirect(context.Background(), doc(b, request), binding.Request, nil, k, options())
+	raw, err := binding.SignRedirect(b.Context(), doc(b, request), binding.Request, nil, k, options())
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -184,7 +183,7 @@ func BenchmarkVerifyRedirect(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		if _, err := binding.VerifyRedirect(context.Background(), raw, k.Public(), options()); err != nil {
+		if _, err := binding.VerifyRedirect(b.Context(), raw, k.Public(), options()); err != nil {
 			b.Fatal(err)
 		}
 	}

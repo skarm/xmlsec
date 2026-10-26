@@ -15,7 +15,7 @@ import (
 )
 
 func TestXMLWriterRestoresNamespaceScopes(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := treepkg.Parse(ctx, []byte(`<r xmlns="urn:r" xmlns:p="urn:p"><a xmlns="" xmlns:p="urn:a"><p:x/></a><p:y/><b xmlns:p="urn:b"><p:z/></b><p:w/></r>`), treepkg.DefaultLimits())
 	if err != nil {
@@ -77,7 +77,7 @@ func TestXMLWriterReconcilesEmptyDefaultNamespace(t *testing.T) {
 }
 
 func TestXMLWriterCDATAUsesSharedEscapingAndNormalization(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	d, err := treepkg.Parse(ctx, []byte("<r>e&#x301;]]&gt;ж&#13;</r>"), treepkg.DefaultLimits())
 	if err != nil {

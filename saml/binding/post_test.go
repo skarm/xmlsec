@@ -2,7 +2,6 @@ package binding_test
 
 import (
 	"bytes"
-	"context"
 	"net/url"
 	"strings"
 	"testing"
@@ -24,7 +23,7 @@ func TestPOST(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	m, e := binding.DecodePOST(context.Background(), form, binding.Request, binding.POSTLimits{})
+	m, e := binding.DecodePOST(t.Context(), form, binding.Request, binding.POSTLimits{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -47,12 +46,12 @@ func TestPOST(t *testing.T) {
 	}
 
 	for _, raw := range []string{string(form) + "&SAMLRequest=x", string(form) + "&RelayState=x", string(form) + "&SAMLResponse=x", string(form) + "&Signature=x", string(form) + "&other=x", "SAMLRequest=%", "SAMLRequest=AA==", "SAMLRequest=AB==", url.Values{"SAMLRequest": []string{"AA=="}, "RelayState": []string{strings.Repeat("x", 81)}}.Encode()} {
-		if m, e := binding.DecodePOST(context.Background(), []byte(raw), binding.Request, binding.POSTLimits{}); m != nil || e == nil {
+		if m, e := binding.DecodePOST(t.Context(), []byte(raw), binding.Request, binding.POSTLimits{}); m != nil || e == nil {
 			t.Fatal("accepted", raw)
 		}
 	}
 
-	if m, e := binding.DecodePOST(context.Background(), form, binding.Response, binding.POSTLimits{}); m != nil || e == nil {
+	if m, e := binding.DecodePOST(t.Context(), form, binding.Response, binding.POSTLimits{}); m != nil || e == nil {
 		t.Fatal("wrong kind")
 	}
 
@@ -72,6 +71,6 @@ func FuzzPOST(f *testing.F) {
 			t.Skip()
 		}
 
-		_, _ = binding.DecodePOST(context.Background(), b, binding.Response, binding.POSTLimits{MaxFormBytes: 1 << 16, MaxXMLBytes: 1 << 16})
+		_, _ = binding.DecodePOST(t.Context(), b, binding.Response, binding.POSTLimits{MaxFormBytes: 1 << 16, MaxXMLBytes: 1 << 16})
 	})
 }

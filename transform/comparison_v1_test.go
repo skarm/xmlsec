@@ -386,7 +386,7 @@ func compareSaxonDocumentSnapshots(t *testing.T, binary, classpath string) {
 		t.Run("document snapshot "+test.name, func(t *testing.T) {
 			var lock sync.Mutex
 			requests := make(map[string]int)
-			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			server := httptest.NewTestServer(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				lock.Lock()
 				requests[request.UserAgent()]++
 				first := requests[request.UserAgent()] == 1
@@ -398,7 +398,8 @@ func compareSaxonDocumentSnapshots(t *testing.T, binary, classpath string) {
 				writer.Header().Set("Content-Type", "application/xml")
 				_, _ = io.WriteString(writer, `<r>first</r>`)
 			}))
-			t.Cleanup(server.Close)
+			// The external Saxon process needs a loopback listener.
+			server.Start()
 			resolver, err := resource.NewHTTPResolver(resource.HTTPConfig{AllowedOrigins: []string{server.URL}, Client: server.Client()})
 			if err != nil {
 				t.Fatal(err)
@@ -2678,7 +2679,7 @@ func TestCompareLibxmlXPath10(t *testing.T) {
 		t.Skip("xmllint is unavailable")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 
 	source := `<r xmlns:p="urn:p" xml:lang="en-US"><v n="2">2</v><v n="3">3</v><p:x>4</p:x></r>`
@@ -2732,7 +2733,7 @@ func TestCompareLibxslt10(t *testing.T) {
 		t.Skip("xsltproc is unavailable")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 
 	source := `<r><n k="a">2</n><n k="a">3</n><n k="b">bad</n></r>`
@@ -3899,7 +3900,7 @@ func compareSaxonTextResources(t *testing.T, binary, classpath string) {
 			publishedProofVector(t, test.want)
 			var lock sync.Mutex
 			requests := make(map[string]int)
-			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			server := httptest.NewTestServer(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				lock.Lock()
 				requests[request.UserAgent()]++
 				repeated := requests[request.UserAgent()] > 1
@@ -3911,7 +3912,8 @@ func compareSaxonTextResources(t *testing.T, binary, classpath string) {
 				}
 				_, _ = io.WriteString(writer, data)
 			}))
-			t.Cleanup(server.Close)
+			// The external Saxon process needs a loopback listener.
+			server.Start()
 			resolver, err := resource.NewHTTPResolver(resource.HTTPConfig{AllowedOrigins: []string{server.URL}, Client: server.Client()})
 			if err != nil {
 				t.Fatal(err)

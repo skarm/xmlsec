@@ -91,7 +91,7 @@ func testDetachedAlgorithmsAndTransformsCase(t *testing.T, cms *[]string, k *str
 		t.Run(cm, func(t *testing.T) {
 			sig := signDetached(t, k.key, *refs, sourceMap(*resources), xmldsig.DetachedSignOptions{SignatureMethod: k.method, Canonicalization: reference.Transform{Algorithm: cm}, Policy: xmldsig.ModernPolicy()})
 
-			result, err := xmldsig.VerifyDetached(context.Background(), sig, k.key.Public(), sourceMap(*resources), xmldsig.DetachedVerifyOptions{ExpectedURIs: *expected, AllowedCanonicalizationMethods: []string{cm}, Policy: xmldsig.ModernPolicy()})
+			result, err := xmldsig.VerifyDetached(t.Context(), sig, k.key.Public(), sourceMap(*resources), xmldsig.DetachedVerifyOptions{ExpectedURIs: *expected, AllowedCanonicalizationMethods: []string{cm}, Policy: xmldsig.ModernPolicy()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -121,7 +121,7 @@ func testDetachedAlgorithmsAndTransformsCase(t *testing.T, cms *[]string, k *str
 				t.Fatal("mutable result")
 			}
 			// The root-enveloped profile rejects a standalone detached signature.
-			if result, err := xmldsig.Verify(context.Background(), sig, k.key.Public(), xmldsig.VerifyOptions{}); result != nil || !errors.Is(err, xmldsig.ErrStructure) {
+			if result, err := xmldsig.Verify(t.Context(), sig, k.key.Public(), xmldsig.VerifyOptions{}); result != nil || !errors.Is(err, xmldsig.ErrStructure) {
 				t.Fatal(result, err)
 			}
 		})
@@ -163,7 +163,7 @@ func TestDetachedPreauthenticationAndExactSet(t *testing.T) {
 			calls := 0
 			resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { calls++; return nil, errors.New("must not run") })
 
-			result, err := xmldsig.VerifyDetached(context.Background(), parse(t, tc.xml), tc.key, resolver, tc.opt)
+			result, err := xmldsig.VerifyDetached(t.Context(), parse(t, tc.xml), tc.key, resolver, tc.opt)
 			if result != nil || !errors.Is(err, tc.want) || calls != 0 {
 				t.Fatalf("result=%v err=%v calls=%d", result, err, calls)
 			}
@@ -175,7 +175,7 @@ func TestDetachedPreauthenticationAndExactSet(t *testing.T) {
 		calls := 0
 		resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { calls++; return nil, nil })
 
-		out, err := xmldsig.VerifyDetached(context.Background(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}})
+		out, err := xmldsig.VerifyDetached(t.Context(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}})
 		if out != nil || !errors.Is(err, xmldsig.ErrPolicy) || calls != 0 {
 			t.Fatal(out, err, calls)
 		}
@@ -193,7 +193,7 @@ func TestDetachedEveryDigestAndTypedError(t *testing.T) {
 		calls++
 		return sourceMap(resources).Resolve(ctx, uri)
 	})
-	out, err := xmldsig.VerifyDetached(context.Background(), corrupted, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}})
+	out, err := xmldsig.VerifyDetached(t.Context(), corrupted, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}})
 
 	var detail *xmldsig.ReferenceError
 	if out != nil || !errors.Is(err, xmldsig.ErrDigest) || !errors.As(err, &detail) || detail.Index != 1 || detail.URI != uriUrnB || detail.Stage != "digest" || calls != 2 {
@@ -202,7 +202,7 @@ func TestDetachedEveryDigestAndTypedError(t *testing.T) {
 
 	resources[uriUrnB] = []byte("changed")
 
-	out, err = xmldsig.VerifyDetached(context.Background(), sig, key.Public(), sourceMap(resources), xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}})
+	out, err = xmldsig.VerifyDetached(t.Context(), sig, key.Public(), sourceMap(resources), xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}})
 	if out != nil || !errors.Is(err, xmldsig.ErrDigest) {
 		t.Fatal(out, err)
 	}
@@ -223,7 +223,7 @@ func wrongSecondDigest(t testing.TB, doc *document.Document, key *ecdsa.PrivateK
 	si := changed.Root().Children()[0]
 
 	var canonical bytes.Buffer
-	if err := c14n.WriteElement(context.Background(), &canonical, si, c14n.Options{}); err != nil {
+	if err := c14n.WriteElement(t.Context(), &canonical, si, c14n.Options{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -281,7 +281,7 @@ func TestDetachedResourceLimitsAndCleanup(t *testing.T) {
 			observed := &observedReader{Reader: tc.reader, closeErr: tc.closeErr}
 			resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return observed, tc.resolveErr })
 
-			out, err := xmldsig.VerifyDetached(context.Background(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}, Limits: tc.limits})
+			out, err := xmldsig.VerifyDetached(t.Context(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}, Limits: tc.limits})
 			if tc.want == nil {
 				if err != nil || out == nil {
 					t.Fatal(out, err)
@@ -305,24 +305,24 @@ func TestDetachedResourceLimitsAndCleanup(t *testing.T) {
 		src := sourceMap(map[string][]byte{uriUrnA: []byte("abc"), uriUrnB: []byte("def")})
 
 		sig := signDetached(t, key, refs, src, xmldsig.DetachedSignOptions{})
-		if out, err := xmldsig.VerifyDetached(context.Background(), sig, key.Public(), src, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}, Limits: xmldsig.ResourceLimits{MaxTotalResourceBytes: 5}}); out != nil || !errors.Is(err, xmldsig.ErrPolicy) {
+		if out, err := xmldsig.VerifyDetached(t.Context(), sig, key.Public(), src, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}, Limits: xmldsig.ResourceLimits{MaxTotalResourceBytes: 5}}); out != nil || !errors.Is(err, xmldsig.ErrPolicy) {
 			t.Fatal(out, err)
 		}
 
-		if out, err := xmldsig.SignDetached(context.Background(), refs, key, src, xmldsig.DetachedSignOptions{Limits: xmldsig.ResourceLimits{MaxTotalResourceBytes: 5}}); out != nil || !errors.Is(err, xmldsig.ErrPolicy) {
+		if out, err := xmldsig.SignDetached(t.Context(), refs, key, src, xmldsig.DetachedSignOptions{Limits: xmldsig.ResourceLimits{MaxTotalResourceBytes: 5}}); out != nil || !errors.Is(err, xmldsig.ErrPolicy) {
 			t.Fatal(out, err)
 		}
 	})
 	t.Run("nil reader", func(t *testing.T) {
 		resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { var r *observedReader; return r, nil })
 
-		out, err := xmldsig.VerifyDetached(context.Background(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}})
+		out, err := xmldsig.VerifyDetached(t.Context(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}})
 		if out != nil || !errors.Is(err, xmldsig.ErrReference) {
 			t.Fatal(out, err)
 		}
 	})
 	t.Run("cancel after resolver returns", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 
 		r := &observedReader{Reader: strings.NewReader("abc")}
@@ -369,7 +369,7 @@ func TestDetachedValidationBeforeSigningIO(t *testing.T) {
 			calls := 0
 			resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { calls++; return nil, errors.New("called") })
 
-			out, err := xmldsig.SignDetached(context.Background(), tc.refs, key, resolver, tc.opt)
+			out, err := xmldsig.SignDetached(t.Context(), tc.refs, key, resolver, tc.opt)
 			if out != nil || err == nil || calls != 0 {
 				t.Fatal(out, err, calls)
 			}
@@ -389,15 +389,15 @@ func TestDetachedByteBudgetAndExternalSigner(t *testing.T) {
 	}
 
 	var si bytes.Buffer
-	if err := c14n.WriteElement(context.Background(), &si, sig.Root().Children()[0], c14n.Options{}); err != nil {
+	if err := c14n.WriteElement(t.Context(), &si, sig.Root().Children()[0], c14n.Options{}); err != nil {
 		t.Fatal(err)
 	}
 
 	total := si.Len() + 3
 	for _, size := range []int{total, total - 1} {
-		result, err := xmldsig.VerifyDetached(context.Background(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}, Policy: xmldsig.Policy{MaxCanonicalBytes: size}})
+		result, err := xmldsig.VerifyDetached(t.Context(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}, Policy: xmldsig.Policy{MaxCanonicalBytes: size}})
 
-		doc, signErr := xmldsig.SignDetached(context.Background(), refs, key, resolver, xmldsig.DetachedSignOptions{Policy: xmldsig.Policy{MaxCanonicalBytes: size}})
+		doc, signErr := xmldsig.SignDetached(t.Context(), refs, key, resolver, xmldsig.DetachedSignOptions{Policy: xmldsig.Policy{MaxCanonicalBytes: size}})
 		if size == total {
 			if err != nil || signErr != nil {
 				t.Fatal(err, signErr)
@@ -417,7 +417,7 @@ func TestDetachedConcurrencyAndZeroValues(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 12 {
 		wg.Go(func() {
-			if _, err := xmldsig.VerifyDetached(context.Background(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}}); err != nil {
+			if _, err := xmldsig.VerifyDetached(t.Context(), sig, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}}); err != nil {
 				t.Error(err)
 			}
 		})
@@ -434,11 +434,11 @@ func TestDetachedConcurrencyAndZeroValues(t *testing.T) {
 	}
 
 	var fn xmldsig.ResolverFunc
-	if out, err := xmldsig.SignDetached(context.Background(), refs, key, fn, xmldsig.DetachedSignOptions{}); out != nil || err == nil {
+	if out, err := xmldsig.SignDetached(t.Context(), refs, key, fn, xmldsig.DetachedSignOptions{}); out != nil || err == nil {
 		t.Fatal(out, err)
 	}
 
-	if out, err := xmldsig.VerifyDetached(context.Background(), nil, key.Public(), resolver, xmldsig.DetachedVerifyOptions{}); out != nil || err == nil {
+	if out, err := xmldsig.VerifyDetached(t.Context(), nil, key.Public(), resolver, xmldsig.DetachedVerifyOptions{}); out != nil || err == nil {
 		t.Fatal(out, err)
 	}
 
@@ -740,7 +740,7 @@ func FuzzVerifyDetached(f *testing.F) {
 			return
 		}
 
-		result, err := xmldsig.VerifyDetached(context.Background(), doc, key, resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: uris})
+		result, err := xmldsig.VerifyDetached(t.Context(), doc, key, resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: uris})
 		if err != nil && result != nil {
 			t.Fatal("partial verification result")
 		}
@@ -809,7 +809,7 @@ func sourceMap(resources map[string][]byte) xmldsig.Resolver {
 func signDetached(t testing.TB, key crypto.Signer, refs []xmldsig.DetachedReference, resolver xmldsig.Resolver, opt xmldsig.DetachedSignOptions) *document.Document {
 	t.Helper()
 
-	doc, err := xmldsig.SignDetached(context.Background(), refs, key, resolver, opt)
+	doc, err := xmldsig.SignDetached(t.Context(), refs, key, resolver, opt)
 	if err != nil {
 		t.Fatal(err)
 	}

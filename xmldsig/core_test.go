@@ -313,7 +313,7 @@ func testCoreFormsCase(t *testing.T, tc *struct {
 
 	selected := xmldsig.Signatures(signed)[0]
 
-	result, report, err := xmldsig.VerifySignatureDetailed(context.Background(), signed, selected, &(*key).PublicKey, xmldsig.SignatureOptions{})
+	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, selected, &(*key).PublicKey, xmldsig.SignatureOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,12 +349,12 @@ func testCoreFormsCase(t *testing.T, tc *struct {
 	}
 
 	if tc.expectCovered {
-		_, err = xmldsig.VerifySignature(context.Background(), signed, selected, &(*key).PublicKey, xmldsig.SignatureOptions{RequiredElements: []document.Element{target}})
+		_, err = xmldsig.VerifySignature(t.Context(), signed, selected, &(*key).PublicKey, xmldsig.SignatureOptions{RequiredElements: []document.Element{target}})
 		if err != nil {
 			t.Fatal(err)
 		}
 	} else {
-		r, err := xmldsig.VerifySignature(context.Background(), signed, selected, &(*key).PublicKey, xmldsig.SignatureOptions{RequiredElements: []document.Element{target}})
+		r, err := xmldsig.VerifySignature(t.Context(), signed, selected, &(*key).PublicKey, xmldsig.SignatureOptions{RequiredElements: []document.Element{target}})
 		if !errors.Is(err, xmldsig.ErrPolicy) || r != nil {
 			t.Fatal("unproven coverage accepted", err)
 		}
@@ -392,7 +392,7 @@ func TestCoreAlgorithmsAndCanonicalization(t *testing.T) {
 				opt := xmldsig.SignatureOptions{AllowedCanonicalizationMethods: []string{cm}, ExpectedURIs: []string{nameData}}
 
 				signed := coreSign(t, d, tc.key, opt)
-				if _, err := xmldsig.VerifySignature(context.Background(), signed, xmldsig.Signatures(signed)[0], tc.key.Public(), opt); err != nil {
+				if _, err := xmldsig.VerifySignature(t.Context(), signed, xmldsig.Signatures(signed)[0], tc.key.Public(), opt); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -401,7 +401,7 @@ func TestCoreAlgorithmsAndCanonicalization(t *testing.T) {
 }
 
 func TestCoreMultisignaturesAndPreservation(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	key1, key2 := coreEC(t), coreEC(t)
 	tmpl := func(id, uri string, transforms ...string) string {
 		return coreTemplate(id, xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(uri, transforms...), "")
@@ -485,7 +485,7 @@ func TestCoreMultisignaturesAndPreservation(t *testing.T) {
 
 func TestCoreDiagnosticsAndWrapping(t *testing.T) {
 	key := coreEC(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	refs := coreRef("#first", c14n.Exclusive) + coreRef("#second", c14n.Exclusive) + coreRef("#third", c14n.Exclusive)
 	raw := `<root><item ID="first">one</item><item ID="second">two</item><item ID="third">three</item>` + coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, refs, "") + `<unsigned>ignored</unsigned></root>`
 	d := coreSign(t, coreParse(t, raw), key, xmldsig.SignatureOptions{})
@@ -537,7 +537,7 @@ func TestCoreRepeatedURIAndExpectedSet(t *testing.T) {
 
 	signed := coreSign(t, d, key, opt)
 	for _, uris := range [][]string{{nameData}, {nameData, "#other"}, {}, {nameData, nameData, nameData}} {
-		r, e := xmldsig.VerifySignature(context.Background(), signed, xmldsig.Signatures(signed)[0], &key.PublicKey, xmldsig.SignatureOptions{ExpectedURIs: uris})
+		r, e := xmldsig.VerifySignature(t.Context(), signed, xmldsig.Signatures(signed)[0], &key.PublicKey, xmldsig.SignatureOptions{ExpectedURIs: uris})
 		if r != nil || !errors.Is(e, xmldsig.ErrPolicy) {
 			t.Fatal("URI multiset accepted", e)
 		}
@@ -580,7 +580,7 @@ func TestTemplateObjectNamespaceImport(t *testing.T) {
 
 func TestCoreTemplateSafety(t *testing.T) {
 	key := coreEC(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("self-dependent", func(t *testing.T) {
 		for _, uri := range []string{"", "#s", "#xpointer(/)"} {
@@ -646,7 +646,7 @@ func TestCoreTemplateSafety(t *testing.T) {
 
 func TestCoreInvalidOptions(t *testing.T) {
 	key := coreEC(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	base := coreParse(t, coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData, c14n.Exclusive), `<ds:Object Id="data">payload</ds:Object>`))
 	d := coreSign(t, base, key, xmldsig.SignatureOptions{})
 	sig := xmldsig.Signatures(d)[0]
@@ -704,7 +704,7 @@ func TestCoreInvalidOptions(t *testing.T) {
 
 func TestCoreCommentAndManifestSemantics(t *testing.T) {
 	key := coreEC(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, uri := range []string{nameData, "#xpointer(id('data'))"} {
 		t.Run(uri, func(t *testing.T) {
@@ -773,7 +773,7 @@ func FuzzVerifySignature(f *testing.F) {
 			return
 		}
 
-		result, report, err := xmldsig.VerifySignatureDetailed(context.Background(), d, signatures[0], key, xmldsig.SignatureOptions{Processing: reference.Options{MaxNodeVisits: 100_000}})
+		result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), d, signatures[0], key, xmldsig.SignatureOptions{Processing: reference.Options{MaxNodeVisits: 100_000}})
 		if err != nil {
 			if result != nil || report.Status == xmldsig.Valid {
 				t.Fatal("partial success")
@@ -820,7 +820,7 @@ func FuzzSignTemplate(f *testing.F) {
 		before := coreXML(t, d)
 		opt := xmldsig.SignatureOptions{Processing: reference.Options{MaxNodeVisits: 100_000}}
 
-		out, err := xmldsig.SignTemplate(context.Background(), d, signatures[0], key, xmldsig.TemplateSignOptions{Validation: opt})
+		out, err := xmldsig.SignTemplate(t.Context(), d, signatures[0], key, xmldsig.TemplateSignOptions{Validation: opt})
 		if coreXML(t, d) != before {
 			t.Fatal("input changed")
 		}
@@ -837,7 +837,7 @@ func FuzzSignTemplate(f *testing.F) {
 			t.Fatal("nil success")
 		}
 
-		if _, err := xmldsig.VerifySignature(context.Background(), out, xmldsig.Signatures(out)[0], &key.PublicKey, opt); err != nil {
+		if _, err := xmldsig.VerifySignature(t.Context(), out, xmldsig.Signatures(out)[0], &key.PublicKey, opt); err != nil {
 			t.Fatal("invalid signed output", err)
 		}
 	})
@@ -926,7 +926,7 @@ func coreTemplate(id, method, cm, refs, objects string) string {
 func coreSign(t testing.TB, d *document.Document, key crypto.Signer, opt xmldsig.SignatureOptions) *document.Document {
 	t.Helper()
 
-	out, e := xmldsig.SignTemplate(context.Background(), d, xmldsig.Signatures(d)[0], key, xmldsig.TemplateSignOptions{Validation: opt})
+	out, e := xmldsig.SignTemplate(t.Context(), d, xmldsig.Signatures(d)[0], key, xmldsig.TemplateSignOptions{Validation: opt})
 	if e != nil {
 		t.Fatal(e)
 	}

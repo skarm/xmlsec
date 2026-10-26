@@ -61,7 +61,7 @@ func TestBasicRoundTrip(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	r, e = xades.VerifyBasicEnveloped(context.Background(), parsed, xmldsig.Signatures(parsed)[0], der, xades.VerifyOptions{})
+	r, e = xades.VerifyBasicEnveloped(t.Context(), parsed, xmldsig.Signatures(parsed)[0], der, xades.VerifyOptions{})
 	if e != nil || r == nil {
 		t.Fatal(e)
 	}
@@ -112,7 +112,7 @@ func TestBasicProfileRejects(t *testing.T) {
 				t.Fatal(e)
 			}
 
-			result, e := xades.VerifyBasicEnveloped(context.Background(), p, xmldsig.Signatures(p)[0], tt.cert, xades.VerifyOptions{})
+			result, e := xades.VerifyBasicEnveloped(t.Context(), p, xmldsig.Signatures(p)[0], tt.cert, xades.VerifyOptions{})
 			if e == nil || result != nil {
 				t.Fatal("accepted")
 			}
@@ -150,16 +150,16 @@ func TestSignedWrongCertificateDigest(t *testing.T) {
 
 	opts := xmldsig.SignatureOptions{AdditionalIDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: xades.Namespace, Local: signedPropertiesLocal}}}}}
 
-	signed, e := xmldsig.SignTemplate(context.Background(), template, xmldsig.Signatures(template)[0], k, xmldsig.TemplateSignOptions{Validation: opts})
+	signed, e := xmldsig.SignTemplate(t.Context(), template, xmldsig.Signatures(template)[0], k, xmldsig.TemplateSignOptions{Validation: opts})
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	if _, e := xmldsig.VerifySignature(context.Background(), signed, xmldsig.Signatures(signed)[0], &k.PublicKey, opts); e != nil {
+	if _, e := xmldsig.VerifySignature(t.Context(), signed, xmldsig.Signatures(signed)[0], &k.PublicKey, opts); e != nil {
 		t.Fatal("crypto not valid:", e)
 	}
 
-	r, e := xades.VerifyBasicEnveloped(context.Background(), signed, xmldsig.Signatures(signed)[0], der, xades.VerifyOptions{})
+	r, e := xades.VerifyBasicEnveloped(t.Context(), signed, xmldsig.Signatures(signed)[0], der, xades.VerifyOptions{})
 	if r != nil || !errors.Is(e, xades.ErrCertificate) {
 		t.Fatalf("%v", e)
 	}
@@ -179,7 +179,7 @@ func TestBasicInvalidCreation(t *testing.T) {
 			x := o
 			tc.change(&x)
 
-			d, r, e := xades.SignBasicEnveloped(context.Background(), input(t), k, der, x)
+			d, r, e := xades.SignBasicEnveloped(t.Context(), input(t), k, der, x)
 			if e == nil || d != nil || r != nil {
 				t.Fatal("accepted")
 			}
@@ -187,11 +187,11 @@ func TestBasicInvalidCreation(t *testing.T) {
 	}
 
 	var nilKey *ecdsa.PrivateKey
-	if _, _, e := xades.SignBasicEnveloped(context.Background(), input(t), nilKey, der, o); e == nil {
+	if _, _, e := xades.SignBasicEnveloped(t.Context(), input(t), nilKey, der, o); e == nil {
 		t.Fatal("typed nil")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, _, e := xades.SignBasicEnveloped(ctx, input(t), k, der, o); !errors.Is(e, context.Canceled) {
@@ -210,7 +210,7 @@ func FuzzVerifyBasic(f *testing.F) {
 		f.Fatal(err)
 	}
 
-	ctx := context.Background()
+	ctx := f.Context()
 
 	seedDoc, err := document.Parse(ctx, seed, document.DefaultLimits())
 	if err != nil {
@@ -253,7 +253,7 @@ func BenchmarkVerifyBasic(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		if _, err := xades.VerifyBasicEnveloped(context.Background(), d, selected, cert, xades.VerifyOptions{}); err != nil {
+		if _, err := xades.VerifyBasicEnveloped(b.Context(), d, selected, cert, xades.VerifyOptions{}); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -279,17 +279,17 @@ func TestAuthenticatedSigningTimeLexicalForm(t *testing.T) {
 		t.Run(tc.value, func(t *testing.T) {
 			template := signingTimeTemplate(t, d, tc.value)
 
-			signed, err := xmldsig.SignTemplate(context.Background(), template, xmldsig.Signatures(template)[0], key, xmldsig.TemplateSignOptions{Validation: options})
+			signed, err := xmldsig.SignTemplate(t.Context(), template, xmldsig.Signatures(template)[0], key, xmldsig.TemplateSignOptions{Validation: options})
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			selected := xmldsig.Signatures(signed)[0]
-			if _, err := xmldsig.VerifySignature(context.Background(), signed, selected, key.Public(), options); err != nil {
+			if _, err := xmldsig.VerifySignature(t.Context(), signed, selected, key.Public(), options); err != nil {
 				t.Fatal("control must have a valid signature", err)
 			}
 
-			result, err := xades.VerifyBasicEnveloped(context.Background(), signed, selected, certificate, xades.VerifyOptions{})
+			result, err := xades.VerifyBasicEnveloped(t.Context(), signed, selected, certificate, xades.VerifyOptions{})
 			if !tc.valid {
 				if result != nil || !errors.Is(err, xades.ErrProfile) {
 					t.Fatalf("invalid/unsupported dateTime accepted: result=%v, error=%v", result != nil, err)
@@ -391,7 +391,7 @@ func sign(t testing.TB) (*document.Document, *xades.BasicResult, *ecdsa.PrivateK
 
 	der := certificate(t, k, 1)
 
-	d, r, e := xades.SignBasicEnveloped(context.Background(), input(t), k, der, xades.SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: time.Date(2026, 10, 7, 18, 30, 15, 123456, time.FixedZone("+05", 5*3600))})
+	d, r, e := xades.SignBasicEnveloped(t.Context(), input(t), k, der, xades.SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: time.Date(2026, 10, 7, 18, 30, 15, 123456, time.FixedZone("+05", 5*3600))})
 	if e != nil {
 		t.Fatal(e)
 	}

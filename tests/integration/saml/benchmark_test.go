@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/metrics"
 	"strconv"
@@ -41,12 +42,12 @@ func BenchmarkLogin(b *testing.B) {
 	for b.Loop() {
 		_, req, browser := begin(b, s, metadata.HTTPRedirect)
 
-		issued, err := s.idp.Issue(context.Background(), req, auth(), testcert.Now().Add(2*time.Second))
+		issued, err := s.idp.Issue(b.Context(), req, auth(), testcert.Now().Add(2*time.Second))
 		if err != nil {
 			b.Fatal(err)
 		}
 
-		if _, err := s.sp.ConsumePOST(context.Background(), postBody(b, issued), sp.ConsumeOptions{At: testcert.Now().Add(3 * time.Second), BrowserBinding: browser}); err != nil {
+		if _, err := s.sp.ConsumePOST(b.Context(), postBody(b, issued), sp.ConsumeOptions{At: testcert.Now().Add(3 * time.Second), BrowserBinding: browser}); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -70,7 +71,7 @@ func BenchmarkSPBegin(b *testing.B) {
 			b.StartTimer()
 		}
 
-		if _, err := s.sp.Begin(context.Background(), opts); err != nil {
+		if _, err := s.sp.Begin(b.Context(), opts); err != nil {
 			b.Fatal(err)
 		}
 
@@ -86,7 +87,7 @@ func BenchmarkIDPAcceptRedirect(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		if _, err := s.idp.AcceptRedirect(context.Background(), query, spID, ssoRedirect, testcert.Now()); err != nil {
+		if _, err := s.idp.AcceptRedirect(b.Context(), query, spID, ssoRedirect, testcert.Now()); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -101,7 +102,7 @@ func BenchmarkIDPIssue(b *testing.B) {
 		_, request, _ := begin(b, s, metadata.HTTPRedirect)
 		b.StartTimer()
 
-		if _, err := s.idp.Issue(context.Background(), request, auth(), testcert.Now().Add(2*time.Second)); err != nil {
+		if _, err := s.idp.Issue(b.Context(), request, auth(), testcert.Now().Add(2*time.Second)); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -115,7 +116,7 @@ func BenchmarkSPConsumePOST(b *testing.B) {
 		b.StopTimer()
 		_, request, browser := begin(b, s, metadata.HTTPRedirect)
 
-		issued, err := s.idp.Issue(context.Background(), request, auth(), testcert.Now().Add(2*time.Second))
+		issued, err := s.idp.Issue(b.Context(), request, auth(), testcert.Now().Add(2*time.Second))
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -124,7 +125,7 @@ func BenchmarkSPConsumePOST(b *testing.B) {
 
 		b.StartTimer()
 
-		if _, err := s.sp.ConsumePOST(context.Background(), form, sp.ConsumeOptions{At: testcert.Now().Add(3 * time.Second), BrowserBinding: browser}); err != nil {
+		if _, err := s.sp.ConsumePOST(b.Context(), form, sp.ConsumeOptions{At: testcert.Now().Add(3 * time.Second), BrowserBinding: browser}); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -143,6 +144,8 @@ func TestSustainedLoad(t *testing.T) {
 		t.Fatal("invalid duration")
 	}
 	scenario := os.Getenv("XMLSEC_SOAK_SCENARIO")
+	t.Attr("soak.scenario", scenario)
+	t.Attr("soak.duration", duration.String())
 	var operation func(context.Context, uint64) error
 	var sizes func() any
 	switch scenario {
@@ -155,19 +158,21 @@ func TestSustainedLoad(t *testing.T) {
 	default:
 		t.Fatal("scenario must be transform, http or saml")
 	}
-	output := io.Discard
-	if path := os.Getenv("XMLSEC_SOAK_OUT"); path != "" {
-		file, e := os.Create(path)
-		if e != nil {
-			t.Fatal(e)
-		}
-		defer func() {
-			if e := file.Close(); e != nil {
-				t.Error(e)
-			}
-		}()
-		output = file
+	path := os.Getenv("XMLSEC_SOAK_OUT")
+	if path == "" {
+		path = filepath.Join(t.ArtifactDir(), "soak.jsonl")
 	}
+	output, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := output.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	t.Log("soak report:", path)
+
 	encoder := json.NewEncoder(output)
 	original := runtime.GOMAXPROCS(0)
 	defer runtime.GOMAXPROCS(original)
@@ -343,7 +348,7 @@ func (w *soakSlowWriter) Write(p []byte) (int, error) {
 func soakHTTP(t *testing.T) func(context.Context, uint64) error {
 	t.Helper()
 	small, large := bytes.Repeat([]byte{0x37}, 4096), bytes.Repeat([]byte{0x59}, 1<<20)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/error":
 			http.Error(w, "dependency failure", http.StatusServiceUnavailable)
@@ -364,7 +369,8 @@ func soakHTTP(t *testing.T) func(context.Context, uint64) error {
 			_, _ = w.Write(small)
 		}
 	}))
-	t.Cleanup(server.Close)
+	// This soak measures real socket traffic and transport connection limits.
+	server.Start()
 	transport := &http.Transport{MaxConnsPerHost: 4, MaxIdleConnsPerHost: 4}
 	t.Cleanup(transport.CloseIdleConnections)
 	uris := []string{server.URL + "/small", server.URL + "/large", server.URL + "/slow", server.URL + "/error"}

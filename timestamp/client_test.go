@@ -1,7 +1,6 @@
 package timestamp_test
 
 import (
-	"context"
 	"errors"
 	"io"
 	"testing"
@@ -54,7 +53,7 @@ func TestFetchRejectsInvalidReaderCount(t *testing.T) {
 		}
 	}()
 
-	result, err := v.Fetch(context.Background(), transport{b: response}, q, testcert.Now(), pki.Evidence{})
+	result, err := v.Fetch(t.Context(), transport{b: response}, q, testcert.Now(), pki.Evidence{})
 	if result != nil || !errors.Is(err, io.ErrShortBuffer) || !response.closed {
 		t.Fatalf("result=%v err=%v closed=%v", result, err, response.closed)
 	}

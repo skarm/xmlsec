@@ -322,12 +322,12 @@ func testRoundTripAndBindingsCase(t *testing.T, h *crypto.Hash, omit *bool, c *t
 		t.Fatal(e)
 	}
 
-	raw, e := timestamp.IssueResponse(context.Background(), q.DER(), c.TSAKey, c.TSA.Raw, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(10), GenTime: testcert.Now().Add(-time.Second + 123456000*time.Nanosecond), Accuracy: a, Ordering: true, Hash: *h, ExtraCertificates: [][]byte{c.Root.Raw}})
+	raw, e := timestamp.IssueResponse(t.Context(), q.DER(), c.TSAKey, c.TSA.Raw, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(10), GenTime: testcert.Now().Add(-time.Second + 123456000*time.Nanosecond), Accuracy: a, Ordering: true, Hash: *h, ExtraCertificates: [][]byte{c.Root.Raw}})
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	r, e := (*v).VerifyResponse(context.Background(), raw, q, testcert.Now(), *ev)
+	r, e := (*v).VerifyResponse(t.Context(), raw, q, testcert.Now(), *ev)
 	if e != nil || r == nil {
 		t.Fatal(e)
 	}
@@ -351,7 +351,7 @@ func testRoundTripAndBindingsCase(t *testing.T, h *crypto.Hash, omit *bool, c *t
 		t.Fatal(e)
 	}
 
-	if r, e := (*v).VerifyResponse(context.Background(), raw, wrong, testcert.Now(), *ev); r != nil || !errors.Is(e, timestamp.ErrBinding) {
+	if r, e := (*v).VerifyResponse(t.Context(), raw, wrong, testcert.Now(), *ev); r != nil || !errors.Is(e, timestamp.ErrBinding) {
 		t.Fatal("wrong request", e)
 	}
 
@@ -362,7 +362,7 @@ func testRoundTripAndBindingsCase(t *testing.T, h *crypto.Hash, omit *bool, c *t
 		want error
 	}{{"missing revocation", testcert.Now(), pki.Evidence{}, timestamp.ErrTrust}, {"revoked TSA", testcert.Now(), pki.Evidence{CRLs: [][]byte{testcert.CRL(t, *c, c.TSA)}}, pki.ErrRevoked}, {"future token", testcert.Now().Add(-2 * time.Second), *ev, timestamp.ErrPolicy}} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, e := (*v).VerifyResponse(context.Background(), raw, q, tc.at, tc.e)
+			r, e := (*v).VerifyResponse(t.Context(), raw, q, tc.at, tc.e)
 			if r != nil || !errors.Is(e, tc.want) {
 				t.Fatal(e)
 			}
@@ -382,7 +382,7 @@ func TestTSAUsageAndPolicy(t *testing.T) {
 	}
 
 	o := timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(1), GenTime: testcert.Now()}
-	if _, e := timestamp.IssueResponse(context.Background(), q.DER(), c.LeafKey, c.Leaf.Raw, o); !errors.Is(e, timestamp.ErrTrust) {
+	if _, e := timestamp.IssueResponse(t.Context(), q.DER(), c.LeafKey, c.Leaf.Raw, o); !errors.Is(e, timestamp.ErrTrust) {
 		t.Fatal("wrong EKU", e)
 	}
 
@@ -394,12 +394,12 @@ func TestTSAUsageAndPolicy(t *testing.T) {
 	weak.Extensions = nil
 
 	crt := testcert.Issue(t, &weak, c.Root, &c.TSAKey.PublicKey, c.RootKey)
-	if _, e := timestamp.IssueResponse(context.Background(), q.DER(), c.TSAKey, crt.Raw, o); !errors.Is(e, timestamp.ErrTrust) {
+	if _, e := timestamp.IssueResponse(t.Context(), q.DER(), c.TSAKey, crt.Raw, o); !errors.Is(e, timestamp.ErrTrust) {
 		t.Fatal("noncritical EKU", e)
 	}
 
 	o.Policy = asn1.ObjectIdentifier{1, 2, 3}
-	if _, e := timestamp.IssueResponse(context.Background(), q.DER(), c.TSAKey, c.TSA.Raw, o); !errors.Is(e, timestamp.ErrBinding) {
+	if _, e := timestamp.IssueResponse(t.Context(), q.DER(), c.TSAKey, c.TSA.Raw, o); !errors.Is(e, timestamp.ErrBinding) {
 		t.Fatal("wrong policy", e)
 	}
 }
@@ -423,7 +423,7 @@ func TestMalformedAndCancellation(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	v := verifier(t, testcert.New(t))
@@ -446,16 +446,16 @@ func TestFetchBoundsAndCloses(t *testing.T) {
 	}
 
 	b := &body{Reader: bytes.NewReader([]byte{0x30, 0x82, 0x08, 0x00})}
-	if r, e := v.Fetch(context.Background(), transport{b: b}, q, testcert.Now(), pki.Evidence{}); r != nil || !errors.Is(e, timestamp.ErrPolicy) || !b.closed {
+	if r, e := v.Fetch(t.Context(), transport{b: b}, q, testcert.Now(), pki.Evidence{}); r != nil || !errors.Is(e, timestamp.ErrPolicy) || !b.closed {
 		t.Fatal(e)
 	}
 
 	b = &body{Reader: bytes.NewReader(nil), closeErr: io.ErrClosedPipe}
-	if r, e := v.Fetch(context.Background(), transport{b: b}, q, testcert.Now(), pki.Evidence{}); r != nil || !errors.Is(e, io.ErrClosedPipe) || !b.closed {
+	if r, e := v.Fetch(t.Context(), transport{b: b}, q, testcert.Now(), pki.Evidence{}); r != nil || !errors.Is(e, io.ErrClosedPipe) || !b.closed {
 		t.Fatal(e)
 	}
 
-	if r, e := v.Fetch(context.Background(), transport{}, q, testcert.Now(), pki.Evidence{}); r != nil || !errors.Is(e, timestamp.ErrFormat) {
+	if r, e := v.Fetch(t.Context(), transport{}, q, testcert.Now(), pki.Evidence{}); r != nil || !errors.Is(e, timestamp.ErrFormat) {
 		t.Fatal("typed nil body", e)
 	}
 }
@@ -486,7 +486,7 @@ func TestFetchRejectsInvalidStateBeforeTransport(t *testing.T) {
 				return io.NopCloser(bytes.NewReader(nil)), nil
 			})
 
-			result, err := tc.v.Fetch(context.Background(), tr, tc.q, tc.at, pki.Evidence{})
+			result, err := tc.v.Fetch(t.Context(), tr, tc.q, tc.at, pki.Evidence{})
 			if calls != 0 || result != nil || !errors.Is(err, timestamp.ErrPolicy) {
 				t.Fatalf("transport calls=%d result=%v error=%v", calls, result != nil, err)
 			}
@@ -553,7 +553,7 @@ func TestFetchPreservesReadAndCloseErrors(t *testing.T) {
 
 func TestMaxAgeDoesNotOverflowWithClockSkew(t *testing.T) {
 	c := testcert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	q, err := timestamp.CreateRequest(t.Context(), []byte("age boundary"), timestamp.RequestOptions{Policy: policy()})
 	if err != nil {
@@ -614,7 +614,7 @@ func FuzzResponse(f *testing.F) {
 	}
 
 	evidence := pki.Evidence{CRLs: [][]byte{fixture.Read(f, "ts-ecdsa-256/crl.der")}}
-	if result, e := v.VerifyResponse(context.Background(), raw, q, fixture.At, evidence); e != nil || result == nil {
+	if result, e := v.VerifyResponse(f.Context(), raw, q, fixture.At, evidence); e != nil || result == nil {
 		f.Fatalf("invalid positive timestamp fixture: %v", e)
 	}
 
@@ -629,7 +629,7 @@ func FuzzResponse(f *testing.F) {
 			return
 		}
 
-		result, e := v.VerifyResponse(context.Background(), b, q, fixture.At, evidence)
+		result, e := v.VerifyResponse(t.Context(), b, q, fixture.At, evidence)
 		if e != nil && result != nil || e == nil && (result == nil || result.Trust() == nil || result.Trust().RevocationStatus() != pki.Valid) {
 			t.Fatal("inconsistent timestamp verification result")
 		}
@@ -645,7 +645,7 @@ func BenchmarkVerifyResponse(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	raw, err := timestamp.IssueResponse(context.Background(), q.DER(), c.TSAKey, c.TSA.Raw, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(10), GenTime: testcert.Now().Add(-time.Second)})
+	raw, err := timestamp.IssueResponse(b.Context(), q.DER(), c.TSAKey, c.TSA.Raw, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(10), GenTime: testcert.Now().Add(-time.Second)})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -654,7 +654,7 @@ func BenchmarkVerifyResponse(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		if _, err := v.VerifyResponse(context.Background(), raw, q, testcert.Now(), e); err != nil {
+		if _, err := v.VerifyResponse(b.Context(), raw, q, testcert.Now(), e); err != nil {
 			b.Fatal(err)
 		}
 	}

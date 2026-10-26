@@ -283,7 +283,7 @@ func TestXMLDSigStage4IndependentURIContexts(t *testing.T) {
 func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 	k := coreEC(t)
 
-	ki, e := keyinfo.Build(context.Background(), keyinfo.Template{ID: "key", Names: []string{"not an identity"}, Keys: []keyinfo.PublicKeyValue{{Key: &k.PublicKey}}})
+	ki, e := keyinfo.Build(t.Context(), keyinfo.Template{ID: "key", Names: []string{"not an identity"}, Keys: []keyinfo.PublicKeyValue{{Key: &k.PublicKey}}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -292,7 +292,7 @@ func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 	before := coreXML(t, signed)
 	opt := xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{namePayload}, RequiredElements: []document.Element{signed.Root().Children()[0]}}, SelectTrustedKey: keySelector(t, &k.PublicKey)}
 
-	r, e := xmldsig.VerifySignatureWithKeyInfo(context.Background(), signed, sel, opt)
+	r, e := xmldsig.VerifySignatureWithKeyInfo(t.Context(), signed, sel, opt)
 	if e != nil || !r.CoversElement(signed.Root().Children()[0]) || r.CoversElement(signed.Root()) || coreXML(t, signed) != before {
 		t.Fatalf("result=%v error=%v", r, e)
 	}
@@ -303,7 +303,7 @@ func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 		o.KeyInfo.AllowedKeyData = []document.Name{{Space: keyinfo.Namespace, Local: "X509Data"}}
 
 		o.SelectTrustedKey = func(context.Context, *keyinfo.Result) (int, error) { called = true; return 0, nil }
-		if result, err := xmldsig.VerifySignatureWithKeyInfo(context.Background(), signed, sel, o); result != nil || !errors.Is(err, keyinfo.ErrPolicy) || called {
+		if result, err := xmldsig.VerifySignatureWithKeyInfo(t.Context(), signed, sel, o); result != nil || !errors.Is(err, keyinfo.ErrPolicy) || called {
 			t.Fatal("disallowed key data reached trust callback", err)
 		}
 	})
@@ -311,7 +311,7 @@ func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 		o := opt
 		o.SelectTrustedKey = nil
 
-		r, e := xmldsig.VerifySignatureWithKeyInfo(context.Background(), signed, sel, o)
+		r, e := xmldsig.VerifySignatureWithKeyInfo(t.Context(), signed, sel, o)
 		if r != nil || !errors.Is(e, xmldsig.ErrKeyInfoTrust) {
 			t.Fatal(e)
 		}
@@ -320,7 +320,7 @@ func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 		o := opt
 		o.SelectTrustedKey = keySelector(t, &coreEC(t).PublicKey)
 
-		r, e := xmldsig.VerifySignatureWithKeyInfo(context.Background(), signed, sel, o)
+		r, e := xmldsig.VerifySignatureWithKeyInfo(t.Context(), signed, sel, o)
 		if r != nil || !errors.Is(e, xmldsig.ErrKeyInfoTrust) {
 			t.Fatal(e)
 		}
@@ -329,7 +329,7 @@ func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 		o := opt
 		o.SelectTrustedKey = func(context.Context, *keyinfo.Result) (int, error) { return 99, nil }
 
-		r, e := xmldsig.VerifySignatureWithKeyInfo(context.Background(), signed, sel, o)
+		r, e := xmldsig.VerifySignatureWithKeyInfo(t.Context(), signed, sel, o)
 		if r != nil || !errors.Is(e, xmldsig.ErrKeyInfoTrust) {
 			t.Fatal(e)
 		}
@@ -343,7 +343,7 @@ func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 
 			return 0, nil
 		}
-		if _, e := xmldsig.VerifySignatureWithKeyInfo(context.Background(), signed, sel, o); e != nil {
+		if _, e := xmldsig.VerifySignatureWithKeyInfo(t.Context(), signed, sel, o); e != nil {
 			t.Fatal(e)
 		}
 	})
@@ -355,7 +355,7 @@ func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 			o.Signature.ExpectedURIs[0] = "#tampered"
 			return 0, nil
 		}
-		if _, e := xmldsig.VerifySignatureWithKeyInfo(context.Background(), signed, sel, o); e != nil {
+		if _, e := xmldsig.VerifySignatureWithKeyInfo(t.Context(), signed, sel, o); e != nil {
 			t.Fatal(e)
 		}
 	})
@@ -367,7 +367,7 @@ func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 			return 0, nil
 		}
 
-		r, e := xmldsig.VerifySignatureWithKeyInfo(context.Background(), signed, sel, o)
+		r, e := xmldsig.VerifySignatureWithKeyInfo(t.Context(), signed, sel, o)
 		if r != nil || !errors.Is(e, xmldsig.ErrPolicy) {
 			t.Fatal(e)
 		}
@@ -377,20 +377,20 @@ func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 		o := opt
 		o.Signature.RequiredElements = nil
 
-		r, e := xmldsig.VerifySignatureWithKeyInfo(context.Background(), d, xmldsig.Signatures(d)[0], o)
+		r, e := xmldsig.VerifySignatureWithKeyInfo(t.Context(), d, xmldsig.Signatures(d)[0], o)
 		if r != nil || e == nil {
 			t.Fatal("payload accepted")
 		}
 	})
 	t.Run("old-explicit-key-api-unchanged", func(t *testing.T) {
-		if _, e := xmldsig.VerifySignature(context.Background(), signed, sel, &k.PublicKey, opt.Signature); e != nil {
+		if _, e := xmldsig.VerifySignature(t.Context(), signed, sel, &k.PublicKey, opt.Signature); e != nil {
 			t.Fatal(e)
 		}
 	})
 }
 
 func TestKeyInfoIntegrationRejectsContradictoryDeclarations(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	k := coreEC(t)
 	other := coreEC(t)
 
@@ -412,7 +412,7 @@ func TestKeyInfoIntegrationRejectsContradictoryDeclarations(t *testing.T) {
 }
 
 func TestKeyInfoLinkedFromSignature(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	k := coreEC(t)
 
 	info, e := keyinfo.Build(ctx, keyinfo.Template{ID: "shared", Keys: []keyinfo.PublicKeyValue{{Key: &k.PublicKey}}})
@@ -453,7 +453,7 @@ func TestKeyInfoLinkedFromSignature(t *testing.T) {
 }
 
 func TestKeyInfoResourceOrderAndInvalidPreflight(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	k := coreEC(t)
 
 	ki, e := keyinfo.Build(ctx, keyinfo.Template{KeyInfoReferences: []string{uriUrnKey}})
@@ -580,7 +580,7 @@ func testKeyInfoResourceOrderAndInvalidPreflightCase(t *testing.T, signed **docu
 }
 
 func TestKeyInfoExplicitPKIXSelection(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
 
 	caKey, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -643,7 +643,7 @@ func TestKeyInfoExplicitPKIXSelection(t *testing.T) {
 }
 
 func TestKeyInfoBuilderMutualExclusion(t *testing.T) {
-	ki, e := keyinfo.Build(context.Background(), keyinfo.Template{Names: []string{"x"}})
+	ki, e := keyinfo.Build(t.Context(), keyinfo.Template{Names: []string{"x"}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -654,7 +654,7 @@ func TestKeyInfoBuilderMutualExclusion(t *testing.T) {
 		certs [][]byte
 	}{{"both", ki, [][]byte{{1}}}, {"wrong-root", coreParse(t, `<not-KeyInfo/>`), nil}} {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, e := xmldsig.BuildTemplate(context.Background(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, KeyInfo: test.ki, Certificates: test.certs, References: []xmldsig.ReferenceTemplate{{URI: nameData}}, Objects: []xmldsig.ObjectTemplate{{ID: nameData2, Binary: []byte("x")}}})
+			_, _, e := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, KeyInfo: test.ki, Certificates: test.certs, References: []xmldsig.ReferenceTemplate{{URI: nameData}}, Objects: []xmldsig.ObjectTemplate{{ID: nameData2, Binary: []byte("x")}}})
 			if e == nil {
 				t.Fatal("accepted")
 			}
@@ -756,7 +756,7 @@ func FuzzVerifyWithKeyInfo(f *testing.F) {
 			return
 		}
 
-		r, e := xmldsig.VerifySignatureWithKeyInfo(context.Background(), d, sigs[0], options)
+		r, e := xmldsig.VerifySignatureWithKeyInfo(t.Context(), d, sigs[0], options)
 		if e != nil && r != nil {
 			t.Fatal("partial success")
 		}
@@ -791,7 +791,7 @@ func keySelector(t testing.TB, expected crypto.PublicKey) xmldsig.TrustedKeySele
 func makeKeyInfoSigned(t testing.TB, k crypto.Signer, ki *document.Document) (*document.Document, document.Element) {
 	t.Helper()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	d := coreParse(t, `<root><payload ID="payload">hello</payload></root>`)
 
 	draft, selected, e := xmldsig.BuildTemplate(ctx, d, d.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, KeyInfo: ki, References: []xmldsig.ReferenceTemplate{{URI: namePayload, Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}}})

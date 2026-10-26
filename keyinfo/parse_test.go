@@ -197,7 +197,7 @@ func testBuildParsePublicKeysCase(t *testing.T, test *struct {
 	key  crypto.PublicKey
 }, format *keyinfo.KeyFormat,
 ) {
-	d, e := keyinfo.Build(context.Background(), keyinfo.Template{ID: "ki", Names: []string{"  significant name\n"}, Keys: []keyinfo.PublicKeyValue{{Key: test.key, Format: *format}}})
+	d, e := keyinfo.Build(t.Context(), keyinfo.Template{ID: "ki", Names: []string{"  significant name\n"}, Keys: []keyinfo.PublicKeyValue{{Key: test.key, Format: *format}}})
 	if test.name == "Ed25519" && (*format) == keyinfo.XMLKeyValue {
 		if !errors.Is(e, keyinfo.ErrUnsupported) {
 			t.Fatal(e)
@@ -210,7 +210,7 @@ func testBuildParsePublicKeysCase(t *testing.T, test *struct {
 		t.Fatal(e)
 	}
 
-	out, e := keyinfo.Parse(context.Background(), d, d.Root(), keyinfo.Options{})
+	out, e := keyinfo.Parse(t.Context(), d, d.Root(), keyinfo.Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -244,12 +244,12 @@ func TestReturnedDataCannotChangeHints(t *testing.T) {
 	k := ec(t, elliptic.P256())
 	der := cert(t, k)
 
-	d, e := keyinfo.Build(context.Background(), keyinfo.Template{Keys: []keyinfo.PublicKeyValue{{Key: &k.PublicKey}}, Certificates: [][]byte{der}, Names: []string{"original"}})
+	d, e := keyinfo.Build(t.Context(), keyinfo.Template{Keys: []keyinfo.PublicKeyValue{{Key: &k.PublicKey}}, Certificates: [][]byte{der}, Names: []string{"original"}})
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	info, e := keyinfo.Parse(context.Background(), d, d.Root(), keyinfo.Options{})
+	info, e := keyinfo.Parse(t.Context(), d, d.Root(), keyinfo.Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -400,7 +400,7 @@ func TestSameDocumentReferencesAndCycles(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			d := parseXML(t, test.xml)
 
-			r, e := keyinfo.Parse(context.Background(), d, d.Root().Children()[0], test.opt)
+			r, e := keyinfo.Parse(t.Context(), d, d.Root().Children()[0], test.opt)
 			if test.err != nil {
 				if r != nil || !errors.Is(e, test.err) {
 					t.Fatalf("got %v %v", r, e)
@@ -433,7 +433,7 @@ func TestRawCertificateRetrieval(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			d := parseXML(t, makeXML(uri, test.transform))
 
-			r, e := keyinfo.Parse(context.Background(), d, d.Root(), keyinfo.Options{External: &keyinfo.ExternalResources{AllowedURIs: []string{uri}, Resolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+			r, e := keyinfo.Parse(t.Context(), d, d.Root(), keyinfo.Options{External: &keyinfo.ExternalResources{AllowedURIs: []string{uri}, Resolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 				return io.NopCloser(bytes.NewReader(test.data)), nil
 			})}})
 			if e != nil {
@@ -450,7 +450,7 @@ func TestRawCertificateRetrieval(t *testing.T) {
 	xml := `<root xmlns:ds="` + ns + `" xmlns:k="` + ns11 + `"><ds:KeyInfo><ds:RetrievalMethod URI="#blob" Type="` + keyinfo.RawX509Certificate + `">` + base64T + `</ds:RetrievalMethod></ds:KeyInfo><data ID="blob">` + enc(der) + `</data></root>`
 	d := parseXML(t, xml)
 
-	r, e := keyinfo.Parse(context.Background(), d, d.Root().Children()[0], keyinfo.Options{AdditionalIDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: "ID"}, Elements: []document.Name{{Local: "data"}}}}})
+	r, e := keyinfo.Parse(t.Context(), d, d.Root().Children()[0], keyinfo.Options{AdditionalIDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: "ID"}, Elements: []document.Name{{Local: "data"}}}}})
 	if e != nil || !bytes.Equal(r.Candidates()[0].CertificateDER(), der) {
 		t.Fatal(e)
 	}
@@ -468,7 +468,7 @@ func TestExternalLifecycleLimitsAndCaching(t *testing.T) {
 	d := parseXML(t, xml)
 	opt := keyinfo.Options{External: &keyinfo.ExternalResources{Resolver: source, AllowedURIs: []string{uriUrnRemote}}}
 
-	r, e := keyinfo.Parse(context.Background(), d, d.Root(), opt)
+	r, e := keyinfo.Parse(t.Context(), d, d.Root(), opt)
 	if e != nil || calls != 1 || len(r.Candidates()) != 2 || len(r.ExternalURIs()) != 1 {
 		t.Fatalf("cache: %v %v calls=%d", r, e, calls)
 	}
@@ -562,14 +562,14 @@ func TestExternalCycleAndDepthBeforeIO(t *testing.T) {
 func TestCancellationBadPolicyAndForeignSnapshot(t *testing.T) {
 	d := parseXML(t, wrap(`<ds:KeyName>x</ds:KeyName>`))
 	other := parseXML(t, asXML(t, d))
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if r, e := keyinfo.Parse(ctx, d, d.Root(), keyinfo.Options{}); r != nil || !errors.Is(e, context.Canceled) {
 		t.Fatal(e)
 	}
 
-	if r, e := keyinfo.Parse(context.Background(), d, other.Root(), keyinfo.Options{}); r != nil || !errors.Is(e, keyinfo.ErrInput) {
+	if r, e := keyinfo.Parse(t.Context(), d, other.Root(), keyinfo.Options{}); r != nil || !errors.Is(e, keyinfo.ErrInput) {
 		t.Fatal(e)
 	}
 
@@ -598,16 +598,14 @@ func TestConflictingBareDeclarations(t *testing.T) {
 func BenchmarkParseKeyInfo(b *testing.B) {
 	k := ec(b, elliptic.P256())
 
-	d, e := keyinfo.Build(context.Background(), keyinfo.Template{Keys: []keyinfo.PublicKeyValue{{Key: &k.PublicKey}}})
+	d, e := keyinfo.Build(b.Context(), keyinfo.Template{Keys: []keyinfo.PublicKeyValue{{Key: &k.PublicKey}}})
 	if e != nil {
 		b.Fatal(e)
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		if _, e := keyinfo.Parse(context.Background(), d, d.Root(), keyinfo.Options{}); e != nil {
+	for b.Loop() {
+		if _, e := keyinfo.Parse(b.Context(), d, d.Root(), keyinfo.Options{}); e != nil {
 			b.Fatal(e)
 		}
 	}
@@ -738,7 +736,7 @@ func parseInfo(t testing.TB, s string) *keyinfo.Result {
 	t.Helper()
 	d := parseXML(t, s)
 
-	r, e := keyinfo.Parse(context.Background(), d, d.Root(), keyinfo.Options{})
+	r, e := keyinfo.Parse(t.Context(), d, d.Root(), keyinfo.Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -777,7 +775,7 @@ func requireErr(t testing.TB, xml string, opt keyinfo.Options, want error) {
 	t.Helper()
 	d := parseXML(t, xml)
 
-	r, e := keyinfo.Parse(context.Background(), d, d.Root(), opt)
+	r, e := keyinfo.Parse(t.Context(), d, d.Root(), opt)
 	if r != nil || !errors.Is(e, want) {
 		t.Fatalf("got result=%v err=%v; want %v", r, e, want)
 	}

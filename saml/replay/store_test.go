@@ -30,7 +30,7 @@ func TestAtomicConsume(t *testing.T) {
 	)
 	for range 64 {
 		wg.Go(func() {
-			e := m.Consume(context.Background(), entries, now)
+			e := m.Consume(t.Context(), entries, now)
 			if e == nil {
 				success.Add(1)
 			} else if !errors.Is(e, replay.ErrReplay) {
@@ -51,19 +51,19 @@ func TestCapacityExpiryAndAllOrNothing(t *testing.T) {
 	now := time.Now()
 
 	entry := func(id string) replay.Entry { return replay.Entry{Scope: "s", ID: id, ExpiresAt: now.Add(time.Minute)} }
-	if e := m.Consume(context.Background(), []replay.Entry{entry("a")}, now); e != nil {
+	if e := m.Consume(t.Context(), []replay.Entry{entry("a")}, now); e != nil {
 		t.Fatal(e)
 	}
 
-	if e := m.Consume(context.Background(), []replay.Entry{entry("b"), entry("c")}, now); !errors.Is(e, replay.ErrCapacity) || m.Len() != 1 {
+	if e := m.Consume(t.Context(), []replay.Entry{entry("b"), entry("c")}, now); !errors.Is(e, replay.ErrCapacity) || m.Len() != 1 {
 		t.Fatal("partial capacity commit")
 	}
 
-	if e := m.Consume(context.Background(), []replay.Entry{entry("b"), entry("a")}, now); !errors.Is(e, replay.ErrReplay) || m.Len() != 1 {
+	if e := m.Consume(t.Context(), []replay.Entry{entry("b"), entry("a")}, now); !errors.Is(e, replay.ErrReplay) || m.Len() != 1 {
 		t.Fatal("partial replay commit")
 	}
 
-	if e := m.Consume(context.Background(), []replay.Entry{entry("b")}, now); e != nil {
+	if e := m.Consume(t.Context(), []replay.Entry{entry("b")}, now); e != nil {
 		t.Fatal(e)
 	}
 
@@ -71,7 +71,7 @@ func TestCapacityExpiryAndAllOrNothing(t *testing.T) {
 	a := entry("a")
 
 	a.ExpiresAt = later.Add(time.Minute)
-	if e := m.Consume(context.Background(), []replay.Entry{a}, later); e != nil || m.Len() != 1 {
+	if e := m.Consume(t.Context(), []replay.Entry{a}, later); e != nil || m.Len() != 1 {
 		t.Fatal("expiry")
 	}
 }
@@ -81,12 +81,12 @@ func TestReplayValidation(t *testing.T) {
 
 	now := time.Now()
 	for _, es := range [][]replay.Entry{nil, {{Scope: "", ID: "a", ExpiresAt: now.Add(time.Second)}}, {{Scope: "s", ID: "a", ExpiresAt: now}}, {{Scope: "s", ID: "a", ExpiresAt: now.Add(2 * time.Hour)}}, {{Scope: "s", ID: "a", ExpiresAt: now.Add(time.Second)}, {Scope: "s", ID: "a", ExpiresAt: now.Add(time.Second)}}} {
-		if e := m.Consume(context.Background(), es, now); !errors.Is(e, replay.ErrPolicy) {
+		if e := m.Consume(t.Context(), es, now); !errors.Is(e, replay.ErrPolicy) {
 			t.Fatal(e)
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if e := m.Consume(ctx, []replay.Entry{{Scope: "s", ID: "a", ExpiresAt: now.Add(time.Minute)}}, now); !errors.Is(e, context.Canceled) {
@@ -111,7 +111,7 @@ func BenchmarkConsumeAndExpire(b *testing.B) {
 			entries[i].ExpiresAt = expiry
 		}
 
-		if err := m.Consume(context.Background(), entries, at); err != nil {
+		if err := m.Consume(b.Context(), entries, at); err != nil {
 			b.Fatal(err)
 		}
 
@@ -128,7 +128,7 @@ func BenchmarkReplayParallel(b *testing.B) {
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	entries := []replay.Entry{{Scope: uriUrnSpUrnIdp, ID: nameRequest, ExpiresAt: at.Add(time.Minute)}}
-	if err := m.Consume(context.Background(), entries, at); err != nil {
+	if err := m.Consume(b.Context(), entries, at); err != nil {
 		b.Fatal(err)
 	}
 
@@ -136,7 +136,7 @@ func BenchmarkReplayParallel(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if err := m.Consume(context.Background(), entries, at); !errors.Is(err, replay.ErrReplay) {
+			if err := m.Consume(b.Context(), entries, at); !errors.Is(err, replay.ErrReplay) {
 				b.Errorf("replay result: %v", err)
 			}
 		}

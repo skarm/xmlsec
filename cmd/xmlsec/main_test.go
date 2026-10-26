@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -67,12 +66,12 @@ func TestCLI(t *testing.T) {
 	source := `<r ID="root"><v>value</v></r>`
 
 	var signed, stderr bytes.Buffer
-	if err := run(context.Background(), []string{nameSign, flagKey, private}, strings.NewReader(source), &signed, &stderr); err != nil {
+	if err := run(t.Context(), []string{nameSign, flagKey, private}, strings.NewReader(source), &signed, &stderr); err != nil {
 		t.Fatal(err)
 	}
 
 	var verified bytes.Buffer
-	if err := run(context.Background(), []string{nameVerify, flagKey, public, "-root-local", "r"}, bytes.NewReader(signed.Bytes()), &verified, &stderr); err != nil {
+	if err := run(t.Context(), []string{nameVerify, flagKey, public, "-root-local", "r"}, bytes.NewReader(signed.Bytes()), &verified, &stderr); err != nil {
 		t.Fatal(err)
 	}
 
@@ -90,7 +89,7 @@ func TestCLI(t *testing.T) {
 	}
 
 	var canonical bytes.Buffer
-	if err := run(context.Background(), []string{nameC14n}, strings.NewReader(`<r b="2" a="1"/>`), &canonical, &stderr); err != nil {
+	if err := run(t.Context(), []string{nameC14n}, strings.NewReader(`<r b="2" a="1"/>`), &canonical, &stderr); err != nil {
 		t.Fatal(err)
 	}
 
@@ -99,7 +98,7 @@ func TestCLI(t *testing.T) {
 	}
 
 	output := filepath.Join(dir, "out.xml")
-	if err := run(context.Background(), []string{nameSign, flagKey, private, "-out", output}, strings.NewReader(source), &signed, &stderr); err != nil {
+	if err := run(t.Context(), []string{nameSign, flagKey, private, "-out", output}, strings.NewReader(source), &signed, &stderr); err != nil {
 		t.Fatal(err)
 	}
 
@@ -112,7 +111,7 @@ func TestCLIRejects(t *testing.T) {
 	for _, args := range [][]string{{nameBogus}, {nameSign}, {nameVerify}, {nameSign, flagKey, "-"}, {nameC14n, "unexpected"}, {nameC14n, "-id", "missing"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			var out, errout bytes.Buffer
-			if err := run(context.Background(), args, strings.NewReader(`<r/>`), &out, &errout); err == nil {
+			if err := run(t.Context(), args, strings.NewReader(`<r/>`), &out, &errout); err == nil {
 				t.Fatal("accepted invalid invocation")
 			}
 		})
@@ -123,7 +122,7 @@ func TestCLICanonicalAlgorithms(t *testing.T) {
 	for _, alg := range []string{c14n.Canonical10, c14n.Canonical11, c14n.Exclusive} {
 		t.Run(alg, func(t *testing.T) {
 			var out, errout bytes.Buffer
-			if err := run(context.Background(), []string{nameC14n, "-algorithm", alg},
+			if err := run(t.Context(), []string{nameC14n, "-algorithm", alg},
 				strings.NewReader(`<r xmlns:p="urn:p"><c/></r>`), &out, &errout); err != nil {
 				t.Fatal(err)
 			}
@@ -140,7 +139,7 @@ func TestCLICanonicalAlgorithms(t *testing.T) {
 	}
 
 	var out, errout bytes.Buffer
-	if err := run(context.Background(), []string{nameC14n, "-algorithm", nameUnknown},
+	if err := run(t.Context(), []string{nameC14n, "-algorithm", nameUnknown},
 		strings.NewReader(`<r/>`), &out, &errout); err == nil {
 		t.Fatal("unknown algorithm accepted")
 	}
@@ -154,7 +153,7 @@ func BenchmarkVerify(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	d, err = xmldsig.SignEnveloped(context.Background(), d, c.LeafKey, xmldsig.SignOptions{SignatureMethod: xmldsig.ECDSASHA256})
+	d, err = xmldsig.SignEnveloped(b.Context(), d, c.LeafKey, xmldsig.SignOptions{SignatureMethod: xmldsig.ECDSASHA256})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -179,7 +178,7 @@ func BenchmarkVerify(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		if err := run(context.Background(), args, bytes.NewReader(raw), io.Discard, io.Discard); err != nil {
+		if err := run(b.Context(), args, bytes.NewReader(raw), io.Discard, io.Discard); err != nil {
 			b.Fatal(err)
 		}
 	}

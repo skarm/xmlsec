@@ -338,7 +338,7 @@ func TestWithTimeExpiredSignerAndCurrentProfile(t *testing.T) {
 	v := timeValidator(t, c)
 	evidence := xades.ValidationEvidence{Signer: pki.Evidence{CRLs: [][]byte{datedCRL(t, c, proof, 1)}}, TSA: timeOptions(t, c).Evidence}
 
-	r, report, e := v.ValidateEnveloped(context.Background(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence)
+	r, report, e := v.ValidateEnveloped(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence)
 	if e != nil || r == nil || report.Indication() != xades.Passed || !r.ProofTime().Equal(proof) || !r.SignerTrust().VerificationTime().Equal(proof) || !r.Basic().Signature().CoversElement(d.Root()) {
 		t.Fatal(report, e)
 	}
@@ -357,7 +357,7 @@ func TestWithTimeExpiredSignerAndCurrentProfile(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if r, e := current.ValidateEnveloped(context.Background(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence); r != nil || !errors.Is(e, pki.ErrCertificate) {
+	if r, e := current.ValidateEnveloped(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence); r != nil || !errors.Is(e, pki.ErrCertificate) {
 		t.Fatal("current validator implicitly backdated", e)
 	}
 
@@ -369,7 +369,7 @@ func TestWithTimeExpiredSignerAndCurrentProfile(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
-			r, report, e := v.ValidateEnveloped(context.Background(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence)
+			r, report, e := v.ValidateEnveloped(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence)
 			if e != nil || r == nil || report.Indication() != xades.Passed {
 				t.Error(e)
 			}
@@ -388,7 +388,7 @@ func TestWithTimeNoUntrustedRecovery(t *testing.T) {
 	assertReject := func(name string, doc *document.Document, evidence xades.ValidationEvidence, want error, status xades.Indication) {
 		t.Helper()
 		t.Run(name, func(t *testing.T) {
-			r, report, e := v.ValidateEnveloped(context.Background(), doc, xmldsig.Signatures(doc)[0], c.Leaf.Raw, testcert.Now(), evidence)
+			r, report, e := v.ValidateEnveloped(t.Context(), doc, xmldsig.Signatures(doc)[0], c.Leaf.Raw, testcert.Now(), evidence)
 			if r != nil || e == nil || report.Indication() != status || want != nil && !errors.Is(e, want) {
 				t.Fatal(r, report.Indication(), e)
 			}
@@ -465,7 +465,7 @@ func TestWithTimeNoUntrustedRecovery(t *testing.T) {
 
 	assertReject("bad unsigned timestamp", bad, good, nil, xades.Indeterminate)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if r, report, e := v.ValidateEnveloped(ctx, d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), good); r != nil || !errors.Is(e, context.Canceled) || report.Indication() == xades.Passed {
@@ -492,21 +492,21 @@ func TestWithTimeAccuracyAndEarliestProof(t *testing.T) {
 	evidence := xades.ValidationEvidence{Signer: pki.Evidence{CRLs: [][]byte{datedCRL(t, c, gen, 1)}}, TSA: timeOptions(t, c).Evidence}
 
 	v := timeValidator(t, c)
-	if r, report, e := v.ValidateEnveloped(context.Background(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence); r != nil || !errors.Is(e, xades.ErrLevel) || report.Indication() != xades.Indeterminate || !report.ProofTime().Equal(gen.Add(accuracy)) {
+	if r, report, e := v.ValidateEnveloped(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence); r != nil || !errors.Is(e, xades.ErrLevel) || report.Indication() != xades.Indeterminate || !report.ProofTime().Equal(gen.Add(accuracy)) {
 		t.Fatal("accuracy ignored", e)
 	}
 
 	early := testcert.Now().Add(-2 * time.Hour)
 	d = timedPastDocument(t, c, early.Add(time.Minute), nil)
 
-	d, _, e := xades.AddSignatureTimestamp(context.Background(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, datedTSA{chain: c, gen: early}, xades.AddTimestampOptions{Validation: timeOptions(t, c), Request: timestamp.RequestOptions{Policy: tsaPolicy()}})
+	d, _, e := xades.AddSignatureTimestamp(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, datedTSA{chain: c, gen: early}, xades.AddTimestampOptions{Validation: timeOptions(t, c), Request: timestamp.RequestOptions{Policy: tsaPolicy()}})
 	if e != nil {
 		t.Fatal(e)
 	}
 
 	evidence.Signer.CRLs = [][]byte{datedCRL(t, c, early, 1)}
 
-	r, report, e := v.ValidateEnveloped(context.Background(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence)
+	r, report, e := v.ValidateEnveloped(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence)
 	if e != nil || r == nil || !report.ProofTime().Equal(early) || len(r.Timestamps()) != 2 {
 		t.Fatal("earliest POE changed", e)
 	}
@@ -554,7 +554,7 @@ func timedPastDocument(t *testing.T, c testcert.Chain, gen time.Time, accuracy *
 	t.Helper()
 	base := basicDocument(t, c)
 
-	d, _, e := xades.AddSignatureTimestamp(context.Background(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, datedTSA{c, gen, accuracy}, xades.AddTimestampOptions{Validation: timeOptions(t, c), Request: timestamp.RequestOptions{Policy: tsaPolicy()}})
+	d, _, e := xades.AddSignatureTimestamp(t.Context(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, datedTSA{c, gen, accuracy}, xades.AddTimestampOptions{Validation: timeOptions(t, c), Request: timestamp.RequestOptions{Policy: tsaPolicy()}})
 	if e != nil {
 		t.Fatal(e)
 	}

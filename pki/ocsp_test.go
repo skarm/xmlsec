@@ -43,7 +43,7 @@ func TestOCSPRoundTripAndFailures(t *testing.T) {
 		t.Fatal("mutable")
 	}
 
-	good, e := pki.CreateOCSPResponse(context.Background(), req, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, c.RootKey, ocspTemplate())
+	good, e := pki.CreateOCSPResponse(t.Context(), req, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, c.RootKey, ocspTemplate())
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -63,11 +63,11 @@ func TestOCSPRoundTripAndFailures(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if r, rep, e := v.Verify(context.Background(), c.Leaf.Raw, testcert.Now(), pki.Evidence{OCSPResponses: [][]byte{good}}); e != nil || r == nil || rep.Revocation != pki.Valid {
+	if r, rep, e := v.Verify(t.Context(), c.Leaf.Raw, testcert.Now(), pki.Evidence{OCSPResponses: [][]byte{good}}); e != nil || r == nil || rep.Revocation != pki.Valid {
 		t.Fatalf("%v %+v", e, rep)
 	}
 
-	if r, _, e := v.Verify(context.Background(), c.Leaf.Raw, testcert.Now(), pki.Evidence{}); r != nil || !errors.Is(e, pki.ErrUnavailable) {
+	if r, _, e := v.Verify(t.Context(), c.Leaf.Raw, testcert.Now(), pki.Evidence{}); r != nil || !errors.Is(e, pki.ErrUnavailable) {
 		t.Fatal("missing evidence", e)
 	}
 
@@ -77,18 +77,18 @@ func TestOCSPRoundTripAndFailures(t *testing.T) {
 		tmpl.RevokedAt = testcert.Now().Add(-time.Minute)
 		tmpl.RevocationReason = 1
 
-		raw, e := pki.CreateOCSPResponse(context.Background(), req, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, c.RootKey, tmpl)
+		raw, e := pki.CreateOCSPResponse(t.Context(), req, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, c.RootKey, tmpl)
 		if e != nil {
 			t.Fatal(e)
 		}
 
-		r, rep, e := pki.VerifyOCSP(context.Background(), raw, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{})
+		r, rep, e := pki.VerifyOCSP(t.Context(), raw, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{})
 		if r != nil || e == nil || rep.Signature != pki.Valid || rep.Status != status {
 			t.Fatalf("%v %+v", e, rep)
 		}
 
 		if status == pki.OCSPRevoked {
-			if r, _, e := v.Verify(context.Background(), c.Leaf.Raw, testcert.Now(), pki.Evidence{OCSPResponses: [][]byte{good, raw}}); r != nil || !errors.Is(e, pki.ErrRevoked) {
+			if r, _, e := v.Verify(t.Context(), c.Leaf.Raw, testcert.Now(), pki.Evidence{OCSPResponses: [][]byte{good, raw}}); r != nil || !errors.Is(e, pki.ErrRevoked) {
 				t.Fatal("revocation hidden by GOOD", e)
 			}
 		}
@@ -103,14 +103,14 @@ func testOCSPRoundTripAndFailuresCase(t *testing.T, tc *struct {
 	want     error
 }, c *testcert.Chain,
 ) {
-	r, rep, e := pki.VerifyOCSP(context.Background(), tc.response, c.Leaf.Raw, c.Root.Raw, tc.at, pki.OCSPOptions{ExpectedNonce: tc.nonce})
+	r, rep, e := pki.VerifyOCSP(t.Context(), tc.response, c.Leaf.Raw, c.Root.Raw, tc.at, pki.OCSPOptions{ExpectedNonce: tc.nonce})
 	if tc.want == nil {
 		if e != nil || r == nil || rep.Status != pki.OCSPGood || rep.Signature != pki.Valid {
 			t.Fatalf("%v %+v", e, rep)
 		}
 
 		r.DER()[0] ^= 1
-		if _, _, e = pki.VerifyOCSP(context.Background(), r.DER(), c.Leaf.Raw, c.Root.Raw, tc.at, pki.OCSPOptions{}); e != nil {
+		if _, _, e = pki.VerifyOCSP(t.Context(), r.DER(), c.Leaf.Raw, c.Root.Raw, tc.at, pki.OCSPOptions{}); e != nil {
 			t.Fatal("mutable result", e)
 		}
 	} else if r != nil || !errors.Is(e, tc.want) {
@@ -147,7 +147,7 @@ func TestOCSPDelegation(t *testing.T) {
 
 			cert := testcert.Issue(t, ct, c.Root, &key.PublicKey, c.RootKey)
 
-			raw, e := pki.CreateOCSPResponse(context.Background(), req, c.Leaf.Raw, c.Root.Raw, cert.Raw, key, ocspTemplate())
+			raw, e := pki.CreateOCSPResponse(t.Context(), req, c.Leaf.Raw, c.Root.Raw, cert.Raw, key, ocspTemplate())
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -157,7 +157,7 @@ func TestOCSPDelegation(t *testing.T) {
 				o.ResponderCRLs = [][]byte{testcert.CRL(t, c)}
 			}
 
-			r, rep, e := pki.VerifyOCSP(context.Background(), raw, c.Leaf.Raw, c.Root.Raw, testcert.Now(), o)
+			r, rep, e := pki.VerifyOCSP(t.Context(), raw, c.Leaf.Raw, c.Root.Raw, testcert.Now(), o)
 			if tc.want == nil {
 				if e != nil || r == nil || !rep.Delegated {
 					t.Fatal(e)
@@ -190,7 +190,7 @@ func TestOCSPNonceSizeAndCancellation(t *testing.T) {
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, _, e := pki.VerifyOCSP(ctx, nil, nil, nil, testcert.Now(), pki.OCSPOptions{}); !errors.Is(e, context.Canceled) {
@@ -215,7 +215,7 @@ func TestOCSPRejectsOversizedInputBeforeAllocation(t *testing.T) {
 			return err
 		}},
 		{"response", func() error {
-			result, report, err := pki.VerifyOCSP(context.Background(), input, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{MaxBytes: 1 << 16})
+			result, report, err := pki.VerifyOCSP(t.Context(), input, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{MaxBytes: 1 << 16})
 			if result != nil || report.Signature != pki.NotChecked {
 				t.Fatal("oversized response was processed")
 			}
@@ -390,7 +390,7 @@ func FuzzOCSPResponse(f *testing.F) {
 	issuer := fixture.Read(f, "ocsp-rsa-sha256-HASH-GOOD/issuer.der")
 	options := pki.OCSPOptions{ExpectedNonce: fixture.Nonce}
 
-	result, report, e := pki.VerifyOCSP(context.Background(), raw, leaf, issuer, fixture.At, options)
+	result, report, e := pki.VerifyOCSP(f.Context(), raw, leaf, issuer, fixture.At, options)
 	if e != nil || result == nil || report.Signature != pki.Valid || report.Status != pki.OCSPGood {
 		f.Fatalf("invalid positive OCSP fixture: %v %+v", e, report)
 	}
@@ -402,7 +402,7 @@ func FuzzOCSPResponse(f *testing.F) {
 			t.Skip()
 		}
 
-		result, report, e := pki.VerifyOCSP(context.Background(), b, leaf, issuer, fixture.At, options)
+		result, report, e := pki.VerifyOCSP(t.Context(), b, leaf, issuer, fixture.At, options)
 		if e != nil && result != nil || e == nil && (result == nil || report.Signature != pki.Valid || report.Status != pki.OCSPGood) {
 			t.Fatal("inconsistent OCSP verification result")
 		}

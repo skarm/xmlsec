@@ -61,7 +61,7 @@ func TestAlgorithmsAndReferences(t *testing.T) {
 			// Verify a fresh parse, not the in-memory representation used by signer.
 			d := parse(t, xmlString(t, signed))
 
-			result, err := xmldsig.Verify(context.Background(), d, tt.key.Public(), xmldsig.VerifyOptions{ExpectedRoot: document.Name{Space: "urn:app", Local: "Root"}})
+			result, err := xmldsig.Verify(t.Context(), d, tt.key.Public(), xmldsig.VerifyOptions{ExpectedRoot: document.Name{Space: "urn:app", Local: "Root"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -141,7 +141,7 @@ func TestTamperingAndStructure(t *testing.T) {
 				opt.ExpectedRoot = document.Name{Space: "urn:app", Local: "Root"}
 			}
 
-			result, err := xmldsig.Verify(context.Background(), d, key.Public(), opt)
+			result, err := xmldsig.Verify(t.Context(), d, key.Public(), opt)
 			if result != nil || !errors.Is(err, tt.want) {
 				t.Fatalf("result %v error %v, want %v", result, err, tt.want)
 			}
@@ -149,11 +149,11 @@ func TestTamperingAndStructure(t *testing.T) {
 	}
 
 	wrong := ecKey(t, elliptic.P256())
-	if _, err := xmldsig.Verify(context.Background(), signed, wrong.Public(), xmldsig.VerifyOptions{}); !errors.Is(err, xmldsig.ErrSignature) {
+	if _, err := xmldsig.Verify(t.Context(), signed, wrong.Public(), xmldsig.VerifyOptions{}); !errors.Is(err, xmldsig.ErrSignature) {
 		t.Fatal(err)
 	}
 
-	if _, err := xmldsig.Verify(context.Background(), signed, nil, xmldsig.VerifyOptions{}); !errors.Is(err, xmldsig.ErrKey) {
+	if _, err := xmldsig.Verify(t.Context(), signed, nil, xmldsig.VerifyOptions{}); !errors.Is(err, xmldsig.ErrKey) {
 		t.Fatal(err)
 	}
 }
@@ -167,21 +167,21 @@ func TestExternalSignerAndErrors(t *testing.T) {
 		t.Fatal(adapter.calls)
 	}
 
-	if _, err := xmldsig.Verify(context.Background(), signed, key.Public(), xmldsig.VerifyOptions{}); err != nil {
+	if _, err := xmldsig.Verify(t.Context(), signed, key.Public(), xmldsig.VerifyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
 	var nilKey *rsa.PrivateKey
-	if _, err := xmldsig.SignEnveloped(context.Background(), parse(t, input), nilKey, xmldsig.SignOptions{}); err == nil {
+	if _, err := xmldsig.SignEnveloped(t.Context(), parse(t, input), nilKey, xmldsig.SignOptions{}); err == nil {
 		t.Fatal("typed nil signer accepted")
 	}
 
 	fail := errors.New("HSM unavailable")
-	if _, err := xmldsig.SignEnveloped(context.Background(), parse(t, input), failingSigner{key, fail}, xmldsig.SignOptions{}); !errors.Is(err, fail) {
+	if _, err := xmldsig.SignEnveloped(t.Context(), parse(t, input), failingSigner{key, fail}, xmldsig.SignOptions{}); !errors.Is(err, fail) {
 		t.Fatal(err)
 	}
 
-	if _, err := xmldsig.SignEnveloped(context.Background(), parse(t, input), badSigner{key}, xmldsig.SignOptions{}); !errors.Is(err, xmldsig.ErrSignature) {
+	if _, err := xmldsig.SignEnveloped(t.Context(), parse(t, input), badSigner{key}, xmldsig.SignOptions{}); !errors.Is(err, xmldsig.ErrSignature) {
 		t.Fatal(err)
 	}
 }
@@ -207,7 +207,7 @@ func TestPolicyAndID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := xmldsig.SignEnveloped(context.Background(), parse(t, tt.src), key, tt.opt); err == nil {
+			if _, err := xmldsig.SignEnveloped(t.Context(), parse(t, tt.src), key, tt.opt); err == nil {
 				t.Fatal("invalid signing input accepted")
 			}
 		})
@@ -216,19 +216,19 @@ func TestPolicyAndID(t *testing.T) {
 	id := document.Name{Space: "urn:id", Local: "id"}
 
 	signed := sign(t, key, parse(t, `<r xmlns:i="urn:id" i:id="root"><c/></r>`), xmldsig.SignOptions{IDAttribute: id})
-	if _, err := xmldsig.Verify(context.Background(), signed, key.Public(), xmldsig.VerifyOptions{IDAttribute: id}); err != nil {
+	if _, err := xmldsig.Verify(t.Context(), signed, key.Public(), xmldsig.VerifyOptions{IDAttribute: id}); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := xmldsig.Verify(context.Background(), signed, key.Public(), xmldsig.VerifyOptions{}); err == nil {
+	if _, err := xmldsig.Verify(t.Context(), signed, key.Public(), xmldsig.VerifyOptions{}); err == nil {
 		t.Fatal("ID attribute was guessed")
 	}
 
-	if _, err := xmldsig.SignEnveloped(context.Background(), signed, key, xmldsig.SignOptions{}); err == nil {
+	if _, err := xmldsig.SignEnveloped(t.Context(), signed, key, xmldsig.SignOptions{}); err == nil {
 		t.Fatal("existing signature accepted")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if _, err := xmldsig.SignEnveloped(ctx, parse(t, input), key, xmldsig.SignOptions{}); !errors.Is(err, context.Canceled) {
@@ -267,7 +267,7 @@ func TestECDSAIsNotDER(t *testing.T) {
 	}
 
 	changed := parse(t, s[:start]+base64.StdEncoding.EncodeToString(der)+s[end:])
-	if _, err := xmldsig.Verify(context.Background(), changed, key.Public(), xmldsig.VerifyOptions{}); !errors.Is(err, xmldsig.ErrSignature) {
+	if _, err := xmldsig.Verify(t.Context(), changed, key.Public(), xmldsig.VerifyOptions{}); !errors.Is(err, xmldsig.ErrSignature) {
 		t.Fatal(err)
 	}
 }
@@ -279,11 +279,11 @@ func TestKeyInfoDoesNotEstablishTrust(t *testing.T) {
 	src := strings.Replace(xmlString(t, signed), "</ds:Signature>", `<ds:KeyInfo><ds:KeyName>trusted-admin</ds:KeyName><ds:RetrievalMethod URI="https://invalid.example/key"/></ds:KeyInfo></ds:Signature>`, 1)
 
 	doc := parse(t, src)
-	if _, err := xmldsig.Verify(context.Background(), doc, key.Public(), xmldsig.VerifyOptions{}); err != nil {
+	if _, err := xmldsig.Verify(t.Context(), doc, key.Public(), xmldsig.VerifyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := xmldsig.Verify(context.Background(), doc, ecKey(t, elliptic.P256()).Public(), xmldsig.VerifyOptions{}); !errors.Is(err, xmldsig.ErrSignature) {
+	if _, err := xmldsig.Verify(t.Context(), doc, ecKey(t, elliptic.P256()).Public(), xmldsig.VerifyOptions{}); !errors.Is(err, xmldsig.ErrSignature) {
 		t.Fatal(err)
 	}
 }
@@ -296,7 +296,7 @@ func TestVerifyConcurrency(t *testing.T) {
 	for range 16 {
 		wg.Go(func() {
 			for range 10 {
-				if _, err := xmldsig.Verify(context.Background(), signed, key.Public(), xmldsig.VerifyOptions{}); err != nil {
+				if _, err := xmldsig.Verify(t.Context(), signed, key.Public(), xmldsig.VerifyOptions{}); err != nil {
 					t.Error(err)
 				}
 			}
@@ -309,11 +309,11 @@ func TestVerifyConcurrency(t *testing.T) {
 func TestZeroDocuments(t *testing.T) {
 	key := ecKey(t, elliptic.P256())
 	for _, d := range []*document.Document{nil, {}} {
-		if _, err := xmldsig.SignEnveloped(context.Background(), d, key, xmldsig.SignOptions{}); err == nil {
+		if _, err := xmldsig.SignEnveloped(t.Context(), d, key, xmldsig.SignOptions{}); err == nil {
 			t.Fatal("empty document signed")
 		}
 
-		if _, err := xmldsig.Verify(context.Background(), d, key.Public(), xmldsig.VerifyOptions{}); err == nil {
+		if _, err := xmldsig.Verify(t.Context(), d, key.Public(), xmldsig.VerifyOptions{}); err == nil {
 			t.Fatal("empty document verified")
 		}
 	}
@@ -360,7 +360,7 @@ func FuzzVerify(f *testing.F) {
 			return
 		}
 
-		result, err := xmldsig.Verify(context.Background(), doc, key, xmldsig.VerifyOptions{})
+		result, err := xmldsig.Verify(t.Context(), doc, key, xmldsig.VerifyOptions{})
 		if err == nil && (result == nil || !result.CoversElement(doc.Root())) {
 			t.Fatal("success without root coverage")
 		}
@@ -412,7 +412,7 @@ func testModernSignatureMethodsCase(t *testing.T, tc *struct {
 	hash   crypto.Hash
 }, edKey *ed25519.PrivateKey, rsaKey **rsa.PrivateKey,
 ) {
-	ctx := context.Background()
+	ctx := t.Context()
 	d := graphDoc(t, `<r ID="r">payload</r>`)
 
 	signed, e := xmldsig.SignEnveloped(ctx, d, tc.key, xmldsig.SignOptions{SignatureMethod: tc.method, Policy: xmldsig.ModernPolicy()})
@@ -468,7 +468,7 @@ func testModernSignatureMethodsCase(t *testing.T, tc *struct {
 }
 
 func TestContextSignerAdapter(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	provider := &contextTestSigner{key: graphKey(t)}
@@ -662,10 +662,8 @@ func BenchmarkVerifySignature(b *testing.B) {
 	selected := xmldsig.Signatures(d)[0]
 
 	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		if _, err := xmldsig.VerifySignature(context.Background(), d, selected, key, xmldsig.SignatureOptions{}); err != nil {
+	for b.Loop() {
+		if _, err := xmldsig.VerifySignature(b.Context(), d, selected, key, xmldsig.SignatureOptions{}); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -677,10 +675,8 @@ func BenchmarkHMACMessage(b *testing.B) {
 	p := xmldsig.HMACPolicy()
 
 	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		if _, e := xmldsig.ComputeHMAC(context.Background(), data, key, xmldsig.HMACSHA256, 0, p); e != nil {
+	for b.Loop() {
+		if _, e := xmldsig.ComputeHMAC(b.Context(), data, key, xmldsig.HMACSHA256, 0, p); e != nil {
 			b.Fatal(e)
 		}
 	}
@@ -692,16 +688,14 @@ func BenchmarkParameterizedPSSVerify(b *testing.B) {
 	p := xmldsig.ParameterizedPolicy()
 	params := xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{Hash: crypto.SHA256, SaltLength: 20}}
 
-	value, e := xmldsig.SignMessageWithParameters(context.Background(), data, key, xmldsig.RSAPSS, params, p)
+	value, e := xmldsig.SignMessageWithParameters(b.Context(), data, key, xmldsig.RSAPSS, params, p)
 	if e != nil {
 		b.Fatal(e)
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		if e := xmldsig.VerifyMessageWithParameters(context.Background(), data, value, &key.PublicKey, xmldsig.RSAPSS, params, p); e != nil {
+	for b.Loop() {
+		if e := xmldsig.VerifyMessageWithParameters(b.Context(), data, value, &key.PublicKey, xmldsig.RSAPSS, params, p); e != nil {
 			b.Fatal(e)
 		}
 	}
@@ -711,10 +705,8 @@ func BenchmarkVerifyECDSA(b *testing.B) {
 	key := ecKey(b, elliptic.P256())
 	signed := sign(b, key, parse(b, input), xmldsig.SignOptions{})
 	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		if _, err := xmldsig.Verify(context.Background(), signed, key.Public(), xmldsig.VerifyOptions{}); err != nil {
+	for b.Loop() {
+		if _, err := xmldsig.Verify(b.Context(), signed, key.Public(), xmldsig.VerifyOptions{}); err != nil {
 			b.Fatal(err)
 		}
 	}
