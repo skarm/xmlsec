@@ -181,7 +181,7 @@ func fnCodepointsToString(ctx context.Context, args []xdm.Sequence) (xdm.Sequenc
 			return nil, &xdm.Error{Code: lexicon.ErrFOCH0001, Message: fmt.Sprintf("invalid XML character [x%X]", cp)}
 		}
 
-		return xdm.SingleString(string(rune(cp))), nil
+		return xdm.SingleString(string(rune(cp))), nil // #nosec G115 -- The XML code point validation above bounds cp to 0..0x10FFFF.
 	}
 
 	var b strings.Builder
@@ -196,11 +196,11 @@ func fnCodepointsToString(ctx context.Context, args []xdm.Sequence) (xdm.Sequenc
 			return nil, &xdm.Error{Code: lexicon.ErrFOCH0001, Message: fmt.Sprintf("invalid XML character [x%X]", cp)}
 		}
 
-		if err := ChargeString(ctx, utf8.RuneLen(rune(cp))); err != nil {
+		if err := ChargeString(ctx, utf8.RuneLen(rune(cp))); err != nil { // #nosec G115 -- The XML code point validation above bounds cp to 0..0x10FFFF.
 			return nil, err
 		}
 
-		b.WriteRune(rune(cp))
+		b.WriteRune(rune(cp)) // #nosec G115 -- The XML code point validation above bounds cp to 0..0x10FFFF.
 	}
 
 	return xdm.SingleString(b.String()), nil

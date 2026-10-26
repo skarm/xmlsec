@@ -39,8 +39,8 @@ func DecimalZeroDigit(character rune) bool {
 	}
 
 	for _, block := range unicode.Nd.R32 {
-		if character >= rune(block.Lo) && character <= rune(block.Hi) {
-			return (character-rune(block.Lo))%10 == 0
+		if character >= rune(block.Lo) && character <= rune(block.Hi) { // #nosec G115 -- Standard Unicode Nd tables contain code points at most utf8.MaxRune.
+			return (character-rune(block.Lo))%10 == 0 // #nosec G115 -- Standard Unicode Nd tables contain code points at most utf8.MaxRune.
 		}
 	}
 

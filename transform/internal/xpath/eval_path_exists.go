@@ -111,7 +111,7 @@ func pathExists(evalFn exprEvaluator, ctx context.Context, ec *evalContext, lp v
 	defer p.release(ec.runtime.probes)
 
 	p.start = start
-	contexts := append(p.contexts[:0], start)
+	contexts := append(p.contexts[:0], start) //nolint:gocritic // Probe ownership is restored on the next assignment.
 
 	p.contexts = contexts
 	if split > 0 {

@@ -37,6 +37,7 @@ func DecodePOSTReader(ctx context.Context, src io.Reader, expected Parameter, li
 
 	for {
 		if _, err := input.Peek(1); err != nil {
+			// A wrapped/joined EOF can carry a source failure; only bare EOF ends the form.
 			if err == io.EOF {
 				break
 			}
@@ -112,6 +113,7 @@ func postFieldKey(input *bufio.Reader) (string, bool, error) {
 	for {
 		c, err := input.ReadByte()
 		if err != nil {
+			// Preserve a source failure accompanying EOF instead of accepting a partial key.
 			if err != io.EOF {
 				return "", false, err
 			}
@@ -160,6 +162,7 @@ func (r *postValueReader) Read(dst []byte) (int, error) {
 	for used < len(dst) {
 		c, err := r.input.ReadByte()
 		if err != nil {
+			// Only bare EOF marks the field complete; joined errors must reach the decoder.
 			if err == io.EOF {
 				r.done = true
 			}

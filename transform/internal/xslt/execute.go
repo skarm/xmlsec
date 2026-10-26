@@ -922,7 +922,7 @@ func (ec *execContext) addNodeUntracked(node xdm.Node) error {
 	// excluded — they are managed by resolveConditionalScope directly.
 	if node.Type() == xdm.TextNode {
 		if n := len(out.conditionalScopes); n > 0 {
-			out.conditionalScopes[n-1].untrackedNodes = append(out.conditionalScopes[n-1].untrackedNodes, node.(xdm.MutableNode)) //nolint:forcetypeassert
+			out.conditionalScopes[n-1].untrackedNodes = append(out.conditionalScopes[n-1].untrackedNodes, node.(xdm.MutableNode)) //nolint:forcetypeassert // The selected output-tree node implements MutableNode.
 		}
 	}
 
@@ -1218,7 +1218,7 @@ func (ec *execContext) spliceConditionalSequence(placeholder xdm.MutableNode, se
 
 	savedCurrent := out.current
 	if parent != nil {
-		out.current = parent.(xdm.MutableNode) //nolint:forcetypeassert
+		out.current = parent.(xdm.MutableNode) //nolint:forcetypeassert // The selected output-tree node implements MutableNode.
 		defer func() {
 			out.current = savedCurrent
 		}()

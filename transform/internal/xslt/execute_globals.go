@@ -850,13 +850,13 @@ func (ec *execContext) resolveSequencePlaceholders(tmpDoc *xdm.Document, placeho
 		}
 
 		if len(replacement) == 0 {
-			xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert
+			xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert // Tree child nodes implement MutableNode.
 			child = next
 
 			continue
 		}
 
-		if err := child.(xdm.MutableNode).Replace(replacement...); err != nil { //nolint:forcetypeassert
+		if err := child.(xdm.MutableNode).Replace(replacement...); err != nil { //nolint:forcetypeassert // Tree child nodes implement MutableNode.
 			return err
 		}
 
@@ -1003,7 +1003,7 @@ func removeEmptyDocumentText(tmpDoc *xdm.Document) {
 	for child := tmpDoc.FirstChild(); child != nil; {
 		next := child.NextSibling()
 		if child.Type() == xdm.TextNode && len(xdm.CharacterData(child)) == 0 {
-			xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert
+			xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert // Tree child nodes implement MutableNode.
 		}
 
 		child = next
@@ -1014,11 +1014,11 @@ func mergeDocumentText(tmpDoc *xdm.Document) error {
 	for child := tmpDoc.FirstChild(); child != nil; {
 		next := child.NextSibling()
 		if child.Type() == xdm.TextNode && next != nil && next.Type() == xdm.TextNode {
-			if err := child.(xdm.MutableNode).AppendText(xdm.CharacterData(next)); err != nil { //nolint:forcetypeassert
+			if err := child.(xdm.MutableNode).AppendText(xdm.CharacterData(next)); err != nil { //nolint:forcetypeassert // Tree child nodes implement MutableNode.
 				return err
 			}
 
-			xdm.UnlinkNode(next.(xdm.MutableNode)) //nolint:forcetypeassert
+			xdm.UnlinkNode(next.(xdm.MutableNode)) //nolint:forcetypeassert // Tree child nodes implement MutableNode.
 
 			continue
 		}

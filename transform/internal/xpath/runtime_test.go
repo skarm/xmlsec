@@ -1186,7 +1186,7 @@ func TestStableSortStopsOnComparatorFailure(t *testing.T) {
 			calls++
 			return false, failure
 		})
-		if err != failure || calls != 1 {
+		if err != failure || calls != 1 { //nolint:errorlint // The callback error must be returned unchanged, preserving its identity.
 			t.Fatal("sort must stop at the first comparator error", calls, err)
 		}
 	}

@@ -661,7 +661,7 @@ func (reference *fullyNormalizedReference) add(r rune) {
 
 func (reference *fullyNormalizedReference) value() rune {
 	if !reference.invalid && reference.phase == 'd' && reference.digits != 0 {
-		return rune(reference.number)
+		return rune(reference.number) // #nosec G115 -- add rejects references above utf8.MaxRune before updating number.
 	}
 
 	if !reference.invalid {
@@ -749,7 +749,7 @@ func (state *fullyNormalizedText) consume(r rune) error {
 		case "[CDATA[":
 			state.mode, state.tail, state.started = 'd', 0, false
 		default:
-			if !strings.HasPrefix("--", state.prefix) && !strings.HasPrefix("[CDATA[", state.prefix) {
+			if !strings.HasPrefix("--", state.prefix) && !strings.HasPrefix("[CDATA[", state.prefix) { //nolint:gocritic // The candidate delimiters must start with the partial prefix.
 				state.mode = 'v'
 				state.declaration(r)
 			}

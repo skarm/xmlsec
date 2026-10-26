@@ -23,16 +23,14 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/skarm/xmlsec/transform/internal/xdm"
-
-	"golang.org/x/text/transform"
-
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
-	"github.com/skarm/xmlsec/resource"
-	iencoding "github.com/skarm/xmlsec/transform/internal/xdm/encoding"
+	"github.com/skarm/xmlsec/transform/internal/xdm"
+	"github.com/skarm/xmlsec/transform/internal/xdm/encoding"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
+
+	"golang.org/x/text/transform"
 )
 
 // DefaultMaxBytes is the default per-resource read cap applied when
@@ -154,7 +152,9 @@ func LoadTextLinesBounded(ctx context.Context, cfg *Config, href, encoding strin
 		err = lines.emit()
 	}
 
-	if err == errLineLimit {
+	// Only the exact stop signal is successful truncation. A joined error
+	// also carries a close or cancellation failure that must reach the caller.
+	if err == errLineLimit { //nolint:errorlint // Only the exact stop sentinel is success; joined close or cancellation failures must propagate.
 		return lines.lines, true, nil
 	}
 
@@ -268,6 +268,7 @@ func ReadURI(ctx context.Context, cfg *Config, uri string) (text string, err err
 		out    strings.Builder
 		buffer [32 << 10]byte
 	)
+
 	for {
 		n, readErr := rc.Read(buffer[:])
 		if n > 0 {
@@ -285,6 +286,7 @@ func ReadURI(ctx context.Context, cfg *Config, uri string) (text string, err err
 		}
 
 		if readErr != nil {
+			// A wrapped/joined EOF can carry a resource failure and must not return success.
 			if readErr == io.EOF {
 				return out.String(), nil
 			}
@@ -555,7 +557,8 @@ func decodedJSONReader(src io.Reader, contentType string) (io.Reader, bool, erro
 	reader := bufio.NewReaderSize(src, 4096)
 
 	prefix, err := reader.Peek(4)
-	if err != nil && err != io.EOF {
+	// Only bare EOF permits a short encoding prefix; joined source errors remain fatal.
+	if err != nil && err != io.EOF { //nolint:errorlint // Only bare EOF is completion; wrapped or joined failures must propagate.
 		return nil, false, err
 	}
 
@@ -730,7 +733,9 @@ func openURI(ctx context.Context, cfg *Config, uri string) (io.ReadCloser, strin
 		}
 	}
 
-	if typed, ok := rc.(resource.TypedReader); ok {
+	// The resolver already supplies io.ReadCloser. Consume only the optional
+	// metadata method here, without depending on concrete resource adapters.
+	if typed, ok := rc.(interface{ MediaType() string }); ok {
 		hint = typed.MediaType()
 	}
 
@@ -761,7 +766,8 @@ func (r *retrievalReader) Read(p []byte) (int, error) {
 		r.observe(n)
 	}
 
-	if err != nil && err != io.EOF {
+	// Keep wrapped/joined EOF failures classified as retrieval errors.
+	if err != nil && err != io.EOF { //nolint:errorlint // Only bare EOF is completion; wrapped or joined failures must propagate.
 		err = retrievalError(err)
 	}
 
@@ -893,7 +899,7 @@ func resolveEncoding(specified, detected string) string {
 // decodedReader sniffs only the bounded declaration prefix, then keeps one
 // stateful decoder across chunks. XML declarations beyond 200 bytes are ignored.
 func decodedReader(src io.Reader, specified, contentType string) (io.Reader, error) {
-	if specified != "" && iencoding.Load(specified) == nil {
+	if specified != "" && encoding.Load(specified) == nil {
 		return nil, &Error{Code: ErrCodeEncoding, Message: fmt.Sprintf("unsupported encoding: %s", specified)}
 	}
 
@@ -911,8 +917,9 @@ func decodedReader(src io.Reader, specified, contentType string) (io.Reader, err
 
 	reader := bufio.NewReaderSize(src, 4096)
 
+	// These prefix probes tolerate only bare EOF, never a joined resource failure.
 	prefix, err := reader.Peek(4)
-	if err != nil && err != io.EOF {
+	if err != nil && err != io.EOF { //nolint:errorlint // Only bare EOF is completion; wrapped or joined failures must propagate.
 		return nil, err
 	}
 
@@ -925,13 +932,13 @@ func decodedReader(src io.Reader, specified, contentType string) (io.Reader, err
 
 	if detected == "" && specified == "" {
 		prefix, err = reader.Peek(5)
-		if err != nil && err != io.EOF {
+		if err != nil && err != io.EOF { //nolint:errorlint // Only bare EOF is completion; wrapped or joined failures must propagate.
 			return nil, err
 		}
 
 		if bytes.Equal(prefix, []byte("<?xml")) {
 			prefix, err = reader.Peek(202)
-			if err != nil && err != io.EOF {
+			if err != nil && err != io.EOF { //nolint:errorlint // Only bare EOF is completion; wrapped or joined failures must propagate.
 				return nil, err
 			}
 
@@ -959,7 +966,7 @@ func encodingReader(src io.Reader, name string) (io.Reader, error) {
 		return src, nil
 	}
 
-	codec := iencoding.Load(name)
+	codec := encoding.Load(name)
 	if codec == nil {
 		return nil, &Error{Code: ErrCodeEncoding, Message: fmt.Sprintf("unsupported encoding: %s", name)}
 	}
@@ -1012,6 +1019,7 @@ func readDecodedText(ctx context.Context, reader io.Reader, maximum int64, xmlOn
 		}
 
 		if err != nil {
+			// Only bare EOF completes decoding; joined read/close failures must survive.
 			if err == io.EOF {
 				return ctx.Err()
 			}

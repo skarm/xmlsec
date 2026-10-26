@@ -94,7 +94,7 @@ func ebvAtomic(v xdm.AtomicValue) (bool, error) {
 	// untypedAtomic, string-derived types, and numeric types only.
 	switch v.TypeName {
 	case xdm.TypeBoolean:
-		return v.Value.(bool), nil //nolint:forcetypeassert
+		return v.Value.(bool), nil //nolint:forcetypeassert // The xs:boolean fast path requires its boolean representation.
 	case xdm.TypeString, xdm.TypeAnyURI, xdm.TypeUntypedAtomic:
 		s, _ := v.Value.(string)
 		return s != "", nil

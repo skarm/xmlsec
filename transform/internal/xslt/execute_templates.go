@@ -153,7 +153,7 @@ func (ec *execContext) findBestTemplate(ctx context.Context, node xdm.Node, mode
 	}
 
 	if best == nil {
-		return nil, nil //nolint:nilnil
+		return nil, nil //nolint:nilnil // No matching template is an ordinary lookup miss.
 	}
 
 	if ec.onMultipleMatchFail(mode) {
@@ -349,7 +349,7 @@ func (ec *execContext) findAtomicTemplate(ctx context.Context, item xdm.Item, mo
 	}
 
 	if best == nil {
-		return nil, nil //nolint:nilnil
+		return nil, nil //nolint:nilnil // No matching template is an ordinary lookup miss.
 	}
 
 	if ec.onMultipleMatchFail(mode) {

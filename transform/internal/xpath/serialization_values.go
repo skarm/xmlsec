@@ -252,7 +252,7 @@ func serializedJSONRune(r rune, canEncode func(rune) bool) string {
 		}
 	}
 	if r <= 0xFFFF {
-		unit(0, uint16(r))
+		unit(0, uint16(r)) // #nosec G115 -- r is a decoded Unicode rune and this branch restricts it to the BMP.
 		return string(data[:6])
 	}
 

@@ -3036,8 +3036,8 @@ func encodeJSONStringForSerialization(s string, opts serializeOptions) (string, 
 }
 
 func utf16SurrogatePair(r rune) (uint16, uint16) {
-	cp := uint32(r - 0x10000)
-	hi := uint16(0xD800 + (cp >> 10))
+	cp := uint32(r - 0x10000)         // #nosec G115 -- The caller passes a supplementary Unicode scalar in 0x10000..0x10FFFF.
+	hi := uint16(0xD800 + (cp >> 10)) // #nosec G115 -- The supplementary scalar yields a high surrogate in 0xD800..0xDBFF.
 	lo := uint16(0xDC00 + (cp & 0x3FF))
 
 	return hi, lo

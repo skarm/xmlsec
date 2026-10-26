@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/transform/internal/unparsedtext"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
 func lookupFunctionsUnparsedText(name string) (*builtinFunc, bool) {

@@ -286,6 +286,7 @@ func ReadSequence(ctx context.Context, src io.Reader, maximum int) (asn1.RawValu
 	}
 
 	var extra [1]byte
+	// Only bare EOF proves that no trailing value or source failure remains.
 	if n, err := io.ReadFull(source, extra[:]); n != 0 || err != io.EOF {
 		if err == nil || n > 0 {
 			err = ErrInvalidDER

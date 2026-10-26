@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/xmlchar"
+	"github.com/skarm/xmlsec/transform/internal/unparsedtext"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
 // ResolveURIReference applies fn:resolve-uri's IRI rules to explicit strings.

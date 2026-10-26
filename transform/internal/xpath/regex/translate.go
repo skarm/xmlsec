@@ -994,11 +994,11 @@ func ResolveProperty(name string) *unicode.RangeTable {
 
 	for _, r := range ranges {
 		if r.low <= 0xFFFF {
-			table.R16 = append(table.R16, unicode.Range16{Lo: uint16(r.low), Hi: uint16(min(r.high, 0xFFFF)), Stride: 1})
+			table.R16 = append(table.R16, unicode.Range16{Lo: uint16(r.low), Hi: uint16(min(r.high, 0xFFFF)), Stride: 1}) // #nosec G115 -- The Unicode block table supplies nonnegative scalar ranges; the R16 branch caps the high bound.
 		}
 
 		if r.high > 0xFFFF {
-			table.R32 = append(table.R32, unicode.Range32{Lo: uint32(max(r.low, 0x10000)), Hi: uint32(r.high), Stride: 1})
+			table.R32 = append(table.R32, unicode.Range32{Lo: uint32(max(r.low, 0x10000)), Hi: uint32(r.high), Stride: 1}) // #nosec G115 -- The Unicode block table bounds every range by 0x10FFFF.
 		}
 	}
 

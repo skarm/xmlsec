@@ -82,7 +82,7 @@ func (r *evaluationRuntime) resolveCollation(uri, baseURI string) (*collationImp
 	defer r.collationMu.Unlock()
 
 	if stored, ok := r.collations.Load(key); ok {
-		return stored.(*collationImpl), nil //nolint:forcetypeassert
+		return stored.(*collationImpl), nil //nolint:forcetypeassert // Only collationImpl pointers are stored in this cache.
 	}
 
 	if len(r.collationKeys) == collationCacheCapacity {

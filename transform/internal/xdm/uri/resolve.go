@@ -75,7 +75,7 @@ func ResolveSchemaURI(ref, base string) (string, error) {
 	if err != nil {
 		// Rel only fails when one is absolute and the other isn't;
 		// nothing actionable here — accept and let the loader decide.
-		return p, nil //nolint:nilerr
+		return p, nil //nolint:nilerr // A mixed absolute/relative filesystem base is delegated to the configured loader.
 	}
 
 	rel = ToSlash(rel)

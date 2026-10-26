@@ -611,7 +611,7 @@ func frenchOrdinal(n int64, _ string) string {
 }
 
 func frenchTens(n int64, ones []string) string {
-	tens := []string{"", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante", "quatre-vingt", "quatre-vingt"}
+	tens := []string{"", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante", "quatre-vingt", "quatre-vingt"} //nolint:misspell // French cardinal number, not an English spelling.
 	t := n / 10
 
 	o := n % 10

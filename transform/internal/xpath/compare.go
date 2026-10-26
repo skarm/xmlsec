@@ -881,7 +881,7 @@ func compareAtomicWithImplicitTimezone(op TokenType, a, b xdm.AtomicValue, impli
 	}
 
 	if a.TypeName == xdm.TypeBoolean && b.TypeName == xdm.TypeBoolean {
-		return compareBooleans(op, a.Value.(bool), b.Value.(bool)), nil //nolint:forcetypeassert
+		return compareBooleans(op, a.Value.(bool), b.Value.(bool)), nil //nolint:forcetypeassert // Operand dispatch has selected the matching atomic representations.
 	}
 
 	if a.IsNumeric() && b.IsNumeric() {
@@ -920,9 +920,9 @@ func compareSameTypeAtomics(op TokenType, a, b xdm.AtomicValue, implicitTZ *time
 	case xdm.TypeYearMonthDuration, xdm.TypeDayTimeDuration, xdm.TypeDuration:
 		result, err = compareDurationValues(op, a, b)
 	case xdm.TypeBase64Binary, xdm.TypeHexBinary:
-		result = compareBinary(op, a.Value.([]byte), b.Value.([]byte)) //nolint:forcetypeassert
+		result = compareBinary(op, a.Value.([]byte), b.Value.([]byte)) //nolint:forcetypeassert // Operand dispatch has selected the matching atomic representations.
 	case xdm.TypeQName:
-		result, err = compareQName(op, a.Value.(xdm.QNameValue), b.Value.(xdm.QNameValue)) //nolint:forcetypeassert
+		result, err = compareQName(op, a.Value.(xdm.QNameValue), b.Value.(xdm.QNameValue)) //nolint:forcetypeassert // Operand dispatch has selected the matching atomic representations.
 	case xdm.TypeGDay, xdm.TypeGMonth, xdm.TypeGMonthDay, xdm.TypeGYear, xdm.TypeGYearMonth:
 		result, err = compareGregorianValues(op, a, b, implicitTZ)
 	default:

@@ -132,7 +132,7 @@ func promoteSchemaNumeric(a xdm.AtomicValue) xdm.AtomicValue {
 // integerArithInt64 performs integer arithmetic using int64 values.
 // Falls back to big.Int on overflow.
 func integerArithInt64(ctx context.Context, op TokenType, a, b int64) (xdm.Sequence, error) {
-	switch op { //nolint:exhaustive
+	switch op { //nolint:exhaustive // Only arithmetic operator tokens belong in this dispatcher.
 	case TokenPlus:
 		r, ok := addInt64(a, b)
 		if ok {

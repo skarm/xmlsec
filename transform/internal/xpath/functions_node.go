@@ -14,8 +14,8 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/xmlchar"
+	"github.com/skarm/xmlsec/transform/internal/unparsedtext"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
 func lookupFunctionsNode(name string) (*builtinFunc, bool) {
@@ -1244,7 +1244,7 @@ func fnCollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 		return nil, &xdm.Error{Code: lexicon.ErrFODC0002, Message: "fn:collection: no collection resolver configured"}
 	}
 
-	cache := InvocationState(ctx, collectionInvocationCacheKey(ec.collectionResolver, false), func() any { return make(map[string]xdm.Sequence) }).(map[string]xdm.Sequence) //nolint:forcetypeassert
+	cache := InvocationState(ctx, collectionInvocationCacheKey(ec.collectionResolver, false), func() any { return make(map[string]xdm.Sequence) }).(map[string]xdm.Sequence) //nolint:forcetypeassert // This invocation-state key is populated only by the typed map factory.
 	if seq, found := cache[uri]; found {
 		if ec.resourceReads != nil {
 			if err := registerCollectionDocuments(ctx, ec, seq); err != nil {
@@ -1355,7 +1355,7 @@ func fnURICollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 		return nil, &xdm.Error{Code: lexicon.ErrFODC0002, Message: "fn:uri-collection: no collection resolver configured"}
 	}
 
-	cache := InvocationState(ctx, collectionInvocationCacheKey(ec.collectionResolver, true), func() any { return make(map[string]xdm.Sequence) }).(map[string]xdm.Sequence) //nolint:forcetypeassert
+	cache := InvocationState(ctx, collectionInvocationCacheKey(ec.collectionResolver, true), func() any { return make(map[string]xdm.Sequence) }).(map[string]xdm.Sequence) //nolint:forcetypeassert // This invocation-state key is populated only by the typed map factory.
 	if seq, found := cache[uri]; found {
 		return seq, nil
 	}
@@ -1815,7 +1815,7 @@ func nodeArgOrCtx(ctx context.Context, args []xdm.Sequence) (xdm.Node, error) {
 	}
 
 	if xdm.SequenceLen(args[0]) == 0 {
-		return nil, nil //nolint:nilnil
+		return nil, nil //nolint:nilnil // An empty optional node argument has no node.
 	}
 
 	if xdm.SequenceLen(args[0]) > 1 {

@@ -6,7 +6,7 @@ Adapted files retain origin, copyright and modification notices; the full notice
 is in [MIT-helium.txt](../licenses/MIT-helium.txt). Grammar metadata and the adapted
 pattern parser from knroy/go-xml retain [their MIT notice](../licenses/MIT-knroy-go-xml.txt).
 
-The private `transform/internal/{xdm,xpath,xslt,pattern}` packages adapt those
+The private `transform/internal/{xdm,xpath,xslt,pattern,unparsedtext}` packages adapt those
 sources to the project's XML storage, immutable public values, language profiles,
 context cancellation, resource policy and execution budgets. They are maintained
 as part of this module. [transform](transforms.md) describes the public API.

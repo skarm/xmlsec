@@ -481,6 +481,7 @@ func decodePEM(ctx context.Context, data []byte, maximum int) (decodedMaterial, 
 	}
 
 	var probe [1]byte
+	// A joined EOF may include a PEM/base64 read failure; do not accept it as completion.
 	if n, err := decoder.Read(probe[:]); n != 0 || err != io.EOF {
 		clear(output)
 		return decodedMaterial{}, errors.Join(ErrFormat, err)

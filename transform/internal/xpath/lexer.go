@@ -224,7 +224,7 @@ func (l *lexer) emitPairedOperator(r rune, next byte, single, paired TokenType) 
 func (l *lexer) scanComparisonOperator(r rune, single, equal, nodeOrder TokenType) {
 	l.advanceRune(r)
 
-	if l.pos < len(l.input) && l.input[l.pos] == byte(r) {
+	if l.pos < len(l.input) && l.input[l.pos] == byte(r) { // #nosec G115 -- This helper is called only for the ASCII comparison operators < and >.
 		l.emit(nodeOrder, string(r)+string(r))
 		l.pos++
 

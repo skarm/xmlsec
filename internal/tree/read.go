@@ -130,6 +130,7 @@ func newXMLInputMode(ctx context.Context, src io.Reader, maximum int64, tokenLim
 	r := &xmlInput{source: source, reader: bufio.NewReaderSize(source, 4096), encoding: sourceEncoding{name: nameUTF8}, maximum: maximum, tokenLimit: tokenLimit}
 
 	prefix, err := r.reader.Peek(4)
+	// A short prefix is usable only at bare EOF; a joined source failure remains fatal.
 	if err != nil && err != io.EOF {
 		return nil, err
 	}
@@ -237,6 +238,7 @@ func (r *xmlInput) singleByteRune() (rune, error) {
 func (r *xmlInput) utf16Rune() (rune, error) {
 	var pair [2]byte
 	if _, err := io.ReadFull(r.reader, pair[:]); err != nil {
+		// Only bare EOF is a clean boundary before the next UTF-16 code unit.
 		if err == io.EOF {
 			return 0, err
 		}

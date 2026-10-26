@@ -254,6 +254,7 @@ func readCiphertext(ctx context.Context, source io.Reader, maximum int) ([]byte,
 		}
 
 		if err != nil {
+			// ReadFull's bare sentinels finish the stream; joined source failures do not.
 			if err != io.EOF && err != io.ErrUnexpectedEOF {
 				return nil, err
 			}

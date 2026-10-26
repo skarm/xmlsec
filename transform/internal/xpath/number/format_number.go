@@ -358,7 +358,7 @@ func FormatFrac(frac float64, minDigits, maxDigits int, df DecimalFormat) string
 	for range maxDigits {
 		remaining *= 10
 		d := int(remaining)
-		digits = append(digits, byte('0'+d))
+		digits = append(digits, byte('0'+d)) // #nosec G115 -- The nonnegative fractional remainder produces a decimal digit in 0..9.
 		remaining -= float64(d)
 	}
 
@@ -390,7 +390,7 @@ func FormatRatFrac(frac *big.Rat, minDigits, maxDigits int, df DecimalFormat) st
 	for range maxDigits {
 		rem.Mul(&rem, ten)
 		digit.QuoRem(&rem, frac.Denom(), &rem)
-		digits = append(digits, byte('0'+digit.Int64()))
+		digits = append(digits, byte('0'+digit.Int64())) // #nosec G115 -- Long division of a nonnegative proper fraction produces digits in 0..9.
 	}
 
 	end := len(digits)

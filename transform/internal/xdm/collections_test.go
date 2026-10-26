@@ -221,7 +221,7 @@ func TestMapIterationIsolationAndEarlyError(t *testing.T) {
 		v.Get(0).(xdm.AtomicValue).BigInt().SetInt64(99)
 		return sentinel
 	})
-	if err != sentinel || calls != 1 {
+	if err != sentinel || calls != 1 { //nolint:errorlint // The callback error must be returned unchanged, preserving its identity.
 		t.Fatalf("ForEach error/stop: %v,%d", err, calls)
 	}
 	value, ok := m.Get(xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(1)})
@@ -229,7 +229,7 @@ func TestMapIterationIsolationAndEarlyError(t *testing.T) {
 		t.Fatal("ForEach exposed map storage")
 	}
 	calls = 0
-	if err = m.ForEachView(func(xdm.AtomicValue, xdm.Sequence) error { calls++; return sentinel }); err != sentinel || calls != 1 {
+	if err = m.ForEachView(func(xdm.AtomicValue, xdm.Sequence) error { calls++; return sentinel }); err != sentinel || calls != 1 { //nolint:errorlint // The callback error must be returned unchanged, preserving its identity.
 		t.Fatal("ForEachView did not stop on exact error")
 	}
 	var seen []string

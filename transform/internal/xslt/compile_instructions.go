@@ -162,7 +162,7 @@ func (c *compiler) compileInstruction(ctx context.Context, elem *xdm.Element) (i
 	}
 
 	if !include {
-		return nil, nil //nolint:nilnil
+		return nil, nil //nolint:nilnil // use-when=false omits the instruction without a compilation error.
 	}
 
 	if err := c.prepareInstructionAttributes(ctx, elem); err != nil {
@@ -604,7 +604,7 @@ func (c *compiler) compileXSLTInstruction(ctx context.Context, elem *xdm.Element
 			return nil, err
 		}
 
-		return nil, nil //nolint:nilnil
+		return nil, nil //nolint:nilnil // The declaration is checked statically and emits no runtime instruction.
 	case lexicon.XSLTElementContextItem:
 		return nil, staticError(errCodeXTSE0010, "xsl:context-item is only allowed as the first child of xsl:template")
 	case lexicon.XSLTElementAssert:

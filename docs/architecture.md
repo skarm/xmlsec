@@ -15,6 +15,12 @@ APIs by format or protocol; `internal` packages provide shared implementation.
   `xdm`, `xpath`, `xslt` and `pattern` packages implement language processing;
   [source notices](engine-origin.md) record their origins.
 
+`transform/internal/unparsedtext` owns bounded resource reading and text decoding
+shared by XPath retrieval functions and XSLT text-error handling. It consumes
+resolver and optional media-type methods without importing the public filesystem
+or HTTP adapters. The public `transform` package wires application resolvers
+into the language processors and applies aggregate invocation budgets.
+
 ## Signatures, encryption and trust
 
 - `xmldsig`: XML signatures and authenticated reference coverage.

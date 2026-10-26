@@ -101,7 +101,7 @@ func CastAtomicContext(ctx context.Context, value xdm.AtomicValue, target string
 }
 
 func int64Bits(n int64) int {
-	u := uint64(n)
+	u := uint64(n) // #nosec G115 -- Unsigned conversion and negation compute the magnitude even for MinInt64.
 	if n < 0 {
 		u = -u
 	}

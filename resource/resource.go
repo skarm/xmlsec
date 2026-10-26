@@ -71,8 +71,9 @@ type FSConfig struct {
 	// FS is required and remains application-owned. The application controls symlink
 	// handling and cancellation of blocking I/O.
 	FS fs.FS
-	// BaseURI is the absolute directory URI ending in a slash. Resource paths beneath it
-	// map to FS independently of the process working directory.
+	// BaseURI is the absolute directory URI ending in a slash, without a query
+	// or fragment. Resource paths beneath it map to FS independently of the
+	// process working directory.
 	BaseURI string
 }
 
@@ -203,6 +204,7 @@ func NewHTTPResolver(config HTTPConfig) (*HTTPResolver, error) {
 }
 
 // Resolve retrieves one HTTP resource with request and body cancellation.
+// URI fragments, including an empty fragment delimiter, are refused.
 func (r *HTTPResolver) Resolve(ctx context.Context, uri string) (io.ReadCloser, error) {
 	if ctx == nil || r == nil || r.client == nil {
 		return nil, ErrInput
@@ -213,7 +215,7 @@ func (r *HTTPResolver) Resolve(ctx context.Context, uri string) (io.ReadCloser, 
 	}
 
 	u, err := url.Parse(uri)
-	if err != nil || !r.allowed(u) || u.Fragment != "" {
+	if err != nil || !r.allowed(u) || strings.ContainsRune(uri, '#') {
 		return nil, ErrPolicy
 	}
 
@@ -278,7 +280,7 @@ func (t *httpTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func parseURI(value string) (*url.URL, error) {
 	u, err := url.Parse(value)
-	if err != nil || !u.IsAbs() || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsRune(u.Path, '\\') {
+	if err != nil || !u.IsAbs() || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.ContainsRune(value, '#') || strings.ContainsRune(u.Path, '\\') {
 		return nil, ErrPolicy
 	}
 

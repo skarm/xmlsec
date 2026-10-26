@@ -742,10 +742,10 @@ func daysBeforeMonth(year *big.Int, month int) int {
 	}
 
 	if isLeapYearBig(year) {
-		return leap[month-1]
+		return leap[month-1] // #nosec G602 -- Indexing is reached only for month in 1..12.
 	}
 
-	return common[month-1]
+	return common[month-1] // #nosec G602 -- Indexing is reached only for month in 1..12.
 }
 
 func floorDivInt(n *big.Int, d int64) *big.Int {

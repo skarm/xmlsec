@@ -27,6 +27,80 @@ import (
 
 const fsBaseURI = "embed:/"
 
+func TestResolversRejectEmptyFragments(t *testing.T) {
+	for _, kind := range []string{"filesystem", "HTTP"} {
+		t.Run(kind, func(t *testing.T) {
+			calls := 0
+			var resolver resource.Resolver
+			var base string
+
+			if kind == "filesystem" {
+				base = fsBaseURI
+				adapter, err := resource.NewFSResolver(resource.FSConfig{BaseURI: base, FS: openFunc(func(name string) (fs.File, error) {
+					calls++
+					if name != "file#" {
+						t.Errorf("unexpected resource: %q", name)
+					}
+
+					return &testFile{}, nil
+				})})
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				resolver = adapter
+			} else {
+				base = "https://resource.test/"
+				adapter, err := resource.NewHTTPResolver(resource.HTTPConfig{AllowedOrigins: []string{"https://resource.test"}, Client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					calls++
+					if req.URL.Path != "/file#" {
+						t.Errorf("unexpected resource: %q", req.URL.Path)
+					}
+
+					return evidenceResponse(req, http.StatusOK, io.NopCloser(strings.NewReader(""))), nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				resolver = adapter
+			}
+
+			for _, suffix := range []string{"#", "#fragment"} {
+				stream, err := resolver.Resolve(t.Context(), base+"file"+suffix)
+				if stream != nil {
+					_ = stream.Close()
+				}
+
+				if stream != nil || !errors.Is(err, resource.ErrPolicy) || calls != 0 {
+					t.Fatalf("fragment %q opened a resource: %v, calls=%d", suffix, err, calls)
+				}
+			}
+
+			// An encoded '#' belongs to the path and is not a fragment delimiter.
+			stream, err := resolver.Resolve(t.Context(), base+"file%23")
+			if err != nil || stream == nil || calls != 1 {
+				t.Fatalf("encoded path rejected: %v, calls=%d", err, calls)
+			}
+
+			if err := stream.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestResolverConfigurationRejectsEmptyFragments(t *testing.T) {
+	filesystem := openFunc(func(string) (fs.File, error) { t.Fatal("unexpected filesystem access"); return nil, fs.ErrNotExist })
+	if adapter, err := resource.NewFSResolver(resource.FSConfig{BaseURI: fsBaseURI + "#", FS: filesystem}); adapter != nil || !errors.Is(err, resource.ErrInput) {
+		t.Fatalf("fragment-bearing base accepted: %v", err)
+	}
+
+	if adapter, err := resource.NewHTTPResolver(resource.HTTPConfig{AllowedOrigins: []string{"https://resource.test#"}, Client: &http.Client{}}); adapter != nil || !errors.Is(err, resource.ErrInput) {
+		t.Fatalf("fragment-bearing origin accepted: %v", err)
+	}
+}
+
 func TestHTTPResolverRechecksCallerRedirectChanges(t *testing.T) {
 	calls, closed := 0, 0
 	resolver, err := resource.NewHTTPResolver(resource.HTTPConfig{

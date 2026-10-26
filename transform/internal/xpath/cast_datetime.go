@@ -820,7 +820,7 @@ func exactFractionDigits(frac *big.Rat) string {
 	for i := 0; i < maxDigits && num.Sign() != 0; i++ {
 		num.Mul(num, ten)
 		q.QuoRem(num, den, num)
-		b.WriteByte(byte('0' + q.Int64()))
+		b.WriteByte(byte('0' + q.Int64())) // #nosec G115 -- Long division of a fraction in [0,1) produces digits in 0..9.
 	}
 
 	return strings.TrimRight(b.String(), "0")

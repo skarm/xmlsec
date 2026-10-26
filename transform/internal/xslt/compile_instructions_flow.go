@@ -455,7 +455,7 @@ func (c *compiler) compileSortKey(ctx context.Context, elem *xdm.Element) (*sort
 		}
 
 		if !include {
-			return nil, nil //nolint:nilnil
+			return nil, nil //nolint:nilnil // use-when=false omits the declaration without a compilation error.
 		}
 	}
 
@@ -558,7 +558,7 @@ func (c *compiler) compileWithParam(ctx context.Context, elem *xdm.Element) (*wi
 		}
 
 		if !include {
-			return nil, nil //nolint:nilnil
+			return nil, nil //nolint:nilnil // use-when=false omits the declaration without a compilation error.
 		}
 	}
 

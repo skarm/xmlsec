@@ -642,7 +642,7 @@ func appendEscapedJSONStringRune(b *strings.Builder, r rune) {
 		b.WriteString(`\t`)
 	default:
 		if (r >= 0x00 && r <= 0x1F) || !isValidXMLCodepoint(int(r)) {
-			appendJSONCodeUnit(b, uint16(r), jsonHexLower)
+			appendJSONCodeUnit(b, uint16(r), jsonHexLower) // #nosec G115 -- Decoded Unicode runes reach this branch only for disallowed BMP code points.
 			return
 		}
 
@@ -670,7 +670,7 @@ func appendSerializedJSONStringRune(b *strings.Builder, r rune) {
 		b.WriteString(`\t`)
 	default:
 		if (r >= 0x00 && r <= 0x1F) || (r >= 0x7F && r <= 0x9F) || !isValidXMLCodepoint(int(r)) {
-			appendJSONCodeUnit(b, uint16(r), jsonHexUpper)
+			appendJSONCodeUnit(b, uint16(r), jsonHexUpper) // #nosec G115 -- Decoded Unicode runes reach this branch only for disallowed BMP code points.
 			return
 		}
 

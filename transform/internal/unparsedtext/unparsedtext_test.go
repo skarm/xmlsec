@@ -13,8 +13,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/tree"
-	iencoding "github.com/skarm/xmlsec/transform/internal/xdm/encoding"
-	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
+	"github.com/skarm/xmlsec/transform/internal/unparsedtext"
+	"github.com/skarm/xmlsec/transform/internal/xdm/encoding"
 )
 
 const textUTF8 = "utf-8"
@@ -121,7 +121,7 @@ func TestSplitLinesBounded(t *testing.T) {
 
 func TestTextReaderPreservesStatefulEncoding(t *testing.T) {
 	text := strings.Repeat("日本語abc", 10000)
-	codec := iencoding.Load("iso-2022-jp")
+	codec := encoding.Load("iso-2022-jp")
 
 	source, err := codec.NewEncoder().Bytes([]byte(text))
 	if err != nil {
@@ -155,6 +155,60 @@ func TestLineLimitDoesNotHideCloseFailure(t *testing.T) {
 	})}
 	if _, _, err := unparsedtext.LoadTextLinesBounded(t.Context(), cfg, "urn:text", "", 1); !errors.Is(err, failure) {
 		t.Fatal(err)
+	}
+}
+
+func TestLineLimitCompletion(t *testing.T) {
+	failure := errors.New("close failed")
+	for _, tc := range []struct {
+		name     string
+		closeErr error
+		cancel   bool
+	}{
+		{name: "successful truncation"},
+		{name: "close failure joined with EOF", closeErr: errors.Join(io.EOF, failure)},
+		{name: "cancellation on close", cancel: true},
+		{name: "cancellation and close failure", cancel: true, closeErr: failure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			closed := 0
+			cfg := &unparsedtext.Config{URIResolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				return closeFailure{Reader: strings.NewReader("a\nb\nc\n"), err: tc.closeErr, onClose: func() {
+					closed++
+					if tc.cancel {
+						cancel()
+					}
+				}}, nil
+			})}
+
+			lines, truncated, err := unparsedtext.LoadTextLinesBounded(ctx, cfg, "urn:text", "", 1)
+			if closed != 1 {
+				t.Fatalf("resource closed %d times; want 1", closed)
+			}
+
+			if tc.closeErr == nil && !tc.cancel {
+				if err != nil || !truncated || !slices.Equal(lines, []string{"a", "b"}) {
+					t.Fatalf("successful truncation: %q, %v, %v", lines, truncated, err)
+				}
+
+				return
+			}
+
+			if lines != nil || truncated || err == nil {
+				t.Fatalf("failure returned partial success: %q, %v, %v", lines, truncated, err)
+			}
+
+			if tc.closeErr != nil && !errors.Is(err, failure) {
+				t.Fatalf("close failure lost: %v", err)
+			}
+
+			if tc.cancel && !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation lost: %v", err)
+			}
+		})
 	}
 }
 
@@ -211,10 +265,17 @@ func (r *trackedReader) Close() error { r.closed = true; return nil }
 
 type closeFailure struct {
 	io.Reader
-	err error
+	err     error
+	onClose func()
 }
 
-func (r closeFailure) Close() error { return r.err }
+func (r closeFailure) Close() error {
+	if r.onClose != nil {
+		r.onClose()
+	}
+
+	return r.err
+}
 
 func BenchmarkTextResources(b *testing.B) {
 	for _, size := range []int{64, 1 << 20} {

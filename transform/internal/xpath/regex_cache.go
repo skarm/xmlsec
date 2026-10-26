@@ -54,7 +54,7 @@ func (c *regexLRUCache) Load(key xpathRegexCacheKey) (*compiledXPathRegex, bool)
 
 	c.ll.MoveToFront(el)
 
-	return el.Value.(*regexLRUEntry).value, true //nolint:forcetypeassert
+	return el.Value.(*regexLRUEntry).value, true //nolint:forcetypeassert // Only regexLRUEntry values are inserted into this list.
 }
 
 // LoadOrStore returns the existing value for key, marking it most-recently-used,
@@ -67,7 +67,7 @@ func (c *regexLRUCache) LoadOrStore(key xpathRegexCacheKey, value *compiledXPath
 
 	if el, ok := c.items[key]; ok {
 		c.ll.MoveToFront(el)
-		return el.Value.(*regexLRUEntry).value, true //nolint:forcetypeassert
+		return el.Value.(*regexLRUEntry).value, true //nolint:forcetypeassert // Only regexLRUEntry values are inserted into this list.
 	}
 
 	weight := 2*(len(key.pattern)+len(key.flags)) + 256 + value.program.CacheCost(xpathRegexCacheBytes+1)

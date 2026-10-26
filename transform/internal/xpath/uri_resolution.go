@@ -7,8 +7,8 @@ import (
 	"context"
 	"net/url"
 
+	"github.com/skarm/xmlsec/transform/internal/unparsedtext"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
-	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
 // ContextBaseURI exposes the calling XPath static base to host functions. The

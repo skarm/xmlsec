@@ -311,7 +311,7 @@ func formatSequentialSymbol(n *big.Int, startCodepoint rune, maxVal int) string 
 		return n.String()
 	}
 
-	return string(startCodepoint + rune(n.Int64()-1))
+	return string(startCodepoint + rune(n.Int64()-1)) // #nosec G115 -- The caller supplies a 20-symbol block; n is checked against that block above.
 }
 
 // CJK ideographic number formatting
@@ -509,7 +509,7 @@ func formatAlpha(n *big.Int, upper bool) string {
 
 		mod := new(big.Int)
 		val.DivMod(val, twentySix, mod)
-		digits = append([]rune{base + rune(mod.Int64())}, digits...)
+		digits = append([]rune{base + rune(mod.Int64())}, digits...) // #nosec G115 -- DivMod by 26 produces a remainder in 0..25.
 	}
 
 	return string(digits)
@@ -1044,7 +1044,7 @@ func germanWordsUnderThousand(n int64) string {
 	tens := []string{"", "", "zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig"}
 
 	if n < 20 {
-		return ones[n]
+		return ones[n] // #nosec G602 -- The caller passes 1..999; this branch restricts n to 1..19.
 	}
 
 	if n < 100 {
@@ -1186,7 +1186,7 @@ func int64ToFrenchWords(n int64) string {
 		"", "un", "deux", "trois", "quatre", "cinq", nameSix, "sept", "huit", "neuf", "dix",
 		"onze", "douze", "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf",
 	}
-	tens := []string{"", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante", "quatre-vingt", "quatre-vingt"}
+	tens := []string{"", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante", "quatre-vingt", "quatre-vingt"} //nolint:misspell // French cardinal number, not an English spelling.
 
 	if n < 20 {
 		return ones[n]

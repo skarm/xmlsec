@@ -379,7 +379,7 @@ func (ec *execContext) stripWhitespaceFromNodeInto(root xdm.Node, removed map[xd
 					removed[child] = struct{}{}
 				}
 
-				xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert
+				xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert // Tree child nodes implement MutableNode.
 			} else if child.FirstChild() != nil {
 				stack = append(stack, stripStackFrame{node: child, preserve: childXMLSpacePreserve(child, frame.preserve)})
 			}

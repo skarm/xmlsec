@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/transform/internal/unparsedtext"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-	unparsedtext "github.com/skarm/xmlsec/transform/internal/xpath/text"
 )
 
 const maxNodeSetLength = xdm.DefaultMaxNodeSetLength

@@ -17,7 +17,7 @@ func TestBuildURIReferenceFirstPortableResolution(t *testing.T) {
 		{"/absolute.xml", "relative/doc.xml", "/absolute.xml"},
 		{"child.xml", "", "child.xml"},
 		{"https://other.test/a", `C:\a\doc.xml`, "https://other.test/a"},
-		{`D:\other\absolute.xml`, "https://example.test/base", `D:\other\absolute.xml`},
+		{`D:\other\absolute.xml`, "https://example.test/base", `D:\other\absolute.xml`}, //nolint:misspell // Literal Windows path; the backslash precedes the word other.
 		{`..\child\`, `C:\a\doc.xml`, "C:/child/"},
 		{"child.xml", `..\a\doc.xml`, "../a/child.xml"},
 		{"child.xml", `\\server\share\a\doc.xml`, "//server/share/a/child.xml"},

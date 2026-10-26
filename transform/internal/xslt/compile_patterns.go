@@ -2068,7 +2068,7 @@ func validatePatternExprInner(expr xpath.Expr, _ bool, nsBindings map[string]str
 		case xpath.LocationPath:
 			return nil // (path)[pred]
 		case *xpath.LocationPath:
-			lp := e.Expr.(*xpath.LocationPath) //nolint:forcetypeassert
+			lp := e.Expr.(*xpath.LocationPath) //nolint:forcetypeassert // The enclosing type-switch case has selected *xpath.LocationPath.
 			if lp.Absolute && len(lp.Steps) == 0 {
 				return nil // (/)[pred]
 			}

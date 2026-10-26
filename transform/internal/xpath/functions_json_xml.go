@@ -941,7 +941,7 @@ func parseEscapedUnicodeSequence(s string) (string, string, int, error) {
 	case cp >= 0xDC00 && cp <= 0xDFFF:
 		return "", "", 0, &xdm.Error{Code: errCodeFOJS0007, Message: "xml-to-json: invalid low surrogate"}
 	default:
-		return encoded, string(rune(cp)), 6, nil
+		return encoded, string(rune(cp)), 6, nil // #nosec G115 -- cp comes from exactly four validated hexadecimal digits.
 	}
 }
 

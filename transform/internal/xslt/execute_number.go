@@ -774,8 +774,8 @@ func formatWithAlphaSystem(num int64, start rune) string {
 
 	n := num
 	for n > 0 {
-		n-- // convert to 0-based
-		result = append([]rune{start + rune(n%int64(seqLen))}, result...)
+		n--                                                               // convert to 0-based
+		result = append([]rune{start + rune(n%int64(seqLen))}, result...) // #nosec G115 -- The positive remainder is smaller than the selected Unicode alphabet length.
 		n /= int64(seqLen)
 	}
 
@@ -1083,7 +1083,7 @@ func formatWithOrdinalSystem(num int, start rune) string {
 		}
 
 		if num <= rangeLen {
-			return string(start + rune(num-1))
+			return string(start + rune(num-1)) // #nosec G115 -- num is nonnegative and bounded by the detected Unicode numbering range.
 		}
 
 		return strconv.Itoa(num)
@@ -1106,7 +1106,7 @@ func formatWithOrdinalSystem(num int, start rune) string {
 
 		rangeLen := int(rangeEnd - rangeStart + 1)
 		if pos <= rangeLen {
-			return string(rangeStart + rune(pos-1))
+			return string(rangeStart + rune(pos-1)) // #nosec G115 -- pos is a positive index bounded by the selected Unicode numbering range.
 		}
 
 		pos -= rangeLen

@@ -227,7 +227,7 @@ func (ec *execContext) moveAnnotatedDocumentChildren(doc *xdm.Document) error {
 	}
 
 	for _, child := range children {
-		xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert
+		xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert // Tree child nodes implement MutableNode.
 
 		if err := ec.addNode(child); err != nil {
 			return err
@@ -966,7 +966,7 @@ func (ec *execContext) evalResultDocOutputDef(ctx context.Context, inst *resultD
 	}
 
 	if !hasAny && effectiveFormat == "" {
-		return nil, nil //nolint:nilnil
+		return nil, nil //nolint:nilnil // Absent output overrides require no additional output definition.
 	}
 
 	base := ec.resultDocOutputBase(effectiveFormat)
@@ -1501,7 +1501,7 @@ func moveChildren(src *xdm.Document, dst *xdm.Document) error {
 	}
 
 	for _, child := range children {
-		xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert
+		xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert // Tree child nodes implement MutableNode.
 
 		if err := dst.AddChild(child); err != nil {
 			return err

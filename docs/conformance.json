@@ -35968,7 +35968,7 @@
         "code": [
           "resource/resource.go",
           "transform/resource.go",
-          "transform/internal/xpath/text/unparsedtext.go"
+          "transform/internal/unparsedtext/unparsedtext.go"
         ]
       },
       "tests": {
@@ -40764,7 +40764,7 @@
         "code": [
           "resource/resource.go",
           "transform/resource.go",
-          "transform/internal/xpath/text/unparsedtext.go"
+          "transform/internal/unparsedtext/unparsedtext.go"
         ]
       },
       "tests": {
@@ -381172,7 +381172,7 @@
           "transform/internal/xpath/functions.go",
           "resource/resource.go",
           "transform/resource.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/functions_node.go",
           "transform/internal/xdm/parse.go",
           "internal/tree/parse.go",
@@ -389096,7 +389096,7 @@
         "code": [
           "resource/resource.go",
           "transform/resource.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/xpath.go",
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions_node.go",
@@ -390111,7 +390111,7 @@
           "transform/xpath.go",
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions_unparsed_text.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/context.go",
           "transform/internal/xpath/evaluator.go",
           "transform/internal/xpath/eval_reuse.go",
@@ -390306,7 +390306,7 @@
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions.go",
           "transform/internal/xpath/functions_unparsed_text.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/context.go",
           "transform/internal/xpath/evaluator.go",
           "transform/internal/xpath/eval_reuse.go",
@@ -390500,7 +390500,7 @@
           "transform/xpath.go",
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions_unparsed_text.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/context.go",
           "transform/internal/xpath/evaluator.go",
           "transform/internal/xpath/eval_reuse.go",
@@ -390694,7 +390694,7 @@
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions_misc.go",
           "transform/internal/xpath/functions_unparsed_text.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/eval_funcall.go",
           "transform/internal/xpath/profile.go"
         ]
@@ -390902,7 +390902,7 @@
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions_misc.go",
           "transform/internal/xpath/functions_unparsed_text.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/eval_funcall.go",
           "transform/internal/xpath/profile.go"
         ]
@@ -480679,7 +480679,7 @@
           "transform/internal/xpath/functions.go",
           "resource/resource.go",
           "transform/resource.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/functions_node.go",
           "transform/internal/xdm/parse.go",
           "internal/tree/parse.go",
@@ -487425,7 +487425,7 @@
         "code": [
           "resource/resource.go",
           "transform/resource.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/xpath.go",
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions_node.go",
@@ -488482,7 +488482,7 @@
           "transform/xpath.go",
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions_unparsed_text.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/context.go",
           "transform/internal/xpath/evaluator.go",
           "transform/internal/xpath/eval_reuse.go",
@@ -488693,7 +488693,7 @@
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions.go",
           "transform/internal/xpath/functions_unparsed_text.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/context.go",
           "transform/internal/xpath/evaluator.go",
           "transform/internal/xpath/eval_reuse.go",
@@ -488903,7 +488903,7 @@
           "transform/xpath.go",
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions_unparsed_text.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/context.go",
           "transform/internal/xpath/evaluator.go",
           "transform/internal/xpath/eval_reuse.go",
@@ -489113,7 +489113,7 @@
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions_misc.go",
           "transform/internal/xpath/functions_unparsed_text.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/eval_funcall.go",
           "transform/internal/xpath/profile.go"
         ]
@@ -489305,7 +489305,7 @@
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions_misc.go",
           "transform/internal/xpath/functions_unparsed_text.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/eval_funcall.go",
           "transform/internal/xpath/profile.go"
         ]
@@ -496063,7 +496063,7 @@
           "transform/internal/xpath/eval_arithmetic.go",
           "transform/internal/xpath/functions_array.go",
           "transform/internal/xpath/functions_json_xml.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/context.go",
           "transform/internal/xpath/evaluator.go",
           "transform/internal/xpath/eval_reuse.go",
@@ -503001,7 +503001,7 @@
           "transform/internal/xpath/functions_json_xml.go",
           "transform/internal/xpath/eval_funcall.go",
           "transform/internal/xpath/profile.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/context.go",
           "transform/internal/xpath/evaluator.go",
           "transform/internal/xpath/eval_reuse.go",
@@ -503491,7 +503491,7 @@
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions_json.go",
           "transform/internal/xpath/functions_unparsed_text.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xpath/context.go",
           "transform/internal/xpath/evaluator.go",
           "transform/internal/xpath/eval_reuse.go",
@@ -649191,7 +649191,7 @@
           "transform/internal/xpath/evaluator.go",
           "transform/internal/xpath/functions_node.go",
           "transform/internal/xpath/functions_unparsed_text.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xslt/functions.go",
           "transform/internal/xslt/functions_user.go",
           "transform/internal/xslt/compile_formats.go",
@@ -649959,7 +649959,7 @@
           "transform/internal/xpath/evaluator.go",
           "transform/internal/xpath/functions_node.go",
           "transform/internal/xpath/functions_unparsed_text.go",
-          "transform/internal/xpath/text/unparsedtext.go",
+          "transform/internal/unparsedtext/unparsedtext.go",
           "transform/internal/xslt/functions.go",
           "transform/internal/xslt/functions_user.go",
           "transform/internal/xslt/compile_formats.go",

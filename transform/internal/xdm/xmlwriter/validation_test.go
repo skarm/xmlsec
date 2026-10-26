@@ -31,7 +31,7 @@ func TestCDATAConvenienceAndEveryChunkBoundary(t *testing.T) {
 		var text strings.Builder
 		for {
 			token, err := decoder.Token()
-			if err == io.EOF {
+			if err == io.EOF { //nolint:errorlint // Only bare EOF is completion; wrapped or joined failures must propagate.
 				break
 			}
 			if err != nil {

@@ -183,6 +183,7 @@ func VerifyRedirect(ctx context.Context, rawQuery string, key crypto.PublicKey, 
 		return nil, fmt.Errorf("%w: %w", ErrEncoding, err)
 	}
 
+	// Only bare EOF proves that the compressed input ended without a source failure.
 	if _, err := source.Peek(1); err != io.EOF {
 		return nil, errors.Join(ErrEncoding, err)
 	}

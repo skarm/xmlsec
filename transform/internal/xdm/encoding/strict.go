@@ -100,7 +100,8 @@ func (t *strictDecoderTransformer) Reset() {
 
 func (t *strictDecoderTransformer) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
 	nDst, nSrc, err = t.base.Transform(dst, src, atEOF)
-	if err != nil && err != transform.ErrShortSrc && err != transform.ErrShortDst {
+	// Transformer uses exact retry sentinels; a wrapped/joined error is a real failure.
+	if err != nil && err != transform.ErrShortSrc && err != transform.ErrShortDst { //nolint:errorlint // Only exact transform retry sentinels permit conversion to continue.
 		return nDst, nSrc, err
 	}
 

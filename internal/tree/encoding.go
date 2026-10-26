@@ -84,6 +84,7 @@ func DecodeBase64(ctx context.Context, node *Node, textLimit, decodedLimit int) 
 	}
 
 	var extra [1]byte
+	// A wrapped/joined EOF must not hide a decoding or source failure.
 	if n, err := decoder.Read(extra[:]); n != 0 || err != io.EOF {
 		return nil, errors.Join(ErrMalformed, err)
 	}

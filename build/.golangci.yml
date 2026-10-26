@@ -16,7 +16,7 @@ linters:
     - dupl
     - errcheck
     - errorlint
-    - forcetypeassert
+    - forcetypeassert # Checks type assertions; errcheck checks returned errors.
     - gochecknoglobals
     - gochecknoinits
     - gocognit
@@ -51,8 +51,6 @@ linters:
     - whitespace
     - wsl_v5
   settings:
-    errcheck:
-      check-type-assertions: true
     gocritic:
       disabled-checks: [ ifElseChain ]
     godot:
@@ -76,18 +74,13 @@ linters:
   exclusions:
     generated: strict
     rules:
-      # Adapted language/model sources retain selected style exemptions.
-      # Naming, govet and correctness checks cover these packages as well.
-      - path: ^transform/internal/(xdm|xpath|xslt)/
-        linters: [ errorlint, gocritic, godot, gosec, misspell, nakedret, nolintlint, perfsprint, makezero ]
-      # Native value/storage assertions already carry explicit forcetypeassert
-      # exemptions. Keep ordinary unchecked-error detection enabled there.
-      - path: ^transform/internal/(xdm|xpath|xslt)/
-        linters: [ errcheck ]
-        source: '//nolint:forcetypeassert'
-      - path: ^transform/internal/(xdm|xpath|xslt)/
-        linters: [ staticcheck ]
-        text: 'ST[0-9]+:'
+      # Preserve adapted comment/return style and fmt calls in these packages.
+      - path: ^transform/internal/(xdm|xpath|xslt|unparsedtext)/
+        linters: [ godot, nakedret, perfsprint ]
+      # Keep gocritic's correctness checks active; exempt only these style hints.
+      - path: ^transform/internal/(xdm|xpath|xslt|unparsedtext)/
+        linters: [ gocritic ]
+        text: '^(unslice|singleCaseSwitch|elseif|unlambda):'
       # Test scenarios keep repeated fixtures and assertions together.
       - path: _test\.go$
         linters: [ dupl, gocognit, goconst, gocyclo, wsl_v5 ]

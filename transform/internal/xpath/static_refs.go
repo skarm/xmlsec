@@ -235,7 +235,7 @@ func (c *staticRefCollector) walkItemTest(it xdm.NodeTest) {
 	}
 }
 
-func (c *staticRefCollector) walk(node Expr) { //nolint:gocyclo
+func (c *staticRefCollector) walk(node Expr) { //nolint:gocyclo // One traversal must cover every expression kind and its lexical scope.
 	c.visits++
 
 	node, ok := derefExprNode(node)

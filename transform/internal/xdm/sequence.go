@@ -124,7 +124,7 @@ func AppendSequenceNodes(dst []Node, seq Sequence) ([]Node, bool) {
 // saturated at math.MaxInt. The span is computed in uint64, where end-start
 // cannot overflow.
 func rangeLen(start, end int64) int {
-	span := uint64(end) - uint64(start)
+	span := uint64(end) - uint64(start) // #nosec G115 -- Unsigned subtraction intentionally preserves the full signed-range span before saturation.
 	if span >= math.MaxInt {
 		return math.MaxInt
 	}

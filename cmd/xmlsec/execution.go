@@ -295,6 +295,7 @@ func decodeJSON(raw []byte, target any) error {
 		return err
 	}
 
+	// The in-memory decoder must report its exact end-of-input sentinel.
 	if _, err := d.Token(); err != io.EOF {
 		return errors.New("configuration must contain exactly one JSON value")
 	}

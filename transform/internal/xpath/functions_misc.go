@@ -158,14 +158,14 @@ func randomAtomicSeed(value xdm.AtomicValue) int64 {
 	switch xdm.PromoteSchemaType(value).TypeName {
 	case xdm.TypeDateTime, xdm.TypeDate, xdm.TypeTime,
 		xdm.TypeGYear, xdm.TypeGYearMonth, xdm.TypeGMonth, xdm.TypeGMonthDay, xdm.TypeGDay:
-		return int64(maphash.Comparable(randomSeedHash(), value.TypeName))
+		return int64(maphash.Comparable(randomSeedHash(), value.TypeName)) // #nosec G115 -- Seed conversion intentionally preserves all 64 hash bits.
 	default:
-		return int64(maphash.Comparable(randomSeedHash(), xdm.NormalizeMapKey(value)))
+		return int64(maphash.Comparable(randomSeedHash(), xdm.NormalizeMapKey(value))) // #nosec G115 -- Seed conversion intentionally preserves all 64 hash bits.
 	}
 }
 
 func makeRNGMap(seed int64) xdm.MapItem {
-	rng := rand.New(rand.NewSource(seed))
+	rng := rand.New(rand.NewSource(seed)) // #nosec G404 -- XPath random-number-generator is reproducible and is not used for cryptographic keys or nonces.
 	number := rng.Float64()
 	nextSeed := rng.Int63()
 	itemType := stItem(xdm.OccurrenceExactlyOne)
@@ -188,7 +188,7 @@ func makeRNGMap(seed int64) xdm.MapItem {
 			perm := make(xdm.ItemSlice, xdm.SequenceLen(seq))
 			copy(perm, xdm.Materialize(seq))
 
-			localRng := rand.New(rand.NewSource(seed))
+			localRng := rand.New(rand.NewSource(seed)) // #nosec G404 -- XPath permutation repeats the generator seed; cryptographic randomness is not required.
 
 			localRng.Shuffle(len(perm), func(i, j int) {
 				perm[i], perm[j] = perm[j], perm[i]

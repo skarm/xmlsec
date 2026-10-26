@@ -64,8 +64,8 @@ const (
 	TypeLanguage         = "xs:language"
 	TypeName             = "xs:Name"
 	TypeNCName           = "xs:NCName"
-	TypeNMTOKEN          = "xs:NMTOKEN"
-	TypeNMTOKENS         = "xs:NMTOKENS"
+	TypeNMTOKEN          = "xs:NMTOKEN"  // #nosec G101 -- XML Schema type name, not a credential.
+	TypeNMTOKENS         = "xs:NMTOKENS" // #nosec G101 -- XML Schema type name, not a credential.
 	TypeENTITY           = "xs:ENTITY"
 	TypeID               = "xs:ID"
 	TypeIDREF            = "xs:IDREF"
@@ -214,7 +214,7 @@ func CloneMapKey(key AtomicValue) AtomicValue {
 
 // StringVal returns the backing string value. Panics if not a string-backed type.
 func (a AtomicValue) StringVal() string {
-	return a.Value.(string) //nolint:forcetypeassert
+	return a.Value.(string) //nolint:forcetypeassert // The type-specific accessor requires the matching XDM value representation.
 }
 
 // IntegerVal returns an int64-backed value or delegates to big.Int.Int64. It does not
@@ -225,7 +225,7 @@ func (a AtomicValue) IntegerVal() int64 {
 		return v
 	}
 
-	return a.Value.(*big.Int).Int64() //nolint:forcetypeassert
+	return a.Value.(*big.Int).Int64() //nolint:forcetypeassert // The type-specific accessor requires the matching XDM value representation.
 }
 
 // Int64Val returns the int64 value if it fits, or (0, false) otherwise.
@@ -315,28 +315,28 @@ func (a AtomicValue) FloatVal() *FloatValue {
 
 // BooleanVal returns the backing bool value.
 func (a AtomicValue) BooleanVal() bool {
-	return a.Value.(bool) //nolint:forcetypeassert
+	return a.Value.(bool) //nolint:forcetypeassert // The type-specific accessor requires the matching XDM value representation.
 }
 
 // TimeVal returns the backing time.Time value.
 func (a AtomicValue) TimeVal() time.Time {
-	return a.Value.(time.Time) //nolint:forcetypeassert
+	return a.Value.(time.Time) //nolint:forcetypeassert // The type-specific accessor requires the matching XDM value representation.
 }
 
 // DurationVal returns the backing Duration value.
 func (a AtomicValue) DurationVal() Duration {
-	return a.Value.(Duration) //nolint:forcetypeassert
+	return a.Value.(Duration) //nolint:forcetypeassert // The type-specific accessor requires the matching XDM value representation.
 }
 
 // BytesVal returns the borrowed byte-slice payload and panics for other backing types.
 // Callers must not mutate shared XDM value storage.
 func (a AtomicValue) BytesVal() []byte {
-	return a.Value.([]byte) //nolint:forcetypeassert
+	return a.Value.([]byte) //nolint:forcetypeassert // The type-specific accessor requires the matching XDM value representation.
 }
 
 // QNameVal returns the backing QNameValue.
 func (a AtomicValue) QNameVal() QNameValue {
-	return a.Value.(QNameValue) //nolint:forcetypeassert
+	return a.Value.(QNameValue) //nolint:forcetypeassert // The type-specific accessor requires the matching XDM value representation.
 }
 
 // IsNaN returns true if the atomic value is NaN (xs:double or xs:float).

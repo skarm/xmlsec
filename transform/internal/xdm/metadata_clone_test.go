@@ -34,7 +34,7 @@ func TestCloneFunctionMetadataRecursesThroughCollections(t *testing.T) {
 		t.Fatal("cloned metadata shares nested slices")
 	}
 	result, err := cloned.Invoke(t.Context(), nil)
-	if err != sentinel || cloned.Arity != 1 || cloned.Name != "f" {
+	if err != sentinel || cloned.Arity != 1 || cloned.Name != "f" { //nolint:errorlint // The callback error must be returned unchanged, preserving its identity.
 		t.Fatal("clone changed function identity or closure")
 	}
 	assertStringItems(t, result, "result")

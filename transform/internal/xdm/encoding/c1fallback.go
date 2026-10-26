@@ -125,7 +125,8 @@ func (t *c1DecoderTransformer) decodeByte(dst, src []byte, atEOF bool) (int, int
 	if src[0] <= 0x9f {
 		// C1 bytes use their own code points when the base decoder has no mapping.
 		fallback = fallback || written == 3 && decoded[0] == 0xef && decoded[1] == 0xbf && decoded[2] == 0xbd
-	} else if fallback && (err == transform.ErrShortDst || err == transform.ErrShortSrc) {
+	} else if fallback && (err == transform.ErrShortDst || err == transform.ErrShortSrc) { //nolint:errorlint // Only exact transform retry sentinels permit conversion to continue.
+		// Only the Transformer's exact retry signals request more input/output space.
 		return 0, 0, err
 	}
 

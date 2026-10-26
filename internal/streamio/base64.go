@@ -47,6 +47,7 @@ func (r *base64PaddingReader) Read(dst []byte) (int, error) {
 
 	if invalid >= 0 {
 		// Ordinary terminal EOF must not disguise corruption as completion.
+		// Strip only bare EOF; a wrapped/joined error may also carry a source failure.
 		if err == io.EOF {
 			err = nil
 		}

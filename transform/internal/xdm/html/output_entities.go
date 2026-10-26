@@ -1105,7 +1105,7 @@ func newHTMLEntityTable() map[rune]string {
 		10703:  "LeftTriangleBar",
 		10704:  "RightTriangleBar",
 		10716:  "iinfin",
-		10717:  "infintie",
+		10717:  "infintie", //nolint:misspell // Standard HTML named character reference.
 		10718:  "nvinfin",
 		10723:  "eparsl",
 		10724:  "smeparsl",
@@ -1174,7 +1174,7 @@ func newHTMLEntityTable() map[rune]string {
 		10840:  "andslope",
 		10842:  "andv",
 		10843:  "orv",
-		10844:  "andd",
+		10844:  "andd", //nolint:misspell // Standard HTML named character reference.
 		10845:  "ord",
 		10847:  "wedbar",
 		10854:  "sdote",

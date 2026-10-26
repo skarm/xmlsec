@@ -630,7 +630,7 @@ func (ec *execContext) collectNodeChildren(node xdm.Node) xdm.ItemSlice {
 
 	seq := make(xdm.ItemSlice, 0, len(children))
 	for _, child := range children {
-		xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert
+		xdm.UnlinkNode(child.(xdm.MutableNode)) //nolint:forcetypeassert // Tree child nodes implement MutableNode.
 		seq = append(seq, xdm.NodeItem{Node: child})
 	}
 
