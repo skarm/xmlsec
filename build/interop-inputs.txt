@@ -3,8 +3,8 @@
 f269b7b98691a48647e54ca5bce9d1042c0eb5f12a0887879974f418f70baa23 https://repo.maven.apache.org/maven2/org/eclipse/jetty/jetty-home/12.1.14/jetty-home-12.1.14.tar.gz jetty.tar.gz
 1c7db9f726df835349c64edd631de0310eca31291100230064eba153f607b0be https://github.com/Saxonica/Saxon-HE/releases/download/SaxonHE12-10/SaxonHE12-10J.zip saxon.zip
 c52862d33cd5bb34ed20d48a5ff62bc475e4279c16fd13460a19f726d1dcf62f https://repo.maven.apache.org/maven2/net/sf/saxon/Saxon-HE/9.4.0-9/Saxon-HE-9.4.0-9.jar saxon20.jar
-1cbcc49ac5ed8942ba58276699254469ca2144e229f68faeeb48f784c1037953 https://www.w3.org/2014/04/xslt-xquery-serialization/schema-for-serialization-parameters.xsd schemas/ser30.xsd
-256736a2f4e7923e888047dee757c17bc3ee707e285f00639fd8fb1d962d11b0 https://www.w3.org/2017/01/xslt-xquery-serialization/schema-for-serialization-parameters.xsd schemas/ser31.xsd
+1b95a61f1f1ee5905898544542e7b283c7780ed63dd6313010c078183d626242 https://www.w3.org/2014/04/xslt-xquery-serialization/schema-for-serialization-parameters.xsd schemas/ser30.xsd
+f191b0dc69513670883c0abae97d1dab76965b8bfe3fb0b08a2df1b85d228cd3 https://www.w3.org/2017/01/xslt-xquery-serialization/schema-for-serialization-parameters.xsd schemas/ser31.xsd
 34407695050d165be14931c0f378f832d24abe3de682a069d2d6121f07661ec3 https://www.w3.org/TR/2017/REC-xpath-functions-31-20170321/schema-for-json.xsd schemas/json.xsd
 c5301a890b0265a705f0806269aa37345aa47d7245a78900b941af65290b16fa https://www.w3.org/TR/2013/REC-xmlenc-core1-20130411/xenc-schema.xsd xmlenc/xenc-schema.xsd
 2b48432f036262345638536601d4ea3224897e2d41901163c04eebf350477958 https://www.w3.org/TR/2013/REC-xmlenc-core1-20130411/xenc-schema-11.xsd xmlenc/xenc-schema-11.xsd

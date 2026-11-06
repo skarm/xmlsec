@@ -1,0 +1,6 @@
+# Go tooling writes module files with LF on every platform.
+go.mod text eol=lf
+go.sum text eol=lf
+
+# Preserve the checksum-pinned Unicode corpus byte for byte.
+/tests/testdata/unicode/NormalizationTest-17.0.0.txt -text

@@ -1855,8 +1855,8 @@ func qtResidualSerializationControls(t *testing.T, options suiteOptions, item su
 		version  string
 		checksum string
 	}{
-		{"30", "1cbcc49ac5ed8942ba58276699254469ca2144e229f68faeeb48f784c1037953"},
-		{"31", "256736a2f4e7923e888047dee757c17bc3ee707e285f00639fd8fb1d962d11b0"},
+		{"30", "1b95a61f1f1ee5905898544542e7b283c7780ed63dd6313010c078183d626242"},
+		{"31", "f191b0dc69513670883c0abae97d1dab76965b8bfe3fb0b08a2df1b85d228cd3"},
 	} {
 		schema := filepath.Join(residualRequired(t, "SERIALIZATION_SCHEMA_DIR"), "ser"+edition.version+".xsd")
 		data, err := os.ReadFile(schema)
