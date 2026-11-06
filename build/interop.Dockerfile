@@ -51,7 +51,8 @@ ENV PATH="/usr/local/go/bin:${PATH}" \
     XADES_SCHEMA_DIR=/opt/inputs/xades \
     RFC9879_FILE=/opt/inputs/rfc9879.txt \
     XMLSEC_REQUIRE_INTEROP=1 \
-    XMLSEC_INTEROP_SHARDS=4
+    XMLSEC_INTEROP_SHARDS=2 \
+    XMLSEC_INTEROP_PARALLEL=2
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

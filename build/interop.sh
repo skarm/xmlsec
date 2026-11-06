@@ -24,22 +24,34 @@ run() {
 
 shards=${XMLSEC_INTEROP_SHARDS:-1}
 case "$shards" in [1-8]) ;; *) printf 'XMLSEC_INTEROP_SHARDS must be 1..8\n' >&2; exit 1 ;; esac
+parallel=${XMLSEC_INTEROP_PARALLEL:-1}
+case "$parallel" in [1-8]) ;; *) printf 'XMLSEC_INTEROP_PARALLEL must be 1..8\n' >&2; exit 1 ;; esac
 names=$("$go_bin" test -tags=interop ./transform -list '^TestCompare')
-filters=()
-for ((slot=0; slot<shards; slot++)); do filters[slot]=''; done
 index=0
 while IFS= read -r name; do
     [[ $name =~ ^TestCompare[[:alnum:]_]+$ ]] || continue
-    slot=$((index % shards))
-    filters[slot]+="${filters[slot]:+|}$name"
+    printf '%s\n' "$name" >> "$reports/transform-tests"
     index=$((index + 1))
 done <<< "$names"
 [[ $index -gt 0 ]] || { printf 'no transform comparisons discovered\n' >&2; exit 1; }
-printf 'Running %d transform comparisons in %d isolated processes\n' "$index" "$shards"
+printf 'Running %d transform comparisons with %d workers and %d parallel subtests each\n' "$index" "$shards" "$parallel"
+
+run_transform() {
+    local name failed=0
+    while IFS= read -r name; do
+        # Claim the next test atomically. Workers take more work as they finish,
+        # so large test tables cannot leave other workers idle for a whole shard.
+        mkdir "$reports/claim-$name" 2>/dev/null || continue
+        # Bound each comparison, rather than the accumulated time of unrelated
+        # comparisons. Each invocation also has its own complete JSON stream.
+        run "$reports/$name.jsonl" -tags=interop -count=1 -timeout=45m "-parallel=$parallel" ./transform "-run=^${name}$" || failed=1
+    done < "$reports/transform-tests"
+    return "$failed"
+}
+
 pids=()
 for ((slot=0; slot<shards; slot++)); do
-    [[ -n ${filters[slot]} ]] || continue
-    run "$reports/transform-$slot.jsonl" -tags=interop -count=1 -timeout=45m ./transform "-run=^(${filters[slot]})$" &
+    run_transform &
     pids+=("$!")
 done
 failed=0

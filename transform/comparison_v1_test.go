@@ -466,28 +466,33 @@ func TestCompareSaxonDocumentBaseURI(t *testing.T) {
 }
 
 func TestCompareSaxonFunctionTypes(t *testing.T) {
+	t.Parallel()
 	classpath, binary := saxonRuntime(t)
 	e := engine(t, transform.Config{})
 	for expression, want := range processingInstructionTypeCases() {
 		t.Run("PI type "+strconv.QuoteToASCII(expression), func(t *testing.T) {
+			t.Parallel()
 			expression = "let $d := parse-xml('" + processingInstructionTypeXML + "') return $d ! (" + expression + ")"
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want)
 		})
 	}
 	for expression, want := range processingInstructionFunctionTypeCases() {
 		t.Run("PI function type "+strconv.QuoteToASCII(expression), func(t *testing.T) {
+			t.Parallel()
 			expression = "let $d := parse-xml('" + processingInstructionTypeXML + "') return $d ! (" + expression + ")"
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want)
 		})
 	}
 	for expression, want := range namespaceNodeTypeCases() {
 		t.Run("node type namespace "+expression, func(t *testing.T) {
+			t.Parallel()
 			body := `<xsl:variable name="d">` + namespaceNodeTypeXML + `</xsl:variable><xsl:template name="start"><xsl:for-each select="$d" xmlns:p="urn:node" xmlns:t="http://www.w3.org/2001/XMLSchema" xpath-default-namespace="urn:node">` + valueOfExpression(expression) + `</xsl:for-each></xsl:template>`
 			compareSaxonStylesheet(t, t.Context(), e, binary, classpath, body, want)
 		})
 	}
 	for expression, want := range standardFunctionTypeCases() {
 		t.Run(expression, func(t *testing.T) {
+			t.Parallel()
 			oracle := want
 			if expression == `base-uri#0 instance of function() as xs:anyURI?` {
 				oracle = nameFalse
@@ -516,16 +521,19 @@ func TestCompareSaxonFunctionTypes(t *testing.T) {
 	}
 	for expression, want := range mathFunctionContractCases() {
 		t.Run("math contract "+expression, func(t *testing.T) {
+			t.Parallel()
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want)
 		})
 	}
 	for expression, want := range sequenceConcatenationContractCases() {
 		t.Run("sequence contract "+expression, func(t *testing.T) {
+			t.Parallel()
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want)
 		})
 	}
 	for expression, want := range basicNodeAccessorCases() {
 		t.Run("node accessor "+expression, func(t *testing.T) {
+			t.Parallel()
 			expression = "let $d := parse-xml('" + basicAccessorXML + "') return " + expression
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want)
 		})
@@ -533,6 +541,7 @@ func TestCompareSaxonFunctionTypes(t *testing.T) {
 	compareSaxonURICollections(t, binary, classpath)
 	for expression, want := range publishedFunctionArityCases(transform.XPath31) {
 		t.Run("published arity "+expression, func(t *testing.T) {
+			t.Parallel()
 			oracle := want
 			if expression == "fn:deep-equal((),(),(),())" {
 				// The pinned Saxon also exposes the later four-argument
@@ -544,6 +553,7 @@ func TestCompareSaxonFunctionTypes(t *testing.T) {
 	}
 	for expression, want := range sequenceSubtypeCases() {
 		t.Run(expression, func(t *testing.T) {
+			t.Parallel()
 			oracle := want
 			// REC 3.0/3.1 §2.5.6.1 explicitly makes xs:error and xs:error+
 			// bottom sequence types. The pinned Saxon misses these table cells.
@@ -568,6 +578,7 @@ func TestCompareSaxonFunctionTypes(t *testing.T) {
 	}
 	for expression, want := range exactFloatCastCases() {
 		t.Run(expression, func(t *testing.T) {
+			t.Parallel()
 			oracle := want
 			// F&O §19.1.2.1 requires the nearest supported float. Saxon
 			// narrows through double and loses the side of these midpoints.
@@ -586,6 +597,7 @@ func TestCompareSaxonFunctionTypes(t *testing.T) {
 	for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
 		for expression, want := range xpathLexicalCases(version) {
 			t.Run(fmt.Sprintf("lexical %d/%s", version, strconv.QuoteToASCII(expression)), func(t *testing.T) {
+				t.Parallel()
 				source := sheet(version30, `<xsl:template name="start" xmlns:p="urn:test"><xsl:for-each select="document('module.xsl')">`+valueOfExpression(expression)+`</xsl:for-each></xsl:template>`)
 				compareSaxonCompiler(t, binary, classpath, source, xpathLexicalXML, want, transform.XSLT30)
 			})
@@ -597,12 +609,14 @@ func TestCompareSaxonFunctionTypes(t *testing.T) {
 	for _, cases := range []map[string]string{mapKeyAtomizationCases(), predicateNumericCases(), xpathCoreClauseCases()} {
 		for expression, want := range cases {
 			t.Run(expression, func(t *testing.T) {
+				t.Parallel()
 				compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, want)
 			})
 		}
 	}
 	for expression, want := range qnameWhitespaceCases() {
 		t.Run("QName whitespace "+expression, func(t *testing.T) {
+			t.Parallel()
 			oracle := want
 			if expression == "xs:QName('\u00a0p:x')" {
 				// The value has both invalid lexical syntax and an unbound
@@ -614,12 +628,14 @@ func TestCompareSaxonFunctionTypes(t *testing.T) {
 	}
 	for expression, want := range untypedNodeTypeCases() {
 		t.Run("untyped node "+expression, func(t *testing.T) {
+			t.Parallel()
 			source := `parse-xml('` + untypedNodeTypeXML + `') ! (` + expression + `)`
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, source, want)
 		})
 	}
 	for expression, want := range xsltFunctionTypeCases() {
 		t.Run(expression, func(t *testing.T) {
+			t.Parallel()
 			oracle := want
 			switch expression {
 			case `unparsed-entity-uri('x')`:
@@ -663,12 +679,14 @@ func compareSaxonURICollections(t *testing.T, binary, classpath string) {
 		"stable view": {`deep-equal(uri-collection($uri),uri-collection($uri))`, nameTrue},
 	} {
 		t.Run("URI collection "+name, func(t *testing.T) {
+			t.Parallel()
 			expression := "let $uri := '" + uri + "' return " + test.expression
 			compareSaxonExpression(t, t.Context(), e, binary, classpath, expression, test.want)
 		})
 	}
 	for _, expression := range xpathSyntaxErrorSources() {
 		t.Run("XPath syntax "+expression, func(t *testing.T) {
+			t.Parallel()
 			source := sheet(version30, `<xsl:template name="start" xmlns:p="urn:syntax" xmlns:fn="http://www.w3.org/2005/xpath-functions">`+valueOfExpression(expression)+`</xsl:template>`)
 			compareSaxonCompiler(t, binary, classpath, source, sheet(version30, ""), errCodeXPST0003, transform.XSLT30)
 		})
@@ -677,6 +695,7 @@ func compareSaxonURICollections(t *testing.T, binary, classpath string) {
 	for _, name := range xpathReservedNames(transform.XPath31) {
 		for _, prefixed := range []bool{false, true} {
 			t.Run(fmt.Sprintf("reserved reference/%s/%t", name, prefixed), func(t *testing.T) {
+				t.Parallel()
 				want := errCodeXPST0003
 				if prefixed {
 					want = "registered"
@@ -690,6 +709,7 @@ func compareSaxonURICollections(t *testing.T, binary, classpath string) {
 	for _, name := range xpathReservedNames(transform.XPath31) {
 		for _, prefixed := range []bool{false, true} {
 			t.Run(fmt.Sprintf("reserved/%s/%t", name, prefixed), func(t *testing.T) {
+				t.Parallel()
 				want := errCodeXPST0003
 				if prefixed {
 					want = "registered"
@@ -904,6 +924,7 @@ func TestCompareSaxonSequenceConstructorContracts(t *testing.T) {
 }
 
 func TestCompareSaxon20CompilerContracts(t *testing.T) {
+	t.Parallel()
 	classpath := os.Getenv("SAXON20_CLASSPATH")
 	if classpath == "" {
 		t.Skip("SAXON20_CLASSPATH is not configured")
@@ -1211,6 +1232,7 @@ func TestCompareSaxon20CompilerContracts(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			oracle := test.want
 			if test.name == "text implicit invalid XML character" || test.name == "text detected UTF8 malformed" {
 				// The old processor groups no-argument decoding failures under1200,
@@ -1310,6 +1332,7 @@ func TestCompareSaxonResidualEditionProofs(t *testing.T) {
 }
 
 func TestCompareSaxonConditionalCompilation(t *testing.T) {
+	t.Parallel()
 	classpath, binary := saxonRuntime(t)
 	// REC 9.9 excludes a global binding from its own declaration. The pinned
 	// Saxon CLI diagnoses the same condition without exposing a standard code.
@@ -1317,6 +1340,7 @@ func TestCompareSaxonConditionalCompilation(t *testing.T) {
 
 	for _, test := range conditionalCompilationCases() {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			oracle := test.want30
 			if test.name == "shadow type namespace" {
 				// Saxon evaluates this condition before its computed type namespace.
@@ -1328,6 +1352,7 @@ func TestCompareSaxonConditionalCompilation(t *testing.T) {
 	}
 	for _, test := range staticModuleCompilationCases() {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			oracle := test.want
 			if test.name == "include embedded simplified xml space preserve " || test.name == "import embedded simplified xml space preserve " {
 				// REC 3.0 §3.11 leaves module construction implementation-defined.
@@ -1350,6 +1375,7 @@ func TestCompareSaxonConditionalCompilation(t *testing.T) {
 	}
 	for _, test := range variableScopeCases() {
 		t.Run("variable scope "+test.name, func(t *testing.T) {
+			t.Parallel()
 			version := version20
 			if test.modern {
 				version = version30
@@ -1364,6 +1390,7 @@ func TestCompareSaxonConditionalCompilation(t *testing.T) {
 	}
 	for _, test := range compilerClauseCases() {
 		t.Run("clause "+test.name, func(t *testing.T) {
+			t.Parallel()
 			oracle := test.want
 			switch test.name {
 			case "backwards named foreign reference", "backwards named declared arity":
@@ -1377,6 +1404,7 @@ func TestCompareSaxonConditionalCompilation(t *testing.T) {
 	}
 	for _, test := range groupingCopyRegressionCases() {
 		t.Run("typed group copy "+test.name, func(t *testing.T) {
+			t.Parallel()
 			oracle := test.want
 			switch test.name {
 			case "adjacent numeric predecessor":
@@ -1453,11 +1481,13 @@ func TestCompareSaxonModuleUseWhenNamespaces(t *testing.T) {
 }
 
 func TestCompareSaxonHostFunctionContracts(t *testing.T) {
+	t.Parallel()
 	classpath, binary := saxonRuntime(t)
 	e := engine(t, transform.Config{})
 	for _, test := range hostFunctionCases() {
 		for _, version := range []string{version20, version30} {
 			t.Run(test.name+version, func(t *testing.T) {
+				t.Parallel()
 				source := hostFunctionSheet(version, test)
 				expression := `transform(map{'stylesheet-text':'` + strings.ReplaceAll(source, "'", "''") + `','initial-template':QName('','start'),'delivery-format':'serialized'})?output`
 				oracle := test.want30
@@ -1523,6 +1553,7 @@ func TestCompareSaxonHostFunctionContracts(t *testing.T) {
 	}
 	for _, test := range xsltHostNameCases() {
 		t.Run("host EQName "+test.expression, func(t *testing.T) {
+			t.Parallel()
 			source := sheet(version20, `<xsl:key name="k" match="n" use="@k"/><xsl:variable name="d"><r><n k="a"/></r></xsl:variable><xsl:template name="start">`+valueOfExpression(test.expression)+`</xsl:template>`)
 			compareSaxonCompiler(t, binary, classpath, source, sheet(version20, ""), test.want30, transform.XSLT30)
 		})
@@ -1544,13 +1575,16 @@ func TestCompareSaxonNumberPictureDiagnostic(t *testing.T) {
 }
 
 func TestCompareSaxonStaticParameterContracts(t *testing.T) {
+	t.Parallel()
 	classpath, binary := saxonRuntime(t)
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
 
 	e := engine(t, transform.Config{})
 	for _, test := range staticParameterCases() {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+
 			expression := strings.ReplaceAll(staticParameterExpression(test.argument), "$stylesheet", "'"+strings.ReplaceAll(staticParameterSheet(test), "'", "''")+"'")
 			oracle := test.want
 			switch test.name {
@@ -1577,6 +1611,10 @@ func TestCompareSaxonStaticParameterContracts(t *testing.T) {
 	}
 	for _, test := range staticVariableCases() {
 		t.Run("variable/"+test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+
 			expression := strings.ReplaceAll(staticParameterExpression(""), "$stylesheet", "'"+strings.ReplaceAll(staticVariableSheet(test), "'", "''")+"'")
 			oracle := test.want
 			switch test.name {
@@ -3844,6 +3882,7 @@ func TestCompareSerializationRawHTMLDescendants(t *testing.T) {
 }
 
 func TestCompareSerializationVoidElementTables(t *testing.T) {
+	t.Parallel()
 	classpath, binary := saxonRuntime(t)
 	for _, edition := range []string{"20", "30", "31"} {
 		selectedClasspath := classpath
@@ -3861,6 +3900,7 @@ func TestCompareSerializationVoidElementTables(t *testing.T) {
 				for _, name := range serializationVoidElementNames() {
 					for _, nullNamespace := range serializationVoidNamespaceCases(method, htmlVersion, name) {
 						t.Run("SER"+edition+"/"+method+"/HTML"+htmlVersion+"/"+serializationVoidLabel(name, nullNamespace), func(t *testing.T) {
+							t.Parallel()
 							vector := serializationVoidVector(edition, method, htmlVersion, name, nullNamespace)
 							source := markupSerializationSheet(vector, false)
 							if edition == "20" {
@@ -3880,6 +3920,7 @@ func TestCompareSerializationVoidElementTables(t *testing.T) {
 }
 
 func TestCompareSerializationBooleanAttributeTables(t *testing.T) {
+	t.Parallel()
 	classpath, binary := saxonRuntime(t)
 	for _, edition := range []string{"20", "30", "31"} {
 		selectedClasspath := classpath
@@ -3895,6 +3936,7 @@ func TestCompareSerializationBooleanAttributeTables(t *testing.T) {
 			}
 			for _, cell := range publishedSerializationBooleanCells() {
 				t.Run("SER"+edition+"/HTML"+htmlVersion+"/"+cell.element+"/"+cell.attribute, func(t *testing.T) {
+					t.Parallel()
 					vector := serializationBooleanCellVector(htmlVersion, cell, strings.ToUpper(cell.attribute))
 					var body strings.Builder
 					body.WriteString(strings.TrimSuffix(strings.TrimPrefix(vector.body, "<r>"), "</r>"))
@@ -3954,6 +3996,7 @@ func TestCompareSerializationContainerParameters(t *testing.T) {
 }
 
 func TestCompareSerializationSelectedEditions(t *testing.T) {
+	t.Parallel()
 	classpath, binary := saxonRuntime(t)
 	for _, edition := range []string{"20", "30"} {
 		selectedClasspath := classpath
@@ -3967,7 +4010,10 @@ func TestCompareSerializationSelectedEditions(t *testing.T) {
 			if !serializationVectorAdmitted(edition, test) || !serializationSelectedOracleAdmitted(test) {
 				continue
 			}
-			t.Run("SER"+edition+"/"+test.name, func(t *testing.T) { compareSelectedSerializationVector(t, binary, selectedClasspath, edition, test) })
+			t.Run("SER"+edition+"/"+test.name, func(t *testing.T) {
+				t.Parallel()
+				compareSelectedSerializationVector(t, binary, selectedClasspath, edition, test)
+			})
 		}
 	}
 }
@@ -4039,6 +4085,7 @@ func serializationReviewedOracleDiagnostic(name string) bool {
 }
 
 func TestCompareSerializationURIAttributeTables(t *testing.T) {
+	t.Parallel()
 	classpath, binary := saxonRuntime(t)
 	oldClasspath := os.Getenv("SAXON20_CLASSPATH")
 	if oldClasspath == "" {
@@ -4052,6 +4099,7 @@ func TestCompareSerializationURIAttributeTables(t *testing.T) {
 		for _, method := range []string{"html", "xhtml"} {
 			for _, cell := range publishedSerializationURICells() {
 				t.Run("SER"+edition+"/"+method+"/"+cell.element+"/"+cell.attribute, func(t *testing.T) {
+					t.Parallel()
 					compareSerializationURICell(t, binary, selectedClasspath, edition, method, cell)
 				})
 			}

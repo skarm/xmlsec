@@ -61,8 +61,12 @@ Runtime networking is disabled except for the container's loopback. The full
 recipe runs race tests, generates local historical fixtures, starts official DSS
 6.5.1 and performs both external suites. `XMLSEC_REQUIRE_INTEROP=1` makes every
 skipped test, failure, empty run or incomplete JSON test stream fail the gate.
-Transform comparisons run in four isolated Go processes in the image
-(`XMLSEC_INTEROP_SHARDS`, 1–8). Tests within each process remain sequential.
+Transform comparisons use two workers in the image (`XMLSEC_INTEROP_SHARDS`,
+1–8). Each worker takes the next comparison when free and runs it in an isolated
+Go process with a 45-minute limit. Independent cases in the largest tables run
+in parallel, bounded by `XMLSEC_INTEROP_PARALLEL` (1–8, two in the image).
+Together these settings allow at most four comparison JVMs at once in the image.
+Both settings default to one on a prepared host.
 
 For a prepared host:
 
